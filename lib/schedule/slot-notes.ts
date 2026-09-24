@@ -5,6 +5,12 @@ export const SCHEDULE_SLOT_NOTES_KEY = '@selfapp/frog_schedule_slot_notes_v1';
 
 export const SCHEDULE_SLOT_NOTE_MAX_LEN = 6;
 
+/**
+ * 输入框软上限：中文 IME 拼音中间态字母数常远超成字数。
+ * 勿把 MAX_LEN 直接绑到 TextInput.maxLength，否则拼音会被截断导致汉字无法上屏。
+ */
+export const SCHEDULE_SLOT_NOTE_IME_SOFT_MAX = SCHEDULE_SLOT_NOTE_MAX_LEN * 8;
+
 export type ScheduleSlotNotesMap = Record<string, string>;
 
 function minutesKey(startMinutes: number): string {

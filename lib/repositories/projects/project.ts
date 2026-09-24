@@ -126,6 +126,13 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
   if ((result.changes ?? 0) === 0) {
     throw new Error('项目保存失败，请返回列表刷新后重试');
   }
+  if (input.status !== undefined && input.status !== current.status) {
+    void import('@/lib/notification-center')
+      .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+        resyncAppNotificationsAfterPreferenceChange(),
+      )
+      .catch(() => {});
+  }
 }
 
 export async function deleteProject(id: string) {

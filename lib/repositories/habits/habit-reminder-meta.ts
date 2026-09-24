@@ -34,3 +34,31 @@ export function formatHabitReminderClock(meta: ParsedHabitReminder): string | nu
   if (!meta.enabled) return null;
   return `${pad2(meta.hour)}:${pad2(meta.minute)}`;
 }
+
+/** 写回习惯 `extra_data.reminder`（与 add-habit / habit-detail 同源）。 */
+export function mergeHabitReminderIntoExtraData(
+  extraData: string | null,
+  reminder: { enabled: false } | { enabled: true; hour: number; minute: number },
+): string {
+  let base: Record<string, unknown> = {};
+  if (extraData) {
+    try {
+      const p = JSON.parse(extraData) as unknown;
+      if (p && typeof p === 'object' && !Array.isArray(p)) {
+        base = { ...(p as Record<string, unknown>) };
+      }
+    } catch {
+      base = {};
+    }
+  }
+  if (!reminder.enabled) {
+    base.reminder = { enabled: false };
+  } else {
+    base.reminder = {
+      enabled: true,
+      hour: Math.max(0, Math.min(23, Math.round(reminder.hour))),
+      minute: Math.max(0, Math.min(59, Math.round(reminder.minute))),
+    };
+  }
+  return JSON.stringify(base);
+}

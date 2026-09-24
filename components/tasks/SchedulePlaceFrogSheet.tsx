@@ -219,8 +219,8 @@ function CandidateMetaChips({
     chips.push({
       key: 'assigned',
       label: '当日已指派',
-      color: outline,
-      icon: 'link',
+      color: errorColor,
+      icon: 'link-off',
     });
   }
 
@@ -402,6 +402,10 @@ export function SchedulePlaceFrogSheet({
 
   const submit = React.useCallback(async () => {
     if (!picked || !canConfirm) return;
+    if (picked.alreadyAssigned) {
+      Alert.alert('无法入格', '该项当日已指派到课程表，请先取消指派后再入格。');
+      return;
+    }
     setSaving(true);
     try {
       await onConfirm({
@@ -535,37 +539,57 @@ export function SchedulePlaceFrogSheet({
                       showsVerticalScrollIndicator={false}>
                       {visibleCandidates.map((c) => {
                         const acceptance = (c.acceptanceCriteria || '').trim();
+                        const assignedBlocked = c.alreadyAssigned;
                         return (
                           <Pressable
                             key={`${c.kind}-${c.id}`}
-                            onPress={() => setPicked(c)}
+                            disabled={assignedBlocked}
+                            onPress={() => {
+                              if (assignedBlocked) return;
+                              setPicked(c);
+                            }}
                             style={({ pressed }) => [
                               styles.candidateCard,
                               {
                                 backgroundColor: c.isOverdue
                                   ? `${errorColor}10`
                                   : surfaceLow,
-                                opacity: pressed ? 0.85 : c.alreadyAssigned ? 0.72 : 1,
-                                borderColor: c.isOverdue
-                                  ? `${errorColor}55`
-                                  : isDark
-                                    ? 'rgba(148,163,184,0.22)'
-                                    : 'rgba(203,213,225,0.85)',
-                                borderWidth: c.isOverdue ? 1.5 : StyleSheet.hairlineWidth,
+                                opacity: assignedBlocked ? 0.48 : pressed ? 0.85 : 1,
+                                borderColor: assignedBlocked
+                                  ? `${outline}33`
+                                  : c.isOverdue
+                                    ? `${errorColor}55`
+                                    : isDark
+                                      ? 'rgba(148,163,184,0.22)'
+                                      : 'rgba(203,213,225,0.85)',
+                                borderWidth: c.isOverdue && !assignedBlocked ? 1.5 : StyleSheet.hairlineWidth,
                               },
-                            ]}>
+                            ]}
+                            accessibilityState={{ disabled: assignedBlocked }}
+                            accessibilityHint={
+                              assignedBlocked ? '当日已指派，不可再次入格' : undefined
+                            }>
                             <View style={styles.candidateTitleRow}>
                               <Text
                                 style={{
-                                  color: c.isOverdue ? errorColor : theme.text,
-                                  fontWeight: c.isOverdue ? '800' : '700',
+                                  color: assignedBlocked
+                                    ? outline
+                                    : c.isOverdue
+                                      ? errorColor
+                                      : theme.text,
+                                  fontWeight: c.isOverdue && !assignedBlocked ? '800' : '700',
                                   flex: 1,
                                   fontSize: 15,
+                                  textDecorationLine: assignedBlocked ? 'line-through' : 'none',
                                 }}
                                 numberOfLines={2}>
                                 {c.title}
                               </Text>
-                              <MaterialIcons name="chevron-right" size={20} color={outline} />
+                              <MaterialIcons
+                                name={assignedBlocked ? 'block' : 'chevron-right'}
+                                size={20}
+                                color={outline}
+                              />
                             </View>
                             <CandidateMetaChips
                               candidate={c}

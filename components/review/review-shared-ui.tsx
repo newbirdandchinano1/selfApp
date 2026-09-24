@@ -1,6 +1,7 @@
 import { AppCard } from '@/components/ui/app-card';
-import { getMinTouchTarget, Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { REVIEW_PAGE_PADDING_X, reviewContentMaxWidth } from '@/lib/review-layout';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import {
@@ -14,8 +15,6 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
-
-const TABLET_MIN_WIDTH = 768;
 
 export function ReviewSectionCard({
   children,
@@ -154,13 +153,13 @@ export function ReviewPageContent({
   style?: StyleProp<ViewStyle>;
 }) {
   const { width } = useWindowDimensions();
-  const maxWidth = width >= TABLET_MIN_WIDTH ? Layout.contentMaxWidthWide : Layout.contentMaxWidth;
-  return <View style={[styles.pageContent, { maxWidth }, style]}>{children}</View>;
+  const maxWidth = reviewContentMaxWidth(width);
+  return <View style={[styles.pageContent, maxWidth != null ? { maxWidth } : null, style]}>{children}</View>;
 }
 
 const styles = StyleSheet.create({
   sectionCard: {
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: REVIEW_PAGE_PADDING_X,
   },
   noticeCard: {
     paddingVertical: Spacing['3xl'],
@@ -191,7 +190,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: Layout.pagePaddingX,
+    marginHorizontal: REVIEW_PAGE_PADDING_X,
     paddingHorizontal: Spacing['3xl'],
     ...Shadows.card,
   },

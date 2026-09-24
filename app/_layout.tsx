@@ -3,7 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { InteractionManager, Platform, View } from 'react-native';
+import { InteractionManager, Platform, AppState, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -14,20 +14,21 @@ import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
+import { CompletionCelebrationHost } from '@/components/completion-celebration-host';
 import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
 import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
 import { HabitReminderNotificationListener } from '@/components/habit-reminder-notification-listener';
-import { TaskReminderNotificationListener } from '@/components/task-reminder-notification-listener';
+import { ScheduleSlotReminderNotificationListener } from '@/components/schedule-slot-reminder-notification-listener';
 import {
   shouldSuppressDailyReviewReminderNotification,
-  syncDailyReviewReminderNotification,
 } from '@/lib/daily-review-reminder-notifications';
 import {
-  resyncAllHabitReminders,
   shouldSuppressHabitReminderNotification,
 } from '@/lib/habit-reminder-notifications';
+import { shouldSuppressHealthIntakeReminderNotification } from '@/lib/health-intake-reminder-notifications';
+import { resyncAppNotificationsAfterPreferenceChange } from '@/lib/notification-center';
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -85,6 +86,8 @@ if (Platform.OS !== 'web') {
           suppress = await shouldSuppressHabitReminderNotification(record.habitId);
         } else if (record.type === 'daily-review-reminder') {
           suppress = await shouldSuppressDailyReviewReminderNotification();
+        } else if (record.type === 'health-intake-reminder') {
+          suppress = await shouldSuppressHealthIntakeReminderNotification();
         }
       }
       if (suppress) {
@@ -131,8 +134,7 @@ function RootLayoutInner() {
             if (isExpoSandboxNotificationDisabled()) {
               await clearExpoSandboxNotifications();
             } else {
-              void syncDailyReviewReminderNotification();
-              void resyncAllHabitReminders();
+              void resyncAppNotificationsAfterPreferenceChange();
             }
           }
         } catch (e) {
@@ -230,6 +232,16 @@ function RootLayoutInner() {
     };
   }, []);
 
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const sub = AppState.addEventListener('change', next => {
+      if (next !== 'active') return;
+      if (isExpoSandboxNotificationDisabled()) return;
+      void resyncAppNotificationsAfterPreferenceChange();
+    });
+    return () => sub.remove();
+  }, []);
+
   return (
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         {showMainApp && isDbReady ? (
@@ -237,7 +249,7 @@ function RootLayoutInner() {
             <ScreenshotDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <ScheduledExpenseCoordinator dbReady={isDbReady} />
-            <TaskReminderNotificationListener />
+            <ScheduleSlotReminderNotificationListener />
             <HabitReminderNotificationListener />
             <DailyReviewReminderNotificationListener />
             <FinanceSheetHost />
@@ -282,6 +294,8 @@ function RootLayoutInner() {
             <Stack.Screen name="memo-list" />
             <Stack.Screen name="memo-view/[id]" />
             <Stack.Screen name="memo-edit/[id]" />
+            <Stack.Screen name="notification-center" />
+            <Stack.Screen name="notification-center-scheduled" />
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="weekly-review/[weekStartYmd]/[dimensionId]" />
@@ -305,6 +319,7 @@ function RootLayoutInner() {
             </AppErrorBoundary>
             <ApiLoadingIndicator />
             <PointsEarnedToastHost />
+            <CompletionCelebrationHost />
           </View>
         ) : null}
         {!showMainApp ? (

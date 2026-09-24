@@ -1,4 +1,6 @@
 import { WeeklyFrogSchedule, type SchedulePendingPlace } from '@/components/tasks/WeeklyFrogSchedule';
+import { notifyCompletionCelebration } from '@/lib/completion-celebration-events';
+import { suppressPointsEarnedToastForMs } from '@/lib/points-earned-toast-events';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import {
   TasksHabitSectionSkeleton,
@@ -7,7 +9,6 @@ import {
   TasksStandaloneSectionSkeleton,
 } from '@/components/tasks/tasks-home-skeletons';
 import { AppIconButton } from '@/components/ui';
-import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
 import {
   Layout,
   Radius,
@@ -185,7 +186,7 @@ import {
   isTaskRowOverdue,
 } from '@/lib/standalone-todo-visibility';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
-import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
 import {
   applyRepeatingTaskRollovers,
   patchExtraDataOnRepeatTaskComplete,
@@ -1806,9 +1807,10 @@ export default function TasksScreen() {
   const grantTaskPointsWithToast = React.useCallback(
     async (taskId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
       try {
-        await applyTaskCompletionPointsReward(taskId, direction, extraData);
+        return await applyTaskCompletionPointsReward(taskId, direction, extraData);
       } catch (e) {
         if (__DEV__) console.warn('[task-points]', e);
+        return 0;
       }
     },
     [],
@@ -1817,9 +1819,10 @@ export default function TasksScreen() {
   const grantProjectPointsWithToast = React.useCallback(
     async (projectId: string, direction: 'earn' | 'undo', extraData?: string | null) => {
       try {
-        await applyProjectCompletionPointsReward(projectId, direction, extraData);
+        return await applyProjectCompletionPointsReward(projectId, direction, extraData);
       } catch (e) {
         if (__DEV__) console.warn('[project-points]', e);
+        return 0;
       }
     },
     [],
@@ -1996,7 +1999,6 @@ export default function TasksScreen() {
     };
   }, [scrollQuickTodoAboveKeyboard]);
   const { boundary: dayBoundary, logicalTodayYmd } = usePageDayBoundary('tasks');
-  const { open: openSettingsDrawer } = useSettingsDrawer();
 
   const habitScheduleAnchorDate = React.useMemo(() => logicalYmdToLocalDate(logicalTodayYmd), [logicalTodayYmd]);
 
@@ -2644,7 +2646,7 @@ export default function TasksScreen() {
 
   React.useEffect(() => {
     if (Platform.OS === 'web') return;
-    void getTasks().then((rows) => syncScheduledTaskReminders(rows));
+    void syncScheduleSlotReminderNotifications();
   }, [standaloneTodos, matrixWeekTasks]);
 
   React.useEffect(() => {
@@ -3011,6 +3013,10 @@ export default function TasksScreen() {
         Alert.alert('无法入格', '已搁置的待办请先激活后再指派到课程表。');
         return;
       }
+      if (isFrogAssignedOn(task.extra_data, logicalTodayYmd)) {
+        Alert.alert('无法入格', '该项今日已指派到课程表，请先取消指派后再入格。');
+        return;
+      }
       const ch = Array.isArray((task as TaskTreeNode).children)
         ? (task as TaskTreeNode).children
         : [];
@@ -3057,6 +3063,10 @@ export default function TasksScreen() {
       const taskCount = getProjectTreeTaskProgress(tree).total;
 
       if (isProjectEligibleAsFrog(project, taskCount, locked)) {
+        if (isFrogAssignedOn(project.extra_data, logicalTodayYmd)) {
+          Alert.alert('无法入格', '该项目今日已指派到课程表，请先取消指派后再入格。');
+          return;
+        }
         const tagRows = projectTagsByProjectId.get(project.id) ?? [];
         beginSchedulePlace({
           kind: 'project',
@@ -3095,14 +3105,18 @@ export default function TasksScreen() {
       }
 
       const assignable = collectAssignableFrogTasksFromTree(tree)
+        .filter((t) => !isFrogAssignedOn(t.extra_data, logicalTodayYmd))
         .slice()
         .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
       if (assignable.length === 0) {
+        const anyLeaf = collectAssignableFrogTasksFromTree(tree).length > 0;
         Alert.alert(
           '无法直接入格',
-          taskCount > 0
-            ? '该项目暂无可用的叶子任务（需无未完成子任务）。可展开后长按任务入格。'
-            : '该项目当前不可指派为青蛙。',
+          anyLeaf
+            ? '该项目下可入格的叶子任务今日均已指派，请先取消指派后再入格。'
+            : taskCount > 0
+              ? '该项目暂无可用的叶子任务（需无未完成子任务）。可展开后长按任务入格。'
+              : '该项目当前不可指派为青蛙。',
         );
         return;
       }
@@ -3374,12 +3388,21 @@ export default function TasksScreen() {
       try {
         await runExclusiveMutation('正在删除项目...', async () => {
           markPageDirty();
+          suppressPointsEarnedToastForMs(4000);
           const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
           if (nextProjectExtra !== proj.extra_data) {
             await updateProject(project.id, { extra_data: nextProjectExtra });
           }
           // 与「归纳」一致：完成即发奖，再删除实体；青蛙事件已在 completeIncomplete 中写入
-          await grantProjectPointsWithToast(project.id, 'earn', nextProjectExtra ?? proj.extra_data);
+          const pointsDelta = await grantProjectPointsWithToast(
+            project.id,
+            'earn',
+            nextProjectExtra ?? proj.extra_data,
+          );
+          notifyCompletionCelebration({
+            title: project.name,
+            pointsDelta: pointsDelta > 0 ? pointsDelta : undefined,
+          });
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           projectSwipeableRefs.current[project.id]?.close();
           await deleteProject(project.id);
@@ -3415,13 +3438,22 @@ export default function TasksScreen() {
       try {
         await runExclusiveMutation('正在完成项目...', async () => {
           markPageDirty();
+          suppressPointsEarnedToastForMs(4000);
           const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
             status: 'completed',
             ...(nextProjectExtra !== proj.extra_data ? { extra_data: nextProjectExtra } : {}),
           });
-          await grantProjectPointsWithToast(project.id, 'earn', nextProjectExtra ?? proj.extra_data);
+          const pointsDelta = await grantProjectPointsWithToast(
+            project.id,
+            'earn',
+            nextProjectExtra ?? proj.extra_data,
+          );
+          notifyCompletionCelebration({
+            title: project.name,
+            pointsDelta: pointsDelta > 0 ? pointsDelta : undefined,
+          });
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           projectSwipeableRefs.current[project.id]?.close();
           const rows = await loadProjects();
@@ -3697,11 +3729,20 @@ export default function TasksScreen() {
           },
           current as Record<string, unknown>,
         );
-        await grantTaskPointsWithToast(
+        if (nextStatus === 'done' || wasDone) {
+          suppressPointsEarnedToastForMs(3500);
+        }
+        const pointsDelta = await grantTaskPointsWithToast(
           taskId,
           wasDone ? 'undo' : 'earn',
           nextExtraData ?? current.extra_data,
         );
+        if (nextStatus === 'done') {
+          notifyCompletionCelebration({
+            title: current.title,
+            pointsDelta: pointsDelta > 0 ? pointsDelta : undefined,
+          });
+        }
         const frogAssignedToday = isFrogAssignedOn(current.extra_data, logicalTodayYmd);
         // 待办热力图仅统计无项目待办；青蛙完成走 frog_completion_events，避免同一任务重复计入
         if (isStandaloneTodoTask(current) && !frogAssignedToday && !getFrogAssignedOn(current.extra_data)) {
@@ -3879,6 +3920,11 @@ export default function TasksScreen() {
       const nextExtraData = setFrogSessionCompletedOn(current.extra_data, assignYmd);
 
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      notifyCompletionCelebration({
+        title:
+          (isProjectFrog ? project?.name : current.title)?.trim() ||
+          (isProjectFrog ? '该项目' : '该任务'),
+      });
       if (isProjectFrog) {
         setProjects((prev) =>
           prev.map((p) => (p.id === taskId ? { ...p, extra_data: nextExtraData } : p)),
@@ -5371,7 +5417,6 @@ export default function TasksScreen() {
             pendingPlace={pendingSchedulePlace}
             onClearPendingPlace={() => setPendingSchedulePlace(null)}
             onChanged={onScheduleChanged}
-            onOpenSettings={() => openSettingsDrawer('frogSchedule')}
             onOpenSubject={(kind, id) => {
               if (kind === 'project') openProject(id);
               else openTask(id);
@@ -6099,6 +6144,7 @@ export default function TasksScreen() {
                   {standaloneTodos.map((t) => {
                     const isDone = isTaskTerminalStatus(t.status);
                     const isShelved = isTaskShelvedStatus(t.status);
+                    const frogAssignedToday = isFrogAssignedOn(t.extra_data, logicalTodayYmd);
                     const noteText = (t.note ?? '').trim();
                     const acceptanceText = trimTaskAcceptanceCriteria(t);
                     const meta = parseTaskMeta(t.extra_data);
@@ -6208,7 +6254,7 @@ export default function TasksScreen() {
                                 ...((isShelved || isRepeatWaiting) && !isDone
                                   ? { shadowOpacity: 0.03, elevation: 0 }
                                   : null),
-                                opacity: isRepeatWaiting ? 0.55 : 1,
+                                opacity: isRepeatWaiting || frogAssignedToday ? 0.55 : 1,
                               },
                             ]}>
                           {isShelved ? (
@@ -6231,12 +6277,18 @@ export default function TasksScreen() {
                           <Pressable
                             style={[
                               styles.taskBody,
-                              (isShelved || isRepeatWaiting) && !isDone && styles.shelvedTodoBodyMuted,
+                              (isShelved || isRepeatWaiting || frogAssignedToday) &&
+                                !isDone &&
+                                styles.shelvedTodoBodyMuted,
                             ]}
                             onPress={() => openTask(t.id)}
                             onLongPress={() => beginSchedulePlaceForTask(t)}
                             delayLongPress={380}
-                            accessibilityHint="长按可将待办指派到课程表格子">
+                            accessibilityHint={
+                              frogAssignedToday
+                                ? '今日已指派到课程表'
+                                : '长按可将待办指派到课程表格子'
+                            }>
                             <View style={styles.standaloneTodoTitleRow}>
                               <Text
                                 style={[
@@ -6244,14 +6296,18 @@ export default function TasksScreen() {
                                   styles.standaloneTodoTitleText,
                                   {
                                     color:
-                                      isShelved || isRepeatWaiting
+                                      isShelved || isRepeatWaiting || frogAssignedToday
                                         ? colors.textSecondary
                                         : overdue
                                           ? error
                                           : colors.text,
                                     fontWeight: overdue && !isShelved && !isRepeatWaiting ? '800' : '600',
                                     textDecorationLine: isDone ? 'line-through' : 'none',
-                                    opacity: isDone ? 0.45 : isShelved || isRepeatWaiting ? 0.82 : 1,
+                                    opacity: isDone
+                                      ? 0.45
+                                      : isShelved || isRepeatWaiting || frogAssignedToday
+                                        ? 0.82
+                                        : 1,
                                   },
                                 ]}
                                 numberOfLines={2}>
@@ -6272,6 +6328,12 @@ export default function TasksScreen() {
                                 </View>
                               ) : null}
                             </View>
+                            {frogAssignedToday && !isDone ? (
+                              <View style={[styles.shelvedPill, { backgroundColor: `${primary}18` }]}>
+                                <MaterialIcons name="event-available" size={12} color={primary} />
+                                <Text style={[styles.shelvedPillText, { color: primary }]}>已指派</Text>
+                              </View>
+                            ) : null}
                             {isShelved ? (
                               <View style={[styles.shelvedPill, { backgroundColor: `${outline}18` }]}>
                                 <MaterialIcons name="inventory-2" size={12} color={outline} />
@@ -6473,6 +6535,7 @@ export default function TasksScreen() {
                   const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
                   const isLocked = !!(lockInfo?.locked || isScheduleNotStarted);
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  const frogAssignedToday = isFrogAssignedOn(project.extra_data, logicalTodayYmd);
                   const isArchived = project.status === 'archived';
                   const projectAccent = isLocked ? outline : isCompleted ? success : primary;
                   const projectCardBg = isLocked
@@ -6514,6 +6577,7 @@ export default function TasksScreen() {
                     const hairlineColor = taskUi.treeLine;
                     return nodes.map((node) => {
                       const isDone = node.status === 'done' || node.status === 'cancelled';
+                      const frogAssignedToday = isFrogAssignedOn(node.extra_data, logicalTodayYmd);
                       const fullNode = taskNodeById.get(node.id) ?? node;
                       const childrenAll = Array.isArray(fullNode.children) ? fullNode.children : [];
                       const displayChildren =
@@ -6629,8 +6693,15 @@ export default function TasksScreen() {
                               }}
                               delayLongPress={380}
                               hitSlop={8}
-                              accessibilityHint="长按可将任务指派到课程表格子"
-                              style={({ pressed }) => [{ flex: 1, minWidth: 0 }, pressed && { opacity: 0.85 }]}>
+                              accessibilityHint={
+                                frogAssignedToday
+                                  ? '今日已指派到课程表'
+                                  : '长按可将任务指派到课程表格子'
+                              }
+                              style={({ pressed }) => [
+                                { flex: 1, minWidth: 0, opacity: frogAssignedToday && !isDone ? 0.55 : 1 },
+                                pressed && { opacity: 0.85 },
+                              ]}>
                               <View style={styles.projectTaskMain}>
                               {hasAnyChildren ? (
                                 <View
@@ -6671,7 +6742,13 @@ export default function TasksScreen() {
                                       styles.projectTaskText,
                                       level > 1 && styles.projectTaskTextChild,
                                       {
-                                        color: isDone ? colors.textMuted : dueOverdue ? error : colors.text,
+                                        color: isDone
+                                          ? colors.textMuted
+                                          : frogAssignedToday
+                                            ? colors.textSecondary
+                                            : dueOverdue
+                                              ? error
+                                              : colors.text,
                                         fontWeight: dueOverdue && !isDone ? '800' : level > 1 ? '600' : '700',
                                         textDecorationLine: isDone ? 'line-through' : 'none',
                                         opacity: isDone ? 0.85 : 1,
@@ -6682,6 +6759,9 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                                 <View style={styles.projectTaskTitleTags}>
+                                  {frogAssignedToday && !isDone ? (
+                                    <Text style={[styles.taskDoneTag, { color: primary }]}>已指派</Text>
+                                  ) : null}
                                   {taskRewardPoints !== 0 ? (
                                     <View
                                       style={[
@@ -6904,6 +6984,7 @@ export default function TasksScreen() {
                                 : isCompleted
                                   ? taskUi.successWashLine
                                   : taskUi.hairline,
+                              opacity: frogAssignedToday && !isCompleted ? 0.72 : 1,
                             },
                           ]}>
                       <ScalePressable
@@ -6913,7 +6994,11 @@ export default function TasksScreen() {
                         hitSlop={6}
                         scaleTo={0.988}
                         style={styles.projectHeadPressable}
-                        accessibilityHint="长按可将项目或任务指派到课程表格子">
+                        accessibilityHint={
+                          frogAssignedToday
+                            ? '今日已指派到课程表'
+                            : '长按可将项目或任务指派到课程表格子'
+                        }>
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>
                           <Pressable
@@ -6962,7 +7047,7 @@ export default function TasksScreen() {
                                   {
                                     color: isScheduleExpired
                                       ? error
-                                      : isLocked || isCompleted
+                                      : isLocked || isCompleted || frogAssignedToday
                                         ? doneMuted
                                         : colors.text,
                                     fontWeight: isScheduleExpired ? '800' : '700',
@@ -6974,7 +7059,19 @@ export default function TasksScreen() {
                                 numberOfLines={2}>
                                 {project.name}
                               </Text>
-                              {isScheduleExpired ? (
+                              {frogAssignedToday && !isCompleted ? (
+                                <View
+                                  style={[
+                                    styles.projectDoneBadge,
+                                    {
+                                      backgroundColor: taskUi.primaryWash,
+                                      borderColor: taskUi.primaryWashBorder,
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="event-available" size={12} color={primary} />
+                                  <Text style={[styles.projectDoneBadgeText, { color: primary }]}>已指派</Text>
+                                </View>
+                              ) : isScheduleExpired ? (
                                 <View
                                   style={[
                                     styles.projectDoneBadge,

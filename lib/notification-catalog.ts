@@ -1,9 +1,10 @@
 /**
- * App 内本地通知类型目录：用于设置侧边栏统一展示来源与跳转。
+ * App 内本地通知类型目录：用于通知管理页展示来源与跳转。
  */
 
 export type NotificationCategoryId =
-  | 'task-reminder'
+  | 'health-intake-reminder'
+  | 'schedule-slot-reminder'
   | 'habit-reminder'
   | 'daily-review-reminder'
   | 'auto-ledger';
@@ -26,20 +27,29 @@ export type NotificationCategoryMeta = {
 
 export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
   {
-    id: 'task-reminder',
-    title: '待办提醒',
-    sourceLabel: '任务',
-    description: '未完成待办在截止日前按你设置的「当天 / 提前 N 天」触发。',
-    customizeLabel: '在任务详情中设置提醒',
-    customizeHref: '/tasks',
-    identifierPrefix: 'selfapp-task-reminder:',
+    id: 'health-intake-reminder',
+    title: '健康摄入提醒',
+    sourceLabel: '健康',
+    description: '逻辑日未达标时按固定时刻或间隔推送（每日最多 2 条）。',
+    customizeLabel: '在通知管理中设置模式与免打扰',
+    customizeHref: '/notification-center',
+    identifierPrefix: 'selfapp-health-intake-reminder:',
+  },
+  {
+    id: 'schedule-slot-reminder',
+    title: '课程表提醒',
+    sourceLabel: '课程表',
+    description: '已入格占用在开始前 N 分钟提醒（未入格任务不推送）。',
+    customizeLabel: '在通知管理中设置提前分钟',
+    customizeHref: '/notification-center',
+    identifierPrefix: 'selfapp-schedule-reminder:',
   },
   {
     id: 'habit-reminder',
     title: '习惯打卡提醒',
     sourceLabel: '习惯',
     description: '已开启提醒的习惯，在打卡日按设定时刻本地推送。',
-    customizeLabel: '在习惯详情中设置提醒时间',
+    customizeLabel: '在习惯详情或通知管理中设置提醒时间',
     customizeHref: '/habit-manage',
     identifierPrefix: 'selfapp-habit-reminder:',
   },
@@ -48,7 +58,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     title: '每日复盘提醒',
     sourceLabel: '复盘',
     description: '每日固定时刻提醒填写日复盘（已填写或周复盘日会跳过）。',
-    customizeLabel: '在复盘设置中开关与改时间',
+    customizeLabel: '在复盘设置或通知管理中开关与改时间',
     customizeHref: '/review-settings',
     identifierPrefix: 'selfapp-daily-review-reminder',
   },
@@ -78,6 +88,8 @@ export function resolveNotificationCategoryFromIdentifier(
 ): NotificationCategoryId | null {
   const id = identifier.trim();
   if (!id) return null;
+  // 旧截止日待办前缀：兼容已预约条目展示
+  if (id.startsWith('selfapp-task-reminder:')) return 'schedule-slot-reminder';
   for (const cat of NOTIFICATION_CATEGORIES) {
     if (!cat.identifierPrefix) continue;
     if (cat.identifierPrefix.endsWith(':')) {
@@ -94,7 +106,8 @@ export function resolveNotificationCategoryFromData(
 ): NotificationCategoryId | null {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const type = (data as Record<string, unknown>).type;
-  if (type === 'task-reminder') return 'task-reminder';
+  if (type === 'health-intake-reminder') return 'health-intake-reminder';
+  if (type === 'schedule-slot-reminder' || type === 'task-reminder') return 'schedule-slot-reminder';
   if (type === 'habit-reminder') return 'habit-reminder';
   if (type === 'daily-review-reminder') return 'daily-review-reminder';
   if (type === 'auto-ledger' || type === 'auto-ledger-hint' || type === 'auto-ledger-failure') {

@@ -37,8 +37,12 @@ export const AppSettingKey = {
   dailyReviewReminderEnabled: 'daily_review_reminder_enabled_v1',
   dailyReviewReminderHour: 'daily_review_reminder_hour_v1',
   dailyReviewReminderMinute: 'daily_review_reminder_minute_v1',
-  /** 全局通知中心：总开关、频道开关、单条静音 */
+  /** 日复盘极简默认模板迁移标记 */
+  reviewMinimalDailyTemplateV1: 'review_minimal_daily_template_v1',
+  /** 全局通知中心：总开关、频道开关、单条静音、健康/课程表偏好 */
   notificationsCenter: '@selfapp/notifications_center_v1',
+  /** 通知 AI 文案缓存（identifier + fingerprint） */
+  notificationAiCopyCache: '@selfapp/notification_ai_copy_cache_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

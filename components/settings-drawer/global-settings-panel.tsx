@@ -46,9 +46,6 @@ import {
 import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-native-gesture-handler';
 import type { SettingsSection } from './settings-drawer-context';
 import { useSettingsDrawer } from './settings-drawer-context';
-import { NotificationSettingsSection } from './notification-settings-section';
-import { FrogScheduleSettingsCard } from './frog-schedule-settings-card';
-
 function formatZhFullBackupTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -514,60 +511,75 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </View>
           </Pressable>
 
-        </View>
-
-        <View
-          onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}
-          style={styles.section}>
-          {renderSectionHead('外观与夜间模式')}
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-            <View style={styles.rowBetween}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>夜间模式</Text>
-                <Text style={[styles.rowHint, { color: outline }]}>
-                  开启后使用深色界面；也可选择跟随系统。
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/notification-center');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="notifications-none" size={26} color={primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>通知管理</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  总开关、各模块提醒与已预约列表
                 </Text>
               </View>
-              <Switch
-                value={colorScheme === 'dark'}
-                onValueChange={onNightModeSwitch}
-                trackColor={{ false: outlineVariant, true: primary }}
-                thumbColor="#ffffff"
-              />
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
             </View>
-            <View style={styles.themeModeRow}>
-              {(['light', 'dark', 'system'] as const).map(mode => {
-                const labels = { light: '浅色', dark: '深色', system: '跟随系统' };
-                const selected = preference === mode;
-                return (
-                  <Pressable
-                    key={mode}
-                    onPress={() => setThemeMode(mode)}
-                    style={({ pressed }) => [
-                      styles.themeModeChip,
-                      {
-                        borderColor: selected ? primary : outlineVariant,
-                        backgroundColor: selected
-                          ? isDark
-                            ? 'rgba(96,165,250,0.15)'
-                            : 'rgba(0,88,190,0.08)'
-                          : 'transparent',
-                        opacity: pressed ? 0.85 : 1,
-                      },
-                    ]}>
-                    <Text style={[styles.themeModeChipText, { color: text }]}>{labels[mode]}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
+          </Pressable>
+
         </View>
 
-        <View
-          onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}
-          style={styles.section}>
-          {renderSectionHead('日界线')}
+        <View style={styles.section}>
+          {renderSectionHead('系统管理')}
+          <View onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}>
+            <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <View style={styles.rowBetween}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={[styles.rowTitle, { color: text }]}>夜间模式</Text>
+                  <Text style={[styles.rowHint, { color: outline }]}>
+                    开启后使用深色界面；也可选择跟随系统。
+                  </Text>
+                </View>
+                <Switch
+                  value={colorScheme === 'dark'}
+                  onValueChange={onNightModeSwitch}
+                  trackColor={{ false: outlineVariant, true: primary }}
+                  thumbColor="#ffffff"
+                />
+              </View>
+              <View style={styles.themeModeRow}>
+                {(['light', 'dark', 'system'] as const).map(mode => {
+                  const labels = { light: '浅色', dark: '深色', system: '跟随系统' };
+                  const selected = preference === mode;
+                  return (
+                    <Pressable
+                      key={mode}
+                      onPress={() => setThemeMode(mode)}
+                      style={({ pressed }) => [
+                        styles.themeModeChip,
+                        {
+                          borderColor: selected ? primary : outlineVariant,
+                          backgroundColor: selected
+                            ? isDark
+                              ? 'rgba(96,165,250,0.15)'
+                              : 'rgba(0,88,190,0.08)'
+                            : 'transparent',
+                          opacity: pressed ? 0.85 : 1,
+                        },
+                      ]}>
+                      <Text style={[styles.themeModeChipText, { color: text }]}>{labels[mode]}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          <View onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}>
           <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
+            <Text style={[styles.rowTitle, { color: text }]}>日界线设置</Text>
             <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
               自定义日界仅作用于下方勾选的页面：未到该时刻仍算「昨天」。未勾选的页面始终按凌晨
               00:00 自然日划分。每月预算周期仍可在记账页单独设置「预算刷新日」。
@@ -609,34 +621,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
               );
             })}
           </View>
-        </View>
-
-        <View
-          onLayout={ev => onSectionLayout('frogSchedule', ev.nativeEvent.layout.y)}
-          style={styles.section}>
-          {renderSectionHead('周课程表')}
-          <FrogScheduleSettingsCard
-            cardBg={cardBg}
-            cardBorder={cardBorder}
-            text={text}
-            outline={outline}
-            primary={primary}
-          />
-        </View>
-
-        <View
-          onLayout={ev => onSectionLayout('notifications', ev.nativeEvent.layout.y)}
-          style={styles.section}>
-          {renderSectionHead('通知管理')}
-          <NotificationSettingsSection
-            cardBg={cardBg}
-            cardBorder={cardBorder}
-            text={text}
-            outline={outline}
-            outlineVariant={outlineVariant}
-            primary={primary}
-            isDark={isDark}
-          />
+          </View>
         </View>
 
         <View

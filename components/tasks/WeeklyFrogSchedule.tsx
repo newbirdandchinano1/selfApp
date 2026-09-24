@@ -1,6 +1,6 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { isFrogDoneForToday } from '@/lib/long-term-task';
+import { getIsLongTermFrog, isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -31,7 +31,6 @@ import {
   type WeekScheduleView,
 } from '@/lib/schedule-service';
 import { subscribeFrogScheduleChanged } from '@/lib/schedule-events';
-import { useSettingsDrawer } from '@/components/settings-drawer/settings-drawer-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
@@ -62,6 +61,8 @@ import {
   type SchedulePlacePreselected,
   type SchedulePlaceResult,
 } from '@/components/tasks/SchedulePlaceFrogSheet';
+import { ScheduleCellTitleRotator } from '@/components/tasks/ScheduleCellTitleRotator';
+import { FrogScheduleSettingsSheet } from '@/components/tasks/FrogScheduleSettingsSheet';
 import {
   SchedulePlacementDetailSheet,
   type ScheduleSubjectInfo,
@@ -72,6 +73,7 @@ import {
   loadScheduleSlotNotes,
   normalizeSlotNote,
   saveScheduleSlotNote,
+  SCHEDULE_SLOT_NOTE_IME_SOFT_MAX,
   SCHEDULE_SLOT_NOTE_MAX_LEN,
   type ScheduleSlotNotesMap,
 } from '@/lib/schedule/slot-notes';
@@ -107,7 +109,6 @@ type Props = {
     id: string;
     assignYmd: string;
   }) => void;
-  onOpenSettings?: () => void;
 };
 
 type CellKey = string; // `${ymd}-${slot}`
@@ -194,7 +195,7 @@ function resolveSubject(
   };
 }
 
-/** 同一格内多占用：未完成优先的第一只 */
+/** 同一格内多占用：未完成优先的第一只；count = 未完成主体数（角标口径） */
 function pickDisplayPlacement(
   list: SchedulePlacementRow[],
   lookup: SubjectLookup,
@@ -210,12 +211,87 @@ function pickDisplayPlacement(
     return (b.sub?.priority ?? 0) - (a.sub?.priority ?? 0);
   });
   const first = enriched[0]!;
+  const unfinishedCount = enriched.filter((x) => !x.done).length;
   return {
     primary: first.p,
-    count: list.length,
+    count: unfinishedCount,
     done: first.done,
     title: first.sub?.title ?? '青蛙',
   };
+}
+
+/** 格子角标：按主体去重后统计未完成数量 */
+function countUnfinishedInCell(
+  list: SchedulePlacementRow[],
+  lookup: SubjectLookup,
+  assignYmd: string,
+): number {
+  const unique = uniquePlacementsBySubject(list);
+  let n = 0;
+  for (const p of unique) {
+    const sub = resolveSubject(p.subjectKind, p.subjectId, lookup, assignYmd);
+    if (sub && !sub.done) n += 1;
+  }
+  return n;
+}
+
+/** 同一格未完成标题（主体去重，优先级高优先；供色块标题轮换） */
+function listUnfinishedTitlesInCell(
+  list: SchedulePlacementRow[],
+  lookup: SubjectLookup,
+  assignYmd: string,
+): string[] {
+  const unique = uniquePlacementsBySubject(list);
+  const enriched = unique.map((p) => {
+    const sub = resolveSubject(p.subjectKind, p.subjectId, lookup, assignYmd);
+    return {
+      title: (sub?.title ?? '').trim() || '青蛙',
+      done: !!sub?.done,
+      priority: sub?.priority ?? 0,
+    };
+  });
+  return enriched
+    .filter((x) => !x.done)
+    .sort((a, b) => b.priority - a.priority)
+    .map((x) => x.title);
+}
+
+/** 同一格按主体去重（跨段占用同一青蛙只算一只） */
+function uniquePlacementsBySubject(list: SchedulePlacementRow[]): SchedulePlacementRow[] {
+  return [...new Map(list.map((p) => [`${p.subjectKind}:${p.subjectId}`, p])).values()];
+}
+
+function confirmTogglePlacementDone(
+  subject: ScheduleSubjectInfo,
+  assignYmd: string,
+  onToggleDone: NonNullable<Props['onToggleDone']>,
+) {
+  const titleLabel = (subject.title ?? '').trim() || '该青蛙';
+  const run = () =>
+    onToggleDone({
+      kind: subject.kind,
+      id: subject.id,
+      assignYmd,
+    });
+
+  // 长期未完成：沿用既有多选项确认（完成任务 / 仅结束当日会话）
+  if (!subject.done && getIsLongTermFrog(subject.extraData)) {
+    run();
+    return;
+  }
+
+  if (subject.done) {
+    Alert.alert('取消完成？', `确定将「${titleLabel}」标记为未完成吗？`, [
+      { text: '取消', style: 'cancel' },
+      { text: '取消完成', onPress: run },
+    ]);
+    return;
+  }
+
+  Alert.alert('确认完成？', `确定将「${titleLabel}」标记为已完成吗？`, [
+    { text: '取消', style: 'cancel' },
+    { text: '完成', onPress: run },
+  ]);
 }
 
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
@@ -233,7 +309,6 @@ export function WeeklyFrogSchedule({
   onChanged,
   onOpenSubject,
   onToggleDone,
-  onOpenSettings,
 }: Props) {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
@@ -242,8 +317,6 @@ export function WeeklyFrogSchedule({
   const outline = theme.textSecondary;
   const surfaceLow = isDark ? 'rgba(148,163,184,0.1)' : 'rgba(241,245,249,0.95)';
   const gridLine = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(203,213,225,0.85)';
-
-  const { registerOnClose } = useSettingsDrawer();
 
   /** 0 = 今天居中的三天；±1 切换一整周期（平移 3 天） */
   const [periodIndex, setPeriodIndex] = React.useState(0);
@@ -295,6 +368,7 @@ export function WeeklyFrogSchedule({
   } | null>(null);
   /** 首页默认折叠为摘要，避免网格占满首屏 */
   const [expanded, setExpanded] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [slotNotes, setSlotNotes] = React.useState<ScheduleSlotNotesMap>({});
   const [slotNoteEditor, setSlotNoteEditor] = React.useState<{
     startMinutes: number;
@@ -368,19 +442,12 @@ export function WeeklyFrogSchedule({
     void reload(loadDayYmds);
   }, [loadDaysKey, reload, loadDayYmds]);
 
-  // 任意本地课表变更（含设置页改轴）立即静默重载
+  // 任意本地课表变更（含设置弹窗改轴）立即静默重载
   React.useEffect(() => {
     return subscribeFrogScheduleChanged(() => {
       void reload(loadDayYmdsRef.current, { silent: true });
     });
   }, [reload]);
-
-  // 设置抽屉关闭后再刷一次，避免保存提示出现后网格仍用旧轴
-  React.useEffect(() => {
-    return registerOnClose(() => {
-      void reload(loadDayYmdsRef.current, { silent: true });
-    });
-  }, [registerOnClose, reload]);
 
   React.useEffect(() => {
     // 逻辑日跨天时回到「今天居中」
@@ -577,6 +644,20 @@ export function WeeklyFrogSchedule({
     onChanged?.();
   };
 
+  const openCellList = (
+    assignYmd: string,
+    slotIndex: number,
+    list: SchedulePlacementRow[],
+    editable: boolean,
+  ) => {
+    setCellList({
+      assignYmd,
+      slotIndex,
+      placements: uniquePlacementsBySubject(list),
+      editable,
+    });
+  };
+
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
@@ -590,24 +671,22 @@ export function WeeklyFrogSchedule({
       openPlace(assignYmd, slotIndex);
       return;
     }
-    if (!editable) {
-      setCellList({
-        assignYmd,
-        slotIndex,
-        placements: list,
-        editable: false,
-      });
+    const unique = uniquePlacementsBySubject(list);
+    /** 多只青蛙：先弹出列表让用户选择具体任务 */
+    if (unique.length > 1 || !editable) {
+      openCellList(assignYmd, slotIndex, list, editable);
       return;
     }
-    const display = pickDisplayPlacement(list, subjects, assignYmd);
-    if (!display) return;
-    if (display.primary.subjectKind && onToggleDone) {
-      onToggleDone({
-        kind: display.primary.subjectKind,
-        id: display.primary.subjectId,
-        assignYmd,
-      });
-    }
+    const display = pickDisplayPlacement(unique, subjects, assignYmd);
+    if (!display?.primary.subjectKind || !onToggleDone) return;
+    const subject = resolveSubject(
+      display.primary.subjectKind,
+      display.primary.subjectId,
+      subjects,
+      assignYmd,
+    );
+    if (!subject) return;
+    confirmTogglePlacementDone(subject, assignYmd, onToggleDone);
   };
 
   const handleCellLongPress = (assignYmd: string, slotIndex: number) => {
@@ -618,12 +697,7 @@ export function WeeklyFrogSchedule({
       if (editable) openPlace(assignYmd, slotIndex);
       return;
     }
-    setCellList({
-      assignYmd,
-      slotIndex,
-      placements: [...new Map(list.map((p) => [p.id, p])).values()],
-      editable,
-    });
+    openCellList(assignYmd, slotIndex, list, editable);
   };
 
   const openDetail = (p: SchedulePlacementRow) => {
@@ -789,6 +863,26 @@ export function WeeklyFrogSchedule({
                   const display = pickDisplayPlacement(starts, subjects, ymd);
                   if (!display) return null;
                   const h = display.primary.spanSlots * slotH - 4;
+                  const titleLines = Math.max(1, Math.min(3, display.primary.spanSlots));
+                  /** 与角标同口径：覆盖本格的未完成主体标题轮换 */
+                  const unfinishedTitles = listUnfinishedTitlesInCell(
+                    covering,
+                    subjects,
+                    ymd,
+                  );
+                  const showUnfinished =
+                    unfinishedTitles.length > 0 ? unfinishedTitles : null;
+                  const titleDone = !showUnfinished;
+                  const titleStyle = [
+                    styles.blockTitle,
+                    {
+                      color: titleDone ? outline : theme.text,
+                      textDecorationLine: titleDone
+                        ? ('line-through' as const)
+                        : ('none' as const),
+                      fontSize: h < 40 ? 11 : 12,
+                    },
+                  ];
                   return (
                     <View
                       key={display.primary.id}
@@ -805,18 +899,17 @@ export function WeeklyFrogSchedule({
                           borderColor: display.done ? `${outline}66` : `${primary}66`,
                         },
                       ]}>
-                      <Text
-                        numberOfLines={Math.max(1, Math.min(3, display.primary.spanSlots))}
-                        style={[
-                          styles.blockTitle,
-                          {
-                            color: display.done ? outline : theme.text,
-                            textDecorationLine: display.done ? 'line-through' : 'none',
-                            fontSize: h < 40 ? 11 : 12,
-                          },
-                        ]}>
-                        {display.title}
-                      </Text>
+                      {showUnfinished && showUnfinished.length > 1 ? (
+                        <ScheduleCellTitleRotator
+                          titles={showUnfinished}
+                          numberOfLines={1}
+                          style={titleStyle}
+                        />
+                      ) : (
+                        <Text numberOfLines={titleLines} style={titleStyle}>
+                          {showUnfinished?.[0] ?? display.title}
+                        </Text>
+                      )}
                       {display.done ? (
                         <MaterialIcons
                           name="check"
@@ -829,11 +922,15 @@ export function WeeklyFrogSchedule({
                   );
                 })()}
 
-                {covering.length > 1 ? (
-                  <View style={[styles.badge, { backgroundColor: primary }]}>
-                    <Text style={styles.badgeText}>{covering.length}</Text>
-                  </View>
-                ) : null}
+                {(() => {
+                  const unfinished = countUnfinishedInCell(covering, subjects, ymd);
+                  if (unfinished <= 1) return null;
+                  return (
+                    <View style={[styles.badge, { backgroundColor: primary }]}>
+                      <Text style={styles.badgeText}>{unfinished}</Text>
+                    </View>
+                  );
+                })()}
 
                 {isEmpty &&
                 isTodayCol &&
@@ -1075,7 +1172,7 @@ export function WeeklyFrogSchedule({
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation?.();
-                  onOpenSettings?.();
+                  setSettingsOpen(true);
                 }}
                 hitSlop={6}>
                 <Text style={{ color: theme.danger, fontSize: 12, fontWeight: '700' }}>
@@ -1108,7 +1205,7 @@ export function WeeklyFrogSchedule({
             <Pressable
               onPress={(e) => {
                 e.stopPropagation?.();
-                onOpenSettings?.();
+                setSettingsOpen(true);
               }}
               hitSlop={8}
               accessibilityRole="button"
@@ -1277,6 +1374,11 @@ export function WeeklyFrogSchedule({
         onConfirm={handlePlaceConfirm}
       />
 
+      <FrogScheduleSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
+
       <Modal
         visible={!!cellList}
         transparent
@@ -1289,7 +1391,9 @@ export function WeeklyFrogSchedule({
               styles.listCard,
               { backgroundColor: isDark ? '#1e293b' : '#fff', borderColor: gridLine },
             ]}>
-            <Text style={[styles.listTitle, { color: theme.text }]}>本格占用</Text>
+            <Text style={[styles.listTitle, { color: theme.text }]}>
+              {(cellList?.placements.length ?? 0) > 1 ? '选择本格任务' : '本格占用'}
+            </Text>
             <ScrollView style={{ maxHeight: 280 }}>
               {(cellList?.placements ?? []).map((p) => {
                 const sub = resolveSubject(
@@ -1425,12 +1529,20 @@ export function WeeklyFrogSchedule({
               value={slotNoteEditor?.draft ?? ''}
               onChangeText={(text) =>
                 setSlotNoteEditor((prev) =>
-                  prev ? { ...prev, draft: normalizeSlotNote(text) } : prev,
+                  // 输入中不截断：拼音中间态（如 xuexishijian）会超过 6 字母，
+                  // 若此处 slice/maxLength=6，汉字无法上屏。成字后由 onEndEditing/保存再规范化。
+                  prev ? { ...prev, draft: text } : prev,
                 )
               }
+              onEndEditing={(e) => {
+                const next = normalizeSlotNote(e.nativeEvent.text);
+                setSlotNoteEditor((prev) =>
+                  prev ? { ...prev, draft: next } : prev,
+                );
+              }}
               placeholder="例如：学习"
               placeholderTextColor={outline}
-              maxLength={SCHEDULE_SLOT_NOTE_MAX_LEN}
+              maxLength={SCHEDULE_SLOT_NOTE_IME_SOFT_MAX}
               autoFocus
               style={[
                 styles.noteInput,
@@ -1441,7 +1553,15 @@ export function WeeklyFrogSchedule({
                 },
               ]}
             />
-            <Text style={{ color: outline, fontSize: 11, alignSelf: 'flex-end' }}>
+            <Text
+              style={{
+                color:
+                  (slotNoteEditor?.draft ?? '').length > SCHEDULE_SLOT_NOTE_MAX_LEN
+                    ? '#dc2626'
+                    : outline,
+                fontSize: 11,
+                alignSelf: 'flex-end',
+              }}>
               {(slotNoteEditor?.draft ?? '').length}/{SCHEDULE_SLOT_NOTE_MAX_LEN}
             </Text>
             <View style={styles.noteActions}>

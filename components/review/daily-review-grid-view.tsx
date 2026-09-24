@@ -1,8 +1,10 @@
 import {
-  DailyReviewGrid,
   DailyReviewMetaBar,
   DailyReviewSaveStatus,
 } from '@/components/review/daily-review-grid-parts';
+import { DailyReviewFactsStrip } from '@/components/review/daily-review-facts-strip';
+import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
+import { DailyReviewProgressHintCard } from '@/components/review/daily-review-progress-bar';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
 import {
@@ -12,18 +14,30 @@ import {
   ReviewPrimaryButton,
 } from '@/components/review/review-shared-ui';
 import {
+  countDailyReviewStreak,
+  countEditableDailyEntries,
+  countFilledDailyEntries,
+  dailyEntryHasContent,
   formatReviewHeaderDate,
+  formatWeekReviewProgressLabel,
+  isDailyReviewDoneLight,
   isDailyReviewEditableYmd,
   isDailySkipped,
   loadReviewPeriodSnapshot,
   shiftYmd,
+  type DailyEntry,
 } from '@/components/review/review-utils';
 import {
   formatDailyReviewReminderClock,
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import { Layout, Spacing } from '@/constants/design-tokens';
+import {
+  formatReviewDayFactsInsertText,
+  loadReviewDayFacts,
+  type ReviewDayFacts,
+} from '@/lib/review-day-facts';
+import { Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -31,13 +45,17 @@ import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review
 import { fetchReviewDaily, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   collectColumnIds,
+  emptyFieldValues,
+  parseDailyReviewBody,
   parseDailyReviewJournal,
   serializeReviewBody,
   type ReviewFieldValues,
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -77,9 +95,14 @@ export function DailyReviewGridView({
   const [fields, setFields] = useState<ReviewFieldValues>({});
   const [meta, setMeta] = useState<ReviewJournalMeta>({});
   const [entryLabel, setEntryLabel] = useState('');
-  const [dailyTemplate, setDailyTemplate] = useState<Awaited<ReturnType<typeof loadReviewPeriodSnapshot>>['dailyTemplate']>([]);
+  const [dailyTemplate, setDailyTemplate] = useState<
+    Awaited<ReturnType<typeof loadReviewPeriodSnapshot>>['dailyTemplate']
+  >([]);
   const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
+  const [periodEntries, setPeriodEntries] = useState<DailyEntry[]>([]);
+  const [streakEntries, setStreakEntries] = useState<DailyEntry[]>([]);
+  const [facts, setFacts] = useState<ReviewDayFacts | null>(null);
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
   const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
@@ -91,6 +114,18 @@ export function DailyReviewGridView({
 
   const skipped = isDailySkipped(ymd, reviewCycleEndYmd, configuredDow);
   const canEdit = !skipped && isDailyReviewEditableYmd(ymd, todayYmd);
+  const todayDone = isDailyReviewDoneLight(fields);
+
+  const weekProgressLabel = useMemo(() => {
+    const filled = countFilledDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow);
+    const editable = countEditableDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow, todayYmd);
+    return formatWeekReviewProgressLabel(filled, editable);
+  }, [configuredDow, periodEntries, reviewCycleEndYmd, todayYmd]);
+
+  const streak = useMemo(
+    () => countDailyReviewStreak(streakEntries, reviewCycleEndYmd, configuredDow, todayYmd),
+    [configuredDow, reviewCycleEndYmd, streakEntries, todayYmd],
+  );
 
   const reload = useCallback(async () => {
     if (!ymd) return;
@@ -98,14 +133,17 @@ export function DailyReviewGridView({
     setLoading(true);
     try {
       await wrapLoad(async () => {
-        // home 覆盖周期 7 天；换日到窗外时补拉单日
         if (shouldFetchReviewFromApi()) {
           await fetchReviewDaily({ start: ymd, end: ymd, offlineFallback: true });
         }
-        const [snapshot, dailyRows, reminderSettings] = await Promise.all([
+        const streakStart = shiftYmd(todayYmd, -45);
+        const [snapshot, dailyRows, reminderSettings, dayFacts, streakRows, dailyTpl] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listDailyReviewsBetween(ymd, ymd),
           getDailyReviewReminderSettings(),
+          ymd <= todayYmd ? loadReviewDayFacts(ymd) : Promise.resolve(null),
+          listDailyReviewsBetween(streakStart, todayYmd),
+          listReviewTemplate('daily'),
         ]);
         setDailyReminderEnabled(reminderSettings.enabled);
         setDailyReminderTimeLabel(
@@ -116,8 +154,25 @@ export function DailyReviewGridView({
         setDailyTemplate(snapshot.dailyTemplate);
         setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
         setConfiguredDow(snapshot.configuredDow);
+        setPeriodEntries(snapshot.dailyEntries);
+        setFacts(dayFacts);
+
+        const colIds = collectColumnIds(snapshot.dailyTemplate.length ? snapshot.dailyTemplate : dailyTpl);
+        const byYmd = new Map(
+          streakRows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', colIds)]),
+        );
+        const streakList: DailyEntry[] = [];
+        for (let i = 0; i <= 45; i++) {
+          const d = shiftYmd(streakStart, i);
+          streakList.push({
+            ymd: d,
+            label: d,
+            fields: byYmd.get(d) ?? emptyFieldValues(colIds),
+          });
+        }
+        setStreakEntries(streakList);
+
         const entry = snapshot.dailyEntries.find(e => e.ymd === ymd);
-        const colIds = collectColumnIds(snapshot.dailyTemplate);
         const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
         setFields(journal.fields);
         setMeta(journal.meta);
@@ -126,6 +181,7 @@ export function DailyReviewGridView({
     } catch {
       setFields({});
       setMeta({});
+      setFacts(null);
     } finally {
       setLoading(false);
       hydratedRef.current = true;
@@ -202,6 +258,31 @@ export function DailyReviewGridView({
     [router, ymd],
   );
 
+  const onChangeField = useCallback(
+    (columnId: string, plain: string) => {
+      if (!canEdit) return;
+      setFields(prev => ({ ...prev, [columnId]: plain }));
+    },
+    [canEdit],
+  );
+
+  const onInsertFacts = useCallback(() => {
+    if (!canEdit || !facts) return;
+    const insert = formatReviewDayFactsInsertText(facts);
+    if (!insert) {
+      Alert.alert('暂无内容', '今天还没有可写入的事实。');
+      return;
+    }
+    const firstCol = dailyTemplate[0]?.columns[0]?.id ?? Object.keys(fields)[0];
+    if (!firstCol) {
+      Alert.alert('无法写入', '请先配置日复盘栏目。');
+      return;
+    }
+    const existing = reviewContentToPlainDisplay(fields[firstCol] ?? '').trim();
+    const next = existing ? `${existing}\n\n${insert}` : insert;
+    setFields(prev => ({ ...prev, [firstCol]: next }));
+  }, [canEdit, dailyTemplate, facts, fields]);
+
   const runAi = useCallback(async () => {
     if (!canEdit) {
       Alert.alert('暂不可用', '当前日期不可生成 AI 分析。');
@@ -264,6 +345,12 @@ export function DailyReviewGridView({
         { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
       ]}>
       <ReviewPageContent style={styles.pageGap}>
+        <DailyReviewProgressHintCard
+          weekLabel={weekProgressLabel}
+          streak={streak}
+          todayDone={ymd === todayYmd ? todayDone : dailyEntryHasContent(fields)}
+        />
+
         <DailyReviewMetaBar
           meta={meta}
           dateLabel={headerDateLabel}
@@ -290,16 +377,22 @@ export function DailyReviewGridView({
           />
         ) : null}
 
+        {!skipped && canEdit ? (
+          <DailyReviewFactsStrip facts={facts} canEdit={canEdit} onInsert={onInsertFacts} />
+        ) : null}
+
         {dailyTemplate.length === 0 ? (
           <ReviewEmptyState
             title="尚未配置日复盘维度"
             subtitle="请点右上角「模板」按钮编辑标题与栏目。"
           />
         ) : (
-          <DailyReviewGrid
+          <DailyReviewInlineComposer
             dimensions={dailyTemplate}
             fields={fields}
-            onPressDimension={openDimension}
+            canEdit={canEdit}
+            onChangeField={onChangeField}
+            onOpenDimension={openDimension}
           />
         )}
 

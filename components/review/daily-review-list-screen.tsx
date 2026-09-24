@@ -246,7 +246,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Layout.pagePaddingX,
     paddingTop: Spacing.xl,
     gap: Spacing['3xl'],
-    maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
   },

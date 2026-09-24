@@ -25,6 +25,12 @@ function sqlNow(): string {
 function markScheduleDirty(): void {
   markCloudSqliteTableDirty('schedule_placements');
   markCloudSqliteTableDirty('schedule_week_axis_snapshot');
+  // 入格/移格/改轴后立刻重同步课程表占用提醒
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
 }
 
 type PlacementDbRow = {
@@ -75,6 +81,11 @@ export async function saveScheduleAxisSettingsLocal(
   const normalized = normalizeAxisSettings(next);
   const payload: ScheduleAxisSettings = { ...normalized, updatedAt: sqlNow() };
   await setAppSetting(SCHEDULE_AXIS_SETTING_KEY, payload);
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
   return payload;
 }
 

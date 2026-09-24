@@ -26,6 +26,8 @@ type Props = {
   text: string;
   outline: string;
   primary: string;
+  /** 为 false 时不加载；弹窗打开时传 true 以刷新 */
+  active?: boolean;
 };
 
 const SLOT_OPTIONS: ScheduleSlotHours[] = [1, 2, 3, 4];
@@ -46,6 +48,7 @@ export function FrogScheduleSettingsCard({
   text,
   outline,
   primary,
+  active = true,
 }: Props) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -70,8 +73,10 @@ export function FrogScheduleSettingsCard({
   }, []);
 
   React.useEffect(() => {
+    if (!active) return;
+    setLoaded(false);
     void reload();
-  }, [reload]);
+  }, [active, reload]);
 
   const openPicker = (target: PickerTarget) => {
     setPickerTarget(target);

@@ -1408,9 +1408,12 @@ export async function initDatabase() {
     console.warn('schedule tables ensure failed', e);
   }
 
-  const { ensureReviewTemplateDefaults } = await import('@/lib/repositories/insights/review-template');
+  const { ensureReviewTemplateDefaults, migrateDailyTemplateToMinimalIfNeeded } = await import(
+    '@/lib/repositories/insights/review-template'
+  );
   await migrateReviewDimensionsAllowMonthly(db);
   await ensureReviewTemplateDefaults();
+  await migrateDailyTemplateToMinimalIfNeeded();
 
   await migrateDropDeletedAtAndVersionColumns(db);
   await migrateDropPersonaPortraitCache(db);

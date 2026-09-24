@@ -11,6 +11,7 @@ import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 import { canScheduleAppNotification } from '@/lib/notification-center-settings';
+import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import { Platform } from 'react-native';
 
@@ -76,6 +77,44 @@ function formatYmd(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/** 本周期已复盘天数文案，用于通知 body */
+async function buildWeekProgressBodyHint(now: Date = new Date()): Promise<string> {
+  try {
+    const configuredDow = await getWeeklyReviewConfiguredWeekday();
+    const rolling =
+      configuredDow !== null
+        ? (
+            await import('@/lib/repositories/insights/weekly-review')
+          ).getRollingSevenDayRangeEndingOnNextReviewDay(now, configuredDow)
+        : (await import('@/lib/repositories/insights/weekly-review')).getRollingSevenDayRange(now);
+
+    const [tpl, rows] = await Promise.all([
+      listReviewTemplate('daily'),
+      listDailyReviewsBetween(rolling.startYmd, rolling.endYmd),
+    ]);
+    const colIds = collectColumnIds(tpl);
+    let filled = 0;
+    let editable = 0;
+    const todayYmd = formatYmd(now);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(rolling.start);
+      d.setDate(rolling.start.getDate() + i);
+      const ymd = formatYmd(d);
+      if (isDailyReviewSkippedForYmd(ymd, configuredDow)) continue;
+      if (ymd > todayYmd) continue;
+      editable += 1;
+      const row = rows.find(r => r.record_date_ymd === ymd);
+      if (!row?.body?.trim()) continue;
+      const fields = parseDailyReviewBody(row.body, colIds);
+      if (dailyEntryHasContent(fields)) filled += 1;
+    }
+    if (editable <= 0) return '花几分钟写写今天发生了什么、有啥进步。';
+    return `本周已复盘 ${filled}/${editable}，花几分钟写写今天。`;
+  } catch {
+    return '记得花几分钟完成今日复盘。';
+  }
 }
 
 async function findNextDailyReviewReminderFireAt(
@@ -187,15 +226,33 @@ export async function syncDailyReviewReminderNotification(
 
   const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
   const channelId = Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined;
+  const fingerprint = `daily-review|${hour}:${minute}|${fireAt.toISOString().slice(0, 16)}`;
+  const progressHint = await buildWeekProgressBodyHint(new Date());
+  const copy = await resolveNotificationAiCopy({
+    identifier: NOTIFICATION_ID,
+    fingerprint,
+    fallback: {
+      title: '今日复盘',
+      body: progressHint,
+    },
+    contextBlock: [
+      '【频道】每日复盘提醒',
+      '【语境】提醒用户填写今日日复盘',
+      `【进度提示】${progressHint}`,
+    ].join('\n'),
+  });
 
   try {
     await Notifications.scheduleNotificationAsync({
       identifier: NOTIFICATION_ID,
       content: {
-        title: '每日复盘提醒',
-        body: '记得花几分钟完成今日复盘。',
+        title: copy.title,
+        body: copy.body,
         sound: true,
-        data: { type: 'daily-review-reminder' },
+        data: {
+          type: 'daily-review-reminder',
+          href: '/(tabs)/review',
+        },
       },
       trigger: {
         type: SchedulableTriggerInputTypes.DATE,

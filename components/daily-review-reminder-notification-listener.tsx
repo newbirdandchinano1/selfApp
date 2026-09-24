@@ -12,11 +12,12 @@ function isDailyReviewReminderData(data: unknown): boolean {
 
 function navigateToDailyReviewFromNotification(
   router: ReturnType<typeof useRouter>,
-  todayYmd: string,
+  _todayYmd: string,
   data: unknown,
 ) {
   if (!isDailyReviewReminderData(data)) return;
-  router.push({ pathname: '/daily-review/[ymd]', params: { ymd: todayYmd } });
+  // 直达复盘 Tab：默认今日可写主路径
+  router.push('/(tabs)/review');
 }
 
 export function DailyReviewReminderNotificationListener() {

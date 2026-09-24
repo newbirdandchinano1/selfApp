@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 
-export type SettingsSection = 'appearance' | 'dayBoundary' | 'frogSchedule' | 'notifications' | 'backup';
+export type SettingsSection = 'appearance' | 'dayBoundary' | 'backup';
 
 type SettingsDrawerContextValue = {
   isOpen: boolean;

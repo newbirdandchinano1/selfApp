@@ -54,6 +54,11 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
   );
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
   await pushLocalChangesToApi({ awaitSync: true });
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
 }
 
 export async function getHealthRecordById(id: string) {
@@ -301,6 +306,11 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
   );
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
   await pushLocalChangesToApi({ awaitSync: true });
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
 }
 
 export async function deleteHealthRecord(id: string) {
@@ -326,4 +336,9 @@ export async function deleteHealthRecord(id: string) {
   );
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
   await pushLocalChangesToApi({ awaitSync: true });
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
 }

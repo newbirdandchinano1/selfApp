@@ -32,6 +32,11 @@ async function persistToDisk() {
     caloriesKcal: globalCaloriesTargetKcal,
   };
   await setAppSetting(AppSettingKey.globalIntakeTargets, payload);
+  void import('@/lib/notification-center')
+    .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+      resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
 }
 
 function coerceTarget(value: unknown, fallback: number): number {

@@ -8,6 +8,7 @@ let visiblePoints: number | null = null;
 let pendingPoints = 0;
 let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
+let suppressUntil = 0;
 
 const COALESCE_MS = 80;
 /** 与 host 停留 + 上滑 + 渐隐总时长对齐，供晚订阅者清状态。 */
@@ -25,6 +26,7 @@ function flushPending(): void {
   const points = pendingPoints;
   pendingPoints = 0;
   if (points === 0) return;
+  if (Date.now() < suppressUntil) return;
 
   if (hideTimer) {
     clearTimeout(hideTimer);
@@ -43,10 +45,29 @@ function flushPending(): void {
 export function notifyPointsEarned(delta: number): void {
   const n = roundPoints(delta);
   if (!Number.isFinite(n) || n === 0) return;
+  if (Date.now() < suppressUntil) return;
 
   pendingPoints = roundPoints(pendingPoints + n);
   if (coalesceTimer) clearTimeout(coalesceTimer);
   coalesceTimer = setTimeout(flushPending, COALESCE_MS);
+}
+
+/**
+ * 完成庆祝已展示积分时，短暂屏蔽独立积分 toast，避免重复提示。
+ */
+export function suppressPointsEarnedToastForMs(ms: number): void {
+  const until = Date.now() + Math.max(0, ms);
+  if (until > suppressUntil) suppressUntil = until;
+  pendingPoints = 0;
+  if (coalesceTimer) {
+    clearTimeout(coalesceTimer);
+    coalesceTimer = null;
+  }
+  if (hideTimer) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+  if (visiblePoints != null) emit(null);
 }
 
 /** @deprecated 使用 notifyPointsEarned（已支持正负） */

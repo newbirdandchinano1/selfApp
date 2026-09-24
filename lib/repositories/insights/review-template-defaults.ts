@@ -2,32 +2,32 @@ import type { ReviewTemplateScope } from './review-template.types';
 
 /** 内置维度/栏目稳定 ID，便于从旧版固定字段迁移 */
 export const REVIEW_TEMPLATE_DEFAULTS = {
+  /** 极简日复盘：默认两问，降低冷启动；更多栏目可在模板设置中自行添加 */
   daily: [
     {
-      id: 'rd_daily_audit',
-      title: '今日总结 (Audit)',
+      id: 'rd_daily_what',
+      title: '今天做了啥',
       sort_order: 10,
       columns: [
-        { id: 'rc_audit_tasks', title: '完成任务', placeholder: '[ ] A, [ ] B…', sort_order: 10 },
-        { id: 'rc_audit_issues', title: '遗留问题', placeholder: '…', sort_order: 20 },
+        {
+          id: 'rc_daily_what',
+          title: '今日记录',
+          placeholder: '今天发生了什么？完成了哪些事？',
+          sort_order: 10,
+        },
       ],
     },
     {
-      id: 'rd_daily_insight',
-      title: '今日洞察 (Insight)',
+      id: 'rd_daily_progress',
+      title: '有啥进步',
       sort_order: 20,
       columns: [
-        { id: 'rc_insight_high', title: '效率高点', placeholder: '例如：上午深度工作 2 小时', sort_order: 10 },
-        { id: 'rc_insight_block', title: '障碍点', placeholder: '例如：被频繁的消息通知打断', sort_order: 20 },
-      ],
-    },
-    {
-      id: 'rd_daily_iter',
-      title: '明日迭代 (Iteration)',
-      sort_order: 30,
-      columns: [
-        { id: 'rc_iter_top3', title: '明日 Top 3 目标', placeholder: '1. … 2. … 3. …', sort_order: 10 },
-        { id: 'rc_iter_tweak', title: '执行微调', placeholder: '例如：明天把手机放在客厅再开始工作', sort_order: 20 },
+        {
+          id: 'rc_daily_progress',
+          title: '今日进步',
+          placeholder: '比昨天好一点的地方？学到了什么？',
+          sort_order: 10,
+        },
       ],
     },
   ],

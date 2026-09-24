@@ -213,3 +213,50 @@ export function isDailySkipped(
 ): boolean {
   return isDailyReviewSkippedOnWeeklyReviewDay(ymd, reviewCycleEndYmd, configuredDow);
 }
+
+/** 任一栏目非空即视为「今日已复盘」（轻量完成定义） */
+export function isDailyReviewDoneLight(fields: ReviewFieldValues): boolean {
+  return dailyEntryHasContent(fields);
+}
+
+/**
+ * 连续复盘天数：从 todayYmd 往前数（跳过周复盘日），遇到未填即停。
+ * 若今天尚未填写，则从昨天起算（已养成的连续仍可见）。
+ */
+export function countDailyReviewStreak(
+  entries: DailyEntry[],
+  _reviewCycleEndYmd: string,
+  configuredDow: number | null,
+  todayYmd: string,
+): number {
+  const byYmd = new Map(entries.map(e => [e.ymd, e]));
+  let cursor = todayYmd;
+  const todaySkipped = isDailyReviewSkippedForYmd(todayYmd, configuredDow);
+  const todayEntry = byYmd.get(todayYmd);
+  const todayDone =
+    !todaySkipped && todayEntry != null && isDailyReviewDoneLight(todayEntry.fields);
+  if (!todayDone && !todaySkipped) {
+    cursor = getYesterdayYmd(todayYmd);
+  }
+
+  let streak = 0;
+  for (let i = 0; i < 366; i++) {
+    if (isDailyReviewSkippedForYmd(cursor, configuredDow)) {
+      cursor = getYesterdayYmd(cursor);
+      continue;
+    }
+    const entry = byYmd.get(cursor);
+    if (!entry) break;
+    if (!isDailyReviewDoneLight(entry.fields)) break;
+    streak += 1;
+    cursor = getYesterdayYmd(cursor);
+  }
+  return streak;
+}
+
+export function formatWeekReviewProgressLabel(filled: number, editable: number): string {
+  const total = Math.max(0, editable);
+  const n = Math.min(Math.max(0, filled), total || filled);
+  if (total <= 0) return `本周已复盘 ${n}`;
+  return `本周 ${n}/${total}`;
+}

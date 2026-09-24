@@ -17,20 +17,17 @@ import {
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { cancelScheduledHabitReminder, resyncAllHabitReminders } from '@/lib/habit-reminder-notifications';
+import { syncHealthIntakeReminderNotifications } from '@/lib/health-intake-reminder-notifications';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import {
   formatHabitReminderClock,
   parseHabitReminder,
 } from '@/lib/repositories/habits/habit-reminder-meta';
-import { getTasks } from '@/lib/repositories/tasks/task';
-import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
-  buildTaskReminderFireAt,
-  isTaskReminderConfigured,
-  parseTaskReminderAdvanceDays,
-} from '@/lib/task-reminder-schedule';
-import { syncScheduledTaskReminders } from '@/lib/task-reminder-notifications';
+  listScheduleSlotReminderBusinessItems,
+  syncScheduleSlotReminderNotifications,
+} from '@/lib/schedule-slot-reminder-notifications';
 import { Linking, Platform } from 'react-native';
 
 export type NotificationPermissionSnapshot = {
@@ -61,18 +58,6 @@ export type ScheduledAppNotificationItem = {
   statusLabel: string;
 };
 
-type TaskExtraSchedule = {
-  mode?: 'date' | 'time';
-  allDay?: boolean;
-  hasExactTime?: boolean;
-  reminderOption?: string;
-  reminderHour?: number;
-  reminderMinute?: number;
-  date?: string;
-  range?: { start?: string; end?: string };
-  startTime?: string;
-};
-
 function formatFireAtLabel(date: Date | null): string {
   if (!date || Number.isNaN(date.getTime())) return '时间待定';
   return date.toLocaleString('zh-CN', {
@@ -91,76 +76,19 @@ function pad2(n: number): string {
 function triggerToDate(trigger: unknown): Date | null {
   if (!trigger || typeof trigger !== 'object') return null;
   const t = trigger as Record<string, unknown>;
-  if (typeof t.value === 'number' && Number.isFinite(t.value)) {
-    const ms = t.value < 1e12 ? t.value * 1000 : t.value;
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  if (typeof t.date === 'number' && Number.isFinite(t.date)) {
-    const ms = t.date < 1e12 ? t.date * 1000 : t.date;
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  if (typeof t.date === 'string') {
-    const d = new Date(t.date);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  if (t.type === 'daily' || t.type === 'calendar') {
-    const hour = typeof t.hour === 'number' ? t.hour : null;
-    const minute = typeof t.minute === 'number' ? t.minute : null;
-    if (hour != null && minute != null) {
-      const now = new Date();
-      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
-      if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
-      return next;
+  if (t.type === 'date' || t.type === 'DATE') {
+    const d = t.date ?? t.value;
+    if (typeof d === 'string' || typeof d === 'number') {
+      const parsed = new Date(d);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
     }
+    if (d instanceof Date) return d;
+  }
+  if (typeof t.date === 'string' || typeof t.date === 'number') {
+    const parsed = new Date(t.date);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
   return null;
-}
-
-function parseTaskExtra(raw: string | null): {
-  reminder?: string;
-  schedule?: TaskExtraSchedule | null;
-} {
-  if (!raw) return {};
-  try {
-    const p = JSON.parse(raw) as Record<string, unknown>;
-    if (!p || typeof p !== 'object' || Array.isArray(p)) return {};
-    const schedule = p.schedule;
-    return {
-      reminder: typeof p.reminder === 'string' ? p.reminder : undefined,
-      schedule:
-        schedule && typeof schedule === 'object' && !Array.isArray(schedule)
-          ? (schedule as TaskExtraSchedule)
-          : null,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function extractYmd(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const m = value.trim().match(/(\d{4}-\d{2}-\d{2})/);
-  return m?.[1] ?? null;
-}
-
-function getAnchorYmd(task: TaskRow, schedule: TaskExtraSchedule | null | undefined): string | null {
-  if (schedule?.mode === 'time' && schedule.range?.end) return extractYmd(schedule.range.end);
-  if (schedule?.date) return extractYmd(schedule.date);
-  return extractYmd(task.due_date);
-}
-
-function resolveReminderOption(extra: ReturnType<typeof parseTaskExtra>): string {
-  const fromSchedule = extra.schedule?.reminderOption?.trim();
-  if (fromSchedule) return fromSchedule;
-  const fromReminder = extra.reminder?.trim();
-  if (fromReminder) {
-    if (fromReminder === '当天' || fromReminder.startsWith('当天 ')) return '当天';
-    const m = /^(提前\d+天)/.exec(fromReminder);
-    if (m) return m[1];
-  }
-  return '不提前';
 }
 
 function resolveItemStatus(params: {
@@ -256,16 +184,15 @@ export async function openSystemNotificationSettings(): Promise<void> {
 }
 
 /**
- * 列出各功能中「已开启」的提醒（待办 / 习惯 / 日复盘），并标注是否已写入系统预约队列。
- * 不只依赖 getAllScheduledNotificationsAsync：Expo Go 或尚未 sync 时业务侧仍可见。
+ * 列出各功能中「已开启」的提醒，并标注是否已写入系统预约队列。
  */
 export async function listScheduledAppNotifications(): Promise<ScheduledAppNotificationItem[]> {
-  const [settings, osMap, habits, tasks, dailySettings] = await Promise.all([
+  const [settings, osMap, habits, dailySettings, scheduleItems] = await Promise.all([
     getNotificationCenterSettings(),
     readOsScheduledMap(),
     getHabits().catch(() => []),
-    getTasks().catch(() => []),
     getDailyReviewReminderSettings().catch(() => null),
+    listScheduleSlotReminderBusinessItems().catch(() => []),
   ]);
 
   const osIdentifiers = new Set(osMap.keys());
@@ -302,22 +229,39 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     });
   }
 
-  for (const task of tasks) {
-    if (task.status === 'done' || task.status === 'cancelled' || task.status === 'shelved') continue;
-    const extra = parseTaskExtra(task.extra_data);
-    const reminderOpt = resolveReminderOption(extra);
-    if (!isTaskReminderConfigured(reminderOpt, extra.reminder)) continue;
+  for (const slot of scheduleItems) {
+    const meta = getNotificationCategoryMeta('schedule-slot-reminder');
+    const osFire = osMap.get(slot.identifier) ?? null;
+    const fireAt = osFire ?? slot.fireAt;
+    const { status, statusLabel } = resolveItemStatus({
+      identifier: slot.identifier,
+      category: 'schedule-slot-reminder',
+      settings,
+      osIdentifiers,
+      sandboxDisabled,
+    });
+    items.push({
+      identifier: slot.identifier,
+      title: meta.title,
+      body: slot.body,
+      category: 'schedule-slot-reminder',
+      sourceLabel: meta.sourceLabel,
+      customizeHref: slot.customizeHref,
+      entityId: slot.subjectId,
+      fireAtIso: fireAt && !Number.isNaN(fireAt.getTime()) ? fireAt.toISOString() : null,
+      fireAtLabel: fireAt ? formatFireAtLabel(fireAt) : '时间待定',
+      status,
+      statusLabel,
+    });
+  }
 
-    const identifier = `selfapp-task-reminder:${task.id}`;
-    const meta = getNotificationCategoryMeta('task-reminder');
-    const advance = parseTaskReminderAdvanceDays(reminderOpt);
-    const ymd = getAnchorYmd(task, extra.schedule);
-    const computedFire = ymd ? buildTaskReminderFireAt(ymd, advance, extra.schedule) : null;
-    const osFire = osMap.get(identifier) ?? null;
-    const fireAt = osFire ?? computedFire;
+  // 健康：仅展示系统队列中已有的健康预约
+  for (const [identifier, fireAt] of osMap) {
+    if (!identifier.startsWith('selfapp-health-intake-reminder:')) continue;
+    const meta = getNotificationCategoryMeta('health-intake-reminder');
     const { status, statusLabel } = resolveItemStatus({
       identifier,
-      category: 'task-reminder',
+      category: 'health-intake-reminder',
       settings,
       osIdentifiers,
       sandboxDisabled,
@@ -325,13 +269,13 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     items.push({
       identifier,
       title: meta.title,
-      body: task.title?.trim() || '待办',
-      category: 'task-reminder',
+      body: '今日摄入未达标提醒',
+      category: 'health-intake-reminder',
       sourceLabel: meta.sourceLabel,
-      customizeHref: `/edit-task?id=${encodeURIComponent(task.id)}`,
-      entityId: task.id,
-      fireAtIso: fireAt && !Number.isNaN(fireAt.getTime()) ? fireAt.toISOString() : null,
-      fireAtLabel: fireAt ? formatFireAtLabel(fireAt) : `提醒：${reminderOpt}`,
+      customizeHref: '/notification-center',
+      entityId: null,
+      fireAtIso: fireAt ? fireAt.toISOString() : null,
+      fireAtLabel: formatFireAtLabel(fireAt),
       status,
       statusLabel,
     });
@@ -438,8 +382,23 @@ export async function cancelAllScheduledAppNotifications(): Promise<void> {
   }
 }
 
+async function cancelByPrefix(prefix: string): Promise<void> {
+  try {
+    const Notifications = await import('expo-notifications');
+    const pending = await Notifications.getAllScheduledNotificationsAsync();
+    await Promise.all(
+      pending
+        .filter(r => typeof r.identifier === 'string' && r.identifier.startsWith(prefix))
+        .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
- * 偏好变更后：必要时清空预约，并按当前任务/习惯/复盘设置重新登记。
+ * 偏好/数据变更后：必要时清空预约，并按当前健康/课程表/习惯/复盘设置重新登记。
+ * masterEnabled === false → cancelAllScheduledNotifications，且不再登记。
  */
 export async function resyncAppNotificationsAfterPreferenceChange(
   settings?: NotificationCenterSettings,
@@ -453,47 +412,29 @@ export async function resyncAppNotificationsAfterPreferenceChange(
     return;
   }
 
-  if (!resolved.categories['task-reminder']) {
-    try {
-      const Notifications = await import('expo-notifications');
-      const pending = await Notifications.getAllScheduledNotificationsAsync();
-      await Promise.all(
-        pending
-          .filter(
-            r =>
-              typeof r.identifier === 'string' &&
-              r.identifier.startsWith('selfapp-task-reminder:'),
-          )
-          .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
-      );
-    } catch {
-      /* ignore */
-    }
+  if (!resolved.categories['health-intake-reminder']) {
+    await cancelByPrefix('selfapp-health-intake-reminder:');
   } else {
     try {
-      const tasks = await getTasks();
-      await syncScheduledTaskReminders(tasks);
+      await syncHealthIntakeReminderNotifications();
     } catch (e) {
-      console.warn('重同步待办提醒失败', e);
+      console.warn('重同步健康摄入提醒失败', e);
+    }
+  }
+
+  if (!resolved.categories['schedule-slot-reminder']) {
+    await cancelByPrefix('selfapp-schedule-reminder:');
+    await cancelByPrefix('selfapp-task-reminder:');
+  } else {
+    try {
+      await syncScheduleSlotReminderNotifications();
+    } catch (e) {
+      console.warn('重同步课程表提醒失败', e);
     }
   }
 
   if (!resolved.categories['habit-reminder']) {
-    try {
-      const Notifications = await import('expo-notifications');
-      const pending = await Notifications.getAllScheduledNotificationsAsync();
-      await Promise.all(
-        pending
-          .filter(
-            r =>
-              typeof r.identifier === 'string' &&
-              r.identifier.startsWith('selfapp-habit-reminder:'),
-          )
-          .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
-      );
-    } catch {
-      /* ignore */
-    }
+    await cancelByPrefix('selfapp-habit-reminder:');
   } else {
     try {
       await resyncAllHabitReminders();

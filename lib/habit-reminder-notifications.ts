@@ -9,6 +9,7 @@ import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import { canScheduleAppNotification } from '@/lib/notification-center-settings';
+import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import { Platform } from 'react-native';
 
@@ -198,14 +199,24 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   }
 
   const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
-  const body = (title.trim() || '习惯') + '，该打卡啦';
+  const habitName = title.trim() || '习惯';
+  const fingerprint = `${habitId}|${habitName}|${h}:${m}|${fireAt.toISOString().slice(0, 16)}`;
+  const copy = await resolveNotificationAiCopy({
+    identifier: id,
+    fingerprint,
+    fallback: {
+      title: '习惯打卡提醒',
+      body: `${habitName}，该打卡啦`,
+    },
+    contextBlock: [`【频道】习惯打卡提醒`, `【习惯名】${habitName}`].join('\n'),
+  });
 
   try {
     await Notifications.scheduleNotificationAsync({
       identifier: id,
       content: {
-        title: '习惯打卡提醒',
-        body,
+        title: copy.title,
+        body: copy.body,
         sound: true,
         data: { type: 'habit-reminder', habitId },
       },

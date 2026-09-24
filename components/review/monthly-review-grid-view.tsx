@@ -1,6 +1,5 @@
-import {
-  DailyReviewGrid,
-} from '@/components/review/daily-review-grid-parts';
+import { DailyReviewSaveStatus } from '@/components/review/daily-review-grid-parts';
+import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
 import {
@@ -179,6 +178,14 @@ export function MonthlyReviewGridView({
     [monthStartYmd, router],
   );
 
+  const onChangeField = useCallback(
+    (columnId: string, plain: string) => {
+      if (!canEdit) return;
+      setFields(prev => ({ ...prev, [columnId]: plain }));
+    },
+    [canEdit],
+  );
+
   const runAi = useCallback(async () => {
     if (!canEdit) {
       Alert.alert('暂不可用', '未来月份仅可查看，不可生成 AI 分析。');
@@ -278,12 +285,16 @@ export function MonthlyReviewGridView({
             subtitle="请点右上角「模板」按钮编辑标题与栏目。"
           />
         ) : (
-          <DailyReviewGrid
+          <DailyReviewInlineComposer
             dimensions={monthlyTemplate}
             fields={fields}
-            onPressDimension={openDimension}
+            canEdit={canEdit}
+            onChangeField={onChangeField}
+            onOpenDimension={openDimension}
           />
         )}
+
+        <DailyReviewSaveStatus saving={saving} saved={false} />
 
         <ReviewAiAnalysisPanel
           text={meta.ai_analysis}

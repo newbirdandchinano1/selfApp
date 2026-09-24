@@ -1,7 +1,5 @@
-import {
-  DailyReviewGrid,
-  WeeklyReviewMetaBar,
-} from '@/components/review/daily-review-grid-parts';
+import { WeeklyReviewMetaBar } from '@/components/review/daily-review-grid-parts';
+import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
 import {
@@ -10,12 +8,16 @@ import {
   ReviewPageContent,
   ReviewPrimaryButton,
 } from '@/components/review/review-shared-ui';
+import { WeeklyReviewWeekStory } from '@/components/review/weekly-review-week-story';
 import {
+  isDailySkipped,
   loadReviewPeriodSnapshot,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
+  type DailyEntry,
 } from '@/components/review/review-utils';
-import { Spacing } from '@/constants/design-tokens';
+import { Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
@@ -27,24 +29,29 @@ import {
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
+  fetchWeeklyReviewMetrics,
   getRollingSevenDayRange,
   getRollingSevenDayRangeEndingOnNextReviewDay,
+  type WeeklyReviewMetrics,
 } from '@/lib/repositories/insights/weekly-review';
 import {
   getWeeklyReviewJournalByWeek,
   setWeeklyReviewCoachingText,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
   StyleSheet,
+  Text,
   type RefreshControlProps,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+const AUTO_SAVE_MS = 900;
 
 export function WeeklyReviewGridView({
   pageApiKey,
@@ -57,15 +64,21 @@ export function WeeklyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { colors } = useAppTheme();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [fields, setFields] = useState<ReviewFieldValues>({});
   const [weeklyTemplate, setWeeklyTemplate] = useState<ReviewDimensionTemplate[]>([]);
+  const [dailyTemplate, setDailyTemplate] = useState<ReviewDimensionTemplate[]>([]);
+  const [dailyEntries, setDailyEntries] = useState<DailyEntry[]>([]);
+  const [metrics, setMetrics] = useState<WeeklyReviewMetrics | null>(null);
   const [canEdit, setCanEdit] = useState(false);
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
   const [periodStartYmd, setPeriodStartYmd] = useState('');
+  const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [aiCoaching, setAiCoaching] = useState<string | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
@@ -76,9 +89,20 @@ export function WeeklyReviewGridView({
     adjust_plans: false,
   });
 
+  const hydratedRef = useRef(false);
   const skipFirstFocusReloadRef = useRef(true);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const skippedYmds = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of dailyEntries) {
+      if (isDailySkipped(e.ymd, reviewCycleEndYmd, configuredDow)) set.add(e.ymd);
+    }
+    return set;
+  }, [configuredDow, dailyEntries, reviewCycleEndYmd]);
 
   const reload = useCallback(async () => {
+    hydratedRef.current = false;
     setLoading(true);
     try {
       await wrapLoad(async () => {
@@ -89,6 +113,9 @@ export function WeeklyReviewGridView({
         setConfiguredDow(snapshot.configuredDow);
         setCanEdit(snapshot.canEditWeekly);
         setWeekRangeLabel(snapshot.weekRangeLabel);
+        setDailyTemplate(snapshot.dailyTemplate);
+        setDailyEntries(snapshot.dailyEntries);
+        setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
 
         const today = new Date();
         const rolling =
@@ -100,9 +127,13 @@ export function WeeklyReviewGridView({
         setWeeklyTemplate(weeklyTpl);
 
         const wColIds = collectColumnIds(weeklyTpl);
-        const row = await getWeeklyReviewJournalByWeek(startYmd);
+        const [row, weekMetrics] = await Promise.all([
+          getWeeklyReviewJournalByWeek(startYmd),
+          fetchWeeklyReviewMetrics(rolling.end, 'rolling-7').catch(() => null),
+        ]);
         setFields(row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds));
         setAiCoaching(row?.ai_coaching ?? null);
+        setMetrics(weekMetrics);
         journalMetaRef.current = {
           execution_score: row?.execution_score ?? 0,
           adjust_tasks: row?.adjust_tasks === 1,
@@ -114,8 +145,10 @@ export function WeeklyReviewGridView({
       setFields({});
       setWeeklyTemplate([]);
       setAiCoaching(null);
+      setMetrics(null);
     } finally {
       setLoading(false);
+      hydratedRef.current = true;
     }
   }, [todayYmd, wrapLoad]);
 
@@ -137,6 +170,45 @@ export function WeeklyReviewGridView({
       }
       void reload();
     }, [reload]),
+  );
+
+  const persist = useCallback(async () => {
+    if (!canEdit || !periodStartYmd) return;
+    setSaving(true);
+    try {
+      const meta = journalMetaRef.current;
+      await upsertWeeklyReviewJournal({
+        week_start_ymd: periodStartYmd,
+        fields,
+        execution_score: meta.execution_score,
+        adjust_tasks: meta.adjust_tasks,
+        adjust_savings: meta.adjust_savings,
+        adjust_plans: meta.adjust_plans,
+      });
+    } catch (e) {
+      console.warn('weekly review save', e);
+    } finally {
+      setSaving(false);
+    }
+  }, [canEdit, fields, periodStartYmd]);
+
+  useEffect(() => {
+    if (!hydratedRef.current || !canEdit) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void persist();
+    }, AUTO_SAVE_MS);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [canEdit, fields, persist]);
+
+  const onChangeField = useCallback(
+    (columnId: string, plain: string) => {
+      if (!canEdit) return;
+      setFields(prev => ({ ...prev, [columnId]: plain }));
+    },
+    [canEdit],
   );
 
   const openDimension = useCallback(
@@ -161,15 +233,7 @@ export function WeeklyReviewGridView({
     }
     setAiBusy(true);
     try {
-      const meta = journalMetaRef.current;
-      await upsertWeeklyReviewJournal({
-        week_start_ymd: periodStartYmd,
-        fields,
-        execution_score: meta.execution_score,
-        adjust_tasks: meta.adjust_tasks,
-        adjust_savings: meta.adjust_savings,
-        adjust_plans: meta.adjust_plans,
-      });
+      await persist();
       const text = await generateReviewAiAnalysis({
         scope: 'weekly',
         periodLabel: weekRangeLabel || periodStartYmd,
@@ -184,7 +248,7 @@ export function WeeklyReviewGridView({
     } finally {
       setAiBusy(false);
     }
-  }, [canEdit, fields, periodStartYmd, weekRangeLabel, weeklyTemplate]);
+  }, [canEdit, fields, periodStartYmd, persist, weekRangeLabel, weeklyTemplate]);
 
   const configuredDowLabel = useMemo(
     () => (configuredDow !== null ? WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow] : undefined),
@@ -198,6 +262,7 @@ export function WeeklyReviewGridView({
   return (
     <ScrollView
       refreshControl={refreshControl}
+      keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
       contentContainerStyle={[
         styles.scroll,
@@ -208,6 +273,13 @@ export function WeeklyReviewGridView({
           weekRangeLabel={weekRangeLabel}
           configuredDowLabel={configuredDowLabel}
           onOpenReviewDaySettings={() => router.push('/review-settings')}
+        />
+
+        <WeeklyReviewWeekStory
+          dailyEntries={dailyEntries}
+          dailyTemplate={dailyTemplate}
+          metrics={metrics}
+          skippedYmds={skippedYmds}
         />
 
         {configuredDow === null ? (
@@ -223,16 +295,24 @@ export function WeeklyReviewGridView({
           />
         ) : null}
 
+        <Text
+          style={[Typography.bodyStrong, { color: colors.text, paddingHorizontal: Spacing['3xl'] }]}
+          maxFontSizeMultiplier={1.35}>
+          本周总复盘{saving ? ' · 保存中…' : ''}
+        </Text>
+
         {weeklyTemplate.length === 0 ? (
           <ReviewEmptyState
             title="尚未配置周复盘维度"
             subtitle="请点右上角「模板」按钮编辑标题与栏目。"
           />
         ) : (
-          <DailyReviewGrid
+          <DailyReviewInlineComposer
             dimensions={weeklyTemplate}
             fields={fields}
-            onPressDimension={openDimension}
+            canEdit={canEdit}
+            onChangeField={onChangeField}
+            onOpenDimension={openDimension}
           />
         )}
 

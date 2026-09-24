@@ -310,3 +310,37 @@ export async function ensureReviewTemplateDefaults(): Promise<void> {
     }
   }
 }
+
+const LEGACY_DAILY_DIM_IDS = ['rd_daily_audit', 'rd_daily_insight', 'rd_daily_iter'] as const;
+
+/**
+ * 一次性：若日复盘仍是旧版三块 Audit/Insight/Iteration 默认结构，则替换为极简两问。
+ * 用户已自定义维度（ID 集合不同）则跳过，避免覆盖。
+ */
+export async function migrateDailyTemplateToMinimalIfNeeded(): Promise<void> {
+  const { AppSettingKey, getAppSettingRaw, setAppSetting } = await import('@/lib/app-settings-store');
+  const flag = await getAppSettingRaw(AppSettingKey.reviewMinimalDailyTemplateV1);
+  if (flag === '1' || flag === 'true') return;
+
+  await ensureReviewTemplateDefaults();
+
+  const dims = await listReviewDimensions('daily');
+  const idSet = new Set(dims.map(d => d.id));
+  const isLegacyDefault =
+    dims.length === LEGACY_DAILY_DIM_IDS.length &&
+    LEGACY_DAILY_DIM_IDS.every(id => idSet.has(id));
+
+  if (isLegacyDefault) {
+    for (const id of LEGACY_DAILY_DIM_IDS) {
+      await deleteReviewDimension(id);
+    }
+    for (const dim of REVIEW_TEMPLATE_DEFAULTS.daily) {
+      await ensureDefaultReviewDimension('daily', dim);
+      for (const col of dim.columns) {
+        await ensureDefaultReviewColumn(dim, col);
+      }
+    }
+  }
+
+  await setAppSetting(AppSettingKey.reviewMinimalDailyTemplateV1, '1');
+}

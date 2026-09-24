@@ -642,6 +642,13 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
     const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
     await pushLocalChangesToApi({ awaitSync: true });
   }
+  if (input.status !== undefined && input.status !== current.status) {
+    void import('@/lib/notification-center')
+      .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
+        resyncAppNotificationsAfterPreferenceChange(),
+      )
+      .catch(() => {});
+  }
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */

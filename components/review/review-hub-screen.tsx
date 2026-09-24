@@ -3,11 +3,13 @@ import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-v
 import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { getMinTouchTarget, Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { REVIEW_PAGE_PADDING_X, reviewContentMaxWidth } from '@/lib/review-layout';
+import { isTodayConfiguredWeeklyReviewDay } from '@/lib/weekly-review-settings';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -22,11 +24,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/review';
-const TABLET_MIN_WIDTH = 768;
 
+/** 主切换仅日/周；月复盘从「更多」进入 */
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
 
-const SCOPE_ORDER: ReviewScope[] = ['daily', 'weekly', 'monthly'];
+const SCOPE_TOGGLE_ORDER: Array<'daily' | 'weekly'> = ['daily', 'weekly'];
 
 const SCOPE_LABEL: Record<ReviewScope, string> = {
   daily: '日复盘',
@@ -38,8 +40,8 @@ function ReviewScopeToggle({
   value,
   onChange,
 }: {
-  value: ReviewScope;
-  onChange: (next: ReviewScope) => void;
+  value: 'daily' | 'weekly';
+  onChange: (next: 'daily' | 'weekly') => void;
 }) {
   const { colors } = useAppTheme();
   const touchMin = getMinTouchTarget(Platform.OS);
@@ -50,7 +52,7 @@ function ReviewScopeToggle({
         style={[styles.scopeTrack, { backgroundColor: colors.capsule }]}
         accessibilityRole="tablist"
         accessibilityLabel="复盘范围">
-        {SCOPE_ORDER.map((scope, index) => {
+        {SCOPE_TOGGLE_ORDER.map((scope, index) => {
           const active = value === scope;
           return (
             <Pressable
@@ -58,7 +60,7 @@ function ReviewScopeToggle({
               onPress={() => onChange(scope)}
               accessibilityRole="tab"
               accessibilityState={{ selected: active }}
-              accessibilityLabel={`${SCOPE_LABEL[scope]}，${index + 1}/${SCOPE_ORDER.length}`}
+              accessibilityLabel={`${SCOPE_LABEL[scope]}，${index + 1}/${SCOPE_TOGGLE_ORDER.length}`}
               style={({ pressed }) => [
                 styles.scopeItem,
                 { minHeight: touchMin },
@@ -100,16 +102,14 @@ export function ReviewHubScreen() {
   const [scope, setScope] = useState<ReviewScope>('daily');
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [monthLabel, setMonthLabel] = useState('');
+  const [autoSwitchedWeekly, setAutoSwitchedWeekly] = useState(false);
   const scopeRef = useRef(scope);
   const weeklyReloadRef = useRef<(() => Promise<void>) | null>(null);
   const monthlyReloadRef = useRef<(() => Promise<void>) | null>(null);
 
   scopeRef.current = scope;
 
-  const contentMaxWidth = useMemo(
-    () => (width >= TABLET_MIN_WIDTH ? Layout.contentMaxWidthWide : Layout.contentMaxWidth),
-    [width],
-  );
+  const contentMaxWidth = useMemo(() => reviewContentMaxWidth(width), [width]);
 
   useEffect(() => {
     setSelectedYmd(todayYmd);
@@ -120,9 +120,19 @@ export function ReviewHubScreen() {
       await wrapLoad(async () => {
         const snapshot = await loadReviewPeriodSnapshot(todayYmd);
         setWeekRangeLabel(snapshot.weekRangeLabel);
+
+        // 周复盘日：首次进入默认切到周视图
+        if (
+          !autoSwitchedWeekly &&
+          snapshot.configuredDow !== null &&
+          isTodayConfiguredWeeklyReviewDay(snapshot.configuredDow, new Date())
+        ) {
+          setScope('weekly');
+          setAutoSwitchedWeekly(true);
+        }
       }, forceApi);
     },
-    [todayYmd, wrapLoad],
+    [autoSwitchedWeekly, todayYmd, wrapLoad],
   );
 
   const reload = useCallback(
@@ -151,6 +161,10 @@ export function ReviewHubScreen() {
   const openHeaderMore = useCallback(() => {
     Alert.alert('更多', undefined, [
       {
+        text: '月复盘',
+        onPress: () => setScope('monthly'),
+      },
+      {
         text: '复盘日历',
         onPress: () => router.push('/review-calendar'),
       },
@@ -169,6 +183,8 @@ export function ReviewHubScreen() {
         ? weekRangeLabel || formatReviewHeaderDate(todayYmd)
         : monthLabel || formatReviewHeaderDate(todayYmd);
 
+  const toggleValue: 'daily' | 'weekly' = scope === 'weekly' ? 'weekly' : 'daily';
+
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
       <ScreenHeader
@@ -178,20 +194,43 @@ export function ReviewHubScreen() {
           <View style={styles.headerActions}>
             <ScreenHeaderIconAction
               icon="tune"
-              onPress={() => router.push(`/review-template-settings?scope=${scope}`)}
+              onPress={() => router.push(`/review-template-settings?scope=${scope === 'monthly' ? 'monthly' : scope}`)}
               accessibilityLabel="编辑复盘标题与栏目"
             />
             <ScreenHeaderIconAction
               icon="more-horiz"
               onPress={openHeaderMore}
-              accessibilityLabel="更多：复盘日历与设置"
+              accessibilityLabel="更多：月复盘、日历与设置"
             />
           </View>
         }
       />
 
-      <View style={[styles.body, { maxWidth: contentMaxWidth }]}>
-        <ReviewScopeToggle value={scope} onChange={setScope} />
+      <View style={[styles.body, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
+        {scope === 'monthly' ? (
+          <View style={styles.monthBar}>
+            <Pressable
+              onPress={() => setScope('daily')}
+              accessibilityRole="button"
+              accessibilityLabel="返回日复盘"
+              style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
+              <Text style={[Typography.bodyStrong, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                ← 返回日/周
+              </Text>
+            </Pressable>
+            <Text style={[Typography.bodyStrong, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
+              月复盘
+            </Text>
+          </View>
+        ) : (
+          <ReviewScopeToggle
+            value={toggleValue}
+            onChange={next => {
+              setScope(next);
+              if (next === 'weekly') setAutoSwitchedWeekly(true);
+            }}
+          />
+        )}
 
         <View style={styles.content}>
           {scope === 'daily' ? (
@@ -200,7 +239,10 @@ export function ReviewHubScreen() {
               onYmdChange={setSelectedYmd}
               pageApiKey={PAGE_API_KEY}
               refreshControl={refreshControl}
-              onSwitchToWeekly={() => setScope('weekly')}
+              onSwitchToWeekly={() => {
+                setScope('weekly');
+                setAutoSwitchedWeekly(true);
+              }}
             />
           ) : scope === 'weekly' ? (
             <WeeklyReviewGridView
@@ -235,7 +277,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   scopeWrap: {
-    paddingHorizontal: Layout.pagePaddingX,
+    paddingHorizontal: REVIEW_PAGE_PADDING_X,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,
     width: '100%',
@@ -257,6 +299,14 @@ const styles = StyleSheet.create({
   },
   scopeItemActive: {
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  monthBar: {
+    paddingHorizontal: REVIEW_PAGE_PADDING_X,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   content: {
     flex: 1,
