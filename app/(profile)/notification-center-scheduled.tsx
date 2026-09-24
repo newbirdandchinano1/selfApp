@@ -203,7 +203,7 @@ export default function NotificationCenterScheduledScreen() {
             <Text style={[styles.rowHint, { color: outline }]}>
               {Platform.OS === 'web'
                 ? 'Web 端无本地推送'
-                : `共 ${scheduled.length} 条（健康 / 课程表 / 习惯 / 复盘）`}
+                : `共 ${scheduled.length} 条（健康 / 日程表 / 习惯 / 复盘）`}
             </Text>
 
             {scheduled.length === 0 ? (

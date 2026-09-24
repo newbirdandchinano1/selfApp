@@ -11,7 +11,8 @@ import {
   type ScheduleSubjectKind,
   type ScheduleWeekAxisSnapshot,
 } from '@/lib/schedule/types';
-import { clampSlotHours, normalizeAxisSettings } from '@/lib/schedule/axis';
+import { clampSlotHours, normalizeAxisSettings, normalizeBreaks } from '@/lib/schedule/axis';
+import type { ScheduleBreak } from '@/lib/schedule/types';
 import { getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 
 export function createSchedulePlacementId(): string {
@@ -89,6 +90,19 @@ export async function saveScheduleAxisSettingsLocal(
   return payload;
 }
 
+function parseBreaksJson(
+  raw: string | null | undefined,
+  startMinutes: number,
+  endMinutes: number,
+): ScheduleBreak[] {
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    return normalizeBreaks(JSON.parse(raw), startMinutes, endMinutes);
+  } catch {
+    return [];
+  }
+}
+
 export async function getWeekAxisSnapshot(weekStartYmd: string): Promise<ScheduleWeekAxisSnapshot | null> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{
@@ -96,6 +110,7 @@ export async function getWeekAxisSnapshot(weekStartYmd: string): Promise<Schedul
     start_minutes: number;
     end_minutes: number;
     slot_hours: number;
+    breaks_json: string | null;
     created_at: string;
   }>('SELECT * FROM schedule_week_axis_snapshot WHERE week_start_ymd = ? LIMIT 1', [weekStartYmd]);
   if (!row) return null;
@@ -104,23 +119,37 @@ export async function getWeekAxisSnapshot(weekStartYmd: string): Promise<Schedul
     startMinutes: row.start_minutes,
     endMinutes: row.end_minutes,
     slotHours: clampSlotHours(row.slot_hours),
+    breaks: parseBreaksJson(row.breaks_json, row.start_minutes, row.end_minutes),
     createdAt: row.created_at,
   };
 }
 
 export async function upsertWeekAxisSnapshot(
   weekStartYmd: string,
-  axis: { startMinutes: number; endMinutes: number; slotHours: ScheduleSlotHours },
+  axis: {
+    startMinutes: number;
+    endMinutes: number;
+    slotHours: ScheduleSlotHours;
+    breaks?: ScheduleBreak[];
+  },
 ): Promise<ScheduleWeekAxisSnapshot> {
   const db = await getDatabase();
   const existing = await getWeekAxisSnapshot(weekStartYmd);
   if (existing) return existing;
   const createdAt = sqlNow();
+  const breaks = normalizeBreaks(axis.breaks, axis.startMinutes, axis.endMinutes);
   await db.runAsync(
     `INSERT INTO schedule_week_axis_snapshot
-      (week_start_ymd, start_minutes, end_minutes, slot_hours, created_at, sync_status)
-     VALUES (?, ?, ?, ?, ?, 'pending_create')`,
-    [weekStartYmd, axis.startMinutes, axis.endMinutes, axis.slotHours, createdAt],
+      (week_start_ymd, start_minutes, end_minutes, slot_hours, breaks_json, created_at, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending_create')`,
+    [
+      weekStartYmd,
+      axis.startMinutes,
+      axis.endMinutes,
+      axis.slotHours,
+      JSON.stringify(breaks),
+      createdAt,
+    ],
   );
   markCloudSqliteTableDirty('schedule_week_axis_snapshot');
   return {
@@ -128,6 +157,7 @@ export async function upsertWeekAxisSnapshot(
     startMinutes: axis.startMinutes,
     endMinutes: axis.endMinutes,
     slotHours: axis.slotHours,
+    breaks,
     createdAt,
   };
 }
@@ -315,6 +345,7 @@ export async function ensureScheduleTables(): Promise<void> {
       start_minutes INTEGER NOT NULL,
       end_minutes INTEGER NOT NULL,
       slot_hours INTEGER NOT NULL,
+      breaks_json TEXT,
       created_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
@@ -334,6 +365,15 @@ export async function ensureScheduleTables(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_schedule_placements_week
       ON schedule_placements(week_start_ymd, weekday);
   `);
+  // 存量库补列
+  const cols = await db.getAllAsync<{ name: string }>(
+    `PRAGMA table_info(schedule_week_axis_snapshot)`,
+  );
+  if (!cols.some((c) => c.name === 'breaks_json')) {
+    await db.execAsync(
+      `ALTER TABLE schedule_week_axis_snapshot ADD COLUMN breaks_json TEXT`,
+    );
+  }
 }
 
 export { DEFAULT_SCHEDULE_AXIS };

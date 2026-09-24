@@ -7,6 +7,7 @@ export type FrogScheduleWeekPayload = {
     startMinutes: number;
     endMinutes: number;
     slotHours: number;
+    breaks?: Array<{ startMinutes: number; endMinutes: number; label: string }>;
     fromSnapshot?: boolean;
   };
   placements: Array<{
@@ -46,6 +47,7 @@ export async function apiSaveFrogScheduleAxis(
         startMinutes: axis.startMinutes,
         endMinutes: axis.endMinutes,
         slotHours: axis.slotHours,
+        breaks: axis.breaks ?? [],
         updatedAt: axis.updatedAt,
       }),
       signal,

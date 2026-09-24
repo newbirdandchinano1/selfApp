@@ -39,7 +39,7 @@ async function ensureAndroidChannel() {
   if (Platform.OS !== 'android') return;
   const Notifications = await import('expo-notifications');
   await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-    name: '课程表提醒',
+    name: '日程表提醒',
     importance: Notifications.AndroidImportance.HIGH,
     vibrationPattern: [0, 250, 250, 250],
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
@@ -62,7 +62,7 @@ export async function cancelAllScheduleSlotReminders(): Promise<void> {
     await cancelPrefixed(NOTIFICATION_PREFIX);
     await cancelPrefixed(LEGACY_TASK_PREFIX);
   } catch (e) {
-    console.warn('取消课程表提醒失败', e);
+    console.warn('取消日程表提醒失败', e);
   }
 }
 
@@ -70,6 +70,7 @@ async function resolveAxisForWeek(weekStartYmd: string): Promise<{
   startMinutes: number;
   endMinutes: number;
   slotHours: number;
+  breaks: ScheduleAxisSettings['breaks'];
 }> {
   const snap = await getWeekAxisSnapshot(weekStartYmd);
   if (snap) {
@@ -77,6 +78,7 @@ async function resolveAxisForWeek(weekStartYmd: string): Promise<{
       startMinutes: snap.startMinutes,
       endMinutes: snap.endMinutes,
       slotHours: snap.slotHours,
+      breaks: snap.breaks ?? [],
     };
   }
   const axis: ScheduleAxisSettings = await getScheduleAxisSettings();
@@ -84,12 +86,15 @@ async function resolveAxisForWeek(weekStartYmd: string): Promise<{
     startMinutes: axis.startMinutes,
     endMinutes: axis.endMinutes,
     slotHours: axis.slotHours,
+    breaks: axis.breaks ?? [],
   };
 }
 
 function placementStartDate(placement: SchedulePlacementRow, axis: {
   startMinutes: number;
+  endMinutes: number;
   slotHours: number;
+  breaks?: ScheduleAxisSettings['breaks'];
 }): Date | null {
   if (placement.orphaned || placement.startSlotIndex == null) return null;
   const ymd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
@@ -201,11 +206,11 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
       identifier: id,
       fingerprint,
       fallback: {
-        title: '课程表提醒',
+        title: '日程表提醒',
         body: subject.title,
       },
       contextBlock: [
-        '【频道】课程表提醒',
+        '【频道】日程表提醒',
         `【类型】${placement.subjectKind === 'project' ? '项目' : '待办'}`,
         `【标题】${subject.title}`,
         `【开始】${dayYmd} ${startHm}`,
@@ -234,7 +239,7 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
         },
       });
     } catch (e) {
-      console.warn('登记课程表提醒失败', placement.id, e);
+      console.warn('登记日程表提醒失败', placement.id, e);
     }
   }
 }
@@ -291,7 +296,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
     items.push({
       identifier: scheduleSlotReminderIdentifier(placement.id),
-      title: '课程表提醒',
+      title: '日程表提醒',
       body: `${subject.title} · ${formatLocalYmdFromDate(startAt)} ${startHm}`,
       subjectKind: placement.subjectKind,
       subjectId: placement.subjectId,

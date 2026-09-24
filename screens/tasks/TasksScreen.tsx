@@ -1,4 +1,4 @@
-import { WeeklyFrogSchedule, type SchedulePendingPlace } from '@/components/tasks/WeeklyFrogSchedule';
+﻿import { WeeklyFrogSchedule, type SchedulePendingPlace } from '@/components/tasks/WeeklyFrogSchedule';
 import { notifyCompletionCelebration } from '@/lib/completion-celebration-events';
 import { suppressPointsEarnedToastForMs } from '@/lib/points-earned-toast-events';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
@@ -2068,7 +2068,7 @@ export default function TasksScreen() {
   const projectTaskRefilledRef = React.useRef(new Set<string>());
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
-  /** 长按项目/任务后，在课程表点格入格 */
+  /** 长按项目/任务后，在日程表点格入格 */
   const [pendingSchedulePlace, setPendingSchedulePlace] = React.useState<SchedulePendingPlace | null>(
     null,
   );
@@ -3002,7 +3002,7 @@ export default function TasksScreen() {
     (subject: SchedulePendingPlace) => {
       setPendingSchedulePlace(subject);
       mainScrollRef.current?.scrollToOffset({ offset: 0, animated: true });
-      showOperationToast('success', '请在上方课程表点选格子');
+      showOperationToast('success', '请在上方日程表点选格子');
     },
     [showOperationToast],
   );
@@ -3010,11 +3010,11 @@ export default function TasksScreen() {
   const beginSchedulePlaceForTask = React.useCallback(
     (task: TaskRow, projectName?: string | null) => {
       if (isTaskShelvedStatus(task.status)) {
-        Alert.alert('无法入格', '已搁置的待办请先激活后再指派到课程表。');
+        Alert.alert('无法入格', '已搁置的待办请先激活后再指派到日程表。');
         return;
       }
       if (isFrogAssignedOn(task.extra_data, logicalTodayYmd)) {
-        Alert.alert('无法入格', '该项今日已指派到课程表，请先取消指派后再入格。');
+        Alert.alert('无法入格', '该项今日已指派到日程表，请先取消指派后再入格。');
         return;
       }
       const ch = Array.isArray((task as TaskTreeNode).children)
@@ -3064,7 +3064,7 @@ export default function TasksScreen() {
 
       if (isProjectEligibleAsFrog(project, taskCount, locked)) {
         if (isFrogAssignedOn(project.extra_data, logicalTodayYmd)) {
-          Alert.alert('无法入格', '该项目今日已指派到课程表，请先取消指派后再入格。');
+          Alert.alert('无法入格', '该项目今日已指派到日程表，请先取消指派后再入格。');
           return;
         }
         const tagRows = projectTagsByProjectId.get(project.id) ?? [];
@@ -3135,7 +3135,7 @@ export default function TasksScreen() {
         });
       }
       buttons.push({ text: '取消', style: 'cancel' });
-      Alert.alert('选择任务入格', `「${project.name}」含任务，请选择要放入课程表的叶子任务：`, buttons);
+      Alert.alert('选择任务入格', `「${project.name}」含任务，请选择要放入日程表的叶子任务：`, buttons);
     },
     [
       beginSchedulePlace,
@@ -6286,8 +6286,8 @@ export default function TasksScreen() {
                             delayLongPress={380}
                             accessibilityHint={
                               frogAssignedToday
-                                ? '今日已指派到课程表'
-                                : '长按可将待办指派到课程表格子'
+                                ? '今日已指派到日程表'
+                                : '长按可将待办指派到日程表格子'
                             }>
                             <View style={styles.standaloneTodoTitleRow}>
                               <Text
@@ -6695,8 +6695,8 @@ export default function TasksScreen() {
                               hitSlop={8}
                               accessibilityHint={
                                 frogAssignedToday
-                                  ? '今日已指派到课程表'
-                                  : '长按可将任务指派到课程表格子'
+                                  ? '今日已指派到日程表'
+                                  : '长按可将任务指派到日程表格子'
                               }
                               style={({ pressed }) => [
                                 { flex: 1, minWidth: 0, opacity: frogAssignedToday && !isDone ? 0.55 : 1 },
@@ -6996,8 +6996,8 @@ export default function TasksScreen() {
                         style={styles.projectHeadPressable}
                         accessibilityHint={
                           frogAssignedToday
-                            ? '今日已指派到课程表'
-                            : '长按可将项目或任务指派到课程表格子'
+                            ? '今日已指派到日程表'
+                            : '长按可将项目或任务指派到日程表格子'
                         }>
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>

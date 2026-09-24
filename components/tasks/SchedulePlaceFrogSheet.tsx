@@ -403,7 +403,7 @@ export function SchedulePlaceFrogSheet({
   const submit = React.useCallback(async () => {
     if (!picked || !canConfirm) return;
     if (picked.alreadyAssigned) {
-      Alert.alert('无法入格', '该项当日已指派到课程表，请先取消指派后再入格。');
+      Alert.alert('无法入格', '该项当日已指派到日程表，请先取消指派后再入格。');
       return;
     }
     setSaving(true);

@@ -219,7 +219,7 @@ export default function NotificationCenterScreen() {
         });
         await applySettings(next);
       } catch (e) {
-        console.warn('保存课程表提醒偏好失败', e);
+        console.warn('保存日程表提醒偏好失败', e);
         Alert.alert('保存失败', '请稍后再试');
         setBusy(false);
       }
@@ -561,7 +561,7 @@ export default function NotificationCenterScreen() {
             </Text>
           </View>
 
-          {/* 课程表 */}
+          {/* 日程表 */}
           <View
             style={[
               styles.card,
@@ -576,7 +576,7 @@ export default function NotificationCenterScreen() {
             pointerEvents={
               masterOn && settings.categories['schedule-slot-reminder'] !== false ? 'auto' : 'none'
             }>
-            <Text style={[styles.rowTitle, { color: text }]}>课程表提醒</Text>
+            <Text style={[styles.rowTitle, { color: text }]}>日程表提醒</Text>
             <Text style={[styles.rowHint, { color: outline }]}>
               已入格占用在开始前推送；未入格任务不提醒。提前 {advance} 分钟（5–60）。
             </Text>

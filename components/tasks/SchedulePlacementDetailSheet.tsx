@@ -2,8 +2,12 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
-import type { SchedulePlacementRow } from '@/lib/schedule/types';
-import { formatMinutesAsHm, slotStartMinutes } from '@/lib/schedule/axis';
+import type { ScheduleBreak, SchedulePlacementRow } from '@/lib/schedule/types';
+import {
+  formatMinutesAsHm,
+  placementEndMinutes,
+  slotStartMinutes,
+} from '@/lib/schedule/axis';
 import { ymdForWeekday } from '@/lib/schedule/week';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -24,7 +28,12 @@ export type ScheduleSubjectInfo = {
   deletedSnapshot: boolean;
 };
 
-type Axis = { startMinutes: number; endMinutes: number; slotHours: number };
+type Axis = {
+  startMinutes: number;
+  endMinutes: number;
+  slotHours: number;
+  breaks?: ScheduleBreak[];
+};
 
 type Props = {
   visible: boolean;
@@ -72,7 +81,7 @@ export function SchedulePlacementDetailSheet({
   const timeLabel = React.useMemo(() => {
     if (!placement || placement.startSlotIndex == null) return '未入格';
     const start = slotStartMinutes(axis, placement.startSlotIndex);
-    const end = start + placement.spanSlots * axis.slotHours * 60;
+    const end = placementEndMinutes(axis, placement.startSlotIndex, placement.spanSlots);
     return `${formatMinutesAsHm(start)} – ${formatMinutesAsHm(end)} · ${placement.spanSlots} 格`;
   }, [placement, axis]);
 

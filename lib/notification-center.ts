@@ -429,7 +429,7 @@ export async function resyncAppNotificationsAfterPreferenceChange(
     try {
       await syncScheduleSlotReminderNotifications();
     } catch (e) {
-      console.warn('重同步课程表提醒失败', e);
+      console.warn('重同步日程表提醒失败', e);
     }
   }
 

@@ -41,7 +41,7 @@ export function FrogScheduleSettingsSheet({ visible, onClose }: Props) {
             <View style={[styles.handle, { backgroundColor: outline }]} />
           </View>
           <View style={styles.header}>
-            <Text style={[styles.title, { color: text }]}>周课程表设置</Text>
+            <Text style={[styles.title, { color: text }]}>周日程表设置</Text>
             <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="关闭">
               <MaterialIcons name="close" size={22} color={outline} />
             </Pressable>

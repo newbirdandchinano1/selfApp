@@ -7,6 +7,7 @@ import { getProjectById } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import {
   axisFromSnapshot,
+  breaksEqual,
   findAxisRangeConflicts,
   getSlotCount,
   maxSpanFromSlot,
@@ -14,6 +15,13 @@ import {
   remapPlacementsForSlotHours,
   validateAxisRange,
 } from '@/lib/schedule/axis';
+import type {
+  ScheduleAxisSettings,
+  ScheduleBreak,
+  SchedulePlacementInput,
+  SchedulePlacementRow,
+  ScheduleSubjectKind,
+} from '@/lib/schedule/types';
 import {
   addWeeksToWeekStart,
   getWeekStartMondayYmd,
@@ -21,12 +29,6 @@ import {
   isHistoricalWeek,
   ymdForWeekday,
 } from '@/lib/schedule/week';
-import type {
-  ScheduleAxisSettings,
-  SchedulePlacementInput,
-  SchedulePlacementRow,
-  ScheduleSubjectKind,
-} from '@/lib/schedule/types';
 import {
   countSubjectPlacementsOnDay,
   ensureScheduleTables,
@@ -70,6 +72,7 @@ export async function resolveAxisForWeek(
       startMinutes: globalAxis.startMinutes,
       endMinutes: globalAxis.endMinutes,
       slotHours: globalAxis.slotHours,
+      breaks: globalAxis.breaks ?? [],
     },
     fromSnapshot: false,
   };
@@ -314,7 +317,12 @@ export type SaveAxisResult =
   | { ok: false; error: string; conflicts?: { placementId: string; reason: string }[] };
 
 export async function saveScheduleAxisWithRemap(
-  nextRaw: { startMinutes: number; endMinutes: number; slotHours: number },
+  nextRaw: {
+    startMinutes: number;
+    endMinutes: number;
+    slotHours: number;
+    breaks?: ScheduleBreak[];
+  },
   logicalTodayYmd: string,
 ): Promise<SaveAxisResult> {
   await ensureScheduleTables();
@@ -322,6 +330,7 @@ export async function saveScheduleAxisWithRemap(
     startMinutes: nextRaw.startMinutes,
     endMinutes: nextRaw.endMinutes,
     slotHours: nextRaw.slotHours as ScheduleAxisSettings['slotHours'],
+    breaks: nextRaw.breaks,
   });
   const rangeErr = validateAxisRange(next);
   if (rangeErr) return { ok: false, error: rangeErr };
@@ -336,7 +345,7 @@ export async function saveScheduleAxisWithRemap(
     if (conflicts.length > 0) {
       return {
         ok: false,
-        error: `新时间范围会裁掉 ${conflicts.length} 条已有占用，请先调整课程表后再改设置。`,
+        error: `新时间范围会裁掉 ${conflicts.length} 条已有占用，请先调整日程表后再改设置。`,
         conflicts: conflicts.map((c) => ({ placementId: c.placementId, reason: c.reason })),
       };
     }
@@ -348,10 +357,11 @@ export async function saveScheduleAxisWithRemap(
   const axisChanged =
     next.startMinutes !== oldAxis.startMinutes ||
     next.endMinutes !== oldAxis.endMinutes ||
-    next.slotHours !== oldAxis.slotHours;
+    next.slotHours !== oldAxis.slotHours ||
+    !breaksEqual(next.breaks, oldAxis.breaks);
 
   if (axisChanged) {
-    // 按绝对开始时间重映射到新轴（格宽或起止变更均适用）
+    // 按绝对开始时间重映射到新轴（格宽 / 起止 / 断开变更均适用）
     const byWeek = new Map<string, typeof editablePlacements>();
     for (const p of editablePlacements) {
       const list = byWeek.get(p.weekStartYmd) ?? [];
@@ -371,6 +381,7 @@ export async function saveScheduleAxisWithRemap(
           remappedCount += 1;
           await updatePlacementSlots(r.placementId, {
             startSlotIndex: r.nextStartSlotIndex,
+            spanSlots: r.nextSpanSlots,
             orphaned: false,
           });
         }

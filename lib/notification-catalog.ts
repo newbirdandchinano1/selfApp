@@ -37,8 +37,8 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
   },
   {
     id: 'schedule-slot-reminder',
-    title: '课程表提醒',
-    sourceLabel: '课程表',
+    title: '日程表提醒',
+    sourceLabel: '日程表',
     description: '已入格占用在开始前 N 分钟提醒（未入格任务不推送）。',
     customizeLabel: '在通知管理中设置提前分钟',
     customizeHref: '/notification-center',

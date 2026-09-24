@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 46;
+export const DB_VERSION = 47;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -931,6 +931,7 @@ export async function initDatabase() {
       start_minutes INTEGER NOT NULL,
       end_minutes INTEGER NOT NULL,
       slot_hours INTEGER NOT NULL,
+      breaks_json TEXT,
       created_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
@@ -1383,6 +1384,7 @@ export async function initDatabase() {
         start_minutes INTEGER NOT NULL,
         end_minutes INTEGER NOT NULL,
         slot_hours INTEGER NOT NULL,
+        breaks_json TEXT,
         created_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'pending_create'
       );
@@ -1404,6 +1406,7 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_schedule_placements_subject
         ON schedule_placements(subject_kind, subject_id);
     `);
+    await ensureColumn(db, 'schedule_week_axis_snapshot', 'breaks_json', 'TEXT');
   } catch (e) {
     console.warn('schedule tables ensure failed', e);
   }
