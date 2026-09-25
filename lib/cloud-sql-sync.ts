@@ -691,10 +691,11 @@ export async function ensureFinanceAccountRefsForApiUpload(
   rowsByTable: Map<string, Record<string, unknown>[]>,
 ): Promise<void> {
   const txnRows = rowsByTable.get('finance_transactions') ?? [];
-  if (txnRows.length === 0) return;
+  const scheduledRows = rowsByTable.get('finance_scheduled_expenses') ?? [];
+  if (txnRows.length === 0 && scheduledRows.length === 0) return;
 
   const neededIds = new Set<string>();
-  for (const row of txnRows) {
+  for (const row of [...txnRows, ...scheduledRows]) {
     const aid = row.account_id;
     if (aid != null && aid !== '') neededIds.add(String(aid));
   }

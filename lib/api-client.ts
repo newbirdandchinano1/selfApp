@@ -1247,6 +1247,8 @@ export type FinanceCatalogPayload = {
   accounts: Record<string, unknown>[];
   accountTypes: Record<string, unknown>[];
   categories: Record<string, unknown>[];
+  /** 定时支出规则 */
+  scheduledExpenses?: Record<string, unknown>[];
   meta?: FinancePageMeta;
 };
 
@@ -1265,6 +1267,8 @@ export type FinanceHomePayload = {
   categories: Record<string, unknown>[];
   /** 今日 + 预算窗 + 近 daysBack 天 + 首屏历史日的并集（去重） */
   transactions: Record<string, unknown>[];
+  /** 定时支出规则 */
+  scheduledExpenses?: Record<string, unknown>[];
   historyHasMore?: boolean;
   /** 服务端按 exclude_from_total_assets 汇总的净资产 */
   netWorth?: number;

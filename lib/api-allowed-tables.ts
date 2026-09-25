@@ -14,6 +14,7 @@ export const API_ALLOWED_TABLES = new Set([
   'finance_account_types',
   'finance_accounts',
   'finance_flow_categories',
+  'finance_scheduled_expenses',
   'finance_transactions',
   'frog_completion_events',
   'habit_check_ins',

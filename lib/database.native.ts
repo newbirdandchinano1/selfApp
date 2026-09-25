@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 47;
+export const DB_VERSION = 48;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -621,6 +621,30 @@ export async function initDatabase() {
       FOREIGN KEY (flow_category_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS finance_scheduled_expenses (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      account_id TEXT NOT NULL,
+      repeat_option TEXT NOT NULL DEFAULT 'daily',
+      weekly_days TEXT,
+      monthly_days TEXT,
+      hour INTEGER NOT NULL DEFAULT 8,
+      minute INTEGER NOT NULL DEFAULT 0,
+      times_per_day INTEGER NOT NULL DEFAULT 1,
+      flow_category_id TEXT,
+      category_key TEXT,
+      category_label TEXT,
+      include_in_budget INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      FOREIGN KEY (account_id) REFERENCES finance_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (flow_category_id) REFERENCES finance_flow_categories(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL DEFAULT '默认用户',
@@ -1193,6 +1217,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_finance_transactions_account_id ON finance_transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_finance_transactions_flow_category_id ON finance_transactions(flow_category_id);
     CREATE INDEX IF NOT EXISTS idx_finance_transactions_happened_at ON finance_transactions(happened_at);
+    CREATE INDEX IF NOT EXISTS idx_finance_scheduled_expenses_account_id ON finance_scheduled_expenses(account_id);
+    CREATE INDEX IF NOT EXISTS idx_finance_scheduled_expenses_updated_at ON finance_scheduled_expenses(updated_at);
     CREATE INDEX IF NOT EXISTS idx_users_updated_at ON users(updated_at);
     CREATE INDEX IF NOT EXISTS idx_health_records_user_id ON health_records(user_id);
     CREATE INDEX IF NOT EXISTS idx_health_records_record_date ON health_records(record_date);
@@ -1445,6 +1471,7 @@ export async function resetDatabase() {
   await db.execAsync(`
     DROP TABLE IF EXISTS health_records;
     DROP TABLE IF EXISTS finance_transactions;
+    DROP TABLE IF EXISTS finance_scheduled_expenses;
     DROP TABLE IF EXISTS finance_flow_categories;
     DROP TABLE IF EXISTS finance_account_types;
     DROP TABLE IF EXISTS finance_accounts;

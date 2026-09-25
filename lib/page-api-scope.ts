@@ -25,6 +25,7 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   finance_accounts: [TAB_PAGE_KEYS.finance],
   finance_account_types: [TAB_PAGE_KEYS.finance],
   finance_flow_categories: [TAB_PAGE_KEYS.finance],
+  finance_scheduled_expenses: [TAB_PAGE_KEYS.finance],
   finance_transactions: [TAB_PAGE_KEYS.finance],
   cash_flow_profile: [TAB_PAGE_KEYS.finance],
   cash_flow_incomes: [TAB_PAGE_KEYS.finance],

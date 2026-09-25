@@ -116,6 +116,15 @@ async function syncAccountTypes(raw: unknown): Promise<FinanceAccountTypeRow[]> 
   return types;
 }
 
+async function syncScheduledExpenses(raw: unknown): Promise<void> {
+  // 旧后端无该字段时跳过，避免误清空本地
+  if (raw === undefined) return;
+  const rows = asRecordArray(raw);
+  await withApiTableSyncLock('finance_scheduled_expenses', async () => {
+    await syncApiReadResultToLocal('finance_scheduled_expenses', rows, { reconcileSnapshot: true });
+  });
+}
+
 async function syncTransactions(raw: unknown): Promise<FinanceTransactionRow[]> {
   const txns = asTxnRows(raw);
   await upsertFinanceRows('finance_transactions', txns as Record<string, unknown>[]);
@@ -140,6 +149,7 @@ export async function fetchFinanceCatalog(opts?: {
       syncAccountTypes(payload.accountTypes),
       syncCategories(payload.categories),
     ]);
+    await syncScheduledExpenses(payload.scheduledExpenses);
     return { accounts, accountTypes, categories, fromApi: true };
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;
@@ -190,6 +200,7 @@ export async function fetchFinanceHome(opts?: {
       syncCategories(payload.categories),
       syncTransactions(payload.transactions),
     ]);
+    await syncScheduledExpenses(payload.scheduledExpenses);
     if (typeof payload.netWorth === 'number') {
       rememberFinanceNetWorth(payload.netWorth);
     }

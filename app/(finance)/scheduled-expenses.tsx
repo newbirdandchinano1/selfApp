@@ -48,10 +48,8 @@ export default function ScheduledExpensesScreen() {
     setLoading(true);
     await wrapLoad(async () => {
       try {
-        const [rows, catalog] = await Promise.all([
-          loadScheduledFinanceExpenses(),
-          fetchFinanceCatalog({ offlineFallback: true }),
-        ]);
+        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+        const rows = await loadScheduledFinanceExpenses();
         setItems(rows);
         setAccounts(catalog.accounts);
       } catch (e) {

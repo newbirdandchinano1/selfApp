@@ -2380,12 +2380,6 @@ export default function FinanceScreen() {
         setMonthBudgetSettings(settings);
         const rd = await loadBudgetRefreshDay();
         setBudgetRefreshDay(rd);
-        const [scheduled, savingsGoal] = await Promise.all([
-          loadScheduledFinanceExpenses(),
-          loadFinanceSavingsGoal(),
-        ]);
-        setScheduledExpenses(scheduled);
-        setSavingsGoalTargetDate(savingsGoal?.targetDate ?? null);
         await loadFinanceLastUsedAccountId();
 
         if (forceApi || !financeTransactionsRef.current.length) {
@@ -2416,6 +2410,13 @@ export default function FinanceScreen() {
         } else {
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
         }
+
+        const [scheduled, savingsGoal] = await Promise.all([
+          loadScheduledFinanceExpenses(),
+          loadFinanceSavingsGoal(),
+        ]);
+        setScheduledExpenses(scheduled);
+        setSavingsGoalTargetDate(savingsGoal?.targetDate ?? null);
       } catch (e) {
         console.warn('Finance tab refresh failed:', e);
         throw e;

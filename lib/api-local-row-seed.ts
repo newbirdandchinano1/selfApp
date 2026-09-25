@@ -24,6 +24,9 @@ export async function sanitizeRowForLocalSeed(
   if (table === 'finance_transactions') {
     return sanitizeFinanceTransactionRowForLocalSeed(row);
   }
+  if (table === 'finance_scheduled_expenses') {
+    return sanitizeFinanceScheduledExpenseRowForLocalSeed(row);
+  }
   if (table === 'memos') {
     return sanitizeMemoRowForLocalSeed(row);
   }
@@ -116,6 +119,15 @@ async function preserveFkColumnWhenMissing(
 }
 
 async function sanitizeFinanceTransactionRowForLocalSeed(
+  row: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  await preserveFkColumnWhenMissing(next, 'flow_category_id', 'finance_flow_categories');
+  await preserveFkColumnWhenMissing(next, 'account_id', 'finance_accounts');
+  return next;
+}
+
+async function sanitizeFinanceScheduledExpenseRowForLocalSeed(
   row: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const next = { ...row };

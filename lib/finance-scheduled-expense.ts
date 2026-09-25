@@ -1,6 +1,14 @@
-import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
+import { AppSettingKey, getAppSetting, removeAppSetting, setAppSetting } from '@/lib/app-settings-store';
 import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import {
+  createFinanceScheduledExpense,
+  deleteFinanceScheduledExpense as deleteFinanceScheduledExpenseRow,
+  getFinanceScheduledExpenseByIdLocal,
+  listFinanceScheduledExpensesLocal,
+  updateFinanceScheduledExpense,
+} from '@/lib/repositories/finance/finance-scheduled-expense';
+import type { FinanceScheduledExpenseRow } from '@/lib/repositories/finance/finance-scheduled-expense.types';
 import { isTaskRepeatDueOnLogicalDay, type TaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 
 export type ScheduledExpenseRepeat = 'daily' | 'weekly' | 'monthly';
@@ -31,8 +39,16 @@ export type UpsertScheduledFinanceExpenseInput = Omit<ScheduledFinanceExpense, '
 };
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const;
+const SETTINGS_MIGRATED_META = 'finance_scheduled_expenses_settings_migrated_v1';
 
 function normalizeWeeklyDays(raw: unknown): number[] {
+  if (typeof raw === 'string') {
+    try {
+      return normalizeWeeklyDays(JSON.parse(raw) as unknown);
+    } catch {
+      return [];
+    }
+  }
   if (!Array.isArray(raw)) return [];
   return [...new Set(raw.map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10))).filter((n) => n >= 1 && n <= 7))].sort(
     (a, b) => a - b,
@@ -40,6 +56,13 @@ function normalizeWeeklyDays(raw: unknown): number[] {
 }
 
 function normalizeMonthlyDays(raw: unknown): number[] {
+  if (typeof raw === 'string') {
+    try {
+      return normalizeMonthlyDays(JSON.parse(raw) as unknown);
+    } catch {
+      return [];
+    }
+  }
   if (!Array.isArray(raw)) return [];
   return [...new Set(raw.map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10))).filter((n) => n >= 1 && n <= 31))].sort(
     (a, b) => a - b,
@@ -51,19 +74,31 @@ function normalizeRepeatOption(raw: unknown): ScheduledExpenseRepeat {
   return 'daily';
 }
 
+function serializeDays(days: number[]): string {
+  return JSON.stringify(days);
+}
+
+function boolFromDb(raw: unknown, defaultValue = true): boolean {
+  if (raw === false || raw === 0 || raw === '0') return false;
+  if (raw === true || raw === 1 || raw === '1') return true;
+  if (raw == null) return defaultValue;
+  return defaultValue;
+}
+
 function normalizeScheduledExpense(raw: unknown): ScheduledFinanceExpense | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : null;
   const name = typeof o.name === 'string' ? o.name.trim() : '';
-  const accountId = typeof o.accountId === 'string' && o.accountId.trim() ? o.accountId.trim() : null;
-  const amount = o.amount;
+  const accountIdRaw = o.accountId ?? o.account_id;
+  const accountId = typeof accountIdRaw === 'string' && accountIdRaw.trim() ? accountIdRaw.trim() : null;
+  const amount = typeof o.amount === 'number' ? o.amount : Number(o.amount);
   if (!id || !name || !accountId) return null;
-  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return null;
+  if (!Number.isFinite(amount) || amount <= 0) return null;
 
-  const repeatOption = normalizeRepeatOption(o.repeatOption);
-  const weeklyDays = normalizeWeeklyDays(o.weeklyDays);
-  const monthlyDays = normalizeMonthlyDays(o.monthlyDays);
+  const repeatOption = normalizeRepeatOption(o.repeatOption ?? o.repeat_option);
+  const weeklyDays = normalizeWeeklyDays(o.weeklyDays ?? o.weekly_days);
+  const monthlyDays = normalizeMonthlyDays(o.monthlyDays ?? o.monthly_days);
   if (repeatOption === 'weekly' && weeklyDays.length === 0) return null;
   if (repeatOption === 'monthly' && monthlyDays.length === 0) return null;
 
@@ -72,10 +107,21 @@ function normalizeScheduledExpense(raw: unknown): ScheduledFinanceExpense | null
   const hour = Number.isFinite(hourRaw) ? Math.min(23, Math.max(0, Math.floor(hourRaw))) : 8;
   const minute = Number.isFinite(minuteRaw) ? Math.min(59, Math.max(0, Math.floor(minuteRaw))) : 0;
 
-  const timesRaw = typeof o.timesPerDay === 'number' ? o.timesPerDay : parseInt(String(o.timesPerDay ?? ''), 10);
+  const timesRaw =
+    typeof o.timesPerDay === 'number'
+      ? o.timesPerDay
+      : typeof o.times_per_day === 'number'
+        ? o.times_per_day
+        : parseInt(String(o.timesPerDay ?? o.times_per_day ?? ''), 10);
   const timesPerDay = Number.isFinite(timesRaw) ? Math.min(10, Math.max(1, Math.floor(timesRaw))) : 1;
 
-  const createdAt = typeof o.createdAt === 'string' && o.createdAt.trim() ? o.createdAt.trim() : new Date().toISOString();
+  const createdAtRaw = o.createdAt ?? o.created_at;
+  const createdAt =
+    typeof createdAtRaw === 'string' && createdAtRaw.trim() ? createdAtRaw.trim() : new Date().toISOString();
+
+  const flowCategoryId = o.flowCategoryId ?? o.flow_category_id;
+  const categoryKey = o.categoryKey ?? o.category_key;
+  const categoryLabel = o.categoryLabel ?? o.category_label;
 
   return {
     id,
@@ -88,40 +134,95 @@ function normalizeScheduledExpense(raw: unknown): ScheduledFinanceExpense | null
     hour,
     minute,
     timesPerDay,
-    flowCategoryId: typeof o.flowCategoryId === 'string' ? o.flowCategoryId : null,
-    categoryKey: typeof o.categoryKey === 'string' ? o.categoryKey : null,
-    categoryLabel: typeof o.categoryLabel === 'string' ? o.categoryLabel : null,
-    includeInBudget: o.includeInBudget !== false,
-    enabled: o.enabled !== false,
+    flowCategoryId: typeof flowCategoryId === 'string' ? flowCategoryId : null,
+    categoryKey: typeof categoryKey === 'string' ? categoryKey : null,
+    categoryLabel: typeof categoryLabel === 'string' ? categoryLabel : null,
+    includeInBudget: boolFromDb(o.includeInBudget ?? o.include_in_budget, true),
+    enabled: boolFromDb(o.enabled, true),
     createdAt,
   };
+}
+
+function rowToDomain(row: FinanceScheduledExpenseRow): ScheduledFinanceExpense | null {
+  return normalizeScheduledExpense(row);
 }
 
 export function newScheduledFinanceExpenseId(): string {
   return makeTimestampEntityId('fse_', 8);
 }
 
+async function migrateScheduledExpensesFromAppSettingsIfNeeded(): Promise<void> {
+  try {
+    const { readAppMeta, writeAppMeta } = await import('@/lib/api-local-bootstrap');
+    const flag = await readAppMeta(SETTINGS_MIGRATED_META);
+    if (flag === '1') return;
+
+    const existing = await listFinanceScheduledExpensesLocal();
+    if (existing.length === 0) {
+      const parsed = await getAppSetting<unknown>(AppSettingKey.financeScheduledExpenses);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const normalized = normalizeScheduledExpense(item);
+          if (!normalized) continue;
+          await createFinanceScheduledExpense({
+            id: normalized.id,
+            name: normalized.name,
+            amount: normalized.amount,
+            account_id: normalized.accountId,
+            repeat_option: normalized.repeatOption,
+            weekly_days: serializeDays(normalized.weeklyDays),
+            monthly_days: serializeDays(normalized.monthlyDays),
+            hour: normalized.hour,
+            minute: normalized.minute,
+            times_per_day: normalized.timesPerDay,
+            flow_category_id: normalized.flowCategoryId ?? null,
+            category_key: normalized.categoryKey ?? null,
+            category_label: normalized.categoryLabel ?? null,
+            include_in_budget: normalized.includeInBudget ? 1 : 0,
+            enabled: normalized.enabled ? 1 : 0,
+            created_at: normalized.createdAt,
+          });
+        }
+      }
+    }
+
+    try {
+      await removeAppSetting(AppSettingKey.financeScheduledExpenses);
+    } catch {
+      await setAppSetting(AppSettingKey.financeScheduledExpenses, []);
+    }
+    await writeAppMeta(SETTINGS_MIGRATED_META, '1');
+  } catch (e) {
+    if (__DEV__) console.warn('[finance-scheduled-expense] migrate from settings failed', e);
+  }
+}
+
 export async function loadScheduledFinanceExpenses(): Promise<ScheduledFinanceExpense[]> {
-  const parsed = await getAppSetting<unknown>(AppSettingKey.financeScheduledExpenses);
-  if (!Array.isArray(parsed)) return [];
+  await migrateScheduledExpensesFromAppSettingsIfNeeded();
+  const rows = await listFinanceScheduledExpensesLocal();
   const out: ScheduledFinanceExpense[] = [];
-  for (const item of parsed) {
-    const normalized = normalizeScheduledExpense(item);
+  for (const row of rows) {
+    const normalized = rowToDomain(row);
     if (normalized) out.push(normalized);
   }
   return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export async function persistScheduledFinanceExpenses(items: ScheduledFinanceExpense[]): Promise<void> {
-  await setAppSetting(AppSettingKey.financeScheduledExpenses, items);
+/** @deprecated 定时支出已落独立表，不再整表写入 app_settings */
+export async function persistScheduledFinanceExpenses(_items: ScheduledFinanceExpense[]): Promise<void> {
+  // no-op：保留导出以免旧调用崩溃
 }
 
 export async function getScheduledFinanceExpenseById(id: string): Promise<ScheduledFinanceExpense | null> {
-  const rows = await loadScheduledFinanceExpenses();
-  return rows.find((row) => row.id === id) ?? null;
+  await migrateScheduledExpensesFromAppSettingsIfNeeded();
+  const row = await getFinanceScheduledExpenseByIdLocal(id);
+  return row ? rowToDomain(row) : null;
 }
 
-export async function upsertScheduledFinanceExpense(input: UpsertScheduledFinanceExpenseInput): Promise<ScheduledFinanceExpense> {
+export async function upsertScheduledFinanceExpense(
+  input: UpsertScheduledFinanceExpenseInput,
+): Promise<ScheduledFinanceExpense> {
+  await migrateScheduledExpensesFromAppSettingsIfNeeded();
   const normalized = normalizeScheduledExpense({
     ...input,
     id: input.id ?? newScheduledFinanceExpenseId(),
@@ -130,16 +231,40 @@ export async function upsertScheduledFinanceExpense(input: UpsertScheduledFinanc
   if (!normalized) {
     throw new Error('定时支出参数无效');
   }
-  const rows = await loadScheduledFinanceExpenses();
-  const idx = rows.findIndex((row) => row.id === normalized.id);
-  const next = idx >= 0 ? rows.map((row, i) => (i === idx ? normalized : row)) : [...rows, normalized];
-  await persistScheduledFinanceExpenses(next);
+
+  const existing = await getFinanceScheduledExpenseByIdLocal(normalized.id);
+  const payload = {
+    name: normalized.name,
+    amount: normalized.amount,
+    account_id: normalized.accountId,
+    repeat_option: normalized.repeatOption,
+    weekly_days: serializeDays(normalized.weeklyDays),
+    monthly_days: serializeDays(normalized.monthlyDays),
+    hour: normalized.hour,
+    minute: normalized.minute,
+    times_per_day: normalized.timesPerDay,
+    flow_category_id: normalized.flowCategoryId ?? null,
+    category_key: normalized.categoryKey ?? null,
+    category_label: normalized.categoryLabel ?? null,
+    include_in_budget: normalized.includeInBudget ? 1 : 0,
+    enabled: normalized.enabled ? 1 : 0,
+  };
+
+  if (existing) {
+    await updateFinanceScheduledExpense(normalized.id, payload);
+  } else {
+    await createFinanceScheduledExpense({
+      id: normalized.id,
+      ...payload,
+      created_at: normalized.createdAt,
+    });
+  }
   return normalized;
 }
 
 export async function deleteScheduledFinanceExpense(id: string): Promise<void> {
-  const rows = await loadScheduledFinanceExpenses();
-  await persistScheduledFinanceExpenses(rows.filter((row) => row.id !== id));
+  await migrateScheduledExpensesFromAppSettingsIfNeeded();
+  await deleteFinanceScheduledExpenseRow(id);
 }
 
 export function scheduledExpenseToTaskRepeatSchedule(item: ScheduledFinanceExpense): TaskRepeatSchedule {
