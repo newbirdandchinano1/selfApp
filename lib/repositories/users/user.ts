@@ -196,5 +196,18 @@ export async function updateDefaultUser(input: UpdateDefaultUserInput) {
      WHERE id = ?`,
     values
   );
+
+  const weightNum = Number(input.weight);
+  if (Number.isFinite(weightNum) && weightNum > 0) {
+    try {
+      const { localYmdFromDate, upsertWeightLog } = await import(
+        '@/lib/repositories/health/weight-log'
+      );
+      await upsertWeightLog(localYmdFromDate(), weightNum);
+    } catch (e) {
+      if (__DEV__) console.warn('[users] upsert weight log failed', e);
+    }
+  }
+
   notifyDefaultUserUpdated();
 }

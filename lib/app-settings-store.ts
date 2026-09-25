@@ -43,6 +43,8 @@ export const AppSettingKey = {
   notificationsCenter: '@selfapp/notifications_center_v1',
   /** 通知 AI 文案缓存（identifier + fingerprint） */
   notificationAiCopyCache: '@selfapp/notification_ai_copy_cache_v1',
+  /** 饮食偏好与禁忌（过敏、忌口、预设标签） */
+  dietaryPrefs: '@selfapp/dietary_prefs_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

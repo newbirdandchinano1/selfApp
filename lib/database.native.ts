@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 50;
+export const DB_VERSION = 51;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -83,6 +83,31 @@ async function migrateRestorePersonaPortraitColumn(db: SQLite.SQLiteDatabase): P
   await ensureColumn(db, 'users', 'persona_portrait', 'TEXT');
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'restore_persona_portrait_v45',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 本地体重日志（不同步云端） */
+async function migrateEnsureWeightLogsLocal(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['weight_logs_local_v51'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS weight_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      recorded_ymd TEXT NOT NULL UNIQUE,
+      weight_kg REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_weight_logs_ymd ON weight_logs(recorded_ymd);
+  `);
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'weight_logs_local_v51',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -1031,6 +1056,7 @@ export async function initDatabase() {
       body TEXT NOT NULL DEFAULT '',
       dimension_id TEXT,
       dimension TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       ai_evaluation TEXT,
       ai_suggestions TEXT,
       ai_review_at TEXT,
@@ -1209,6 +1235,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension_id', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension', 'TEXT');
+  await ensureColumn(db, 'memos', 'is_pinned', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'wish_board_items', 'description', 'TEXT');
   await ensureColumn(db, 'wish_board_items', 'icon_key', 'TEXT');
   await ensureColumn(db, 'wish_board_items', 'wish_type', "TEXT NOT NULL DEFAULT 'once'");
@@ -1496,9 +1523,10 @@ export async function initDatabase() {
   const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
   await migrateRecipesStorageToSqliteIfNeeded(db);
 
-  const { migrateMemosStorageToSqliteIfNeeded, ensureMemoDimensionsBackfilled } = await import('@/lib/memos');
+  const { migrateMemosStorageToSqliteIfNeeded, ensureMemoDimensionsBackfilled, migrateMemoDimensionsToTagsIfNeeded } = await import('@/lib/memos');
   await migrateMemosStorageToSqliteIfNeeded(db);
   await ensureMemoDimensionsBackfilled(db);
+  await migrateMemoDimensionsToTagsIfNeeded(db);
 
   // 已下线功能：清理本地遗留表（本周任务表 / 我的缺点）
   await db.execAsync(`
@@ -1553,6 +1581,7 @@ export async function initDatabase() {
   await migrateDropPersonaPortraitCache(db);
   await migrateDropRemovedProfileFeatures(db);
   await migrateRestorePersonaPortraitColumn(db);
+  await migrateEnsureWeightLogsLocal(db);
   await migrateHabitCheckInsAllowZeroCount(db);
   await migrateRestoreWishBoardItems(db);
   await migratePointsAllowDecimalAndSignedBalance(db);
@@ -1576,6 +1605,7 @@ export async function resetDatabase() {
 
   await db.execAsync(`
     DROP TABLE IF EXISTS health_records;
+    DROP TABLE IF EXISTS weight_logs;
     DROP TABLE IF EXISTS finance_transactions;
     DROP TABLE IF EXISTS finance_scheduled_expenses;
     DROP TABLE IF EXISTS finance_flow_categories;

@@ -1,7 +1,7 @@
 import type { SyncStatus } from '../../database.native';
 
-/** 可打标实体：项目 / 习惯 / 独立待办（无 parent_task_id 的 task） */
-export type TagEntityType = 'project' | 'habit' | 'task';
+/** 可打标实体：项目 / 习惯 / 独立待办（无 parent_task_id 的 task）/ 备忘录 */
+export type TagEntityType = 'project' | 'habit' | 'task' | 'memo';
 
 export type TagRow = {
   id: string;

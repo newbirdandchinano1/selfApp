@@ -1,0 +1,14 @@
+{
+  "ignore_dirs": [
+    ".git",
+    ".cursor",
+    ".codegraph",
+    ".impeccable",
+    ".expo",
+    ".expo-test-export2",
+    ".vscode",
+    ".github",
+    "dist",
+    "node_modules/.cache"
+  ]
+}

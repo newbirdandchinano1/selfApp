@@ -1,4 +1,4 @@
-import { AppCard, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
+import { ScreenHeader, ScreenHeaderIconAction, Skeleton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -9,19 +9,88 @@ import {
   computeTotalAssets,
   computeTotalLiabilitiesAbs,
   financeLiabilityDebtMagnitude,
+  getTxnNetWorthTotalDelta,
   isFinanceLiabilityAccount,
 } from '@/lib/finance-net-worth';
 import { isFinanceAccountExcludedFromAggregates } from '@/lib/repositories/finance/finance-account-extra';
-import type { FinanceAccountBalanceRow, FinanceAccountTypeRow } from '@/lib/repositories/finance/finance.types';
+import { getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import type {
+  FinanceAccountBalanceRow,
+  FinanceAccountTypeRow,
+  FinanceTransactionRow,
+} from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle } from 'react-native-svg';
 
 const PAGE_API_KEY = 'assets';
+
+type UiAccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom' | 'unknown';
+
+type ThemeColors = ReturnType<typeof useAppTheme>['colors'];
+
+function AssetsPageSkeleton({ colors }: { colors: ThemeColors }) {
+  return (
+    <View style={styles.skeletonWrap}>
+      <View style={styles.hero}>
+        <Skeleton width={72} height={12} borderRadius={6} />
+        <Skeleton width={220} height={40} borderRadius={10} style={{ marginTop: Spacing.md }} />
+        <Skeleton width={96} height={28} borderRadius={14} style={{ marginTop: Spacing.lg }} />
+        <View style={styles.totalsRow}>
+          <Skeleton width="46%" height={64} borderRadius={Radius.lg} />
+          <Skeleton width="46%" height={64} borderRadius={Radius.lg} />
+        </View>
+      </View>
+
+      <View style={[styles.allocPanel, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+        <Skeleton width={72} height={16} borderRadius={6} />
+        <Skeleton width="100%" height={12} borderRadius={6} style={{ marginTop: Spacing['3xl'] }} />
+        <View style={{ gap: Spacing.lg, marginTop: Spacing['3xl'] }}>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} width="100%" height={18} borderRadius={6} />
+          ))}
+        </View>
+      </View>
+
+      {Array.from({ length: 2 }).map((_, g) => (
+        <View key={g} style={{ gap: Spacing.xl }}>
+          <View style={styles.groupHeader}>
+            <Skeleton width={120} height={16} borderRadius={6} />
+            <Skeleton width={64} height={12} borderRadius={6} />
+          </View>
+          <View style={[styles.groupPanel, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.accountRow,
+                  i < 2 ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.outline } : null,
+                ]}>
+                <Skeleton width={36} height={36} borderRadius={Radius.md} />
+                <View style={{ flex: 1, gap: Spacing.sm }}>
+                  <Skeleton width="55%" height={14} borderRadius={6} />
+                  <Skeleton width="35%" height={11} borderRadius={5} />
+                </View>
+                <Skeleton width={72} height={16} borderRadius={6} />
+              </View>
+            ))}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
 
 export default function AssetsScreen() {
   const router = useRouter();
@@ -29,7 +98,6 @@ export default function AssetsScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark, shadows } = useAppTheme();
 
-  /** 资产配置环形图：蓝 / 深蓝 / 绿，与财务页主色一致（避免 tertiary 棕褐大面积） */
   const assetSegmentColors = React.useMemo(
     () => ({
       cash: colors.primarySoft,
@@ -39,29 +107,39 @@ export default function AssetsScreen() {
     [colors.primary, colors.primarySoft, colors.secondary],
   );
 
-  const ringSize = 128;
-  const ringStroke = 6;
-  const r = (ringSize - ringStroke) / 2;
-  const c = 2 * Math.PI * r;
-
-  const dash = (p: number) => `${c * p} ${c * (1 - p)}`;
-
   const [accounts, setAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [accountTypes, setAccountTypes] = React.useState<FinanceAccountTypeRow[]>([]);
+  const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
+  const [initialLoadPending, setInitialLoadPending] = React.useState(true);
+  const [skeletonMounted, setSkeletonMounted] = React.useState(true);
 
-  const reload = React.useCallback(async (forceApi = false) => {
-    await wrapLoad(async () => {
-      try {
-        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
-        setAccounts(catalog.accounts);
-        setAccountTypes(catalog.accountTypes);
-      } catch (e) {
-        console.warn('Failed to load finance accounts:', e);
-        setAccounts([]);
-        setAccountTypes([]);
-      }
-    }, forceApi);
-  }, [wrapLoad]);
+  const skeletonOpacity = React.useRef(new Animated.Value(1)).current;
+  const contentOpacity = React.useRef(new Animated.Value(0)).current;
+  const contentRevealDoneRef = React.useRef(false);
+
+  const reload = React.useCallback(
+    async (forceApi = false) => {
+      await wrapLoad(async () => {
+        try {
+          const [catalog, txns] = await Promise.all([
+            fetchFinanceCatalog({ offlineFallback: true }),
+            getFinanceTransactions({ localOnly: !forceApi }),
+          ]);
+          setAccounts(catalog.accounts);
+          setAccountTypes(catalog.accountTypes);
+          setTransactions(txns);
+        } catch (e) {
+          console.warn('Failed to load finance accounts:', e);
+          setAccounts([]);
+          setAccountTypes([]);
+          setTransactions([]);
+        } finally {
+          setInitialLoadPending(false);
+        }
+      }, forceApi);
+    },
+    [wrapLoad],
+  );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -75,32 +153,47 @@ export default function AssetsScreen() {
     }, [reload]),
   );
 
-  const formatMoney0 = React.useCallback((value: number) => {
-    const abs = Math.abs(value);
-    return `¥${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
-  }, []);
-
-  const formatSignedMoney0 = React.useCallback((value: number) => {
-    const abs = Math.abs(value);
-    const prefix = value < 0 ? '-¥' : '¥';
-    return `${prefix}${abs.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
-  }, []);
-
-  /** 当前净资产：截断到分（向 0 取整），避免第三位小数四舍五入 */
-  const formatSignedMoneyTrunc2 = React.useCallback((value: number) => {
-    if (!Number.isFinite(value)) {
-      return '¥0.00';
+  React.useEffect(() => {
+    if (initialLoadPending) return;
+    if (contentRevealDoneRef.current) {
+      contentOpacity.setValue(1);
+      return;
     }
-    const factor = 100;
-    const truncated = value >= 0 ? Math.floor(value * factor + 1e-9) / factor : Math.ceil(value * factor - 1e-9) / factor;
-    const abs = Math.abs(truncated);
-    const prefix = truncated < 0 ? '-¥' : '¥';
-    return `${prefix}${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }, []);
+    contentRevealDoneRef.current = true;
+    setSkeletonMounted(true);
+    skeletonOpacity.setValue(1);
+    contentOpacity.setValue(0);
+    Animated.parallel([
+      Animated.timing(skeletonOpacity, {
+        toValue: 0,
+        duration: 240,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(contentOpacity, {
+        toValue: 1,
+        duration: 300,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) setSkeletonMounted(false);
+    });
+  }, [contentOpacity, initialLoadPending, skeletonOpacity]);
 
   const formatMoney2 = React.useCallback((value: number) => {
     const abs = Math.abs(value);
     return `¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
+  const formatSignedMoneyTrunc2 = React.useCallback((value: number) => {
+    if (!Number.isFinite(value)) return '¥0.00';
+    const factor = 100;
+    const truncated =
+      value >= 0 ? Math.floor(value * factor + 1e-9) / factor : Math.ceil(value * factor - 1e-9) / factor;
+    const abs = Math.abs(truncated);
+    const prefix = truncated < 0 ? '-¥' : '¥';
+    return `${prefix}${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
   const formatDebtMoney2 = React.useCallback((value: number) => {
@@ -109,11 +202,9 @@ export default function AssetsScreen() {
     return `-¥${abs.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
-  type UiAccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom' | 'unknown';
-
   const parseUiMeta = React.useCallback(
     (
-      acc: FinanceAccountBalanceRow
+      acc: FinanceAccountBalanceRow,
     ): {
       uiType: UiAccountType;
       uiIcon?: keyof typeof MaterialIcons.glyphMap;
@@ -129,7 +220,11 @@ export default function AssetsScreen() {
           const customTypeName = typeof obj.ui_custom_type_name === 'string' ? obj.ui_custom_type_name.trim() : '';
           const uiIsLiability = typeof obj.ui_is_liability === 'boolean' ? obj.ui_is_liability : undefined;
           const typeOk =
-            uiType === 'cash_wallet' || uiType === 'bank' || uiType === 'investment' || uiType === 'liability' || uiType === 'custom';
+            uiType === 'cash_wallet' ||
+            uiType === 'bank' ||
+            uiType === 'investment' ||
+            uiType === 'liability' ||
+            uiType === 'custom';
 
           let uiIcon: keyof typeof MaterialIcons.glyphMap | undefined;
           if (typeof iconKey === 'string' && iconKey.length > 0) {
@@ -149,9 +244,8 @@ export default function AssetsScreen() {
           };
         }
       } catch {
-        // ignore JSON parse errors
+        // ignore
       }
-
       return { uiType: acc.account_type === 'liability' ? 'liability' : 'unknown', uiIcon: undefined };
     },
     [],
@@ -167,12 +261,13 @@ export default function AssetsScreen() {
       if (list) list.push(a);
       else map.set(key, [a]);
     }
-    const groups: Array<{ name: string; rows: FinanceAccountBalanceRow[] }> = accountTypes.map((row) => ({
-      name: row.name,
-      rows: map.get(row.name) ?? [],
-    }));
+    const groups: Array<{ name: string; rows: FinanceAccountBalanceRow[] }> = [];
+    for (const row of accountTypes) {
+      const rows = map.get(row.name) ?? [];
+      if (rows.length > 0) groups.push({ name: row.name, rows });
+    }
     for (const [name, rows] of map.entries()) {
-      if (!accountTypes.some((item) => item.name === name)) {
+      if (!accountTypes.some((item) => item.name === name) && rows.length > 0) {
         groups.push({ name, rows });
       }
     }
@@ -206,7 +301,6 @@ export default function AssetsScreen() {
     [accountTypes, parseUiMeta],
   );
 
-  /** 分组标题合计：自定义/混合组内可能含负债账户，按「资产 ≥0、负债额度绝对值」折算后汇总 */
   const groupMixedLedgerSum = React.useCallback(
     (rows: FinanceAccountBalanceRow[]) =>
       rows.reduce((sum, a) => {
@@ -237,6 +331,24 @@ export default function AssetsScreen() {
   const totalLiabilitiesAbs = React.useMemo(() => computeTotalLiabilitiesAbs(accounts), [accounts]);
   const netWorth = React.useMemo(() => computeNetWorthTotal(accounts), [accounts]);
 
+  /** 本月净资产变动（真实流水），替代原来的假 2.4% */
+  const monthTrend = React.useMemo(() => {
+    const now = new Date();
+    const monthStartMs = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0).getTime();
+    let delta = 0;
+    let hit = 0;
+    for (const txn of transactions) {
+      const ms = new Date(txn.happened_at).getTime();
+      if (!Number.isFinite(ms) || ms < monthStartMs) continue;
+      delta += getTxnNetWorthTotalDelta(txn);
+      hit += 1;
+    }
+    const base = netWorth - delta;
+    const pct =
+      Math.abs(base) >= 0.01 ? (delta / Math.abs(base)) * 100 : hit > 0 && Math.abs(delta) >= 0.01 ? 100 : null;
+    return { delta, pct, hasActivity: hit > 0 };
+  }, [netWorth, transactions]);
+
   const sumAssetBalanceForDisplay = React.useCallback((rows: FinanceAccountBalanceRow[]) => {
     return rows.reduce((sum, a) => {
       if (isFinanceAccountExcludedFromAggregates(a.extra_data)) return sum;
@@ -244,72 +356,47 @@ export default function AssetsScreen() {
     }, 0);
   }, []);
 
-  const cashTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.cash_wallet), [grouped.cash_wallet, sumAssetBalanceForDisplay]);
-  const bankTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.bank), [grouped.bank, sumAssetBalanceForDisplay]);
-  const investTotal = React.useMemo(() => sumAssetBalanceForDisplay(grouped.investment), [grouped.investment, sumAssetBalanceForDisplay]);
-  const unknownAssetTotal = React.useMemo(
-    () => sumAssetBalanceForDisplay(grouped.unknown),
-    [grouped.unknown, sumAssetBalanceForDisplay],
-  );
-
-  const customAssetSegments = React.useMemo(() => {
+  /** 资产配置：按具体账户余额占比（不含负债 / 已排除汇总的账户） */
+  const allocSegments = React.useMemo(() => {
     const palette = [
+      colors.primary,
+      colors.primarySoft,
+      colors.secondary,
       colors.tertiary,
       isDark ? '#a78bfa' : '#7c3aed',
       isDark ? '#f472b6' : '#db2777',
       isDark ? '#38bdf8' : '#0284c7',
       isDark ? '#fbbf24' : '#d97706',
+      isDark ? '#2dd4bf' : '#0f766e',
+      isDark ? '#fb923c' : '#ea580c',
     ];
-    let colorIdx = 0;
-    const segs: Array<{ key: string; label: string; amount: number; color: string }> = [];
-    for (const group of customTypeGroups) {
-      const assetRows = group.rows.filter((a) => !isLiabilityAccount(a));
-      const amount = sumAssetBalanceForDisplay(assetRows);
-      if (amount <= 0) continue;
-      segs.push({
-        key: `custom:${group.name}`,
-        label: group.name,
-        amount,
-        color: palette[colorIdx % palette.length]!,
-      });
-      colorIdx += 1;
-    }
-    if (unknownAssetTotal > 0) {
-      segs.push({
-        key: 'unknown',
-        label: '其他',
-        amount: unknownAssetTotal,
-        color: colors.textSecondary,
-      });
-    }
-    return segs;
+    const rows = accounts
+      .filter((a) => !isLiabilityAccount(a) && !isFinanceAccountExcludedFromAggregates(a.extra_data))
+      .map((a) => ({
+        account: a,
+        amount: Math.max(0, a.balance ?? 0),
+      }))
+      .filter((row) => row.amount > 0)
+      .sort((a, b) => b.amount - a.amount || a.account.name.localeCompare(b.account.name, 'zh-CN'));
+
+    return rows.map((row, index) => ({
+      key: row.account.id,
+      label: row.account.name,
+      amount: row.amount,
+      color: palette[index % palette.length]!,
+      account: row.account,
+    }));
   }, [
-    customTypeGroups,
+    accounts,
     isLiabilityAccount,
-    sumAssetBalanceForDisplay,
-    unknownAssetTotal,
+    colors.primary,
+    colors.primarySoft,
+    colors.secondary,
     colors.tertiary,
-    colors.textSecondary,
     isDark,
   ]);
 
-  const ringSegments = React.useMemo(() => {
-    const base: Array<{ key: string; label: string; amount: number; color: string }> = [
-      { key: 'cash', label: '现金', amount: cashTotal, color: assetSegmentColors.cash },
-      { key: 'bank', label: '银行', amount: bankTotal, color: assetSegmentColors.bank },
-      { key: 'invest', label: '投资', amount: investTotal, color: assetSegmentColors.invest },
-      ...customAssetSegments,
-    ];
-    return base.filter((s) => s.amount > 0);
-  }, [cashTotal, bankTotal, investTotal, customAssetSegments, assetSegmentColors]);
-
-  const ringCoveredTotal = React.useMemo(
-    () => ringSegments.reduce((sum, s) => sum + s.amount, 0),
-    [ringSegments],
-  );
-
   const hasAssets = totalAssets > 0;
-  const ringPct = hasAssets ? Math.round((ringCoveredTotal / totalAssets) * 100) : 0;
 
   const accountIcon = React.useCallback(
     (acc: FinanceAccountBalanceRow) => {
@@ -339,6 +426,112 @@ export default function AssetsScreen() {
     [router],
   );
 
+  const trendTone =
+    monthTrend.delta > 0.009 ? 'up' : monthTrend.delta < -0.009 ? 'down' : 'flat';
+  const trendColor =
+    trendTone === 'up' ? colors.secondary : trendTone === 'down' ? colors.danger : colors.textSecondary;
+  const trendBg =
+    trendTone === 'up'
+      ? isDark
+        ? 'rgba(52,211,153,0.18)'
+        : 'rgba(0,108,73,0.1)'
+      : trendTone === 'down'
+        ? isDark
+          ? 'rgba(248,113,113,0.18)'
+          : 'rgba(220,38,38,0.1)'
+        : isDark
+          ? 'rgba(148,163,184,0.16)'
+          : 'rgba(148,163,184,0.12)';
+  const trendLabel =
+    monthTrend.pct == null
+      ? monthTrend.hasActivity
+        ? '本月变动'
+        : '本月持平'
+      : `${Math.abs(monthTrend.pct) >= 10 ? Math.abs(monthTrend.pct).toFixed(0) : Math.abs(monthTrend.pct).toFixed(1)}%`;
+  const trendIcon: keyof typeof MaterialIcons.glyphMap =
+    trendTone === 'up' ? 'trending-up' : trendTone === 'down' ? 'trending-down' : 'trending-flat';
+
+  const fabBottom = Math.max(insets.bottom, Spacing.md) + Spacing['3xl'];
+  const scrollBottomPad = fabBottom + 64;
+
+  const renderAccountGroup = (
+    key: string,
+    title: string,
+    icon: keyof typeof MaterialIcons.glyphMap,
+    accent: string,
+    rows: FinanceAccountBalanceRow[],
+    sumLabel: string,
+    debtStyle = false,
+  ) => {
+    if (rows.length === 0) return null;
+    return (
+      <View key={key} style={styles.group}>
+        <View style={styles.groupHeader}>
+          <View style={styles.groupHeaderLeft}>
+            <View style={[styles.groupIconBadge, { backgroundColor: isDark ? `${accent}33` : `${accent}18` }]}>
+              <MaterialIcons name={icon} size={16} color={accent} />
+            </View>
+            <Text style={[Typography.title, { color: debtStyle ? colors.danger : colors.text }]}>{title}</Text>
+            <Text style={[Typography.caption, { color: colors.textMuted }]}>{rows.length}</Text>
+          </View>
+          <Text style={[styles.groupSum, { color: debtStyle ? colors.danger : accent }]}>{sumLabel}</Text>
+        </View>
+
+        <View
+          style={[
+            styles.groupPanel,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.outline,
+            },
+            debtStyle && {
+              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(220,38,38,0.06)',
+              borderColor: isDark ? 'rgba(248,113,113,0.28)' : 'rgba(220,38,38,0.18)',
+            },
+          ]}>
+          {rows.map((acc, index) => (
+            <Pressable
+              key={acc.id}
+              onPress={() => openAccountDetail(acc)}
+              accessibilityRole="button"
+              accessibilityLabel={`${acc.name} ${formatAccountRowBalance(acc)}`}
+              style={({ pressed }) => [
+                styles.accountRow,
+                index < rows.length - 1
+                  ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.outline }
+                  : null,
+                pressed && { opacity: 0.82, backgroundColor: colors.surfaceMuted },
+              ]}>
+              <View style={[styles.accountIconBox, { backgroundColor: isDark ? colors.surfaceMuted : colors.input }]}>
+                <MaterialIcons name={accountIcon(acc)} size={20} color={accent} />
+              </View>
+              <View style={styles.accountTextCol}>
+                <Text style={[Typography.bodyStrong, { color: colors.text }]} numberOfLines={1}>
+                  {acc.name}
+                </Text>
+                {acc.account_no ? (
+                  <Text style={[Typography.caption, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {acc.account_no}
+                  </Text>
+                ) : null}
+              </View>
+              <Text
+                style={[
+                  Typography.title,
+                  styles.accountAmount,
+                  { color: debtStyle || isLiabilityAccount(acc) ? colors.danger : colors.text },
+                ]}>
+                {formatAccountRowBalance(acc)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  const hasAnyAccount = accounts.length > 0;
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right']}>
       <ScreenHeader
@@ -353,435 +546,267 @@ export default function AssetsScreen() {
         }
       />
 
-      <ScrollView
-        refreshControl={refreshControl}
-        contentContainerStyle={[
-          styles.content,
-          {
-            paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md),
-            maxWidth: Layout.contentMaxWidth,
-            alignSelf: 'center',
-            width: '100%',
-          },
-        ]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled">
-        <View style={styles.hero}>
-          <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>当前净资产</Text>
-          <View style={styles.heroRow}>
-            <Text style={[Typography.display, styles.netWorth, { color: netWorth < 0 ? colors.danger : colors.text }]}>
-              {formatSignedMoneyTrunc2(netWorth)}
-            </Text>
-            <Pressable
-              onPress={() => router.push('/cash-flow')}
-              style={({ pressed }) => [
-                styles.trendPill,
-                { backgroundColor: isDark ? 'rgba(52,211,153,0.2)' : 'rgba(0,108,73,0.1)' },
-                pressed && { opacity: 0.8 },
+      <View style={styles.body}>
+        {skeletonMounted ? (
+          <Animated.View
+            pointerEvents={initialLoadPending ? 'auto' : 'none'}
+            style={[StyleSheet.absoluteFill, { opacity: skeletonOpacity, zIndex: 2 }]}>
+            <ScrollView
+              contentContainerStyle={[
+                styles.content,
+                {
+                  paddingBottom: scrollBottomPad,
+                  maxWidth: Layout.contentMaxWidth,
+                  alignSelf: 'center',
+                  width: '100%',
+                },
+              ]}
+              showsVerticalScrollIndicator={false}>
+              <AssetsPageSkeleton colors={colors} />
+            </ScrollView>
+          </Animated.View>
+        ) : null}
+
+        <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
+          <ScrollView
+            refreshControl={refreshControl}
+            contentContainerStyle={[
+              styles.content,
+              {
+                paddingBottom: scrollBottomPad,
+                maxWidth: Layout.contentMaxWidth,
+                alignSelf: 'center',
+                width: '100%',
+              },
+            ]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled">
+            <View style={styles.hero}>
+              <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>当前净资产</Text>
+              <View style={styles.heroRow}>
+                <Text
+                  style={[
+                    Typography.display,
+                    styles.netWorth,
+                    { color: netWorth < 0 ? colors.danger : colors.text, fontSize: 40, lineHeight: 48 },
+                  ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}>
+                  {formatSignedMoneyTrunc2(netWorth)}
+                </Text>
+                <Pressable
+                  onPress={() => router.push('/cash-flow')}
+                  accessibilityRole="button"
+                  accessibilityLabel={`本月净资产趋势 ${trendLabel}`}
+                  style={({ pressed }) => [styles.trendPill, { backgroundColor: trendBg }, pressed && { opacity: 0.8 }]}>
+                  <MaterialIcons name={trendIcon} size={16} color={trendColor} />
+                  <Text style={[Typography.bodyStrong, { color: trendColor }]}>{trendLabel}</Text>
+                </Pressable>
+              </View>
+              {monthTrend.hasActivity && Math.abs(monthTrend.delta) >= 0.01 ? (
+                <Text style={[Typography.caption, { color: colors.textMuted }]}>
+                  本月 {monthTrend.delta >= 0 ? '+' : '−'}
+                  {formatMoney2(Math.abs(monthTrend.delta))}
+                </Text>
+              ) : (
+                <Text style={[Typography.caption, { color: colors.textMuted }]}>相对月初净资产变化 · 点按查看现金流</Text>
+              )}
+
+              <View style={styles.totalsRow}>
+                <View style={[styles.totalChip, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
+                  <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总资产</Text>
+                  <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney2(totalAssets)}</Text>
+                </View>
+                <View style={[styles.totalChip, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
+                  <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总负债</Text>
+                  <Text style={[Typography.bodyStrong, { color: colors.danger }]}>
+                    {formatMoney2(totalLiabilitiesAbs)}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View
+              style={[
+                styles.allocPanel,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.outline,
+                },
+                shadows.card,
               ]}>
-              <MaterialIcons name="trending-up" size={16} color={colors.secondary} />
-              <Text style={[Typography.bodyStrong, { color: colors.secondary }]}>2.4%</Text>
-            </Pressable>
-          </View>
+              <View style={styles.allocHeader}>
+                <Text style={[Typography.h3, { color: colors.text }]}>资产配置</Text>
+                {hasAssets ? (
+                  <Text style={[Typography.caption, { color: colors.textMuted }]}>按账户占比</Text>
+                ) : null}
+              </View>
 
-          <View style={styles.totalsRow}>
-            <View style={styles.totalBlock}>
-              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总资产</Text>
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney2(totalAssets)}</Text>
-            </View>
-            <View style={[styles.vDivider, { backgroundColor: colors.outline }]} />
-            <View style={styles.totalBlock}>
-              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>总负债</Text>
-              <Text style={[Typography.bodyStrong, { color: colors.danger }]}>{formatMoney2(totalLiabilitiesAbs)}</Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.bento}>
-          <AppCard style={shadows.card}>
-            <Text style={[Typography.h3, styles.cardTitle, { color: colors.text }]}>资产配置</Text>
-            <View style={styles.assetRow}>
-              <View style={styles.ringWrap}>
-                <Svg width={ringSize} height={ringSize} viewBox={`0 0 ${ringSize} ${ringSize}`} style={{ transform: [{ rotate: '-90deg' }] }}>
-                  <Circle cx={ringSize / 2} cy={ringSize / 2} r={r} stroke={colors.progressTrack} strokeWidth={2} fill="none" />
-                  {(() => {
-                    let offsetRatio = 0;
-                    return ringSegments.map((seg) => {
-                      const pct = hasAssets ? seg.amount / totalAssets : 0;
-                      const node = (
-                        <Circle
+              {allocSegments.length === 0 ? (
+                <Text style={[Typography.body, { color: colors.textSecondary, marginTop: Spacing.xl }]}>
+                  暂无资产分布，添加账户后将在此展示
+                </Text>
+              ) : (
+                <>
+                  <View style={[styles.stackBar, { backgroundColor: colors.progressTrack }]}>
+                    {allocSegments.map((seg) => {
+                      const flex = hasAssets ? Math.max(seg.amount / totalAssets, 0.02) : 1;
+                      return (
+                        <View
                           key={seg.key}
-                          cx={ringSize / 2}
-                          cy={ringSize / 2}
-                          r={r}
-                          stroke={seg.color}
-                          strokeWidth={ringStroke}
-                          strokeDasharray={dash(pct)}
-                          strokeDashoffset={0}
-                          fill="none"
-                          transform={`rotate(${offsetRatio * 360} ${ringSize / 2} ${ringSize / 2})`}
+                          style={{
+                            flex,
+                            backgroundColor: seg.color,
+                            minWidth: 4,
+                          }}
                         />
                       );
-                      offsetRatio += pct;
-                      return node;
-                    });
-                  })()}
-                </Svg>
-                <Text style={[Typography.title, styles.ringText, { color: colors.text }]}>{ringPct}%</Text>
-              </View>
+                    })}
+                  </View>
 
-              <View style={styles.legend}>
-                {ringSegments.length === 0 ? (
-                  <Text style={[Typography.body, { color: colors.textSecondary }]}>暂无资产分布</Text>
-                ) : (
-                  ringSegments.map((seg) => {
-                    const pct = hasAssets ? Math.round((seg.amount / totalAssets) * 100) : 0;
-                    return (
-                      <View key={seg.key} style={styles.legendRow}>
-                        <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
-                        <Text style={[Typography.body, { color: colors.text, flexShrink: 1 }]} numberOfLines={1}>
-                          {seg.label} ({pct}%)
-                        </Text>
-                      </View>
-                    );
-                  })
+                  <View style={styles.legend}>
+                    {allocSegments.map((seg) => {
+                      const pct = hasAssets ? Math.round((seg.amount / totalAssets) * 100) : 0;
+                      return (
+                        <Pressable
+                          key={seg.key}
+                          onPress={() => openAccountDetail(seg.account)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${seg.label} ${pct}% ${formatMoney2(seg.amount)}`}
+                          style={({ pressed }) => [styles.legendRow, pressed && { opacity: 0.75 }]}>
+                          <View style={styles.legendLeft}>
+                            <View style={[styles.legendDot, { backgroundColor: seg.color }]} />
+                            <Text style={[Typography.body, { color: colors.text, flexShrink: 1 }]} numberOfLines={1}>
+                              {seg.label}
+                            </Text>
+                            <Text style={[Typography.caption, { color: colors.textMuted }]}>{pct}%</Text>
+                          </View>
+                          <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatMoney2(seg.amount)}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </>
+              )}
+            </View>
+
+            {!hasAnyAccount ? (
+              <View
+                style={[
+                  styles.emptyPanel,
+                  { backgroundColor: colors.surface, borderColor: colors.outline },
+                ]}>
+                <View style={[styles.emptyIconWrap, { backgroundColor: colors.primaryMuted }]}>
+                  <MaterialIcons name="account-balance-wallet" size={28} color={colors.primary} />
+                </View>
+                <Text style={[Typography.h3, { color: colors.text, textAlign: 'center' }]}>还没有账户</Text>
+                <Text style={[Typography.body, { color: colors.textSecondary, textAlign: 'center' }]}>
+                  添加现金、银行卡或投资账户后，这里会汇总你的净资产与配置
+                </Text>
+                <Pressable
+                  onPress={() => router.push('/add-account')}
+                  style={({ pressed }) => [
+                    styles.emptyCta,
+                    { backgroundColor: colors.primary },
+                    pressed && { opacity: 0.88 },
+                  ]}>
+                  <MaterialIcons name="add" size={18} color="#fff" />
+                  <Text style={[Typography.bodyStrong, { color: '#fff' }]}>添加账户</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.accounts}>
+                {renderAccountGroup(
+                  'cash',
+                  '现金与钱包',
+                  'wallet',
+                  assetSegmentColors.cash,
+                  grouped.cash_wallet,
+                  formatMoney2(sumAssetBalanceForDisplay(grouped.cash_wallet)),
+                )}
+                {renderAccountGroup(
+                  'bank',
+                  '银行账户',
+                  'account-balance',
+                  colors.primary,
+                  grouped.bank,
+                  formatMoney2(sumAssetBalanceForDisplay(grouped.bank)),
+                )}
+                {renderAccountGroup(
+                  'invest',
+                  '投资项目',
+                  'show-chart',
+                  colors.secondary,
+                  grouped.investment,
+                  formatMoney2(sumAssetBalanceForDisplay(grouped.investment)),
+                )}
+                {customTypeGroups.map((g) =>
+                  renderAccountGroup(
+                    `custom-${g.name}`,
+                    g.name,
+                    'tune',
+                    colors.textSecondary,
+                    g.rows,
+                    formatMoney2(groupMixedLedgerSum(g.rows)),
+                  ),
+                )}
+                {grouped.unknown.length > 0
+                  ? renderAccountGroup(
+                      'unknown',
+                      '其他',
+                      'more-horiz',
+                      colors.textSecondary,
+                      grouped.unknown,
+                      formatMoney2(groupMixedLedgerSum(grouped.unknown)),
+                    )
+                  : null}
+                {renderAccountGroup(
+                  'liability',
+                  '负债',
+                  'credit-card-off',
+                  colors.danger,
+                  grouped.liability,
+                  formatDebtMoney2(sumLiabilityDebtMagnitudes(grouped.liability)),
+                  true,
                 )}
               </View>
-            </View>
-          </AppCard>
-        </View>
-
-        <View style={styles.accounts}>
-          <View style={styles.addAccountRow}>
-            <Pressable
-              onPress={() => router.push('/add-account')}
-              style={({ pressed }) => [styles.addAccountBtn, { backgroundColor: colors.primaryMuted }, pressed && { opacity: 0.85 }]}>
-              <MaterialIcons name="add" size={18} color={colors.primary} />
-              <Text style={[Typography.bodyStrong, { color: colors.primary }]}>添加新账户</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.group}>
-            <View style={styles.groupHeader}>
-              <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="wallet" size={20} color={assetSegmentColors.cash} />
-                <Text style={[Typography.title, { color: colors.text }]}>现金与钱包</Text>
-              </View>
-              <Text style={[styles.groupSum, { color: assetSegmentColors.cash }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.cash_wallet))}</Text>
-            </View>
-
-            {grouped.cash_wallet.length === 0 ? (
-              <Pressable
-                onPress={() => router.push('/add-account')}
-                style={({ pressed }) => [
-                  styles.accountRow,
-                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: assetSegmentColors.cash },
-                  pressed && { opacity: 0.85 },
-                ]}>
-                <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="add" size={20} color={assetSegmentColors.cash} />
-                  </View>
-                  <View>
-                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
-                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>创建你的第一个账户</Text>
-                  </View>
-                </View>
-              </Pressable>
-            ) : (
-              grouped.cash_wallet.map((acc) => (
-                <Pressable
-                  key={acc.id}
-                  onPress={() => openAccountDetail(acc)}
-                  style={({ pressed }) => [
-                    styles.accountRow,
-                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: assetSegmentColors.cash },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={assetSegmentColors.cash} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '现金/钱包'}</Text>
-                    </View>
-                  </View>
-                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
-                </Pressable>
-              ))
             )}
-          </View>
+          </ScrollView>
+        </Animated.View>
 
-          <View style={styles.group}>
-            <View style={styles.groupHeader}>
-              <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="account-balance" size={20} color={colors.primary} />
-                <Text style={[Typography.title, { color: colors.text }]}>银行账户</Text>
-              </View>
-              <Text style={[styles.groupSum, { color: colors.primary }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.bank))}</Text>
-            </View>
-
-            {grouped.bank.length === 0 ? (
-              <Pressable
-                onPress={() => router.push('/add-account')}
-                style={({ pressed }) => [
-                  styles.accountRow,
-                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.primary },
-                  pressed && { opacity: 0.85 },
-                ]}>
-                <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="add" size={20} color={colors.primary} />
-                  </View>
-                  <View>
-                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
-                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>添加银行卡/储蓄账户</Text>
-                  </View>
-                </View>
-              </Pressable>
-            ) : (
-              grouped.bank.map((acc) => (
-                <Pressable
-                  key={acc.id}
-                  onPress={() => openAccountDetail(acc)}
-                  style={({ pressed }) => [
-                    styles.accountRow,
-                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.primary },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.primary} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '银行账户'}</Text>
-                    </View>
-                  </View>
-                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-
-          <View style={styles.group}>
-            <View style={styles.groupHeader}>
-              <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="show-chart" size={20} color={colors.secondary} />
-                <Text style={[Typography.title, { color: colors.text }]}>投资项目</Text>
-              </View>
-              <Text style={[styles.groupSum, { color: colors.secondary }]}>{formatMoney2(sumAssetBalanceForDisplay(grouped.investment))}</Text>
-            </View>
-
-            {grouped.investment.length === 0 ? (
-              <Pressable
-                onPress={() => router.push('/add-account')}
-                style={({ pressed }) => [
-                  styles.accountRow,
-                  { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.secondary },
-                  pressed && { opacity: 0.85 },
-                ]}>
-                <View style={styles.accountLeft}>
-                  <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="add" size={20} color={colors.secondary} />
-                  </View>
-                  <View>
-                    <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
-                    <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>添加基金/股票/理财</Text>
-                  </View>
-                </View>
-              </Pressable>
-            ) : (
-              grouped.investment.map((acc) => (
-                <Pressable
-                  key={acc.id}
-                  onPress={() => openAccountDetail(acc)}
-                  style={({ pressed }) => [
-                    styles.accountRow,
-                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.secondary },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.secondary} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '投资账户'}</Text>
-                    </View>
-                  </View>
-                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
-                </Pressable>
-              ))
-            )}
-          </View>
-
-          {customTypeGroups.map((g) => (
-            <View key={`custom-group-${g.name}`} style={styles.group}>
-              <View style={styles.groupHeader}>
-                <View style={styles.groupHeaderLeft}>
-                  <MaterialIcons name="tune" size={20} color={colors.textSecondary} />
-                  <Text style={[Typography.title, { color: colors.text }]}>{g.name}</Text>
-                </View>
-                <Text style={[styles.groupSum, { color: colors.textSecondary }]}>{formatMoney0(groupMixedLedgerSum(g.rows))}</Text>
-              </View>
-
-              {g.rows.length === 0 ? (
-                <Pressable
-                  onPress={() => router.push('/add-account')}
-                  style={({ pressed }) => [
-                    styles.accountRow,
-                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name="add" size={20} color={colors.textSecondary} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加账户</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>类型：{g.name}</Text>
-                    </View>
-                  </View>
-                </Pressable>
-              ) : (
-                g.rows.map((acc) => (
-                  <Pressable
-                    key={acc.id}
-                    onPress={() => openAccountDetail(acc)}
-                    style={({ pressed }) => [
-                      styles.accountRow,
-                      { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
-                      pressed && { opacity: 0.85 },
-                    ]}>
-                    <View style={styles.accountLeft}>
-                      <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                        <MaterialIcons name={accountIcon(acc)} size={20} color={colors.textSecondary} />
-                      </View>
-                      <View>
-                        <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                        <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : g.name}</Text>
-                      </View>
-                    </View>
-                    <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
-                  </Pressable>
-                ))
-              )}
-            </View>
-          ))}
-
-          {grouped.unknown.length > 0 ? (
-            <View style={styles.group}>
-              <View style={styles.groupHeader}>
-                <View style={styles.groupHeaderLeft}>
-                  <MaterialIcons name="tune" size={20} color={colors.textSecondary} />
-                  <Text style={[Typography.title, { color: colors.text }]}>其他</Text>
-                </View>
-                <Text style={[styles.groupSum, { color: colors.textSecondary }]}>{formatMoney0(groupMixedLedgerSum(grouped.unknown))}</Text>
-              </View>
-
-              {grouped.unknown.map((acc) => (
-                <Pressable
-                  key={acc.id}
-                  onPress={() => openAccountDetail(acc)}
-                  style={({ pressed }) => [
-                    styles.accountRow,
-                    { backgroundColor: isDark ? colors.surfaceMuted : colors.input, borderLeftColor: colors.outline },
-                    pressed && { opacity: 0.85 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={20} color={colors.textSecondary} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '其他'}</Text>
-                    </View>
-                  </View>
-                  <Text style={[Typography.title, styles.accountAmount, { color: colors.text }]}>{formatAccountRowBalance(acc)}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : null}
-
-          <View style={[styles.group, styles.liabilityGroup, { borderTopColor: colors.outline }]}>
-            <View style={styles.groupHeader}>
-              <View style={styles.groupHeaderLeft}>
-                <MaterialIcons name="credit-card-off" size={20} color={colors.danger} />
-                <Text style={[Typography.title, { color: colors.danger }]}>负债</Text>
-              </View>
-              <Text style={[styles.groupSum, { color: colors.danger }]}>{formatDebtMoney2(sumLiabilityDebtMagnitudes(grouped.liability))}</Text>
-            </View>
-
-            <View style={styles.debtList}>
-              {grouped.liability.length === 0 ? (
-                <Pressable
-                  onPress={() => router.push('/add-account')}
-                  style={({ pressed }) => [
-                    styles.debtRow,
-                    {
-                      backgroundColor: isDark ? 'rgba(220,38,38,0.2)' : 'rgba(220,38,38,0.1)',
-                      borderLeftColor: colors.danger,
-                    },
-                    pressed && { opacity: 0.9 },
-                  ]}>
-                  <View style={styles.accountLeft}>
-                    <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name="add" size={20} color={colors.danger} />
-                    </View>
-                    <View>
-                      <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>添加负债</Text>
-                      <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>信用卡/贷款等</Text>
-                    </View>
-                  </View>
-                </Pressable>
-              ) : (
-                grouped.liability.map((acc) => (
-                  <Pressable
-                    key={acc.id}
-                    onPress={() => openAccountDetail(acc)}
-                    style={({ pressed }) => [
-                      styles.debtRow,
-                      {
-                      backgroundColor: isDark ? 'rgba(220,38,38,0.2)' : 'rgba(220,38,38,0.1)',
-                      borderLeftColor: colors.danger,
-                    },
-                      pressed && { opacity: 0.9 },
-                    ]}>
-                    <View style={styles.accountLeft}>
-                      <View style={[styles.accountIconBox, { backgroundColor: colors.surface }]}>
-                        <MaterialIcons name={accountIcon(acc)} size={20} color={colors.danger} />
-                      </View>
-                      <View>
-                        <Text style={[Typography.bodyStrong, styles.accountName, { color: colors.text }]}>{acc.name}</Text>
-                        <Text style={[Typography.caption, styles.accountMeta, { color: colors.textSecondary }]}>{acc.account_no ? acc.account_no : '负债账户'}</Text>
-                      </View>
-                    </View>
-                    <Text style={[Typography.title, styles.accountAmount, { color: colors.danger }]}>{formatAccountRowBalance(acc)}</Text>
-                  </Pressable>
-                ))
-              )}
-            </View>
-          </View>
-        </View>
-
-      </ScrollView>
+        <Pressable
+          onPress={() => router.push('/add-account')}
+          accessibilityRole="button"
+          accessibilityLabel="添加账户"
+          style={({ pressed }) => [
+            styles.fab,
+            {
+              bottom: fabBottom,
+              backgroundColor: colors.primary,
+              shadowColor: isDark ? '#000' : colors.primary,
+            },
+            pressed && { opacity: 0.9, transform: [{ scale: 0.96 }] },
+          ]}>
+          <MaterialIcons name="add" size={28} color="#fff" />
+        </Pressable>
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  body: { flex: 1 },
   content: {
     paddingHorizontal: Spacing['5xl'],
     paddingTop: Spacing['3xl'],
-    gap: Spacing['4xl'],
+    gap: Spacing['5xl'],
   },
+  skeletonWrap: { gap: Spacing['5xl'] },
   hero: {
-    gap: Spacing.lg,
+    gap: Spacing.md,
     paddingTop: Spacing.sm,
-    paddingBottom: Spacing.lg,
   },
   heroKicker: {
     letterSpacing: 1.2,
@@ -790,12 +815,13 @@ const styles = StyleSheet.create({
   },
   heroRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: Spacing.lg,
     flexWrap: 'wrap',
   },
   netWorth: {
     flexShrink: 1,
+    minWidth: 0,
   },
   trendPill: {
     flexDirection: 'row',
@@ -807,87 +833,149 @@ const styles = StyleSheet.create({
   },
   totalsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing['3xl'],
-    marginTop: Spacing.xs,
+    gap: Spacing.xl,
+    marginTop: Spacing.lg,
   },
-  totalBlock: { gap: Spacing.xs },
+  totalChip: {
+    flex: 1,
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing.xl,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   totalLabel: {
     letterSpacing: 1.2,
-    fontSize: 12,
+    fontSize: 11,
     textTransform: 'none',
   },
-  vDivider: { width: StyleSheet.hairlineWidth, height: 28, borderRadius: Radius.xs },
-  bento: { gap: Spacing.xl },
-  cardTitle: { marginBottom: Spacing['2xl'] },
-  assetRow: {
+  allocPanel: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+    gap: Spacing['3xl'],
+  },
+  allocHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: Spacing.lg,
+  },
+  stackBar: {
+    height: 12,
+    borderRadius: Radius.pill,
+    overflow: 'hidden',
+    flexDirection: 'row',
+  },
+  legend: { gap: Spacing.lg },
+  legendRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: Spacing['4xl'],
+    gap: Spacing.xl,
   },
-  ringWrap: { width: 128, height: 128, alignItems: 'center', justifyContent: 'center' },
-  ringText: { position: 'absolute' },
-  legend: { flex: 1, gap: Spacing.lg },
-  legendRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
-  legendDot: { width: 10, height: 10, borderRadius: 5 },
-  accounts: { gap: Spacing['4xl'] },
-  addAccountRow: { alignItems: 'flex-end' },
-  addAccountBtn: {
+  legendLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
-    paddingHorizontal: Spacing['3xl'],
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.pill,
+    flex: 1,
+    minWidth: 0,
   },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  accounts: { gap: Spacing['4xl'] },
   group: { gap: Spacing.xl },
-  liabilityGroup: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: Spacing['4xl'],
-  },
-  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  groupHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  groupSum: {
-    ...Typography.kicker,
-    letterSpacing: 1.6,
-    fontSize: 12,
-  },
-  accountRow: {
-    borderRadius: Radius.xl,
-    padding: Spacing['2xl'],
+  groupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderLeftWidth: 4,
+    gap: Spacing.lg,
+    paddingHorizontal: Spacing.xs,
   },
-  accountLeft: {
+  groupHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    flex: 1,
+    minWidth: 0,
+  },
+  groupIconBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  groupSum: {
+    ...Typography.kicker,
+    letterSpacing: 0.6,
+    fontSize: 12,
+    textTransform: 'none',
+  },
+  groupPanel: {
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  accountRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xl,
-    flex: 1,
-    paddingRight: Spacing.xl,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing['2xl'],
+    minHeight: 56,
   },
   accountIconBox: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  accountName: { marginBottom: 2 },
-  accountMeta: {},
-  accountAmount: {},
-  debtList: {
-    gap: Spacing.lg,
-    opacity: 0.92,
+  accountTextCol: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
-  debtRow: {
-    borderRadius: Radius.xl,
-    padding: Spacing['2xl'],
+  accountAmount: {
+    fontVariant: ['tabular-nums'],
+  },
+  emptyPanel: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing['5xl'],
+    paddingVertical: Spacing['6xl'],
+    alignItems: 'center',
+    gap: Spacing.xl,
+  },
+  emptyIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.sm,
+  },
+  emptyCta: {
+    marginTop: Spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    borderLeftWidth: 4,
+    gap: Spacing.md,
+    paddingHorizontal: Spacing['4xl'],
+    paddingVertical: Spacing.xl,
+    borderRadius: Radius.pill,
+  },
+  fab: {
+    position: 'absolute',
+    right: Spacing['5xl'],
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 6,
+    zIndex: 8,
   },
 });

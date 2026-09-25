@@ -9,7 +9,7 @@ import {
   IngredientInputs,
   trimIngredientRows,
 } from '@/components/recipe/ingredient-inputs';
-import { Colors } from '@/constants/theme';
+import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
@@ -22,6 +22,7 @@ import {
   type RecipeCategory,
   type RecipeIngredient,
 } from '@/lib/recipes';
+import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -60,25 +61,15 @@ export default function RecipeEditScreen() {
   const isNew = id === 'new';
 
   const colorScheme = useColorScheme();
-  const scheme = (colorScheme ?? 'light') as 'light' | 'dark';
-  const theme = Colors[scheme];
-  const isDark = colorScheme === 'dark';
-
-  const bg = isDark ? theme.background : '#faf8ff';
-  const text = isDark ? theme.text : '#131b2e';
-  const outline = isDark ? 'rgba(148,163,184,0.9)' : '#424754';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const borderSoft = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)';
-  const inputBg = isDark ? 'rgba(15,23,42,0.5)' : '#ffffff';
-  const headerBg = isDark ? 'rgba(15,23,42,0.96)' : 'rgba(255,255,255,0.96)';
-  const accent = isDark ? '#fb923c' : '#ea580c';
-  const cardBg = isDark ? '#1e293b' : '#ffffff';
+  const p = getRecipePalette(colorScheme);
 
   const [categories, setCategories] = useState<RecipeCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [categoryModalVisible, setCategoryModalVisible] = useState(false);
   const [title, setTitle] = useState('');
-  const [ingredientRows, setIngredientRows] = useState<RecipeIngredient[]>([{ name: '', amount: '', remark: '' }]);
+  const [ingredientRows, setIngredientRows] = useState<RecipeIngredient[]>([
+    { name: '', amount: '', remark: '' },
+  ]);
   const [stepLines, setStepLines] = useState<string[]>(['']);
   const [notes, setNotes] = useState('');
   const [finishedImageUri, setFinishedImageUri] = useState<string | null>(null);
@@ -117,7 +108,9 @@ export default function RecipeEditScreen() {
       setSelectedCategoryId(row.category_id);
       setTitle(row.title);
       setIngredientRows(
-        ensureMinIngredientRows(row.ingredients.length > 0 ? row.ingredients : [{ name: '', amount: '', remark: '' }]),
+        ensureMinIngredientRows(
+          row.ingredients.length > 0 ? row.ingredients : [{ name: '', amount: '', remark: '' }],
+        ),
       );
       setStepLines(ensureMinLines(row.steps.length > 0 ? row.steps : linesFromLegacyText('')));
       setNotes(row.notes ?? '');
@@ -165,7 +158,7 @@ export default function RecipeEditScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
-      aspect: [4, 3],
+      aspect: [1, 1],
       quality: 0.88,
     });
     if (!result.canceled && result.assets[0]?.uri) {
@@ -247,14 +240,14 @@ export default function RecipeEditScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: bg }]}>
+    <View style={[styles.container, { backgroundColor: p.bg }]}>
       <View
         style={[
           styles.topBarWrap,
           {
             paddingTop: insets.top,
-            backgroundColor: headerBg,
-            borderBottomColor: borderSoft,
+            backgroundColor: p.header,
+            borderBottomColor: p.border,
           },
         ]}
       >
@@ -262,18 +255,29 @@ export default function RecipeEditScreen() {
           <Pressable
             style={({ pressed }) => [
               styles.headerIconBtn,
-              { backgroundColor: isDark ? 'rgba(30,41,59,0.6)' : '#fff', opacity: pressed || saving ? 0.7 : 1 },
+              {
+                backgroundColor: p.card,
+                borderColor: p.border,
+                opacity: pressed || saving ? 0.7 : 1,
+              },
             ]}
             onPress={() => router.back()}
             disabled={saving}
           >
-            <MaterialIcons name="arrow-back-ios-new" size={18} color={primary} />
+            <MaterialIcons name="arrow-back-ios-new" size={18} color={p.primary} />
           </Pressable>
-          <Text style={[styles.topBarTitle, { color: text }]}>{isNew ? '新建菜谱' : '编辑菜谱'}</Text>
+          <View style={styles.headerCenter}>
+            <Text style={[styles.topBarTitle, { color: p.text }]}>
+              {isNew ? '写进菜谱本' : '改一改'}
+            </Text>
+            <Text style={[styles.topBarSub, { color: p.textSecondary }]}>
+              {isNew ? '成品图越清楚越好吃' : '保存后立刻更新'}
+            </Text>
+          </View>
           <Pressable
             style={({ pressed }) => [
               styles.saveBtnPill,
-              { backgroundColor: primary, opacity: pressed || saving || loading ? 0.65 : 1 },
+              { backgroundColor: p.primary, opacity: pressed || saving || loading ? 0.65 : 1 },
             ]}
             onPress={() => void onSave()}
             disabled={saving || loading}
@@ -289,7 +293,7 @@ export default function RecipeEditScreen() {
 
       {loading ? (
         <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color={primary} />
+          <ActivityIndicator size="large" color={p.primary} />
         </View>
       ) : (
         <KeyboardAvoidingView
@@ -306,123 +310,129 @@ export default function RecipeEditScreen() {
             ]}
             showsVerticalScrollIndicator={false}
           >
-            <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-            <Text style={[styles.sectionLabel, { color: text }]}>成品图</Text>
-            {finishedImageUri ? (
-              <View style={styles.imageBlock}>
-                <Image source={{ uri: finishedImageUri }} style={styles.previewImage} contentFit="cover" />
-                <View style={styles.imageActions}>
-                  <Pressable
-                    onPress={() => void pickFinishedImage()}
-                    style={({ pressed }) => [styles.imageActionBtn, { opacity: pressed ? 0.85 : 1 }]}
-                  >
-                    <MaterialIcons name="photo-library" size={20} color={primary} />
-                    <Text style={{ color: primary, fontWeight: '700', fontSize: 13 }}>更换</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={clearFinishedImage}
-                    style={({ pressed }) => [styles.imageActionBtn, { opacity: pressed ? 0.85 : 1 }]}
-                  >
-                    <MaterialIcons name="delete-outline" size={20} color={isDark ? '#f87171' : '#b91c1c'} />
-                    <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700', fontSize: 13 }}>
-                      移除
-                    </Text>
-                  </Pressable>
+            <RecipeMotionPressable
+              enterDelay={40}
+              onPress={() => void pickFinishedImage()}
+              style={[styles.heroCard, { backgroundColor: p.card, borderColor: p.border }]}
+            >
+              {finishedImageUri ? (
+                <>
+                  <Image source={{ uri: finishedImageUri }} style={styles.previewImage} contentFit="cover" />
+                  <View style={styles.heroOverlay}>
+                    <View style={[styles.heroChip, { backgroundColor: 'rgba(28,20,16,0.55)' }]}>
+                      <MaterialIcons name="photo-camera" size={16} color="#fff" />
+                      <Text style={styles.heroChipText}>点按更换</Text>
+                    </View>
+                  </View>
+                </>
+              ) : (
+                <View style={[styles.uploadPlaceholder, { backgroundColor: p.placeholderBg }]}>
+                  <View style={[styles.uploadIconRing, { backgroundColor: p.accentSoft }]}>
+                    <MaterialIcons name="add-a-photo" size={28} color={p.accent} />
+                  </View>
+                  <Text style={[styles.uploadTitle, { color: p.text }]}>上传成品图</Text>
+                  <Text style={[styles.uploadHint, { color: p.outlineMuted }]}>正方形裁切 · 列表里更好看</Text>
                 </View>
-              </View>
-            ) : (
+              )}
+            </RecipeMotionPressable>
+
+            {finishedImageUri ? (
+              <Pressable onPress={clearFinishedImage} style={styles.removeImageRow}>
+                <MaterialIcons name="delete-outline" size={18} color={p.danger} />
+                <Text style={{ color: p.danger, fontWeight: '700', fontSize: 13 }}>移除成品图</Text>
+              </Pressable>
+            ) : null}
+
+            <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
+              <Text style={[styles.sectionLabel, { color: p.text }]}>基本信息</Text>
+              <Text style={[styles.label, { color: p.outline }]}>分类</Text>
               <Pressable
-                onPress={() => void pickFinishedImage()}
+                onPress={() => {
+                  if (categories.length === 0) {
+                    Alert.alert('暂无分类', '请先在「我的菜谱」中创建分类');
+                    return;
+                  }
+                  setCategoryModalVisible(true);
+                }}
+                disabled={saving || categories.length === 0}
                 style={({ pressed }) => [
-                  styles.uploadPlaceholder,
-                  { borderColor: borderSoft, opacity: pressed ? 0.88 : 1 },
+                  styles.categoryPicker,
+                  {
+                    borderColor: p.border,
+                    backgroundColor: p.inputBg,
+                    opacity: pressed || saving || categories.length === 0 ? 0.75 : 1,
+                  },
                 ]}
               >
-                <MaterialIcons name="add-a-photo" size={32} color={primary} />
-                <Text style={{ color: outline, fontSize: 13, marginTop: 6 }}>从相册上传成品图</Text>
+                <View style={styles.categoryPickerLeft}>
+                  <MaterialIcons name="auto-stories" size={18} color={p.accent} />
+                  <Text
+                    style={[
+                      styles.categoryPickerText,
+                      { color: selectedCategoryName ? p.text : p.outlineMuted },
+                    ]}
+                  >
+                    {selectedCategoryName || '请选择分类'}
+                  </Text>
+                </View>
+                <MaterialIcons name="expand-more" size={22} color={p.outline} />
               </Pressable>
-            )}
-            </View>
-
-            <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-            <Text style={[styles.sectionLabel, { color: text }]}>基本信息</Text>
-            <Text style={[styles.label, { color: outline }]}>分类</Text>
-            <Pressable
-              onPress={() => {
-                if (categories.length === 0) {
-                  Alert.alert('暂无分类', '请先在「我的菜谱」中创建分类');
-                  return;
-                }
-                setCategoryModalVisible(true);
-              }}
-              disabled={saving || categories.length === 0}
-              style={({ pressed }) => [
-                styles.categoryPicker,
-                {
-                  borderColor: borderSoft,
-                  backgroundColor: inputBg,
-                  opacity: pressed || saving || categories.length === 0 ? 0.75 : 1,
-                },
-              ]}
-            >
-              <View style={styles.categoryPickerLeft}>
-                <MaterialIcons name="folder" size={18} color={accent} />
-                <Text style={[styles.categoryPickerText, { color: selectedCategoryName ? text : outline }]}>
-                  {selectedCategoryName || '请选择分类'}
-                </Text>
-              </View>
-              <MaterialIcons name="expand-more" size={22} color={outline} />
-            </Pressable>
-            <Text style={[styles.label, { color: outline, marginTop: 4 }]}>菜名</Text>
-            <TextInput
-              value={title}
-              onChangeText={x => setTitle(x.length > RECIPE_TITLE_MAX ? x.slice(0, RECIPE_TITLE_MAX) : x)}
-              placeholder="例如：番茄炒蛋"
-              placeholderTextColor={outline}
-              style={[styles.inputSingle, { color: text, borderColor: borderSoft, backgroundColor: inputBg }]}
-            />
-            </View>
-
-            <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-              <IngredientInputs
-                rows={ingredientRows}
-                onChange={setIngredientRows}
-                textColor={text}
-                outlineColor={outline}
-                borderColor={borderSoft}
-                inputBg={inputBg}
-                primary={primary}
+              <Text style={[styles.label, { color: p.outline, marginTop: 4 }]}>菜名</Text>
+              <TextInput
+                value={title}
+                onChangeText={x => setTitle(x.length > RECIPE_TITLE_MAX ? x.slice(0, RECIPE_TITLE_MAX) : x)}
+                placeholder="例如：番茄炒蛋"
+                placeholderTextColor={p.outlineMuted}
+                style={[
+                  styles.inputSingle,
+                  { color: p.text, borderColor: p.border, backgroundColor: p.inputBg },
+                ]}
               />
             </View>
 
-            <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
+            <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
+              <IngredientInputs
+                rows={ingredientRows}
+                onChange={setIngredientRows}
+                textColor={p.text}
+                outlineColor={p.outline}
+                borderColor={p.border}
+                inputBg={p.inputBg}
+                primary={p.primary}
+              />
+            </View>
+
+            <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
               <DynamicLineInputs
                 label="步骤"
                 hint="每行一步，支持随时增删"
                 lines={stepLines}
                 onChange={setStepLines}
                 placeholder="描述本步操作"
-                textColor={text}
-                outlineColor={outline}
-                borderColor={borderSoft}
-                inputBg={inputBg}
-                primary={primary}
+                textColor={p.text}
+                outlineColor={p.outline}
+                borderColor={p.border}
+                inputBg={p.inputBg}
+                primary={p.primary}
                 stepPrefix={i => `${i + 1}.`}
               />
             </View>
 
-            <View style={[styles.formSection, { backgroundColor: cardBg, borderColor: borderSoft }]}>
-            <Text style={[styles.sectionLabel, { color: text }]}>备注</Text>
-            <Text style={[styles.label, { color: outline }]}>可选，最多 {RECIPE_NOTES_MAX} 字</Text>
-            <TextInput
-              value={notes}
-              onChangeText={x => setNotes(x.length > RECIPE_NOTES_MAX ? x.slice(0, RECIPE_NOTES_MAX) : x)}
-              placeholder="火候、替换食材、个人口味等"
-              placeholderTextColor={outline}
-              multiline
-              textAlignVertical="top"
-              style={[styles.inputMulti, { color: text, borderColor: borderSoft, backgroundColor: inputBg }]}
-            />
+            <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
+              <Text style={[styles.sectionLabel, { color: p.text }]}>备注</Text>
+              <Text style={[styles.label, { color: p.outline }]}>可选，最多 {RECIPE_NOTES_MAX} 字</Text>
+              <TextInput
+                value={notes}
+                onChangeText={x => setNotes(x.length > RECIPE_NOTES_MAX ? x.slice(0, RECIPE_NOTES_MAX) : x)}
+                placeholder="火候、替换食材、个人口味等"
+                placeholderTextColor={p.outlineMuted}
+                multiline
+                textAlignVertical="top"
+                style={[
+                  styles.inputMulti,
+                  { color: p.text, borderColor: p.border, backgroundColor: p.inputBg },
+                ]}
+              />
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -434,13 +444,17 @@ export default function RecipeEditScreen() {
         animationType="fade"
         onRequestClose={() => setCategoryModalVisible(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: p.overlay }]} onPress={() => setCategoryModalVisible(false)}>
           <Pressable
             onPress={() => {}}
-            style={[styles.modalCard, { backgroundColor: cardBg, borderColor: borderSoft }]}
+            style={[styles.modalCard, { backgroundColor: p.card, borderColor: p.border }]}
           >
-            <Text style={[styles.modalTitle, { color: text }]}>选择菜谱分类</Text>
-            <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <Text style={[styles.modalTitle, { color: p.text }]}>选择菜谱分类</Text>
+            <ScrollView
+              style={styles.modalList}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               {categories.map(cat => (
                 <Pressable
                   key={cat.id}
@@ -450,16 +464,16 @@ export default function RecipeEditScreen() {
                   }}
                   style={({ pressed }) => [
                     styles.modalItem,
-                    { borderBottomColor: borderSoft },
+                    { borderBottomColor: p.border },
                     pressed && { opacity: 0.8 },
                   ]}
                 >
                   <View style={styles.modalItemLeft}>
-                    <MaterialIcons name="folder" size={18} color={accent} />
-                    <Text style={[styles.modalItemText, { color: text }]}>{cat.name}</Text>
+                    <MaterialIcons name="auto-stories" size={18} color={p.accent} />
+                    <Text style={[styles.modalItemText, { color: p.text }]}>{cat.name}</Text>
                   </View>
                   {selectedCategoryId === cat.id ? (
-                    <MaterialIcons name="check" size={20} color={primary} />
+                    <MaterialIcons name="check" size={20} color={p.primary} />
                   ) : null}
                 </Pressable>
               ))}
@@ -483,53 +497,101 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  topBarTitle: { flex: 1, fontSize: 18, fontWeight: '900', textAlign: 'center' },
+  headerCenter: { flex: 1, gap: 2 },
+  topBarTitle: { fontSize: 18, fontWeight: '900' },
+  topBarSub: { fontSize: 11, fontWeight: '600' },
   saveBtnPill: {
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 11,
+    borderRadius: 14,
     minWidth: 64,
     alignItems: 'center',
   },
   saveBtnPillText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   formSection: {
     borderWidth: 1,
-    borderRadius: 16,
-    padding: 14,
+    borderRadius: 20,
+    padding: 16,
     marginBottom: 12,
     gap: 8,
   },
   sectionLabel: { fontSize: 16, fontWeight: '900', marginBottom: 4 },
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scrollInner: { paddingHorizontal: 18, paddingTop: 16 },
+  scrollInner: { paddingHorizontal: 16, paddingTop: 14 },
+  heroCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  previewImage: { width: '100%', aspectRatio: 1 },
+  heroOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+    padding: 12,
+  },
+  heroChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  heroChipText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  uploadPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    gap: 8,
+  },
+  uploadIconRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  uploadTitle: { fontSize: 16, fontWeight: '900' },
+  uploadHint: { fontSize: 12, fontWeight: '600' },
+  removeImageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 12,
+    paddingVertical: 6,
+  },
   categoryPicker: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 11,
-    minHeight: 44,
+    paddingVertical: 12,
+    minHeight: 46,
   },
   categoryPickerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   categoryPickerText: { fontSize: 15, fontWeight: '600', flex: 1 },
   label: { fontSize: 12, fontWeight: '700', marginBottom: 6 },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
   modalCard: {
     borderWidth: 1,
-    borderRadius: 16,
+    borderRadius: 20,
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 8,
@@ -548,31 +610,18 @@ const styles = StyleSheet.create({
   modalItemText: { fontSize: 15, fontWeight: '600', flex: 1 },
   inputSingle: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingVertical: 12,
     fontSize: 15,
   },
   inputMulti: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 14,
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingVertical: 12,
     fontSize: 15,
     minHeight: 88,
     lineHeight: 22,
   },
-  uploadPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 32,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    backgroundColor: 'transparent',
-  },
-  imageBlock: { gap: 10 },
-  previewImage: { width: '100%', height: 200, borderRadius: 12 },
-  imageActions: { flexDirection: 'row', gap: 16 },
-  imageActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });

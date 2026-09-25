@@ -1,17 +1,13 @@
-// Windows: Metro/Expo SDK 57 can hit EMFILE (too many open files) under
-// concurrent crawl/hash. Patch fs + tighten watch scope before Metro boots.
+// Windows + Expo SDK 57: EMFILE (too many open files) is usually caused by
+// (1) double-watching the project root via watchFolders, (2) unbounded cache I/O,
+// (3) too many transform workers. Fix those before Metro boots.
 const fs = require('fs');
 const path = require('path');
 
 try {
-  // Queues open() when the process hits the FD limit instead of crashing.
   require('graceful-fs').gracefulify(fs);
 } catch {
-  // optional — still ship without it
-}
-
-if (process.platform === 'win32') {
-  process.env.CHOKIDAR_USEPOLLING = process.env.CHOKIDAR_USEPOLLING || '1';
+  // optional — start script also preloads patch-fs.js
 }
 
 const { getDefaultConfig } = require('expo/metro-config');
@@ -43,12 +39,67 @@ if (Array.isArray(existing)) {
   config.resolver.blockList = extraBlockList;
 }
 
-// Keep the watcher rooted on this app only (avoid parent APP folder).
-config.watchFolders = [__dirname];
+// IMPORTANT: do NOT set watchFolders = [__dirname].
+// Metro already watches projectRoot; repeating it doubles the file-map crawl
+// and is a common EMFILE trigger (see facebook/metro#1405).
 
-// Fewer parallel hash/read workers → far less likely to hit EMFILE on Windows.
+const CACHE_IO_CONCURRENCY = Number(process.env.METRO_CACHE_CONCURRENCY) || 32;
+
+function createLimiter(max) {
+  let active = 0;
+  const queue = [];
+
+  const drain = () => {
+    while (active < max && queue.length > 0) {
+      const { fn, resolve, reject } = queue.shift();
+      active++;
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, reject)
+        .then(() => {
+          active--;
+          drain();
+        });
+    }
+  };
+
+  return (fn) =>
+    new Promise((resolve, reject) => {
+      queue.push({ fn, resolve, reject });
+      drain();
+    });
+}
+
+async function withRetry(fn, attempts = 8) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const code = err && err.code;
+      if ((code !== 'EMFILE' && code !== 'ENFILE') || attempt >= attempts) {
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 25 * 2 ** attempt));
+    }
+  }
+}
+
+const limitCacheIO = createLimiter(CACHE_IO_CONCURRENCY);
+
+if (Array.isArray(config.cacheStores)) {
+  for (const store of config.cacheStores) {
+    for (const method of ['get', 'set']) {
+      const original = store[method];
+      if (typeof original !== 'function') continue;
+      store[method] = (...args) =>
+        limitCacheIO(() => withRetry(() => original.apply(store, args)));
+    }
+  }
+}
+
+// Fewer parallel hash/transform workers → far less concurrent open() on Windows.
 if (process.platform === 'win32') {
-  config.maxWorkers = 2;
+  config.maxWorkers = 1;
 }
 
 module.exports = config;

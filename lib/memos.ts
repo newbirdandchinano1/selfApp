@@ -35,6 +35,8 @@ export type MemoItem = {
   body: string;
   dimension_id?: string;
   dimension?: string;
+  /** 置顶：1/true 置顶 */
+  is_pinned?: boolean;
   created_at: string;
   updated_at: string;
   ai_evaluation?: string;
@@ -42,6 +44,8 @@ export type MemoItem = {
   ai_review_at?: string;
   linked_task_id?: string;
 };
+
+export type MemoSortMode = 'updated' | 'created' | 'title';
 
 type MemoDimensionRow = {
   id: string;
@@ -57,6 +61,7 @@ type MemoRow = {
   body: string;
   dimension_id: string | null;
   dimension: string | null;
+  is_pinned?: number | boolean | null;
   ai_evaluation: string | null;
   ai_suggestions: string | null;
   ai_review_at: string | null;
@@ -64,6 +69,11 @@ type MemoRow = {
   created_at: string;
   updated_at: string;
 };
+
+function coercePinned(v: unknown): boolean {
+  if (v === true || v === 1 || v === '1') return true;
+  return false;
+}
 
 function newId(): string {
   return makeTimestampEntityId('', 9);
@@ -103,6 +113,7 @@ function rowToMemo(row: MemoRow): MemoItem {
     body: row.body,
     ...(row.dimension_id?.trim() ? { dimension_id: row.dimension_id.trim() } : {}),
     ...(row.dimension?.trim() ? { dimension: row.dimension.trim() } : {}),
+    ...(coercePinned(row.is_pinned) ? { is_pinned: true } : {}),
     created_at: row.created_at,
     updated_at: row.updated_at,
     ...(row.ai_evaluation?.trim() ? { ai_evaluation: row.ai_evaluation.trim() } : {}),
@@ -126,6 +137,7 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
       const body = typeof r.body === 'string' ? r.body : '';
       const dimension_id = typeof r.dimension_id === 'string' ? r.dimension_id : undefined;
       const dimension = typeof r.dimension === 'string' ? r.dimension : undefined;
+      const is_pinned = coercePinned(r.is_pinned);
       const created_at = typeof r.created_at === 'string' ? r.created_at : '';
       const updated_at = typeof r.updated_at === 'string' ? r.updated_at : '';
       const ai_evaluation = typeof r.ai_evaluation === 'string' ? r.ai_evaluation : undefined;
@@ -139,6 +151,7 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
         body,
         ...(dimension_id != null && dimension_id.trim() !== '' ? { dimension_id: dimension_id.trim() } : {}),
         ...(dimension != null && dimension.trim() !== '' ? { dimension: clampDimension(dimension) } : {}),
+        ...(is_pinned ? { is_pinned: true } : {}),
         created_at,
         updated_at,
         ...(ai_evaluation != null && ai_evaluation !== '' ? { ai_evaluation } : {}),
@@ -214,15 +227,16 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
       }
       await db.runAsync(
         `INSERT INTO memos (
-          id, title, body, dimension_id, dimension, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+          id, title, body, dimension_id, dimension, is_pinned, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
           created_at, updated_at, sync_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           clampTitle(item.title),
           clampBody(item.body),
           dimensionId,
           dimensionName || null,
+          item.is_pinned ? 1 : 0,
           item.ai_evaluation?.trim() || null,
           item.ai_suggestions?.trim() || null,
           item.ai_review_at?.trim() || null,
@@ -381,12 +395,13 @@ async function listMemosFromDb(db: SQLite.SQLiteDatabase, dimensionId?: string):
   const rows = await db.getAllAsync<MemoRow>(
     `SELECT memos.id, memos.title, memos.body, memos.dimension_id,
        COALESCE(memo_dimensions.name, memos.dimension) AS dimension,
+       COALESCE(memos.is_pinned, 0) AS is_pinned,
        memos.ai_evaluation, memos.ai_suggestions, memos.ai_review_at, memos.linked_task_id,
        memos.created_at, memos.updated_at
      FROM memos
      LEFT JOIN memo_dimensions ON memo_dimensions.id = memos.dimension_id
      ${where}
-     ORDER BY memos.updated_at DESC`,
+     ORDER BY COALESCE(memos.is_pinned, 0) DESC, memos.updated_at DESC`,
     dimensionId ? [dimensionId] : [],
   );
   return rows.map(rowToMemo);
@@ -522,82 +537,138 @@ export async function getMemo(id: string): Promise<MemoItem | null> {
   return getMemoFromApi(id);
 }
 
-export async function createMemo(input: { title: string; body: string; dimensionId: string }): Promise<MemoItem> {
+export async function createMemo(input: {
+  title: string;
+  body: string;
+  dimensionId?: string;
+  tagIds?: string[];
+  is_pinned?: boolean;
+}): Promise<MemoItem> {
   const db = await getDatabase();
   await migrateMemosStorageToSqliteIfNeeded(db);
-  const dimension = await db.getFirstAsync<MemoDimensionRow>(
-    'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
-    [input.dimensionId],
-  );
-  if (!dimension) throw new Error('请先选择有效维度');
+  let dimensionId: string | null = null;
+  let dimensionName: string | null = null;
+  const dimId = input.dimensionId?.trim() || '';
+  if (dimId) {
+    const dimension = await db.getFirstAsync<MemoDimensionRow>(
+      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
+      [dimId],
+    );
+    if (!dimension) throw new Error('请先选择有效维度');
+    dimensionId = dimension.id;
+    dimensionName = dimension.name;
+  }
   const now = new Date().toISOString();
+  const pinned = Boolean(input.is_pinned);
   const item: MemoItem = {
     id: newId(),
     title: clampTitle(input.title),
     body: clampBody(input.body),
-    dimension_id: dimension.id,
-    dimension: dimension.name,
+    ...(dimensionId ? { dimension_id: dimensionId } : {}),
+    ...(dimensionName ? { dimension: dimensionName } : {}),
+    ...(pinned ? { is_pinned: true } : {}),
     created_at: now,
     updated_at: now,
   };
   await db.runAsync(
     `INSERT INTO memos (
-      id, title, body, dimension_id, dimension, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+      id, title, body, dimension_id, dimension, is_pinned, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'pending_create')`,
-    [item.id, item.title, item.body, item.dimension_id ?? null, item.dimension ?? null, item.created_at, item.updated_at],
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'pending_create')`,
+    [
+      item.id,
+      item.title,
+      item.body,
+      dimensionId,
+      dimensionName,
+      pinned ? 1 : 0,
+      item.created_at,
+      item.updated_at,
+    ],
   );
   markMemosDirty();
+  if (input.tagIds && input.tagIds.length > 0) {
+    const { setMemoTagIds } = await import('@/lib/repositories/tags/tag');
+    await setMemoTagIds(item.id, input.tagIds);
+    markCloudSqliteTableDirty('tag_links');
+    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+  }
   return item;
 }
 
 export async function updateMemo(
   id: string,
-  patch: { title?: string; body?: string; dimensionId?: string },
+  patch: { title?: string; body?: string; dimensionId?: string | null; tagIds?: string[]; is_pinned?: boolean },
 ): Promise<MemoItem | null> {
   const row = await ensureLocalRowForWrite<MemoRow>('memos', id);
   const prev = row ? rowToMemo(row) : null;
   if (!prev) return null;
   const nextTitle = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
   const nextBody = patch.body !== undefined ? clampBody(patch.body) : prev.body;
-  let nextDimensionId = patch.dimensionId !== undefined ? patch.dimensionId.trim() : prev.dimension_id ?? '';
+  let nextDimensionId =
+    patch.dimensionId !== undefined
+      ? (patch.dimensionId?.trim() || '')
+      : prev.dimension_id ?? '';
   let nextDimension = prev.dimension ?? '';
   const db = await getDatabase();
-  if (nextDimensionId) {
+  if (patch.dimensionId !== undefined) {
+    if (nextDimensionId) {
+      const dim = await db.getFirstAsync<MemoDimensionRow>(
+        'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
+        [nextDimensionId],
+      );
+      if (!dim) throw new Error('请选择有效维度');
+      nextDimensionId = dim.id;
+      nextDimension = dim.name;
+    } else {
+      nextDimensionId = '';
+      nextDimension = '';
+    }
+  } else if (nextDimensionId) {
     const dim = await db.getFirstAsync<MemoDimensionRow>(
       'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
       [nextDimensionId],
     );
-    if (!dim) throw new Error('请选择有效维度');
-    nextDimensionId = dim.id;
-    nextDimension = dim.name;
+    if (dim) {
+      nextDimensionId = dim.id;
+      nextDimension = dim.name;
+    }
   }
+  const nextPinned = patch.is_pinned !== undefined ? Boolean(patch.is_pinned) : Boolean(prev.is_pinned);
   const contentChanged =
     (patch.title !== undefined && nextTitle !== prev.title) ||
     (patch.body !== undefined && nextBody !== prev.body);
   const updated_at = new Date().toISOString();
   if (contentChanged) {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
+      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, is_pinned = ?,
+        ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
         updated_at = ?,
         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
-      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
+      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, nextPinned ? 1 : 0, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, updated_at = ?,
+      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, is_pinned = ?, updated_at = ?,
         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
-      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, updated_at, id],
+      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, nextPinned ? 1 : 0, updated_at, id],
     );
   }
   markMemosDirty();
+  if (patch.tagIds !== undefined) {
+    const { setMemoTagIds } = await import('@/lib/repositories/tags/tag');
+    await setMemoTagIds(id, patch.tagIds);
+    markCloudSqliteTableDirty('tag_links');
+    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+  }
   const next: MemoItem = {
     id: prev.id,
     title: nextTitle,
     body: nextBody,
     ...(nextDimensionId ? { dimension_id: nextDimensionId } : {}),
     ...(nextDimension ? { dimension: nextDimension } : {}),
+    ...(nextPinned ? { is_pinned: true } : {}),
     created_at: prev.created_at,
     updated_at,
   };
@@ -608,6 +679,10 @@ export async function updateMemo(
   }
   if (prev.linked_task_id) next.linked_task_id = prev.linked_task_id;
   return next;
+}
+
+export async function setMemoPinned(id: string, pinned: boolean): Promise<MemoItem | null> {
+  return updateMemo(id, { is_pinned: pinned });
 }
 
 export async function setMemoAiReview(
@@ -695,6 +770,13 @@ export async function deleteMemo(id: string): Promise<boolean> {
     [id],
   );
   if (!row) return false;
+  try {
+    const { softDeleteTagLinksForEntity } = await import('@/lib/repositories/tags/tag');
+    await softDeleteTagLinksForEntity('memo', id);
+    markCloudSqliteTableDirty('tag_links');
+  } catch {
+    /* ignore tag cleanup errors */
+  }
   if (row.sync_status === 'pending_create') {
     await db.runAsync('DELETE FROM memos WHERE id = ?', [id]);
   } else {
@@ -705,6 +787,104 @@ export async function deleteMemo(id: string): Promise<boolean> {
   }
   markMemosDirty();
   return true;
+}
+
+/** 将旧「维度」一次性迁成全局标签并挂到备忘上（幂等） */
+export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteDatabase): Promise<void> {
+  const database = db ?? (await getDatabase());
+  const flag = await database.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['memo_dimensions_to_tags_v1'],
+  );
+  if (flag?.value === '1') return;
+
+  await ensureMemoDimensionsBackfilled(database);
+
+  const dims = await database.getAllAsync<{ id: string; name: string }>(
+    `SELECT id, name FROM memo_dimensions WHERE sync_status != 'pending_delete'`,
+  );
+  if (!dims.length) {
+    await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'memo_dimensions_to_tags_v1',
+      '1',
+    ]);
+    return;
+  }
+
+  const { createTag, getTags, setMemoTagIds, getTagIdsByEntity } = await import(
+    '@/lib/repositories/tags/tag'
+  );
+
+  const existingTags = await getTags();
+  const tagIdByName = new Map(
+    existingTags.map(t => [t.name.trim().toLowerCase(), t.id]),
+  );
+
+  const dimToTag = new Map<string, string>();
+  for (const dim of dims) {
+    const name = clampDimension(dim.name);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    let tagId = tagIdByName.get(key);
+    if (!tagId) {
+      tagId = makeTimestampEntityId('ptag_', 8);
+      await createTag({ id: tagId, name, color: '#64748B' });
+      tagIdByName.set(key, tagId);
+    }
+    dimToTag.set(dim.id, tagId);
+  }
+
+  const memos = await database.getAllAsync<{ id: string; dimension_id: string | null }>(
+    `SELECT id, dimension_id FROM memos WHERE sync_status != 'pending_delete'`,
+  );
+  for (const memo of memos) {
+    const dimId = memo.dimension_id?.trim();
+    if (!dimId) continue;
+    const tagId = dimToTag.get(dimId);
+    if (!tagId) continue;
+    const existing = await getTagIdsByEntity('memo', memo.id);
+    if (existing.includes(tagId)) continue;
+    await setMemoTagIds(memo.id, [...existing, tagId]);
+  }
+
+  await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'memo_dimensions_to_tags_v1',
+    '1',
+  ]);
+  markCloudSqliteTableDirty('tags');
+  markCloudSqliteTableDirty('tag_links');
+  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+}
+
+export function sortMemos(items: MemoItem[], mode: MemoSortMode = 'updated'): MemoItem[] {
+  const pinRank = (m: MemoItem) => (m.is_pinned ? 0 : 1);
+  return [...items].sort((a, b) => {
+    const pin = pinRank(a) - pinRank(b);
+    if (pin !== 0) return pin;
+    if (mode === 'title') {
+      const ta = memoListPreviewTitle(a);
+      const tb = memoListPreviewTitle(b);
+      const c = ta.localeCompare(tb, 'zh-CN');
+      if (c !== 0) return c;
+      return b.updated_at.localeCompare(a.updated_at);
+    }
+    if (mode === 'created') {
+      const c = b.created_at.localeCompare(a.created_at);
+      if (c !== 0) return c;
+      return b.updated_at.localeCompare(a.updated_at);
+    }
+    return b.updated_at.localeCompare(a.updated_at);
+  });
+}
+
+export function memoMatchesSearch(item: MemoItem, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    item.title.toLowerCase().includes(q) ||
+    item.body.toLowerCase().includes(q) ||
+    (item.dimension?.toLowerCase().includes(q) ?? false)
+  );
 }
 
 export function memoListPreviewTitle(row: MemoItem): string {
@@ -739,9 +919,9 @@ export function memoContextForAiReview(row: MemoItem): string {
       })
     : '未知';
   parts.push(
-    `【元信息】标题 ${title.length} 字；正文 ${body.length} 字${bodyLines > 0 ? `（约 ${bodyLines} 段/行）` : ''}；维度 ${dimension || '未设置'}；最近更新 ${updatedLabel}`,
+    `【元信息】标题 ${title.length} 字；正文 ${body.length} 字${bodyLines > 0 ? `（约 ${bodyLines} 段/行）` : ''}；标签维度 ${dimension || '未设置'}；最近更新 ${updatedLabel}`,
   );
-  if (dimension) parts.push(`【维度】\n${dimension}`);
+  if (dimension) parts.push(`【分类】\n${dimension}`);
   if (title) parts.push(`【标题】\n${title}`);
   if (body) parts.push(`【正文】\n${body}`);
   return parts.join('\n\n');

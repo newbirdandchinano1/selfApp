@@ -1,4 +1,4 @@
-import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { AppButton, AppInput, ScreenHeader, Skeleton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -52,11 +52,12 @@ type AccountType = 'cash_wallet' | 'bank' | 'investment' | 'liability' | 'custom
 const BASE_TYPE_OPTIONS: {
   key: Exclude<AccountType, 'custom'>;
   label: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
 }[] = [
-  { key: 'cash_wallet', label: '现金与钱包' },
-  { key: 'bank', label: '银行账户' },
-  { key: 'investment', label: '投资项目' },
-  { key: 'liability', label: '负债' },
+  { key: 'cash_wallet', label: '现金与钱包', icon: 'wallet' },
+  { key: 'bank', label: '银行账户', icon: 'account-balance' },
+  { key: 'investment', label: '投资项目', icon: 'show-chart' },
+  { key: 'liability', label: '负债', icon: 'credit-card-off' },
 ];
 
 function resolveAccountTypeLabel(accountType: AccountType, customTypeName: string): string {
@@ -131,6 +132,17 @@ export default function AddAccountScreen() {
   const accountTypeLabel = React.useMemo(
     () => resolveAccountTypeLabel(accountType, customTypeName),
     [accountType, customTypeName],
+  );
+
+  const panelStyle = React.useMemo(
+    () => [
+      styles.panel,
+      {
+        backgroundColor: colors.surface,
+        borderColor: colors.outline,
+      },
+    ],
+    [colors.outline, colors.surface],
   );
 
   const reloadCustomTypes = React.useCallback(
@@ -446,10 +458,15 @@ export default function AddAccountScreen() {
           style={[
             styles.iconGridCellInner,
             {
-              backgroundColor: active ? colors.primaryMuted : colors.surface,
-              borderColor: active ? colors.primary : colors.outline,
+              backgroundColor: active
+                ? isDark
+                  ? 'rgba(96,165,250,0.22)'
+                  : colors.primaryMuted
+                : isDark
+                  ? colors.surfaceMuted
+                  : colors.input,
+              borderColor: active ? colors.primary : 'transparent',
             },
-            active && shadows.card,
           ]}>
           <MaterialIcons name={it.icon} size={20} color={active ? colors.primary : colors.textSecondary} />
         </View>
@@ -463,6 +480,7 @@ export default function AddAccountScreen() {
     onPress: () => void,
     onLongPress: (() => void) | undefined,
     label: string,
+    icon?: keyof typeof MaterialIcons.glyphMap,
   ) => (
     <Pressable
       key={key}
@@ -471,13 +489,21 @@ export default function AddAccountScreen() {
       style={({ pressed }) => [
         styles.typeChip,
         {
-          backgroundColor: active ? colors.primaryMuted : colors.surface,
-          borderColor: active ? colors.primary : colors.outline,
+          backgroundColor: active
+            ? isDark
+              ? 'rgba(96,165,250,0.22)'
+              : colors.primaryMuted
+            : isDark
+              ? colors.surfaceMuted
+              : colors.input,
+          borderColor: active ? colors.primary : 'transparent',
         },
-        active && shadows.card,
         pressed && styles.pressed,
       ]}>
-      <Text numberOfLines={1} style={[Typography.bodyStrong, styles.typeLabel, { color: active ? colors.primary : colors.text }]}>
+      {icon ? <MaterialIcons name={icon} size={16} color={active ? colors.primary : colors.textSecondary} /> : null}
+      <Text
+        numberOfLines={1}
+        style={[Typography.bodyStrong, styles.typeLabel, { color: active ? colors.primary : colors.text }]}>
         {label}
       </Text>
     </Pressable>
@@ -498,38 +524,53 @@ export default function AddAccountScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag">
           <View style={styles.content}>
+            <View style={styles.hero}>
+              <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>
+                {isEditMode ? '编辑资产账户' : '新建资产账户'}
+              </Text>
+              <Text style={[Typography.h2, { color: colors.text }]}>
+                {isEditMode ? accountName.trim() || '账户信息' : '选类型，填余额'}
+              </Text>
+              <Text style={[Typography.body, { color: colors.textMuted }]}>
+                {isEditMode ? '修改后会与资产页汇总同步' : '保存后会出现在资产页分组列表中'}
+              </Text>
+            </View>
+
             {isEditMode ? (
-              <AppCard padded style={[styles.section, shadows.card]}>
+              <View style={panelStyle}>
                 {!editSheetReady ? (
                   <View style={styles.editHeroLoading}>
-                    <Text style={[Typography.body, { color: colors.textSecondary }]}>加载中…</Text>
+                    <Skeleton width={96} height={28} borderRadius={14} />
+                    <Skeleton width="70%" height={12} borderRadius={6} style={{ marginTop: Spacing.lg }} />
                   </View>
                 ) : (
                   <View style={styles.editHeroMeta}>
-                    <View
-                      style={[
-                        styles.typeBadge,
-                        {
-                          backgroundColor: isDark ? colors.surfaceMuted : colors.input,
-                          borderColor: colors.outline,
-                        },
-                      ]}>
-                      <Text style={[Typography.caption, styles.typeBadgeText, { color: colors.text }]}>
-                        {accountTypeLabel}
-                      </Text>
+                    <View style={styles.sectionTitleRow}>
+                      <Text style={[Typography.title, { color: colors.text }]}>账户类型</Text>
+                      <View
+                        style={[
+                          styles.typeBadge,
+                          {
+                            backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : colors.primaryMuted,
+                          },
+                        ]}>
+                        <Text style={[Typography.caption, styles.typeBadgeText, { color: colors.primary }]}>
+                          {accountTypeLabel}
+                        </Text>
+                      </View>
                     </View>
                     <Text style={[Typography.caption, styles.editHeroHint, { color: colors.textSecondary }]}>
                       账户类型创建后不可修改
                     </Text>
                   </View>
                 )}
-              </AppCard>
+              </View>
             ) : (
-              <AppCard padded style={styles.section}>
-                <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>选择账户类型</Text>
+              <View style={panelStyle}>
+                <Text style={[Typography.title, { color: colors.text }]}>选择账户类型</Text>
                 <View style={styles.typeGrid}>
                   {BASE_TYPE_OPTIONS.map((t) =>
-                    renderTypeChip(t.key, t.key === accountType, () => setAccountType(t.key), undefined, t.label),
+                    renderTypeChip(t.key, t.key === accountType, () => setAccountType(t.key), undefined, t.label, t.icon),
                   )}
                   {customTypeOptions.map((t) => {
                     const active = accountType === 'custom' && customTypeName === t.name;
@@ -579,15 +620,16 @@ export default function AddAccountScreen() {
                         })();
                       },
                       t.name,
+                      t.isLiability ? 'credit-card' : 'tune',
                     );
                   })}
-                  {renderTypeChip('custom-add', false, openCustomTypeModal, undefined, '自定义')}
+                  {renderTypeChip('custom-add', false, openCustomTypeModal, undefined, '自定义', 'add')}
                 </View>
-              </AppCard>
+              </View>
             )}
 
-            <AppCard padded style={styles.section}>
-              <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>账户图标</Text>
+            <View style={panelStyle}>
+              <Text style={[Typography.title, { color: colors.text }]}>账户图标</Text>
               <View
                 style={styles.iconGrid}
                 onLayout={(event) => {
@@ -603,7 +645,9 @@ export default function AddAccountScreen() {
                   accessibilityLabel={iconPickerExpanded ? '收起图标列表' : '展开查看更多图标'}
                   style={({ pressed }) => [styles.iconExpandToggle, pressed && styles.pressed]}>
                   <Text style={[Typography.caption, { color: colors.primary, fontWeight: '700' }]}>
-                    {iconPickerExpanded ? '收起' : `查看更多（${FINANCE_ACCOUNT_ICON_OPTIONS.length - ICON_ROW_COUNT}+）`}
+                    {iconPickerExpanded
+                      ? '收起'
+                      : `查看更多（${FINANCE_ACCOUNT_ICON_OPTIONS.length - ICON_ROW_COUNT}+）`}
                   </Text>
                   <MaterialIcons
                     name={iconPickerExpanded ? 'expand-less' : 'expand-more'}
@@ -612,10 +656,10 @@ export default function AddAccountScreen() {
                   />
                 </Pressable>
               ) : null}
+            </View>
 
-              <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
-
-              <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>基本信息</Text>
+            <View style={panelStyle}>
+              <Text style={[Typography.title, { color: colors.text }]}>基本信息</Text>
               <AppInput
                 label="账户名称"
                 value={accountName}
@@ -644,10 +688,17 @@ export default function AddAccountScreen() {
                     styles.amountWrap,
                     {
                       borderColor: colors.outline,
-                      backgroundColor: colors.input,
+                      backgroundColor: isDark ? colors.surfaceMuted : colors.input,
                     },
                   ]}>
-                  <Text style={[Typography.h2, styles.currency, { color: colors.primary }]}>¥</Text>
+                  <Text
+                    style={[
+                      Typography.h2,
+                      styles.currency,
+                      { color: isSelectedLiability ? colors.danger : colors.primary },
+                    ]}>
+                    ¥
+                  </Text>
                   <TextInput
                     value={balance}
                     onChangeText={handleBalanceChange}
@@ -670,7 +721,7 @@ export default function AddAccountScreen() {
                 inputWrapStyle={styles.notesWrap}
                 inputStyle={styles.notesInput}
               />
-            </AppCard>
+            </View>
           </View>
         </ScrollView>
 
@@ -696,11 +747,7 @@ export default function AddAccountScreen() {
         </View>
       </KeyboardAvoidingView>
 
-      <Modal
-        transparent
-        animationType="fade"
-        visible={customTypeModalOpen}
-        onRequestClose={closeCustomTypeModal}>
+      <Modal transparent animationType="fade" visible={customTypeModalOpen} onRequestClose={closeCustomTypeModal}>
         <View style={styles.modalRoot}>
           <Pressable
             style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}
@@ -710,8 +757,20 @@ export default function AddAccountScreen() {
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.modalCenter}
             pointerEvents="box-none">
-            <AppCard padded style={[styles.modalCard, shadows.sheet]}>
+            <View
+              style={[
+                styles.modalCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.outline,
+                },
+                shadows.sheet,
+              ]}>
+              <View style={[styles.modalIconWrap, { backgroundColor: colors.primaryMuted }]}>
+                <MaterialIcons name="tune" size={22} color={colors.primary} />
+              </View>
               <Text style={[Typography.h3, { color: colors.text }]}>自定义类型</Text>
+              <Text style={[Typography.body, { color: colors.textMuted }]}>创建后可在账户类型里快速选用</Text>
 
               <AppInput
                 label="类型名称"
@@ -729,7 +788,11 @@ export default function AddAccountScreen() {
                     disabled={modalSaving}
                     style={({ pressed }) => [
                       styles.segmentItem,
-                      !modalIsLiability && [styles.segmentItemActive, { backgroundColor: colors.surface }, shadows.card],
+                      !modalIsLiability && [
+                        styles.segmentItemActive,
+                        { backgroundColor: colors.surface },
+                        shadows.card,
+                      ],
                       pressed && styles.pressed,
                     ]}>
                     <Text
@@ -745,7 +808,11 @@ export default function AddAccountScreen() {
                     disabled={modalSaving}
                     style={({ pressed }) => [
                       styles.segmentItem,
-                      modalIsLiability && [styles.segmentItemActive, { backgroundColor: colors.surface }, shadows.card],
+                      modalIsLiability && [
+                        styles.segmentItemActive,
+                        { backgroundColor: colors.surface },
+                        shadows.card,
+                      ],
                       pressed && styles.pressed,
                     ]}>
                     <Text
@@ -778,7 +845,7 @@ export default function AddAccountScreen() {
                   style={styles.modalBtn}
                 />
               </View>
-            </AppCard>
+            </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -795,15 +862,33 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     width: '100%',
     paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.md,
-    gap: Spacing.md,
+    paddingTop: Spacing['3xl'],
+    gap: Spacing['4xl'],
   },
-  section: { gap: Spacing.lg },
+  hero: {
+    gap: Spacing.sm,
+    paddingBottom: Spacing.xs,
+  },
+  heroKicker: {
+    letterSpacing: 1.2,
+    fontSize: 12,
+    textTransform: 'none',
+  },
+  panel: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+    gap: Spacing['3xl'],
+  },
   cardKicker: { marginBottom: Spacing.xs },
-  editHeroLoading: {
+  sectionTitleRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: Spacing['3xl'],
+    justifyContent: 'space-between',
+    gap: Spacing.lg,
+  },
+  editHeroLoading: {
+    paddingVertical: Spacing.md,
   },
   editHeroMeta: {
     gap: Spacing.md,
@@ -816,7 +901,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,
     borderRadius: Radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
   },
   typeBadgeText: {
     fontWeight: '700',
@@ -830,18 +914,15 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   typeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
     borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   typeLabel: { fontSize: 13, textAlign: 'center' },
-  sectionDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginVertical: Spacing.xs,
-  },
   iconGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -923,6 +1004,17 @@ const styles = StyleSheet.create({
     maxWidth: Layout.contentMaxWidth,
     width: '100%',
     alignSelf: 'center',
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+  },
+  modalIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.xs,
   },
   modalField: {
     gap: Spacing.sm,

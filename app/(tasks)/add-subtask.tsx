@@ -147,11 +147,13 @@ export default function AddSubtaskScreen() {
     setRepeatText(applied.repeatText);
     setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
   }, [params.defaultSchedule, scheduleMeta]);
-  const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
-  const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
   const surfaceLowest = theme.surface;
+  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
+  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : '#ffffff';
+  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : 'rgba(241,243,255,0.72)';
+  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
 
   const readScheduleResult = React.useCallback(() => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -269,78 +271,79 @@ export default function AddSubtaskScreen() {
         style={[
           styles.header,
           {
-            paddingTop: Math.max(insets.top, 12),
-            backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)',
-            borderBottomColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)',
+            paddingTop: Math.max(insets.top, 8),
+            backgroundColor: theme.background,
+            borderBottomColor: divider,
           },
         ]}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-          <MaterialIcons name="arrow-back" size={22} color={primary} />
+          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>添加子任务</Text>
-        <View style={styles.headerRightPlaceholder} />
+        <Text style={[styles.headerTitle, { color: theme.text }]}>添加子任务</Text>
+        <Pressable
+          onPress={createSubtask}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.headerActionBtn,
+            { backgroundColor: primary, opacity: pressed ? 0.88 : 1 },
+          ]}>
+          <Text style={styles.headerActionText}>创建</Text>
+        </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
-          contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]}
+          contentContainerStyle={[styles.content, { paddingBottom: 40 + Math.max(insets.bottom, 12) }]}
           showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>概要</Text>
             <TextInput
               value={title}
               onChangeText={setTitle}
-              placeholder="任务名称（30字以内）"
+              placeholder="子任务名称（30字以内）"
               placeholderTextColor={outlineVariant}
               multiline
               maxLength={30}
               style={[styles.titleInput, { color: theme.text }]}
             />
+            <Text style={[styles.charCounter, { color: outline }]}>{title.length}/30</Text>
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>时间限制</Text>
-            <View style={[styles.deadlineCard, { backgroundColor: surfaceLow }]}>
-              <View style={[styles.deadlineIconWrap, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={22} color={primary} />
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>日程</Text>
+            <Pressable
+              onPress={openSchedulePicker}
+              style={({ pressed }) => [
+                styles.scheduleRow,
+                { backgroundColor: fieldBg, opacity: pressed ? 0.85 : 1 },
+              ]}>
+              <View style={[styles.scheduleIcon, { backgroundColor: surfaceLowest }]}>
+                <MaterialIcons name="event-note" size={20} color={primary} />
               </View>
               <View style={styles.deadlineBody}>
-                <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
+                <Text style={[styles.fieldLabel, { color: outline }]}>时间限制</Text>
+                <Text style={[styles.fieldValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
                 {!!(reminderText || repeatText) && (
                   <View style={styles.tagRow}>
                     {!!reminderText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={14} color={primary} />
+                        <MaterialIcons name="notifications-active" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
                       </View>
                     )}
                     {!!repeatText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={14} color={primary} />
+                        <MaterialIcons name="repeat" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
                       </View>
                     )}
                   </View>
                 )}
               </View>
-              <Pressable onPress={openSchedulePicker} style={styles.deadlineEdit}>
-                <MaterialIcons name="edit-calendar" size={22} color={primary} />
-              </Pressable>
-            </View>
-          </View>
-        </ScrollView>
-
-        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
-          <View style={styles.bottomInner}>
-            <Pressable
-              onPress={createSubtask}
-              style={({ pressed }) => [styles.createBtn, { backgroundColor: pressed ? primaryContainer : primary }, pressed && { transform: [{ scale: 0.98 }] }]}>
-              <MaterialIcons name="task-alt" size={22} color="#fff" />
-              <Text style={styles.createText}>创建子任务</Text>
+              <MaterialIcons name="chevron-right" size={20} color={outline} />
             </Pressable>
           </View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -349,25 +352,67 @@ export default function AddSubtaskScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingBottom: 10, borderBottomWidth: 1 },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  headerRightPlaceholder: { width: 36, height: 36 },
-  content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
-  section: { gap: 10 },
-  sectionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.75 },
-  titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  deadlineCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16 },
-  deadlineIconWrap: { width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  deadlineBody: { flex: 1, gap: 4 },
-  deadlineKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
-  deadlineValue: { fontSize: 16, fontWeight: '800' },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
-  metaTag: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  metaTagText: { fontSize: 11, fontWeight: '700' },
-  deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
-  bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
-  createBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
-  createText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
+  header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
+  headerActionBtn: {
+    minWidth: 64,
+    height: 34,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerActionText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  content: { paddingTop: 84, paddingHorizontal: 14, gap: 12 },
+  panel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
+  },
+  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28 },
+  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
+  fieldLabel: { fontSize: 12, fontWeight: '600' },
+  fieldValue: { fontSize: 14, fontWeight: '600' },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  scheduleIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deadlineBody: { flex: 1, gap: 4, minWidth: 0 },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  metaTag: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metaTagText: { fontSize: 11, fontWeight: '600' },
 });

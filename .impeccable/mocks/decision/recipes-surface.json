@@ -1,0 +1,254 @@
+{
+  "title": "菜谱页结构",
+  "question": "三种版式，选一个作为改版方向（视觉仍用现有 design-tokens，只改布局）。",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "加大缩略图的分组列表",
+      "kicker": "THE ROLL",
+      "thesis": "分类仍是章节；每道菜一行，成品图加大成主视觉，去掉统计卡噪音。",
+      "palette": [
+        "#faf8ff",
+        "#ffffff",
+        "#0058be",
+        "#131b2e"
+      ],
+      "materials": [
+        "inset group",
+        "large thumb row",
+        "ScreenHeader"
+      ],
+      "viewport": "顶栏「我的菜谱」+ 新建分类；其下最近更新横滑小图条；再按分类分组，每行大缩略图+标题+食材步数。",
+      "risk": "仍偏列表，成品图冲击力不如网格强。",
+      "wireframe": {
+        "cols": 12,
+        "rows": 16,
+        "regions": [
+          {
+            "label": "header",
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 1,
+            "accent": true
+          },
+          {
+            "label": "recent strip",
+            "x": 0,
+            "y": 1,
+            "w": 12,
+            "h": 2
+          },
+          {
+            "label": "cat A title",
+            "x": 0,
+            "y": 3,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "label": "recipe row",
+            "x": 0,
+            "y": 4,
+            "w": 12,
+            "h": 2,
+            "accent": true
+          },
+          {
+            "label": "recipe row",
+            "x": 0,
+            "y": 6,
+            "w": 12,
+            "h": 2
+          },
+          {
+            "label": "cat B title",
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "label": "recipe row",
+            "x": 0,
+            "y": 9,
+            "w": 12,
+            "h": 2
+          },
+          {
+            "label": "empty add",
+            "x": 0,
+            "y": 11,
+            "w": 12,
+            "h": 1
+          }
+        ]
+      },
+      "comp": ".impeccable/mocks/decision/assigned.webp"
+    },
+    {
+      "id": "photo-stack",
+      "label": "分类下的通栏成品卡",
+      "thesis": "每道菜一张通栏图卡，标题压在图下；分类名当章节标题。",
+      "palette": [
+        "#faf8ff",
+        "#ffffff",
+        "#0058be",
+        "#131b2e"
+      ],
+      "materials": [
+        "full-bleed photo card",
+        "section title",
+        "meta caption"
+      ],
+      "viewport": "顶栏后直接进入分类；每道菜宽图卡（约 16:9）+ 标题 + 一行元信息；空分类一行轻提示。",
+      "risk": "图多时长列表变长，扫分类会多滑几屏。",
+      "wireframe": {
+        "cols": 12,
+        "rows": 16,
+        "regions": [
+          {
+            "label": "header",
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 1,
+            "accent": true
+          },
+          {
+            "label": "cat title",
+            "x": 0,
+            "y": 1,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "label": "photo card",
+            "x": 0,
+            "y": 2,
+            "w": 12,
+            "h": 4,
+            "accent": true
+          },
+          {
+            "label": "photo card",
+            "x": 0,
+            "y": 6,
+            "w": 12,
+            "h": 4
+          },
+          {
+            "label": "cat title",
+            "x": 0,
+            "y": 10,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "label": "photo card",
+            "x": 0,
+            "y": 11,
+            "w": 12,
+            "h": 4
+          }
+        ]
+      },
+      "comp": ".impeccable/mocks/decision/photo-stack.webp"
+    },
+    {
+      "id": "cookbook-grid",
+      "label": "菜谱本章节双列格",
+      "thesis": "每个分类像一章：大标题 + 双列成品图格，最像实体菜谱本。",
+      "palette": [
+        "#faf8ff",
+        "#ffffff",
+        "#0058be",
+        "#131b2e"
+      ],
+      "materials": [
+        "chapter head",
+        "2-col photo grid",
+        "recent rail"
+      ],
+      "viewport": "顶栏下「最近」横滑；每分类大标题与操作；其下双列方图，图下菜名。",
+      "risk": "双列在窄屏上标题易折行；无图占位要设计好。",
+      "wireframe": {
+        "cols": 12,
+        "rows": 16,
+        "regions": [
+          {
+            "label": "header",
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 1,
+            "accent": true
+          },
+          {
+            "label": "recent",
+            "x": 0,
+            "y": 1,
+            "w": 12,
+            "h": 2
+          },
+          {
+            "label": "chapter",
+            "x": 0,
+            "y": 3,
+            "w": 12,
+            "h": 1
+          },
+          {
+            "label": "photo",
+            "x": 0,
+            "y": 4,
+            "w": 6,
+            "h": 4,
+            "accent": true
+          },
+          {
+            "label": "photo",
+            "x": 6,
+            "y": 4,
+            "w": 6,
+            "h": 4
+          },
+          {
+            "label": "photo",
+            "x": 0,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          {
+            "label": "photo",
+            "x": 6,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          {
+            "label": "chapter",
+            "x": 0,
+            "y": 12,
+            "w": 12,
+            "h": 1
+          }
+        ]
+      },
+      "comp": ".impeccable/mocks/decision/cookbook-grid.webp"
+    }
+  ],
+  "reroll": {
+    "registers": [
+      "safer",
+      "bolder"
+    ]
+  },
+  "buildPath": {
+    "value": "code",
+    "toggle": true
+  },
+  "steer": true,
+  "canon": false
+}

@@ -77,7 +77,7 @@ export function parseMemoBodyToEditModel(body: string): MemoEditModel {
       continue;
     }
     if (body.startsWith('**', i)) {
-      const idx = findLastStackIndex(stack, s => s.bold);
+      const idx = findLastStackIndex(stack, s => !!s.bold);
       if (idx >= 0) stack.splice(idx, 1);
       else stack.push({ bold: true });
       i += 2;

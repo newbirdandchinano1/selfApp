@@ -20,6 +20,7 @@ export {
   isTagNameDuplicate,
   setEntityTagIds,
   setHabitTagIds,
+  setMemoTagIds,
   setProjectTagIds,
   setTaskTagIds,
   softDeleteProjectTagLinksForProject,

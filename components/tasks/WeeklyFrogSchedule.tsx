@@ -103,14 +103,14 @@ type TodayCompactItem = {
 };
 
 function formatRemainLabel(remainSec: number, opts?: { untilStart?: boolean }): string {
-  const sec = Math.max(0, remainSec);
+  const sec = Math.max(0, Math.floor(remainSec));
   const prefix = opts?.untilStart ? '距开始' : '剩余';
-  if (sec < 60) return `${prefix} ${sec} 秒`;
-  const totalMin = Math.floor(sec / 60);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h > 0) return m > 0 ? `${prefix} ${h} 时 ${m} 分` : `${prefix} ${h} 时`;
-  return `${prefix} ${m} 分`;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${prefix} ${h} 时 ${m} 分 ${s} 秒`;
+  if (m > 0) return `${prefix} ${m} 分 ${s} 秒`;
+  return `${prefix} ${s} 秒`;
 }
 
 function remainSecondsUntil(targetMinutes: number, wall: Date): number {

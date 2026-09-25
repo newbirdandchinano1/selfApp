@@ -1,22 +1,12 @@
 import {
-  ComposerEditorialCard,
-  ComposerHero,
-  ComposerMain,
-  ComposerNoteSection,
-  ComposerOptionRow,
-  ComposerPriorityMatrix,
-  ComposerScheduleSection,
-  ComposerSection,
   ComposerCategoryModal,
-  ComposerSectionHead,
+  ComposerPriorityMatrix,
   ComposerTopBar,
-  composerStyles,
   taskPriorityKeyToNumber,
   type TaskPriorityKey,
 } from '@/components/composer';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
-import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
@@ -40,15 +30,22 @@ import {
   mergeRewardPointsIntoExtraData,
   normalizeRewardPoints,
 } from '@/lib/reward-points';
-import { AppInput } from '@/components/ui';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { useFocusEffect } from "expo-router/react-navigation";
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-
-type Subtask = { id: string; title: string; done: boolean };
 
 type SchedulePickerResult = {
   mode: 'date' | 'time';
@@ -177,7 +174,6 @@ export default function AddProjectScreen() {
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
-  const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
@@ -434,172 +430,208 @@ export default function AddProjectScreen() {
     setTitle(text.slice(0, TITLE_MAX_LENGTH));
   };
 
+  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
+  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : colors.surface;
+  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : colors.input;
+  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
+
   return (
-    <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ComposerTopBar
         title="新建项目"
-        subtitle="可设置优先级、分类、前置依赖与日程"
+        subtitle="分类 · 优先级 · 依赖 · 日程"
         onBack={() => router.back()}
         onSubmit={() => void createProjectRecord()}
         submitting={creating}
         submitLabel="创建"
       />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={composerStyles.flex}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
           refreshControl={refreshControl}
           contentContainerStyle={[
-            composerStyles.content,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
+            styles.content,
+            { paddingBottom: 48 + Math.max(insets.bottom, 12) },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <ComposerMain>
-            <ComposerHero
-              badgeIcon="folder-special"
-              kicker="这次要推进什么项目？"
-              placeholder="写下项目名称…"
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: colors.text }]}>概要</Text>
+            <TextInput
               value={title}
               onChangeText={handleTitleChange}
+              placeholder="写下项目名称…"
+              placeholderTextColor={colors.textMuted}
+              multiline
               maxLength={TITLE_MAX_LENGTH}
+              style={[styles.titleInput, { color: colors.text }]}
             />
+            <Text style={[styles.charCounter, { color: colors.textSecondary }]}>
+              {title.length}/{TITLE_MAX_LENGTH}
+            </Text>
 
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.tertiary}
-                title="项目分类"
-                description="不可选收集箱；无其它分类时为未分类"
-              />
-              <ComposerOptionRow
-                icon="folder-open"
-                iconBg={colors.capsule}
-                title="当前分类"
-                value={selectedCategoryName || '未分类'}
-                onPress={() => setCategoryModalVisible(true)}
-                accessibilityLabel="选择项目分类"
-              />
-            </ComposerSection>
+            <View style={[styles.panelDivider, { backgroundColor: divider }]} />
 
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.primary}
-                title="标签"
-                description="可贴 0 到多个标签；可在标签管理中新建"
-                rightIcon="local-offer"
-              />
-              <ComposerEditorialCard>
-                <ProjectTagPickerField
-                  selectedIds={selectedTagIds}
-                  allTags={allTags}
-                  loading={tagsLoading}
-                  onChange={setSelectedTagIds}
-                  textColor={colors.text}
-                  outline={colors.textSecondary}
-                  placeholderColor={colors.textMuted}
-                  primary={colors.primary}
-                  surfaceLow={colors.input}
-                  surfaceLowest={colors.surfaceSubtle}
-                  isDark={isDark}
-                />
-              </ComposerEditorialCard>
-            </ComposerSection>
+            <Pressable
+              onPress={() => setCategoryModalVisible(true)}
+              style={({ pressed }) => [
+                styles.fieldRow,
+                { backgroundColor: fieldBg, opacity: pressed ? 0.82 : 1 },
+              ]}>
+              <View style={styles.fieldRowLeft}>
+                <MaterialIcons name="folder-open" size={18} color={colors.primary} />
+                <View style={styles.fieldCopy}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>分类</Text>
+                  <Text style={[styles.fieldValue, { color: colors.text }]}>
+                    {selectedCategoryName || '未分类'}
+                  </Text>
+                </View>
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
+            </Pressable>
 
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>标签</Text>
+              <ProjectTagPickerField
+                selectedIds={selectedTagIds}
+                allTags={allTags}
+                loading={tagsLoading}
+                onChange={setSelectedTagIds}
+                textColor={colors.text}
+                outline={colors.textSecondary}
+                placeholderColor={colors.textMuted}
+                primary={colors.primary}
+                surfaceLow={colors.input}
+                surfaceLowest={colors.surfaceSubtle}
+                isDark={isDark}
+              />
+            </View>
+          </View>
+
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: colors.text }]}>优先级</Text>
             <ComposerPriorityMatrix value={priority} onChange={setPriority} />
+          </View>
 
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.primary}
-                title="前置项目"
-                description="需先完成所选项目后，本项目才可推进"
-                rightIcon="account-tree"
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: colors.text }]}>依赖与日程</Text>
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>前置项目</Text>
+              <PrerequisiteProjectPickerField
+                selectedIds={prerequisiteProjectIds}
+                allProjects={allProjects}
+                loading={projectsLoading}
+                onChange={setPrerequisiteProjectIds}
+                textColor={colors.text}
+                outline={colors.textSecondary}
+                placeholderColor={colors.textMuted}
+                primary={colors.primary}
+                surfaceLow={colors.input}
+                surfaceLowest={colors.surfaceSubtle}
+                isDark={isDark}
               />
-              <ComposerEditorialCard>
-                <PrerequisiteProjectPickerField
-                  selectedIds={prerequisiteProjectIds}
-                  allProjects={allProjects}
-                  loading={projectsLoading}
-                  onChange={setPrerequisiteProjectIds}
-                  textColor={colors.text}
-                  outline={colors.textSecondary}
-                  placeholderColor={colors.textMuted}
-                  primary={colors.primary}
-                  surfaceLow={colors.input}
-                  surfaceLowest={colors.surfaceSubtle}
-                  isDark={isDark}
-                />
-              </ComposerEditorialCard>
-            </ComposerSection>
+            </View>
 
-            <ComposerSection>
-              <ComposerScheduleSection
-                deadlineText={deadlineText}
-                reminderText={reminderText}
-                repeatText={repeatText}
-                onPress={openSchedulePicker}
-              />
-            </ComposerSection>
-
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.primary}
-                title="长期项目"
-                description="无子任务时可指派为青蛙；完成时可仅结束今日会话"
-                rightIcon="timeline"
-              />
-              <ComposerEditorialCard>
-                <Pressable
-                  onPress={() => setIsLongTermProject((v) => !v)}
-                  accessibilityRole="switch"
-                  accessibilityState={{ checked: isLongTermProject }}
-                  style={({ pressed }) => [
-                    styles.longTermRow,
-                    {
-                      backgroundColor: isLongTermProject ? `${colors.primary}12` : colors.surfaceSubtle,
-                      borderColor: isLongTermProject ? colors.primary : colors.outline,
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}>
-                  <View style={styles.longTermTextWrap}>
-                    <Text style={[Typography.bodyStrong, { color: colors.text }]}>标记为长期项目</Text>
-                    <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-                      完成青蛙时会询问是否已完成整个项目
-                    </Text>
+            <Pressable
+              onPress={openSchedulePicker}
+              style={({ pressed }) => [
+                styles.scheduleRow,
+                { backgroundColor: fieldBg, opacity: pressed ? 0.85 : 1 },
+              ]}>
+              <View style={[styles.scheduleIcon, { backgroundColor: colors.surfaceSubtle }]}>
+                <MaterialIcons name="event-note" size={20} color={colors.primary} />
+              </View>
+              <View style={styles.scheduleBody}>
+                <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>时间安排</Text>
+                <Text style={[styles.fieldValue, { color: colors.text }]}>{deadlineText || '未设置'}</Text>
+                {!!(reminderText || repeatText) && (
+                  <View style={styles.tagRow}>
+                    {!!reminderText && (
+                      <View
+                        style={[
+                          styles.metaTag,
+                          { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
+                        ]}>
+                        <MaterialIcons name="notifications-active" size={13} color={colors.primary} />
+                        <Text style={[styles.metaTagText, { color: colors.text }]}>{reminderText}</Text>
+                      </View>
+                    )}
+                    {!!repeatText && (
+                      <View
+                        style={[
+                          styles.metaTag,
+                          { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
+                        ]}>
+                        <MaterialIcons name="repeat" size={13} color={colors.primary} />
+                        <Text style={[styles.metaTagText, { color: colors.text }]}>{repeatText}</Text>
+                      </View>
+                    )}
                   </View>
-                  <MaterialIcons
-                    name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
-                    size={24}
-                    color={isLongTermProject ? colors.primary : colors.textSecondary}
-                  />
-                </Pressable>
-              </ComposerEditorialCard>
-            </ComposerSection>
+                )}
+              </View>
+              <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
+            </Pressable>
+          </View>
 
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.tertiary}
-                title="奖励积分"
-                description="完成整个项目后计入积分；负数表示扣除，可含小数；0 表示无变动"
-                rightIcon="stars"
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: colors.text }]}>更多</Text>
+            <Pressable
+              onPress={() => setIsLongTermProject((v) => !v)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: isLongTermProject }}
+              style={({ pressed }) => [
+                styles.longTermRow,
+                {
+                  backgroundColor: isLongTermProject ? `${colors.primary}12` : fieldBg,
+                  borderColor: isLongTermProject ? colors.primary : 'transparent',
+                  opacity: pressed ? 0.88 : 1,
+                },
+              ]}>
+              <View style={styles.longTermTextWrap}>
+                <Text style={[styles.longTermTitle, { color: colors.text }]}>长期项目</Text>
+                <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
+                  无子任务时可指派为青蛙；完成时确认是否结束整项
+                </Text>
+              </View>
+              <MaterialIcons
+                name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
+                size={22}
+                color={isLongTermProject ? colors.primary : colors.textSecondary}
               />
-              <ComposerEditorialCard>
-                <AppInput
-                  label="奖励积分"
+            </Pressable>
+
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>奖励积分</Text>
+              <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
                   value={rewardPointsText}
                   onChangeText={setRewardPointsText}
                   placeholder="0"
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="numbers-and-punctuation"
-                  inputWrapStyle={styles.rewardPointsWrap}
+                  style={[styles.rewardPointsInput, { color: colors.text }]}
                 />
-              </ComposerEditorialCard>
-            </ComposerSection>
+              </View>
+              <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
+                完成整项后计入；负数扣除，可含小数；0 无变动
+              </Text>
+            </View>
 
-            <ComposerNoteSection
-              value={notes}
-              onChangeText={setNotes}
-              title="验收标准"
-              placeholder="怎样算完成？可写可验证的标准…（可选）"
-            />
-          </ComposerMain>
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>验收标准</Text>
+              <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
+                  value={notes}
+                  onChangeText={setNotes}
+                  placeholder="怎样算完成？（可选）"
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  textAlignVertical="top"
+                  style={[styles.notesInput, { color: colors.text }]}
+                />
+              </View>
+            </View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -619,21 +651,93 @@ export default function AddProjectScreen() {
 }
 
 const styles = StyleSheet.create({
+  container: { flex: 1 },
+  flex: { flex: 1 },
+  content: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    gap: 12,
+    maxWidth: 560,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  panel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
+  },
+  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
+  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28, minHeight: 56 },
+  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  fieldRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
+  fieldCopy: { flex: 1, gap: 2, minWidth: 0 },
+  fieldBlock: { gap: 8 },
+  fieldLabel: { fontSize: 12, fontWeight: '600' },
+  fieldValue: { fontSize: 14, fontWeight: '600' },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  scheduleIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleBody: { flex: 1, gap: 4, minWidth: 0 },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  metaTagText: { fontSize: 11, fontWeight: '600' },
   longTermRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  longTermTextWrap: {
-    flex: 1,
-    gap: 4,
-  },
+  longTermTextWrap: { flex: 1, gap: 3 },
+  longTermTitle: { fontSize: 14, fontWeight: '600' },
+  longTermHint: { fontSize: 12, lineHeight: 16 },
   rewardPointsWrap: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     minHeight: 40,
-    paddingVertical: Spacing.md,
+    justifyContent: 'center',
   },
+  rewardPointsInput: {
+    padding: 0,
+    margin: 0,
+    fontSize: 15,
+    fontWeight: '600',
+    minHeight: 20,
+  },
+  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
+  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
 });

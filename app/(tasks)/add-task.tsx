@@ -1,18 +1,10 @@
 import {
-    ComposerEditorialCard,
-    ComposerHero,
-    ComposerMain,
-    ComposerNoteSection,
     ComposerPriorityMatrix,
-    ComposerScheduleSection,
-    ComposerSection,
-    ComposerSectionHead,
     ComposerTopBar,
-    composerStyles,
     taskPriorityLabel,
     type TaskPriorityKey,
 } from '@/components/composer';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { setAddTaskResult } from '@/lib/add-task-bridge';
@@ -28,7 +20,6 @@ import {
   normalizeRewardPoints,
   parseRewardPointsFromExtraData,
 } from '@/lib/reward-points';
-import { AppInput } from '@/components/ui';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
@@ -734,8 +725,13 @@ export default function AddTaskScreen() {
     ]);
   }, [editTaskId, formBusy, notifyAncestorsDataChanged, router, title]);
 
+  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
+  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : colors.surface;
+  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : colors.input;
+  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
+
   return (
-    <SafeAreaView style={[composerStyles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ComposerTopBar
         title={screenTitle}
         subtitle={topSubtitle}
@@ -745,140 +741,185 @@ export default function AddTaskScreen() {
         submitLabel={isStandalone ? '保存' : '创建'}
       />
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={composerStyles.flex}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
           refreshControl={refreshControl}
           contentContainerStyle={[
-            composerStyles.content,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md) },
+            styles.content,
+            { paddingBottom: 48 + Math.max(insets.bottom, 12) },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
           {loadingEdit ? (
             <View style={styles.editLoading}>
               <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={[Typography.caption, { color: colors.textSecondary }]}>加载待办…</Text>
+              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>加载待办…</Text>
             </View>
           ) : (
-          <ComposerMain>
-            <ComposerHero
-              badgeIcon="task-alt"
-              kicker={isStandalone && standaloneIntent === 'shelved' ? '先记下来，以后再安排' : '今天要完成什么？'}
-              placeholder={isStandalone ? '写下待办名称…' : '写下任务名称…'}
-              value={title}
-              onChangeText={handleTitleChange}
-              maxLength={titleMaxLength}
-            />
+            <>
+              <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+                <Text style={[styles.panelTitle, { color: colors.text }]}>概要</Text>
+                <TextInput
+                  value={title}
+                  onChangeText={handleTitleChange}
+                  placeholder={isStandalone ? '写下待办名称…' : '写下任务名称…'}
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  maxLength={titleMaxLength}
+                  style={[styles.titleInput, { color: colors.text }]}
+                />
+                <Text style={[styles.charCounter, { color: colors.textSecondary }]}>
+                  {title.length}/{titleMaxLength}
+                </Text>
 
-            {isStandalone ? (
-              <View style={styles.standaloneIntentRow}>
-                <Pressable
-                  onPress={() => setStandaloneIntent('active')}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: standaloneIntent === 'active' }}
-                  style={({ pressed }) => [
-                    styles.standaloneIntentChip,
-                    {
-                      backgroundColor: standaloneIntent === 'active' ? `${colors.primary}18` : colors.surfaceMuted,
-                      borderColor: standaloneIntent === 'active' ? colors.primary : colors.outline,
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}>
-                  <MaterialIcons
-                    name="radio-button-checked"
-                    size={18}
-                    color={standaloneIntent === 'active' ? colors.primary : colors.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.standaloneIntentChipText,
-                      { color: standaloneIntent === 'active' ? colors.primary : colors.text },
-                    ]}>
-                    正常待办
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setStandaloneIntent('shelved')}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: standaloneIntent === 'shelved' }}
-                  style={({ pressed }) => [
-                    styles.standaloneIntentChip,
-                    {
-                      backgroundColor: standaloneIntent === 'shelved' ? `${colors.secondary}22` : colors.surfaceMuted,
-                      borderColor: standaloneIntent === 'shelved' ? colors.secondary : colors.outline,
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}>
-                  <MaterialIcons
-                    name="inventory-2"
-                    size={18}
-                    color={standaloneIntent === 'shelved' ? colors.secondary : colors.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.standaloneIntentChipText,
-                      { color: standaloneIntent === 'shelved' ? colors.secondary : colors.text },
-                    ]}>
-                    暂时搁置
-                  </Text>
-                </Pressable>
+                {isStandalone ? (
+                  <>
+                    <View style={[styles.panelDivider, { backgroundColor: divider }]} />
+                    <View style={styles.standaloneIntentRow}>
+                      <Pressable
+                        onPress={() => setStandaloneIntent('active')}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: standaloneIntent === 'active' }}
+                        style={({ pressed }) => [
+                          styles.standaloneIntentChip,
+                          {
+                            backgroundColor:
+                              standaloneIntent === 'active' ? `${colors.primary}18` : fieldBg,
+                            borderColor:
+                              standaloneIntent === 'active' ? colors.primary : 'transparent',
+                            opacity: pressed ? 0.88 : 1,
+                          },
+                        ]}>
+                        <MaterialIcons
+                          name="radio-button-checked"
+                          size={18}
+                          color={standaloneIntent === 'active' ? colors.primary : colors.textSecondary}
+                        />
+                        <Text
+                          style={[
+                            styles.standaloneIntentChipText,
+                            { color: standaloneIntent === 'active' ? colors.primary : colors.text },
+                          ]}>
+                          正常待办
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setStandaloneIntent('shelved')}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: standaloneIntent === 'shelved' }}
+                        style={({ pressed }) => [
+                          styles.standaloneIntentChip,
+                          {
+                            backgroundColor:
+                              standaloneIntent === 'shelved' ? `${colors.secondary}22` : fieldBg,
+                            borderColor:
+                              standaloneIntent === 'shelved' ? colors.secondary : 'transparent',
+                            opacity: pressed ? 0.88 : 1,
+                          },
+                        ]}>
+                        <MaterialIcons
+                          name="inventory-2"
+                          size={18}
+                          color={
+                            standaloneIntent === 'shelved' ? colors.secondary : colors.textSecondary
+                          }
+                        />
+                        <Text
+                          style={[
+                            styles.standaloneIntentChipText,
+                            {
+                              color: standaloneIntent === 'shelved' ? colors.secondary : colors.text,
+                            },
+                          ]}>
+                          暂时搁置
+                        </Text>
+                      </Pressable>
+                    </View>
+                    {standaloneIntent === 'shelved' ? (
+                      <Text style={[styles.standaloneShelvedHint, { color: colors.textSecondary }]}>
+                        搁置项会留在待办栏，不能勾选完成；需要时在卡片右侧点「激活」并确认后变为正常待办。
+                      </Text>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {isStandalone ? (
+                  <View style={styles.fieldBlock}>
+                    <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>标签</Text>
+                    <ProjectTagPickerField
+                      selectedIds={selectedTagIds}
+                      allTags={allTags}
+                      loading={tagsLoading}
+                      onChange={setSelectedTagIds}
+                      textColor={colors.text}
+                      outline={colors.textSecondary}
+                      placeholderColor={colors.textMuted}
+                      primary={colors.primary}
+                      surfaceLow={colors.input}
+                      surfaceLowest={colors.surfaceSubtle}
+                      isDark={isDark}
+                    />
+                  </View>
+                ) : null}
               </View>
-            ) : null}
 
-            {isStandalone && standaloneIntent === 'shelved' ? (
-              <Text style={[styles.standaloneShelvedHint, { color: colors.textSecondary }]}>
-                搁置项会留在待办栏，不能勾选完成；需要时在卡片右侧点「激活」并确认后变为正常待办。
-              </Text>
-            ) : null}
+              {isStandalone ? (
+                <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+                  <Text style={[styles.panelTitle, { color: colors.text }]}>优先级</Text>
+                  <ComposerPriorityMatrix value={priority} onChange={setPriority} />
+                </View>
+              ) : null}
 
-            {isStandalone ? <ComposerPriorityMatrix value={priority} onChange={setPriority} /> : null}
+              {!isStandalone || standaloneIntent === 'active' ? (
+                <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+                  <Text style={[styles.panelTitle, { color: colors.text }]}>日程</Text>
+                  <Pressable
+                    onPress={openSchedulePicker}
+                    style={({ pressed }) => [
+                      styles.scheduleRow,
+                      { backgroundColor: fieldBg, opacity: pressed ? 0.85 : 1 },
+                    ]}>
+                    <View style={[styles.scheduleIcon, { backgroundColor: colors.surfaceSubtle }]}>
+                      <MaterialIcons name="event-note" size={20} color={colors.primary} />
+                    </View>
+                    <View style={styles.scheduleBody}>
+                      <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>时间安排</Text>
+                      <Text style={[styles.fieldValue, { color: colors.text }]}>
+                        {deadlineText || '未设置'}
+                      </Text>
+                      {!!(reminderText || repeatText) && (
+                        <View style={styles.tagRow}>
+                          {!!reminderText && (
+                            <View
+                              style={[
+                                styles.metaTag,
+                                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
+                              ]}>
+                              <MaterialIcons name="notifications-active" size={13} color={colors.primary} />
+                              <Text style={[styles.metaTagText, { color: colors.text }]}>{reminderText}</Text>
+                            </View>
+                          )}
+                          {!!repeatText && (
+                            <View
+                              style={[
+                                styles.metaTag,
+                                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
+                              ]}>
+                              <MaterialIcons name="repeat" size={13} color={colors.primary} />
+                              <Text style={[styles.metaTagText, { color: colors.text }]}>{repeatText}</Text>
+                            </View>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
+                  </Pressable>
+                </View>
+              ) : null}
 
-            {isStandalone ? (
-              <ComposerSection>
-                <ComposerSectionHead
-                  accentColor={colors.primary}
-                  title="标签"
-                  description="可贴 0 到多个标签；可在标签管理中新建"
-                  rightIcon="local-offer"
-                />
-                <ComposerEditorialCard>
-                  <ProjectTagPickerField
-                    selectedIds={selectedTagIds}
-                    allTags={allTags}
-                    loading={tagsLoading}
-                    onChange={setSelectedTagIds}
-                    textColor={colors.text}
-                    outline={colors.textSecondary}
-                    placeholderColor={colors.textMuted}
-                    primary={colors.primary}
-                    surfaceLow={colors.input}
-                    surfaceLowest={colors.surfaceSubtle}
-                    isDark={isDark}
-                  />
-                </ComposerEditorialCard>
-              </ComposerSection>
-            ) : null}
-
-            {!isStandalone || standaloneIntent === 'active' ? (
-              <ComposerSection>
-                <ComposerScheduleSection
-                  deadlineText={deadlineText}
-                  reminderText={reminderText}
-                  repeatText={repeatText}
-                  onPress={openSchedulePicker}
-                />
-              </ComposerSection>
-            ) : null}
-
-            {!isStandalone ? (
-              <ComposerSection>
-                <ComposerSectionHead
-                  accentColor={colors.primary}
-                  title="长期任务"
-                  description="指派为青蛙后，完成时可仅结束今日会话"
-                  rightIcon="timeline"
-                />
-                <ComposerEditorialCard>
+              <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+                <Text style={[styles.panelTitle, { color: colors.text }]}>更多</Text>
+                {!isStandalone ? (
                   <Pressable
                     onPress={() => setIsLongTermTask((v) => !v)}
                     accessibilityRole="switch"
@@ -886,74 +927,82 @@ export default function AddTaskScreen() {
                     style={({ pressed }) => [
                       styles.longTermRow,
                       {
-                        backgroundColor: isLongTermTask ? `${colors.primary}12` : colors.surfaceSubtle,
-                        borderColor: isLongTermTask ? colors.primary : colors.outline,
+                        backgroundColor: isLongTermTask ? `${colors.primary}12` : fieldBg,
+                        borderColor: isLongTermTask ? colors.primary : 'transparent',
                         opacity: pressed ? 0.88 : 1,
                       },
                     ]}>
                     <View style={styles.longTermTextWrap}>
-                      <Text style={[Typography.bodyStrong, { color: colors.text }]}>标记为长期任务</Text>
-                      <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-                        完成青蛙时会询问是否已完成整个任务
+                      <Text style={[styles.longTermTitle, { color: colors.text }]}>长期任务</Text>
+                      <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
+                        指派为青蛙后，完成时可仅结束今日会话
                       </Text>
                     </View>
                     <MaterialIcons
                       name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
-                      size={24}
+                      size={22}
                       color={isLongTermTask ? colors.primary : colors.textSecondary}
                     />
                   </Pressable>
-                </ComposerEditorialCard>
-              </ComposerSection>
-            ) : null}
+                ) : null}
 
-            <ComposerSection>
-              <ComposerSectionHead
-                accentColor={colors.tertiary}
-                title="奖励积分"
-                description="完成任务后计入积分；负数表示扣除，可含小数；0 表示无变动"
-                rightIcon="stars"
-              />
-              <ComposerEditorialCard>
-                <AppInput
-                  label="奖励积分"
-                  value={rewardPointsText}
-                  onChangeText={setRewardPointsText}
-                  placeholder="0"
-                  keyboardType="numbers-and-punctuation"
-                  inputWrapStyle={styles.rewardPointsWrap}
-                />
-              </ComposerEditorialCard>
-            </ComposerSection>
+                <View style={styles.fieldBlock}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>奖励积分</Text>
+                  <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
+                    <TextInput
+                      value={rewardPointsText}
+                      onChangeText={setRewardPointsText}
+                      placeholder="0"
+                      placeholderTextColor={colors.textMuted}
+                      keyboardType="numbers-and-punctuation"
+                      style={[styles.rewardPointsInput, { color: colors.text }]}
+                    />
+                  </View>
+                  <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
+                    完成后计入；负数扣除，可含小数；0 无变动
+                  </Text>
+                </View>
 
-            <ComposerNoteSection
-              value={acceptanceCriteria}
-              onChangeText={setAcceptanceCriteria}
-              title="验收标准"
-              placeholder="怎样算完成？可写可验证的标准…（可选）"
-            />
+                <View style={styles.fieldBlock}>
+                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>验收标准</Text>
+                  <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
+                    <TextInput
+                      value={acceptanceCriteria}
+                      onChangeText={setAcceptanceCriteria}
+                      placeholder="怎样算完成？（可选）"
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      textAlignVertical="top"
+                      style={[styles.notesInput, { color: colors.text }]}
+                    />
+                  </View>
+                </View>
 
-            {isEditStandalone ? (
-              <View style={[styles.pageFooter, { borderTopColor: colors.outline }]}>
-                <Pressable
-                  onPress={removeStandaloneTodo}
-                  disabled={formBusy}
-                  accessibilityRole="button"
-                  accessibilityLabel="删除待办"
-                  style={({ pressed }) => [
-                    styles.deleteBtn,
-                    {
-                      backgroundColor: pressed ? '#991b1b' : '#ba1a1a',
-                      opacity: formBusy ? 0.7 : 1,
-                    },
-                    pressed && { transform: [{ scale: 0.98 }] },
-                  ]}>
-                  <MaterialIcons name="delete-outline" size={22} color="#fff" />
-                  <Text style={styles.deleteText}>删除待办</Text>
-                </Pressable>
+                {isEditStandalone ? (
+                  <Pressable
+                    onPress={removeStandaloneTodo}
+                    disabled={formBusy}
+                    accessibilityRole="button"
+                    accessibilityLabel="删除待办"
+                    style={({ pressed }) => [
+                      styles.deleteBtn,
+                      {
+                        borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
+                        opacity: formBusy ? 0.55 : pressed ? 0.8 : 1,
+                      },
+                    ]}>
+                    <MaterialIcons
+                      name="delete-outline"
+                      size={18}
+                      color={isDark ? '#f87171' : '#ba1a1a'}
+                    />
+                    <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>
+                      删除待办
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
-            ) : null}
-          </ComposerMain>
+            </>
           )}
         </ScrollView>
 
@@ -971,7 +1020,7 @@ export default function AddTaskScreen() {
               <View style={[styles.mainTaskHandle, { backgroundColor: colors.outline }]} />
 
               <View style={styles.mainTaskHead}>
-                <Text style={[Typography.h3, { color: colors.text }]}>关联主任务</Text>
+                <Text style={[styles.mainTaskHeadTitle, { color: colors.text }]}>关联主任务</Text>
                 <Pressable
                   onPress={() => setMainTaskOpen(false)}
                   style={[styles.mainTaskCloseBtn, { backgroundColor: colors.surfaceMuted }]}>
@@ -986,7 +1035,7 @@ export default function AddTaskScreen() {
                   onChangeText={setMainTaskQuery}
                   placeholder="搜索已有主任务..."
                   placeholderTextColor={colors.textMuted}
-                  style={[Typography.body, styles.mainTaskSearchInput, { color: colors.text }]}
+                  style={[styles.mainTaskSearchInput, { color: colors.text }]}
                 />
               </View>
 
@@ -1009,8 +1058,8 @@ export default function AddTaskScreen() {
                         {active ? <View style={[styles.mainTaskRadioInner, { backgroundColor: colors.primary }]} /> : null}
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={[Typography.bodyStrong, styles.mainTaskItemTitle, { color: colors.text }]}>{item.title}</Text>
-                        <Text style={[Typography.caption, { color: colors.textSecondary }]}>{item.due}</Text>
+                        <Text style={[styles.mainTaskItemTitle, { color: colors.text }]}>{item.title}</Text>
+                        <Text style={[styles.mainTaskItemDue, { color: colors.textSecondary }]}>{item.due}</Text>
                       </View>
                     </Pressable>
                   );
@@ -1024,7 +1073,7 @@ export default function AddTaskScreen() {
                   { backgroundColor: colors.primary },
                   pressed && { opacity: 0.9 },
                 ]}>
-                <Text style={[Typography.bodyStrong, { color: colors.onPrimary }]}>确认关联</Text>
+                <Text style={[styles.mainTaskConfirmText, { color: colors.onPrimary }]}>确认关联</Text>
               </Pressable>
             </Pressable>
           </Pressable>
@@ -1035,68 +1084,128 @@ export default function AddTaskScreen() {
 }
 
 const styles = StyleSheet.create({
+  container: { flex: 1 },
+  flex: { flex: 1 },
+  content: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    gap: 12,
+    maxWidth: 560,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  panel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
+  },
+  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
+  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28, minHeight: 56 },
+  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
+  fieldBlock: { gap: 8 },
+  fieldLabel: { fontSize: 12, fontWeight: '600' },
+  fieldValue: { fontSize: 14, fontWeight: '600' },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  scheduleIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduleBody: { flex: 1, gap: 4, minWidth: 0 },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  metaTagText: { fontSize: 11, fontWeight: '600' },
   editLoading: {
     paddingVertical: Spacing['6xl'],
     alignItems: 'center',
     gap: Spacing.xl,
   },
+  loadingText: { fontSize: 12, fontWeight: '500' },
   standaloneIntentRow: {
     flexDirection: 'row',
-    gap: Spacing.md,
+    gap: 8,
   },
   standaloneIntentChip: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.xl,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   standaloneIntentChipText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   standaloneShelvedHint: {
-    fontSize: 13,
-    lineHeight: 20,
-    marginTop: -Spacing.sm,
-  },
-  pageFooter: {
-    marginTop: Spacing['4xl'],
-    paddingTop: Spacing['4xl'],
-    borderTopWidth: StyleSheet.hairlineWidth,
+    fontSize: 12,
+    lineHeight: 17,
   },
   deleteBtn: {
     width: '100%',
-    paddingVertical: Spacing.xl,
-    borderRadius: Radius.lg,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: Spacing.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.14,
-    shadowRadius: 20,
-    elevation: 8,
+    gap: 6,
+    marginTop: 4,
   },
-  deleteText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
+  deleteText: { fontSize: 14, fontWeight: '600' },
   longTermRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-    padding: Spacing.lg,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   longTermTextWrap: {
     flex: 1,
-    gap: Spacing.xs,
+    gap: 3,
   },
+  longTermTitle: { fontSize: 14, fontWeight: '600' },
+  longTermHint: { fontSize: 12, lineHeight: 16 },
+  rewardPointsWrap: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 40,
+    justifyContent: 'center',
+  },
+  rewardPointsInput: {
+    padding: 0,
+    margin: 0,
+    fontSize: 15,
+    fontWeight: '600',
+    minHeight: 20,
+  },
+  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
+  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
   mainTaskOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -1124,6 +1233,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  mainTaskHeadTitle: { fontSize: 17, fontWeight: '700' },
   mainTaskCloseBtn: {
     width: 32,
     height: 32,
@@ -1142,6 +1252,7 @@ const styles = StyleSheet.create({
   mainTaskSearchInput: {
     flex: 1,
     paddingVertical: 0,
+    fontSize: 15,
   },
   mainTaskList: {
     maxHeight: 320,
@@ -1170,7 +1281,10 @@ const styles = StyleSheet.create({
   },
   mainTaskItemTitle: {
     marginBottom: 2,
+    fontSize: 15,
+    fontWeight: '600',
   },
+  mainTaskItemDue: { fontSize: 12 },
   mainTaskConfirmBtn: {
     marginTop: Spacing.sm,
     borderRadius: Radius.lg,
@@ -1178,9 +1292,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rewardPointsWrap: {
-    minHeight: 40,
-    paddingVertical: Spacing.md,
-  },
+  mainTaskConfirmText: { fontSize: 15, fontWeight: '700' },
 });
 

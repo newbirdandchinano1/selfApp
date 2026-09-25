@@ -1,4 +1,9 @@
 import { AppSettingKey, getAppSettingRaw, removeAppSetting, setAppSetting } from '@/lib/app-settings-store';
+import {
+  formatDietaryPrefsForAi,
+  loadDietaryPrefs,
+  type DietaryPrefs,
+} from '@/lib/dietary-prefs';
 
 import {
   adjustNutritionMetricsForDaySchedule,
@@ -29,7 +34,7 @@ export type DailyAiIntakeTargetsRow = {
   rationale_zh: string | null;
 };
 
-function buildProfileFingerprint(user: UserRow, todayYmd: string): string {
+function buildProfileFingerprint(user: UserRow, todayYmd: string, dietary: DietaryPrefs): string {
   return JSON.stringify({
     id: user.id,
     gender: user.gender,
@@ -43,6 +48,7 @@ function buildProfileFingerprint(user: UserRow, todayYmd: string): string {
     birthday: user.birthday,
     age: user.age,
     updated_at: user.updated_at,
+    dietary,
   });
 }
 
@@ -96,8 +102,9 @@ function buildContextBlock(params: {
   user: UserRow;
   todayYmd: string;
   records: HealthRecordRow[];
+  dietary: DietaryPrefs;
 }): string {
-  const { user, todayYmd, records } = params;
+  const { user, todayYmd, records, dietary } = params;
   const activity = mapLifestyleToActivityLevel(user.lifestyle);
   const g = mapGoalToNutritionGoal(user.goal);
   const gender = mapGenderToNutritionGender(user.gender);
@@ -113,15 +120,21 @@ function buildContextBlock(params: {
     daySchedule === 'sedentary'
       ? '【今日日程】静坐习惯，无周训练/休息日划分。'
       : `【今日日程】${weekdayLabel ?? todayYmd} 为${getUserDayScheduleLabelZh(daySchedule)}。周计划：${formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与热量以支持训练；休息日温和降低训练日定量（尤其碳水与热量），仍保证基础营养。`;
+  const dietaryLine = formatDietaryPrefsForAi(dietary);
 
   return [
     `【今日日期】${todayYmd}`,
     `【用户档案】称呼：${user.name ?? '用户'}；性别：${user.gender}；生日：${user.birthday ?? '未填'}；年龄(档案)：${age}；身高 cm：${h}；体重 kg：${w}；生活方式：${user.lifestyle}；目标：${user.goal}`,
     scheduleLine,
+    dietaryLine
+      ? `【饮食偏好与禁忌】${dietaryLine}。请在建议中严格避开过敏与忌口项，并尊重素食等标签。`
+      : null,
     `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；热量 ${heuristic.Calories_kcal} kcal`,
     `【近7日（含今日）每日摄入合计】`,
     buildSevenDayDigest(records, todayYmd),
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 async function readCache(): Promise<DailyAiIntakeTargetsRow | null> {
@@ -180,7 +193,8 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
   healthRecordsLocalOnly?: boolean;
 }): Promise<EnsureDailyAiIntakeTargetsResult> {
   const { user, todayYmd, healthRecordsLocalOnly } = params;
-  const fingerprint = buildProfileFingerprint(user, todayYmd);
+  const dietary = await loadDietaryPrefs();
+  const fingerprint = buildProfileFingerprint(user, todayYmd, dietary);
   const cached = await readCache();
   if (
     cached &&
@@ -199,7 +213,7 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
   const records = await getHealthRecordsLast7Days(user.id, todayYmd, {
     localOnly: healthRecordsLocalOnly,
   });
-  const context = buildContextBlock({ user, todayYmd, records });
+  const context = buildContextBlock({ user, todayYmd, records, dietary });
   const ai = await estimateDailyIntakeTargetsFromContext({ apiKey, contextBlock: context });
   if (!ai.ok) {
     return { status: 'failed', error: ai.error };

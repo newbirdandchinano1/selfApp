@@ -463,7 +463,6 @@ export default function EditProjectScreen() {
   const scheduleSource =
     normalizeRouteParam(params.source as string | string[] | undefined) || `edit-project-${projectId || 'unknown'}`;
   const addTaskSource = `${scheduleSource}-add-task`;
-  const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
@@ -1225,30 +1224,52 @@ export default function EditProjectScreen() {
       );
     });
 
+  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
+  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : '#ffffff';
+  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : 'rgba(241,243,255,0.72)';
+  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)', borderBottomColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: Math.max(insets.top, 8),
+            backgroundColor: theme.background,
+            borderBottomColor: divider,
+          },
+        ]}>
         <Pressable
           onPress={() => router.back()}
           disabled={saving}
           hitSlop={10}
           style={({ pressed }) => [styles.iconBtn, { opacity: saving ? 0.45 : pressed ? 0.75 : 1 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={primary} />
+          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '加载中' : '项目详情'}</Text>
+        <Text style={[styles.headerTitle, { color: theme.text }]}>{loading ? '加载中' : '项目详情'}</Text>
         <Pressable
           onPress={saveProject}
           disabled={saving || loading}
           hitSlop={10}
-          style={({ pressed }) => [styles.headerActionBtn, { opacity: saving || loading ? 0.55 : pressed ? 0.75 : 1 }]}>
-          <Text style={[styles.headerActionText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
+          style={({ pressed }) => [
+            styles.headerActionBtn,
+            {
+              backgroundColor: saving || loading ? `${primary}55` : primary,
+              opacity: pressed ? 0.88 : 1,
+            },
+          ]}>
+          <Text style={styles.headerActionText}>{saving ? '保存中' : '保存'}</Text>
         </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
+        <ScrollView
+          refreshControl={refreshControl}
+          contentContainerStyle={[styles.content, { paddingBottom: 120 + Math.max(insets.bottom, 12) }]}
+          showsVerticalScrollIndicator={false}>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>概要</Text>
             <TextInput
               value={title}
               onChangeText={setTitle}
@@ -1262,107 +1283,123 @@ export default function EditProjectScreen() {
             <Text style={[styles.charCounter, { color: outline }]}>
               {title.length}/{TITLE_MAX_LENGTH}
             </Text>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>项目分类</Text>
+            <View style={[styles.panelDivider, { backgroundColor: divider }]} />
+
             <Pressable
               onPress={() => setCategoryModalVisible(true)}
               disabled={loading || saving}
               style={({ pressed }) => [
-                styles.categorySelect,
-                { backgroundColor: surfaceLow, borderColor: outlineVariant, opacity: loading ? 0.65 : pressed ? 0.8 : 1 },
+                styles.fieldRow,
+                { backgroundColor: fieldBg, opacity: loading ? 0.65 : pressed ? 0.82 : 1 },
               ]}>
-              <View style={styles.categoryLeft}>
+              <View style={styles.fieldRowLeft}>
                 <MaterialIcons name="folder-open" size={18} color={primary} />
-                <Text style={[styles.categoryValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
+                <View style={styles.fieldCopy}>
+                  <Text style={[styles.fieldLabel, { color: outline }]}>分类</Text>
+                  <Text style={[styles.fieldValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
+                </View>
               </View>
-              <MaterialIcons name="expand-more" size={20} color={outline} />
+              <MaterialIcons name="chevron-right" size={20} color={outline} />
             </Pressable>
+
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>标签</Text>
+              <ProjectTagPickerField
+                selectedIds={selectedTagIds}
+                allTags={allTags}
+                loading={tagsLoading || loading}
+                disabled={loading || saving}
+                onChange={setSelectedTagIds}
+                textColor={theme.text}
+                outline={outline}
+                placeholderColor={outlineVariant}
+                primary={primary}
+                surfaceLow={surfaceLow}
+                surfaceLowest={surfaceLowest}
+                isDark={isDark}
+              />
+            </View>
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>标签</Text>
-            <ProjectTagPickerField
-              selectedIds={selectedTagIds}
-              allTags={allTags}
-              loading={tagsLoading || loading}
-              disabled={loading || saving}
-              onChange={setSelectedTagIds}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
-          </View>
-
-          <View style={[styles.section, { opacity: loading ? 0.65 : 1 }]} pointerEvents={loading || saving ? 'none' : 'auto'}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>优先级</Text>
+          <View
+            style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder, opacity: loading ? 0.65 : 1 }]}
+            pointerEvents={loading || saving ? 'none' : 'auto'}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>优先级</Text>
             <ComposerPriorityMatrix value={priority} onChange={setPriority} />
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>前置项目</Text>
-            <PrerequisiteProjectPickerField
-              selectedIds={prerequisiteProjectIds}
-              allProjects={allProjects}
-              excludeProjectId={projectId}
-              loading={projectsLoading || loading}
-              disabled={loading || saving}
-              onChange={setPrerequisiteProjectIds}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
-          </View>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>依赖与日程</Text>
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>前置项目</Text>
+              <PrerequisiteProjectPickerField
+                selectedIds={prerequisiteProjectIds}
+                allProjects={allProjects}
+                excludeProjectId={projectId}
+                loading={projectsLoading || loading}
+                disabled={loading || saving}
+                onChange={setPrerequisiteProjectIds}
+                textColor={theme.text}
+                outline={outline}
+                placeholderColor={outlineVariant}
+                primary={primary}
+                surfaceLow={surfaceLow}
+                surfaceLowest={surfaceLowest}
+                isDark={isDark}
+              />
+            </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>时间限制</Text>
-            <View style={[styles.deadlineCard, { backgroundColor: surfaceLow }]}>
-              <View style={[styles.deadlineIconWrap, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={22} color={primary} />
+            <Pressable
+              onPress={openSchedulePicker}
+              disabled={loading || saving}
+              style={({ pressed }) => [
+                styles.scheduleRow,
+                { backgroundColor: fieldBg, opacity: loading || saving ? 0.65 : pressed ? 0.85 : 1 },
+              ]}>
+              <View style={[styles.scheduleIcon, { backgroundColor: surfaceLowest }]}>
+                <MaterialIcons name="event-note" size={20} color={primary} />
               </View>
               <View style={styles.deadlineBody}>
-                <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
+                <Text style={[styles.fieldLabel, { color: outline }]}>时间限制</Text>
+                <Text style={[styles.fieldValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
                 {!!(reminderText || repeatText) && (
                   <View style={styles.tagRow}>
                     {!!reminderText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={14} color={primary} />
+                        <MaterialIcons name="notifications-active" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
                       </View>
                     )}
                     {!!repeatText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={14} color={primary} />
+                        <MaterialIcons name="repeat" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
                       </View>
                     )}
                   </View>
                 )}
               </View>
-              <Pressable onPress={openSchedulePicker} disabled={loading || saving} style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="edit-calendar" size={22} color={primary} />
-              </Pressable>
-            </View>
+              <MaterialIcons name="chevron-right" size={20} color={outline} />
+            </Pressable>
           </View>
 
-          <View style={styles.section}>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
             <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>任务拆解</Text>
+              <View>
+                <Text style={[styles.panelTitle, { color: theme.text }]}>任务拆解</Text>
+                <Text style={[styles.panelHint, { color: outline }]}>
+                  {subtasks.length > 0 ? `${subtasks.length} 项顶层任务` : '把项目拆成可执行任务'}
+                </Text>
+              </View>
               <View style={styles.subtaskHeaderActions}>
                 {expandableSubtaskIds.length > 0 ? (
-                  <Pressable onPress={toggleExpandAllSubtasks} style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
-                    <MaterialIcons name={allSubtasksExpanded ? 'expand-less' : 'expand-more'} size={16} color={primary} />
-                    <Text style={[styles.linkBtnText, { color: primary }]}>{allSubtasksExpanded ? '全部收起' : '全部展开'}</Text>
+                  <Pressable
+                    onPress={toggleExpandAllSubtasks}
+                    style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
+                    <Text style={[styles.linkBtnText, { color: primary }]}>
+                      {allSubtasksExpanded ? '收起' : '展开'}
+                    </Text>
                   </Pressable>
                 ) : null}
                 <Pressable
@@ -1376,27 +1413,28 @@ export default function EditProjectScreen() {
                       },
                     })
                   }
-                  style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
-                  <MaterialIcons name="add-circle" size={16} color={primary} />
-                  <Text style={[styles.linkBtnText, { color: primary }]}>添加任务</Text>
+                  style={({ pressed }) => [
+                    styles.addTaskBtn,
+                    { backgroundColor: `${primary}14`, opacity: pressed ? 0.8 : 1 },
+                  ]}>
+                  <MaterialIcons name="add" size={16} color={primary} />
+                  <Text style={[styles.linkBtnText, { color: primary }]}>添加</Text>
                 </Pressable>
               </View>
             </View>
             <View style={styles.subtaskList}>
               {renderSubtaskNodes(subtasks, 0)}
               {subtasks.length === 0 && (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder }]}>
-                  <View style={[styles.emptySubtaskIcon, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="playlist-add-check" size={18} color={outline} />
-                  </View>
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无任务，点击右上角添加任务</Text>
+                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
+                  <MaterialIcons name="playlist-add-check" size={18} color={outline} />
+                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无任务，点右上角添加</Text>
                 </View>
               )}
             </View>
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>长期项目</Text>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>更多</Text>
             <Pressable
               onPress={() => setIsLongTermProject((v) => !v)}
               disabled={loading || saving}
@@ -1405,69 +1443,81 @@ export default function EditProjectScreen() {
               style={({ pressed }) => [
                 styles.longTermRow,
                 {
-                  backgroundColor: isLongTermProject ? `${primary}12` : surfaceLow,
-                  borderColor: isLongTermProject ? primary : `${outlineVariant}70`,
+                  backgroundColor: isLongTermProject ? `${primary}12` : fieldBg,
+                  borderColor: isLongTermProject ? primary : 'transparent',
                   opacity: loading || saving ? 0.65 : pressed ? 0.88 : 1,
                 },
               ]}>
               <View style={styles.longTermTextWrap}>
-                <Text style={[styles.longTermTitle, { color: theme.text }]}>标记为长期项目</Text>
+                <Text style={[styles.longTermTitle, { color: theme.text }]}>长期项目</Text>
                 <Text style={[styles.longTermHint, { color: outline }]}>
-                  无子任务时可指派为青蛙；完成时会询问是否已完成整个项目
+                  无子任务时可指派为青蛙；完成时确认是否结束整项
                 </Text>
               </View>
               <MaterialIcons
                 name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
-                size={24}
+                size={22}
                 color={isLongTermProject ? primary : outline}
               />
             </Pressable>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>奖励积分</Text>
-            <View style={[styles.rewardPointsWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput
-                value={rewardPointsText}
-                onChangeText={setRewardPointsText}
-                placeholder="0"
-                placeholderTextColor={outline}
-                keyboardType="numbers-and-punctuation"
-                editable={!loading && !saving}
-                style={[styles.rewardPointsInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
-              />
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>奖励积分</Text>
+              <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
+                  value={rewardPointsText}
+                  onChangeText={setRewardPointsText}
+                  placeholder="0"
+                  placeholderTextColor={outline}
+                  keyboardType="numbers-and-punctuation"
+                  editable={!loading && !saving}
+                  style={[styles.rewardPointsInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
+                />
+              </View>
+              <Text style={[styles.longTermHint, { color: outline }]}>
+                完成整项后计入；负数扣除，可含小数；0 无变动
+              </Text>
             </View>
-            <Text style={[styles.longTermHint, { color: outline, marginTop: 8 }]}>
-              完成整个项目后计入积分；负数表示扣除，可含小数；0 表示无变动
-            </Text>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>验收标准</Text>
-            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput value={notes} onChangeText={setNotes} placeholder="怎样算完成？可写可验证的标准…（可选）" placeholderTextColor={outline} multiline editable={!loading && !saving} style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]} />
-              <View style={styles.notesIcon} pointerEvents="none"><MaterialIcons name="fact-check" size={20} color={outlineVariant} /></View>
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>验收标准</Text>
+              <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
+                  value={notes}
+                  onChangeText={setNotes}
+                  placeholder="怎样算完成？（可选）"
+                  placeholderTextColor={outline}
+                  multiline
+                  editable={!loading && !saving}
+                  style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
+                />
+              </View>
             </View>
           </View>
         </ScrollView>
 
-        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12), backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)', borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)' }]}>
-          <View style={styles.bottomInner}>
-            <Pressable
-              onPress={removeProject}
-              disabled={saving || loading}
-              style={({ pressed }) => [
-                styles.deleteBtn,
-                {
-                  backgroundColor: pressed ? '#991b1b' : '#ba1a1a',
-                  opacity: saving || loading ? 0.7 : 1,
-                },
-                pressed && { transform: [{ scale: 0.98 }] },
-              ]}>
-              <MaterialIcons name="delete-outline" size={22} color="#fff" />
-              <Text style={styles.createText}>删除项目</Text>
-            </Pressable>
-          </View>
+        <View
+          style={[
+            styles.bottomBar,
+            {
+              paddingBottom: Math.max(insets.bottom, 10),
+              backgroundColor: theme.background,
+              borderTopColor: divider,
+            },
+          ]}>
+          <Pressable
+            onPress={removeProject}
+            disabled={saving || loading}
+            style={({ pressed }) => [
+              styles.deleteBtn,
+              {
+                borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
+                opacity: saving || loading ? 0.55 : pressed ? 0.8 : 1,
+              },
+            ]}>
+            <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
+            <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除项目</Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
 
@@ -1527,89 +1577,162 @@ export default function EditProjectScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingBottom: 10, borderBottomWidth: 1 },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerActionBtn: { minWidth: 46, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerActionText: { fontSize: 15, fontWeight: '800' },
-  headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
-  section: { gap: 10 },
-  sectionLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 1.6, textTransform: 'uppercase', opacity: 0.75 },
-  titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  charCounter: { alignSelf: 'flex-end', fontSize: 12, fontWeight: '600' },
-  categorySelect: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  categoryLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 10 },
-  categoryValue: { fontSize: 14, fontWeight: '700' },
-  deadlineCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16 },
-  deadlineIconWrap: { width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
-  deadlineBody: { flex: 1, gap: 4 },
-  deadlineKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
-  deadlineValue: { fontSize: 16, fontWeight: '800' },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  metaTag: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 999, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
-  metaTagText: { fontSize: 12, fontWeight: '600' },
-  deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  subtaskHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  subtaskHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 1, flexWrap: 'wrap', justifyContent: 'flex-end' },
-  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  linkBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase' },
-  subtaskList: { gap: 10 },
+  header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  headerActionBtn: {
+    minWidth: 64,
+    height: 34,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerActionText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  headerTitle: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
+  content: { paddingTop: 84, paddingHorizontal: 14, gap: 12 },
+  panel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
+  },
+  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+  panelHint: { fontSize: 12, marginTop: 2, lineHeight: 16 },
+  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
+  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28 },
+  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  fieldRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
+  fieldCopy: { flex: 1, gap: 2, minWidth: 0 },
+  fieldBlock: { gap: 8 },
+  fieldLabel: { fontSize: 12, fontWeight: '600' },
+  fieldValue: { fontSize: 14, fontWeight: '600' },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  scheduleIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deadlineBody: { flex: 1, gap: 4, minWidth: 0 },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  metaTagText: { fontSize: 11, fontWeight: '600' },
+  subtaskHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  subtaskHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 4 },
+  linkBtnText: { fontSize: 13, fontWeight: '600' },
+  addTaskBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  subtaskList: { gap: 8 },
   subtaskTreeWrap: { width: '100%' },
   subtaskRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 2,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  subtaskExpandHit: { width: 28, height: 34, alignItems: 'center', justifyContent: 'center' },
-  subtaskExpandPlaceholder: { width: 28, height: 34 },
-  subtaskLevelMark: { width: 28, alignItems: 'center', justifyContent: 'center' },
+  subtaskExpandHit: { width: 26, height: 32, alignItems: 'center', justifyContent: 'center' },
+  subtaskExpandPlaceholder: { width: 26, height: 32 },
+  subtaskLevelMark: { width: 24, alignItems: 'center', justifyContent: 'center' },
   subtaskLevelBadge: {
-    minWidth: 22,
-    height: 22,
-    paddingHorizontal: 5,
-    borderRadius: 11,
-    borderWidth: 1,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 4,
+    borderRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  subtaskLevelText: { fontSize: 11, fontWeight: '900' },
-  subtaskRowMainPress: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12, minWidth: 0 },
-  subtaskIndicator: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  subtaskBody: { flex: 1, gap: 8, paddingRight: 2 },
-  subtaskText: { flex: 1, fontSize: 15, fontWeight: '700', lineHeight: 20 },
-  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 18 },
-  subtaskAction: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
-  emptySubtaskRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 14, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed' },
-  emptySubtaskIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
+  subtaskLevelText: { fontSize: 10, fontWeight: '700' },
+  subtaskRowMainPress: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
+  subtaskIndicator: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  subtaskBody: { flex: 1, gap: 6, paddingRight: 2 },
+  subtaskText: { flex: 1, fontSize: 14, fontWeight: '600', lineHeight: 19 },
+  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
+  subtaskAction: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  emptySubtaskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
+  },
+  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '500' },
   longTermRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  longTermTextWrap: { flex: 1, gap: 4 },
-  longTermTitle: { fontSize: 15, fontWeight: '700' },
-  longTermHint: { fontSize: 12, lineHeight: 17 },
-  notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
-  notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
+  longTermTextWrap: { flex: 1, gap: 3 },
+  longTermTitle: { fontSize: 14, fontWeight: '600' },
+  longTermHint: { fontSize: 12, lineHeight: 16 },
+  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
+  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
   rewardPointsWrap: {
-    borderRadius: 12,
-    paddingHorizontal: 14,
+    borderRadius: 10,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     minHeight: 40,
     justifyContent: 'center',
@@ -1618,23 +1741,46 @@ const styles = StyleSheet.create({
     padding: 0,
     margin: 0,
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '600',
     minHeight: 20,
   },
-  notesIcon: { position: 'absolute', right: 12, bottom: 12 },
-  bottomBar: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1 },
-  bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
-  createBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
-  deleteBtn: { width: '100%', paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 20, elevation: 8 },
-  createText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
+  bottomBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  deleteBtn: {
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  deleteText: { fontSize: 14, fontWeight: '600' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.38)', justifyContent: 'center', paddingHorizontal: 18 },
-  modalCard: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 8 },
-  modalTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
-  modalItem: { borderRadius: 10, paddingHorizontal: 10, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalCard: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 6 },
+  modalTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
+  modalItem: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   modalItemText: { fontSize: 14, fontWeight: '600' },
   toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
   toastHost: { width: '100%', alignItems: 'center' },
-  toastWrap: { borderRadius: 999, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
+  toastWrap: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   savingOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1643,5 +1789,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 14,
   },
-  savingOverlayText: { fontSize: 15, fontWeight: '700' },
+  savingOverlayText: { fontSize: 15, fontWeight: '600' },
 });

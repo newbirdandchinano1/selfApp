@@ -1,4 +1,4 @@
-import { AppButton, AppCard, AppIconButton, ScreenHeader } from '@/components/ui';
+import { AppButton, AppIconButton, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -66,7 +66,6 @@ type TrendDetailItem = {
   type: 'income' | 'expense';
 };
 
-const CATEGORY_COLORS = ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#bfdbfe', '#0ea5e9', '#38bdf8'];
 const DEFAULT_CATEGORY_ICON: keyof typeof MaterialIcons.glyphMap = 'category';
 
 function formatYmd(value: Date) {
@@ -78,24 +77,6 @@ function formatYmd(value: Date) {
 
 function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function SummaryMetric({ label, valueText, color }: { label: string; valueText: string; color: string }) {
-  const { colors } = useAppTheme();
-  return (
-    <View style={styles.summaryCol}>
-      <Text style={[Typography.caption, styles.summaryLabel, { color: colors.textSecondary }]} numberOfLines={1}>
-        {label}
-      </Text>
-      <Text
-        style={[styles.summaryAmount, { color }]}
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        minimumFontScale={0.5}>
-        {valueText}
-      </Text>
-    </View>
-  );
 }
 
 function formatMonthDay(value: Date) {
@@ -185,11 +166,33 @@ const PAGE_API_KEY = 'finance-stats';
 export default function FinanceStatsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, isDark, shadows } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const expenseColor = colors.primary;
-  const incomeColor = colors.tertiary;
-  const balanceColor = colors.secondary;
+  const incomeColor = colors.secondary;
+  /** 分类条色板：财务蓝绿系，与资产页配置条一致 */
+  const categoryPalette = React.useMemo(
+    () => [
+      colors.primary,
+      colors.primarySoft,
+      colors.secondary,
+      colors.tertiary,
+      isDark ? '#38bdf8' : '#0284c7',
+      isDark ? '#2dd4bf' : '#0f766e',
+      isDark ? '#a78bfa' : '#7c3aed',
+    ],
+    [colors.primary, colors.primarySoft, colors.secondary, colors.tertiary, isDark],
+  );
+  const panelStyle = React.useMemo(
+    () => [
+      styles.panel,
+      {
+        backgroundColor: colors.surface,
+        borderColor: colors.outline,
+      },
+    ],
+    [colors.outline, colors.surface],
+  );
   const [activeTab, setActiveTab] = React.useState<RangeTab>('月');
   const [currentDate, setCurrentDate] = React.useState(() => new Date());
   const [customStartDate, setCustomStartDate] = React.useState(() => addDays(new Date(), -6));
@@ -284,9 +287,9 @@ export default function FinanceStatsScreen() {
       amount: item.amount,
       count: item.count,
       icon: asMaterialIcon(item.iconKey),
-      color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+      color: categoryPalette[index % categoryPalette.length]!,
     }));
-  }, [categoryMode, stats?.categories.expense, stats?.categories.income]);
+  }, [categoryMode, categoryPalette, stats?.categories.expense, stats?.categories.income]);
 
   const dailyRows = React.useMemo<BillSummaryItem[]>(() => {
     if (!stats) {
@@ -475,7 +478,7 @@ export default function FinanceStatsScreen() {
 
   const trendTitle =
     trendMode === 'income' ? '每日收入趋势' : trendMode === 'balance' ? '每日结余趋势' : '每日支出趋势';
-  const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? balanceColor : expenseColor;
+  const trendAccent = trendMode === 'income' ? incomeColor : trendMode === 'balance' ? colors.secondary : expenseColor;
   const shouldShowCustomYear = range.start.getFullYear() !== range.end.getFullYear();
   const rangeLabel =
     activeTab === '年'
@@ -559,15 +562,17 @@ export default function FinanceStatsScreen() {
   }, [billSummaryForAi]);
 
   const renderModePill = (label: string, active: boolean, activeColor: string, onPress: () => void) => (
-    <Pressable key={label} onPress={onPress}>
-      <Text
-        style={
-          active
-            ? [styles.pillTabActive, { backgroundColor: activeColor }]
-            : [styles.pillTab, { color: colors.textSecondary }]
-        }>
-        {label}
-      </Text>
+    <Pressable
+      key={label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.pillTabBtn,
+        active && {
+          backgroundColor: isDark ? `${activeColor}33` : `${activeColor}18`,
+        },
+        pressed && { opacity: 0.85 },
+      ]}>
+      <Text style={[styles.pillTabLabel, { color: active ? activeColor : colors.textSecondary }]}>{label}</Text>
     </Pressable>
   );
 
@@ -625,10 +630,16 @@ export default function FinanceStatsScreen() {
                 onPress={() => setActiveTab(tab)}
                 style={({ pressed }) => [
                   styles.tabBtn,
-                  active && [styles.tabBtnActive, shadows.card, { backgroundColor: colors.surface }],
+                  active && {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.outline,
+                    borderWidth: StyleSheet.hairlineWidth,
+                  },
                   pressed && { opacity: 0.88 },
                 ]}>
-                <Text style={[Typography.caption, { color: active ? colors.text : colors.textSecondary }]}>{tab}</Text>
+                <Text style={[Typography.caption, { color: active ? colors.primary : colors.textSecondary }]}>
+                  {tab}
+                </Text>
               </Pressable>
             );
           })}
@@ -651,27 +662,39 @@ export default function FinanceStatsScreen() {
         </View>
 
         {activeTab === '自定义' ? (
-          <AppCard style={styles.customDateWrap}>
+          <View style={[panelStyle, styles.customDateWrap]}>
             <Pressable
               onPress={() => openDatePicker('start')}
-              style={({ pressed }) => [styles.datePickerBtn, { borderColor: colors.outline }, pressed && { opacity: 0.88 }]}>
+              style={({ pressed }) => [
+                styles.datePickerBtn,
+                { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.input },
+                pressed && { opacity: 0.88 },
+              ]}>
               <Text style={[Typography.label, { color: colors.textSecondary }]}>开始日期</Text>
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatCustomDate(customStartDate, shouldShowCustomYear)}</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>
+                {formatCustomDate(customStartDate, shouldShowCustomYear)}
+              </Text>
             </Pressable>
             <MaterialIcons name="arrow-forward" size={18} color={colors.textSecondary} />
             <Pressable
               onPress={() => openDatePicker('end')}
-              style={({ pressed }) => [styles.datePickerBtn, { borderColor: colors.outline }, pressed && { opacity: 0.88 }]}>
+              style={({ pressed }) => [
+                styles.datePickerBtn,
+                { borderColor: colors.outline, backgroundColor: isDark ? colors.surfaceMuted : colors.input },
+                pressed && { opacity: 0.88 },
+              ]}>
               <Text style={[Typography.label, { color: colors.textSecondary }]}>结束日期</Text>
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>{formatCustomDate(customEndDate, shouldShowCustomYear)}</Text>
+              <Text style={[Typography.bodyStrong, { color: colors.text }]}>
+                {formatCustomDate(customEndDate, shouldShowCustomYear)}
+              </Text>
             </Pressable>
-          </AppCard>
+          </View>
         ) : null}
 
         <Modal visible={!!activeDatePicker} transparent animationType="fade" onRequestClose={() => setActiveDatePicker(null)}>
           <Pressable style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setActiveDatePicker(null)}>
             <Pressable
-              style={[styles.modalCard, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}
+              style={[styles.modalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}
               onPress={(event) => event.stopPropagation()}>
               <View style={styles.modalHeader}>
                 <Text style={[Typography.h3, { color: colors.text }]}>
@@ -691,20 +714,29 @@ export default function FinanceStatsScreen() {
               </View>
 
               <View style={styles.pickerColumns}>
-                {([
-                  { key: 'year', label: '年', value: `${draftPickerDate.getFullYear()}` },
-                  { key: 'month', label: '月', value: `${draftPickerDate.getMonth() + 1}` },
-                  { key: 'day', label: '日', value: `${draftPickerDate.getDate()}` },
-                ] as { key: PickerColumn; label: string; value: string }[]).map((item) => (
+                {(
+                  [
+                    { key: 'year', label: '年', value: `${draftPickerDate.getFullYear()}` },
+                    { key: 'month', label: '月', value: `${draftPickerDate.getMonth() + 1}` },
+                    { key: 'day', label: '日', value: `${draftPickerDate.getDate()}` },
+                  ] as { key: PickerColumn; label: string; value: string }[]
+                ).map((item) => (
                   <View
                     key={item.key}
-                    style={[styles.pickerColumnCard, { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle }]}>
-                    <Pressable onPress={() => adjustDraftDate(item.key, 1)} style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
+                    style={[
+                      styles.pickerColumnCard,
+                      { backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle },
+                    ]}>
+                    <Pressable
+                      onPress={() => adjustDraftDate(item.key, 1)}
+                      style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
                       <MaterialIcons name="keyboard-arrow-up" size={22} color={expenseColor} />
                     </Pressable>
                     <Text style={[Typography.label, { color: colors.textSecondary }]}>{item.label}</Text>
                     <Text style={[Typography.h2, styles.pickerColumnValue, { color: colors.text }]}>{item.value}</Text>
-                    <Pressable onPress={() => adjustDraftDate(item.key, -1)} style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
+                    <Pressable
+                      onPress={() => adjustDraftDate(item.key, -1)}
+                      style={({ pressed }) => [styles.pickerAdjustBtn, pressed && { opacity: 0.7 }]}>
                       <MaterialIcons name="keyboard-arrow-down" size={22} color={expenseColor} />
                     </Pressable>
                   </View>
@@ -724,18 +756,38 @@ export default function FinanceStatsScreen() {
           </Pressable>
         </Modal>
 
-        <AppCard style={[shadows.card, styles.cardGap]}>
-          <View style={styles.summaryRow}>
-            <SummaryMetric label="支出" valueText={formatMoney(totalExpense)} color={expenseColor} />
-            <SummaryMetric label="收入" valueText={formatMoney(totalIncome)} color={incomeColor} />
-            <SummaryMetric
-              label="结余"
-              valueText={`${balance < 0 ? '-' : ''}${formatMoney(Math.abs(balance))}`}
-              color={balanceColor}
-            />
+        <View style={styles.hero}>
+          <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>本期结余</Text>
+          <Text
+            style={[
+              Typography.display,
+              styles.heroBalance,
+              { color: balance < 0 ? colors.danger : colors.text, fontSize: 40, lineHeight: 48 },
+            ]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.55}>
+            {`${balance < 0 ? '-' : ''}${formatMoney(Math.abs(balance))}`}
+          </Text>
+          <Text style={[Typography.caption, { color: colors.textMuted }]}>
+            {txnCount > 0 ? `共 ${txnCount} 笔流水` : '所选区间暂无流水'}
+          </Text>
+          <View style={styles.totalsRow}>
+            <View style={[styles.totalChip, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
+              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>支出</Text>
+              <Text style={[Typography.bodyStrong, { color: expenseColor }]} numberOfLines={1}>
+                {formatMoney(totalExpense)}
+              </Text>
+            </View>
+            <View style={[styles.totalChip, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
+              <Text style={[Typography.kicker, styles.totalLabel, { color: colors.textSecondary }]}>收入</Text>
+              <Text style={[Typography.bodyStrong, { color: incomeColor }]} numberOfLines={1}>
+                {formatMoney(totalIncome)}
+              </Text>
+            </View>
           </View>
 
-          <View style={[styles.analysisCard, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}>
+          <View style={[styles.analysisCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
             <View style={styles.analysisHeader}>
               <MaterialIcons name="auto-awesome" size={18} color={expenseColor} />
               <Text style={[Typography.bodyStrong, { color: colors.text }]}>AI 账单分析</Text>
@@ -743,7 +795,9 @@ export default function FinanceStatsScreen() {
             {aiBillAnalysisBusy ? (
               <View style={styles.analysisLoadingRow}>
                 <ActivityIndicator size="small" color={expenseColor} />
-                <Text style={[Typography.caption, { color: colors.textSecondary, flex: 1 }]}>正在调用智谱模型，请稍候…</Text>
+                <Text style={[Typography.caption, { color: colors.textSecondary, flex: 1 }]}>
+                  正在调用智谱模型，请稍候…
+                </Text>
               </View>
             ) : aiBillAnalysisError || aiBillAnalysis ? (
               <Text
@@ -770,9 +824,9 @@ export default function FinanceStatsScreen() {
               </Text>
             </Pressable>
           </View>
-        </AppCard>
+        </View>
 
-        <AppCard style={[shadows.card, styles.cardGap]}>
+        <View style={panelStyle}>
           <View style={styles.sectionHeader}>
             <Text style={[Typography.title, { color: colors.text }]}>
               {categoryMode === 'income' ? '收入分类构成' : '支出分类构成'}
@@ -815,22 +869,20 @@ export default function FinanceStatsScreen() {
               </View>
             </View>
           ))}
-        </AppCard>
+        </View>
 
-        <AppCard style={[shadows.card, styles.cardGap]}>
+        <View style={panelStyle}>
           <View style={styles.sectionHeader}>
             <Text style={[Typography.title, { color: colors.text }]}>{trendTitle}</Text>
             <View style={[styles.pillTabs, { backgroundColor: isDark ? colors.surfaceMuted : colors.capsule }]}>
               {renderModePill('支出', trendMode === 'expense', expenseColor, () => setTrendMode('expense'))}
               {renderModePill('收入', trendMode === 'income', incomeColor, () => setTrendMode('income'))}
-              {renderModePill('结余', trendMode === 'balance', balanceColor, () => setTrendMode('balance'))}
+              {renderModePill('结余', trendMode === 'balance', colors.secondary, () => setTrendMode('balance'))}
             </View>
           </View>
 
           <View style={[styles.trendTip, { backgroundColor: colors.surfaceSubtle }]}>
-            <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-              {trendTipText}
-            </Text>
+            <Text style={[Typography.caption, { color: colors.textSecondary }]}>{trendTipText}</Text>
           </View>
 
           <View style={styles.trendChart}>
@@ -842,10 +894,7 @@ export default function FinanceStatsScreen() {
                   onPress={() => setSelectedTrendIndex((prev) => (prev === idx ? null : idx))}
                   accessibilityRole="button"
                   accessibilityLabel={`${point.label} ${trendModeLabel} ${formatMoney(Math.abs(point.rawValue))}`}
-                  style={({ pressed }) => [
-                    styles.trendBarWrap,
-                    pressed && { opacity: 0.82 },
-                  ]}>
+                  style={({ pressed }) => [styles.trendBarWrap, pressed && { opacity: 0.82 }]}>
                   <View
                     style={[
                       styles.trendBar,
@@ -885,9 +934,9 @@ export default function FinanceStatsScreen() {
               )}
             </View>
           ) : null}
-        </AppCard>
+        </View>
 
-        <AppCard style={[shadows.card, styles.cardGap]}>
+        <View style={panelStyle}>
           <Text style={[Typography.title, { color: colors.text }]}>账单汇总</Text>
           <View style={[styles.tableWrap, { backgroundColor: colors.surfaceSubtle }]}>
             <View style={styles.tableHeader}>
@@ -901,16 +950,16 @@ export default function FinanceStatsScreen() {
                 <Text style={[styles.tableCell, { color: colors.text }]}>{row.date}</Text>
                 <Text style={[styles.tableCell, { color: expenseColor }]}>{formatMoney(row.expense)}</Text>
                 <Text style={[styles.tableCell, { color: incomeColor }]}>{formatMoney(row.income)}</Text>
-                <Text style={[styles.tableCell, { color: balanceColor }]}>
+                <Text style={[styles.tableCell, { color: colors.secondary }]}>
                   {row.balance < 0 ? '-' : ''}
                   {formatMoney(Math.abs(row.balance))}
                 </Text>
               </View>
             ))}
           </View>
-        </AppCard>
+        </View>
 
-        <AppCard style={[shadows.card, styles.cardGap]}>
+        <View style={panelStyle}>
           <View style={styles.sectionHeader}>
             <Text style={[Typography.title, { color: colors.text }]}>
               {rankMode === 'income' ? '单笔收入排行' : '单笔支出排行'}
@@ -938,7 +987,7 @@ export default function FinanceStatsScreen() {
               </View>
             );
           })}
-        </AppCard>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -952,10 +1001,42 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingHorizontal: Spacing['5xl'],
     paddingTop: Spacing['3xl'],
-    gap: Spacing['4xl'],
+    gap: Spacing['5xl'],
   },
-  cardGap: {
+  panel: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
     gap: Spacing.xl,
+  },
+  hero: {
+    gap: Spacing.md,
+  },
+  heroKicker: {
+    letterSpacing: 1.2,
+    fontSize: 12,
+    textTransform: 'none',
+  },
+  heroBalance: {
+    flexShrink: 1,
+  },
+  totalsRow: {
+    flexDirection: 'row',
+    gap: Spacing.xl,
+    marginTop: Spacing.sm,
+  },
+  totalChip: {
+    flex: 1,
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing.xl,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  totalLabel: {
+    letterSpacing: 1.2,
+    fontSize: 11,
+    textTransform: 'none',
   },
   tabWrap: {
     borderRadius: Radius.pill,
@@ -967,8 +1048,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.pill,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
   },
-  tabBtnActive: {},
   monthSwitcher: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1042,32 +1124,12 @@ const styles = StyleSheet.create({
   modalActionBtn: {
     flex: 1,
   },
-  summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.sm,
-  },
-  summaryCol: {
-    flex: 1,
-    minWidth: 0,
-    alignItems: 'center',
-    gap: Spacing.xs,
-    paddingHorizontal: Spacing.xs,
-  },
-  summaryLabel: {
-    textAlign: 'center',
-    width: '100%',
-  },
-  summaryAmount: {
-    ...Typography.h2,
-    textAlign: 'center',
-    width: '100%',
-  },
   analysisCard: {
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
     padding: Spacing.xl,
     gap: Spacing.md,
+    marginTop: Spacing.sm,
   },
   analysisHeader: {
     flexDirection: 'row',
@@ -1106,19 +1168,14 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
     alignItems: 'center',
   },
-  pillTabActive: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '800',
+  pillTabBtn: {
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.xs,
     borderRadius: Radius.pill,
-    overflow: 'hidden',
   },
-  pillTab: {
+  pillTabLabel: {
     fontSize: 11,
     fontWeight: '800',
-    paddingHorizontal: Spacing.lg,
   },
   donutArea: {
     alignItems: 'center',

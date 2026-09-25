@@ -279,9 +279,9 @@ export default function AddHabitScreen() {
   const [habitName, setHabitName] = React.useState(initialName);
   const [habitIcon, setHabitIcon] = React.useState(initialIcon);
   const [quantifyEnabled, setQuantifyEnabled] = React.useState(true);
-  const [contextOpen, setContextOpen] = React.useState(true);
-  const [quantifyOpen, setQuantifyOpen] = React.useState(true);
-  const [cycleOpen, setCycleOpen] = React.useState(true);
+  const [contextOpen, setContextOpen] = React.useState(false);
+  const [quantifyOpen, setQuantifyOpen] = React.useState(false);
+  const [cycleOpen, setCycleOpen] = React.useState(false);
   const [contextOptions, setContextOptions] = React.useState<string[]>([]);
   /** 新建时不预设情境；列表仅来自接口 habit_contexts */
   const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
@@ -313,7 +313,7 @@ export default function AddHabitScreen() {
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
   const [scheduleAxisHint, setScheduleAxisHint] = React.useState<string | null>(null);
   const [expectedGoalOpen, setExpectedGoalOpen] = React.useState(false);
-  const [subHabitsOpen, setSubHabitsOpen] = React.useState(true);
+  const [subHabitsOpen, setSubHabitsOpen] = React.useState(false);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
   const [subHabits, setSubHabits] = React.useState<HabitSubItem[]>([]);
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);

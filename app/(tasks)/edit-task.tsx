@@ -447,7 +447,6 @@ export default function EditTaskScreen() {
   );
 
   const primary = isDark ? '#60a5fa' : '#0058be';
-  const primaryContainer = isDark ? '#1d4ed8' : '#2170e4';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
   const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
   const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
@@ -455,6 +454,10 @@ export default function EditTaskScreen() {
   const subtaskCardBg = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
   const subtaskCardBorder = isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.55)';
   const subtaskIndicatorBg = isDark ? 'rgba(30,41,59,0.72)' : 'rgba(226,232,240,0.85)';
+  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
+  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : '#ffffff';
+  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : 'rgba(241,243,255,0.72)';
+  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
 
   const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
     { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
@@ -1089,9 +1092,9 @@ export default function EditTaskScreen() {
         style={[
           styles.header,
           {
-            paddingTop: Math.max(insets.top, 12),
-            backgroundColor: isDark ? 'rgba(15,23,42,0.82)' : 'rgba(255,255,255,0.82)',
-            borderBottomColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)',
+            paddingTop: Math.max(insets.top, 8),
+            backgroundColor: theme.background,
+            borderBottomColor: divider,
           },
         ]}>
         <Pressable
@@ -1099,28 +1102,31 @@ export default function EditTaskScreen() {
           disabled={saving || loading}
           hitSlop={10}
           style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={primary} />
+          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: primary }]}>{loading ? '任务详情' : '编辑任务'}</Text>
+        <Text style={[styles.headerTitle, { color: theme.text }]}>{loading ? '加载中' : '编辑任务'}</Text>
         <Pressable
           onPress={handleSavePress}
           disabled={saving || loading}
           hitSlop={10}
           style={({ pressed }) => [
             styles.headerActionBtn,
-            { opacity: saving || loading ? 0.55 : pressed ? 0.75 : 1 },
+            {
+              backgroundColor: saving || loading ? `${primary}55` : primary,
+              opacity: pressed ? 0.88 : 1,
+            },
           ]}>
-          <Text style={[styles.headerActionText, { color: primary }]}>{saving ? '保存中' : '保存'}</Text>
+          <Text style={styles.headerActionText}>{saving ? '保存中' : '保存'}</Text>
         </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
           refreshControl={refreshControl}
-          contentContainerStyle={[styles.content, { paddingBottom: 150 + Math.max(insets.bottom, 12) }]}
+          contentContainerStyle={[styles.content, { paddingBottom: 120 + Math.max(insets.bottom, 12) }]}
           showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>基础信息</Text>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>概要</Text>
             <TextInput
               value={title}
               onChangeText={(t) => setTitle(t.slice(0, TITLE_MAX_LENGTH))}
@@ -1134,86 +1140,105 @@ export default function EditTaskScreen() {
             <Text style={[styles.charCounter, { color: outline }]}>
               {title.length}/{TITLE_MAX_LENGTH}
             </Text>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>优先级别</Text>
-            {inheritsProjectPriority ? (
-              <View
-                style={[
-                  styles.prioritySelect,
-                  {
-                    backgroundColor: surfaceLow,
-                    borderColor: `${outlineVariant}70`,
-                    opacity: loading ? 0.65 : 1,
-                  },
-                ]}>
-                <View style={styles.priorityLeft}>
-                  <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                  <Text style={[styles.priorityValue, { color: theme.text }]}>
-                    {`与项目一致：${projectPriorityLabel || currentPriority.label || '未设置'}`}
-                  </Text>
+            <View style={[styles.panelDivider, { backgroundColor: divider }]} />
+
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>优先级</Text>
+              {inheritsProjectPriority ? (
+                <View style={[styles.prioritySelect, { backgroundColor: fieldBg, opacity: loading ? 0.65 : 1 }]}>
+                  <View style={styles.priorityLeft}>
+                    <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
+                    <Text style={[styles.priorityValue, { color: theme.text }]}>
+                      {`与项目一致：${projectPriorityLabel || currentPriority.label || '未设置'}`}
+                    </Text>
+                  </View>
                 </View>
+              ) : (
+                <Pressable
+                  onPress={() => setPriorityOpen(true)}
+                  disabled={loading}
+                  style={({ pressed }) => [
+                    styles.prioritySelect,
+                    {
+                      backgroundColor: fieldBg,
+                      opacity: loading ? 0.65 : pressed ? 0.85 : 1,
+                    },
+                  ]}>
+                  <View style={styles.priorityLeft}>
+                    <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
+                    <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={20} color={outline} />
+                </Pressable>
+              )}
+            </View>
+
+            {canTagTask ? (
+              <View style={styles.fieldBlock}>
+                <Text style={[styles.fieldLabel, { color: outline }]}>标签</Text>
+                <ProjectTagPickerField
+                  selectedIds={selectedTagIds}
+                  allTags={allTags}
+                  loading={tagsLoading}
+                  disabled={loading}
+                  onChange={setSelectedTagIds}
+                  textColor={theme.text}
+                  outline={outline}
+                  placeholderColor={outlineVariant}
+                  primary={primary}
+                  surfaceLow={surfaceLow}
+                  surfaceLowest={surfaceLowest}
+                  isDark={isDark}
+                />
               </View>
-            ) : (
-              <Pressable
-                onPress={() => setPriorityOpen(true)}
-                disabled={loading}
-                style={({ pressed }) => [
-                  styles.prioritySelect,
-                  {
-                    backgroundColor: surfaceLow,
-                    borderColor: `${outlineVariant}70`,
-                    opacity: loading ? 0.65 : pressed ? 0.85 : 1,
-                  },
-                ]}>
-                <View style={styles.priorityLeft}>
-                  <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                  <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
-                </View>
-                <MaterialIcons name="expand-more" size={22} color={outline} />
-              </Pressable>
-            )}
+            ) : null}
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>时间限制</Text>
-            <View style={[styles.deadlineCard, { backgroundColor: surfaceLow }]}>
-              <View style={[styles.deadlineIconWrap, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={22} color={primary} />
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>日程</Text>
+            <Pressable
+              onPress={openSchedulePicker}
+              disabled={loading}
+              style={({ pressed }) => [
+                styles.scheduleRow,
+                { backgroundColor: fieldBg, opacity: loading ? 0.65 : pressed ? 0.85 : 1 },
+              ]}>
+              <View style={[styles.scheduleIcon, { backgroundColor: surfaceLowest }]}>
+                <MaterialIcons name="event-note" size={20} color={primary} />
               </View>
               <View style={styles.deadlineBody}>
-                <Text style={[styles.deadlineKicker, { color: outline }]}>截止日期</Text>
-                <Text style={[styles.deadlineValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
+                <Text style={[styles.fieldLabel, { color: outline }]}>时间限制</Text>
+                <Text style={[styles.fieldValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
                 {!!(reminderText || repeatText) && (
                   <View style={styles.tagRow}>
                     {!!reminderText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={14} color={primary} />
+                        <MaterialIcons name="notifications-active" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
                       </View>
                     )}
                     {!!repeatText && (
                       <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={14} color={primary} />
+                        <MaterialIcons name="repeat" size={13} color={primary} />
                         <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
                       </View>
                     )}
                   </View>
                 )}
               </View>
-              <Pressable
-                onPress={openSchedulePicker}
-                disabled={loading}
-                style={({ pressed }) => [styles.deadlineEdit, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="edit-calendar" size={22} color={primary} />
-              </Pressable>
-            </View>
+              <MaterialIcons name="chevron-right" size={20} color={outline} />
+            </Pressable>
           </View>
 
-          <View style={styles.section}>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
             <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>父任务</Text>
+              <View>
+                <Text style={[styles.panelTitle, { color: theme.text }]}>父任务</Text>
+                <Text style={[styles.panelHint, { color: outline }]}>
+                  {parentTask ? '已关联上级任务' : '可选，用于任务层级'}
+                </Text>
+              </View>
               <Pressable
                 onPress={() =>
                   router.push({
@@ -1226,10 +1251,13 @@ export default function EditTaskScreen() {
                   })
                 }
                 disabled={loading}
-                style={({ pressed }) => [styles.linkBtn, (pressed || loading) && { opacity: 0.75 }]}>
-                <MaterialIcons name="add-circle" size={16} color={primary} />
+                style={({ pressed }) => [
+                  styles.addTaskBtn,
+                  { backgroundColor: `${primary}14`, opacity: pressed || loading ? 0.75 : 1 },
+                ]}>
+                <MaterialIcons name="add" size={16} color={primary} />
                 <Text style={[styles.linkBtnText, { color: primary }]}>
-                  {parentTask ? '更换父任务' : '添加父任务'}
+                  {parentTask ? '更换' : '添加'}
                 </Text>
               </Pressable>
             </View>
@@ -1271,14 +1299,14 @@ export default function EditTaskScreen() {
                                     styles.metaTag,
                                     { backgroundColor: priorityColor.bg, borderColor: priorityColor.border },
                                   ]}>
-                                  <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
+                                  <MaterialIcons name="flag" size={13} color={priorityColor.tint} />
                                   <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
                                 </View>
                               );
                             })()}
                           {!!(parentTask.deadline || parentTask.deadlineText) && (
                             <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="event" size={14} color={primary} />
+                              <MaterialIcons name="event" size={13} color={primary} />
                               <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
                                 {parentTask.deadline || parentTask.deadlineText}
                               </Text>
@@ -1298,19 +1326,22 @@ export default function EditTaskScreen() {
                   </View>
                 </Pressable>
               ) : (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder }]}>
-                  <View style={[styles.emptySubtaskIcon, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="device-hub" size={18} color={outline} />
-                  </View>
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无父任务，点击右上角选择</Text>
+                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
+                  <MaterialIcons name="device-hub" size={18} color={outline} />
+                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无父任务</Text>
                 </View>
               )}
             </View>
           </View>
 
-          <View style={styles.section}>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
             <View style={styles.subtaskHeader}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>子任务</Text>
+              <View>
+                <Text style={[styles.panelTitle, { color: theme.text }]}>子任务</Text>
+                <Text style={[styles.panelHint, { color: outline }]}>
+                  {subtasks.length > 0 ? `${subtasks.length} 项` : '拆成更小可执行步骤'}
+                </Text>
+              </View>
               <Pressable
                 onPress={() =>
                   router.push({
@@ -1323,9 +1354,12 @@ export default function EditTaskScreen() {
                   })
                 }
                 disabled={loading}
-                style={({ pressed }) => [styles.linkBtn, (pressed || loading) && { opacity: 0.75 }]}>
-                <MaterialIcons name="add-circle" size={16} color={primary} />
-                <Text style={[styles.linkBtnText, { color: primary }]}>添加子任务</Text>
+                style={({ pressed }) => [
+                  styles.addTaskBtn,
+                  { backgroundColor: `${primary}14`, opacity: pressed || loading ? 0.75 : 1 },
+                ]}>
+                <MaterialIcons name="add" size={16} color={primary} />
+                <Text style={[styles.linkBtnText, { color: primary }]}>添加</Text>
               </Pressable>
             </View>
             <View style={styles.subtaskList}>
@@ -1338,7 +1372,11 @@ export default function EditTaskScreen() {
                     { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder, opacity: pressed ? 0.86 : 1 },
                   ]}>
                   <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
-                    <View style={[styles.checkbox, { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' }]}>
+                    <View
+                      style={[
+                        styles.checkbox,
+                        { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' },
+                      ]}>
                       {s.done && <MaterialIcons name="check" size={14} color="#fff" />}
                     </View>
                   </View>
@@ -1364,15 +1402,19 @@ export default function EditTaskScreen() {
                               const priorityText = s.priority || s.priorityLabel || '';
                               const priorityColor = getPriorityColor(priorityText, isDark);
                               return (
-                                <View style={[styles.metaTag, { backgroundColor: priorityColor.bg, borderColor: priorityColor.border }]}>
-                                  <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
+                                <View
+                                  style={[
+                                    styles.metaTag,
+                                    { backgroundColor: priorityColor.bg, borderColor: priorityColor.border },
+                                  ]}>
+                                  <MaterialIcons name="flag" size={13} color={priorityColor.tint} />
                                   <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
                                 </View>
                               );
                             })()}
                           {!!(s.deadline || s.deadlineText) && (
                             <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="event" size={14} color={primary} />
+                              <MaterialIcons name="event" size={13} color={primary} />
                               <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
                                 {s.deadline || s.deadlineText}
                               </Text>
@@ -1380,14 +1422,18 @@ export default function EditTaskScreen() {
                           )}
                           {!!(s.reminder || s.reminderText) && (
                             <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="notifications-active" size={14} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>{s.reminder || s.reminderText}</Text>
+                              <MaterialIcons name="notifications-active" size={13} color={primary} />
+                              <Text style={[styles.metaTagText, { color: theme.text }]}>
+                                {s.reminder || s.reminderText}
+                              </Text>
                             </View>
                           )}
                           {!!(s.repeat || s.repeatText) && (
                             <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="repeat" size={14} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>{s.repeat || s.repeatText}</Text>
+                              <MaterialIcons name="repeat" size={13} color={primary} />
+                              <Text style={[styles.metaTagText, { color: theme.text }]}>
+                                {s.repeat || s.repeatText}
+                              </Text>
                             </View>
                           )}
                         </View>
@@ -1405,18 +1451,16 @@ export default function EditTaskScreen() {
                 </Pressable>
               ))}
               {subtasks.length === 0 && (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder }]}>
-                  <View style={[styles.emptySubtaskIcon, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="playlist-add-check" size={18} color={outline} />
-                  </View>
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无子任务，点击右上角添加</Text>
+                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
+                  <MaterialIcons name="playlist-add-check" size={18} color={outline} />
+                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无子任务</Text>
                 </View>
               )}
             </View>
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>长期任务</Text>
+          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
+            <Text style={[styles.panelTitle, { color: theme.text }]}>更多</Text>
             <Pressable
               onPress={() => setIsLongTermTask((v) => !v)}
               disabled={loading}
@@ -1425,52 +1469,32 @@ export default function EditTaskScreen() {
               style={({ pressed }) => [
                 styles.longTermRow,
                 {
-                  backgroundColor: isLongTermTask ? `${primary}12` : surfaceLow,
-                  borderColor: isLongTermTask ? primary : `${outlineVariant}70`,
+                  backgroundColor: isLongTermTask ? `${primary}12` : fieldBg,
+                  borderColor: isLongTermTask ? primary : 'transparent',
                   opacity: loading ? 0.65 : pressed ? 0.88 : 1,
                 },
               ]}>
               <View style={styles.longTermTextWrap}>
-                <Text style={[styles.longTermTitle, { color: theme.text }]}>标记为长期任务</Text>
+                <Text style={[styles.longTermTitle, { color: theme.text }]}>长期任务</Text>
                 <Text style={[styles.longTermHint, { color: outline }]}>
-                  指派为青蛙后，完成时会询问是否已完成整个任务
+                  指派为青蛙后，完成时确认是否结束整项
                 </Text>
               </View>
               <MaterialIcons
                 name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
-                size={24}
+                size={22}
                 color={isLongTermTask ? primary : outline}
               />
             </Pressable>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>绑定小习惯</Text>
-            <BoundHabitPickerField
-              selectedHabitIds={boundHabitIds}
-              sections={habitSections}
-              loading={habitsLoading}
-              disabled={loading}
-              onChange={setBoundHabitIds}
-              textColor={theme.text}
-              outline={outline}
-              placeholderColor={outlineVariant}
-              primary={primary}
-              surfaceLow={surfaceLow}
-              surfaceLowest={surfaceLowest}
-              isDark={isDark}
-            />
-          </View>
-
-          {canTagTask ? (
-            <View style={styles.section}>
-              <Text style={[styles.sectionLabel, { color: outline }]}>标签</Text>
-              <ProjectTagPickerField
-                selectedIds={selectedTagIds}
-                allTags={allTags}
-                loading={tagsLoading}
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>绑定小习惯</Text>
+              <BoundHabitPickerField
+                selectedHabitIds={boundHabitIds}
+                sections={habitSections}
+                loading={habitsLoading}
                 disabled={loading}
-                onChange={setSelectedTagIds}
+                onChange={setBoundHabitIds}
                 textColor={theme.text}
                 outline={outline}
                 placeholderColor={outlineVariant}
@@ -1480,40 +1504,37 @@ export default function EditTaskScreen() {
                 isDark={isDark}
               />
             </View>
-          ) : null}
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>奖励积分</Text>
-            <View style={[styles.rewardPointsWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput
-                value={rewardPointsText}
-                onChangeText={setRewardPointsText}
-                placeholder="0"
-                placeholderTextColor={outline}
-                keyboardType="numbers-and-punctuation"
-                editable={!loading}
-                style={[styles.rewardPointsInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-              />
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>奖励积分</Text>
+              <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
+                  value={rewardPointsText}
+                  onChangeText={setRewardPointsText}
+                  placeholder="0"
+                  placeholderTextColor={outline}
+                  keyboardType="numbers-and-punctuation"
+                  editable={!loading}
+                  style={[styles.rewardPointsInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
+                />
+              </View>
+              <Text style={[styles.longTermHint, { color: outline }]}>
+                完成后计入；负数扣除，可含小数；0 无变动
+              </Text>
             </View>
-            <Text style={{ color: outline, fontSize: 12, fontWeight: '600', marginTop: 8 }}>
-              完成任务后计入积分；负数表示扣除，可含小数；0 表示无变动
-            </Text>
-          </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>验收标准</Text>
-            <View style={[styles.notesWrap, { backgroundColor: surfaceLow }]}>
-              <TextInput
-                value={acceptanceCriteria}
-                onChangeText={setAcceptanceCriteria}
-                placeholder="怎样算完成？可写可验证的标准…（可选）"
-                placeholderTextColor={outline}
-                multiline
-                editable={!loading}
-                style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-              />
-              <View style={styles.notesIcon} pointerEvents="none">
-                <MaterialIcons name="fact-check" size={20} color={outlineVariant} />
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>验收标准</Text>
+              <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
+                <TextInput
+                  value={acceptanceCriteria}
+                  onChangeText={setAcceptanceCriteria}
+                  placeholder="怎样算完成？（可选）"
+                  placeholderTextColor={outline}
+                  multiline
+                  editable={!loading}
+                  style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
+                />
               </View>
             </View>
           </View>
@@ -1523,30 +1544,31 @@ export default function EditTaskScreen() {
           style={[
             styles.bottomBar,
             {
-              paddingBottom: Math.max(insets.bottom, 12),
-              backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : 'rgba(250,248,255,0.65)',
-              borderTopColor: isDark ? 'rgba(30,41,59,0.35)' : 'rgba(226,232,240,0.7)',
+              paddingBottom: Math.max(insets.bottom, 10),
+              backgroundColor: theme.background,
+              borderTopColor: divider,
             },
           ]}>
-          <View style={styles.bottomInner}>
-            <Pressable
-              onPress={removeTask}
-              disabled={saving || loading}
-              style={({ pressed }) => [
-                styles.deleteBtn,
-                {
-                  backgroundColor: pressed ? '#991b1b' : '#ba1a1a',
-                  opacity: saving || loading ? 0.7 : 1,
-                },
-                pressed && { transform: [{ scale: 0.98 }] },
-              ]}>
-              <MaterialIcons name="delete-outline" size={22} color="#fff" />
-              <Text style={styles.deleteText}>删除任务</Text>
-            </Pressable>
-          </View>
+          <Pressable
+            onPress={removeTask}
+            disabled={saving || loading}
+            style={({ pressed }) => [
+              styles.deleteBtn,
+              {
+                borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
+                opacity: saving || loading ? 0.55 : pressed ? 0.8 : 1,
+              },
+            ]}>
+            <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
+            <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除任务</Text>
+          </Pressable>
         </View>
 
-        <Modal transparent visible={!inheritsProjectPriority && priorityOpen} animationType="fade" onRequestClose={() => setPriorityOpen(false)}>
+        <Modal
+          transparent
+          visible={!inheritsProjectPriority && priorityOpen}
+          animationType="fade"
+          onRequestClose={() => setPriorityOpen(false)}>
           <Pressable style={styles.priorityOverlay} onPress={() => setPriorityOpen(false)}>
             <Pressable
               onPress={() => {}}
@@ -1554,10 +1576,10 @@ export default function EditTaskScreen() {
                 styles.prioritySheet,
                 {
                   backgroundColor: surfaceLowest,
-                  borderColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.5)',
+                  borderColor: panelBorder,
                 },
               ]}>
-              <Text style={[styles.prioritySheetTitle, { color: theme.text }]}>选择优先级别</Text>
+              <Text style={[styles.prioritySheetTitle, { color: theme.text }]}>选择优先级</Text>
               {priorityOptions.map((item) => {
                 const active = item.key === priority;
                 return (
@@ -1570,8 +1592,8 @@ export default function EditTaskScreen() {
                     style={({ pressed }) => [
                       styles.priorityItem,
                       {
-                        backgroundColor: active ? `${item.color}14` : 'transparent',
-                        borderColor: active ? `${item.color}44` : `${outlineVariant}60`,
+                        backgroundColor: active ? `${item.color}14` : fieldBg,
+                        borderColor: active ? `${item.color}44` : 'transparent',
                       },
                       pressed && { opacity: 0.85 },
                     ]}>
@@ -1601,119 +1623,129 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-  },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 24, fontWeight: '800', letterSpacing: -0.4 },
-  headerActionBtn: { minWidth: 46, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  headerActionText: { fontSize: 15, fontWeight: '800' },
-  content: { paddingTop: 92, paddingHorizontal: 18, gap: 22 },
-  section: { gap: 10 },
-  longTermRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
-  longTermTextWrap: { flex: 1, gap: 4 },
-  longTermTitle: { fontSize: 15, fontWeight: '700' },
-  longTermHint: { fontSize: 12, lineHeight: 17 },
-  sectionLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    opacity: 0.75,
-  },
-  titleInput: { padding: 0, fontSize: 30, fontWeight: '900', lineHeight: 36 },
-  charCounter: { alignSelf: 'flex-end', fontSize: 12, fontWeight: '600' },
-  prioritySelect: {
-    borderRadius: 20,
-    borderWidth: 1,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  priorityLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  priorityDot: { width: 10, height: 10, borderRadius: 5 },
-  priorityValue: { fontSize: 14, fontWeight: '700' },
-  deadlineCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16 },
-  deadlineIconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 12,
+  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
+  headerActionBtn: {
+    minWidth: 64,
+    height: 34,
+    paddingHorizontal: 14,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
   },
-  deadlineBody: { flex: 1, gap: 4 },
-  deadlineKicker: { fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
-  deadlineValue: { fontSize: 16, fontWeight: '800' },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  metaTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+  headerActionText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  content: { paddingTop: 84, paddingHorizontal: 14, gap: 12 },
+  panel: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 12,
   },
-  metaTagText: { fontSize: 12, fontWeight: '600' },
-  deadlineEdit: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  subtaskHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  linkBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase' },
-  subtaskList: { gap: 10 },
-  subtaskRow: {
+  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+  panelHint: { fontSize: 12, marginTop: 2, lineHeight: 16 },
+  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
+  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28 },
+  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
+  fieldBlock: { gap: 8 },
+  fieldLabel: { fontSize: 12, fontWeight: '600' },
+  fieldValue: { fontSize: 14, fontWeight: '600' },
+  longTermRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    shadowColor: '#0f172a',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 2,
+    paddingVertical: 11,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  subtaskIndicator: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  subtaskBody: { flex: 1, gap: 8, paddingRight: 2 },
-  subtaskText: { flex: 1, fontSize: 15, fontWeight: '700', lineHeight: 20 },
-  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 18 },
-  subtaskAction: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  longTermTextWrap: { flex: 1, gap: 3 },
+  longTermTitle: { fontSize: 14, fontWeight: '600' },
+  longTermHint: { fontSize: 12, lineHeight: 16 },
+  prioritySelect: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  priorityLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
+  priorityDot: { width: 8, height: 8, borderRadius: 4 },
+  priorityValue: { fontSize: 14, fontWeight: '600', flex: 1 },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  scheduleIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deadlineBody: { flex: 1, gap: 4, minWidth: 0 },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  metaTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  metaTagText: { fontSize: 11, fontWeight: '600' },
+  subtaskHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  linkBtnText: { fontSize: 13, fontWeight: '600' },
+  addTaskBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  subtaskList: { gap: 8 },
+  subtaskRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  subtaskIndicator: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  subtaskBody: { flex: 1, gap: 6, paddingRight: 2 },
+  subtaskText: { flex: 1, fontSize: 14, fontWeight: '600', lineHeight: 19 },
+  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
+  subtaskAction: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   emptySubtaskRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingHorizontal: 12,
     paddingVertical: 14,
-    borderRadius: 16,
-    borderWidth: 1,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     borderStyle: 'dashed',
   },
-  emptySubtaskIcon: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '600' },
-  notesWrap: { borderRadius: 16, padding: 14, minHeight: 120 },
-  notesInput: { minHeight: 92, fontSize: 14, fontWeight: '500', lineHeight: 20, paddingRight: 34 },
+  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '500' },
+  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
+  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
   rewardPointsWrap: {
-    borderRadius: 12,
-    paddingHorizontal: 14,
+    borderRadius: 10,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     minHeight: 40,
     justifyContent: 'center',
@@ -1722,41 +1754,37 @@ const styles = StyleSheet.create({
     padding: 0,
     margin: 0,
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '600',
     minHeight: 20,
   },
-  notesIcon: { position: 'absolute', right: 12, bottom: 12 },
   bottomBar: {
     position: 'absolute',
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    borderTopWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  bottomInner: { maxWidth: 520, width: '100%', alignSelf: 'center' },
   deleteBtn: {
     width: '100%',
-    paddingVertical: 16,
-    borderRadius: 16,
+    maxWidth: 520,
+    alignSelf: 'center',
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.14,
-    shadowRadius: 20,
-    elevation: 8,
+    gap: 6,
   },
-  deleteText: { color: '#fff', fontSize: 18, fontWeight: '900', letterSpacing: -0.2 },
-  priorityOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.35)', justifyContent: 'flex-end', padding: 18 },
-  prioritySheet: { borderRadius: 18, borderWidth: 1, padding: 14, gap: 10 },
-  prioritySheetTitle: { fontSize: 14, fontWeight: '800', marginBottom: 2 },
+  deleteText: { fontSize: 14, fontWeight: '600' },
+  priorityOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.35)', justifyContent: 'flex-end', padding: 14 },
+  prioritySheet: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 8 },
+  prioritySheetTitle: { fontSize: 15, fontWeight: '700', marginBottom: 2 },
   priorityItem: {
-    borderRadius: 12,
-    borderWidth: 1,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
     paddingVertical: 12,
     flexDirection: 'row',

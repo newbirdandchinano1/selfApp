@@ -185,12 +185,87 @@ async function listCloudUserTables(signal?: AbortSignal): Promise<string[]> {
 }
 
 async function getLocalCreateTableSql(table: string): Promise<string | null> {
+  // 优先用 PRAGMA 实列重建：sqlite_master.sql 不含后续 ALTER 加的列（如 memos.is_pinned）
+  const fromLive = await buildCreateTableSqlFromPragma(table);
+  if (fromLive) return fromLive;
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ sql: string }>(
     `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`,
     [table],
   );
   return row?.sql ?? null;
+}
+
+type SqlitePragmaColumn = {
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+};
+
+/** 按本地实列生成 CREATE TABLE，保证云端镜像与 PRAGMA 一致 */
+async function buildCreateTableSqlFromPragma(table: string): Promise<string | null> {
+  if (!isSafeSqliteTableName(table)) return null;
+  const db = await getDatabase();
+  const cols = await db.getAllAsync<SqlitePragmaColumn>(`PRAGMA table_info(${quoteIdent(table)})`);
+  if (!cols?.length) return null;
+
+  const pkCols = cols.filter(c => Number(c.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk));
+  const singlePk = pkCols.length === 1 ? pkCols[0]!.name : null;
+
+  const lines: string[] = [];
+  for (const c of cols) {
+    const type = (c.type ?? '').trim() || 'TEXT';
+    let line = `${quoteIdent(c.name)} ${type}`;
+    if (singlePk && c.name === singlePk) {
+      line += ' PRIMARY KEY';
+    }
+    if (Number(c.notnull) === 1) {
+      line += ' NOT NULL';
+    }
+    if (c.dflt_value != null && String(c.dflt_value).length > 0) {
+      line += ` DEFAULT ${c.dflt_value}`;
+    }
+    lines.push(line);
+  }
+  if (pkCols.length > 1) {
+    lines.push(`PRIMARY KEY (${pkCols.map(c => quoteIdent(c.name)).join(', ')})`);
+  }
+
+  return `CREATE TABLE ${quoteIdent(table)} (\n  ${lines.join(',\n  ')}\n)`;
+}
+
+async function listCloudTableColumns(table: string, signal?: AbortSignal): Promise<string[]> {
+  const r = await executeCloudSql<{ name: string }>(
+    `PRAGMA table_info(${quoteIdent(table)})`,
+    undefined,
+    { signal },
+  );
+  if (!r.ok) return [];
+  return r.data.map(row => String(row.name)).filter(Boolean);
+}
+
+/** 云端表已存在但缺本地实列时，逐列 ALTER 补齐（避免整表 DROP） */
+async function ensureCloudColumnsMatchLocal(table: string, signal?: AbortSignal): Promise<void> {
+  const db = await getDatabase();
+  const localCols = await db.getAllAsync<SqlitePragmaColumn>(`PRAGMA table_info(${quoteIdent(table)})`);
+  if (!localCols?.length) return;
+  const cloudNames = new Set(await listCloudTableColumns(table, signal));
+  if (cloudNames.size === 0) return;
+
+  for (const c of localCols) {
+    if (cloudNames.has(c.name)) continue;
+    const type = (c.type ?? '').trim() || 'TEXT';
+    let sql = `ALTER TABLE ${quoteIdent(table)} ADD COLUMN ${quoteIdent(c.name)} ${type}`;
+    if (c.dflt_value != null && String(c.dflt_value).length > 0) {
+      sql += ` DEFAULT ${c.dflt_value}`;
+    }
+    const add = await executeCloudSql(sql, undefined, { signal });
+    if (!add.ok && !/duplicate column/i.test(add.message)) {
+      throw new Error(`云端表 ${table} 补列 ${c.name} 失败：${add.message}`);
+    }
+  }
 }
 
 async function getCloudCreateTableSql(table: string, signal?: AbortSignal): Promise<string | null> {
@@ -487,13 +562,16 @@ async function trySetCloudForeignKeys(enabled: boolean, signal?: AbortSignal): P
   await executeCloudSql(sql, undefined, { signal });
 }
 
-/** 云端无表时按本地结构建表；已有表则不动结构 */
+/** 云端无表时按本地实列建表；已有表则补齐缺失列 */
 async function ensureCloudTableExists(
   table: string,
   localCreateSql: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (await cloudTableExists(table, signal)) return;
+  if (await cloudTableExists(table, signal)) {
+    await ensureCloudColumnsMatchLocal(table, signal);
+    return;
+  }
 
   await trySetCloudForeignKeys(false, signal);
   try {

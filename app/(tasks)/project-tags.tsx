@@ -156,7 +156,7 @@ export default function ProjectTagsScreen() {
   };
 
   const confirmDelete = (tag: ProjectTagRow) => {
-    Alert.alert('删除标签', `确认删除「${tag.name}」？已贴到项目、习惯、待办上的关联会一并移除。`, [
+            Alert.alert('删除标签', `确认删除「${tag.name}」？已贴到项目、习惯、待办、备忘录上的关联会一并移除。`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -204,7 +204,7 @@ export default function ProjectTagsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Text style={[styles.hint, { color: outline }]}>
-          标签可打在项目、习惯与独立待办上；权重越大在项目列表中越靠前。同一权重档内再用项目优先级比紧急程度。
+          标签可打在项目、习惯、独立待办与备忘录上；权重越大在列表中越靠前。
         </Text>
 
         {loading ? (

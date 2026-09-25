@@ -1,5 +1,4 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   loadCashFlowState,
@@ -205,15 +204,14 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
   const router = useRouter();
   const { state, setState, hydrated, metrics, showToast, toast } = useCashFlowContext();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const theme = Colors[isDark ? 'dark' : 'light'];
+  const { colors, isDark } = useAppTheme();
 
-  const bg = isDark ? theme.background : '#f8fafc';
-  const surface = isDark ? theme.surface : '#ffffff';
-  const text = isDark ? theme.text : '#0f172a';
-  const subtle = isDark ? theme.textSecondary : '#64748b';
-  const border = isDark ? 'rgba(148,163,184,0.2)' : '#e2e8f0';
+  /** 壳层走财务主题；内部看板色块仍保持工具页独立视觉 */
+  const bg = colors.background;
+  const surface = colors.surface;
+  const text = colors.text;
+  const subtle = colors.textSecondary;
+  const border = colors.outline;
 
   const [financeInsightsRefresh, setFinanceInsightsRefresh] = React.useState(0);
 
@@ -242,7 +240,15 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
-      <View style={[styles.header, { borderBottomColor: border, backgroundColor: isDark ? 'rgba(15,23,42,0.92)' : 'rgba(255,255,255,0.95)', paddingTop: insets.top }]}>
+      <View
+        style={[
+          styles.header,
+          {
+            borderBottomColor: border,
+            backgroundColor: colors.headerScrim,
+            paddingTop: insets.top,
+          },
+        ]}>
         {route !== 'dashboard' ? (
           <Pressable
             onPress={() => router.back()}
@@ -256,7 +262,7 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
               <MaterialIcons name="arrow-back-ios" size={20} color={subtle} />
             </Pressable>
             <View style={styles.headerBrandMid}>
-              <View style={styles.headerLogo}>
+              <View style={[styles.headerLogo, { backgroundColor: colors.primary }]}>
                 <MaterialIcons name="monetization-on" size={20} color="#fff" />
               </View>
               <Text style={[styles.headerTitle, { color: text }]}>{headerTitle}</Text>
@@ -272,10 +278,10 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
             styles.toast,
             { top: insets.top + 8 },
             toast.type === 'success'
-              ? { backgroundColor: '#10b981' }
+              ? { backgroundColor: colors.secondary }
               : toast.type === 'warning'
-                ? { backgroundColor: '#f59e0b' }
-                : { backgroundColor: '#3b82f6' },
+                ? { backgroundColor: colors.tertiary }
+                : { backgroundColor: colors.primary },
           ]}>
           <MaterialIcons
             name={toast.type === 'success' ? 'check-circle' : 'warning'}
@@ -1919,7 +1925,6 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 10,
-    backgroundColor: '#f59e0b',
     alignItems: 'center',
     justifyContent: 'center',
   },

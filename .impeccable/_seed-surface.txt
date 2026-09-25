@@ -1,0 +1,121 @@
+﻿SURFACE CONCEPT SEED (key: 98d822b6; mode: operate; source: api; approved pool: c3b204a1eed6; 306/564 human-approved; rerun with --scope surface --mode operate --from 98d822b6 --candidate-count 7 to reproduce this roll against this catalog revision)
+DEALT INDICES: 7, 4, 2 (index 7 leads)
+  After ordering the task's grounded structural candidates by resonance,
+  deal candidates 7, 4, 2 of your own grounded list to the
+  table; index 7 leads, and the deal never points at a challenger.
+  The deal is the roll, not a suggestion: the dice decide which structures
+  reach the user, so the ranking rut stays broken while the user still gets a
+  real choice, and the full ranked list stays yours. In an attended run,
+  present the three dealt structures as full cards of equal salience, the
+  lead carrying kicker THE ROLL, with steer and re-roll, and let the user
+  lock one in; the world is already settled, so this choice is composition.
+  Visualize every dealt card: with image generation available and a
+  comp-led default (.impeccable/config.json buildPath; the page toggle
+  handles the exception), declare a comp per card and generate after
+  serving, lead first; otherwise author each card's wireframe field (see
+  serve-question --schema) and the page draws the schematic. Carry the
+  recorded default in the payload as buildPath with toggle: true. Locking a card
+  approves its comp: a surface round that put three visualized structures on
+  the table replaces the three-option comp round in visualize.md. Re-roll
+  yourself only when every dealt structure fails audience identification or
+  product clarity on named factual grounds.
+  The assignment exists to refuse the model's ranking rut, never to outrank
+  the user or the brief. Never expose assignment metadata in user-facing labels.
+CHALLENGERS:
+  1. a crt oscilloscope on a signal bench, phosphor trace riding an etched graticule while detented knobs set channel, timebase, and trigger
+     SOURCE ID: scientific-notation-oscilloscope-signal-bench
+     CREATIVE SPARK: You clip the probe to the pin and a green line snaps out of the noise; a nudge of the trigger knob and the waveform stands still, breathing in phosphor over the etched grid, ten divisions wide, every one meaning something.
+     SYSTEM GRAMMAR:
+       - Palette/material: phosphor green blazing on near-black glass, graticule gray etched beneath, a second channel in dimmer trace; amber readouts for armed and warning states
+       - Type/composition: condensed instrument caps on knob skirts and bezels, glowing seven-segment readouts; everything on screen is measured against the ten-division graticule
+       - Topology/navigation: one screen, many signals; you travel by timebase and vertical scale, and channels overlay in the same graticule space rather than separate views
+       - Controls/state: detented knobs set scale and trigger level; an untriggered trace rolls free, a triggered one locks still, and freeze holds the waveform for cursors
+       - Responsive/motion: the graticule stays square while readouts drop below on narrow screens; the sweep is continuous
+     WEB LEVERAGE: canvas draws the persistent phosphor trace from live Web Audio or sensor input, with pointer-dragged trigger level and keyboard-stepped cursors
+     QUALITY BAR: board https://impeccable.style/worlds/cards/scientific-notation-oscilloscope-signal-bench.webp 路 hero https://impeccable.style/worlds/cards/scientific-notation-oscilloscope-signal-bench-hero.webp
+  2. a HyperCard shoebox stack, where black-and-white cards link through buttons anyone can paint and the tool for reading is also the tool for making
+     SOURCE ID: medium-native-hypercard-stack-shoebox
+     CREATIVE SPARK: A shoebox of black-and-white cards where clicking a hand-painted button flips you somewhere the author felt you should go next, and the paint tools are one menu away.
+     SYSTEM GRAMMAR:
+       - Palette/material: one-bit black on white with stipple-dither grays and no color anywhere, the pressed button inverting to solid black as its active state
+       - Type/composition: bold Chicago-style pixel menus over Geneva-style body text, cards composing as fixed rectangles with hand-drawn borders and painted buttons
+       - Topology/navigation: space is a stack of cards linked by visible buttons; back retraces your exact trail through them.
+       - Controls/state: every card is editable in place; browse and author are two modes of the same object.
+       - Responsive/motion: cards keep fixed proportions and dissolve between each other
+     WEB LEVERAGE: History API and deep links make every card addressable, while in-place editing keeps reader and author one keypress apart.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/medium-native-hypercard-stack-shoebox.webp 路 hero https://impeccable.style/worlds/cards/medium-native-hypercard-stack-shoebox-hero.webp
+  3. a metro screen of flat tiles and giant lowercase, headlines cropped off the canvas edge, color fields as content, chrome deleted so the type itself is the interface
+     SOURCE ID: digital-design-canon-metro-typographic-tiles
+     CREATIVE SPARK: you drag the panorama and the giant word music slides its cropped tail into view, a tile flips over in your peripheral vision with a new photo, everything black and cyan and nothing on screen that is not a word or a color
+     SYSTEM GRAMMAR:
+       - Palette/material: flat cyan, magenta, or lime tiles on a pure black ground, zero gradients or bevels, white segoe as ink, one chosen accent color owns every live state
+       - Type/composition: giant light-weight lowercase headlines cropped off the right edge, type ramped from caption to poster size, left-aligned on a strict grid of square tiles
+       - Topology/navigation: one wide panorama slides behind the viewport, pivot headers peek in from the next pane to promise more, tiles are the only doors
+       - Controls/state: tiles tilt toward the finger on press, live tiles flip to show fresh data, selection floods a tile with the accent color, no borders or button chrome
+       - Responsive/motion: the panorama collapses to a single tile column on narrow screens, entrances glide in from the edge with type leading
+     WEB LEVERAGE: scroll-snap drives the panoramic panes; css 3d transforms tilt tiles on press and flip the live ones
+     QUALITY BAR: board https://impeccable.style/worlds/cards/digital-design-canon-metro-typographic-tiles.webp 路 hero https://impeccable.style/worlds/cards/digital-design-canon-metro-typographic-tiles-hero.webp
+  4. a variety-show telop field, where hand-placed multicolor outlined captions size themselves to the emotion of speech and turn the frame into a live comic
+     SOURCE ID: variety-telop-caption-field
+     CREATIVE SPARK: A gasp lands as fat yellow katakana with a red outline tilted eight degrees; the follow-up mutter sits tiny and gray in the corner, and both are gone before the laugh ends.
+     SYSTEM GRAMMAR:
+       - Palette/material: high-chroma fills with contrast outlines and drop shadows built for legibility over anything; each emotional register owns a color family
+       - Type/composition: free placement keyed to the speaker, scale mapped to intensity, never a fixed lower-third band; rotation is punctuation
+       - Topology/navigation: Move by speaker, by beat, and by reaction.
+       - Controls/state: Land, hold, and vanish; emphasis states change scale and outline weight, not position.
+       - Responsive/motion: Captions enter with a single snap and leave clean; reduced motion pins them for the full beat.
+     WEB LEVERAGE: A caption layer of absolutely-placed outlined type driven by content beats, fully readable in sequence
+     QUALITY BAR: board https://impeccable.style/worlds/cards/variety-telop-caption-field.webp 路 hero https://impeccable.style/worlds/cards/variety-telop-caption-field-hero.webp
+  5. a single square of vermilion washi becoming an orizuru crane through thirty-two deliberate folds, where one uncut sheet passes from flat geometry to beak, wings, hollow body, and a balanced standing silhouette
+     SOURCE ID: paper-folds-pleats-deployable-orizuru-crane-sequence
+     CREATIVE SPARK: The red square closes into a small diamond, opens into a long-necked bird, and with one final pull spreads two crisp wings that still carry every earlier crease.
+     SYSTEM GRAMMAR:
+       - Palette/material: vermilion washi as ground with visible kozo fiber, crease lines in faded fold-white, one gold dot marking the active step, notes in sumi black ink
+       - Type/composition: quiet humanist sans beside kanji step names, folds numbered one to thirty-two in a strict margin column, diagrams square and centered like the uncut sheet
+       - Topology/navigation: Connect face, edge, mountain crease, valley crease, preliminary base, bird base, flap, and finished crane as one continuous sheet.
+       - Controls/state: Fold, unfold, rotate, reverse, and replay with flat, creased, collapsed, based, locked, finished, and recoverable states.
+       - Responsive/motion: Pair the active crease pattern with one authored spatial view and provide discrete fold states under
+     WEB LEVERAGE: Constraint-aware direct manipulation can prevent impossible folds, synchronize the crease pattern with the spatial crane, and deep-link any recoverable step for teaching or return.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-orizuru-crane-sequence.webp 路 hero https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-orizuru-crane-sequence-hero.webp
+  6. an alphabet storm, where letters condense into words, break into weather, and reshape the landscape according to grammar
+     SOURCE ID: dream-surreal-impossible-worlds-alphabet-storm
+     CREATIVE SPARK: Black letters gather into CLOUD, burst into rain, and carve the word RIVER across white ground; changing one vowel turns the current into a field of silver ravens.
+     SYSTEM GRAMMAR:
+       - Palette/material: paper white ground, storm-letter black as both body ink and weather mass, one silver flash for words mid-transformation, rain gray for spent grammar
+       - Type/composition: a single monumental grotesk behaving as matter, kerning loosening into wind, words breaking across lines as literal weather fronts on an open field
+       - Topology/navigation: Travel between letter fronts, word formations, grammatical forces, and the landscapes they produce.
+       - Controls/state: Type, split, conjugate, and recombine language while physical consequences remain reversible.
+       - Responsive/motion: Use one word-weather event per phone viewport and preserve readable text throughout transformation.
+     WEB LEVERAGE: Text parsing, procedural particles, and semantic rules turn typed language into deterministic weather with accessible narrative descriptions.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-alphabet-storm.webp 路 hero https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-alphabet-storm-hero.webp
+A challenger wins only when its fused result beats the grounded list on
+  audience identification and product clarity. It may change task topology or
+  interaction, but never the committed visual identity.
+When you can view images, open the QUALITY BAR board and hero for any
+challenger you weigh seriously and for the world you build. They exist as a
+craft bar, the finish level and commitment the build is expected to reach,
+never as a mockup to copy; your surface serves this product, not that render.
+PRODUCT.md and DESIGN.md constrain every surface candidate's identity
+vocabulary; they do not cancel task-level composition. The seed never
+authorizes a new palette, type system, material world, or unfamiliar control
+behavior.
+The CREATIVE SPARK is a complete visual system, not a theme or decorative
+reference. Translate every supplied system rule into the product: palette and
+material, type and composition, topology, controls and states, and adaptation.
+Keep the source's visible character, scale, rhythm, and interaction instead of
+reducing vivid grammar to generic nouns. When the source is already a credible
+interface language, commit to it across navigation, content, controls, and
+states. Otherwise keep a literal carrier only when it becomes functional.
+Ambitious motion, spatial media, or interaction is welcome when it strengthens
+the product without weakening semantics, performance, or fallback behavior.
+TELEMETRY: after the user's choice resolves, rerun this script once with
+  --kind <assigned|pick|challenger|canon> --from 98d822b6 --scope surface --mode operate,
+  adding --chosen <challenger-id> when a dealt challenger won and keeping
+  --register <safer|bolder> when the resolved round came from a steered hand.
+  One ping per resolved attended round. The ping is anonymous, the card kind
+  plus the catalog id when one won; your grounded candidates' names never
+  leave the machine, and the ping is skipped automatically when DO_NOT_TRACK
+  or IMPECCABLE_NO_TELEMETRY is set.
+A user- or brief-pinned decision beats the roll, always.
+DEALT INDICES (restated for truncated readers): 7, 4, 2; index
+7 leads. Present all three dealt structures; seed key 98d822b6.

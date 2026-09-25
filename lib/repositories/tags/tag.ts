@@ -14,6 +14,7 @@ const ENTITY_TABLE: Record<TagEntityType, string> = {
   project: 'projects',
   habit: 'habits',
   task: 'tasks',
+  memo: 'memos',
 };
 
 function normalizeTagName(name: string): string {
@@ -364,4 +365,8 @@ export async function setHabitTagIds(habitId: string, tagIds: string[]) {
 
 export async function setTaskTagIds(taskId: string, tagIds: string[]) {
   return setEntityTagIds('task', taskId, tagIds);
+}
+
+export async function setMemoTagIds(memoId: string, tagIds: string[]) {
+  return setEntityTagIds('memo', memoId, tagIds);
 }
