@@ -111,12 +111,12 @@ import {
 import {
   INBOX_PROJECT_CATEGORY_ID,
   INBOX_PROJECT_CATEGORY_NAME,
-  INBOX_PROJECT_RETENTION_DAYS,
+  INBOX_PROJECT_FULL_RETENTION_DAYS,
   isProjectInInboxCategory,
 } from '@/lib/repositories/projects/constants';
 import {
+  compressInboxProjectsPastRetentionDays,
   createProjectCategory,
-  deleteInboxProjectsPastRetentionDays,
   deleteProject,
   deleteProjectCategory,
   getProjectById,
@@ -125,6 +125,12 @@ import {
   updateProject,
   updateProjectCategory,
 } from '@/lib/repositories/projects/project';
+import {
+  ensureProjectCompletionLogFromProject,
+  listOrphanProjectCompletionLogs,
+  parseCompletionLogTagNames,
+  type ProjectCompletionLogRow,
+} from '@/lib/repositories/projects/project-completion-logs';
 import { getTagsByProjectIds } from '@/lib/repositories/projects/project-tag';
 import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import {
@@ -1656,7 +1662,6 @@ function showProjectCompletionDispositionPrompt(
   options: {
     incompleteCount?: number;
     onArchive: () => void;
-    onDiscard: () => void;
   },
 ) {
   const incompleteHint =
@@ -1665,12 +1670,44 @@ function showProjectCompletionDispositionPrompt(
       : '';
   Alert.alert(
     `「${project.name}」已完成`,
-    `${incompleteHint}是否将项目归纳到收集箱？\n\n选择「不保留」将直接删除项目及其全部任务记录。`,
+    `${incompleteHint}将收入收集箱归档。完整细节保留 ${INBOX_PROJECT_FULL_RETENTION_DAYS} 天，之后自动压缩为完成履历（仍可在「完成履历」中查看）。`,
     [
-      { text: '不保留', style: 'destructive', onPress: options.onDiscard },
-      { text: '归纳', onPress: options.onArchive },
+      { text: '取消', style: 'cancel' },
+      { text: '收入归档', onPress: options.onArchive },
     ],
   );
+}
+
+type ProjectListFlatItem =
+  | { kind: 'month'; key: string; label: string; count: number; collapsed: boolean }
+  | { kind: 'project'; key: string; project: ProjectRow }
+  | { kind: 'log'; key: string; log: ProjectCompletionLogRow };
+
+function ymdToMonthKey(ymd: string | null | undefined): string {
+  const s = (ymd ?? '').trim();
+  if (/^\d{4}-\d{2}/.test(s)) return s.slice(0, 7);
+  return 'unknown';
+}
+
+function monthKeyToLabel(monthKey: string): string {
+  if (monthKey === 'unknown') return '更早';
+  const m = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!m) return monthKey;
+  return `${Number(m[1])}年${Number(m[2])}月`;
+}
+
+function projectInboxMonthKey(project: ProjectRow): string {
+  return (
+    ymdToMonthKey(project.inbox_entered_at) ||
+    ymdToMonthKey(project.updated_at) ||
+    ymdToMonthKey(project.created_at) ||
+    'unknown'
+  );
+}
+
+function currentCalendarMonthKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 /** 到期自动归入收集箱所依据的日期（区间取结束日，否则取项目 due_date） */
@@ -1907,7 +1944,7 @@ export default function TasksScreen() {
   });
   /** 键盘占用高度：用于主列表底部留白，避免快捷待办被键盘挡住后无法滚到位 */
   const [mainScrollKeyboardPad, setMainScrollKeyboardPad] = React.useState(0);
-  const mainScrollRef = React.useRef<FlatList<ProjectRow>>(null);
+  const mainScrollRef = React.useRef<FlatList<ProjectListFlatItem>>(null);
   const quickTodoAnchorRef = React.useRef<View>(null);
   const mainScrollOffsetYRef = React.useRef(0);
   const keyboardHeightRef = React.useRef(0);
@@ -2037,6 +2074,89 @@ export default function TasksScreen() {
           : projects.filter((p) => p.category_id === projectTab);
     return sortProjectsForList(base, lockedProjectIds, projectTagWeightById);
   }, [lockedProjectIds, projectTagWeightById, projects, projectTab]);
+
+  const [orphanCompletionLogs, setOrphanCompletionLogs] = React.useState<ProjectCompletionLogRow[]>([]);
+  const [expandedInboxMonths, setExpandedInboxMonths] = React.useState<Set<string>>(
+    () => new Set([currentCalendarMonthKey()]),
+  );
+
+  React.useEffect(() => {
+    if (projectTab !== INBOX_PROJECT_CATEGORY_ID) {
+      setOrphanCompletionLogs([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const alive = new Set(projects.map((p) => p.id));
+        const logs = await listOrphanProjectCompletionLogs(alive);
+        if (!cancelled) setOrphanCompletionLogs(logs);
+      } catch (e) {
+        console.warn('加载收集箱履历摘要失败', e);
+        if (!cancelled) setOrphanCompletionLogs([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectTab, projects]);
+
+  const toggleInboxMonthExpanded = React.useCallback((monthKey: string) => {
+    setExpandedInboxMonths((prev) => {
+      const next = new Set(prev);
+      if (next.has(monthKey)) next.delete(monthKey);
+      else next.add(monthKey);
+      return next;
+    });
+  }, []);
+
+  const projectListFlatItems = React.useMemo((): ProjectListFlatItem[] => {
+    if (projectTab !== INBOX_PROJECT_CATEGORY_ID) {
+      return projectsShownInList.map((p) => ({ kind: 'project' as const, key: p.id, project: p }));
+    }
+
+    const byMonth = new Map<string, ProjectRow[]>();
+    for (const p of projectsShownInList) {
+      const mk = projectInboxMonthKey(p);
+      const list = byMonth.get(mk) ?? [];
+      list.push(p);
+      byMonth.set(mk, list);
+    }
+    const logByMonth = new Map<string, ProjectCompletionLogRow[]>();
+    for (const log of orphanCompletionLogs) {
+      const mk = ymdToMonthKey(log.completed_ymd);
+      const list = logByMonth.get(mk) ?? [];
+      list.push(log);
+      logByMonth.set(mk, list);
+    }
+    const monthKeys = [...new Set([...byMonth.keys(), ...logByMonth.keys()])].sort((a, b) =>
+      b.localeCompare(a),
+    );
+    const items: ProjectListFlatItem[] = [];
+    for (const mk of monthKeys) {
+      const projs = byMonth.get(mk) ?? [];
+      const logs = logByMonth.get(mk) ?? [];
+      const count = projs.length + logs.length;
+      if (count === 0) continue;
+      const collapsed = !expandedInboxMonths.has(mk);
+      items.push({
+        kind: 'month',
+        key: `month:${mk}`,
+        label: monthKeyToLabel(mk),
+        count,
+        collapsed,
+      });
+      if (!collapsed) {
+        for (const p of projs) {
+          items.push({ kind: 'project', key: p.id, project: p });
+        }
+        for (const log of logs) {
+          items.push({ kind: 'log', key: `log:${log.id}`, log });
+        }
+      }
+    }
+    return items;
+  }, [expandedInboxMonths, orphanCompletionLogs, projectTab, projectsShownInList]);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -2759,7 +2879,7 @@ export default function TasksScreen() {
       await loadProjectTasks(refreshed, projectTaskOpts({ preloadedTasks: cachedTasks }));
       if (isStale()) return;
     }
-    const purgedInbox = await deleteInboxProjectsPastRetentionDays(INBOX_PROJECT_RETENTION_DAYS);
+    const purgedInbox = await compressInboxProjectsPastRetentionDays(INBOX_PROJECT_FULL_RETENTION_DAYS);
     if (purgedInbox > 0) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       const afterPurge = await loadProjects();
@@ -3265,22 +3385,47 @@ export default function TasksScreen() {
       await runExclusiveMutation('正在收纳项目...', async () => {
         markPageDirty();
         const proj = projects.find((p) => p.id === projectId) ?? (await getProjectById(projectId));
+        const tree = projectTaskTreeMap[projectId] ?? [];
+        const progress = getProjectTreeTaskProgress(tree);
         await updateProject(projectId, {
           category_id: INBOX_PROJECT_CATEGORY_ID,
           status: 'completed',
         });
+        let pointsDelta = 0;
         if (proj && proj.status !== 'completed' && proj.status !== 'archived') {
-          await grantProjectPointsWithToast(projectId, 'earn', proj.extra_data);
+          pointsDelta = await grantProjectPointsWithToast(projectId, 'earn', proj.extra_data);
+        }
+        if (proj) {
+          try {
+            await ensureProjectCompletionLogFromProject(proj, {
+              completedYmd: logicalTodayYmd,
+              taskCount: progress.total,
+              doneTaskCount: progress.done,
+              pointsDelta,
+              source: 'archive',
+              skipIfExists: false,
+            });
+          } catch (logErr) {
+            console.warn('写入完成履历失败', logErr);
+          }
         }
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         projectSwipeableRefs.current[projectId]?.close();
         await loadProjects();
-      }, '项目已收纳');
+      }, '已收入收集箱归档');
     } catch (err) {
       console.warn('收纳项目失败', err);
       Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
-  }, [grantProjectPointsWithToast, loadProjects, markPageDirty, projects, runExclusiveMutation]);
+  }, [
+    grantProjectPointsWithToast,
+    loadProjects,
+    logicalTodayYmd,
+    markPageDirty,
+    projects,
+    projectTaskTreeMap,
+    runExclusiveMutation,
+  ]);
 
   /** 强制完成项目内未完成任务（归纳/删除前共用） */
   const completeIncompleteProjectTasksForProject = React.useCallback(
@@ -3359,86 +3504,15 @@ export default function TasksScreen() {
     ],
   );
 
-  const discardCompletedProjectById = React.useCallback(
-    async (projectId: string) => {
-      try {
-        await runExclusiveMutation('正在删除项目...', async () => {
-          markPageDirty();
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          projectSwipeableRefs.current[projectId]?.close();
-          await deleteProject(projectId);
-          await markPendingTablesDirty(['projects', 'tasks']);
-          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
-          const rows = await loadProjects();
-          await loadProjectTasks(rows);
-          await loadProjectsListFromApi(projectTab, { replaceMap: true });
-        }, '项目已删除');
-      } catch (err) {
-        console.warn('删除已完成项目失败', err);
-        Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
-        await loadProjects();
-      }
-    },
-    [loadProjectTasks, loadProjects, loadProjectsListFromApi, markPageDirty, projectTab, runExclusiveMutation],
-  );
-
-  /** 完成项目后不归纳：强制完成未完成任务后彻底删除（仍发积分并保留青蛙完成记录） */
-  const discardProjectFromList = React.useCallback(
-    async (project: ProjectRow) => {
-      try {
-        await runExclusiveMutation('正在删除项目...', async () => {
-          markPageDirty();
-          suppressPointsEarnedToastForMs(4000);
-          const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
-          if (nextProjectExtra !== proj.extra_data) {
-            await updateProject(project.id, { extra_data: nextProjectExtra });
-          }
-          // 与「归纳」一致：完成即发奖，再删除实体；青蛙事件已在 completeIncomplete 中写入
-          const pointsDelta = await grantProjectPointsWithToast(
-            project.id,
-            'earn',
-            nextProjectExtra ?? proj.extra_data,
-          );
-          notifyCompletionCelebration({
-            title: project.name,
-            pointsDelta: pointsDelta > 0 ? pointsDelta : undefined,
-          });
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          projectSwipeableRefs.current[project.id]?.close();
-          await deleteProject(project.id);
-          await markPendingTablesDirty(['projects', 'tasks']);
-          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
-          const rows = await loadProjects();
-          await loadProjectTasks(rows);
-          await loadProjectsListFromApi(projectTab, { replaceMap: true });
-          scheduleHeatmapReload();
-        }, '项目已删除');
-      } catch (err) {
-        console.warn('删除项目失败', err);
-        Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
-        await loadProjects();
-      }
-    },
-    [
-      completeIncompleteProjectTasksForProject,
-      grantProjectPointsWithToast,
-      loadProjectTasks,
-      loadProjects,
-      loadProjectsListFromApi,
-      markPageDirty,
-      projectTab,
-      runExclusiveMutation,
-      scheduleHeatmapReload,
-    ],
-  );
-
-  /** 项目列表左侧按钮：完成项目（可强制完成未完成任务）并收纳到收集箱 */
+  /** 项目列表左侧按钮：完成项目并收纳到收集箱（写入完成履历） */
   const completeProjectFromList = React.useCallback(
     async (project: ProjectRow) => {
       try {
         await runExclusiveMutation('正在完成项目...', async () => {
           markPageDirty();
           suppressPointsEarnedToastForMs(4000);
+          const tree = projectTaskTreeMap[project.id] ?? [];
+          const progress = getProjectTreeTaskProgress(tree);
           const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
@@ -3450,6 +3524,21 @@ export default function TasksScreen() {
             'earn',
             nextProjectExtra ?? proj.extra_data,
           );
+          try {
+            await ensureProjectCompletionLogFromProject(
+              { ...proj, extra_data: nextProjectExtra ?? proj.extra_data },
+              {
+                completedYmd: logicalTodayYmd,
+                taskCount: Math.max(progress.total, progress.done),
+                doneTaskCount: Math.max(progress.total, progress.done),
+                pointsDelta,
+                source: 'archive',
+                skipIfExists: false,
+              },
+            );
+          } catch (logErr) {
+            console.warn('写入完成履历失败', logErr);
+          }
           notifyCompletionCelebration({
             title: project.name,
             pointsDelta: pointsDelta > 0 ? pointsDelta : undefined,
@@ -3458,7 +3547,7 @@ export default function TasksScreen() {
           projectSwipeableRefs.current[project.id]?.close();
           const rows = await loadProjects();
           await loadProjectTasks(rows);
-        }, '项目已完成');
+        }, '已收入收集箱归档');
       } catch (err) {
         console.warn('完成项目失败', err);
         Alert.alert('操作失败', '未能完成项目，请稍后重试。');
@@ -3469,8 +3558,10 @@ export default function TasksScreen() {
       completeIncompleteProjectTasksForProject,
       loadProjectTasks,
       loadProjects,
+      logicalTodayYmd,
       markPageDirty,
       grantProjectPointsWithToast,
+      projectTaskTreeMap,
       runExclusiveMutation,
     ],
   );
@@ -3480,10 +3571,9 @@ export default function TasksScreen() {
       showProjectCompletionDispositionPrompt(project, {
         incompleteCount,
         onArchive: () => void completeProjectFromList(project),
-        onDiscard: () => void discardProjectFromList(project),
       });
     },
-    [completeProjectFromList, discardProjectFromList],
+    [completeProjectFromList],
   );
 
   /** 收集箱已完成项目：左侧按钮恢复为进行中并移出收集箱 */
@@ -3557,7 +3647,7 @@ export default function TasksScreen() {
       if (!isProjectInboxProgressComplete(project, tree)) {
         Alert.alert(
           '暂时无法收纳',
-          '请先完成项目内的全部任务（或将任务标记为取消）后，再将项目归纳到收集箱。\n\n也可点击项目左侧按钮强制完成项目。',
+                          '请先完成项目内的全部任务（或将任务标记为取消）后，再收入收集箱归档。\n\n也可点击项目左侧按钮强制完成项目。',
         );
         projectSwipeableRefs.current[project.id]?.close();
         return;
@@ -3571,16 +3661,16 @@ export default function TasksScreen() {
     (project: ProjectRow) => {
       projectSwipeableRefs.current[project.id]?.close();
       void (async () => {
-        let message = `确定彻底删除「${project.name}」吗？删除后无法在本地找回（含其下全部任务）。`;
+        let message = `确定删除「${project.name}」的完整记录吗？\n\n任务细节将无法恢复，但完成履历会保留，仍可在「完成履历」中查看。`;
         try {
           const incomplete = await countIncompleteTasksByProjectId(project.id);
           if (incomplete > 0) {
-            message = `「${project.name}」下仍有 ${incomplete} 个未完成任务。\n\n确定连同项目与全部任务一并彻底删除吗？删除后无法在本地找回。`;
+            message = `「${project.name}」下仍有 ${incomplete} 个未完成任务。\n\n删除后任务细节不可恢复，但完成履历会保留。`;
           }
         } catch (err) {
           console.warn('统计项目未完成任务失败', err);
         }
-        Alert.alert('删除项目', message, [
+        Alert.alert('删除完整记录', message, [
           { text: '取消', style: 'cancel' },
           {
             text: '删除',
@@ -3590,24 +3680,46 @@ export default function TasksScreen() {
                 await runExclusiveMutation('正在删除项目...', async () => {
                   markPageDirty();
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                  const tree = projectTaskTreeMap[project.id] ?? [];
+                  const progress = getProjectTreeTaskProgress(tree);
+                  try {
+                    await ensureProjectCompletionLogFromProject(project, {
+                      completedYmd: logicalTodayYmd,
+                      taskCount: progress.total,
+                      doneTaskCount: progress.done,
+                      source: 'manual_delete',
+                      skipIfExists: true,
+                    });
+                  } catch (logErr) {
+                    console.warn('写入完成履历失败', logErr);
+                  }
                   await deleteProject(project.id);
-                  await markPendingTablesDirty(['projects', 'tasks']);
+                  await markPendingTablesDirty(['projects', 'tasks', 'project_completion_logs']);
                   await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
                   const rows = await loadProjects();
                   await loadProjectTasks(rows);
                   await loadProjectsListFromApi(projectTab, { replaceMap: true });
-                }, '项目已删除');
+                }, '已删除，履历已保留');
               } catch (err) {
                 console.warn('删除收集箱项目失败', err);
                 Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
                 await loadProjects();
               }
-            }, 
+            },
           },
         ]);
       })();
     },
-    [loadProjectTasks, loadProjects, loadProjectsListFromApi, markPageDirty, projectTab, runExclusiveMutation]
+    [
+      loadProjectTasks,
+      loadProjects,
+      loadProjectsListFromApi,
+      logicalTodayYmd,
+      markPageDirty,
+      projectTab,
+      projectTaskTreeMap,
+      runExclusiveMutation,
+    ],
   );
 
   const activateShelvedTodo = React.useCallback(
@@ -3832,7 +3944,6 @@ export default function TasksScreen() {
             if (isProjectInboxProgressComplete(proj, tree)) {
               showProjectCompletionDispositionPrompt(proj, {
                 onArchive: () => void moveProjectToInboxById(pid),
-                onDiscard: () => void discardCompletedProjectById(pid),
               });
             }
           }
@@ -3873,7 +3984,6 @@ export default function TasksScreen() {
       }
     },
     [
-      discardCompletedProjectById,
       findVisibleTask,
       grantTaskPointsWithToast,
       loadProjectTasks,
@@ -5365,10 +5475,10 @@ export default function TasksScreen() {
                 transform: [{ translateY: pageTranslateAnim }],
               }}
             >
-      <FlatList
+      <FlatList<ProjectListFlatItem>
         ref={mainScrollRef}
-        data={secondaryPane === 'projects' ? projectsShownInList : []}
-        keyExtractor={(project) => project.id}
+        data={secondaryPane === 'projects' ? projectListFlatItems : ([] as ProjectListFlatItem[])}
+        keyExtractor={(item) => item.key}
         refreshControl={refreshControl}
         style={styles.scroll}
         contentContainerStyle={[
@@ -5406,6 +5516,9 @@ export default function TasksScreen() {
           logicalTodayYmd,
           isDark,
           secondaryPane,
+          projectListFlatItems,
+          expandedInboxMonths,
+          orphanCompletionLogs,
         }}
         ListHeaderComponent={
           <>
@@ -6459,12 +6572,24 @@ export default function TasksScreen() {
                 <View style={styles.headerRow}>
                   <View style={styles.projectListTitleCol}>
                     <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]} numberOfLines={2}>
-                      共 {projectsShownInList.length} 个活跃项目
-                      {projectTab === INBOX_PROJECT_CATEGORY_ID && projectsShownInList.length > 0
-                        ? ' · 左滑可彻底删除'
-                        : ''}
+                    <Text style={[styles.sectionMeta, { color: outline }]} numberOfLines={3}>
+                      {projectTab === INBOX_PROJECT_CATEGORY_ID
+                        ? `归档 ${projectsShownInList.length} 项 · 完整细节保留 ${INBOX_PROJECT_FULL_RETENTION_DAYS} 天 · 左滑可删细节（履历保留）`
+                        : `共 ${projectsShownInList.length} 个活跃项目`}
                     </Text>
+                    {projectTab === INBOX_PROJECT_CATEGORY_ID ? (
+                      <ScalePressable
+                        onPress={() => router.push('/project-completion-logs' as never)}
+                        accessibilityRole="button"
+                        accessibilityLabel="查看完成履历"
+                        style={({ pressed }) => [
+                          { marginTop: 6, alignSelf: 'flex-start', opacity: pressed ? 0.75 : 1 },
+                        ]}>
+                        <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
+                          查看全部完成履历 →
+                        </Text>
+                      </ScalePressable>
+                    ) : null}
                   </View>
                   <ScalePressable
                     onPress={() =>
@@ -6512,7 +6637,7 @@ export default function TasksScreen() {
           </>
         }
         ListEmptyComponent={
-          secondaryPane === 'projects' && projectsShownInList.length === 0 ? (
+          secondaryPane === 'projects' && projectListFlatItems.length === 0 ? (
 <View style={styles.projectSwipeWrap}>
                   <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
                     <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
@@ -6529,7 +6654,83 @@ export default function TasksScreen() {
           ) : null
         }
         ListFooterComponent={<View style={{ height: 46 + mainScrollKeyboardPad }} />}
-        renderItem={({ item: project }) => {
+        renderItem={({ item: listItem }) => {
+                  if (listItem.kind === 'month') {
+                    const monthKey = listItem.key.replace(/^month:/, '');
+                    return (
+                      <Pressable
+                        onPress={() => toggleInboxMonthExpanded(monthKey)}
+                        style={({ pressed }) => [
+                          styles.projectSwipeWrap,
+                          {
+                            paddingVertical: 10,
+                            paddingHorizontal: 4,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            opacity: pressed ? 0.85 : 1,
+                          },
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${listItem.label}，${listItem.count} 项，${listItem.collapsed ? '展开' : '收起'}`}>
+                        <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 15 }]}>
+                          {listItem.label}
+                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text style={[styles.sectionMeta, { color: outline }]}>{listItem.count}</Text>
+                          <MaterialIcons
+                            name={listItem.collapsed ? 'expand-more' : 'expand-less'}
+                            size={22}
+                            color={outline}
+                          />
+                        </View>
+                      </Pressable>
+                    );
+                  }
+                  if (listItem.kind === 'log') {
+                    const log = listItem.log;
+                    const tags = parseCompletionLogTagNames(log.tag_names);
+                    const pointsLabel =
+                      log.points_delta > 0
+                        ? `+${formatPoints(log.points_delta)}`
+                        : log.points_delta < 0
+                          ? formatPoints(log.points_delta)
+                          : null;
+                    return (
+                      <View style={styles.projectSwipeWrap}>
+                        <View
+                          style={[
+                            styles.projectCard,
+                            { backgroundColor: soft, opacity: 0.92, borderLeftColor: success, borderLeftWidth: 3 },
+                          ]}>
+                          <View style={[styles.projectHead, { borderLeftColor: 'transparent' }]}>
+                            <View style={styles.projectHeadLeft}>
+                              <MaterialIcons name="history" size={20} color={success} />
+                              <View style={styles.projectHeadMainColumn}>
+                                <Text style={[styles.projectTitle, { color: colors.text }]} numberOfLines={2}>
+                                  {log.name}
+                                </Text>
+                                <Text style={[styles.projectSub, { color: outline }]} numberOfLines={2}>
+                                  {log.completed_ymd}
+                                  {log.task_count > 0
+                                    ? ` · ${log.done_task_count}/${log.task_count} 任务`
+                                    : ''}
+                                  {pointsLabel ? ` · ${pointsLabel} 积分` : ''}
+                                  {' · 已压缩为履历'}
+                                </Text>
+                                {tags.length > 0 ? (
+                                  <Text style={[styles.projectSub, { color: outline }]} numberOfLines={1}>
+                                    {tags.join(' · ')}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  }
+                  const project = listItem.project;
 
                   const lockInfo = projectLockMap.get(project.id);
                   const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
@@ -6951,10 +7152,10 @@ export default function TasksScreen() {
                                   { opacity: pressed ? 0.9 : 1, backgroundColor: error },
                                 ]}
                                 accessibilityRole="button"
-                                accessibilityLabel={`彻底删除 ${project.name}`}>
+                                accessibilityLabel={`删除 ${project.name} 的完整记录（履历保留）`}>
                                 <MaterialIcons name="delete-outline" size={22} color={taskUi.onAccent} />
                                 <Text style={styles.projectSwipeDeleteText} numberOfLines={1}>
-                                  删除
+                                  删细节
                                 </Text>
                               </Pressable>
                             ) : canSwipeArchiveToInbox ? (
@@ -6965,10 +7166,10 @@ export default function TasksScreen() {
                                   { opacity: pressed ? 0.9 : 1, backgroundColor: secondary },
                                 ]}
                                 accessibilityRole="button"
-                                accessibilityLabel={`将 ${project.name} 归纳到收集箱`}>
+                                accessibilityLabel={`将 ${project.name} 收入收集箱归档`}>
                                 <MaterialIcons name="inventory-2" size={22} color={taskUi.onAccent} />
                                 <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
-                                  收纳
+                                  归档
                                 </Text>
                               </Pressable>
                             ) : null}

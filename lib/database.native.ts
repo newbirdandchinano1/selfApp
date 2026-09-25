@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 48;
+export const DB_VERSION = 49;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -539,6 +539,22 @@ export async function initDatabase() {
       task_title TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_completion_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      completed_ymd TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      task_count INTEGER NOT NULL DEFAULT 0,
+      done_task_count INTEGER NOT NULL DEFAULT 0,
+      points_delta REAL NOT NULL DEFAULT 0,
+      tag_names TEXT,
+      note TEXT,
+      source TEXT NOT NULL DEFAULT 'archive',
+      created_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create'
     );
 
     CREATE TABLE IF NOT EXISTS accounts (
@@ -1120,6 +1136,7 @@ export async function initDatabase() {
   // 增量同步依赖 sync_status；缺列时会把全表当作待推送并反复上传
   await ensureColumn(db, 'task_execution_events', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
   await ensureColumn(db, 'frog_completion_events', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
+  await ensureColumn(db, 'project_completion_logs', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
   await ensureColumn(db, 'app_settings', 'sync_status', "TEXT NOT NULL DEFAULT 'synced'");
 
   // Ensure legacy rows have a default category_id once column exists
@@ -1207,6 +1224,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_task_execution_events_task_id ON task_execution_events(task_id);
     CREATE INDEX IF NOT EXISTS idx_frog_completion_events_assigned_ymd ON frog_completion_events(assigned_ymd);
     CREATE INDEX IF NOT EXISTS idx_frog_completion_events_task_id ON frog_completion_events(task_id);
+    CREATE INDEX IF NOT EXISTS idx_project_completion_logs_completed_ymd ON project_completion_logs(completed_ymd);
+    CREATE INDEX IF NOT EXISTS idx_project_completion_logs_project_id ON project_completion_logs(project_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_updated_at ON accounts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_transactions_account_id ON account_transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_finance_accounts_updated_at ON finance_accounts(updated_at);
@@ -1478,6 +1497,7 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS account_transactions;
     DROP TABLE IF EXISTS accounts;
     DROP TABLE IF EXISTS frog_completion_events;
+    DROP TABLE IF EXISTS project_completion_logs;
     DROP TABLE IF EXISTS task_execution_events;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;

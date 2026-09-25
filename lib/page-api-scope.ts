@@ -21,6 +21,7 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   habit_check_ins: [TAB_PAGE_KEYS.tasks],
   task_execution_events: [TAB_PAGE_KEYS.tasks],
   frog_completion_events: [TAB_PAGE_KEYS.tasks],
+  project_completion_logs: [TAB_PAGE_KEYS.tasks],
   // 财务表：dirty 仅用于 local-first 重读 SQLite；REST 走 /api/pages/finance/*，禁止 List
   finance_accounts: [TAB_PAGE_KEYS.finance],
   finance_account_types: [TAB_PAGE_KEYS.finance],

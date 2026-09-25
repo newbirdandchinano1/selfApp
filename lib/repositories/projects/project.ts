@@ -157,20 +157,70 @@ export async function deleteProject(id: string) {
   }
 }
 
-/** 收集箱内（`category_id` 为内置收集箱）且 `inbox_entered_at` 超过 `retentionDays` 的项目删除（含下属任务）。 */
-export async function deleteInboxProjectsPastRetentionDays(retentionDays: number): Promise<number> {
+/** 收集箱内超过保留期的项目：先确保完成履历，再软删实体（含下属任务）。 */
+export async function compressInboxProjectsPastRetentionDays(retentionDays: number): Promise<number> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ id: string }>(
     `SELECT id FROM projects
      WHERE category_id = ?
        AND inbox_entered_at IS NOT NULL
+       AND sync_status != 'pending_delete'
        AND datetime(inbox_entered_at) <= datetime('now', ?)`,
     [INBOX_PROJECT_CATEGORY_ID, `-${retentionDays} days`],
   );
+  if (rows.length === 0) return 0;
+
+  const { ensureProjectCompletionLogFromProject } = await import('./project-completion-logs');
+  const { getTasksByProjectId, countTaskTreeNodes } = await import('@/lib/repositories/tasks/task');
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const now = new Date();
+  const todayYmd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
   for (const r of rows) {
+    const project = await getProjectById(r.id);
+    if (!project) continue;
+    try {
+      let taskCount = 0;
+      let doneTaskCount = 0;
+      try {
+        const tree = await getTasksByProjectId(project.id, { forceRefresh: false });
+        taskCount = countTaskTreeNodes(tree);
+        const walkDone = (nodes: typeof tree) => {
+          for (const n of nodes) {
+            if (n.status === 'done' || n.status === 'cancelled') doneTaskCount += 1;
+            if (n.children?.length) walkDone(n.children);
+          }
+        };
+        walkDone(tree);
+      } catch {
+        /* 统计失败仍写履历 */
+      }
+      const completedYmd =
+        (project.updated_at && /^\d{4}-\d{2}-\d{2}/.test(project.updated_at)
+          ? project.updated_at.slice(0, 10)
+          : null) ||
+        (project.inbox_entered_at && /^\d{4}-\d{2}-\d{2}/.test(project.inbox_entered_at)
+          ? project.inbox_entered_at.slice(0, 10)
+          : null) ||
+        todayYmd;
+      await ensureProjectCompletionLogFromProject(project, {
+        completedYmd,
+        taskCount,
+        doneTaskCount,
+        source: 'compress',
+        skipIfExists: true,
+      });
+    } catch (e) {
+      console.warn('写入项目完成履历失败，仍将压缩删除', project.id, e);
+    }
     await deleteProject(r.id);
   }
   return rows.length;
+}
+
+/** @deprecated 请用 compressInboxProjectsPastRetentionDays */
+export async function deleteInboxProjectsPastRetentionDays(retentionDays: number): Promise<number> {
+  return compressInboxProjectsPastRetentionDays(retentionDays);
 }
 
 export async function createProjectCategory(input: CreateProjectCategoryInput) {

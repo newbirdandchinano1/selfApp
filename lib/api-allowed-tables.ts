@@ -17,6 +17,7 @@ export const API_ALLOWED_TABLES = new Set([
   'finance_scheduled_expenses',
   'finance_transactions',
   'frog_completion_events',
+  'project_completion_logs',
   'habit_check_ins',
   'habit_contexts',
   'habits',

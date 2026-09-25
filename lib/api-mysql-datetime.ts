@@ -15,7 +15,12 @@ const DATETIME_FIELD_RE =
  * 读取「逻辑日」相关字段请用 parseTaskAuditDatetimeForLogicalDay / ymdFromAuditDatetime。
  */
 const WALL_CLOCK_DATETIME_FIELDS = new Set(['happened_at', 'completed_at']);
-const WALL_CLOCK_DATETIME_TABLES = new Set(['tasks', 'task_execution_events', 'frog_completion_events']);
+const WALL_CLOCK_DATETIME_TABLES = new Set([
+  'tasks',
+  'task_execution_events',
+  'frog_completion_events',
+  'project_completion_logs',
+]);
 
 function looksLikeJsonString(value: string): boolean {
   const t = value.trim();

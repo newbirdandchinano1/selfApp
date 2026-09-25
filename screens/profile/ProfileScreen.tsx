@@ -37,7 +37,7 @@ type ProfileMenuItem = {
   title: string;
   subtitle: string;
   icon: AppIconName;
-  href: '/wish-board' | '/points-ledger' | '/memo-list' | '/my-recipes';
+  href: '/wish-board' | '/points-ledger' | '/project-completion-logs' | '/memo-list' | '/my-recipes';
   accent: string;
   wash: string;
 };
@@ -56,6 +56,13 @@ const PROFILE_MENU_BASE: Omit<ProfileMenuItem, 'accent' | 'wash'>[] = [
     subtitle: '查看全部积分流水',
     icon: 'receipt-long',
     href: '/points-ledger',
+  },
+  {
+    key: 'project-completion-logs',
+    title: '完成履历',
+    subtitle: '已完成项目的轻量记录',
+    icon: 'history',
+    href: '/project-completion-logs',
   },
   {
     key: 'memo-list',
@@ -128,6 +135,11 @@ export default function ProfileScreen() {
       },
       {
         ...PROFILE_MENU_BASE[3],
+        accent: isDark ? '#a78bfa' : '#7c3aed',
+        wash: isDark ? 'rgba(167,139,250,0.16)' : 'rgba(124,58,237,0.1)',
+      },
+      {
+        ...PROFILE_MENU_BASE[4],
         accent: isDark ? '#34d399' : colors.secondary,
         wash: taskUi.successWash,
       },
@@ -391,7 +403,7 @@ export default function ProfileScreen() {
             return (
               <Pressable
                 key={item.key}
-                onPress={() => router.push(item.href)}
+                onPress={() => router.push(item.href as never)}
                 accessibilityRole="button"
                 accessibilityLabel={`${item.title}，${item.subtitle}`}
                 style={({ pressed }) => [

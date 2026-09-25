@@ -288,6 +288,7 @@ function RootLayoutInner() {
             <Stack.Screen name="habit-detail" />
             <Stack.Screen name="add-item" />
             <Stack.Screen name="points-ledger" />
+            <Stack.Screen name="project-completion-logs" />
             <Stack.Screen name="wish-board" />
             <Stack.Screen name="add-wish-board-item" />
             <Stack.Screen name="edit-wish-board-item/[id]" />

@@ -48,6 +48,7 @@ const API_RECONCILE_SKIP_TABLES = new Set([
   /** 完成事件增量写入后 REST 列表/聚合可能滞后，避免 reconcile 误删本地记录 */
   'task_execution_events',
   'frog_completion_events',
+  'project_completion_logs',
   /** 健康专用列表仅近 30 天，避免 reconcile 误删更早本地记录 */
   'health_records',
   'points_ledger',
