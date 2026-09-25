@@ -45,6 +45,8 @@ export const API_ALLOWED_TABLES = new Set([
   'wish_board_items',
   'project_tags',
   'project_tag_links',
+  'tags',
+  'tag_links',
   'health_daily_targets',
 ]);
 

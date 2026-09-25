@@ -1000,7 +1000,7 @@ export default function EditProjectScreen() {
     if (!committed) return;
 
     try {
-      await markPendingTablesDirty(['projects', 'project_categories', 'tasks', 'task_categories']);
+      await markPendingTablesDirty(['projects', 'project_categories', 'tasks', 'task_categories', 'tags', 'tag_links']);
       await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
       notifyAncestorsDataChanged();
     } catch (syncErr) {
@@ -1282,7 +1282,7 @@ export default function EditProjectScreen() {
           </View>
 
           <View style={styles.section}>
-            <Text style={[styles.sectionLabel, { color: outline }]}>项目标签</Text>
+            <Text style={[styles.sectionLabel, { color: outline }]}>标签</Text>
             <ProjectTagPickerField
               selectedIds={selectedTagIds}
               allTags={allTags}

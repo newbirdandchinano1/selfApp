@@ -5,9 +5,11 @@ import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-e
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
+  buildScheduleTimeline,
   computeScheduleSlotLayout,
   formatMinuteRangeLabel,
   formatMinutesAsHm,
+  listWorkSlots,
   maxSpanFromSlot,
   placementBlockHeight,
   placementEndMinutes,
@@ -1031,31 +1033,85 @@ export function WeeklyFrogSchedule({
   const minimalFocus = React.useMemo(() => {
     const nowMins =
       wallNow.getHours() * 60 + wallNow.getMinutes() + wallNow.getSeconds() / 60;
-    const current = todayCompactItems.filter(
-      (x) => nowMins >= x.startMins && nowMins < x.endMins,
+    const timeline = view ? buildScheduleTimeline(view.axis) : [];
+    const workSlots = view ? listWorkSlots(view.axis) : [];
+
+    /** 已超时：时段已结束且未完成（按格宽轴，而非任务自身跨度「仍在进行」） */
+    const overdueItems = todayCompactItems.filter(
+      (x) => !x.done && x.endMins <= nowMins,
     );
-    if (current.length > 0) {
-      const startMins = Math.min(...current.map((x) => x.startMins));
-      const endMins = Math.max(...current.map((x) => x.endMins));
+
+    const itemsStartingInSlot = (slotIndex: number) =>
+      todayCompactItems.filter((x) => x.placement.startSlotIndex === slotIndex);
+
+    const mergeFocusItems = (slotItems: TodayCompactItem[]) => {
+      const byId = new Map<string, TodayCompactItem>();
+      for (const x of overdueItems) byId.set(x.placement.id, x);
+      for (const x of slotItems) byId.set(x.placement.id, x);
+      return [...byId.values()].sort((a, b) => {
+        const sa = a.placement.startSlotIndex ?? 0;
+        const sb = b.placement.startSlotIndex ?? 0;
+        if (sa !== sb) return sa - sb;
+        return a.title.localeCompare(b.title, 'zh');
+      });
+    };
+
+    const currentSlot = workSlots.find(
+      (s) => nowMins >= s.startMinutes && nowMins < s.endMinutes,
+    );
+    if (currentSlot) {
       return {
         kind: 'current' as const,
-        items: current,
-        rangeLabel: `${formatMinutesAsHm(startMins)}–${formatMinutesAsHm(endMins)}`,
-        countdownLabel: formatRemainLabel(remainSecondsUntil(endMins, wallNow)),
+        items: mergeFocusItems(itemsStartingInSlot(currentSlot.slotIndex)),
+        rangeLabel: `${formatMinutesAsHm(currentSlot.startMinutes)}–${formatMinutesAsHm(currentSlot.endMinutes)}`,
+        countdownLabel: formatRemainLabel(
+          remainSecondsUntil(currentSlot.endMinutes, wallNow),
+        ),
       };
     }
-    const upcoming = todayCompactItems.filter((x) => x.startMins > nowMins);
-    if (upcoming.length > 0) {
-      const nextStart = upcoming[0]!.startMins;
-      const nextItems = upcoming.filter((x) => x.startMins === nextStart);
-      const endMins = Math.max(...nextItems.map((x) => x.endMins));
+
+    // 断开时段（如午休）：不可入格，展示断开本身 + 超时项 + 下一段可排指派
+    const currentBreak = timeline.find(
+      (r) =>
+        r.kind === 'break' &&
+        nowMins >= r.startMinutes &&
+        nowMins < r.endMinutes,
+    );
+    const nextSlot = workSlots.find((s) => s.startMinutes > nowMins);
+    if (currentBreak) {
+      return {
+        kind: 'break' as const,
+        items: mergeFocusItems(
+          nextSlot ? itemsStartingInSlot(nextSlot.slotIndex) : [],
+        ),
+        rangeLabel: `${formatMinutesAsHm(currentBreak.startMinutes)}–${formatMinutesAsHm(currentBreak.endMinutes)}`,
+        countdownLabel: nextSlot
+          ? formatRemainLabel(remainSecondsUntil(nextSlot.startMinutes, wallNow), {
+              untilStart: true,
+            })
+          : formatRemainLabel(remainSecondsUntil(currentBreak.endMinutes, wallNow)),
+        breakLabel: currentBreak.label?.trim() || '休息',
+      };
+    }
+
+    if (nextSlot) {
       return {
         kind: 'upcoming' as const,
-        items: nextItems,
-        rangeLabel: `${formatMinutesAsHm(nextStart)}–${formatMinutesAsHm(endMins)}`,
-        countdownLabel: formatRemainLabel(remainSecondsUntil(nextStart, wallNow), {
-          untilStart: true,
-        }),
+        items: mergeFocusItems(itemsStartingInSlot(nextSlot.slotIndex)),
+        rangeLabel: `${formatMinutesAsHm(nextSlot.startMinutes)}–${formatMinutesAsHm(nextSlot.endMinutes)}`,
+        countdownLabel: formatRemainLabel(
+          remainSecondsUntil(nextSlot.startMinutes, wallNow),
+          { untilStart: true },
+        ),
+      };
+    }
+
+    if (overdueItems.length > 0) {
+      return {
+        kind: 'finished' as const,
+        items: overdueItems,
+        rangeLabel: '',
+        countdownLabel: '有超时未完成',
       };
     }
     if (todayCompactItems.length > 0) {
@@ -1072,7 +1128,7 @@ export function WeeklyFrogSchedule({
       rangeLabel: '',
       countdownLabel: '今日暂无安排',
     };
-  }, [todayCompactItems, wallNow]);
+  }, [todayCompactItems, wallNow, view]);
 
   // 非课表态强制回今天周期
   React.useEffect(() => {
@@ -1636,7 +1692,9 @@ export function WeeklyFrogSchedule({
                 <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
                   {minimalFocus.kind === 'finished'
                     ? minimalFocus.countdownLabel
-                    : `${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`}
+                    : minimalFocus.kind === 'break'
+                      ? `${minimalFocus.breakLabel} ${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`
+                      : `${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`}
                 </Text>
               ) : null}
               {isAgenda && todayCompactItems.length > 0 ? (
@@ -1798,11 +1856,13 @@ export function WeeklyFrogSchedule({
                   <Text style={[styles.minimalCountdownLabel, { color: outline }]}>
                     {minimalFocus.kind === 'current'
                       ? '当前时段'
-                      : minimalFocus.kind === 'upcoming'
-                        ? '下一时段'
-                        : minimalFocus.kind === 'finished'
-                          ? '日程'
-                          : '今日'}
+                      : minimalFocus.kind === 'break'
+                        ? minimalFocus.breakLabel
+                        : minimalFocus.kind === 'upcoming'
+                          ? '下一时段'
+                          : minimalFocus.kind === 'finished'
+                            ? '日程'
+                            : '今日'}
                   </Text>
                   {minimalFocus.rangeLabel ? (
                     <Text
@@ -1817,7 +1877,9 @@ export function WeeklyFrogSchedule({
                     styles.minimalCountdown,
                     {
                       color:
-                        minimalFocus.kind === 'current' || minimalFocus.kind === 'upcoming'
+                        minimalFocus.kind === 'current' ||
+                        minimalFocus.kind === 'upcoming' ||
+                        minimalFocus.kind === 'break'
                           ? primary
                           : outline,
                     },

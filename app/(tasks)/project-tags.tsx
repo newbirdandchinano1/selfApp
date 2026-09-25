@@ -3,6 +3,8 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import {
   createProjectTag,
   deleteProjectTag,
@@ -139,6 +141,12 @@ export default function ProjectTagsScreen() {
       }
       setEditorVisible(false);
       await load();
+      try {
+        await markPendingTablesDirty(['tags', 'tag_links']);
+        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      } catch (syncErr) {
+        console.warn('标签保存后同步失败', syncErr);
+      }
     } catch (err) {
       console.warn('保存标签失败', err);
       Alert.alert('保存失败', formatWriteError(err, '标签保存失败，请稍后重试。'));
@@ -148,7 +156,7 @@ export default function ProjectTagsScreen() {
   };
 
   const confirmDelete = (tag: ProjectTagRow) => {
-    Alert.alert('删除标签', `确认删除「${tag.name}」？已贴到项目上的关联会一并移除。`, [
+    Alert.alert('删除标签', `确认删除「${tag.name}」？已贴到项目、习惯、待办上的关联会一并移除。`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -157,6 +165,12 @@ export default function ProjectTagsScreen() {
           try {
             await deleteProjectTag(tag.id);
             await load();
+            try {
+              await markPendingTablesDirty(['tags', 'tag_links']);
+              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+            } catch (syncErr) {
+              console.warn('标签删除后同步失败', syncErr);
+            }
           } catch (err) {
             console.warn('删除标签失败', err);
             Alert.alert('删除失败', formatWriteError(err, '标签删除失败，请稍后重试。'));
@@ -179,7 +193,7 @@ export default function ProjectTagsScreen() {
         <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
-        <Text style={[styles.title, { color: primary }]}>项目标签</Text>
+        <Text style={[styles.title, { color: primary }]}>标签</Text>
         <Pressable onPress={openCreate} style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
           <Text style={[styles.doneText, { color: primary }]}>新建</Text>
         </Pressable>
@@ -190,7 +204,7 @@ export default function ProjectTagsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Text style={[styles.hint, { color: outline }]}>
-          标签表示你更优先做哪类事（如收入、爱好）；权重越大整体越靠前。同一权重档内再用项目优先级比紧急程度。
+          标签可打在项目、习惯与独立待办上；权重越大在项目列表中越靠前。同一权重档内再用项目优先级比紧急程度。
         </Text>
 
         {loading ? (

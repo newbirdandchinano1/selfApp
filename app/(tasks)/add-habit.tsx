@@ -1,10 +1,19 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { formatWriteError } from '@/lib/format-write-error';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import {
+  getTagIdsByEntity,
+  getTags,
+  setHabitTagIds,
+} from '@/lib/repositories/tags/tag';
+import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
 import {
   isBuildHabitSucceeded,
@@ -300,6 +309,9 @@ export default function AddHabitScreen() {
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(true);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
   const [subHabits, setSubHabits] = React.useState<HabitSubItem[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
+  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
+  const [tagsLoading, setTagsLoading] = React.useState(true);
   const [subHabitEditor, setSubHabitEditor] = React.useState<{
     visible: boolean;
     editingId: string | null;
@@ -337,6 +349,15 @@ export default function AddHabitScreen() {
       }
     } catch (err) {
       console.warn('加载情境分类失败', err);
+    }
+    setTagsLoading(true);
+    try {
+      setAllTags(await getTags());
+    } catch (err) {
+      console.warn('加载标签失败', err);
+      setAllTags([]);
+    } finally {
+      setTagsLoading(false);
     }
     }, forceApi);
   }, [isEditMode, wrapLoad]);
@@ -394,6 +415,12 @@ export default function AddHabitScreen() {
         });
         setSelectedContext(rawCtx);
         setHabitNote(row.note?.trim() ? row.note.trim().slice(0, HABIT_NOTE_MAX_LEN) : '');
+        try {
+          setSelectedTagIds(await getTagIdsByEntity('habit', habitId));
+        } catch (tagErr) {
+          console.warn('加载习惯标签失败', tagErr);
+          setSelectedTagIds([]);
+        }
         setHabitKind(parseHabitKind(row.extra_data));
         setRewardPointsText(String(parseHabitRewardPoints(row.extra_data)));
         try {
@@ -802,6 +829,13 @@ export default function AddHabitScreen() {
         });
         savedHabitId = id;
       }
+      await setHabitTagIds(savedHabitId, selectedTagIds);
+      try {
+        await markPendingTablesDirty(['habits', 'tags', 'tag_links']);
+        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      } catch (syncErr) {
+        console.warn('习惯保存后同步到服务器失败', syncErr);
+      }
     } catch (err) {
       const msg = err instanceof Error && err.message.trim() ? err.message : '保存失败，请稍后重试';
       Alert.alert('保存失败', msg);
@@ -855,6 +889,7 @@ export default function AddHabitScreen() {
     router,
     selectedContext,
     selectedDays,
+    selectedTagIds,
     unitInput,
     weeklyNDays,
     subHabits,
@@ -997,6 +1032,23 @@ export default function AddHabitScreen() {
             inputWrapStyle={styles.noteInputWrap}
             inputStyle={[Typography.body, styles.noteInputText]}
           />
+
+          <View style={{ gap: Spacing.sm, marginTop: Spacing.md }}>
+            <Text style={[Typography.caption, { color: colors.textSecondary, fontWeight: '700' }]}>标签</Text>
+            <ProjectTagPickerField
+              selectedIds={selectedTagIds}
+              allTags={allTags}
+              loading={tagsLoading}
+              onChange={setSelectedTagIds}
+              textColor={colors.text}
+              outline={colors.textSecondary}
+              placeholderColor={colors.textMuted}
+              primary={colors.primary}
+              surfaceLow={colors.input}
+              surfaceLowest={colors.surfaceSubtle}
+              isDark={isDark}
+            />
+          </View>
 
           {habitKind === 'break' ? (
             <View style={styles.breakRewardsBlock}>

@@ -711,6 +711,15 @@ export async function deleteTask(id: string) {
   }
   invalidateInflightApiTableFetch('tasks');
 
+  try {
+    const { softDeleteTagLinksForEntity } = await import('@/lib/repositories/tags/tag');
+    for (const tid of subtreeIds) {
+      await softDeleteTagLinksForEntity('task', tid);
+    }
+  } catch {
+    /* 标签表尚未迁移时可忽略 */
+  }
+
   const rootRow = await db.getFirstAsync<{ sync_status: string | null }>(
     `SELECT sync_status FROM tasks WHERE id = ? LIMIT 1`,
     [id],

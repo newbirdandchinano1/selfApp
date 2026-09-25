@@ -134,13 +134,13 @@ export function ProjectTagPickerField({
             onPress={() => {}}
             style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: placeholderColor }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>选择项目标签</Text>
+              <Text style={[styles.modalTitle, { color: textColor }]}>选择标签</Text>
               <Pressable onPress={closeModal} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
                 <MaterialIcons name="close" size={22} color={outline} />
               </Pressable>
             </View>
             <Text style={[styles.modalDesc, { color: outline }]}>
-              一个项目可贴 0 到多个标签；权重高的标签会优先展示。
+              可贴 0 到多个标签；权重高的标签会优先展示。
             </Text>
 
             <Pressable

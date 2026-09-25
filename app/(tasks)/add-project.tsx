@@ -400,7 +400,7 @@ export default function AddProjectScreen() {
       });
       await setProjectTagIds(projectId, selectedTagIds);
       try {
-        await markPendingTablesDirty(['projects']);
+        await markPendingTablesDirty(['projects', 'tags', 'tag_links']);
         await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
       } catch (syncErr) {
         console.warn('项目创建后同步到服务器失败', syncErr);
@@ -483,7 +483,7 @@ export default function AddProjectScreen() {
             <ComposerSection>
               <ComposerSectionHead
                 accentColor={colors.primary}
-                title="项目标签"
+                title="标签"
                 description="可贴 0 到多个标签；可在标签管理中新建"
                 rightIcon="local-offer"
               />

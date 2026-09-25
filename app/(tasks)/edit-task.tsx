@@ -48,6 +48,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import {
+  getTagIdsByEntity,
+  getTags,
+  setTaskTagIds,
+} from '@/lib/repositories/tags/tag';
+import type { TagRow } from '@/lib/repositories/tags/tag.types';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import {
   mergeRewardPointsIntoExtraData,
   normalizeRewardPoints,
@@ -380,6 +388,9 @@ export default function EditTaskScreen() {
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
+  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
+  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
+  const [tagsLoading, setTagsLoading] = React.useState(false);
   const [habitSections, setHabitSections] = React.useState<
     Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
   >([]);
@@ -400,6 +411,7 @@ export default function EditTaskScreen() {
   const boundHabitIdsRef = React.useRef(boundHabitIds);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
   const rewardPointsTextRef = React.useRef(rewardPointsText);
+  const selectedTagIdsRef = React.useRef(selectedTagIds);
   titleRef.current = title;
   acceptanceCriteriaRef.current = acceptanceCriteria;
   priorityRef.current = priority;
@@ -411,8 +423,10 @@ export default function EditTaskScreen() {
   boundHabitIdsRef.current = boundHabitIds;
   isLongTermTaskRef.current = isLongTermTask;
   rewardPointsTextRef.current = rewardPointsText;
+  selectedTagIdsRef.current = selectedTagIds;
 
   const inheritsProjectPriority = !!taskSnapshot?.project_id;
+  const canTagTask = !taskSnapshot?.parent_task_id;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
@@ -710,6 +724,27 @@ export default function EditTaskScreen() {
       setIsLongTermTask(getIsLongTermTask(task.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
+      if (!task.parent_task_id) {
+        setTagsLoading(true);
+        try {
+          const [tags, tagIds] = await Promise.all([
+            getTags(),
+            getTagIdsByEntity('task', taskId),
+          ]);
+          setAllTags(tags);
+          setSelectedTagIds(tagIds);
+        } catch (tagErr) {
+          console.warn('加载任务标签失败', tagErr);
+          setAllTags([]);
+          setSelectedTagIds([]);
+        } finally {
+          setTagsLoading(false);
+        }
+      } else {
+        setAllTags([]);
+        setSelectedTagIds([]);
+      }
+
       try {
         setHabitsLoading(true);
         const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
@@ -851,6 +886,10 @@ export default function EditTaskScreen() {
         due_date: dueDate,
         extra_data: mergedExtra,
       });
+      if (!snapshot.parent_task_id) {
+        await setTaskTagIds(taskId, selectedTagIdsRef.current);
+        await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
+      }
       const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
       });
@@ -1422,6 +1461,26 @@ export default function EditTaskScreen() {
               isDark={isDark}
             />
           </View>
+
+          {canTagTask ? (
+            <View style={styles.section}>
+              <Text style={[styles.sectionLabel, { color: outline }]}>标签</Text>
+              <ProjectTagPickerField
+                selectedIds={selectedTagIds}
+                allTags={allTags}
+                loading={tagsLoading}
+                disabled={loading}
+                onChange={setSelectedTagIds}
+                textColor={theme.text}
+                outline={outline}
+                placeholderColor={outlineVariant}
+                primary={primary}
+                surfaceLow={surfaceLow}
+                surfaceLowest={surfaceLowest}
+                isDark={isDark}
+              />
+            </View>
+          ) : null}
 
           <View style={styles.section}>
             <Text style={[styles.sectionLabel, { color: outline }]}>奖励积分</Text>

@@ -29,11 +29,18 @@ import {
   parseRewardPointsFromExtraData,
 } from '@/lib/reward-points';
 import { AppInput } from '@/components/ui';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  getTagIdsByEntity,
+  getTags,
+  setTaskTagIds,
+} from '@/lib/repositories/tags/tag';
+import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
     applyScheduleMetaToLabels,
     dueDateFromScheduleMeta,
@@ -262,6 +269,9 @@ export default function AddTaskScreen() {
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
   const [loadingEdit, setLoadingEdit] = React.useState(false);
+  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
+  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
+  const [tagsLoading, setTagsLoading] = React.useState(false);
   const editTaskStatusRef = React.useRef<string>('todo');
 
   const isStandalone =
@@ -377,6 +387,17 @@ export default function AddTaskScreen() {
   const reloadAddTaskData = React.useCallback(
     async (forceApi = false) => {
       await wrapLoad(async () => {
+        if (isStandalone) {
+          setTagsLoading(true);
+          try {
+            setAllTags(await getTags());
+          } catch (err) {
+            console.warn('加载标签失败', err);
+            setAllTags([]);
+          } finally {
+            setTagsLoading(false);
+          }
+        }
         if (isEditStandalone && editTaskId) {
           setLoadingEdit(true);
           try {
@@ -387,6 +408,12 @@ export default function AddTaskScreen() {
               return;
             }
             applyLoadedStandaloneTask(task);
+            try {
+              setSelectedTagIds(await getTagIdsByEntity('task', editTaskId));
+            } catch (tagErr) {
+              console.warn('加载待办标签失败', tagErr);
+              setSelectedTagIds([]);
+            }
           } catch (error) {
             console.warn('加载待办失败', error);
             Alert.alert('加载失败', '无法读取待办，请稍后重试。');
@@ -405,7 +432,7 @@ export default function AddTaskScreen() {
         }
       }, forceApi);
     },
-    [applyLoadedStandaloneTask, editTaskId, isEditStandalone, quickProjectId, router, wrapLoad],
+    [applyLoadedStandaloneTask, editTaskId, isEditStandalone, isStandalone, quickProjectId, router, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadAddTaskData);
@@ -559,6 +586,7 @@ export default function AddTaskScreen() {
             due_date: dueDate,
             extra_data: extraPayload,
           });
+          await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
           const id = makeTimestampEntityId('tsk_', 8);
           await createTask({
@@ -574,9 +602,10 @@ export default function AddTaskScreen() {
             due_date: dueDate,
             extra_data: extraPayload,
           });
+          await setTaskTagIds(id, selectedTagIds);
         }
         try {
-          await markPendingTablesDirty(['tasks']);
+          await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
           await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
         } catch (syncErr) {
           console.warn('待办保存后同步到服务器失败', syncErr);
@@ -803,6 +832,32 @@ export default function AddTaskScreen() {
             ) : null}
 
             {isStandalone ? <ComposerPriorityMatrix value={priority} onChange={setPriority} /> : null}
+
+            {isStandalone ? (
+              <ComposerSection>
+                <ComposerSectionHead
+                  accentColor={colors.primary}
+                  title="标签"
+                  description="可贴 0 到多个标签；可在标签管理中新建"
+                  rightIcon="local-offer"
+                />
+                <ComposerEditorialCard>
+                  <ProjectTagPickerField
+                    selectedIds={selectedTagIds}
+                    allTags={allTags}
+                    loading={tagsLoading}
+                    onChange={setSelectedTagIds}
+                    textColor={colors.text}
+                    outline={colors.textSecondary}
+                    placeholderColor={colors.textMuted}
+                    primary={colors.primary}
+                    surfaceLow={colors.input}
+                    surfaceLowest={colors.surfaceSubtle}
+                    isDark={isDark}
+                  />
+                </ComposerEditorialCard>
+              </ComposerSection>
+            ) : null}
 
             {!isStandalone || standaloneIntent === 'active' ? (
               <ComposerSection>

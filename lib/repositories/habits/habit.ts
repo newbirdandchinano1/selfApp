@@ -123,6 +123,12 @@ export async function deleteHabit(id: string) {
   } catch {
     /* 旧库尚无 habit_check_ins 表 */
   }
+  try {
+    const { softDeleteTagLinksForEntity } = await import('@/lib/repositories/tags/tag');
+    await softDeleteTagLinksForEntity('habit', id);
+  } catch {
+    /* 标签表尚未迁移时可忽略 */
+  }
   invalidateInflightApiTableFetch('habits');
   invalidateInflightApiTableFetch('habit_check_ins');
   await pushHabitChangesToApi();

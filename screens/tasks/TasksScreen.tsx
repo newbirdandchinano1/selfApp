@@ -133,6 +133,8 @@ import {
 } from '@/lib/repositories/projects/project-completion-logs';
 import { getTagsByProjectIds } from '@/lib/repositories/projects/project-tag';
 import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
+import { getTagsByEntityIds } from '@/lib/repositories/tags/tag';
+import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
   buildProjectLockMap,
   sortProjectsForList,
@@ -1881,6 +1883,12 @@ export default function TasksScreen() {
   const [projectTagsByProjectId, setProjectTagsByProjectId] = React.useState<
     Map<string, ProjectTagRow[]>
   >(() => new Map());
+  const [habitTagsByHabitId, setHabitTagsByHabitId] = React.useState<Map<string, TagRow[]>>(
+    () => new Map(),
+  );
+  const [standaloneTagsByTaskId, setStandaloneTagsByTaskId] = React.useState<Map<string, TagRow[]>>(
+    () => new Map(),
+  );
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
@@ -2222,6 +2230,42 @@ export default function TasksScreen() {
   React.useEffect(() => {
     void refreshProjectTags(projects);
   }, [projects, refreshProjectTags]);
+
+  const refreshHabitTags = React.useCallback(async () => {
+    const ids = habitSections.flatMap((s) => s.items.map((h) => h.id));
+    if (ids.length === 0) {
+      setHabitTagsByHabitId(new Map());
+      return;
+    }
+    try {
+      setHabitTagsByHabitId(await getTagsByEntityIds('habit', ids));
+    } catch (err) {
+      console.warn('加载习惯标签失败', err);
+      setHabitTagsByHabitId(new Map());
+    }
+  }, [habitSections]);
+
+  React.useEffect(() => {
+    void refreshHabitTags();
+  }, [refreshHabitTags]);
+
+  const refreshStandaloneTags = React.useCallback(async () => {
+    const ids = standaloneTodos.map((t) => t.id);
+    if (ids.length === 0) {
+      setStandaloneTagsByTaskId(new Map());
+      return;
+    }
+    try {
+      setStandaloneTagsByTaskId(await getTagsByEntityIds('task', ids));
+    } catch (err) {
+      console.warn('加载待办标签失败', err);
+      setStandaloneTagsByTaskId(new Map());
+    }
+  }, [standaloneTodos]);
+
+  React.useEffect(() => {
+    void refreshStandaloneTags();
+  }, [refreshStandaloneTags]);
 
   const loadExpandedProjectState = React.useCallback(async () => {
     try {
@@ -5943,6 +5987,35 @@ export default function TasksScreen() {
                                     ]}>
                                     {item.name}
                                   </Text>
+                                  {(habitTagsByHabitId.get(item.id) ?? []).length > 0 ? (
+                                    <View style={styles.habitTagChipRow}>
+                                      {(habitTagsByHabitId.get(item.id) ?? []).slice(0, 2).map((tag) => (
+                                        <View
+                                          key={tag.id}
+                                          style={[
+                                            styles.habitTagChip,
+                                            {
+                                              backgroundColor: `${tag.color}18`,
+                                              borderColor: `${tag.color}44`,
+                                            },
+                                          ]}>
+                                          <View
+                                            style={{
+                                              width: 6,
+                                              height: 6,
+                                              borderRadius: 3,
+                                              backgroundColor: tag.color,
+                                            }}
+                                          />
+                                          <Text
+                                            style={[styles.habitTagChipText, { color: tag.color }]}
+                                            numberOfLines={1}>
+                                            {tag.name}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  ) : null}
                                   {item.note ? (
                                     <Text
                                       style={[
@@ -6441,6 +6514,40 @@ export default function TasksScreen() {
                                 </View>
                               ) : null}
                             </View>
+                            {(standaloneTagsByTaskId.get(t.id) ?? []).length > 0 ? (
+                              <View style={styles.standaloneTagChipRow}>
+                                {(standaloneTagsByTaskId.get(t.id) ?? []).slice(0, 3).map((tag) => (
+                                  <View
+                                    key={tag.id}
+                                    style={[
+                                      styles.projectMetaChip,
+                                      {
+                                        backgroundColor: isDone ? taskUi.hairlineMuted : `${tag.color}18`,
+                                        borderColor: isDone
+                                          ? taskUi.hairlineMutedBorder
+                                          : `${tag.color}44`,
+                                      },
+                                    ]}>
+                                    <View
+                                      style={{
+                                        width: 7,
+                                        height: 7,
+                                        borderRadius: 3.5,
+                                        backgroundColor: isDone ? colors.textMuted : tag.color,
+                                      }}
+                                    />
+                                    <Text
+                                      style={[
+                                        styles.projectMetaChipText,
+                                        { color: isDone ? colors.textMuted : tag.color },
+                                      ]}
+                                      numberOfLines={1}>
+                                      {tag.name}
+                                    </Text>
+                                  </View>
+                                ))}
+                              </View>
+                            ) : null}
                             {frogAssignedToday && !isDone ? (
                               <View style={[styles.shelvedPill, { backgroundColor: `${primary}18` }]}>
                                 <MaterialIcons name="event-available" size={12} color={primary} />
@@ -8870,6 +8977,33 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     letterSpacing: -0.2,
     textAlign: 'center',
+  },
+  habitTagChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 2,
+    justifyContent: 'center',
+  },
+  habitTagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: 88,
+  },
+  habitTagChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  standaloneTagChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
   },
   habitCardNote: {
     fontSize: 11,

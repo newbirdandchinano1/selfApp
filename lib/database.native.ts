@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 49;
+export const DB_VERSION = 50;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -346,6 +346,64 @@ async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): P
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
+async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#64748B',
+      description TEXT,
+      weight INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tag_links (
+      id TEXT PRIMARY KEY NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+    );
+  `);
+
+  const hasProjectTags = await db.getFirstAsync<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='project_tags' LIMIT 1`,
+  );
+  if (hasProjectTags) {
+    await db.execAsync(`
+      INSERT OR IGNORE INTO tags (
+        id, name, color, description, weight, created_at, updated_at, sync_status, extra_data
+      )
+      SELECT id, name, color, description, weight, created_at, updated_at, sync_status, extra_data
+      FROM project_tags
+    `);
+  }
+
+  const hasProjectTagLinks = await db.getFirstAsync<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='project_tag_links' LIMIT 1`,
+  );
+  if (hasProjectTagLinks) {
+    await db.execAsync(`
+      INSERT OR IGNORE INTO tag_links (
+        id, entity_type, entity_id, tag_id, created_at, updated_at, sync_status
+      )
+      SELECT id, 'project', project_id, tag_id, created_at, updated_at, sync_status
+      FROM project_tag_links
+    `);
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'migrate_project_tags_to_global_tags_v1',
+    '1',
+  ]);
+}
+
 async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
@@ -486,6 +544,29 @@ export async function initDatabase() {
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (tag_id) REFERENCES project_tags(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#64748B',
+      description TEXT,
+      weight INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tag_links (
+      id TEXT PRIMARY KEY NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -1213,6 +1294,11 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_project_tag_links_project_id ON project_tag_links(project_id);
     CREATE INDEX IF NOT EXISTS idx_project_tag_links_tag_id ON project_tag_links(tag_id);
     CREATE INDEX IF NOT EXISTS idx_project_tag_links_updated_at ON project_tag_links(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_tags_weight ON tags(weight);
+    CREATE INDEX IF NOT EXISTS idx_tags_updated_at ON tags(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_tag_links_entity ON tag_links(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_tag_links_tag_id ON tag_links(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_tag_links_updated_at ON tag_links(updated_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_category_id ON tasks(category_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id);
@@ -1471,6 +1557,7 @@ export async function initDatabase() {
   await migrateRestoreWishBoardItems(db);
   await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
+  await migrateProjectTagsToGlobalTags(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
@@ -1501,6 +1588,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS task_execution_events;
     DROP TABLE IF EXISTS task_items;
     DROP TABLE IF EXISTS tasks;
+    DROP TABLE IF EXISTS tag_links;
+    DROP TABLE IF EXISTS tags;
     DROP TABLE IF EXISTS project_tag_links;
     DROP TABLE IF EXISTS project_tags;
     DROP TABLE IF EXISTS projects;
