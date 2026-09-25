@@ -16,6 +16,12 @@ import {
   slotStartMinutes,
 } from '@/lib/schedule/axis';
 import {
+  buildVirtualHabitPlacementsForDays,
+  type VirtualHabitPlacement,
+} from '@/lib/schedule/habit-virtual-placement';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
+import {
   centerYmdForPeriod,
   formatThreeDayRangeLabel,
   getWeekStartMondayYmd,
@@ -26,7 +32,7 @@ import {
   weekdayFromYmd,
   ymdForWeekday,
 } from '@/lib/schedule/week';
-import { logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
+import { logicalYmdToLocalDate, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import {
   cancelAssignForPlacementDay,
@@ -85,7 +91,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 export type ScheduleZoomMode = 'minimal' | 'agenda' | 'grid';
 
 type TodayCompactItem = {
-  placement: SchedulePlacementRow;
+  /** 青蛙占用；习惯虚拟块时为空 */
+  placement: SchedulePlacementRow | null;
+  habit: VirtualHabitPlacement | null;
   title: string;
   done: boolean;
   timeLabel: string;
@@ -140,6 +148,8 @@ type Props = {
     id: string;
     assignYmd: string;
   }) => void;
+  /** 点日程表习惯块：等同小习惯打卡（仅今日） */
+  onHabitCheckIn?: (habitId: string) => void;
 };
 
 type CellKey = string; // `${ymd}-${slot}`
@@ -370,6 +380,7 @@ export function WeeklyFrogSchedule({
   onChanged,
   onOpenSubject,
   onToggleDone,
+  onHabitCheckIn,
 }: Props) {
   const { colors: theme, isDark, shadows } = useAppTheme();
   const primary = theme.primary;
@@ -404,6 +415,7 @@ export function WeeklyFrogSchedule({
 
   const [view, setView] = React.useState<WeekScheduleView | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [virtualHabits, setVirtualHabits] = React.useState<VirtualHabitPlacement[]>([]);
   const [gridWidth, setGridWidth] = React.useState(0);
   const hPagerRef = React.useRef<ScrollView>(null);
   const headerPagerRef = React.useRef<ScrollView>(null);
@@ -424,6 +436,7 @@ export function WeeklyFrogSchedule({
     assignYmd: string;
     slotIndex: number;
     placements: SchedulePlacementRow[];
+    habits: VirtualHabitPlacement[];
     editable: boolean;
   } | null>(null);
 
@@ -595,10 +608,25 @@ export function WeeklyFrogSchedule({
     async (days: string[], opts?: { silent?: boolean }) => {
       if (!opts?.silent) setLoading(true);
       try {
-        const data = await loadScheduleForDayWindow(days, logicalTodayYmd, {
-          hydrateRemote: !opts?.silent,
-        });
+        const [data, habits, checkInsMaps, boundary] = await Promise.all([
+          loadScheduleForDayWindow(days, logicalTodayYmd, {
+            hydrateRemote: !opts?.silent,
+          }),
+          getHabits().catch(() => []),
+          getAllHabitCheckInsMaps().catch(() => new Map()),
+          loadTasksDayBoundary(),
+        ]);
         setView(data);
+        setVirtualHabits(
+          buildVirtualHabitPlacementsForDays({
+            habits,
+            dayYmds: days,
+            logicalTodayYmd,
+            axis: data.axis,
+            dayBoundary: boundary,
+            checkInsByHabit: checkInsMaps,
+          }),
+        );
       } catch (err) {
         console.warn('[WeeklyFrogSchedule] load failed', err);
         if (!opts?.silent) Alert.alert('加载失败', '无法加载日程表');
@@ -682,6 +710,17 @@ export function WeeklyFrogSchedule({
     }
     return map;
   }, [view]);
+
+  const habitsByCell = React.useMemo(() => {
+    const map = new Map<CellKey, VirtualHabitPlacement[]>();
+    for (const h of virtualHabits) {
+      const key = cellKey(h.assignYmd, h.startSlotIndex);
+      const list = map.get(key) ?? [];
+      list.push(h);
+      map.set(key, list);
+    }
+    return map;
+  }, [virtualHabits]);
 
   /** 合并色块：仅在起点格渲染 */
   const blockStarts = React.useMemo(() => {
@@ -877,19 +916,37 @@ export function WeeklyFrogSchedule({
     assignYmd: string,
     slotIndex: number,
     list: SchedulePlacementRow[],
+    habits: VirtualHabitPlacement[],
     editable: boolean,
   ) => {
     setCellList({
       assignYmd,
       slotIndex,
       placements: uniquePlacementsBySubject(list),
+      habits: [...habits],
       editable,
     });
   };
 
+  const tapVirtualHabit = React.useCallback(
+    (habit: VirtualHabitPlacement) => {
+      if (habit.assignYmd !== logicalTodayYmd) {
+        Alert.alert(habit.name, '未到打卡日，请到当天再打卡。可在习惯编辑页关闭入格。');
+        return;
+      }
+      if (habit.done) {
+        Alert.alert(habit.name, '今日已达标。取消入格请到习惯编辑页关闭提醒。');
+        return;
+      }
+      onHabitCheckIn?.(habit.habitId);
+    },
+    [logicalTodayYmd, onHabitCheckIn],
+  );
+
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
+    const habits = habitsByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
 
     if (reassignPending && editable) {
@@ -908,7 +965,7 @@ export function WeeklyFrogSchedule({
       return;
     }
 
-    if (list.length === 0) {
+    if (list.length === 0 && habits.length === 0) {
       if (editable) openPlace(assignYmd, slotIndex);
       return;
     }
@@ -918,9 +975,14 @@ export function WeeklyFrogSchedule({
       return;
     }
     const unique = uniquePlacementsBySubject(list);
-    /** 多只青蛙：先弹出列表让用户选择具体任务 */
-    if (unique.length > 1 || !editable) {
-      openCellList(assignYmd, slotIndex, list, editable);
+    const totalItems = unique.length + habits.length;
+    /** 多只 / 含习惯 / 只读：先弹出列表 */
+    if (totalItems > 1 || !editable) {
+      openCellList(assignYmd, slotIndex, list, habits, editable);
+      return;
+    }
+    if (habits.length === 1 && unique.length === 0) {
+      tapVirtualHabit(habits[0]!);
       return;
     }
     const display = pickDisplayPlacement(unique, subjects, assignYmd);
@@ -942,12 +1004,13 @@ export function WeeklyFrogSchedule({
     }
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
+    const habits = habitsByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
-    if (list.length === 0) {
+    if (list.length === 0 && habits.length === 0) {
       if (editable) openPlace(assignYmd, slotIndex);
       return;
     }
-    openCellList(assignYmd, slotIndex, list, editable);
+    openCellList(assignYmd, slotIndex, list, habits, editable);
   };
 
   const openDetail = (p: SchedulePlacementRow) => {
@@ -996,10 +1059,11 @@ export function WeeklyFrogSchedule({
   };
 
   const todayHasPlacement =
-    view?.placements.some((p) => {
+    (view?.placements.some((p) => {
       if (p.orphaned || p.startSlotIndex == null) return false;
       return ymdForWeekday(p.weekStartYmd, p.weekday) === logicalTodayYmd;
-    }) ?? false;
+    }) ?? false) ||
+    virtualHabits.some((h) => h.assignYmd === logicalTodayYmd);
 
   const todayCompactItems = React.useMemo(() => {
     if (!view) return [];
@@ -1013,6 +1077,7 @@ export function WeeklyFrogSchedule({
       const endMins = placementEndMinutes(view.axis, p.startSlotIndex, Math.max(1, p.spanSlots));
       items.push({
         placement: p,
+        habit: null,
         title: sub?.title?.trim() || '青蛙',
         done: !!sub?.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1021,14 +1086,29 @@ export function WeeklyFrogSchedule({
         endMins,
       });
     }
+    for (const h of virtualHabits) {
+      if (h.assignYmd !== logicalTodayYmd) continue;
+      const startMins = slotStartMinutes(view.axis, h.startSlotIndex);
+      const endMins = placementEndMinutes(view.axis, h.startSlotIndex, 1);
+      items.push({
+        placement: null,
+        habit: h,
+        title: h.name,
+        done: h.done,
+        timeLabel: formatMinutesAsHm(startMins),
+        endLabel: formatMinutesAsHm(endMins),
+        startMins,
+        endMins,
+      });
+    }
     items.sort((a, b) => {
-      const sa = a.placement.startSlotIndex ?? 0;
-      const sb = b.placement.startSlotIndex ?? 0;
+      const sa = a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? 0;
+      const sb = b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? 0;
       if (sa !== sb) return sa - sb;
       return a.title.localeCompare(b.title, 'zh');
     });
     return items;
-  }, [view, logicalTodayYmd, subjects]);
+  }, [view, logicalTodayYmd, subjects, virtualHabits]);
 
   const minimalFocus = React.useMemo(() => {
     const nowMins =
@@ -1041,20 +1121,29 @@ export function WeeklyFrogSchedule({
       (x) => !x.done && x.endMins <= nowMins,
     );
 
-    const itemsStartingInSlot = (slotIndex: number) =>
-      todayCompactItems.filter((x) => x.placement.startSlotIndex === slotIndex);
-
     const mergeFocusItems = (slotItems: TodayCompactItem[]) => {
       const byId = new Map<string, TodayCompactItem>();
-      for (const x of overdueItems) byId.set(x.placement.id, x);
-      for (const x of slotItems) byId.set(x.placement.id, x);
+      for (const x of overdueItems) {
+        const id = x.placement?.id ?? (x.habit ? `habit:${x.habit.habitId}` : x.title);
+        byId.set(id, x);
+      }
+      for (const x of slotItems) {
+        const id = x.placement?.id ?? (x.habit ? `habit:${x.habit.habitId}` : x.title);
+        byId.set(id, x);
+      }
       return [...byId.values()].sort((a, b) => {
-        const sa = a.placement.startSlotIndex ?? 0;
-        const sb = b.placement.startSlotIndex ?? 0;
+        const sa = a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? 0;
+        const sb = b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? 0;
         if (sa !== sb) return sa - sb;
         return a.title.localeCompare(b.title, 'zh');
       });
     };
+
+    const itemsStartingInSlot = (slotIndex: number) =>
+      todayCompactItems.filter(
+        (x) =>
+          (x.placement?.startSlotIndex ?? x.habit?.startSlotIndex) === slotIndex,
+      );
 
     const currentSlot = workSlots.find(
       (s) => nowMins >= s.startMinutes && nowMins < s.endMinutes,
@@ -1250,7 +1339,8 @@ export function WeeklyFrogSchedule({
             const key = cellKey(ymd, slotIndex);
             const covering = placementsByCell.get(key) ?? [];
             const starts = blockStarts.get(key) ?? [];
-            const isEmpty = covering.length === 0;
+            const cellHabits = habitsByCell.get(key) ?? [];
+            const isEmpty = covering.length === 0 && cellHabits.length === 0;
             return (
               <Pressable
                 key={`work-${slotIndex}`}
@@ -1266,29 +1356,45 @@ export function WeeklyFrogSchedule({
                   },
                 ]}>
                 {(() => {
-                  if (starts.length === 0) return null;
-                  const display = pickDisplayPlacement(starts, subjects, ymd);
-                  if (!display) return null;
+                  if (starts.length === 0 && cellHabits.length === 0) return null;
+                  const display =
+                    starts.length > 0
+                      ? pickDisplayPlacement(starts, subjects, ymd)
+                      : null;
+                  const primaryHabit =
+                    !display && cellHabits.length > 0
+                      ? [...cellHabits].sort((a, b) => Number(a.done) - Number(b.done))[0]
+                      : null;
+                  const spanSlots = display?.primary.spanSlots ?? 1;
+                  const startIdx =
+                    display?.primary.startSlotIndex ??
+                    primaryHabit?.startSlotIndex ??
+                    slotIndex;
                   const h =
-                    placementBlockHeight(
-                      view.axis,
-                      layout,
-                      display.primary.startSlotIndex ?? slotIndex,
-                      display.primary.spanSlots,
-                    ) - 6;
-                  const titleLines = Math.max(1, Math.min(3, display.primary.spanSlots));
-                  const unfinishedTitles = listUnfinishedTitlesInCell(
+                    placementBlockHeight(view.axis, layout, startIdx, spanSlots) - 6;
+                  const titleLines = Math.max(1, Math.min(3, spanSlots));
+                  const unfinishedFrogTitles = listUnfinishedTitlesInCell(
                     covering,
                     subjects,
                     ymd,
                   );
+                  const unfinishedHabitTitles = cellHabits
+                    .filter((x) => !x.done)
+                    .map((x) => x.name);
+                  const unfinishedTitles = [
+                    ...unfinishedFrogTitles,
+                    ...unfinishedHabitTitles,
+                  ];
                   const showUnfinished =
                     unfinishedTitles.length > 0 ? unfinishedTitles : null;
                   const titleDone = !showUnfinished;
-                  const taskCount = uniquePlacementsBySubject(starts).length;
+                  const taskCount =
+                    uniquePlacementsBySubject(starts).length + cellHabits.length;
+                  const allDone =
+                    (display?.done ?? true) && cellHabits.every((x) => x.done);
                   const fill = scheduleBlockColors(taskCount, {
                     isPast: isPastCol,
-                    allDone: display.done,
+                    allDone,
                     isDark,
                   });
                   const titleStyle = [
@@ -1301,9 +1407,11 @@ export function WeeklyFrogSchedule({
                       fontSize: h < 40 ? 11 : 12,
                     },
                   ];
+                  const fallbackTitle =
+                    display?.title ?? primaryHabit?.name ?? '日程';
                   return (
                     <View
-                      key={display.primary.id}
+                      key={display?.primary.id ?? `habit-${primaryHabit?.habitId}`}
                       pointerEvents="none"
                       style={[
                         styles.block,
@@ -1322,10 +1430,10 @@ export function WeeklyFrogSchedule({
                           />
                         ) : (
                           <Text numberOfLines={titleLines} style={titleStyle}>
-                            {showUnfinished?.[0] ?? display.title}
+                            {showUnfinished?.[0] ?? fallbackTitle}
                           </Text>
                         )}
-                        {display.done ? (
+                        {titleDone ? (
                           <MaterialIcons
                             name="check-circle"
                             size={14}
@@ -1339,7 +1447,9 @@ export function WeeklyFrogSchedule({
                 })()}
 
                 {(() => {
-                  const unfinished = countUnfinishedInCell(covering, subjects, ymd);
+                  const unfinishedFrogs = countUnfinishedInCell(covering, subjects, ymd);
+                  const unfinishedHabits = cellHabits.filter((x) => !x.done).length;
+                  const unfinished = unfinishedFrogs + unfinishedHabits;
                   if (unfinished <= 1 || isPastCol) return null;
                   return (
                     <View style={[styles.badge, { backgroundColor: primary }]}>
@@ -1561,8 +1671,14 @@ export function WeeklyFrogSchedule({
     opts?: { dense?: boolean },
   ) => (
     <Pressable
-      key={item.placement.id}
-      onPress={() => openDetail(item.placement)}
+      key={item.placement?.id ?? `habit-${item.habit?.habitId}-${item.startMins}`}
+      onPress={() => {
+        if (item.habit) {
+          tapVirtualHabit(item.habit);
+          return;
+        }
+        if (item.placement) openDetail(item.placement);
+      }}
       accessibilityRole="button"
       accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
       style={({ pressed }) => [
@@ -1622,7 +1738,7 @@ export function WeeklyFrogSchedule({
             },
           ]}
           numberOfLines={opts?.dense ? 1 : 2}>
-          {item.title}
+          {item.habit ? `习惯 · ${item.title}` : item.title}
         </Text>
       </View>
       {item.done ? (
@@ -2167,9 +2283,41 @@ export function WeeklyFrogSchedule({
               { backgroundColor: theme.surface, borderColor: theme.outline },
             ]}>
             <Text style={[styles.listTitle, { color: theme.text }]}>
-              {(cellList?.placements.length ?? 0) > 1 ? '选择本格任务' : '本格占用'}
+              {(cellList?.placements.length ?? 0) + (cellList?.habits.length ?? 0) > 1
+                ? '选择本格内容'
+                : '本格占用'}
             </Text>
             <ScrollView style={{ maxHeight: 280 }}>
+              {(cellList?.habits ?? []).map((h) => (
+                <Pressable
+                  key={`habit-${h.habitId}`}
+                  onPress={() => {
+                    setCellList(null);
+                    tapVirtualHabit(h);
+                  }}
+                  style={({ pressed }) => [
+                    styles.listRow,
+                    {
+                      backgroundColor: surfaceLow,
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <View
+                    style={[
+                      styles.listRowRail,
+                      { backgroundColor: h.done ? `${outline}66` : primary },
+                    ]}
+                  />
+                  <Text
+                    style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }}
+                    numberOfLines={2}>
+                    习惯 · {h.name}
+                  </Text>
+                  {h.done ? (
+                    <MaterialIcons name="check-circle" size={16} color={successTint} />
+                  ) : null}
+                </Pressable>
+              ))}
               {(cellList?.placements ?? []).map((p) => {
                 const sub = resolveSubject(
                   p.subjectKind,

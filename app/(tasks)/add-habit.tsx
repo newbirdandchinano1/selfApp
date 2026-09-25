@@ -4,6 +4,12 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
+import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
+import {
+  describeHabitScheduleSlotMapping,
+  isHabitSchedulePlaceableCycle,
+} from '@/lib/schedule/habit-virtual-placement';
+import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
@@ -305,6 +311,7 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
+  const [scheduleAxisHint, setScheduleAxisHint] = React.useState<string | null>(null);
   const [expectedGoalOpen, setExpectedGoalOpen] = React.useState(false);
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(true);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
@@ -545,6 +552,45 @@ export default function AddHabitScreen() {
       ? (activeTab as TaskRepeatPeriod)
       : DEFAULT_TASK_REPEAT_PERIOD;
   }, [habitKind, activeTab]);
+
+  const schedulePlacementHint = React.useMemo(() => {
+    if (habitKind !== 'build' || !reminderEnabled) return null;
+    if (activeTab === '每周N天' || activeTab === '每月N天') {
+      return '当前循环只约束次数、不指定具体日，开启后不会入格日程表';
+    }
+    if (!isHabitSchedulePlaceableCycle(JSON.stringify({ schedule: { activeTab } }))) {
+      return null;
+    }
+    return scheduleAxisHint;
+  }, [habitKind, reminderEnabled, activeTab, scheduleAxisHint]);
+
+  React.useEffect(() => {
+    if (habitKind !== 'build' || !reminderEnabled) {
+      setScheduleAxisHint(null);
+      return;
+    }
+    if (activeTab !== '每天' && activeTab !== '每周定期' && activeTab !== '每月定期') {
+      setScheduleAxisHint(null);
+      return;
+    }
+    let cancelled = false;
+    void getScheduleAxisSettings()
+      .then((axis) => {
+        if (cancelled) return;
+        const mapped = describeHabitScheduleSlotMapping(
+          axis,
+          reminderTime.getHours(),
+          reminderTime.getMinutes(),
+        );
+        setScheduleAxisHint(mapped.ok ? null : mapped.reason);
+      })
+      .catch(() => {
+        if (!cancelled) setScheduleAxisHint(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [habitKind, reminderEnabled, reminderTime, activeTab]);
 
   const taskGoalTypeOptions = React.useMemo(
     () => getTaskExpectedGoalTypeOptions(taskRepeatPeriod),
@@ -849,10 +895,15 @@ export default function AddHabitScreen() {
       minute: reminderTime.getMinutes(),
       title: name,
     });
+    try {
+      await syncScheduleSlotReminderNotifications();
+    } catch (e) {
+      console.warn('同步日程格提醒失败', e);
+    }
     if (reminderEnabled && permissionDenied) {
       Alert.alert(
         '提示',
-        '已保存习惯，但系统未授予通知权限，每日提醒将无法送达。可在系统设置中为本应用开启通知。'
+        '已保存习惯，但系统未授予通知权限，日程提醒将无法送达。可在系统设置中为本应用开启通知。'
       );
     }
 
@@ -1604,14 +1655,16 @@ export default function AddHabitScreen() {
           ) : null}
 
           <View>
-            {renderSectionHeader('notifications-active', '打卡提醒', reminderOpen, () => setReminderOpen((v) => !v))}
+            {renderSectionHeader('notifications-active', '打卡提醒 / 日程入格', reminderOpen, () => setReminderOpen((v) => !v))}
             {reminderOpen ? (
               <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                 <View style={styles.quantifyTop}>
                   <View style={styles.reminderIntro}>
-                    <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>每日提醒打卡</Text>
+                    <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>
+                      提醒并入格日程表
+                    </Text>
                     <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                      在设定时间推送本地通知（可选）
+                      开启后按设定时刻推送日程提醒，并自动叠到日程表对应格子（养成习惯 · 每天/每周定期/每月定期）
                       {Platform.OS === 'web' ? '；网页版不会登记系统提醒' : ''}
                     </Text>
                   </View>
@@ -1639,7 +1692,9 @@ export default function AddHabitScreen() {
                         { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle },
                         Platform.OS === 'web' && { opacity: 0.65 },
                       ]}>
-                      <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>提醒时间</Text>
+                      <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
+                        提醒 / 入格时间
+                      </Text>
                       <View style={styles.reminderTimeRight}>
                         <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
                           {pad2(reminderTime.getHours())}:{pad2(reminderTime.getMinutes())}
@@ -1649,6 +1704,15 @@ export default function AddHabitScreen() {
                         ) : null}
                       </View>
                     </Pressable>
+                    {schedulePlacementHint ? (
+                      <Text
+                        style={[
+                          Typography.caption,
+                          { color: '#d97706', marginTop: Spacing.sm, paddingHorizontal: 4 },
+                        ]}>
+                        {schedulePlacementHint}
+                      </Text>
+                    ) : null}
                   </View>
                 ) : null}
               </AppCard>

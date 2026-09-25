@@ -158,6 +158,20 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
     return { scheduled: false, permissionDenied: false };
   }
 
+  let extraData = params.extraData ?? null;
+  if (params.extraData === undefined) {
+    const habit = await getHabitById(habitId);
+    extraData = habit?.extra_data ?? null;
+  }
+
+  // 养成入格习惯改走日程格提醒，避免双推
+  const { habitUsesScheduleSlotReminderChannel } = await import(
+    '@/lib/schedule/habit-virtual-placement'
+  );
+  if (habitUsesScheduleSlotReminderChannel(extraData)) {
+    return { scheduled: false, permissionDenied: false };
+  }
+
   if (!(await canScheduleAppNotification({ category: 'habit-reminder', identifier: id }))) {
     return { scheduled: false, permissionDenied: false };
   }
@@ -177,11 +191,6 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   const h = Math.max(0, Math.min(23, Math.floor(hour)));
   const m = Math.max(0, Math.min(59, Math.floor(minute)));
 
-  let extraData = params.extraData ?? null;
-  if (params.extraData === undefined) {
-    const habit = await getHabitById(habitId);
-    extraData = habit?.extra_data ?? null;
-  }
   const kind = parseHabitKind(extraData);
   const dailyGoal = parseHabitDailyGoal(extraData, kind);
   const checkIns = params.checkIns ?? (await getCheckInsMapByHabitId(habitId));
@@ -245,6 +254,13 @@ export async function resyncAllHabitReminders(): Promise<void> {
         await cancelScheduledHabitReminder(habit.id);
         return;
       }
+      const { habitUsesScheduleSlotReminderChannel } = await import(
+        '@/lib/schedule/habit-virtual-placement'
+      );
+      if (habitUsesScheduleSlotReminderChannel(habit.extra_data)) {
+        await cancelScheduledHabitReminder(habit.id);
+        return;
+      }
       await syncHabitReminderNotification({
         habitId: habit.id,
         enabled: true,
@@ -268,6 +284,13 @@ export async function resyncHabitReminderForHabitId(habitId: string): Promise<vo
   }
   const reminder = parseHabitReminder(habit.extra_data);
   if (!reminder.enabled) {
+    await cancelScheduledHabitReminder(habitId);
+    return;
+  }
+  const { habitUsesScheduleSlotReminderChannel } = await import(
+    '@/lib/schedule/habit-virtual-placement'
+  );
+  if (habitUsesScheduleSlotReminderChannel(habit.extra_data)) {
     await cancelScheduledHabitReminder(habitId);
     return;
   }

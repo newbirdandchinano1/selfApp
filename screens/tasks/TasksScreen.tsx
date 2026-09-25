@@ -5582,6 +5582,15 @@ export default function TasksScreen() {
               toggleFrogDone(id, assignYmd);
               notifyFrogScheduleChanged();
             }}
+            onHabitCheckIn={(habitId) => {
+              const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+              if (!item) return;
+              void (async () => {
+                await handleHabitIncrement(item);
+                notifyFrogScheduleChanged();
+                void syncScheduleSlotReminderNotifications();
+              })();
+            }}
           />
 
           <View style={stackedSectionStyle}>

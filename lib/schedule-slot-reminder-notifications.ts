@@ -1,5 +1,6 @@
 /**
  * 课程表占用提醒：按 schedule_placements 在格子开始前 N 分钟推送。
+ * 亦覆盖养成习惯虚拟入格块（不写占用表）。
  * 替代旧「截止日当天/提前 N 天」待办提醒（selfapp-task-reminder:）。
  */
 
@@ -9,6 +10,8 @@ import {
   getNotificationCenterSettings,
 } from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import {
   getScheduleAxisSettings,
   getWeekAxisSnapshot,
@@ -17,9 +20,14 @@ import {
 import { getProjectById } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import { formatMinutesAsHm, slotStartMinutes } from '@/lib/schedule/axis';
+import {
+  buildVirtualHabitPlacementsForDays,
+  virtualHabitScheduleReminderId,
+} from '@/lib/schedule/habit-virtual-placement';
 import type { ScheduleAxisSettings, SchedulePlacementRow } from '@/lib/schedule/types';
 import { getWeekStartMondayYmd, ymdForWeekday } from '@/lib/schedule/week';
 import {
+  addDaysToLogicalYmd,
   formatLocalYmdFromDate,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
@@ -30,6 +38,8 @@ import { Platform } from 'react-native';
 const NOTIFICATION_PREFIX = 'selfapp-schedule-reminder:';
 const LEGACY_TASK_PREFIX = 'selfapp-task-reminder:';
 const ANDROID_CHANNEL_ID = 'schedule-slot-reminders';
+/** 虚拟习惯入格提醒向前扫描天数 */
+const HABIT_VIRTUAL_LOOKAHEAD_DAYS = 21;
 
 export function scheduleSlotReminderIdentifier(placementId: string): string {
   return `${NOTIFICATION_PREFIX}${placementId}`;
@@ -242,6 +252,102 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
       console.warn('登记日程表提醒失败', placement.id, e);
     }
   }
+
+  // 养成习惯虚拟入格：按格子开始时间登记（与占用提醒同一频道）
+  try {
+    const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
+    const dayYmds: string[] = [];
+    for (let i = 0; i < HABIT_VIRTUAL_LOOKAHEAD_DAYS; i++) {
+      dayYmds.push(addDaysToLogicalYmd(todayYmd, i));
+    }
+    const weekAxisCache = new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
+    const ymdsByWeek = new Map<string, string[]>();
+    for (const ymd of dayYmds) {
+      const monday = getWeekStartMondayYmd(ymd);
+      const list = ymdsByWeek.get(monday) ?? [];
+      list.push(ymd);
+      ymdsByWeek.set(monday, list);
+    }
+    for (const [monday, ymds] of ymdsByWeek) {
+      let axis = weekAxisCache.get(monday);
+      if (!axis) {
+        axis = await resolveAxisForWeek(monday);
+        weekAxisCache.set(monday, axis);
+      }
+      const virtuals = buildVirtualHabitPlacementsForDays({
+        habits,
+        dayYmds: ymds,
+        logicalTodayYmd: todayYmd,
+        axis,
+        dayBoundary: boundary,
+        checkInsByHabit: checkInsMaps,
+      });
+      for (const v of virtuals) {
+        if (v.done) continue;
+        const startMins = slotStartMinutes(axis, v.startSlotIndex);
+        const day = logicalYmdToLocalDate(v.assignYmd);
+        const startAt = new Date(
+          day.getFullYear(),
+          day.getMonth(),
+          day.getDate(),
+          Math.floor(startMins / 60),
+          startMins % 60,
+          0,
+          0,
+        );
+        const fireAt = new Date(startAt.getTime() - advanceMs);
+        if (fireAt.getTime() <= now.getTime() + 2000) continue;
+
+        const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
+        const id = scheduleSlotReminderIdentifier(placementId);
+        if (!(await canScheduleAppNotification({ category: 'schedule-slot-reminder', identifier: id }))) {
+          continue;
+        }
+        const startHm = formatMinutesAsHm(startMins);
+        const fingerprint = `${placementId}|${v.name}|${v.assignYmd}|${startHm}|${settings.schedule.advanceMinutes}`;
+        const copy = await resolveNotificationAiCopy({
+          identifier: id,
+          fingerprint,
+          fallback: {
+            title: '日程表提醒',
+            body: v.name,
+          },
+          contextBlock: [
+            '【频道】日程表提醒',
+            '【类型】习惯',
+            `【标题】${v.name}`,
+            `【开始】${v.assignYmd} ${startHm}`,
+            `【提前】${settings.schedule.advanceMinutes} 分钟`,
+          ].join('\n'),
+        });
+        try {
+          await Notifications.scheduleNotificationAsync({
+            identifier: id,
+            content: {
+              title: copy.title,
+              body: copy.body,
+              sound: true,
+              data: {
+                type: 'schedule-slot-reminder',
+                placementId,
+                subjectKind: 'habit',
+                subjectId: v.habitId,
+              },
+            },
+            trigger: {
+              type: SchedulableTriggerInputTypes.DATE,
+              date: fireAt,
+              channelId: Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined,
+            },
+          });
+        } catch (e) {
+          console.warn('登记习惯日程提醒失败', placementId, e);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('登记习惯虚拟入格提醒失败', e);
+  }
 }
 
 /** @deprecated 截止日待办提醒已废除；保留空实现以免旧调用崩溃 */
@@ -254,7 +360,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     identifier: string;
     title: string;
     body: string;
-    subjectKind: 'task' | 'project';
+    subjectKind: 'task' | 'project' | 'habit';
     subjectId: string;
     placementId: string;
     fireAt: Date | null;
@@ -272,7 +378,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     identifier: string;
     title: string;
     body: string;
-    subjectKind: 'task' | 'project';
+    subjectKind: 'task' | 'project' | 'habit';
     subjectId: string;
     placementId: string;
     fireAt: Date | null;
@@ -308,5 +414,65 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
           : `/edit-task?id=${encodeURIComponent(placement.subjectId)}`,
     });
   }
+
+  try {
+    const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
+    const dayYmds: string[] = [];
+    for (let i = 0; i < HABIT_VIRTUAL_LOOKAHEAD_DAYS; i++) {
+      dayYmds.push(addDaysToLogicalYmd(todayYmd, i));
+    }
+    const ymdsByWeek = new Map<string, string[]>();
+    for (const ymd of dayYmds) {
+      const monday = getWeekStartMondayYmd(ymd);
+      const list = ymdsByWeek.get(monday) ?? [];
+      list.push(ymd);
+      ymdsByWeek.set(monday, list);
+    }
+    for (const [monday, ymds] of ymdsByWeek) {
+      let axis = axisCache.get(monday);
+      if (!axis) {
+        axis = await resolveAxisForWeek(monday);
+        axisCache.set(monday, axis);
+      }
+      const virtuals = buildVirtualHabitPlacementsForDays({
+        habits,
+        dayYmds: ymds,
+        logicalTodayYmd: todayYmd,
+        axis,
+        dayBoundary: boundary,
+        checkInsByHabit: checkInsMaps,
+      });
+      for (const v of virtuals) {
+        if (v.done) continue;
+        const startMins = slotStartMinutes(axis, v.startSlotIndex);
+        const day = logicalYmdToLocalDate(v.assignYmd);
+        const startAt = new Date(
+          day.getFullYear(),
+          day.getMonth(),
+          day.getDate(),
+          Math.floor(startMins / 60),
+          startMins % 60,
+          0,
+          0,
+        );
+        const fireAt = new Date(startAt.getTime() - advanceMs);
+        if (fireAt.getTime() <= now) continue;
+        const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
+        items.push({
+          identifier: scheduleSlotReminderIdentifier(placementId),
+          title: '日程表提醒',
+          body: `${v.name} · ${v.assignYmd} ${formatMinutesAsHm(startMins)}`,
+          subjectKind: 'habit',
+          subjectId: v.habitId,
+          placementId,
+          fireAt,
+          customizeHref: `/add-habit?id=${encodeURIComponent(v.habitId)}`,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('列举习惯日程提醒失败', e);
+  }
+
   return items;
 }

@@ -11,10 +11,13 @@ function navigateFromScheduleOrLegacyTask(
   const record = data as Record<string, unknown>;
 
   if (record.type === 'schedule-slot-reminder') {
-    const subjectKind = record.subjectKind === 'project' ? 'project' : 'task';
     const subjectId = typeof record.subjectId === 'string' ? record.subjectId.trim() : '';
     if (!subjectId) return;
-    if (subjectKind === 'project') {
+    if (record.subjectKind === 'habit') {
+      router.push({ pathname: '/add-habit', params: { id: subjectId } });
+      return;
+    }
+    if (record.subjectKind === 'project') {
       router.push({ pathname: '/edit-project', params: { id: subjectId } });
     } else {
       router.push({ pathname: '/edit-task', params: { id: subjectId } });

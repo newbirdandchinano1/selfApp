@@ -202,6 +202,10 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
   for (const habit of habits) {
     const reminder = parseHabitReminder(habit.extra_data);
     if (!reminder.enabled) continue;
+    const { habitUsesScheduleSlotReminderChannel } = await import(
+      '@/lib/schedule/habit-virtual-placement'
+    );
+    if (habitUsesScheduleSlotReminderChannel(habit.extra_data)) continue;
     const identifier = `selfapp-habit-reminder:${habit.id}`;
     const meta = getNotificationCategoryMeta('habit-reminder');
     const clock =
