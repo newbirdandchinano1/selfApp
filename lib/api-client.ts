@@ -149,17 +149,22 @@ async function parseResponseBody(res: Response): Promise<{ parsed: unknown; text
 
   try {
     return { parsed: JSON.parse(text) as unknown, text };
-  } catch (parseErr) {
-    // JSON 解析失败可能是截断导致的不完整 JSON
+  } catch {
+    // 首字符非 JSON（HTML/网关页/明文）或响应被截断
     const contentLength = res.headers.get('Content-Length');
-    console.warn('[api] JSON 解析失败，响应可能被截断', {
+    const head = text.trim().slice(0, 80).replace(/\s+/g, ' ');
+    console.warn('[api] JSON 解析失败', {
       status: res.status,
       textLength: text.length,
       contentLength: contentLength ?? 'unknown',
+      textHead: head,
       textTail: text.slice(-200),
     });
+    const looksHtml = /^\s*</.test(text);
     throw new ApiRequestError(
-      `JSON 解析失败，响应可能被截断（${text.length} 字符）`,
+      looksHtml
+        ? `接口返回了非 JSON（疑似 HTML/网关错误，HTTP ${res.status}）`
+        : `JSON 解析失败（HTTP ${res.status}，${text.length} 字符）：${head || '(空)'}`,
       res.status,
       -1,
       { retryable: true },
@@ -511,6 +516,8 @@ export type ApiListQueryOpts = {
   includeDeleted?: boolean;
   startDate?: string;
   endDate?: string;
+  /** habit_check_ins：按习惯 id 过滤 */
+  habitId?: string;
   dueDateGte?: string;
   dueDateLte?: string;
   frogAssignedOnGte?: string;
@@ -546,6 +553,7 @@ function buildListQuery(opts?: ApiListQueryOpts): string {
     includeDeleted: opts?.includeDeleted === true,
     startDate: opts?.startDate,
     endDate: opts?.endDate,
+    habitId: opts?.habitId,
     dueDateGte: opts?.dueDateGte,
     dueDateLte: opts?.dueDateLte,
     frogAssignedOnGte: opts?.frogAssignedOnGte,

@@ -28,6 +28,8 @@ export type ApiListOptions = {
   /** habit_check_ins：record_date 范围（见 CALENDAR_API_FOR_APP.md） */
   startDate?: string;
   endDate?: string;
+  /** habit_check_ins：按习惯 id 过滤 */
+  habitId?: string;
   dueDateGte?: string;
   dueDateLte?: string;
   frogAssignedOnGte?: string;

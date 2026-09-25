@@ -335,14 +335,34 @@ export default function HabitDetailScreen() {
       setCheckIns({});
       return;
     }
-    await syncBreakHabitCompletions();
-    await syncBuildHabitCompletions();
-    let row: HabitRow | null = null;
+    // 先读本地，保证长按进详情立刻有内容；REST 软同步失败不挡页面
+    let row = await getHabitById(habitId);
+    if (generation !== habitLoadGenerationRef.current) return;
+    if (row) {
+      setHabit(row);
+      const localMap = await getCheckInsMapByHabitId(row.id);
+      if (generation !== habitLoadGenerationRef.current) return;
+      const mergedLocal = { ...localMap };
+      const legacyLocal = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
+      for (const [k, v] of Object.entries(legacyLocal)) {
+        if (mergedLocal[k] === undefined) mergedLocal[k] = v;
+      }
+      setCheckIns(mergedLocal);
+      setLoading(false);
+    }
+
     try {
-      row = await syncHabitDetailDataFromApi(habitId, { boundary });
+      await syncBreakHabitCompletions();
+      await syncBuildHabitCompletions();
+    } catch (e) {
+      console.warn('习惯详情：完成态同步失败', e);
+    }
+
+    try {
+      row = (await syncHabitDetailDataFromApi(habitId, { boundary })) ?? row;
     } catch (e) {
       console.warn('习惯详情：服务端同步失败，回退本地', e);
-      row = await getHabitById(habitId);
+      row = row ?? (await getHabitById(habitId));
     }
     if (generation !== habitLoadGenerationRef.current) return;
     setHabit(row ?? null);
