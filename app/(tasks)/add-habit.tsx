@@ -554,22 +554,44 @@ export default function AddHabitScreen() {
   }, [habitKind, activeTab]);
 
   const schedulePlacementHint = React.useMemo(() => {
-    if (habitKind !== 'build' || !reminderEnabled) return null;
-    if (activeTab === '每周N天' || activeTab === '每月N天') {
-      return '当前循环只约束次数、不指定具体日，开启后不会入格日程表';
-    }
-    if (!isHabitSchedulePlaceableCycle(JSON.stringify({ schedule: { activeTab } }))) {
+    if ((habitKind !== 'build' && habitKind !== 'task') || !reminderEnabled) return null;
+    const cycleExtra = JSON.stringify({
+      habitKind,
+      schedule: { activeTab },
+    });
+    if (!isHabitSchedulePlaceableCycle(cycleExtra)) {
       return null;
+    }
+    if (habitKind === 'build' && (activeTab === '每周N天' || activeTab === '每月N天')) {
+      return (
+        scheduleAxisHint ??
+        '开启提醒后会入格日程表；本周期完成天数达标后，剩余日格子不再显示'
+      );
+    }
+    if (habitKind === 'task') {
+      return (
+        scheduleAxisHint ??
+        '开启提醒后会入格日程表；本周期完成预期目标后，剩余日格子不再显示'
+      );
     }
     return scheduleAxisHint;
   }, [habitKind, reminderEnabled, activeTab, scheduleAxisHint]);
 
   React.useEffect(() => {
-    if (habitKind !== 'build' || !reminderEnabled) {
+    if ((habitKind !== 'build' && habitKind !== 'task') || !reminderEnabled) {
       setScheduleAxisHint(null);
       return;
     }
-    if (activeTab !== '每天' && activeTab !== '每周定期' && activeTab !== '每月定期') {
+    const placeableBuild =
+      habitKind === 'build' &&
+      (activeTab === '每天' ||
+        activeTab === '每周定期' ||
+        activeTab === '每月定期' ||
+        activeTab === '每周N天' ||
+        activeTab === '每月N天');
+    const placeableTask =
+      habitKind === 'task' && (TASK_CYCLE_TABS as string[]).includes(String(activeTab));
+    if (!placeableBuild && !placeableTask) {
       setScheduleAxisHint(null);
       return;
     }

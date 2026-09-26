@@ -1,24 +1,39 @@
 /**
- * 养成习惯 → 日程表虚拟入格（不写 schedule_placements）
+ * 习惯 → 日程表虚拟入格（不写 schedule_placements）
+ * 养成：每天 / 每周定期 / 每月定期 / 每周N天 / 每月N天
+ * 任务型：每日 / 每周 / 每月 / 每年（周期达标后本周期剩余日不再入格）
  */
 import { isHabitScheduledOnLogicalYmd, type HabitCycleTab } from '@/lib/habit-schedule';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
+import { isBuildNDaysPeriodHiddenOnViewDay } from '@/lib/repositories/habits/habit-build-n-days-period';
 import {
   isHabitDayGoalMet,
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
+import {
+  getTaskHabitTasksViewState,
+  TASK_REPEAT_PERIODS,
+  type TaskRepeatPeriod,
+} from '@/lib/repositories/habits/habit-task-period';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { listWorkSlots, type AxisLike } from '@/lib/schedule/axis';
 import { isHabitVisibleOnCalendarDay } from '@/lib/tasks-calendar-data';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 
-/** 允许虚拟入格的循环模式 */
+/** 养成：允许虚拟入格的循环模式 */
 export const HABIT_SCHEDULE_PLACEABLE_TABS: readonly HabitCycleTab[] = [
   '每天',
   '每周定期',
   '每月定期',
+  '每周N天',
+  '每月N天',
+] as const;
+
+/** 任务型：允许虚拟入格的重复周期 */
+export const TASK_HABIT_SCHEDULE_PLACEABLE_TABS: readonly TaskRepeatPeriod[] = [
+  ...TASK_REPEAT_PERIODS,
 ] as const;
 
 export type VirtualHabitPlacement = {
@@ -47,17 +62,25 @@ function parseActiveTab(extraData: string | null): string | null {
   }
 }
 
-/** 循环是否属于可入格白名单（不含每周N天/每月N天） */
+/** 循环是否属于可入格白名单（养成 N 天 / 定期 / 每天；任务型 每日～每年） */
 export function isHabitSchedulePlaceableCycle(extraData: string | null): boolean {
   const tab = parseActiveTab(extraData);
   if (!tab) return false;
-  return (HABIT_SCHEDULE_PLACEABLE_TABS as readonly string[]).includes(tab);
+  const kind = parseHabitKind(extraData);
+  if (kind === 'task') {
+    return (TASK_HABIT_SCHEDULE_PLACEABLE_TABS as readonly string[]).includes(tab);
+  }
+  if (kind === 'build') {
+    return (HABIT_SCHEDULE_PLACEABLE_TABS as readonly string[]).includes(tab);
+  }
+  return false;
 }
 
-/** 养成 + 提醒开 + 可入格循环 + 未达成 → 走日程格提醒通道（不走习惯提醒） */
+/** 养成/任务型 + 提醒开 + 可入格循环 + 未终局达成 → 走日程格提醒通道（不走习惯提醒） */
 export function habitUsesScheduleSlotReminderChannel(extraData: string | null): boolean {
-  if (parseHabitKind(extraData) !== 'build') return false;
-  if (isBuildHabitSucceeded(extraData)) return false;
+  const kind = parseHabitKind(extraData);
+  if (kind !== 'build' && kind !== 'task') return false;
+  if (kind === 'build' && isBuildHabitSucceeded(extraData)) return false;
   const rem = parseHabitReminder(extraData);
   if (!rem.enabled) return false;
   return isHabitSchedulePlaceableCycle(extraData);
@@ -101,13 +124,10 @@ export function describeHabitScheduleSlotMapping(
 }
 
 export function habitSchedulePlacementEligibilityHint(extraData: string | null): string | null {
-  if (parseHabitKind(extraData) !== 'build') return null;
+  const kind = parseHabitKind(extraData);
+  if (kind !== 'build' && kind !== 'task') return null;
   const rem = parseHabitReminder(extraData);
   if (!rem.enabled) return null;
-  const tab = parseActiveTab(extraData);
-  if (tab === '每周N天' || tab === '每月N天') {
-    return '当前循环只约束次数、不指定具体日，开启提醒不会入格日程表';
-  }
   if (!isHabitSchedulePlaceableCycle(extraData)) {
     return '当前循环模式不支持自动入格日程表';
   }
@@ -120,16 +140,41 @@ export function shouldShowVirtualHabitOnDay(params: {
   viewYmd: string;
   logicalTodayYmd: string;
   dayBoundary: TasksDayBoundary;
+  /** 该习惯打卡 map；N 天/任务型周期隐藏需要 */
+  checkIns?: Record<string, number>;
 }): boolean {
-  const { habit, viewYmd, logicalTodayYmd, dayBoundary } = params;
+  const { habit, viewYmd, logicalTodayYmd, dayBoundary, checkIns = {} } = params;
   if (viewYmd < logicalTodayYmd) return false;
-  if (parseHabitKind(habit.extra_data) !== 'build') return false;
-  if (isBuildHabitSucceeded(habit.extra_data)) return false;
+
+  const kind = parseHabitKind(habit.extra_data);
+  if (kind !== 'build' && kind !== 'task') return false;
+  if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) return false;
+
   const rem = parseHabitReminder(habit.extra_data);
   if (!rem.enabled) return false;
   if (!isHabitSchedulePlaceableCycle(habit.extra_data)) return false;
   if (!isHabitVisibleOnCalendarDay(habit.created_at, viewYmd, dayBoundary)) return false;
   if (!isHabitScheduledOnLogicalYmd(habit.extra_data, viewYmd)) return false;
+
+  // 每周N天 / 每月N天：本周期配额在查看日之前已达成 → 剩余日不再显示
+  if (kind === 'build' && isBuildNDaysPeriodHiddenOnViewDay({
+    extraData: habit.extra_data,
+    checkIns,
+    viewYmd,
+  })) {
+    return false;
+  }
+
+  // 任务型：本周期预期目标在查看日之前已达成 → 剩余日不再显示
+  if (kind === 'task') {
+    const taskView = getTaskHabitTasksViewState({
+      extraData: habit.extra_data,
+      checkIns,
+      logicalYmd: viewYmd,
+    });
+    if (taskView?.hiddenOnViewDay) return false;
+  }
+
   return true;
 }
 
@@ -151,7 +196,10 @@ export function buildVirtualHabitPlacementsForDays(params: {
     const slotIndex = mapHabitTimeToWorkSlotIndex(axis, rem.hour, rem.minute);
     if (slotIndex == null) continue;
 
-    const dailyGoal = parseHabitDailyGoal(habit.extra_data, 'build');
+    const kind = parseHabitKind(habit.extra_data);
+    if (kind !== 'build' && kind !== 'task') continue;
+
+    const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
     const checkIns = checkInsByHabit?.get(habit.id) ?? {};
 
     for (const ymd of dayYmds) {
@@ -161,16 +209,26 @@ export function buildVirtualHabitPlacementsForDays(params: {
           viewYmd: ymd,
           logicalTodayYmd,
           dayBoundary,
+          checkIns,
         })
       ) {
         continue;
       }
       const todayCount = checkIns[ymd] ?? 0;
-      const done = isHabitDayGoalMet({
-        kind: 'build',
+      let done = isHabitDayGoalMet({
+        kind,
         todayCount,
         dailyGoal,
       });
+      // 任务型：达成日当日也视为完成（与任务页 showPeriodCheck 对齐）
+      if (kind === 'task' && !done) {
+        const taskView = getTaskHabitTasksViewState({
+          extraData: habit.extra_data,
+          checkIns,
+          logicalYmd: ymd,
+        });
+        if (taskView?.showPeriodCheckOnViewDay) done = true;
+      }
       out.push({
         habitId: habit.id,
         name: habit.name?.trim() || '习惯',

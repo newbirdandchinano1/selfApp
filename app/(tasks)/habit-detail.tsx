@@ -58,7 +58,6 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect } from "expo-router/react-navigation";
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
@@ -328,7 +327,8 @@ export default function HabitDetailScreen() {
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
-  const loadHabitOverview = React.useCallback(async () => {
+  const loadHabitOverview = React.useCallback(async (opts?: { awaitRemote?: boolean }) => {
+    const awaitRemote = opts?.awaitRemote === true;
     const generation = ++habitLoadGenerationRef.current;
     if (!habitId) {
       setHabit(null);
@@ -351,33 +351,42 @@ export default function HabitDetailScreen() {
       setLoading(false);
     }
 
-    try {
-      await syncBreakHabitCompletions();
-      await syncBuildHabitCompletions();
-    } catch (e) {
-      console.warn('习惯详情：完成态同步失败', e);
-    }
+    const runRemoteSync = async () => {
+      try {
+        await syncBreakHabitCompletions();
+        await syncBuildHabitCompletions();
+      } catch (e) {
+        console.warn('习惯详情：完成态同步失败', e);
+      }
 
-    try {
-      row = (await syncHabitDetailDataFromApi(habitId, { boundary })) ?? row;
-    } catch (e) {
-      console.warn('习惯详情：服务端同步失败，回退本地', e);
-      row = row ?? (await getHabitById(habitId));
-    }
-    if (generation !== habitLoadGenerationRef.current) return;
-    setHabit(row ?? null);
-    if (!row) {
-      setCheckIns({});
+      try {
+        row = (await syncHabitDetailDataFromApi(habitId, { boundary })) ?? row;
+      } catch (e) {
+        console.warn('习惯详情：服务端同步失败，回退本地', e);
+        row = row ?? (await getHabitById(habitId));
+      }
+      if (generation !== habitLoadGenerationRef.current) return;
+      setHabit(row ?? null);
+      if (!row) {
+        setCheckIns({});
+        return;
+      }
+      const fromDb = await getCheckInsMapByHabitId(row.id);
+      if (generation !== habitLoadGenerationRef.current) return;
+      const merged = { ...fromDb };
+      const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
+      for (const [k, v] of Object.entries(legacy)) {
+        if (merged[k] === undefined) merged[k] = v;
+      }
+      setCheckIns(merged);
+    };
+
+    // 本地已有数据：软同步放后台，避免二三级页干等 REST；下拉刷新仍可 await
+    if (row && !awaitRemote) {
+      void runRemoteSync();
       return;
     }
-    const fromDb = await getCheckInsMapByHabitId(row.id);
-    if (generation !== habitLoadGenerationRef.current) return;
-    const merged = { ...fromDb };
-    const legacy = normalizeCheckIns(parseExtra(row.extra_data).checkIns);
-    for (const [k, v] of Object.entries(legacy)) {
-      if (merged[k] === undefined) merged[k] = v;
-    }
-    setCheckIns(merged);
+    await runRemoteSync();
   }, [boundary, habitId]);
 
   React.useEffect(() => {
@@ -410,9 +419,10 @@ export default function HabitDetailScreen() {
           setLoading(false);
           return;
         }
-        setLoading(true);
+        // 仅无本地缓存时亮骨架；有数据则保持现有 UI，后台软同步
+        if (forceApi || !habit) setLoading(true);
         try {
-          await loadHabitOverview();
+          await loadHabitOverview({ awaitRemote: forceApi });
         } catch (e) {
           console.warn('加载习惯详情失败', e);
           setHabit(null);
@@ -421,14 +431,13 @@ export default function HabitDetailScreen() {
         }
       }, forceApi);
     },
-    [habitId, loadHabitOverview, wrapLoad],
+    [habit, habitId, loadHabitOverview, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
-      invalidateInflightApiTableFetch('habit_check_ins');
       void reload();
       setFocusDate((prev) => {
         const ymd = toYMD(prev);

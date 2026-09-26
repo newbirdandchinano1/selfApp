@@ -299,6 +299,11 @@ export function resolvePageApiReadOpts(
   if (hasPageSyncedWithApi(pageKey)) {
     return { localOnly: true, offlineFallback: true };
   }
+  // local-first 且无页面范围表：子页不走「首次全量 REST」门禁，直接读本地
+  // （各页自行软同步；避免首次进详情被空转 needsRest / 同表锁拖 7–10s）
+  if (isLocalFirstReads() && listPageScopeTables(pageKey).length === 0) {
+    return { localOnly: true, offlineFallback: true };
+  }
   return { localOnly: false, offlineFallback: false };
 }
 

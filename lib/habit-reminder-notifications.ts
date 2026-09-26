@@ -1,6 +1,6 @@
 /**
  * 习惯打卡本地提醒：业务只决定「哪天几点、哪个习惯」；权限/通道/排期走 scheduler。
- * 养成入格习惯改走日程格提醒（habitUsesScheduleSlotReminderChannel），避免双推。
+ * 养成/任务型入格习惯改走日程格提醒（habitUsesScheduleSlotReminderChannel），避免双推。
  */
 
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';

@@ -298,60 +298,77 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   const isIncompletePaginationError = (e: unknown): boolean =>
     e instanceof Error && /分页不完整/.test(e.message);
 
-  const fetchPromise = withApiTableSyncLock(table, async (): Promise<T[]> => {
+  /**
+   * 网络翻页与本地灌库分离：表锁只包住 SQLite reconcile。
+   * 若整段拉网都持锁，一级页全表同步会把二三级页同表读写堵 7–10s。
+   */
+  const fetchPromise = (async (): Promise<T[]> => {
+    const applyToLocal = async (startGen: number, rows: T[]): Promise<T[] | null> =>
+      withApiTableSyncLock(table, async () => {
+        if ((tableFetchGeneration.get(table) ?? 0) !== startGen) {
+          return null;
+        }
+        await syncApiReadResultToLocal(table, rows as Record<string, unknown>[], {
+          reconcileSnapshot: true,
+        });
+        if (isApiOnlyReads()) {
+          return readLocalTableVisible<T>(table);
+        }
+        return rows;
+      });
+
     for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS_AFTER_INVALIDATE; attempt += 1) {
       const startGen = tableFetchGeneration.get(table) ?? 0;
       let all: T[];
       try {
         all = await pullAllApiTablePages<T>(table, opts);
       } catch (e) {
-        // 分页不完整错误：重试而非直接失败
         if (isIncompletePaginationError(e) && attempt < MAX_INCOMPLETE_PAGINATION_RETRIES - 1) {
-          console.warn(`[api-read] 表「${table}」分页不完整，重试 ${attempt + 1}/${MAX_INCOMPLETE_PAGINATION_RETRIES}`);
+          console.warn(
+            `[api-read] 表「${table}」分页不完整，重试 ${attempt + 1}/${MAX_INCOMPLETE_PAGINATION_RETRIES}`,
+          );
           continue;
+        }
+        if (isIncompletePaginationError(e)) {
+          if (isCoreSnapshotTable(table)) {
+            console.warn(`[api-read] 表「${table}」重试后分页仍不完整，拒绝写入不完整快照`);
+            throw e;
+          }
+          console.warn(`[api-read] 表「${table}」重试后分页仍不完整，接受已有数据`);
+          const fallbackAll = await pullAllApiTablePages<T>(table, {
+            ...opts,
+            allowIncomplete: true,
+          });
+          if ((tableFetchGeneration.get(table) ?? 0) !== startGen) {
+            continue;
+          }
+          const appliedFallback = await applyToLocal(startGen, fallbackAll);
+          if (appliedFallback == null) continue;
+          return appliedFallback;
         }
         throw e;
       }
-      const endGen = tableFetchGeneration.get(table) ?? 0;
-      if (startGen !== endGen) {
+      if ((tableFetchGeneration.get(table) ?? 0) !== startGen) {
         continue;
       }
-      await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
-        reconcileSnapshot: true,
-      });
-      if (isApiOnlyReads()) {
-        return readLocalTableVisible<T>(table);
-      }
-      return all;
+      const applied = await applyToLocal(startGen, all);
+      if (applied == null) continue;
+      return applied;
     }
 
-    let all: T[];
-    try {
-      all = await pullAllApiTablePages<T>(table, opts);
-    } catch (e) {
-      if (isIncompletePaginationError(e)) {
-        if (isCoreSnapshotTable(table)) {
-          console.warn(`[api-read] 表「${table}」重试后分页仍不完整，拒绝写入不完整快照`);
-          throw e;
-        }
-        console.warn(`[api-read] 表「${table}」重试后分页仍不完整，接受已有数据`);
-        const fallbackAll = await pullAllApiTablePages<T>(table, { ...opts, allowIncomplete: true });
-        await syncApiReadResultToLocal(table, fallbackAll as Record<string, unknown>[], {
-          reconcileSnapshot: true,
-        });
-        if (isApiOnlyReads()) return readLocalTableVisible<T>(table);
-        return fallbackAll;
-      }
-      throw e;
+    const startGen = tableFetchGeneration.get(table) ?? 0;
+    const all = await pullAllApiTablePages<T>(table, opts);
+    if ((tableFetchGeneration.get(table) ?? 0) !== startGen) {
+      const again = await pullAllApiTablePages<T>(table, opts);
+      const gen = tableFetchGeneration.get(table) ?? 0;
+      const applied = await applyToLocal(gen, again);
+      if (applied) return applied;
+      return again;
     }
-    await syncApiReadResultToLocal(table, all as Record<string, unknown>[], {
-      reconcileSnapshot: true,
-    });
-    if (isApiOnlyReads()) {
-      return readLocalTableVisible<T>(table);
-    }
+    const applied = await applyToLocal(startGen, all);
+    if (applied) return applied;
     return all;
-  });
+  })();
 
   inflightTableFetchAll.set(table, fetchPromise as Promise<Record<string, unknown>[]>);
   try {

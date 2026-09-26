@@ -201,7 +201,7 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
     });
   }
 
-  // 养成习惯虚拟入格：按格子开始时间登记（与占用提醒同一频道）
+  // 养成/任务型习惯虚拟入格：按格子开始时间登记（与占用提醒同一频道）
   try {
     const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
     const dayYmds: string[] = [];
