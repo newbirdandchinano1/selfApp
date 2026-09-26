@@ -3,6 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targets';
+import { formatYmd, parseYmd } from '@/lib/date';
 import {
   DEFAULT_DIETARY_PREFS,
   DIETARY_PRESET_TAGS,
@@ -95,15 +96,11 @@ function normalizeWorkoutDays(days: string[]): string[] {
 }
 
 function parseIsoDateLocal(iso: string): Date {
-  const [y, m, d] = iso.split('-').map(Number);
-  return new Date(y, (m ?? 1) - 1, d ?? 1);
+  return parseYmd(iso) ?? new Date();
 }
 
 function toIsoDate(d: Date): string {
-  const y = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${month}-${day}`;
+  return formatYmd(d);
 }
 
 function formatChineseBirthday(iso: string | null): string {

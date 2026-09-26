@@ -1,5 +1,5 @@
-import { MonthlyReviewDimensionDetailScreen } from '@/components/review/monthly-review-dimension-detail-screen';
+import { ReviewDimensionDetailScreen } from '@/components/review/review-dimension-detail-screen';
 
 export default function MonthlyReviewDimensionDetailRoute() {
-  return <MonthlyReviewDimensionDetailScreen />;
+  return <ReviewDimensionDetailScreen scope="monthly" />;
 }

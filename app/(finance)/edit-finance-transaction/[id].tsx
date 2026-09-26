@@ -16,7 +16,7 @@ import {
   isExpenseIncludedInBudget,
   isIncomeIncludedInBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
-import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
+import { notifyFinanceSheetSaved } from '@/lib/finance-transaction-sheet/controller';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { MaterialIcons } from '@expo/vector-icons';

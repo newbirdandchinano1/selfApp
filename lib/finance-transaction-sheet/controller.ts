@@ -4,46 +4,117 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import {
-    getCachedFinanceLastUsedAccountId,
-    loadFinanceLastUsedAccountId,
-    sanitizeFinanceLastUsedAccountId,
+  getCachedFinanceLastUsedAccountId,
+  loadFinanceLastUsedAccountId,
+  sanitizeFinanceLastUsedAccountId,
 } from '@/lib/finance-last-used-account';
-import { notifyFinanceSheetSaved } from '@/lib/finance-sheet-controller';
-import type { FinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
 import {
-    describeFinanceTransferPair,
-    parseFinanceSentenceLocal,
-    pickSheetCategoryForParsed,
-    resolveTransferLaunchAccounts,
-    type AccountPickerTarget,
-    type ParsedOneLiner,
-    type SentenceLedgerPreviewState,
-    type SentenceResolveResult,
-    type SheetTab,
+  describeFinanceTransferPair,
+  parseFinanceSentenceLocal,
+  pickSheetCategoryForParsed,
+  resolveTransferLaunchAccounts,
+  type AccountPickerTarget,
+  type ParsedOneLiner,
+  type SentenceLedgerPreviewState,
+  type SentenceResolveResult,
+  type SheetTab,
 } from '@/lib/finance-transaction-sheet/helpers';
 import { financeTransactionSheetStyles } from '@/lib/finance-transaction-sheet/styles';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
 import {
-    createFinanceTransaction,
-    createFinanceTransferTransactions,
-    financeSignedAmountForSave,
-    getFinanceAccountsWithBalance,
-    getFinanceTransactions,
-    normalizeFinanceSignRule,
-    validateFinanceTransactionBeforeSave,
+  createFinanceTransaction,
+  createFinanceTransferTransactions,
+  financeSignedAmountForSave,
+  getFinanceAccountsWithBalance,
+  getFinanceTransactions,
+  normalizeFinanceSignRule,
+  validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { budgetExtraPatchForTransaction, buildFinanceTransferTxnExtra } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
-    getActiveAiLlmApiKey,
-    isActiveAiLlmConfigured,
-    parseFinanceOneLinerFromText,
+  getActiveAiLlmApiKey,
+  isActiveAiLlmConfigured,
+  parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/** 打开记账弹窗的启动意图（手动/转账/自动记账深链） */
+export type FinanceSheetLaunchIntent =
+  | {
+      kind: 'manual';
+      tab: 'expense' | 'income' | 'sentence';
+      accountId: string | null;
+    }
+  | {
+      kind: 'transfer';
+      /** 扣款账户；负债还款场景可留空，由弹窗默认选资产账户 */
+      fromAccountId: string | null;
+      /** 入账/还款账户；从负债详情发起还款时传入 */
+      toAccountId?: string | null;
+    }
+  /** 剪贴板截图（如 zheng://screenshot，旧流程）：财务页消费后自动 AI 识别并落账 */
+  | {
+      kind: 'auto_ledger_clipboard_image';
+      imageDataUri: string;
+    }
+  /** 深链 zheng://screenshot：在财务页弹窗内读取剪贴板并记账 */
+  | {
+      kind: 'auto_ledger_clipboard_pending';
+    };
+
+let pendingLaunchIntent: FinanceSheetLaunchIntent | null = null;
+
+export function setFinanceSheetLaunchIntent(intent: FinanceSheetLaunchIntent) {
+  pendingLaunchIntent = intent;
+}
+
+export function peekFinanceSheetLaunchIntent(): FinanceSheetLaunchIntent | null {
+  return pendingLaunchIntent;
+}
+
+export function consumeFinanceSheetLaunchIntent(): FinanceSheetLaunchIntent | null {
+  const next = pendingLaunchIntent;
+  pendingLaunchIntent = null;
+  return next;
+}
+
+type OpenListener = (intent: FinanceSheetLaunchIntent) => void;
+type SavedListener = () => void;
+
+const openListeners = new Set<OpenListener>();
+const savedListeners = new Set<SavedListener>();
+
+export function subscribeFinanceSheetOpen(listener: OpenListener): () => void {
+  openListeners.add(listener);
+  return () => {
+    openListeners.delete(listener);
+  };
+}
+
+export function subscribeFinanceSheetSaved(listener: SavedListener): () => void {
+  savedListeners.add(listener);
+  return () => {
+    savedListeners.delete(listener);
+  };
+}
+
+export function notifyFinanceSheetSaved(): void {
+  for (const listener of savedListeners) {
+    listener();
+  }
+}
+
+/** 任意页面打开记账/转账底部弹窗（由根级 FinanceTransactionSheet 渲染） */
+export function openFinanceSheet(intent: FinanceSheetLaunchIntent): void {
+  for (const listener of openListeners) {
+    listener(intent);
+  }
+}
 
 export type FinanceTransactionSheetControllerOptions = {
   visible: boolean;

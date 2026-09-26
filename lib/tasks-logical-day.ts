@@ -1,4 +1,5 @@
 import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
+import { addDaysToYmd, formatYmd, ymdToLocalNoon } from '@/lib/date';
 
 /**
  * 自定义日界时刻：对「已勾选」的页面，打卡/完成/日期归属从该时刻起算新一天。
@@ -101,12 +102,9 @@ export function normalizeDayBoundaryPages(raw: unknown): DayBoundaryPageId[] {
   return out;
 }
 
-/** 与 `formatLocalYmd` 一致：本地日历日的 YYYY-MM-DD */
+/** 与 `formatYmd` 一致：本地日历日的 YYYY-MM-DD */
 export function formatLocalYmdFromDate(date: Date): string {
-  const y = date.getFullYear();
-  const mo = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${d}`;
+  return formatYmd(date);
 }
 
 /**
@@ -124,7 +122,7 @@ export function getLogicalLocalYmd(now: Date, boundary: TasksDayBoundary): strin
   if (mins < startMins) {
     logical.setDate(logical.getDate() - 1);
   }
-  return formatLocalYmdFromDate(logical);
+  return formatYmd(logical);
 }
 
 export function formatTasksDayBoundaryLabel(b: TasksDayBoundary): string {
@@ -134,17 +132,11 @@ export function formatTasksDayBoundaryLabel(b: TasksDayBoundary): string {
 
 /** 逻辑日 YMD → 本地日历日中午，便于展示星期与月日标签 */
 export function logicalYmdToLocalDate(ymd: string): Date {
-  const [y, mo, d] = ymd.split('-').map((x) => parseInt(x, 10));
-  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) {
-    return new Date();
-  }
-  return new Date(y, mo - 1, d, 12, 0, 0, 0);
+  return ymdToLocalNoon(ymd);
 }
 
 export function addDaysToLogicalYmd(ymd: string, deltaDays: number): string {
-  const d = logicalYmdToLocalDate(ymd);
-  d.setDate(d.getDate() + deltaDays);
-  return formatLocalYmdFromDate(d);
+  return addDaysToYmd(ymd, deltaDays);
 }
 
 export function getLogicalDayKeyFromDate(at: Date, boundary?: TasksDayBoundary): string {

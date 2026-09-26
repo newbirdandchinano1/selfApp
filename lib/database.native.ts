@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 51;
+export const DB_VERSION = 53;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -46,6 +46,25 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
   await db.execAsync('DROP TABLE IF EXISTS persona_portrait_cache');
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'drop_persona_portrait_cache_v33',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** P1-02：下线遗留账本 accounts / account_transactions，权威为 finance_* */
+async function migrateDropLegacyAccountsLedger(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['drop_legacy_accounts_ledger_v53'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    DROP TABLE IF EXISTS account_transactions;
+    DROP TABLE IF EXISTS accounts;
+  `);
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'drop_legacy_accounts_ledger_v53',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -372,6 +391,12 @@ async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): P
 }
 
 async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['drop_legacy_project_tags_v52'],
+  );
+  if (done) return;
+
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY NOT NULL,
@@ -423,10 +448,21 @@ async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promis
     `);
   }
 
+  // 迁移完成后丢弃遗留表，避免双体系继续被同步/索引维护
+  await db.execAsync(`
+    DROP TABLE IF EXISTS project_tag_links;
+    DROP TABLE IF EXISTS project_tags;
+  `);
+
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'migrate_project_tags_to_global_tags_v1',
     '1',
   ]);
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'drop_legacy_project_tags_v52',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
 async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
@@ -548,29 +584,6 @@ export async function initDatabase() {
       FOREIGN KEY (category_id) REFERENCES project_categories(id) ON DELETE SET NULL
     );
 
-    CREATE TABLE IF NOT EXISTS project_tags (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      color TEXT NOT NULL DEFAULT '#64748B',
-      description TEXT,
-      weight INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      extra_data TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS project_tag_links (
-      id TEXT PRIMARY KEY NOT NULL,
-      project_id TEXT NOT NULL,
-      tag_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY (tag_id) REFERENCES project_tags(id) ON DELETE CASCADE
-    );
-
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
@@ -661,30 +674,6 @@ export async function initDatabase() {
       source TEXT NOT NULL DEFAULT 'archive',
       created_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create'
-    );
-
-    CREATE TABLE IF NOT EXISTS accounts (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      balance REAL NOT NULL DEFAULT 0,
-      currency TEXT NOT NULL DEFAULT 'CNY',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create'
-    );
-
-    CREATE TABLE IF NOT EXISTS account_transactions (
-      id TEXT PRIMARY KEY NOT NULL,
-      account_id TEXT NOT NULL,
-      amount REAL NOT NULL,
-      category TEXT,
-      note TEXT,
-      happened_at TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'pending_create',
-      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS finance_accounts (
@@ -1041,15 +1030,6 @@ export async function initDatabase() {
       FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS memo_dimensions (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      sort_order INTEGER NOT NULL DEFAULT 1000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      sync_status TEXT NOT NULL DEFAULT 'synced'
-    );
-
     CREATE TABLE IF NOT EXISTS memos (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL DEFAULT '',
@@ -1316,11 +1296,6 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
     CREATE INDEX IF NOT EXISTS idx_projects_due_date ON projects(due_date);
     CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_project_tags_weight ON project_tags(weight);
-    CREATE INDEX IF NOT EXISTS idx_project_tags_updated_at ON project_tags(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_project_tag_links_project_id ON project_tag_links(project_id);
-    CREATE INDEX IF NOT EXISTS idx_project_tag_links_tag_id ON project_tag_links(tag_id);
-    CREATE INDEX IF NOT EXISTS idx_project_tag_links_updated_at ON project_tag_links(updated_at);
     CREATE INDEX IF NOT EXISTS idx_tags_weight ON tags(weight);
     CREATE INDEX IF NOT EXISTS idx_tags_updated_at ON tags(updated_at);
     CREATE INDEX IF NOT EXISTS idx_tag_links_entity ON tag_links(entity_type, entity_id);
@@ -1339,8 +1314,6 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_frog_completion_events_task_id ON frog_completion_events(task_id);
     CREATE INDEX IF NOT EXISTS idx_project_completion_logs_completed_ymd ON project_completion_logs(completed_ymd);
     CREATE INDEX IF NOT EXISTS idx_project_completion_logs_project_id ON project_completion_logs(project_id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_updated_at ON accounts(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_account_transactions_account_id ON account_transactions(account_id);
     CREATE INDEX IF NOT EXISTS idx_finance_accounts_updated_at ON finance_accounts(updated_at);
     CREATE INDEX IF NOT EXISTS idx_finance_account_types_sort_order ON finance_account_types(sort_order);
     CREATE INDEX IF NOT EXISTS idx_finance_account_types_updated_at ON finance_account_types(updated_at);
@@ -1396,10 +1369,8 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_recipe_items_category_id ON recipe_items(category_id);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_updated_at ON recipe_items(updated_at);
 
-    CREATE INDEX IF NOT EXISTS idx_memo_dimensions_sort_order ON memo_dimensions(sort_order);
-    CREATE INDEX IF NOT EXISTS idx_memo_dimensions_updated_at ON memo_dimensions(updated_at);
-    CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
     CREATE INDEX IF NOT EXISTS idx_memos_updated_at ON memos(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
   `);
   await db.runAsync(
     'INSERT OR IGNORE INTO users (id, height, weight, age, created_at, updated_at) VALUES (?, 0, 0, 0, datetime("now"), datetime("now"))',
@@ -1523,10 +1494,10 @@ export async function initDatabase() {
   const { migrateRecipesStorageToSqliteIfNeeded } = await import('@/lib/recipes');
   await migrateRecipesStorageToSqliteIfNeeded(db);
 
-  const { migrateMemosStorageToSqliteIfNeeded, ensureMemoDimensionsBackfilled, migrateMemoDimensionsToTagsIfNeeded } = await import('@/lib/memos');
-  await migrateMemosStorageToSqliteIfNeeded(db);
-  await ensureMemoDimensionsBackfilled(db);
+  const { migrateMemoDimensionsToTagsIfNeeded } = await import('@/lib/memos');
   await migrateMemoDimensionsToTagsIfNeeded(db);
+  // P1-05：维度已迁 tags；本地表下线
+  await db.execAsync(`DROP TABLE IF EXISTS memo_dimensions;`);
 
   // 已下线功能：清理本地遗留表（本周任务表 / 我的缺点）
   await db.execAsync(`
@@ -1587,6 +1558,7 @@ export async function initDatabase() {
   await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
   await migrateProjectTagsToGlobalTags(db);
+  await migrateDropLegacyAccountsLedger(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);

@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
+import { formatYmdCN } from '@/lib/date';
 import { createQuickAddItemMap, loadAllQuickAddItems, type QuickAddCardItem } from '@/lib/quick-add-cards';
 import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
@@ -80,12 +81,6 @@ function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
 
 function formatRecordTime(createdAt: string): string {
   return formatStoredDatetimeHm(createdAt);
-}
-
-function formatYmdChinese(ymd: string): string {
-  const [y, m, day] = ymd.split('-').map((x) => Number(x));
-  if (!y || !m || !day) return ymd;
-  return `${y}年${m}月${day}日`;
 }
 
 function getAmount(row: HealthRecordRow, metric: IntakeMetric): number {
@@ -402,12 +397,12 @@ export default function IntakeRecordDetailScreen() {
               {row.intake_display_title?.trim() ? (
                 <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
                   <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
-                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdChinese(row.record_date)}</Text>
+                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdCN(row.record_date)}</Text>
                 </View>
               ) : (
                 <View style={styles.kvRow}>
                   <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
-                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdChinese(row.record_date)}</Text>
+                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdCN(row.record_date)}</Text>
                 </View>
               )}
               <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>

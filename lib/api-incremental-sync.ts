@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { setLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
+import { isApiGenericWriteForbidden } from '@/lib/api-allowed-tables';
 import { ApiRequestError, ensureApiLoggedIn } from '@/lib/api-client';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
@@ -8,7 +9,6 @@ import {
   rowPrimaryKeyValue,
   upsertProjectCategoriesReferencedByProjects,
   upsertFinanceAccountsReferencedByTransactions,
-  upsertMemoDimensionsReferencedByMemos,
   upsertHabitsReferencedByCheckIns,
   upsertProjectsReferencedByTasks,
   upsertParentTasksReferencedByTasks,
@@ -26,7 +26,6 @@ import {
 import {
   ensureProjectCategoryRefsForApiUpload,
   ensureFinanceAccountRefsForApiUpload,
-  ensureMemoDimensionRefsForApiUpload,
   ensureTaskCategoryMirrorForApiUpload,
   prepareLocalRowsForUpload,
   readLocalForeignKeyRefs,
@@ -39,12 +38,40 @@ import { isSilentCloudRestoreInFlight } from '@/lib/cloud-sync-flags';
 import { getDatabase } from '@/lib/database';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
-/** REST 增量同步跳过的表（与全量迁移一致） */
+/**
+ * REST 增量同步跳过的表（与全量迁移一致）。
+ * 另：高危表中「无 APP 专用 CRUD 适配」的不得再走 /api/data 通用写（见 API_GENERIC_WRITE_FORBIDDEN_TABLES）。
+ */
 export const REST_SKIP_TABLES = new Set([
   'admin_users',
   /** 本地迁移/回填标记，仅设备内有效，见 API_LOCAL_READ_ONLY_TABLES */
   'app_meta',
+  /** 积分权威在服务端 adjust；禁止通用写钱包/流水 */
+  'points_wallet',
+  'points_ledger',
+  /** 课表仅视图/排课层：走 frog-schedule 专用接口，禁止通用 CRUD 推送 */
+  'schedule_placements',
+  'schedule_week_axis_snapshot',
 ]);
+
+/** 禁止通用写、但可由 api-app-domain 专用接口上传的表（仍进脏表推送） */
+const APP_DOMAIN_GENERIC_WRITE_FORBIDDEN = new Set([
+  'wish_board_items',
+  'memos',
+  'health_records',
+  'recipe_categories',
+  'recipe_items',
+  'finance_transactions',
+]);
+
+function shouldSkipGenericRestUpload(table: string): boolean {
+  if (REST_SKIP_TABLES.has(table)) return true;
+  // 双保险：后端禁写且未走专用适配的表一律不推
+  if (isApiGenericWriteForbidden(table) && !APP_DOMAIN_GENERIC_WRITE_FORBIDDEN.has(table)) {
+    return true;
+  }
+  return false;
+}
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';
 /** 合并同一交互内的多次脏表标记，再串行推送到 REST */
@@ -72,8 +99,9 @@ function quoteIdent(name: string): string {
 export function markApiTableDirty(table: string): void {
   const t = table.trim();
   if (!t || !isSafeTableName(t)) return;
-  if (REST_SKIP_TABLES.has(t)) return;
+  if (shouldSkipGenericRestUpload(t) && !APP_DOMAIN_GENERIC_WRITE_FORBIDDEN.has(t)) return;
   if (t.startsWith('sqlite_')) return;
+  // P0-03：单一在线 Outbox（MySQL /api）；Worker 备份不经此队列
   apiDirtyTables.add(t);
   invalidateInflightApiTableFetch(t);
   schedulePersistApiDirty();
@@ -273,14 +301,10 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   await ensureProjectCategoryRefsForApiUpload(rowsByTable);
   await ensureTaskCategoryMirrorForApiUpload(rowsByTable);
   await ensureFinanceAccountRefsForApiUpload(rowsByTable);
-  await ensureMemoDimensionRefsForApiUpload(rowsByTable);
 
   const seedWithRefs = [...filtered];
   if ((rowsByTable.get('finance_accounts')?.length ?? 0) > 0 && !seedWithRefs.includes('finance_accounts')) {
     seedWithRefs.push('finance_accounts');
-  }
-  if ((rowsByTable.get('memo_dimensions')?.length ?? 0) > 0 && !seedWithRefs.includes('memo_dimensions')) {
-    seedWithRefs.push('memo_dimensions');
   }
   if ((rowsByTable.get('habit_check_ins')?.length ?? 0) > 0 && !seedWithRefs.includes('habits')) {
     seedWithRefs.push('habits');
@@ -523,16 +547,6 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
       const uploadedRows: Record<string, unknown>[] = [];
       const uploadedPks = uploadedPkByTable.get(table)!;
 
-      if (table === 'memos') {
-        await upsertMemoDimensionsReferencedByMemos(
-          rows,
-          rowsByTable,
-          pkColsByTable,
-          uploadedPkByTable,
-          fkRefsByTable,
-        );
-      }
-
       if (table === 'finance_transactions') {
         await upsertFinanceAccountsReferencedByTransactions(
           rows,
@@ -587,15 +601,30 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
         } catch (e) {
           if (e instanceof ApiRowUploadSkippedError) {
             if (__DEV__) console.warn('[api incremental] 跳过', table, e.message);
+            // 高危表禁写 / 专用接口未覆盖：本地标 synced，避免脏表无限重试拖垮同步
+            if (isApiGenericWriteForbidden(table) || /禁止通用|App domain fallback|专用接口未覆盖/i.test(e.message)) {
+              uploadedRows.push(uploadRow);
+            }
+            continue;
+          }
+          // 后端 403 禁写：隔离该行并标 synced
+          if (
+            e instanceof ApiRequestError &&
+            e.httpStatus === 403 &&
+            (/禁止通过|专用业务|writeForbidden/i.test(e.message) || isApiGenericWriteForbidden(table))
+          ) {
+            if (__DEV__) console.warn('[api incremental] 通用写已禁用，跳过', table, e.message);
+            uploadedRows.push(uploadRow);
             continue;
           }
           // 积分钱包 OCC 不得中断同批其它表（打卡/流水）
           if (
             table === 'points_wallet' &&
             e instanceof Error &&
-            /已有更新版本|过期数据覆盖|points_wallet/i.test(e.message)
+            /已有更新版本|过期数据覆盖|points_wallet|禁止通用/i.test(e.message)
           ) {
             if (__DEV__) console.warn('[api incremental] points_wallet 冲突已隔离', e.message);
+            uploadedRows.push(uploadRow);
             continue;
           }
           // 远端白名单有表但物理表未建：隔离该表，避免整批失败并无限退避重试

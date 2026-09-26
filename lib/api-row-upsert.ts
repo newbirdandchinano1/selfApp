@@ -1,14 +1,12 @@
 import {
     apiCreateRecord,
     apiDeleteRecord,
-    apiGetRecord,
     apiListRecords,
-    apiPatchRecord,
     ApiRequestError,
     apiUpdateRecord,
     isDuplicateRecordApiError,
 } from '@/lib/api-client';
-import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { isApiGenericWriteForbidden } from '@/lib/api-allowed-tables';
 import { shouldPreserveForeignKeyOnUpload } from '@/lib/api-fk-preserve';
 import { isAbortError } from '@/lib/cloud-fetch-retry';
 import {
@@ -18,104 +16,35 @@ import {
     sortProjectCategoriesForApiUpload,
 } from '@/lib/cloud-sql-sync';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { roundPoints } from '@/lib/reward-points';
-
-function isStaleRowVersionApiError(err: unknown): boolean {
-  if (!(err instanceof ApiRequestError)) return false;
-  const msg = err.message || '';
-  return /已有更新版本|过期数据覆盖|stale\s*version|newer\s*version/i.test(msg);
-}
-
-async function persistLocalPointsWalletUpdatedAt(id: string, updatedAt: string): Promise<void> {
-  const { getDatabase } = await import('@/lib/database');
-  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
-    '@/lib/cloud-sql-dirty-track'
-  );
-  const db = await getDatabase();
-  if (!db) return;
-  beginCloudSqliteDirtyIgnoreBatch();
-  try {
-    await db.runAsync(`UPDATE points_wallet SET updated_at = ? WHERE id = ?`, [updatedAt, id]);
-  } finally {
-    endCloudSqliteDirtyIgnoreBatch();
-  }
-}
 
 /**
- * 积分钱包为单例行，服务端用 updated_at 做乐观锁。
- * 上传必须用本地墙上时钟（见 prepareRowBodyForApi）；冲突时再抬高时间并重试，仍失败则跳过以免拖垮整次同步。
+ * 积分钱包为单例行，余额权威在 POST /points/adjust。
+ * 通用 CRUD 已 403，增量同步不得再推余额。
  */
 async function upsertPointsWalletRowToApi(
-  payload: Record<string, unknown>,
+  _payload: Record<string, unknown>,
   localPk: string | null,
-  signal?: AbortSignal,
+  _signal?: AbortSignal,
 ): Promise<'created' | 'updated'> {
-  const withFreshUpdatedAt = (row: Record<string, unknown>, base?: Date): Record<string, unknown> => ({
-    ...row,
-    updated_at: formatWallClockDatetimeLocal(base ?? new Date()),
-  });
+  throw new ApiRowUploadSkippedError(
+    'points_wallet',
+    localPk,
+    '积分钱包禁止通用写；余额请走 POST /api/app/points/adjust',
+  );
+}
 
-  const tryCreateOrUpdate = async (row: Record<string, unknown>): Promise<'created' | 'updated'> => {
-    try {
-      await apiCreateRecord('points_wallet', row, { signal });
-      return 'created';
-    } catch (e) {
-      if (!isDuplicateRecordApiError(e)) throw e;
-      if (!localPk) throw e;
-      await apiUpdateRecord('points_wallet', localPk, row, { signal });
-      return 'updated';
-    }
-  };
-
-  const first = withFreshUpdatedAt(payload);
-  try {
-    const action = await tryCreateOrUpdate(first);
-    if (localPk) await persistLocalPointsWalletUpdatedAt(localPk, String(first.updated_at));
-    return action;
-  } catch (e) {
-    if (!isStaleRowVersionApiError(e) || !localPk) throw e;
-    if (__DEV__) console.warn('[api-sync] points_wallet 版本冲突，抬高 updated_at 后重试', localPk);
-
-    let bumpFrom = new Date();
-    try {
-      const server = await apiGetRecord<{ updated_at?: string }>('points_wallet', localPk, { signal });
-      const raw = typeof server.updated_at === 'string' ? server.updated_at : '';
-      const serverAt = raw ? new Date(raw.includes('T') ? raw : raw.replace(' ', 'T')) : null;
-      if (serverAt && !Number.isNaN(serverAt.getTime()) && serverAt.getTime() >= bumpFrom.getTime()) {
-        bumpFrom = new Date(serverAt.getTime() + 1000);
-      }
-    } catch {
-      /* ignore */
-    }
-
-    const retry = withFreshUpdatedAt(payload, bumpFrom);
-    try {
-      await apiUpdateRecord('points_wallet', localPk, retry, { signal });
-      await persistLocalPointsWalletUpdatedAt(localPk, String(retry.updated_at));
-      return 'updated';
-    } catch (retryErr) {
-      if (!isStaleRowVersionApiError(retryErr)) throw retryErr;
-      try {
-        await apiPatchRecord(
-          'points_wallet',
-          localPk,
-          { balance: (() => {
-            const n = roundPoints(Number(payload.balance) || 0);
-            return Number.isFinite(n) ? n : 0;
-          })() },
-          { signal },
-        );
-        await persistLocalPointsWalletUpdatedAt(localPk, formatWallClockDatetimeLocal(new Date()));
-        return 'updated';
-      } catch {
-        throw new ApiRowUploadSkippedError(
-          'points_wallet',
-          localPk,
-          retryErr instanceof Error ? retryErr.message : '积分钱包版本冲突，已跳过以免阻塞其它同步',
-        );
-      }
-    }
+/** 后端 403 / 客户端拦截：高危表禁止通用写（或专用接口未覆盖该操作） */
+function isGenericWriteForbiddenClientError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (/禁止通过通用 CRUD|App domain fallback/i.test(err.message)) return true;
+  if (
+    err instanceof ApiRequestError &&
+    err.httpStatus === 403 &&
+    /禁止通过|专用业务|writeForbidden/i.test(err.message)
+  ) {
+    return true;
   }
+  return false;
 }
 
 function rowPrimaryKeyValue(row: Record<string, unknown>, pkCols: string[]): string | null {
@@ -140,12 +69,10 @@ function isMissingParentRecordApiError(err: unknown): boolean {
     (/请先同步\s*projects/i.test(err.message) ||
       /请先同步\s*project_categories/i.test(err.message) ||
       /请先同步\s*habits/i.test(err.message) ||
-      /请先同步\s*memo_dimensions/i.test(err.message) ||
       /请先.*task_categories/i.test(err.message) ||
       /任务分类.*不存在/i.test(err.message) ||
       /项目分类.*不存在/i.test(err.message) ||
       /习惯.*不存在/i.test(err.message) ||
-      /备忘.*维度.*不存在/i.test(err.message) ||
       /引用的\s*项目[\s（(]*projects/i.test(err.message) ||
       /projects[\s）)]*不存在/i.test(err.message))
   );
@@ -358,6 +285,13 @@ export async function upsertRowToApi(
       if (e instanceof ApiRequestError && e.httpStatus === 404) {
         return 'deleted';
       }
+      if (isGenericWriteForbiddenClientError(e) || isApiGenericWriteForbidden(table)) {
+        throw new ApiRowUploadSkippedError(
+          table,
+          pk,
+          e instanceof Error ? e.message : '高危表禁止通用删除，且专用接口未覆盖',
+        );
+      }
       throw e;
     }
   }
@@ -373,10 +307,28 @@ export async function upsertRowToApi(
       await apiCreateRecord(table, payload, { signal: opts?.signal });
       return 'created';
     } catch (e) {
+      if (isGenericWriteForbiddenClientError(e)) {
+        throw new ApiRowUploadSkippedError(
+          table,
+          pk,
+          e instanceof Error ? e.message : '高危表禁止通用写',
+        );
+      }
       if (isDuplicateRecordApiError(e)) {
         if (!pk) throw e;
-        await apiUpdateRecord(table, pk, payload, { signal: opts?.signal });
-        return 'updated';
+        try {
+          await apiUpdateRecord(table, pk, payload, { signal: opts?.signal });
+          return 'updated';
+        } catch (updateErr) {
+          if (isGenericWriteForbiddenClientError(updateErr)) {
+            throw new ApiRowUploadSkippedError(
+              table,
+              pk,
+              updateErr instanceof Error ? updateErr.message : '高危表禁止通用写',
+            );
+          }
+          throw updateErr;
+        }
       }
       throw e;
     }
@@ -489,26 +441,18 @@ export async function upsertRowToApi(
     opts.uploadedPkByTable?.get('task_categories')?.add(cid);
   };
 
-  const tryUpsertReferencedMemoDimension = async (payload: Record<string, unknown>): Promise<void> => {
-    if (table !== 'memos' || !opts?.rowsByTable) return;
-    const dimensionId = payload.dimension_id;
-    if (dimensionId == null || dimensionId === '') return;
-
-    await upsertMemoDimensionsReferencedByMemos(
-      [payload],
-      opts.rowsByTable,
-      opts.pkColsByTable ?? new Map(),
-      opts.uploadedPkByTable ?? new Map(),
-      opts.fkRefsByTable ?? new Map(),
-      opts?.signal,
-    );
-    opts.uploadedPkByTable?.get('memo_dimensions')?.add(String(dimensionId));
-  };
-
   try {
     return await runUpsert(body);
   } catch (e) {
     if (isAbortError(e)) throw e;
+    if (e instanceof ApiRowUploadSkippedError) throw e;
+    if (isGenericWriteForbiddenClientError(e)) {
+      throw new ApiRowUploadSkippedError(
+        table,
+        pk,
+        e instanceof Error ? e.message : '高危表禁止通用写',
+      );
+    }
     if (e instanceof ApiRequestError && (e.httpStatus === 413 || /entity too large/i.test(e.message))) {
       const idHint = pk ? `（id: ${pk}）` : '';
       throw new ApiRequestError(
@@ -528,7 +472,6 @@ export async function upsertRowToApi(
           await tryUpsertReferencedParentTask(body);
         }
         if (table === 'projects') await tryUpsertReferencedProjectCategory(body);
-        if (table === 'memos') await tryUpsertReferencedMemoDimension(body);
         return await runUpsert(body);
       } catch {
         /* 补传父表后仍失败，继续去掉外键重试 */
@@ -679,59 +622,6 @@ export async function upsertFinanceAccountsReferencedByTransactions(
     } catch (e) {
       if (e instanceof ApiRowUploadSkippedError) {
         if (__DEV__) console.warn('[api-sync] 预上传 finance_accounts 跳过', aid, e.message);
-        continue;
-      }
-      throw e;
-    }
-  }
-}
-
-export async function upsertMemoDimensionsReferencedByMemos(
-  memoRows: Record<string, unknown>[],
-  rowsByTable: Map<string, Record<string, unknown>[]>,
-  pkColsByTable: Map<string, string[]>,
-  uploadedPkByTable: UploadedPkRegistry,
-  fkRefsByTable: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>,
-  signal?: AbortSignal,
-): Promise<void> {
-  const dimensionIds = new Set<string>();
-  for (const memo of memoRows) {
-    const did = memo.dimension_id;
-    if (did != null && did !== '') dimensionIds.add(String(did));
-  }
-  if (dimensionIds.size === 0) return;
-
-  const dimensionRows = rowsByTable.get('memo_dimensions') ?? [];
-  const dimensionPkCols = pkColsByTable.get('memo_dimensions') ?? ['id'];
-  const uploadedDimensions = uploadedPkByTable.get('memo_dimensions') ?? new Set<string>();
-  uploadedPkByTable.set('memo_dimensions', uploadedDimensions);
-
-  const { getDatabase } = await import('@/lib/database');
-  const db = await getDatabase();
-
-  for (const did of dimensionIds) {
-    let dimensionRow = dimensionRows.find(d => String(d.id) === did);
-    if (!dimensionRow && db) {
-      dimensionRow =
-        (await db.getFirstAsync<Record<string, unknown>>(
-          'SELECT * FROM memo_dimensions WHERE id = ? LIMIT 1',
-          [did],
-        )) ?? undefined;
-    }
-    if (!dimensionRow) continue;
-    try {
-      await upsertRowToApi('memo_dimensions', dimensionRow, dimensionPkCols, {
-        signal,
-        uploadedPkByTable,
-        fkRefs: fkRefsByTable.get('memo_dimensions') ?? [],
-        rowsByTable,
-        pkColsByTable,
-        fkRefsByTable,
-      });
-      uploadedDimensions.add(did);
-    } catch (e) {
-      if (e instanceof ApiRowUploadSkippedError) {
-        if (__DEV__) console.warn('[api-sync] 预上传 memo_dimensions 跳过', did, e.message);
         continue;
       }
       throw e;

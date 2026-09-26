@@ -6,11 +6,13 @@ import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-
 import { getTaskHabitTasksViewState } from '@/lib/repositories/habits/habit-task-period';
 import {
   addDaysToYmd,
-  formatScheduleDateToYMD,
+  formatYmd,
   isLogicalDayInYmdRange,
-} from '@/lib/standalone-todo-visibility';
+  parseScheduleMetaFromExtra,
+  scheduleDateToYmd,
+} from '@/lib/schedule';
 
-export { addDaysToYmd } from '@/lib/standalone-todo-visibility';
+export { addDaysToYmd } from '@/lib/schedule';
 import { getLogicalLocalYmd, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -236,29 +238,6 @@ export function daysRecordToSummariesMap(
 
 export function calendarRangeKey(startYmd: string, endYmd: string): string {
   return `${startYmd}:${endYmd}`;
-}
-
-type ProjectScheduleMeta = {
-  mode?: 'date' | 'time';
-  date?: string;
-  range?: { start: string; end: string };
-};
-
-function formatYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
-  if (!extraData) return null;
-  try {
-    const parsed = JSON.parse(extraData) as { schedule?: ProjectScheduleMeta };
-    return parsed?.schedule ?? null;
-  } catch {
-    return null;
-  }
 }
 
 function isMatrixTask(task: TaskRow): boolean {
@@ -577,14 +556,14 @@ export function buildTasksCalendarSummaries(params: {
       if (isMatrixTask(task) && task.status !== 'done' && task.status !== 'cancelled') {
         const due = taskDueYmd(task);
         if (due === ymd) continue;
-        const schedule = parseProjectSchedule(task.extra_data);
+        const schedule = parseScheduleMetaFromExtra(task.extra_data);
         let onDay = false;
         if (schedule?.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-          const start = formatScheduleDateToYMD(schedule.range.start);
-          const end = formatScheduleDateToYMD(schedule.range.end);
+          const start = scheduleDateToYmd(schedule.range.start);
+          const end = scheduleDateToYmd(schedule.range.end);
           onDay = isLogicalDayInYmdRange(ymd, start, end);
         } else if (schedule?.date) {
-          onDay = ymd === formatScheduleDateToYMD(schedule.date);
+          onDay = ymd === scheduleDateToYmd(schedule.date);
         }
         if (onDay) {
           const item = toTaskItem(task, 'matrix');

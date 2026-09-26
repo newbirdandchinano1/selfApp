@@ -1,4 +1,12 @@
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import {
+  dueDateFromScheduleMeta as dueDateFromMeta,
+  parseScheduleMetaFromExtra,
+  scheduleMetaHasConcreteDates,
+  type ScheduleMeta,
+  type ScheduleMetaLike,
+} from '@/lib/schedule/meta';
+import { toYmd } from '@/lib/schedule/ymd';
 
 /** 父任务 / 项目 → 子任务的时间继承与 dateLimit 计算 */
 
@@ -7,37 +15,9 @@ export type DateLimitYmd = {
   end?: string;
 };
 
-export type ScheduleMetaLike = {
-  mode?: 'date' | 'time';
-  allDay?: boolean;
-  hasExactTime?: boolean;
-  reminderOption?: TaskReminderOption;
-  reminderHour?: number;
-  reminderMinute?: number;
-  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary?: string;
-  weeklyDays?: number[];
-  monthlyDays?: number[];
-  yearlyDate?: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime?: string;
-  endTime?: string;
-};
+export type { ScheduleMeta, ScheduleMetaLike, TaskReminderOption };
+export { scheduleMetaHasConcreteDates, toYmd };
 
-export function toYmd(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return null;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/** 取父级与项目限制的交集（更紧的窗口） */
 export function mergeDateLimit(base: DateLimitYmd, incoming: DateLimitYmd): DateLimitYmd {
   const next: DateLimitYmd = { ...base };
   if (incoming.start) {
@@ -76,17 +56,7 @@ export function extractScheduleLimitFromExtra(
   extraDataRaw: string | null,
   dueDate?: string | null,
 ): DateLimitYmd {
-  let schedule: ScheduleMetaLike | null = null;
-  if (extraDataRaw) {
-    try {
-      const parsed = JSON.parse(extraDataRaw) as { schedule?: ScheduleMetaLike };
-      if (parsed?.schedule && typeof parsed.schedule === 'object') {
-        schedule = parsed.schedule;
-      }
-    } catch {
-      /* ignore */
-    }
-  }
+  const schedule = parseScheduleMetaFromExtra(extraDataRaw);
   return mergeDateLimit(scheduleMetaToDateLimit(schedule), {
     end: dueDate ? (toYmd(dueDate) ?? undefined) : undefined,
   });
@@ -159,14 +129,7 @@ export function scheduleMetaFromDateLimit(limit: DateLimitYmd | null): ScheduleM
 }
 
 export function formatDate(value: string): string {
-  const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toYmd(value) ?? value.trim().slice(0, 10);
 }
 
 export function formatTime(value: string): string {
@@ -219,6 +182,18 @@ export function hasDateLimitBounds(frame: DateLimitYmd | null | undefined): bool
   return !!(frame?.start || frame?.end);
 }
 
+/**
+ * 项目是否已设定日程：有具体 schedule，或至少有 due_date / dateLimit。
+ * 为真时，下属任务/子任务应完全继承，不可自设。
+ */
+export function projectDefinesSchedule(
+  extraDataRaw: string | null | undefined,
+  dueDate?: string | null,
+): boolean {
+  const limit = extractScheduleLimitFromExtra(extraDataRaw ?? null, dueDate);
+  return hasDateLimitBounds(limit);
+}
+
 function clampYmdToLimit(ymd: string, frame: DateLimitYmd): string {
   let next = ymd;
   if (frame.start && next < frame.start) next = frame.start;
@@ -236,10 +211,7 @@ export function dueDateFromScheduleMeta(
   schedule: ScheduleMetaLike | null | undefined,
   fallbackDue: string | null | undefined,
 ): string | null {
-  if (schedule?.mode === 'time' && schedule.range?.end) return toYmd(schedule.range.end);
-  if (schedule?.date) return toYmd(schedule.date);
-  if (fallbackDue) return toYmd(fallbackDue);
-  return null;
+  return dueDateFromMeta(schedule, fallbackDue);
 }
 
 /**

@@ -6,7 +6,7 @@ import {
   loadReviewPeriodSnapshot,
   type DailyEntry,
 } from '@/components/review/review-utils';
-import { ReviewListSkeleton } from '@/components/review/review-home-skeletons';
+import { ReviewListSkeleton } from '@/components/skeletons/review';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';

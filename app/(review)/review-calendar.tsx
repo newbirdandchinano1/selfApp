@@ -1,4 +1,4 @@
-import { ReviewCalendarSkeleton } from '@/components/review/review-home-skeletons';
+import { ReviewCalendarSkeleton } from '@/components/skeletons/review';
 import { DailyReviewContentCard } from '@/components/review/review-ui-parts';
 import {
   dailyEntryHasContent,
@@ -23,9 +23,10 @@ import { listReviewTemplate } from '@/lib/repositories/insights/review-template'
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
   fetchReviewCatalog,
-  fetchReviewDaily,
+  fetchReviewJournal,
   shouldFetchReviewFromApi,
 } from '@/lib/review-page-api';
+import { formatYmd } from '@/lib/date';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -44,13 +45,6 @@ const WEEK_TITLES = ['一', '二', '三', '四', '五', '六', '日'] as const;
 const GRID_GAP = 5;
 
 const PAGE_API_KEY = 'review-calendar';
-
-function formatYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 function monthStart(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -122,7 +116,7 @@ export default function ReviewCalendarScreen() {
           if (shouldFetchReviewFromApi()) {
             await Promise.all([
               fetchReviewCatalog({ scope: 'daily', offlineFallback: true }),
-              fetchReviewDaily({ start, end, offlineFallback: true }),
+              fetchReviewJournal({ scope: 'daily', start, end, offlineFallback: true }),
             ]);
           }
 

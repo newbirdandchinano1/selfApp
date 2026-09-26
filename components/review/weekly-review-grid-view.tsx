@@ -1,7 +1,7 @@
 import { WeeklyReviewMetaBar } from '@/components/review/daily-review-grid-parts';
 import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
-import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import {
   ReviewEmptyState,
   ReviewNoticeBanner,

@@ -1,5 +1,10 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
-import type { FinanceTransactionSheetController } from '@/hooks/use-finance-transaction-sheet-controller';
+import {
+  subscribeFinanceSheetOpen,
+  useFinanceTransactionSheetController,
+  type FinanceSheetLaunchIntent,
+  type FinanceTransactionSheetController,
+} from '@/lib/finance-transaction-sheet/controller';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import React from 'react';
@@ -16,8 +21,7 @@ import {
   View,
 } from 'react-native';
 
-export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetController }) {
-
+function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetController }) {
   const {
     styles,
     insets,
@@ -103,7 +107,7 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
   } = c;
 
   return (
-        <View style={styles.sheetOverlay}>
+<View style={styles.sheetOverlay}>
           <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
           <View
             style={[
@@ -436,13 +440,15 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
                           : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
                       </Text>
                     </View>
-                    <Pressable
-                      onPress={() => router.push('/zhipu-api-test')}
-                      style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-                      <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
-                        智谱 API 调试页（验证密钥与请求）
-                      </Text>
-                    </Pressable>
+                    {__DEV__ ? (
+                      <Pressable
+                        onPress={() => router.push('/zhipu-api-test')}
+                        style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                        <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
+                          智谱 API 调试页（验证密钥与请求）
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 )}
 
@@ -861,5 +867,59 @@ export function FinanceTransactionSheetView({ c }: { c: FinanceTransactionSheetC
             </Modal>
           </View>
         </View>
+  );
+}
+
+function FinanceTransactionSheetModal({
+  visible,
+  launchIntent,
+  onClose,
+}: {
+  visible: boolean;
+  launchIntent: FinanceSheetLaunchIntent | null;
+  onClose: () => void;
+}) {
+  const controller = useFinanceTransactionSheetController({
+    visible,
+    launchIntent,
+    onClose,
+    onSaved: onClose,
+  });
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={controller.closeSheet}>
+      <FinanceTransactionSheetBody c={controller} />
+    </Modal>
+  );
+}
+
+/**
+ * 全局记账 Bottom Sheet：订阅 openFinanceSheet，自管可见性与 Modal。
+ * 与 controller 组成两层：本视图 + `@/lib/finance-transaction-sheet/controller`。
+ */
+export function FinanceTransactionSheet() {
+  const [visible, setVisible] = React.useState(false);
+  const [launchIntent, setLaunchIntent] = React.useState<FinanceSheetLaunchIntent | null>(null);
+
+  React.useEffect(() => {
+    return subscribeFinanceSheetOpen((intent) => {
+      setLaunchIntent(intent);
+      setVisible(true);
+    });
+  }, []);
+
+  const handleClose = React.useCallback(() => {
+    setVisible(false);
+    setLaunchIntent(null);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <FinanceTransactionSheetModal
+      visible={visible}
+      launchIntent={launchIntent}
+      onClose={handleClose}
+    />
   );
 }

@@ -2,6 +2,7 @@ import { HealthNutrientAccents, Radius, Spacing } from '@/constants/design-token
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getResolvedGlobalIntakeTargets } from '@/lib/global-intake-targets';
+import { addDays as addDaysCore, formatYmd } from '@/lib/date';
 import { TAB_PAGE_KEYS } from '@/lib/page-api-scope';
 import { hasPageSyncedWithApi } from '@/lib/page-api-session';
 import { buildUserHealthCalendarSnapshot } from '@/lib/repositories/health/health';
@@ -73,10 +74,7 @@ function normalizeDate(d: Date) {
 }
 
 function formatLocalYmd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatYmd(d);
 }
 
 function formatDateLabel(d: Date) {
@@ -122,9 +120,7 @@ function calcPercent(value: number, target: number) {
 }
 
 function addDays(base: Date, delta: number) {
-  const next = new Date(base);
-  next.setDate(next.getDate() + delta);
-  return normalizeDate(next);
+  return normalizeDate(addDaysCore(base, delta));
 }
 
 function sumDayTotals(dayRows: HealthRecordRow[]) {

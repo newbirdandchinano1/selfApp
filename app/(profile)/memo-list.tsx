@@ -1,4 +1,5 @@
-import { ScreenLoadingShell } from '@/components/screen-loading-shell';
+import { CrudListScreen, ScreenEmptyState } from '@/components/crud';
+import { AppIconButton } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
@@ -113,7 +114,6 @@ export default function MemoListScreen() {
   const line = isDark ? 'rgba(148,163,184,0.22)' : colors.outlineStrong;
   const chipBg = isDark ? colors.surfaceMuted : colors.surface;
   const searchBg = isDark ? colors.input : colors.surface;
-  const headerBg = colors.headerScrim;
   const primary = colors.primary;
   const secondary = colors.secondary;
   const danger = colors.danger;
@@ -617,64 +617,45 @@ export default function MemoListScreen() {
     ],
   );
 
+  const filteredEmpty = Boolean(search || tagFilter !== TAG_FILTER_ALL);
+
   return (
-    <View style={[styles.container, { backgroundColor: paper }]}>
-      <View
-        style={[
-          styles.topBarWrap,
-          { paddingTop: insets.top, backgroundColor: headerBg, borderBottomColor: line },
-        ]}>
-        <View style={styles.topBar}>
-          <Pressable style={styles.iconBtn} onPress={() => router.back()} hitSlop={8}>
-            <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
-          </Pressable>
-          <Text style={[styles.topTitle, { color: ink }]}>备忘录</Text>
-          <Pressable style={styles.iconBtn} onPress={openNewMemo} hitSlop={8}>
-            <MaterialIcons name="add" size={26} color={primary} />
-          </Pressable>
-        </View>
-      </View>
-
-      {error ? (
-        <Pressable
-          onPress={() => {
-            resetSync();
-            void reload(true);
-          }}
-          style={[styles.errorBanner, { borderColor: line }]}>
-          <Text style={[styles.errorText, { color: ink }]}>{error}</Text>
-          <Text style={[styles.errorRetry, { color: primary }]}>点击重试</Text>
-        </Pressable>
-      ) : null}
-
-      <ScreenLoadingShell loading={loading} hint="加载备忘…" style={{ flex: 1 }}>
-        <FlatList
-          data={listRows}
-          keyExtractor={r => r.key}
-          renderItem={renderRow}
-          ListHeaderComponent={renderListHeader}
-          refreshControl={refreshControl}
-          contentContainerStyle={[
-            styles.listContent,
-            { paddingBottom: Math.max(insets.bottom, 16) + 28 },
-            listRows.length === 0 ? styles.listEmptyPad : null,
-          ]}
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <MaterialIcons name="sticky-note-2" size={36} color={muted} />
-              <Text style={[styles.emptyTitle, { color: ink }]}>
-                {search || tagFilter !== TAG_FILTER_ALL ? '没有匹配的备忘' : '还没有备忘'}
-              </Text>
-              <Text style={[styles.emptyDesc, { color: muted }]}>
-                {search || tagFilter !== TAG_FILTER_ALL
-                  ? '试试换个关键词或标签'
-                  : '点右上角 + 写第一条笔记'}
-              </Text>
-            </View>
-          }
-          showsVerticalScrollIndicator={false}
-        />
-      </ScreenLoadingShell>
+    <>
+    <CrudListScreen
+      title="备忘录"
+      onBack={() => router.back()}
+      headerRight={
+        <AppIconButton icon="add" size={26} color={primary} onPress={openNewMemo} accessibilityLabel="新建备忘" />
+      }
+      loading={loading}
+      loadingHint="加载备忘…"
+      error={error}
+      onRetryError={() => {
+        resetSync();
+        void reload(true);
+      }}
+      style={{ backgroundColor: paper }}>
+      <FlatList
+        data={listRows}
+        keyExtractor={r => r.key}
+        renderItem={renderRow}
+        ListHeaderComponent={renderListHeader}
+        refreshControl={refreshControl}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: Math.max(insets.bottom, 16) + 28 },
+          listRows.length === 0 ? styles.listEmptyPad : null,
+        ]}
+        ListEmptyComponent={
+          <ScreenEmptyState
+            icon="sticky-note-2"
+            title={filteredEmpty ? '没有匹配的备忘' : '还没有备忘'}
+            subtitle={filteredEmpty ? '试试换个关键词或标签' : '点右上角 + 写第一条笔记'}
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      />
+    </CrudListScreen>
 
       <Modal visible={sortMenuVisible} transparent animationType="fade" onRequestClose={() => setSortMenuVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setSortMenuVisible(false)}>
@@ -741,42 +722,11 @@ export default function MemoListScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  topBarWrap: { borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
-  topBar: {
-    height: 48,
-    paddingHorizontal: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  iconBtn: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...Typography.title,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-  },
-  errorBanner: {
-    marginHorizontal: Spacing['5xl'],
-    marginTop: Spacing.md,
-    padding: Spacing['3xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    gap: 4,
-  },
-  errorText: { ...Typography.body },
-  errorRetry: { ...Typography.caption, fontWeight: '700' },
   toolbar: { paddingTop: Spacing['3xl'], gap: Spacing['3xl'] },
   searchWrap: {
     marginHorizontal: Spacing['5xl'],
@@ -889,15 +839,6 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   swipeActionText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  empty: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 72,
-    paddingHorizontal: 32,
-    gap: 8,
-  },
-  emptyTitle: { fontSize: 17, fontWeight: '800', marginTop: 8 },
-  emptyDesc: { fontSize: 13, fontWeight: '500', textAlign: 'center', lineHeight: 20 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.35)',

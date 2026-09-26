@@ -4,6 +4,13 @@ import {
     taskPriorityLabel,
     type TaskPriorityKey,
 } from '@/components/composer';
+import {
+  clampTitle,
+  EntityFormScheduleField,
+  ENTITY_TITLE_MAX,
+  useComposerSchedule,
+  validateRequiredTitle,
+} from '@/components/entity-form';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -25,27 +32,27 @@ import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
-import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+import type { TaskPriority, TaskRow, TaskStatus } from '@/lib/repositories/tasks/task.types';
 import {
   getTagIdsByEntity,
+  getTagIdsByProjectId,
   getTags,
+  getTagsByProjectId,
   setTaskTagIds,
 } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
-    applyScheduleMetaToLabels,
-    dueDateFromScheduleMeta,
     extractScheduleLimitFromExtra,
+    formatDate,
     parseDateLimitParam,
     parseDefaultScheduleParam,
+    projectDefinesSchedule,
     resolveInheritedDefaultSchedule,
 } from '@/lib/schedule-inherit';
-import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { normalizeRouteParam, type SchedulePickerResult, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
-import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -81,97 +88,14 @@ type Subtask = {
   isLongTermTask?: boolean;
 };
 type MainTask = { id: string; title: string; due: string };
-type SchedulePickerResult = {
-  mode: 'date' | 'time';
-  source: string;
-  quickChip: string;
-  allDay: boolean;
-  hasExactTime: boolean;
-  reminderOption: TaskReminderOption;
-  repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary: string;
-  weeklyDays: number[];
-  monthlyDays: number[];
-  yearlyDate: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime: string;
-  endTime: string;
-};
 
-type SchedulePickerInitPayload = {
-  mode?: 'date' | 'time';
-  quickChip?: string;
-  allDay?: boolean;
-  hasExactTime?: boolean;
-  reminderOption?: TaskReminderOption;
-  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary?: string;
-  weeklyDays?: number[];
-  monthlyDays?: number[];
-  yearlyDate?: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime?: string;
-  endTime?: string;
-};
-
-type DateLimitYmd = {
-  start?: string;
-  end?: string;
-};
-
-type TaskScheduleMeta = Pick<
-  SchedulePickerResult,
-  | 'mode'
-  | 'allDay'
-  | 'hasExactTime'
-  | 'reminderOption'
-  | 'reminderHour'
-  | 'reminderMinute'
-  | 'repeatOption'
-  | 'repeatSummary'
-  | 'weeklyDays'
-  | 'monthlyDays'
-  | 'yearlyDate'
-  | 'date'
-  | 'range'
-  | 'startTime'
-  | 'endTime'
->;
-const MAX_PROJECT_TASK_TITLE_LENGTH = 80;
-const MAX_STANDALONE_TODO_TITLE_LENGTH = 50;
+type TaskScheduleMeta = PickedScheduleMeta;
 const STANDALONE_SCHEDULE_SOURCE = 'add-standalone-todo';
-
-function formatDate(value: string): string {
-  const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
-}
 
 function firstRouteParam(value: string | string[] | undefined): string {
   if (typeof value === 'string') return value.trim();
   if (Array.isArray(value) && typeof value[0] === 'string') return value[0].trim();
   return '';
-}
-
-function extractDueDateFromDeadlineText(deadlineText: string) {
-  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
-  if (!all?.length) return null;
-  return all[all.length - 1] ?? null;
 }
 
 function labelToTaskPriority(value?: string): TaskPriority {
@@ -216,10 +140,13 @@ function parseStandaloneTaskScheduleMeta(extraData: string | null): TaskSchedule
   }
 }
 
-function resolveStandaloneStatusOnSave(previous: string, intent: 'active' | 'shelved'): string {
+function resolveStandaloneStatusOnSave(
+  previous: string,
+  intent: 'active' | 'shelved',
+): TaskStatus {
   if (intent === 'shelved') return 'shelved';
   if (previous === 'done' || previous === 'cancelled' || previous === 'doing' || previous === 'blocked') {
-    return previous;
+    return previous as TaskStatus;
   }
   return 'todo';
 }
@@ -233,6 +160,7 @@ export default function AddTaskScreen() {
     source?: string;
     dateLimit?: string;
     defaultSchedule?: string;
+    lockSchedule?: string;
     projectId?: string;
     categoryId?: string;
     standalone?: string;
@@ -248,10 +176,6 @@ export default function AddTaskScreen() {
   const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
   const [mainTaskQuery, setMainTaskQuery] = React.useState('');
   const [selectedMainTaskId, setSelectedMainTaskId] = React.useState<string | null>(null);
-  const [deadlineText, setDeadlineText] = React.useState('');
-  const [reminderText, setReminderText] = React.useState('');
-  const [repeatText, setRepeatText] = React.useState('');
-  const [scheduleMeta, setScheduleMeta] = React.useState<TaskScheduleMeta | null>(null);
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
@@ -263,13 +187,15 @@ export default function AddTaskScreen() {
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<TagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(false);
+  const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
+  const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const editTaskStatusRef = React.useRef<string>('todo');
 
   const isStandalone =
     firstRouteParam(params.standalone) === '1' || firstRouteParam(params.standalone).toLowerCase() === 'true';
   const editTaskId = isStandalone ? firstRouteParam(params.id) : '';
   const isEditStandalone = isStandalone && !!editTaskId;
-  const titleMaxLength = isStandalone ? MAX_STANDALONE_TODO_TITLE_LENGTH : MAX_PROJECT_TASK_TITLE_LENGTH;
+  const titleMaxLength = isStandalone ? ENTITY_TITLE_MAX.standaloneTodo : ENTITY_TITLE_MAX.projectTask;
 
   const quickProjectId = isStandalone ? '' : firstRouteParam(params.projectId);
   const quickCategoryRaw = firstRouteParam(params.categoryId);
@@ -280,11 +206,40 @@ export default function AddTaskScreen() {
     : isStandalone
       ? STANDALONE_SCHEDULE_SOURCE
       : normalizeRouteParam(params.source as string | string[] | undefined) || 'add-task';
+  const lockScheduleFromParam =
+    firstRouteParam(params.lockSchedule) === '1' ||
+    firstRouteParam(params.lockSchedule).toLowerCase() === 'true';
   const dateLimit = React.useMemo(
     () => parseDateLimitParam(typeof params.dateLimit === 'string' ? params.dateLimit : undefined),
     [params.dateLimit],
   );
+  const {
+    deadlineText,
+    reminderText,
+    repeatText,
+    scheduleMeta,
+    applySchedule,
+    clearSchedule,
+    openSchedulePicker,
+    resolveDueDate,
+    setDeadlineText,
+    setReminderText,
+    setRepeatText,
+  } = useComposerSchedule({
+    source: scheduleSource,
+    dateLimit,
+    locked: inheritsProjectSchedule,
+    onPicked: (picked) => {
+      if (isStandalone && isDueYmdToday(extractDueYmdFromSchedulePick(picked))) {
+        setPriority('urgent-important');
+      }
+    },
+  });
   const defaultScheduleApplied = React.useRef(false);
+
+  React.useEffect(() => {
+    if (lockScheduleFromParam) setInheritsProjectSchedule(true);
+  }, [lockScheduleFromParam]);
 
   React.useEffect(() => {
     if (defaultScheduleApplied.current || scheduleMeta) return;
@@ -294,12 +249,9 @@ export default function AddTaskScreen() {
     );
     if (!inherited) return;
     defaultScheduleApplied.current = true;
-    const applied = applyScheduleMetaToLabels(inherited);
-    setDeadlineText(applied.deadlineText);
-    setReminderText(applied.reminderText);
-    setRepeatText(applied.repeatText);
-    setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
-  }, [dateLimit, params.defaultSchedule, scheduleMeta]);
+    applySchedule(inherited);
+    if (lockScheduleFromParam) setInheritsProjectSchedule(true);
+  }, [applySchedule, dateLimit, lockScheduleFromParam, params.defaultSchedule, scheduleMeta]);
 
   React.useEffect(() => {
     if (!quickProjectId || defaultScheduleApplied.current || scheduleMeta) return;
@@ -312,17 +264,15 @@ export default function AddTaskScreen() {
         if (!project || cancelled) return;
         setProjectName(project.name?.trim() || null);
         setProjectPriority(project.priority ?? 0);
+        const limit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
+        const inheritsSchedule = projectDefinesSchedule(project.extra_data, project.due_date);
+        setInheritsProjectSchedule(inheritsSchedule);
         const extra = project.extra_data ? (JSON.parse(project.extra_data) as { schedule?: TaskScheduleMeta }) : {};
         const projectSchedule = extra.schedule ?? null;
-        const limit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
         const inherited = resolveInheritedDefaultSchedule(projectSchedule, limit.start || limit.end ? limit : null);
         if (!inherited || cancelled || defaultScheduleApplied.current) return;
         defaultScheduleApplied.current = true;
-        const applied = applyScheduleMetaToLabels(inherited);
-        setDeadlineText(applied.deadlineText);
-        setReminderText(applied.reminderText);
-        setRepeatText(applied.repeatText);
-        setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+        applySchedule(inherited);
       } catch {
         /* ignore */
       }
@@ -330,7 +280,49 @@ export default function AddTaskScreen() {
     return () => {
       cancelled = true;
     };
-  }, [params.dateLimit, params.defaultSchedule, quickProjectId, scheduleMeta]);
+  }, [applySchedule, params.dateLimit, params.defaultSchedule, quickProjectId, scheduleMeta]);
+
+  React.useEffect(() => {
+    if (isStandalone || !quickProjectId) {
+      if (!isStandalone) {
+        setInheritsProjectTags(false);
+      }
+      return;
+    }
+    let cancelled = false;
+    setTagsLoading(true);
+    void (async () => {
+      try {
+        const [tags, projectTagIds] = await Promise.all([
+          getTags(),
+          getTagIdsByProjectId(quickProjectId),
+        ]);
+        if (cancelled) return;
+        const inheritsTags = projectTagIds.length > 0;
+        setInheritsProjectTags(inheritsTags);
+        if (inheritsTags) {
+          const projectTags = await getTagsByProjectId(quickProjectId);
+          if (cancelled) return;
+          setAllTags(projectTags);
+          setSelectedTagIds(projectTagIds);
+        } else {
+          setAllTags(tags);
+          setSelectedTagIds([]);
+        }
+      } catch {
+        if (!cancelled) {
+          setAllTags([]);
+          setSelectedTagIds([]);
+          setInheritsProjectTags(false);
+        }
+      } finally {
+        if (!cancelled) setTagsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isStandalone, quickProjectId]);
 
   const priorityLabel = taskPriorityLabel(priority);
 
@@ -343,19 +335,12 @@ export default function AddTaskScreen() {
     const shelved = task.status === 'shelved';
     setStandaloneIntent(shelved ? 'shelved' : 'active');
     if (shelved) {
-      setDeadlineText('');
-      setReminderText('');
-      setRepeatText('');
-      setScheduleMeta(null);
+      clearSchedule();
       return;
     }
     const loadedSchedule = parseStandaloneTaskScheduleMeta(task.extra_data);
     if (loadedSchedule) {
-      const applied = applyScheduleMetaToLabels(loadedSchedule);
-      setDeadlineText(applied.deadlineText);
-      setReminderText(applied.reminderText);
-      setRepeatText(applied.repeatText);
-      setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+      applySchedule(loadedSchedule);
       return;
     }
     let reminder = '';
@@ -369,11 +354,11 @@ export default function AddTaskScreen() {
         /* ignore */
       }
     }
+    applySchedule(null);
     setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
     setReminderText(reminder);
     setRepeatText(repeat);
-    setScheduleMeta(null);
-  }, []);
+  }, [applySchedule, clearSchedule, setDeadlineText, setReminderText, setRepeatText]);
 
   const reloadAddTaskData = React.useCallback(
     async (forceApi = false) => {
@@ -446,116 +431,27 @@ export default function AddTaskScreen() {
   };
 
   const handleTitleChange = (text: string) => {
-    setTitle(text.slice(0, titleMaxLength));
+    setTitle(clampTitle(text, titleMaxLength));
   };
-
-  const readScheduleResult = React.useCallback(() => {
-    const picked = consumeSchedulePickerResult(scheduleSource);
-    if (!picked) return;
-
-    if (picked.repeatOption !== '不重复') {
-      setDeadlineText('');
-    } else if (picked.mode === 'time' && picked.range) {
-      const rangeStart = formatDate(picked.range.start);
-      const rangeEnd = formatDate(picked.range.end);
-      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
-      const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
-      setDeadlineText(`${rangeLabel} ${timeLabel}`);
-    } else if (picked.date) {
-      const dateLabel = formatDate(picked.date);
-      const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
-      setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
-    } else {
-      setDeadlineText('');
-    }
-    setReminderText(
-      formatTaskReminderLabel({
-        reminderOption: picked.reminderOption,
-        reminderHour: picked.reminderHour,
-        reminderMinute: picked.reminderMinute,
-      }),
-    );
-    setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
-    setScheduleMeta({
-      mode: picked.mode,
-      allDay: picked.allDay,
-      hasExactTime: picked.hasExactTime,
-      reminderOption: picked.reminderOption,
-      reminderHour: picked.reminderHour,
-      reminderMinute: picked.reminderMinute,
-      repeatOption: picked.repeatOption,
-      repeatSummary: picked.repeatSummary,
-      weeklyDays: picked.weeklyDays,
-      monthlyDays: picked.monthlyDays,
-      yearlyDate: picked.yearlyDate,
-      date: picked.date,
-      range: picked.range,
-      startTime: picked.startTime,
-      endTime: picked.endTime,
-    });
-    if (isStandalone && isDueYmdToday(extractDueYmdFromSchedulePick(picked))) {
-      setPriority('urgent-important');
-    }
-  }, [isStandalone, scheduleSource]);
-
-  const openSchedulePicker = React.useCallback(() => {
-    const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
-      ? {
-          mode: scheduleMeta.mode,
-          quickChip: '',
-          allDay: scheduleMeta.allDay,
-          hasExactTime: scheduleMeta.hasExactTime,
-          reminderOption: scheduleMeta.reminderOption,
-          reminderHour: scheduleMeta.reminderHour,
-          reminderMinute: scheduleMeta.reminderMinute,
-          repeatOption: scheduleMeta.repeatOption,
-          repeatSummary: scheduleMeta.repeatSummary,
-          weeklyDays: scheduleMeta.weeklyDays,
-          monthlyDays: scheduleMeta.monthlyDays,
-          yearlyDate: scheduleMeta.yearlyDate,
-          date: scheduleMeta.date,
-          range: scheduleMeta.range,
-          startTime: scheduleMeta.startTime,
-          endTime: scheduleMeta.endTime,
-        }
-      : undefined;
-    router.push({
-      pathname: '/schedule-picker',
-      params: {
-        source: scheduleSource,
-        initial: scheduleInit ? JSON.stringify(scheduleInit) : '',
-        dateLimit: dateLimit ? JSON.stringify(dateLimit) : '',
-      },
-    });
-  }, [dateLimit, router, scheduleMeta, scheduleSource]);
-
-  React.useEffect(() => {
-    readScheduleResult();
-  }, [readScheduleResult]);
 
   React.useEffect(() => {
     void reloadAddTaskData().catch((e) => console.warn('加载添加任务页数据失败', e));
   }, [reloadAddTaskData]);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      readScheduleResult();
-    }, [readScheduleResult]),
-  );
-
   const handleCreateTask = async () => {
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle) {
-      Alert.alert(isStandalone ? '无法保存' : '无法创建任务', isStandalone ? '请先填写待办标题。' : '请输入任务名称后再创建。');
+    const titleCheck = validateRequiredTitle(title, {
+      emptyMessage: isStandalone ? '请先填写待办标题。' : '请输入任务名称后再创建。',
+    });
+    if (!titleCheck.ok) {
+      Alert.alert(isStandalone ? '无法保存' : '无法创建任务', titleCheck.message);
       return;
     }
+    const trimmedTitle = titleCheck.title;
     if (isStandalone) {
       try {
         setIsSubmitting(true);
         const shelved = standaloneIntent === 'shelved';
-        const dueDate = shelved
-          ? null
-          : dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText));
+        const dueDate = shelved ? null : resolveDueDate();
         const extraPayload = mergeRewardPointsIntoExtraData(
           shelved
             ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
@@ -625,7 +521,7 @@ export default function AddTaskScreen() {
           note: null,
           status: 'todo',
           priority: projectPriority,
-          due_date: dueDateFromScheduleMeta(scheduleMeta, extractDueDateFromDeadlineText(deadlineText)),
+          due_date: resolveDueDate(),
           extra_data: mergeRewardPointsIntoExtraData(
             mergeLongTermTaskIntoExtraData(
               JSON.stringify({
@@ -638,6 +534,10 @@ export default function AddTaskScreen() {
             normalizeRewardPoints(rewardPointsText),
           ),
         });
+        // 项目未贴标签时才保存任务自有标签
+        if (!inheritsProjectTags && selectedTagIds.length > 0) {
+          await setTaskTagIds(id, selectedTagIds);
+        }
         try {
           const hostProject = await getProjectById(quickProjectId);
           if (hostProject) {
@@ -650,7 +550,7 @@ export default function AddTaskScreen() {
           console.warn('清除空项目青蛙指派失败', clearErr);
         }
         try {
-          await markPendingTablesDirty(['tasks', 'projects']);
+          await markPendingTablesDirty(['tasks', 'projects', 'tags', 'tag_links']);
           await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
         } catch (syncErr) {
           console.warn('任务保存后同步到服务器失败', syncErr);
@@ -843,13 +743,14 @@ export default function AddTaskScreen() {
                   </>
                 ) : null}
 
-                {isStandalone ? (
+                {isStandalone || quickProjectId ? (
                   <View style={styles.fieldBlock}>
                     <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>标签</Text>
                     <ProjectTagPickerField
                       selectedIds={selectedTagIds}
                       allTags={allTags}
                       loading={tagsLoading}
+                      locked={!isStandalone && inheritsProjectTags}
                       onChange={setSelectedTagIds}
                       textColor={colors.text}
                       outline={colors.textSecondary}
@@ -873,47 +774,13 @@ export default function AddTaskScreen() {
               {!isStandalone || standaloneIntent === 'active' ? (
                 <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
                   <Text style={[styles.panelTitle, { color: colors.text }]}>日程</Text>
-                  <Pressable
+                  <EntityFormScheduleField
+                    deadlineText={deadlineText}
+                    reminderText={reminderText}
+                    repeatText={repeatText}
                     onPress={openSchedulePicker}
-                    style={({ pressed }) => [
-                      styles.scheduleRow,
-                      { backgroundColor: fieldBg, opacity: pressed ? 0.85 : 1 },
-                    ]}>
-                    <View style={[styles.scheduleIcon, { backgroundColor: colors.surfaceSubtle }]}>
-                      <MaterialIcons name="event-note" size={20} color={colors.primary} />
-                    </View>
-                    <View style={styles.scheduleBody}>
-                      <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>时间安排</Text>
-                      <Text style={[styles.fieldValue, { color: colors.text }]}>
-                        {deadlineText || '未设置'}
-                      </Text>
-                      {!!(reminderText || repeatText) && (
-                        <View style={styles.tagRow}>
-                          {!!reminderText && (
-                            <View
-                              style={[
-                                styles.metaTag,
-                                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
-                              ]}>
-                              <MaterialIcons name="notifications-active" size={13} color={colors.primary} />
-                              <Text style={[styles.metaTagText, { color: colors.text }]}>{reminderText}</Text>
-                            </View>
-                          )}
-                          {!!repeatText && (
-                            <View
-                              style={[
-                                styles.metaTag,
-                                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
-                              ]}>
-                              <MaterialIcons name="repeat" size={13} color={colors.primary} />
-                              <Text style={[styles.metaTagText, { color: colors.text }]}>{repeatText}</Text>
-                            </View>
-                          )}
-                        </View>
-                      )}
-                    </View>
-                    <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
-                  </Pressable>
+                    locked={inheritsProjectSchedule}
+                  />
                 </View>
               ) : null}
 
@@ -1106,34 +973,6 @@ const styles = StyleSheet.create({
   charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
   fieldBlock: { gap: 8 },
   fieldLabel: { fontSize: 12, fontWeight: '600' },
-  fieldValue: { fontSize: 14, fontWeight: '600' },
-  scheduleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  scheduleIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scheduleBody: { flex: 1, gap: 4, minWidth: 0 },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  metaTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  metaTagText: { fontSize: 11, fontWeight: '600' },
   editLoading: {
     paddingVertical: Spacing['6xl'],
     alignItems: 'center',

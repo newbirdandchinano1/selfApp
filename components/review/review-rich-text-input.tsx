@@ -1,5 +1,8 @@
+import { buildStyledRunNodes } from '@/components/rich-text/build-styled-runs';
 import type { ReviewCharStyle, ReviewFontSize, ReviewTextModel, TextSelection } from '@/lib/review-journal-format';
 import { REVIEW_FONT_SIZES } from '@/lib/review-journal-format';
+import type { RichCharStyle } from '@/lib/rich-text/index';
+import { splitPlainIntoLines, TODO_CHECKED, TODO_UNCHECKED } from '@/lib/rich-text/index';
 import React, { useMemo } from 'react';
 import {
   Platform,
@@ -32,11 +35,8 @@ type Props = {
 const BASE_SIZE: ReviewFontSize = REVIEW_FONT_SIZES[0]!;
 const BASE_LINE = BASE_SIZE * 1.55;
 
-const TODO_UNCHECKED = '\u2610'; // ☐
-const TODO_CHECKED = '\u2611'; // ☑
-
-function segmentFontSize(style: ReviewCharStyle, baseSize: ReviewFontSize): number {
-  return style.size ?? baseSize;
+function resolveReviewFontSize(style: RichCharStyle): number {
+  return (style.size as ReviewCharStyle['size'] | undefined) ?? BASE_SIZE;
 }
 
 type LinePart =
@@ -51,19 +51,6 @@ type LinePart =
       leading: string;
     }
   | { kind: 'text'; text: string; plainStart: number };
-
-function splitPlainIntoLines(plain: string): { line: string; start: number }[] {
-  if (!plain) return [{ line: '', start: 0 }];
-  const lines: { line: string; start: number }[] = [];
-  let start = 0;
-  for (let i = 0; i <= plain.length; i++) {
-    if (i === plain.length || plain[i] === '\n') {
-      lines.push({ line: plain.slice(start, i), start });
-      start = i + 1;
-    }
-  }
-  return lines;
-}
 
 function parseLineParts(line: string, lineStart: number): LinePart[] {
   const leading = line.match(/^\s*/)?.[0] ?? '';
@@ -122,13 +109,24 @@ function ReviewEditOverlay({
   textColor,
   placeholderColor,
   placeholder,
+  caretColor,
 }: {
   model: ReviewTextModel;
   textColor: string;
   placeholderColor: string;
   placeholder?: string;
+  caretColor: string;
 }) {
   const lines = useMemo(() => splitPlainIntoLines(model.plain), [model.plain]);
+  const runTheme = useMemo(
+    () => ({
+      textColor,
+      resolveFontSize: resolveReviewFontSize,
+      resolveLineHeight: (size: number) => size * 1.55,
+      resolveFontWeight: () => '500' as const,
+    }),
+    [textColor],
+  );
 
   if (!model.plain) {
     return (
@@ -146,7 +144,6 @@ function ReviewEditOverlay({
           <View key={`line-${lineIndex}-${start}`} style={overlayStyles.lineRow}>
             {parts.map((part, partIndex) => {
               if (part.kind === 'todo') {
-                // 用与 TextInput 相同的 ☐/☑（及空格）占位，避免图标宽度导致光标错位
                 const markerChar = part.checked ? TODO_CHECKED : TODO_UNCHECKED;
                 const marker = `${markerChar}${part.markerWithSpace ? ' ' : ''}`;
                 return (
@@ -160,9 +157,10 @@ function ReviewEditOverlay({
                         textDecorationLine: part.checked ? 'line-through' : 'none',
                         opacity: part.checked ? 0.65 : 1,
                       },
-                    ]}>
+                    ]}
+                  >
                     {part.leading
-                      ? renderStyledText(model, part.leading, start, textColor)
+                      ? buildStyledRunNodes(model, part.leading, start, runTheme)
                       : null}
                     <Text
                       style={{
@@ -172,17 +170,21 @@ function ReviewEditOverlay({
                         color: part.checked ? caretColor : textColor,
                         textDecorationLine: 'none',
                         opacity: 1,
-                      }}>
+                      }}
+                    >
                       {marker}
                     </Text>
-                    {renderStyledText(model, part.text, part.plainStart, textColor)}
+                    {buildStyledRunNodes(model, part.text, part.plainStart, runTheme)}
                   </Text>
                 );
               }
 
               return (
-                <Text key={`text-${partIndex}`} style={[overlayStyles.base, { lineHeight: BASE_LINE, color: textColor }]}>
-                  {renderStyledText(model, part.text, part.plainStart, textColor)}
+                <Text
+                  key={`text-${partIndex}`}
+                  style={[overlayStyles.base, { lineHeight: BASE_LINE, color: textColor }]}
+                >
+                  {buildStyledRunNodes(model, part.text, part.plainStart, runTheme)}
                 </Text>
               );
             })}
@@ -191,46 +193,6 @@ function ReviewEditOverlay({
       })}
     </View>
   );
-}
-
-function renderStyledText(model: ReviewTextModel, text: string, plainStart: number, textColor: string) {
-  if (!text) return null;
-
-  const nodes: React.ReactNode[] = [];
-  let runStart = 0;
-  const sigAt = (absIndex: number) => {
-    const s = model.styles[absIndex] ?? {};
-    return `${s.size ?? ''}`;
-  };
-
-  const flush = (end: number) => {
-    if (end <= runStart) return;
-    const style = model.styles[plainStart + runStart] ?? {};
-    const size = segmentFontSize(style, BASE_SIZE);
-    nodes.push(
-      <Text
-        key={`${plainStart + runStart}-${plainStart + end}`}
-        style={{
-          fontSize: size,
-          lineHeight: size * 1.55,
-          fontWeight: '500',
-          color: textColor,
-        }}>
-        {text.slice(runStart, end)}
-      </Text>,
-    );
-    runStart = end;
-  };
-
-  for (let i = 1; i <= text.length; i++) {
-    const prevAbs = plainStart + i - 1;
-    const abs = plainStart + i;
-    if (i === text.length || sigAt(prevAbs) !== sigAt(abs)) {
-      flush(i);
-    }
-  }
-
-  return nodes;
 }
 
 type TodoHitTarget = {
@@ -282,6 +244,7 @@ export function ReviewRichTextInput({
           textColor={textColor}
           placeholderColor={placeholderColor}
           placeholder={placeholder}
+          caretColor={caretColor}
         />
       </View>
       <TextInput
@@ -343,7 +306,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   input: {
     fontSize: BASE_SIZE,
@@ -353,7 +316,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   todoHitLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   todoHitBtn: {
     position: 'absolute',

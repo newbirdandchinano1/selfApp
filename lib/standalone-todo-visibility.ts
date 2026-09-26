@@ -1,5 +1,13 @@
 import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import {
+  addDaysToYmd,
+  isLogicalDayInYmdRange,
+  parseScheduleMetaFromExtra,
+  scheduleDateToYmd,
+  type ScheduleDateBounds,
+  ymdToLocalDate,
+} from '@/lib/schedule';
+import {
   getRepeatDoneOnYmd,
   isTaskRepeatDueOnLogicalDay,
   parseTaskRepeatSchedule,
@@ -14,53 +22,10 @@ import {
   isTaskTerminalStatus,
 } from '@/lib/repositories/tasks/task.types';
 
-type ProjectScheduleMeta = {
-  mode?: 'date' | 'time';
-  date?: string;
-  range?: { start: string; end: string };
-};
+export { addDaysToYmd, isLogicalDayInYmdRange };
 
-function formatLocalYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-export function addDaysToYmd(ymd: string, days: number): string {
-  const d = ymdToLocalDate(ymd);
-  if (!d) return ymd;
-  d.setDate(d.getDate() + days);
-  return formatLocalYmd(d);
-}
-
-function ymdToLocalDate(ymd: string): Date | null {
-  const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return new Date(year, month - 1, day);
-}
-
-export function formatScheduleDateToYMD(value: string): string {
-  const t = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return t.slice(0, 10);
-  return formatLocalYmd(d);
-}
-
-function parseProjectSchedule(extraData: string | null): ProjectScheduleMeta | null {
-  if (!extraData) return null;
-  try {
-    const parsed = JSON.parse(extraData) as { schedule?: ProjectScheduleMeta };
-    return parsed?.schedule ?? null;
-  } catch {
-    return null;
-  }
-}
+/** @deprecated 使用 scheduleDateToYmd */
+export const formatScheduleDateToYMD = scheduleDateToYmd;
 
 /** 选择器「时刻」单日槽：同日，或 end 为次日的半开区间 [start, end)。 */
 function isSingleDayMomentRange(startYmd: string, endYmd: string): boolean {
@@ -76,12 +41,12 @@ type StandaloneTodoScheduleWindow =
  * 待办日程：日期/时刻 → 当天；跨多日时间段 → 含首尾的区间。
  */
 function getStandaloneTodoScheduleWindow(task: TaskRow): StandaloneTodoScheduleWindow {
-  const schedule = parseProjectSchedule(task.extra_data);
+  const schedule = parseScheduleMetaFromExtra(task.extra_data);
   if (!schedule) return { kind: 'none' };
 
   if (schedule.mode === 'time' && schedule.range?.start && schedule.range?.end) {
-    const startYmd = formatScheduleDateToYMD(schedule.range.start);
-    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    const startYmd = scheduleDateToYmd(schedule.range.start);
+    const endYmd = scheduleDateToYmd(schedule.range.end);
     if (!startYmd || !endYmd) return { kind: 'none' };
     if (isSingleDayMomentRange(startYmd, endYmd)) {
       return { kind: 'moment', ymd: startYmd };
@@ -90,24 +55,12 @@ function getStandaloneTodoScheduleWindow(task: TaskRow): StandaloneTodoScheduleW
   }
 
   if (schedule.date) {
-    const ymd = formatScheduleDateToYMD(schedule.date);
+    const ymd = scheduleDateToYmd(schedule.date);
     if (!ymd) return { kind: 'none' };
     return { kind: 'moment', ymd };
   }
 
   return { kind: 'none' };
-}
-
-/**
- * 判断逻辑日是否落在日程区间内。
- * 单日「时刻」槽为 [start, end)（end 常为次日）；跨多日区间为 [start, end] 含首尾。
- */
-export function isLogicalDayInYmdRange(todayYmd: string, startYmd: string, endYmd: string): boolean {
-  if (!startYmd || !endYmd) return true;
-  if (todayYmd < startYmd) return false;
-  if (startYmd === endYmd) return todayYmd === startYmd;
-  if (endYmd === addDaysToYmd(startYmd, 1)) return todayYmd < endYmd;
-  return todayYmd <= endYmd;
 }
 
 /** 未完成且截止日期（本地日）早于今天。 */
@@ -279,22 +232,41 @@ export function isStandaloneTodoOverdue(task: TaskRow, logicalTodayYmd: string):
   return isTaskOverdueForList(task, logicalTodayYmd);
 }
 
-export function getStandaloneTodoOverdueSortMs(task: TaskRow): number {
-  const due = task.due_date?.slice(0, 10) ?? '';
+/**
+ * 有效截止毫秒（与项目 getDueMs 对齐）：due_date → schedule.range.end → schedule.date；
+ * 无截止返回 null（排序时沉底）。不含 created_at 回退。
+ */
+export function getStandaloneTodoDueMs(task: TaskRow): number | null {
+  const due = task.due_date?.trim().slice(0, 10) ?? '';
   if (due) {
     const d = ymdToLocalDate(due);
     if (d) return d.getTime();
+    const parsed = Date.parse(task.due_date!);
+    if (!Number.isNaN(parsed)) return parsed;
   }
-  const schedule = parseProjectSchedule(task.extra_data);
+  const schedule = parseScheduleMetaFromExtra(task.extra_data);
   if (schedule?.mode === 'time' && schedule.range?.end) {
-    const endYmd = formatScheduleDateToYMD(schedule.range.end);
+    const endRaw = schedule.range.end.trim();
+    const endYmd = scheduleDateToYmd(endRaw);
     const d = ymdToLocalDate(endYmd);
     if (d) return d.getTime();
+    const ms = Date.parse(endRaw);
+    if (!Number.isNaN(ms)) return ms;
   }
   if (schedule?.date) {
-    const d = ymdToLocalDate(formatScheduleDateToYMD(schedule.date));
+    const dateRaw = schedule.date.trim();
+    const d = ymdToLocalDate(scheduleDateToYmd(dateRaw));
     if (d) return d.getTime();
+    const ms = Date.parse(dateRaw);
+    if (!Number.isNaN(ms)) return ms;
   }
+  return null;
+}
+
+/** 过期组内排序键：有有效截止用截止；否则回退 created_at（保证组内稳定） */
+export function getStandaloneTodoOverdueSortMs(task: TaskRow): number {
+  const dueMs = getStandaloneTodoDueMs(task);
+  if (dueMs != null) return dueMs;
   const ms = Date.parse(task.created_at);
   return Number.isNaN(ms) ? 0 : ms;
 }
@@ -311,18 +283,18 @@ function isYmdInRange(ymd: string, startYmd: string, endYmd: string): boolean {
 }
 
 function scheduleIntersectsWeek(
-  schedule: ProjectScheduleMeta | null,
+  schedule: ScheduleDateBounds | null,
   weekStartYmd: string,
   weekEndYmd: string,
 ): boolean {
   if (schedule?.range?.start && schedule.range?.end) {
-    const start = formatScheduleDateToYMD(schedule.range.start);
-    const end = formatScheduleDateToYMD(schedule.range.end);
+    const start = scheduleDateToYmd(schedule.range.start);
+    const end = scheduleDateToYmd(schedule.range.end);
     if (start && end) return start <= weekEndYmd && weekStartYmd <= end;
   }
 
   if (schedule?.date) {
-    const schedYmd = formatScheduleDateToYMD(schedule.date);
+    const schedYmd = scheduleDateToYmd(schedule.date);
     if (schedYmd) return isYmdInRange(schedYmd, weekStartYmd, weekEndYmd);
   }
 
@@ -337,10 +309,10 @@ export function isMatrixTaskInCurrentWeek(
   _logicalTodayYmd: string,
   opts?: { projectExtraData?: string | null },
 ): boolean {
-  const taskSchedule = parseProjectSchedule(task.extra_data);
+  const taskSchedule = parseScheduleMetaFromExtra(task.extra_data);
   if (scheduleIntersectsWeek(taskSchedule, weekStartYmd, weekEndYmd)) return true;
 
-  const projectSchedule = parseProjectSchedule(opts?.projectExtraData ?? null);
+  const projectSchedule = parseScheduleMetaFromExtra(opts?.projectExtraData ?? null);
   if (scheduleIntersectsWeek(projectSchedule, weekStartYmd, weekEndYmd)) return true;
 
   const dueYmd = task.due_date?.trim().slice(0, 10) ?? '';

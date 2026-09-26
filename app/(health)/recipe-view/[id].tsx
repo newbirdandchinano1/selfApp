@@ -1,3 +1,4 @@
+import { CrudDetailScreen } from '@/components/crud';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -15,8 +16,6 @@ import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Pressable,
@@ -49,6 +48,7 @@ export default function RecipeViewScreen() {
   const [row, setRow] = useState<RecipeItem | null>(null);
   const [categoryName, setCategoryName] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const heroOpacity = useRef(new Animated.Value(0)).current;
   const heroScale = useRef(new Animated.Value(1.06)).current;
@@ -106,11 +106,11 @@ export default function RecipeViewScreen() {
         setLoading(false);
         return;
       }
+      setError(null);
       try {
         await wrapLoad(async () => {
           const item = await getRecipe(id);
           if (!item) {
-            Alert.alert('未找到', '该菜谱可能已删除', [{ text: '确定', onPress: () => router.back() }]);
             setRow(null);
             return;
           }
@@ -119,12 +119,13 @@ export default function RecipeViewScreen() {
           setRow(item);
         }, forceApi);
       } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+        setError('加载失败，请重试');
+        setRow(null);
       } finally {
         setLoading(false);
       }
     },
-    [id, router, wrapLoad],
+    [id, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
@@ -144,201 +145,198 @@ export default function RecipeViewScreen() {
 
   if (!id) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <Text style={{ fontSize: 15, fontWeight: '600' }}>缺少菜谱 ID</Text>
-      </View>
+      <CrudDetailScreen
+        title="菜谱"
+        onBack={() => router.back()}
+        missing
+        missingMessage="缺少菜谱 ID"
+        style={{ backgroundColor: p.bg }}
+      />
     );
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: p.bg }]}>
-      <View style={[styles.floatingBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
-        <Pressable
-          style={({ pressed }) => [
-            styles.floatBtn,
-            { backgroundColor: p.card, borderColor: p.border, opacity: pressed ? 0.8 : 1 },
-          ]}
-          onPress={() => router.back()}
-        >
-          <MaterialIcons name="arrow-back-ios-new" size={18} color={p.primary} />
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [
-            styles.floatBtn,
-            {
-              backgroundColor: p.primarySoft,
-              borderColor: p.border,
-              opacity: pressed || !row ? 0.55 : 1,
-            },
-          ]}
-          onPress={() => router.push({ pathname: '/recipe-edit/[id]', params: { id } })}
-          disabled={!row}
-        >
-          <MaterialIcons name="edit" size={20} color={p.primary} />
-        </Pressable>
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color={p.primary} />
+    <CrudDetailScreen
+      loading={loading}
+      loadingHint="加载菜谱…"
+      error={error}
+      onRetryError={() => {
+        setLoading(true);
+        void reload(true);
+      }}
+      missing={!loading && !error && !row}
+      missingMessage="未找到该菜谱"
+      style={{ backgroundColor: p.bg }}>
+      <View style={styles.container}>
+        <View style={[styles.floatingBar, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
+          <Pressable
+            style={({ pressed }) => [
+              styles.floatBtn,
+              { backgroundColor: p.card, borderColor: p.border, opacity: pressed ? 0.8 : 1 },
+            ]}
+            onPress={() => router.back()}>
+            <MaterialIcons name="arrow-back-ios-new" size={18} color={p.primary} />
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.floatBtn,
+              {
+                backgroundColor: p.primarySoft,
+                borderColor: p.border,
+                opacity: pressed || !row ? 0.55 : 1,
+              },
+            ]}
+            onPress={() => router.push({ pathname: '/recipe-edit/[id]', params: { id } })}
+            disabled={!row}>
+            <MaterialIcons name="edit" size={20} color={p.primary} />
+          </Pressable>
         </View>
-      ) : row ? (
-        <ScrollView
-          refreshControl={refreshControl}
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 36 }}
-          showsVerticalScrollIndicator={false}
-        >
-          <Animated.View
-            style={[
-              styles.heroWrap,
-              {
-                opacity: heroOpacity,
-                transform: [{ scale: heroScale }],
-              },
-            ]}
-          >
-            {row.finished_image_uri ? (
-              <Image source={{ uri: row.finished_image_uri }} style={styles.heroImage} contentFit="cover" />
-            ) : (
-              <View style={[styles.heroPlaceholder, { backgroundColor: p.placeholderBg }]}>
-                <MaterialIcons name="restaurant" size={56} color={p.accent} />
-                <Text style={[styles.heroPlaceholderText, { color: p.outlineMuted }]}>还没有成品图</Text>
-              </View>
-            )}
-            <View style={[styles.heroScrim, { height: insets.top + 72 }]} />
-          </Animated.View>
 
-          <Animated.View
-            style={[
-              styles.body,
-              {
-                opacity: contentOpacity,
-                transform: [{ translateY: contentY }],
-              },
-            ]}
-          >
-            <View style={[styles.titleBlock, { backgroundColor: p.card, borderColor: p.border }]}>
-              {categoryName ? (
-                <View style={[styles.categoryBadge, { backgroundColor: p.accentSoft, borderColor: p.border }]}>
-                  <MaterialIcons name="auto-stories" size={14} color={p.accent} />
-                  <Text style={[styles.categoryText, { color: p.accent }]}>{categoryName}</Text>
+        {row ? (
+          <ScrollView
+            refreshControl={refreshControl}
+            contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 36 }}
+            showsVerticalScrollIndicator={false}>
+            <Animated.View
+              style={[
+                styles.heroWrap,
+                {
+                  opacity: heroOpacity,
+                  transform: [{ scale: heroScale }],
+                },
+              ]}>
+              {row.finished_image_uri ? (
+                <Image source={{ uri: row.finished_image_uri }} style={styles.heroImage} contentFit="cover" />
+              ) : (
+                <View style={[styles.heroPlaceholder, { backgroundColor: p.placeholderBg }]}>
+                  <MaterialIcons name="restaurant" size={56} color={p.accent} />
+                  <Text style={[styles.heroPlaceholderText, { color: p.outlineMuted }]}>还没有成品图</Text>
+                </View>
+              )}
+              <View style={[styles.heroScrim, { height: insets.top + 72 }]} />
+            </Animated.View>
+
+            <Animated.View
+              style={[
+                styles.body,
+                {
+                  opacity: contentOpacity,
+                  transform: [{ translateY: contentY }],
+                },
+              ]}>
+              <View style={[styles.titleBlock, { backgroundColor: p.card, borderColor: p.border }]}>
+                {categoryName ? (
+                  <View style={[styles.categoryBadge, { backgroundColor: p.accentSoft, borderColor: p.border }]}>
+                    <MaterialIcons name="auto-stories" size={14} color={p.accent} />
+                    <Text style={[styles.categoryText, { color: p.accent }]}>{categoryName}</Text>
+                  </View>
+                ) : null}
+                <Text style={[styles.title, { color: p.text }]}>{displayTitle}</Text>
+                <View style={styles.metaChipRow}>
+                  {row.ingredients.length > 0 ? (
+                    <View style={[styles.metaChip, { backgroundColor: p.accentSoft }]}>
+                      <Text style={[styles.metaChipText, { color: p.accent }]}>
+                        {row.ingredients.length} 食材
+                      </Text>
+                    </View>
+                  ) : null}
+                  {row.steps.length > 0 ? (
+                    <View style={[styles.metaChip, { backgroundColor: p.primarySoft }]}>
+                      <Text style={[styles.metaChipText, { color: p.primary }]}>{row.steps.length} 步</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={[styles.meta, { color: p.outlineMuted }]}>
+                  更新于 {new Date(row.updated_at).toLocaleString('zh-CN')}
+                </Text>
+              </View>
+
+              {row.ingredients.length > 0 ? (
+                <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
+                  <View style={styles.sectionHead}>
+                    <View style={[styles.sectionIcon, { backgroundColor: p.accentSoft }]}>
+                      <MaterialIcons name="shopping-basket" size={18} color={p.accent} />
+                    </View>
+                    <Text style={[styles.sectionTitle, { color: p.text }]}>食材</Text>
+                  </View>
+                  {row.ingredients.map((item, i) => (
+                    <RecipeMotionPressable
+                      key={`ing-${i}`}
+                      enterDelay={60 + i * 40}
+                      style={[
+                        styles.ingCard,
+                        { borderColor: p.border, backgroundColor: p.inputBg },
+                        i < row.ingredients.length - 1 && styles.ingCardSpacing,
+                      ]}>
+                      <View style={styles.ingMainRow}>
+                        <Text style={[styles.ingName, { color: p.text }]}>{item.name}</Text>
+                        <Text style={[styles.ingAmount, { color: item.amount ? p.text : p.outlineMuted }]}>
+                          {item.amount || '—'}
+                        </Text>
+                      </View>
+                      {item.remark?.trim() ? (
+                        <Text style={[styles.ingRemarkLine, { color: p.outline }]}>
+                          备注：{item.remark.trim()}
+                        </Text>
+                      ) : null}
+                    </RecipeMotionPressable>
+                  ))}
                 </View>
               ) : null}
-              <Text style={[styles.title, { color: p.text }]}>{displayTitle}</Text>
-              <View style={styles.metaChipRow}>
-                {row.ingredients.length > 0 ? (
-                  <View style={[styles.metaChip, { backgroundColor: p.accentSoft }]}>
-                    <Text style={[styles.metaChipText, { color: p.accent }]}>
-                      {row.ingredients.length} 食材
-                    </Text>
-                  </View>
-                ) : null}
-                {row.steps.length > 0 ? (
-                  <View style={[styles.metaChip, { backgroundColor: p.primarySoft }]}>
-                    <Text style={[styles.metaChipText, { color: p.primary }]}>{row.steps.length} 步</Text>
-                  </View>
-                ) : null}
-              </View>
-              <Text style={[styles.meta, { color: p.outlineMuted }]}>
-                更新于 {new Date(row.updated_at).toLocaleString('zh-CN')}
-              </Text>
-            </View>
 
-            {row.ingredients.length > 0 ? (
-              <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
-                <View style={styles.sectionHead}>
-                  <View style={[styles.sectionIcon, { backgroundColor: p.accentSoft }]}>
-                    <MaterialIcons name="shopping-basket" size={18} color={p.accent} />
-                  </View>
-                  <Text style={[styles.sectionTitle, { color: p.text }]}>食材</Text>
-                </View>
-                {row.ingredients.map((item, i) => (
-                  <RecipeMotionPressable
-                    key={`ing-${i}`}
-                    enterDelay={60 + i * 40}
-                    style={[
-                      styles.ingCard,
-                      { borderColor: p.border, backgroundColor: p.inputBg },
-                      i < row.ingredients.length - 1 && styles.ingCardSpacing,
-                    ]}
-                  >
-                    <View style={styles.ingMainRow}>
-                      <Text style={[styles.ingName, { color: p.text }]}>{item.name}</Text>
-                      <Text style={[styles.ingAmount, { color: item.amount ? p.text : p.outlineMuted }]}>
-                        {item.amount || '—'}
-                      </Text>
+              {row.steps.length > 0 ? (
+                <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
+                  <View style={styles.sectionHead}>
+                    <View style={[styles.sectionIcon, { backgroundColor: p.primarySoft }]}>
+                      <MaterialIcons name="format-list-numbered" size={18} color={p.primary} />
                     </View>
-                    {item.remark?.trim() ? (
-                      <Text style={[styles.ingRemarkLine, { color: p.outline }]}>
-                        备注：{item.remark.trim()}
-                      </Text>
-                    ) : null}
-                  </RecipeMotionPressable>
-                ))}
-              </View>
-            ) : null}
-
-            {row.steps.length > 0 ? (
-              <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
-                <View style={styles.sectionHead}>
-                  <View style={[styles.sectionIcon, { backgroundColor: p.primarySoft }]}>
-                    <MaterialIcons name="format-list-numbered" size={18} color={p.primary} />
+                    <Text style={[styles.sectionTitle, { color: p.text }]}>步骤</Text>
                   </View>
-                  <Text style={[styles.sectionTitle, { color: p.text }]}>步骤</Text>
+                  {row.steps.map((line, i) => (
+                    <RecipeMotionPressable key={`step-${i}`} enterDelay={80 + i * 50} style={styles.stepRow}>
+                      <View style={[styles.stepBadge, { backgroundColor: p.primary }]}>
+                        <Text style={styles.stepBadgeText}>{i + 1}</Text>
+                      </View>
+                      <Text style={[styles.listText, { color: p.text }]}>{line}</Text>
+                    </RecipeMotionPressable>
+                  ))}
                 </View>
-                {row.steps.map((line, i) => (
-                  <RecipeMotionPressable
-                    key={`step-${i}`}
-                    enterDelay={80 + i * 50}
-                    style={styles.stepRow}
-                  >
-                    <View style={[styles.stepBadge, { backgroundColor: p.primary }]}>
-                      <Text style={styles.stepBadgeText}>{i + 1}</Text>
+              ) : null}
+
+              {row.notes?.trim() ? (
+                <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
+                  <View style={styles.sectionHead}>
+                    <View style={[styles.sectionIcon, { backgroundColor: p.placeholderBg }]}>
+                      <MaterialIcons name="notes" size={18} color={p.outline} />
                     </View>
-                    <Text style={[styles.listText, { color: p.text }]}>{line}</Text>
-                  </RecipeMotionPressable>
-                ))}
-              </View>
-            ) : null}
-
-            {row.notes?.trim() ? (
-              <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
-                <View style={styles.sectionHead}>
-                  <View style={[styles.sectionIcon, { backgroundColor: p.placeholderBg }]}>
-                    <MaterialIcons name="notes" size={18} color={p.outline} />
+                    <Text style={[styles.sectionTitle, { color: p.text }]}>备注</Text>
                   </View>
-                  <Text style={[styles.sectionTitle, { color: p.text }]}>备注</Text>
+                  <Text style={[styles.notesText, { color: p.text }]}>{row.notes.trim()}</Text>
                 </View>
-                <Text style={[styles.notesText, { color: p.text }]}>{row.notes.trim()}</Text>
-              </View>
-            ) : null}
+              ) : null}
 
-            {row.ingredients.length === 0 &&
-            row.steps.length === 0 &&
-            !row.notes?.trim() &&
-            !row.finished_image_uri ? (
-              <View style={[styles.emptyCard, { borderColor: p.border, backgroundColor: p.card }]}>
-                <MaterialIcons name="edit-note" size={32} color={p.outlineMuted} />
-                <Text style={[styles.emptyHint, { color: p.outline }]}>暂无详细内容</Text>
-                <Pressable
-                  onPress={() => router.push({ pathname: '/recipe-edit/[id]', params: { id } })}
-                  style={({ pressed }) => [
-                    styles.emptyEditBtn,
-                    { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
-                  ]}
-                >
-                  <Text style={styles.emptyEditBtnText}>去编辑</Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </Animated.View>
-        </ScrollView>
-      ) : (
-        <View style={styles.loadingWrap}>
-          <Text style={{ color: p.outline, fontWeight: '600' }}>未找到该菜谱</Text>
-        </View>
-      )}
-    </View>
+              {row.ingredients.length === 0 &&
+              row.steps.length === 0 &&
+              !row.notes?.trim() &&
+              !row.finished_image_uri ? (
+                <View style={[styles.emptyCard, { borderColor: p.border, backgroundColor: p.card }]}>
+                  <MaterialIcons name="edit-note" size={32} color={p.outlineMuted} />
+                  <Text style={[styles.emptyHint, { color: p.outline }]}>暂无详细内容</Text>
+                  <Pressable
+                    onPress={() => router.push({ pathname: '/recipe-edit/[id]', params: { id } })}
+                    style={({ pressed }) => [
+                      styles.emptyEditBtn,
+                      { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={styles.emptyEditBtnText}>去编辑</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </Animated.View>
+          </ScrollView>
+        ) : null}
+      </View>
+    </CrudDetailScreen>
   );
 }
 
@@ -362,7 +360,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   heroWrap: {
     width: '100%',
     height: 300,

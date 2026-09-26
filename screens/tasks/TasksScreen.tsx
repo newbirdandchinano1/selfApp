@@ -1,4 +1,8 @@
-﻿import { WeeklyFrogSchedule, type SchedulePendingPlace } from '@/components/tasks/WeeklyFrogSchedule';
+﻿import {
+  WeeklyFrogSchedule,
+  type ScheduleChangedDetail,
+  type SchedulePendingPlace,
+} from '@/components/tasks/WeeklyFrogSchedule';
 import { notifyCompletionCelebration } from '@/lib/completion-celebration-events';
 import { suppressPointsEarnedToastForMs } from '@/lib/points-earned-toast-events';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
@@ -7,7 +11,8 @@ import {
   TasksHeatmapSkeleton,
   TasksProjectsSectionSkeleton,
   TasksStandaloneSectionSkeleton,
-} from '@/components/tasks/tasks-home-skeletons';
+} from '@/components/skeletons/tasks';
+import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { AppIconButton } from '@/components/ui';
 import {
   Layout,
@@ -23,19 +28,23 @@ import {
 } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import {
   getFrogAssignedOn,
   isFrogAssignedOn,
+  mergeFrogAssignedOn,
   persistProjectFrogExtraToApi,
   persistTaskFrogExtraToApi,
+  removeFrogAssignedOn,
 } from '@/lib/frog-assignment';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import {
@@ -213,6 +222,7 @@ import {
 import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
 import {
   getLogicalLocalYmd,
+  logicalYmdToLocalDate,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import {
@@ -918,10 +928,7 @@ function parseTaskMeta(extraData: string | null): TaskMetaExtra {
 }
 
 function formatLocalYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return formatYmd(date);
 }
 
 /** 将逻辑日 YMD 转为本地日历日正午，与 `getLogicalLocalYmd` 的「今天」对齐，用于习惯循环星期/几号判断 */
@@ -930,16 +937,6 @@ const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as cons
 function formatTasksHeaderDate(ymd: string) {
   const d = logicalYmdToLocalDate(ymd);
   return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAY_LABELS[d.getDay()]}`;
-}
-
-function logicalYmdToLocalDate(ymd: string): Date {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
-  if (!m) return new Date();
-  const y = Number(m[1]);
-  const mo = Number(m[2]) - 1;
-  const d = Number(m[3]);
-  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return new Date();
-  return new Date(y, mo, d, 12, 0, 0, 0);
 }
 
 function formatTaskPriority(priority: number): string {
@@ -1031,14 +1028,7 @@ function findTaskRowInProjectTreeMap(
 }
 
 function ymdToLocalDate(ymd: string): Date | null {
-  const t = ymd.trim();
-  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  return new Date(year, month - 1, day);
+  return parseYmd(ymd);
 }
 
 function startOfLocalDay(d: Date): Date {
@@ -1046,9 +1036,7 @@ function startOfLocalDay(d: Date): Date {
 }
 
 function addLocalDays(d: Date, n: number): Date {
-  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  x.setDate(x.getDate() + n);
-  return x;
+  return addDays(startOfLocalDay(d), n);
 }
 
 /** 含 `d` 的周的周一（本地 0:00） */
@@ -1455,16 +1443,6 @@ function TaskCompletionHeatmap({
   );
 }
 
-function formatYmdCN(ymd: string): string {
-  const t = ymd.trim();
-  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return t;
-  const year = m[1];
-  const month = String(Number(m[2]));
-  const day = String(Number(m[3]));
-  return `${year}年${month}月${day}日`;
-}
-
 function formatProjectDueText(dueYmd: string, todayYmd: string): string {
   const due = ymdToLocalDate(dueYmd);
   const today = ymdToLocalDate(todayYmd);
@@ -1771,10 +1749,13 @@ export default function TasksScreen() {
   const markPageDirty = resetSync;
   /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动 */
   const [initialTasksLoadPending, setInitialTasksLoadPending] = React.useState(true);
-  const [tasksSkeletonMounted, setTasksSkeletonMounted] = React.useState(true);
   const tasksContentRevealDoneRef = React.useRef(false);
-  const tasksSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
-  const tasksContentOpacity = React.useRef(new Animated.Value(0)).current;
+  const {
+    showSkeleton: showTasksSkeleton,
+    skeletonMounted: tasksSkeletonMounted,
+    skeletonOpacity: tasksSkeletonOpacity,
+    contentOpacity: tasksContentOpacity,
+  } = useHomeSkeletonReveal(initialTasksLoadPending);
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -2072,6 +2053,20 @@ export default function TasksScreen() {
     });
     return map;
   }, [projectTagsByProjectId]);
+
+  // 独立待办：多标签取 max 权重，供列表终排（对齐项目列表）
+  const standaloneTodoTagWeightById = React.useMemo(() => {
+    const map = new Map<string, number>();
+    standaloneTagsByTaskId.forEach((tags, taskId) => {
+      let max = 0;
+      for (const tag of tags) {
+        const w = typeof tag.weight === 'number' && Number.isFinite(tag.weight) ? tag.weight : 0;
+        if (w > max) max = w;
+      }
+      map.set(taskId, max);
+    });
+    return map;
+  }, [standaloneTagsByTaskId]);
 
   const projectsShownInList = React.useMemo(() => {
     const base =
@@ -2632,35 +2627,10 @@ export default function TasksScreen() {
 
     if (!tasksContentRevealDoneRef.current) {
       tasksContentRevealDoneRef.current = true;
-      setTasksSkeletonMounted(true);
-      tasksSkeletonOpacity.setValue(1);
-      tasksContentOpacity.setValue(0);
       pageFadeAnim.setValue(1);
       pageTranslateAnim.setValue(0);
       matrixAnim.setValue(1);
       projectAnim.setValue(1);
-      if (reduceMotion) {
-        tasksSkeletonOpacity.setValue(0);
-        tasksContentOpacity.setValue(1);
-        setTasksSkeletonMounted(false);
-        return;
-      }
-      Animated.parallel([
-        Animated.timing(tasksSkeletonOpacity, {
-          toValue: 0,
-          duration: 280,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(tasksContentOpacity, {
-          toValue: 1,
-          duration: 320,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start(({ finished }) => {
-        if (finished) setTasksSkeletonMounted(false);
-      });
       return;
     }
 
@@ -2716,7 +2686,6 @@ export default function TasksScreen() {
     projectAnim,
     reduceMotion,
     tasksContentOpacity,
-    tasksSkeletonOpacity,
   ]);
 
   React.useEffect(() => {
@@ -3027,11 +2996,12 @@ export default function TasksScreen() {
         sortStandaloneTodosLocally(
           prev.map((t) => (t.id === taskId ? apply(t) : t)),
           logicalTodayYmd,
+          standaloneTodoTagWeightById,
         ),
       );
       setMatrixWeekTasks((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
     },
-    [logicalTodayYmd],
+    [logicalTodayYmd, standaloneTodoTagWeightById],
   );
 
   const taskTitleById = React.useMemo(() => {
@@ -3054,9 +3024,15 @@ export default function TasksScreen() {
     return map;
   }, [standaloneTodos, matrixWeekTasks]);
 
+  // 标签就绪后终排：结构层 + 标签权重等业务键（对齐项目列表）
+  const standaloneTodosShown = React.useMemo(
+    () => sortStandaloneTodosLocally(standaloneTodos, logicalTodayYmd, standaloneTodoTagWeightById),
+    [logicalTodayYmd, standaloneTodoTagWeightById, standaloneTodos],
+  );
+
   const standaloneTodoOpenCount = React.useMemo(
-    () => standaloneTodos.filter((t) => isStandaloneTodoOpen(t)).length,
-    [standaloneTodos],
+    () => standaloneTodosShown.filter((t) => isStandaloneTodoOpen(t)).length,
+    [standaloneTodosShown],
   );
 
   const matrixGroups = React.useMemo(() => {
@@ -3357,6 +3333,7 @@ export default function TasksScreen() {
             return { ...task, status: change.status, completed_at: change.completed_at };
           }),
           logicalTodayYmd,
+          standaloneTodoTagWeightById,
         ),
       );
       setMatrixWeekTasks((prev) =>
@@ -3378,7 +3355,7 @@ export default function TasksScreen() {
         return next;
       });
     },
-    [logicalTodayYmd, updateTaskInProjectTree],
+    [logicalTodayYmd, standaloneTodoTagWeightById, updateTaskInProjectTree],
   );
 
   const syncHabitBoundTasksForHabit = React.useCallback(
@@ -4351,7 +4328,11 @@ export default function TasksScreen() {
         markPageDirty();
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setStandaloneTodos((prev) =>
-          sortStandaloneTodosLocally([optimisticTask, ...prev], logicalTodayYmd),
+          sortStandaloneTodosLocally(
+            [optimisticTask, ...prev],
+            logicalTodayYmd,
+            standaloneTodoTagWeightById,
+          ),
         );
         setQuickTodoDraft('');
         await createTask({
@@ -4375,7 +4356,15 @@ export default function TasksScreen() {
     } finally {
       setQuickTodoSaving(false);
     }
-  }, [logicalTodayYmd, markPageDirty, quickTodoDraft, quickTodoSaving, runExclusiveMutation, schedulePostMutationSync]);
+  }, [
+    logicalTodayYmd,
+    markPageDirty,
+    quickTodoDraft,
+    quickTodoSaving,
+    runExclusiveMutation,
+    schedulePostMutationSync,
+    standaloneTodoTagWeightById,
+  ]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
   const handleUpgradeStandaloneTodo = React.useCallback(
@@ -4617,6 +4606,9 @@ export default function TasksScreen() {
         scheduleHabitsReload();
       }
       void resyncHabitReminderForHabitId(habitId);
+      // 习惯区打卡/撤销也要刷新日程虚拟入格，避免只改卡片、格子 done 不同步
+      notifyFrogScheduleChanged();
+      void syncScheduleSlotReminderNotifications();
     },
     [
       maybeCompleteBreakHabit,
@@ -4906,7 +4898,8 @@ export default function TasksScreen() {
                 return {
                   ...it,
                   todayCount: completedCount,
-                  displayCompleted: result.allDone,
+                  // 子项破戒或确认保持都算已确认当日状态
+                  displayCompleted: true,
                   hasTodayRecord: true,
                   hasSubHabits: true,
                   subHabits: subHabitModal.subHabits,
@@ -5182,11 +5175,47 @@ export default function TasksScreen() {
     };
   }, [standaloneTodos, matrixWeekTasks, projectTaskTreeMap, projects]);
 
-  const onScheduleChanged = React.useCallback(() => {
-    markPageDirty();
-    notifyFrogScheduleChanged();
-    schedulePostMutationSync({ frogs: true });
-  }, [markPageDirty, schedulePostMutationSync]);
+  const applyFrogAssignToVisibleLists = React.useCallback(
+    (detail: ScheduleChangedDetail) => {
+      const nextExtra = (extra: string | null) =>
+        detail.action === 'assign'
+          ? mergeFrogAssignedOn(extra, detail.assignYmd)
+          : removeFrogAssignedOn(extra, detail.assignYmd);
+
+      if (detail.kind === 'project') {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === detail.id ? { ...p, extra_data: nextExtra(p.extra_data) } : p)),
+        );
+        return;
+      }
+
+      patchVisibleTask(detail.id, (row) => ({ ...row, extra_data: nextExtra(row.extra_data) }));
+      setProjectTaskTreeMap((prev) =>
+        updateTaskInProjectTree(prev, detail.id, (node) => ({
+          ...node,
+          extra_data: nextExtra(node.extra_data),
+        })),
+      );
+    },
+    [patchVisibleTask, updateTaskInProjectTree],
+  );
+
+  const onScheduleChanged = React.useCallback(
+    (detail?: ScheduleChangedDetail) => {
+      markPageDirty();
+      // 立刻改内存态，待办/项目列表「已指派」不必等本地重载
+      if (detail) applyFrogAssignToVisibleLists(detail);
+      notifyFrogScheduleChanged();
+      // 无 detail 的路径（改轴重排、复制上周、仅移除时段等）从本地库对齐
+      void runSilentPostMutationSync({
+        frogs: false,
+        tasks: true,
+        projectTasks: true,
+        projects: true,
+      });
+    },
+    [applyFrogAssignToVisibleLists, markPageDirty, runSilentPostMutationSync],
+  );
 
   const emptyCardBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
   /** 过期待办卡片底色（不透明，避免左滑时透出操作条） */
@@ -5585,11 +5614,21 @@ export default function TasksScreen() {
             onHabitCheckIn={(habitId) => {
               const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
               if (!item) return;
-              void (async () => {
-                await handleHabitIncrement(item);
-                notifyFrogScheduleChanged();
-                void syncScheduleSlotReminderNotifications();
-              })();
+              // 带子习惯：打开清单；日程刷新由打卡副作用统一触发
+              if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+                openSubHabitModal(item);
+                return;
+              }
+              void handleHabitIncrement(item);
+            }}
+            onHabitUndo={(habitId) => {
+              const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+              if (!item) return;
+              if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+                openSubHabitModal(item);
+                return;
+              }
+              void handleHabitUndoOnce(item);
             }}
           />
 
@@ -6243,7 +6282,7 @@ export default function TasksScreen() {
                       {standaloneTodoOpenCount}
                     </Text>
                   </View>
-                  {standaloneTodos.length > 0 ? (
+                  {standaloneTodosShown.length > 0 ? (
                     <View
                       style={[
                         styles.standaloneTodoHintChip,
@@ -6325,7 +6364,7 @@ export default function TasksScreen() {
                 <Text style={[styles.quickTodoHint, { color: outline }]}>回车或点右侧按钮即可保存 · 最多 {STANDALONE_TODO_TITLE_MAX} 字</Text>
               </View>
 
-              {standaloneTodos.length === 0 ? (
+              {standaloneTodosShown.length === 0 ? (
                 <EmptyPlaceholder
                   icon="task-alt"
                   title="还没有待办"
@@ -6336,7 +6375,7 @@ export default function TasksScreen() {
                 />
               ) : (
                 <View style={styles.standaloneTodoListContent}>
-                  {standaloneTodos.map((t) => {
+                  {standaloneTodosShown.map((t) => {
                     const isDone = isTaskTerminalStatus(t.status);
                     const isShelved = isTaskShelvedStatus(t.status);
                     const frogAssignedToday = isFrogAssignedOn(t.extra_data, logicalTodayYmd);
@@ -7844,24 +7883,20 @@ export default function TasksScreen() {
           </Animated.View>
         ) : null}
 
-          {initialTasksLoadPending || tasksSkeletonMounted ? (
-
-            <Animated.View
-              pointerEvents={initialTasksLoadPending ? 'auto' : 'none'}
-              style={[
-                initialTasksLoadPending ? undefined : styles.tasksSkeletonOverlay,
-                {
-                  opacity: initialTasksLoadPending ? 1 : tasksSkeletonOpacity,
-                  backgroundColor: initialTasksLoadPending ? undefined : bg,
-                },
-              ]}
+          {showTasksSkeleton ? (
+            <HomeSkeletonShell
+              pending={initialTasksLoadPending}
+              mounted={tasksSkeletonMounted}
+              opacity={tasksSkeletonOpacity}
+              backgroundColor={bg}
+              style={{ gap: Spacing['4xl'] }}
             >
               <TasksHeatmapSkeleton colors={colors} cardBg={card} />
               <TasksStandaloneSectionSkeleton colors={colors} cardBg={card} />
               <TasksHabitSectionSkeleton colors={colors} cardBg={card} habitItemWidth={habitGridItemWidth} />
               <TasksProjectsSectionSkeleton colors={colors} cardBg={card} />
               <View style={{ height: 46 }} />
-            </Animated.View>
+            </HomeSkeletonShell>
           ) : null}
       </View>
 
@@ -8226,14 +8261,6 @@ const styles = StyleSheet.create({
   },
   tasksBodyStack: {
     position: 'relative',
-    gap: Spacing['4xl'],
-  },
-  tasksSkeletonOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 2,
     gap: Spacing['4xl'],
   },
   bgOrb: {

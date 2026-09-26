@@ -1,4 +1,6 @@
 import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
+import { normalizeMonthlyDays, normalizeWeeklyDays } from '@/lib/schedule/repeat-days';
+import { ymdToLocalDate } from '@/lib/schedule/ymd';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
@@ -26,13 +28,6 @@ const CN_WEEKDAY_TO_MON1: Record<string, number> = {
   周日: 7,
 };
 
-function ymdToLocalDate(ymd: string): Date | null {
-  const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 function parseExtraObject(extraData: string | null): Record<string, unknown> {
   if (!extraData) return {};
   try {
@@ -44,20 +39,6 @@ function parseExtraObject(extraData: string | null): Record<string, unknown> {
     /* ignore */
   }
   return {};
-}
-
-function normalizeWeeklyDays(raw: unknown): number[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10)))
-    .filter((n) => n >= 1 && n <= 7);
-}
-
-function normalizeMonthlyDays(raw: unknown): number[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10)))
-    .filter((n) => n >= 1 && n <= 31);
 }
 
 function parseWeeklyDaysFromRepeatText(repeat: string): number[] {

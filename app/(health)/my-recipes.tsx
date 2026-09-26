@@ -1,3 +1,4 @@
+import { CrudListScreen } from '@/components/crud';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -263,92 +264,74 @@ export default function MyRecipesScreen() {
   const hasCategories = (store?.categories.length ?? 0) > 0;
   const recipeCount = store?.recipes.length ?? 0;
 
-  return (
-    <View style={[styles.container, { backgroundColor: p.bg }]}>
-      <View
-        style={[
-          styles.topBarWrap,
-          { paddingTop: insets.top, backgroundColor: p.header, borderBottomColor: p.border },
-        ]}
-      >
-        <View style={styles.topBar}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerIconBtn,
-              { backgroundColor: p.card, borderColor: p.border, opacity: pressed ? 0.75 : 1 },
-            ]}
-            onPress={() => router.back()}
-          >
-            <MaterialIcons name="arrow-back-ios-new" size={18} color={p.primary} />
-          </Pressable>
-          <View style={styles.headerCenter}>
-            <Text style={[styles.topBarTitle, { color: p.text }]}>我的菜谱</Text>
-            {hasCategories && !loading ? (
-              <Text style={[styles.topBarSub, { color: p.textSecondary }]}>
-                {recipeCount} 道拿手菜
-              </Text>
-            ) : null}
-          </View>
-          <Pressable
-            style={({ pressed }) => [
-              styles.headerIconBtn,
-              { backgroundColor: p.primarySoft, borderColor: p.border, opacity: pressed ? 0.8 : 1 },
-            ]}
-            onPress={openCreateCategory}
-            accessibilityLabel="新建分类"
-          >
-            <MaterialIcons name="create-new-folder" size={22} color={p.primary} />
-          </Pressable>
+  const recipeHeader = (
+    <View
+      style={[
+        styles.topBarWrap,
+        { paddingTop: insets.top, backgroundColor: p.header, borderBottomColor: p.border },
+      ]}>
+      <View style={styles.topBar}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.headerIconBtn,
+            { backgroundColor: p.card, borderColor: p.border, opacity: pressed ? 0.75 : 1 },
+          ]}
+          onPress={() => router.back()}>
+          <MaterialIcons name="arrow-back-ios-new" size={18} color={p.primary} />
+        </Pressable>
+        <View style={styles.headerCenter}>
+          <Text style={[styles.topBarTitle, { color: p.text }]}>我的菜谱</Text>
+          {hasCategories && !loading ? (
+            <Text style={[styles.topBarSub, { color: p.textSecondary }]}>{recipeCount} 道拿手菜</Text>
+          ) : null}
         </View>
+        <Pressable
+          style={({ pressed }) => [
+            styles.headerIconBtn,
+            { backgroundColor: p.primarySoft, borderColor: p.border, opacity: pressed ? 0.8 : 1 },
+          ]}
+          onPress={openCreateCategory}
+          accessibilityLabel="新建分类">
+          <MaterialIcons name="create-new-folder" size={22} color={p.primary} />
+        </Pressable>
       </View>
+    </View>
+  );
 
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={p.primary} />
-        </View>
-      ) : !hasCategories ? (
-        <View style={styles.centered}>
-          <View style={[styles.emptyRing, { backgroundColor: p.accentSoft, borderColor: p.border }]}>
-            <MaterialIcons name="menu-book" size={42} color={p.accent} />
-          </View>
-          <Text style={[styles.emptyTitle, { color: p.text }]}>打开你的菜谱本</Text>
-          <Text style={[styles.emptyHint, { color: p.textSecondary }]}>
-            先建一章分类（家常菜、烘焙…），{'\n'}再把拿手菜摆进格子里
-          </Text>
-          <Pressable
-            onPress={openCreateCategory}
-            style={({ pressed }) => [
-              styles.emptyBtn,
-              { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
-            ]}
-          >
-            <MaterialIcons name="add" size={20} color="#fff" />
-            <Text style={styles.emptyBtnText}>新建分类</Text>
-          </Pressable>
-        </View>
-      ) : (
+  return (
+    <>
+      <CrudListScreen
+        header={recipeHeader}
+        loading={loading}
+        loadingHint="加载菜谱…"
+        empty={!loading && !hasCategories}
+        emptyProps={{
+          icon: 'menu-book',
+          title: '打开你的菜谱本',
+          subtitle: '先建一章分类（家常菜、烘焙…），再把拿手菜摆进格子里',
+          actionLabel: '新建分类',
+          onAction: openCreateCategory,
+        }}
+        style={{ backgroundColor: p.bg }}>
         <ScrollView
           refreshControl={refreshControl}
           contentContainerStyle={{
             paddingBottom: Math.max(insets.bottom, 20) + 20,
           }}
-          showsVerticalScrollIndicator={false}
-        >
+          showsVerticalScrollIndicator={false}>
           {recentRecipes.length > 0 ? (
             <View style={styles.recentBlock}>
               <Text style={[styles.recentLabel, { color: p.outline }]}>最近翻过</Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.recentRail}
-              >
+                contentContainerStyle={styles.recentRail}>
                 {recentRecipes.map((item, i) => (
                   <RecipeMotionPressable
                     key={`recent-${item.id}`}
                     enterDelay={30 + i * 35}
                     onPress={() => goView(item.id)}
-                    style={[styles.recentCard, { backgroundColor: p.card, borderColor: p.border }]}
-                  >
+                    style={[styles.recentCard, { backgroundColor: p.card, borderColor: p.border }]}>
                     {item.finished_image_uri ? (
                       <Image
                         source={{ uri: item.finished_image_uri }}
@@ -372,8 +355,7 @@ export default function MyRecipesScreen() {
           {sections.map((section, sectionIndex) => (
             <View
               key={section.category.id}
-              style={[styles.chapter, sectionIndex === 0 && !recentRecipes.length ? styles.chapterFirst : null]}
-            >
+              style={[styles.chapter, sectionIndex === 0 && !recentRecipes.length ? styles.chapterFirst : null]}>
               <View style={styles.chapterHead}>
                 <View style={styles.chapterTitleCol}>
                   <Text style={[styles.chapterKicker, { color: p.accent }]}>CHAPTER</Text>
@@ -386,16 +368,14 @@ export default function MyRecipesScreen() {
                   <Pressable
                     hitSlop={8}
                     onPress={() => onCategoryMenu(section.category)}
-                    style={[styles.chapterBtn, { backgroundColor: p.card, borderColor: p.border }]}
-                  >
+                    style={[styles.chapterBtn, { backgroundColor: p.card, borderColor: p.border }]}>
                     <MaterialIcons name="more-horiz" size={20} color={p.outline} />
                   </Pressable>
                   <Pressable
                     hitSlop={8}
                     onPress={() => goNewRecipe(section.category.id)}
                     accessibilityLabel={`在 ${section.category.name} 中添加菜谱`}
-                    style={[styles.chapterBtn, { backgroundColor: p.primary, borderColor: p.primary }]}
-                  >
+                    style={[styles.chapterBtn, { backgroundColor: p.primary, borderColor: p.primary }]}>
                     <MaterialIcons name="add" size={22} color="#fff" />
                   </Pressable>
                 </View>
@@ -411,26 +391,19 @@ export default function MyRecipesScreen() {
                       backgroundColor: p.card,
                       opacity: pressed ? 0.88 : 1,
                     },
-                  ]}
-                >
+                  ]}>
                   <MaterialIcons name="add-circle-outline" size={22} color={p.primary} />
-                  <Text style={{ color: p.outlineMuted, fontSize: 14, fontWeight: '600' }}>
-                    添加第一道菜
-                  </Text>
+                  <Text style={{ color: p.outlineMuted, fontSize: 14, fontWeight: '600' }}>添加第一道菜</Text>
                 </Pressable>
               ) : (
-                <View style={styles.grid}>
-                  {section.data.map((item, index) => renderTile(item, index))}
-                </View>
+                <View style={styles.grid}>{section.data.map((item, index) => renderTile(item, index))}</View>
               )}
             </View>
           ))}
 
-          <Text style={[styles.footerHint, { color: p.outlineMuted }]}>
-            长按菜谱可删除 · 分类点「···」管理
-          </Text>
+          <Text style={[styles.footerHint, { color: p.outlineMuted }]}>长按菜谱可删除 · 分类点「···」管理</Text>
         </ScrollView>
-      )}
+      </CrudListScreen>
 
       <Modal visible={categoryModal != null} transparent animationType="fade" onRequestClose={closeCategoryModal}>
         <View style={styles.modalRoot}>
@@ -461,15 +434,13 @@ export default function MyRecipesScreen() {
               <Pressable
                 onPress={closeCategoryModal}
                 disabled={categorySaving}
-                style={[styles.modalBtnSecondary, { borderColor: p.border }]}
-              >
+                style={[styles.modalBtnSecondary, { borderColor: p.border }]}>
                 <Text style={{ color: p.outline, fontWeight: '700' }}>取消</Text>
               </Pressable>
               <Pressable
                 onPress={() => void saveCategoryModal()}
                 disabled={categorySaving}
-                style={[styles.modalBtnPrimary, { backgroundColor: p.primary }]}
-              >
+                style={[styles.modalBtnPrimary, { backgroundColor: p.primary }]}>
                 {categorySaving ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
@@ -480,12 +451,11 @@ export default function MyRecipesScreen() {
           </View>
         </View>
       </Modal>
-    </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
   topBarWrap: { borderBottomWidth: StyleSheet.hairlineWidth },
   topBar: {
     flexDirection: 'row',
@@ -505,28 +475,6 @@ const styles = StyleSheet.create({
   headerCenter: { flex: 1, gap: 2 },
   topBarTitle: { fontSize: 22, fontWeight: '900', letterSpacing: 0.3 },
   topBarSub: { fontSize: 12, fontWeight: '600' },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 36, gap: 10 },
-  emptyRing: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  emptyTitle: { fontSize: 20, fontWeight: '900', marginTop: 4 },
-  emptyHint: { fontSize: 14, textAlign: 'center', lineHeight: 22 },
-  emptyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 18,
-    paddingHorizontal: 22,
-    paddingVertical: 13,
-    borderRadius: 14,
-  },
-  emptyBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   recentBlock: { paddingTop: 16, gap: 10 },
   recentLabel: {
     paddingHorizontal: PAGE_PAD,

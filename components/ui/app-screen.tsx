@@ -13,6 +13,8 @@ export type AppScreenProps = {
   scrollable?: boolean;
   loading?: boolean;
   loadingHint?: string;
+  /** 加载中展示自定义骨架（替代默认 spinner） */
+  loadingSkeleton?: React.ReactNode;
   /** 下拉刷新时重新拉取页面数据 */
   onRefreshData?: () => Promise<void>;
   contentContainerStyle?: StyleProp<ViewStyle>;
@@ -28,6 +30,7 @@ export function AppScreen({
   scrollable = true,
   loading = false,
   loadingHint,
+  loadingSkeleton,
   onRefreshData,
   contentContainerStyle,
   style,
@@ -37,7 +40,12 @@ export function AppScreen({
   const { colors } = useAppTheme();
 
   const body = (
-    <ScreenLoadingShell loading={loading} hint={loadingHint} style={styles.shell}>
+    <ScreenLoadingShell
+      loading={loading}
+      hint={loadingHint}
+      skeleton={loadingSkeleton}
+      style={styles.shell}
+    >
       <View style={[styles.content, contentContainerStyle]}>{children}</View>
     </ScreenLoadingShell>
   );

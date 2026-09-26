@@ -1,10 +1,7 @@
 import { addDaysToLogicalYmd, formatLocalYmdFromDate, logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
+import { isValidYmd } from '@/lib/schedule/ymd';
 
-const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-export function isValidYmd(ymd: string): boolean {
-  return YMD_RE.test(ymd.trim());
-}
+export { isValidYmd };
 
 /** 给定任意 YMD，返回该自然周周一（本地日历） */
 export function getWeekStartMondayYmd(ymd: string): string {

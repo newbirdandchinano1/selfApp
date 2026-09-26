@@ -27,7 +27,7 @@ import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
 
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 
-import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-pending-overlay';
+import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-local-sync';
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
@@ -47,9 +47,11 @@ import {
 
 } from '@/lib/tasks-logical-day';
 
+import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
+
 import {
 
-  getStandaloneTodoOverdueSortMs,
+  getStandaloneTodoDueMs,
 
   isMatrixTaskInCurrentWeek,
 
@@ -268,29 +270,34 @@ export function resolveMatrixProjectIds(projects: ProjectRow[]): string | undefi
 }
 
 /**
- * 未完成在前 → 过期置顶 → 未到执行日的重复待办置底 → 搁置置底 → 已完成/取消置底；
- * 过期组内按截止/计划日升序；其余组内按优先级降序，其次按截止/创建时间升序。
+ * 独立待办列表排序（结构性置底/置顶优先，再按业务键级联；业务层对齐 sortProjectsForList）：
+ * 1. 已完成 / 取消 → 最底
+ * 2. 搁置 → 终态之上
+ * 3. 未到执行日的重复待办（waiting）→ 搁置之上
+ * 4. 活跃组内：过期 → 置顶
+ * 5. 标签权重分降序（取已贴标签的最大权重；无标签=0 → 靠后）
+ * 6. 紧急程度 priority 降序
+ * 7. 有有效截止的在前；同有截止则越早越前；无截止 → 靠后
+ *    （due_date → schedule.range.end → schedule.date）
+ * 8. 积分奖励降序（无积分 / 0 → 靠后）
+ * 9. updated_at 降序 → id 升序作最后平局
  */
-export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: string): TaskRow[] {
-
+export function sortStandaloneTodosLocally(
+  rows: TaskRow[],
+  logicalTodayYmd?: string,
+  tagWeightByTaskId?: Map<string, number>,
+): TaskRow[] {
   const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
 
-  const createdMs = (t: TaskRow) => {
-
-    const ms = Date.parse(t.created_at);
-
+  const safeTime = (value: string | null | undefined) => {
+    if (!value) return 0;
+    const ms = Date.parse(value);
     return Number.isNaN(ms) ? 0 : ms;
-
   };
 
-  const dueMs = (t: TaskRow) => {
-
-    if (!t.due_date) return Number.POSITIVE_INFINITY;
-
-    const ms = Date.parse(t.due_date);
-
-    return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
-
+  const getTagWeight = (taskId: string): number => {
+    const w = tagWeightByTaskId?.get(taskId);
+    return typeof w === 'number' && Number.isFinite(w) ? w : 0;
   };
 
   const isWaiting = (t: TaskRow) =>
@@ -300,53 +307,48 @@ export function sortStandaloneTodosLocally(rows: TaskRow[], logicalTodayYmd?: st
     !!logicalTodayYmd && isStandaloneTodoOverdue(t, logicalTodayYmd);
 
   return rows.slice().sort((a, b) => {
-
+    // 结构层：终态 → 搁置 → waiting →（活跃内过期置顶）
     const da = isDoneRow(a);
-
     const db = isDoneRow(b);
-
     if (da !== db) return da ? 1 : -1;
 
     const sa = a.status === 'shelved';
-
     const sb = b.status === 'shelved';
-
     if (sa !== sb) return sa ? 1 : -1;
 
     const wa = isWaiting(a);
-
     const wb = isWaiting(b);
-
     if (wa !== wb) return wa ? 1 : -1;
 
     const oa = isOverdue(a);
-
     const ob = isOverdue(b);
-
     if (oa !== ob) return oa ? -1 : 1;
 
-    if (oa && ob) {
+    // 业务层：对齐项目列表（标签 → 优先级 → 截止 → 积分 → 更新时间）
+    const tagA = getTagWeight(a.id);
+    const tagB = getTagWeight(b.id);
+    if (tagA !== tagB) return tagB - tagA;
 
-      const byOverdueDue = getStandaloneTodoOverdueSortMs(a) - getStandaloneTodoOverdueSortMs(b);
+    const priorityA = a.priority ?? 0;
+    const priorityB = b.priority ?? 0;
+    if (priorityA !== priorityB) return priorityB - priorityA;
 
-      if (byOverdueDue !== 0) return byOverdueDue;
+    const dueA = getStandaloneTodoDueMs(a);
+    const dueB = getStandaloneTodoDueMs(b);
+    const hasDueA = dueA != null;
+    const hasDueB = dueB != null;
+    if (hasDueA !== hasDueB) return hasDueA ? -1 : 1;
+    if (hasDueA && hasDueB && dueA !== dueB) return dueA - dueB;
 
-    }
+    const rewardA = parseRewardPointsFromExtraData(a.extra_data);
+    const rewardB = parseRewardPointsFromExtraData(b.extra_data);
+    if (rewardA !== rewardB) return rewardB - rewardA;
 
-    if (a.priority !== b.priority) return b.priority - a.priority;
-
-    const byDue = dueMs(a) - dueMs(b);
-
-    if (byDue !== 0) return byDue;
-
-    const byCreated = createdMs(a) - createdMs(b);
-
-    if (byCreated !== 0) return byCreated;
+    const byUpdated = safeTime(b.updated_at) - safeTime(a.updated_at);
+    if (byUpdated !== 0) return byUpdated;
 
     return a.id.localeCompare(b.id);
-
   });
-
 }
 
 

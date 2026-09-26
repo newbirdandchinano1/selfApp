@@ -6,7 +6,7 @@ import { DailyReviewFactsStrip } from '@/components/review/daily-review-facts-st
 import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
 import { DailyReviewProgressHintCard } from '@/components/review/daily-review-progress-bar';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
-import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import {
   ReviewEmptyState,
   ReviewNoticeBanner,
@@ -42,7 +42,7 @@ import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
-import { fetchReviewDaily, shouldFetchReviewFromApi } from '@/lib/review-page-api';
+import { fetchReviewJournal, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   collectColumnIds,
   emptyFieldValues,
@@ -134,7 +134,7 @@ export function DailyReviewGridView({
     try {
       await wrapLoad(async () => {
         if (shouldFetchReviewFromApi()) {
-          await fetchReviewDaily({ start: ymd, end: ymd, offlineFallback: true });
+          await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd, offlineFallback: true });
         }
         const streakStart = shiftYmd(todayYmd, -45);
         const [snapshot, dailyRows, reminderSettings, dayFacts, streakRows, dailyTpl] = await Promise.all([

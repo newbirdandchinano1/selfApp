@@ -12,10 +12,14 @@
 
 ## 一、先看结论（必读）
 
-1. **不要再给财务 Tab / 财务子页做 `GET /api/data/{table}` 通用 List 全量翻页。** APP 首屏与子页读路径已停用该路径。
-2. APP 现在只打 **`/api/pages/finance/*` 页面专用接口**。慢、缺字段、余额不对，都要在这些专用接口上修，而不是补 List。
-3. **账户余额必须由服务端按全量流水汇总后下发。** APP 本地只缓存近期流水窗口，**禁止**再用不全量流水重算余额。
-4. 任一专用接口失败时，APP **只回退本地 SQLite**，**禁止**再降级到 `/api/data/finance_transactions` 等全表 List。
+1. **权威账本是 `finance_*`（A）**，不是遗留 `accounts` / `account_transactions`。
+   - 账户 / 流水 / 余额 / 分类 / 定时支出：只认 `finance_accounts`、`finance_transactions`、`finance_flow_categories`、`finance_account_types`、`finance_scheduled_expenses`。
+   - `cash_flow_*`、`savings_*` 是**卫星能力**（现金流规划台账、心愿储蓄），不是第二套账本；读路径走 `/pages/finance/cash-flow` 等专口，写仍可走本地仓库 + 通用同步。
+   - `accounts` / `account_transactions` **已下线**：移出 `ALLOWED_TABLES` / 后台财务模块；本地 SQLite v53 与 MySQL `drop-legacy-accounts.sql` 丢弃表。
+2. **不要再给财务 Tab / 财务子页做 `GET /api/data/{table}` 通用 List 全量翻页。** APP 首屏与子页读路径已停用该路径。
+3. APP 现在只打 **`/api/pages/finance/*` 页面专用接口**。慢、缺字段、余额不对，都要在这些专用接口上修，而不是补 List。
+4. **账户余额必须由服务端按全量流水汇总后下发。** APP 本地只缓存近期流水窗口，**禁止**再用不全量流水重算余额。
+5. 任一专用接口失败时，APP **只回退本地 SQLite**，**禁止**再降级到 `/api/data/finance_transactions` 等全表 List。
 
 ---
 
@@ -25,7 +29,7 @@
 
 | 已停用 | 原因 |
 |--------|------|
-| `syncPageScopeFromApi('tabs/finance')` 串行全量拉 12 张表 | 含 `finance_transactions` 无限增长、以及首页不用的 cash_flow / savings / 遗留 `accounts` |
+| `syncPageScopeFromApi('tabs/finance')` 串行全量拉多表 | 含 `finance_transactions` 无限增长、以及首页不用的 cash_flow / savings；遗留 `accounts` 已下线 |
 | `GET /api/data/finance_transactions` 全表翻页 | 首页 / 统计 / 日历 / 资产余额共用，主瓶颈 |
 | `GET /api/data/finance_accounts` 等 List 读路径 | 改走 catalog / home |
 | `GET /api/data/cash_flow_*` 四表 List | 改走 `/api/pages/finance/cash-flow` |
@@ -388,7 +392,7 @@ GET /api/pages/finance/insights?months=6
 - [ ] `GET /api/data/finance_accounts`
 - [ ] `GET /api/data/finance_flow_categories`
 - [ ] `GET /api/data/finance_account_types`
-- [ ] `GET /api/data/accounts` / `account_transactions`
+- [ ] `GET /api/data/accounts` / `account_transactions`（表已下线，出现即回归）
 - [ ] `GET /api/data/savings_plans` / `savings_plan_deposits`
 - [ ] `GET /api/data/cash_flow_profile` / `cash_flow_incomes` / `cash_flow_holdings` / `cash_flow_expense_lines`
 

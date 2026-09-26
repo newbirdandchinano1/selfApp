@@ -8,7 +8,7 @@ import {
 } from '@/lib/cloud-sql-dirty-track';
 import { isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { resolveApiPushInsertOrder } from '@/lib/cloud-sql-sync';
-import { listPageScopeTables, TAB_PAGE_KEYS } from '@/lib/page-api-scope';
+import { isPageApiOnlyTab, listPageScopeTables } from '@/lib/page-api-scope';
 
 export { listAllTabPageKeys, listPageScopeTables } from '@/lib/page-api-scope';
 
@@ -52,12 +52,7 @@ export async function syncPageScopeFromApi(
   pageKey: string,
   opts?: { signal?: AbortSignal },
 ): Promise<{ ok: boolean; tablesSynced: number; error?: string }> {
-  if (
-    pageKey === TAB_PAGE_KEYS.tasks ||
-    pageKey === TAB_PAGE_KEYS.finance ||
-    pageKey === TAB_PAGE_KEYS.review ||
-    pageKey === TAB_PAGE_KEYS.profile
-  ) {
+  if (isPageApiOnlyTab(pageKey)) {
     return { ok: true, tablesSynced: 0 };
   }
 

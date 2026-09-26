@@ -29,7 +29,7 @@ import {
     consumeFinanceSheetLaunchIntent,
     peekFinanceSheetLaunchIntent,
     type FinanceSheetLaunchIntent,
-} from '@/lib/finance-sheet-launch-intent';
+} from '@/lib/finance-transaction-sheet/controller';
 import {
     buildExpenseCategories,
     buildIncomeCategories,

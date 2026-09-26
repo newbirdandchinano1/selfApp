@@ -10,7 +10,6 @@ export const PRESERVE_ON_EMPTY_API: Record<string, readonly string[]> = {
   tasks: ['category_id', 'project_id', 'parent_task_id'],
   projects: ['category_id'],
   finance_transactions: ['flow_category_id', 'account_id'],
-  memos: ['dimension_id'],
   recipe_items: ['category_id'],
 };
 
@@ -21,7 +20,6 @@ export const UPLOAD_PRESERVE_FK: ReadonlyArray<{ table: string } & ForeignKeyRef
   /** 局部更新 status 时父项目/父任务通常已存在于服务端，不应因本批未上传而置空 */
   { table: 'tasks', fromColumn: 'project_id', parentTable: 'projects' },
   { table: 'tasks', fromColumn: 'parent_task_id', parentTable: 'tasks' },
-  { table: 'memos', fromColumn: 'dimension_id', parentTable: 'memo_dimensions' },
   { table: 'finance_transactions', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
   { table: 'recipe_items', fromColumn: 'category_id', parentTable: 'recipe_categories' },
   { table: 'habit_check_ins', fromColumn: 'habit_id', parentTable: 'habits' },
@@ -140,13 +138,6 @@ export async function readReferencedParentIdsForReconcile(
         ...distinctNonEmptyIds(fromTxns, 'flow_category_id'),
         ...distinctNonEmptyIds(fromParents, 'parent_id'),
       ]);
-    }
-    case 'memo_dimensions': {
-      const rows = await db.getAllAsync<{ dimension_id: string | null }>(
-        `SELECT DISTINCT dimension_id FROM memos
-         WHERE dimension_id IS NOT NULL AND TRIM(dimension_id) != ''`,
-      );
-      return distinctNonEmptyIds(rows, 'dimension_id');
     }
     case 'recipe_categories': {
       const rows = await db.getAllAsync<{ category_id: string | null }>(

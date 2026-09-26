@@ -1,5 +1,5 @@
-import { DailyReviewDimensionDetailScreen } from '@/components/review/daily-review-dimension-detail-screen';
+import { ReviewDimensionDetailScreen } from '@/components/review/review-dimension-detail-screen';
 
 export default function DailyReviewDimensionDetailRoute() {
-  return <DailyReviewDimensionDetailScreen />;
+  return <ReviewDimensionDetailScreen scope="daily" />;
 }

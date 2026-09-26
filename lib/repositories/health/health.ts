@@ -3,7 +3,8 @@ import { File } from 'expo-file-system';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
-import { addDaysToYmd, compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
+import { compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
+import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
 import { getDatabase } from '../../database.native';
 import type {
   CreateHealthRecordInput,
@@ -233,10 +234,7 @@ export async function buildUserHealthCalendarSnapshot(
 }
 
 function formatHealthCalendarYmd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatYmd(d);
 }
 
 function normalizeHealthCalendarDate(d: Date) {
@@ -245,10 +243,7 @@ function normalizeHealthCalendarDate(d: Date) {
 
 /** 避免 `new Date('YYYY-MM-DD')` 按 UTC 解析导致本地日界偏移 */
 function parseLocalYmdSafe(ymd: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
-  if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isNaN(d.getTime()) ? null : d;
+  return parseYmd(ymd);
 }
 
 function getDayCompletionLevelFromTotals(

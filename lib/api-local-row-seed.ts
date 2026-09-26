@@ -138,7 +138,9 @@ async function sanitizeFinanceScheduledExpenseRowForLocalSeed(
 
 async function sanitizeMemoRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
   const next = { ...row };
-  await preserveFkColumnWhenMissing(next, 'dimension_id', 'memo_dimensions');
+  next.dimension_id = null;
+  next.dimension = null;
+  delete next.dimension_detail;
   return next;
 }
 

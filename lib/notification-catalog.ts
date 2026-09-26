@@ -83,13 +83,23 @@ export function getNotificationCategoryMeta(
   return found;
 }
 
+/** 按 catalog 前缀拼 identifier（无前缀的类别返回 null）。 */
+export function buildNotificationIdentifier(
+  category: NotificationCategoryId,
+  entityKey: string,
+): string | null {
+  const prefix = getNotificationCategoryMeta(category).identifierPrefix;
+  if (!prefix) return null;
+  const key = entityKey.trim();
+  if (!key) return prefix.endsWith(':') ? null : prefix;
+  return prefix.endsWith(':') ? `${prefix}${key}` : `${prefix}:${key}`;
+}
+
 export function resolveNotificationCategoryFromIdentifier(
   identifier: string,
 ): NotificationCategoryId | null {
   const id = identifier.trim();
   if (!id) return null;
-  // 旧截止日待办前缀：兼容已预约条目展示
-  if (id.startsWith('selfapp-task-reminder:')) return 'schedule-slot-reminder';
   for (const cat of NOTIFICATION_CATEGORIES) {
     if (!cat.identifierPrefix) continue;
     if (cat.identifierPrefix.endsWith(':')) {
@@ -107,7 +117,7 @@ export function resolveNotificationCategoryFromData(
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
   const type = (data as Record<string, unknown>).type;
   if (type === 'health-intake-reminder') return 'health-intake-reminder';
-  if (type === 'schedule-slot-reminder' || type === 'task-reminder') return 'schedule-slot-reminder';
+  if (type === 'schedule-slot-reminder') return 'schedule-slot-reminder';
   if (type === 'habit-reminder') return 'habit-reminder';
   if (type === 'daily-review-reminder') return 'daily-review-reminder';
   if (type === 'auto-ledger' || type === 'auto-ledger-hint' || type === 'auto-ledger-failure') {

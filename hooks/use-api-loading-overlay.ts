@@ -36,6 +36,8 @@ function useApiLoadingError(): ApiLoadingErrorState | null {
   return useSyncExternalStore(subscribeApiLoading, getErrorSnapshot, getErrorServerSnapshot);
 }
 
+export { useApiLoadingRaw };
+
 /**
  * 全局 API 加载蒙层：最短展示时间、全屏阻塞、超时/失败提示与重试。
  */

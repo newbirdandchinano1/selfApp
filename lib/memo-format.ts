@@ -1,4 +1,15 @@
-export type TextSelection = { start: number; end: number };
+import type { MarkupProfile, MarkupTagMatch, RichCharStyle, RichTextModel, TextSelection } from './rich-text/index';
+import {
+  emptyRichTextModel,
+  lineBounds,
+  normalizeRichTextModel,
+  parseMarkupToModel,
+  serializeModelToMarkup,
+  toggleStyleOnRange,
+  updateRichTextModelPlain,
+} from './rich-text/index';
+
+export type { TextSelection };
 
 export type MemoFormatAction =
   | 'bold'
@@ -19,177 +30,86 @@ export type MemoEditModel = {
 
 const INDENT_STEP = '  ';
 
-export function emptyMemoEditModel(): MemoEditModel {
-  return { plain: '', styles: [] };
+function asMemoModel(model: RichTextModel): MemoEditModel {
+  return model as MemoEditModel;
 }
 
-function findLastStackIndex(stack: CharStyle[], pred: (s: CharStyle) => boolean): number {
-  for (let i = stack.length - 1; i >= 0; i--) {
-    if (pred(stack[i]!)) return i;
-  }
-  return -1;
+function asRichModel(model: MemoEditModel): RichTextModel {
+  return model as RichTextModel;
 }
 
-export function normalizeMemoEditModel(model: MemoEditModel): MemoEditModel {
-  const styles = [...model.styles];
-  while (styles.length < model.plain.length) styles.push({});
-  if (styles.length > model.plain.length) styles.length = model.plain.length;
-  return { plain: model.plain, styles };
-}
-
-function mergeStyles(stack: CharStyle[]): CharStyle {
-  const out: CharStyle = {};
-  for (const s of stack) {
-    if (s.bold) out.bold = true;
-    if (s.size) out.size = s.size;
-  }
-  return out;
-}
-
-/** 将存储的正文（含标记）解析为编辑用纯文本 + 样式 */
-export function parseMemoBodyToEditModel(body: string): MemoEditModel {
-  const plainChars: string[] = [];
-  const styles: CharStyle[] = [];
-  const stack: CharStyle[] = [];
-  let i = 0;
-
-  while (i < body.length) {
+export const MEMO_MARKUP_PROFILE: MarkupProfile = {
+  matchTagAt(body, i, stack): MarkupTagMatch | null {
     if (body.startsWith('[小]', i)) {
-      stack.push({ size: 'small' });
-      i += 3;
-      continue;
+      return { kind: 'push', style: { size: 'small' }, length: 3 };
     }
     if (body.startsWith('[/小]', i)) {
-      const idx = findLastStackIndex(stack, s => s.size === 'small');
-      if (idx >= 0) stack.splice(idx, 1);
-      i += 4;
-      continue;
+      return { kind: 'pop', pred: s => s.size === 'small', length: 4 };
     }
     if (body.startsWith('[大]', i)) {
-      stack.push({ size: 'large' });
-      i += 3;
-      continue;
+      return { kind: 'push', style: { size: 'large' }, length: 3 };
     }
     if (body.startsWith('[/大]', i)) {
-      const idx = findLastStackIndex(stack, s => s.size === 'large');
-      if (idx >= 0) stack.splice(idx, 1);
-      i += 4;
-      continue;
+      return { kind: 'pop', pred: s => s.size === 'large', length: 4 };
     }
     if (body.startsWith('**', i)) {
-      const idx = findLastStackIndex(stack, s => !!s.bold);
-      if (idx >= 0) stack.splice(idx, 1);
-      else stack.push({ bold: true });
-      i += 2;
-      continue;
+      const hasBold = stack.some(s => !!s.bold);
+      if (hasBold) return { kind: 'pop', pred: s => !!s.bold, length: 2 };
+      return { kind: 'push', style: { bold: true }, length: 2 };
     }
     if (body.startsWith('~~', i)) {
       const close = body.indexOf('~~', i + 2);
       if (close !== -1) {
-        for (let j = i + 2; j < close; j++) {
-          plainChars.push(body[j]!);
-          styles.push(mergeStyles(stack));
-        }
-        i = close + 2;
-        continue;
+        return {
+          kind: 'skipSpan',
+          contentStart: i + 2,
+          contentEnd: close,
+          totalLength: close + 2 - i,
+        };
       }
     }
     if (body[i] === '*' && body[i + 1] !== '*') {
       const close = body.indexOf('*', i + 1);
       if (close !== -1) {
-        for (let j = i + 1; j < close; j++) {
-          plainChars.push(body[j]!);
-          styles.push(mergeStyles(stack));
-        }
-        i = close + 1;
-        continue;
+        return {
+          kind: 'skipSpan',
+          contentStart: i + 1,
+          contentEnd: close,
+          totalLength: close + 1 - i,
+        };
       }
     }
+    return null;
+  },
+  wrapRun(text, style) {
+    let chunk = text;
+    if (style.size === 'small') chunk = `[小]${chunk}[/小]`;
+    if (style.size === 'large') chunk = `[大]${chunk}[/大]`;
+    if (style.bold) chunk = `**${chunk}**`;
+    return chunk;
+  },
+};
 
-    plainChars.push(body[i]!);
-    styles.push(mergeStyles(stack));
-    i += 1;
-  }
-
-  return normalizeMemoEditModel({ plain: plainChars.join(''), styles });
+export function emptyMemoEditModel(): MemoEditModel {
+  return asMemoModel(emptyRichTextModel());
 }
 
-function styleSignature(style: CharStyle): string {
-  return `${style.bold ? 'b' : ''}|${style.size ?? ''}`;
+export function normalizeMemoEditModel(model: MemoEditModel): MemoEditModel {
+  return asMemoModel(normalizeRichTextModel(asRichModel(model)));
+}
+
+/** 将存储的正文（含标记）解析为编辑用纯文本 + 样式 */
+export function parseMemoBodyToEditModel(body: string): MemoEditModel {
+  return asMemoModel(parseMarkupToModel(body, MEMO_MARKUP_PROFILE));
 }
 
 /** 编辑模型序列化回存储格式（兼容查看页解析） */
 export function serializeMemoEditModel(model: MemoEditModel): string {
-  const { plain, styles } = model;
-  if (!plain) return '';
-
-  type Run = { text: string; style: CharStyle };
-  const runs: Run[] = [];
-  let runStart = 0;
-
-  const pushRun = (end: number) => {
-    if (end <= runStart) return;
-    runs.push({
-      text: plain.slice(runStart, end),
-      style: styles[runStart] ?? {},
-    });
-    runStart = end;
-  };
-
-  for (let i = 1; i <= plain.length; i++) {
-    const prev = styles[i - 1] ?? {};
-    const cur = styles[i] ?? {};
-    if (i === plain.length || styleSignature(prev) !== styleSignature(cur)) {
-      pushRun(i);
-    }
-  }
-
-  return runs
-    .map(run => {
-      let chunk = run.text;
-      if (run.style.size === 'small') chunk = `[小]${chunk}[/小]`;
-      if (run.style.size === 'large') chunk = `[大]${chunk}[/大]`;
-      if (run.style.bold) chunk = `**${chunk}**`;
-      return chunk;
-    })
-    .join('');
+  return serializeModelToMarkup(asRichModel(model), MEMO_MARKUP_PROFILE);
 }
 
-function textDiff(oldText: string, newText: string): { start: number; removed: number; added: number } {
-  let start = 0;
-  while (start < oldText.length && start < newText.length && oldText[start] === newText[start]) {
-    start += 1;
-  }
-  let oldEnd = oldText.length;
-  let newEnd = newText.length;
-  while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === newText[newEnd - 1]) {
-    oldEnd -= 1;
-    newEnd -= 1;
-  }
-  return { start, removed: oldEnd - start, added: newEnd - start };
-}
-
-export function updateMemoEditModelPlain(
-  model: MemoEditModel,
-  nextPlain: string,
-): MemoEditModel {
-  if (nextPlain === model.plain) return model;
-  const { start, removed, added } = textDiff(model.plain, nextPlain);
-  const inherit: CharStyle =
-    start > 0 ? { ...(model.styles[start - 1] ?? {}) } : added > 0 && start < model.styles.length
-      ? { ...(model.styles[start] ?? {}) }
-      : {};
-  const nextStyles = [...model.styles];
-  const inserts = Array.from({ length: added }, () => ({ ...inherit }));
-  nextStyles.splice(start, removed, ...inserts);
-  return normalizeMemoEditModel({ plain: nextPlain, styles: nextStyles });
-}
-
-function lineBounds(text: string, index: number): { start: number; end: number } {
-  const start = text.lastIndexOf('\n', Math.max(0, index - 1)) + 1;
-  const nextNl = text.indexOf('\n', index);
-  const end = nextNl === -1 ? text.length : nextNl;
-  return { start, end };
+export function updateMemoEditModelPlain(model: MemoEditModel, nextPlain: string): MemoEditModel {
+  return asMemoModel(updateRichTextModelPlain(asRichModel(model), nextPlain));
 }
 
 function lineRangeForSelection(text: string, selection: TextSelection): { start: number; end: number } {
@@ -268,32 +188,6 @@ function adjustModelIndent(
   };
 }
 
-function toggleStyleOnRange(
-  styles: CharStyle[],
-  start: number,
-  end: number,
-  patch: Partial<CharStyle>,
-  isActive: (style: CharStyle) => boolean,
-): CharStyle[] {
-  if (start >= end) return styles;
-  const next = [...styles];
-  const active = next.slice(start, end).every(isActive);
-  for (let i = start; i < end; i++) {
-    const cur = { ...(next[i] ?? {}) };
-    if (active) {
-      if (patch.bold) delete cur.bold;
-      if (patch.size === 'small' || patch.size === 'large') delete cur.size;
-    } else {
-      if (patch.bold) cur.bold = true;
-      if (patch.size) {
-        cur.size = patch.size;
-      }
-    }
-    next[i] = cur;
-  }
-  return next;
-}
-
 export function applyMemoFormatToModel(
   model: MemoEditModel,
   selection: TextSelection,
@@ -306,7 +200,7 @@ export function applyMemoFormatToModel(
   const { start, end } = selection;
   if (start >= end) return { model, selection };
 
-  let nextStyles = model.styles;
+  let nextStyles: RichCharStyle[] = model.styles;
   if (action === 'bold') {
     nextStyles = toggleStyleOnRange(nextStyles, start, end, { bold: true }, s => Boolean(s.bold));
   } else if (action === 'size-small') {
@@ -327,7 +221,7 @@ export function applyMemoFormatToModel(
     );
   }
 
-  return { model: { plain: model.plain, styles: nextStyles }, selection };
+  return { model: { plain: model.plain, styles: nextStyles as CharStyle[] }, selection };
 }
 
 export type InlineSegment = {

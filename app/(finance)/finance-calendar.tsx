@@ -3,6 +3,7 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { runPageApiLoad } from '@/lib/page-api-session';
+import { formatYmd } from '@/lib/date';
 import { fetchFinanceDailySummaries, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -39,13 +40,6 @@ const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
 const GRID_PADDING = 6;
 const GRID_GAP = 4;
 
-function formatYMD(date: Date) {
-  const y = date.getFullYear();
-  const m = date.getMonth() + 1;
-  const d = date.getDate();
-  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-}
-
 function isSameDay(a: Date, b: Date) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
@@ -75,7 +69,7 @@ function buildCalendarCells(targetMonth: Date, dailyMap: Map<string, FinanceDail
   return Array.from({ length: 42 }).map((_, idx) => {
     const d = new Date(gridStart);
     d.setDate(gridStart.getDate() + idx);
-    const ymd = formatYMD(d);
+    const ymd = formatYmd(d);
     const row = dailyMap.get(ymd);
     return {
       key: ymd,
@@ -216,8 +210,8 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
     void runPageApiLoad('finance-calendar', async () => {
       try {
         const { days: rows } = await fetchFinanceDailySummaries({
-          start: formatYMD(gridStart),
-          end: formatYMD(gridEnd),
+          start: formatYmd(gridStart),
+          end: formatYmd(gridEnd),
           offlineFallback: true,
         });
         if (cancelled) return;
@@ -372,7 +366,7 @@ export default function FinanceCalendarScreen() {
 
   const reloadDayTxns = React.useCallback(async (date: Date) => {
     try {
-      const ymd = formatYMD(date);
+      const ymd = formatYmd(date);
       const { transactions: rows } = await fetchFinanceTransactionsRange({
         start: ymd,
         end: ymd,

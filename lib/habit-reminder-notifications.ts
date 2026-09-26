@@ -1,4 +1,15 @@
+/**
+ * 习惯打卡本地提醒：业务只决定「哪天几点、哪个习惯」；权限/通道/排期走 scheduler。
+ * 养成入格习惯改走日程格提醒（habitUsesScheduleSlotReminderChannel），避免双推。
+ */
+
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
+import { buildNotificationIdentifier } from '@/lib/notification-catalog';
+import {
+  cancelScheduledByIdentifier,
+  isLocalNotificationSchedulingUnavailable,
+  scheduleDateReminder,
+} from '@/lib/notification-scheduler';
 import { getHabits, getHabitById } from '@/lib/repositories/habits/habit';
 import {
   getAllHabitCheckInsMaps,
@@ -8,40 +19,24 @@ import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habit
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
-import { canScheduleAppNotification } from '@/lib/notification-center-settings';
-import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
-import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
-import { Platform } from 'react-native';
 
-const NOTIFICATION_PREFIX = 'selfapp-habit-reminder:';
-const ANDROID_CHANNEL_ID = 'habit-reminders';
+const ANDROID_CHANNEL = {
+  id: 'habit-reminders',
+  name: '习惯打卡提醒',
+  importance: 'default' as const,
+  vibrationPattern: [0, 200, 120, 200],
+};
+
 /** 向前扫描候选提醒日（覆盖每月定期等稀疏日程） */
 const MAX_LOOKAHEAD_DAYS = 40;
 
-function notificationIdentifier(habitId: string): string {
-  return `${NOTIFICATION_PREFIX}${habitId}`;
-}
-
-async function ensureAndroidChannel() {
-  if (Platform.OS !== 'android') return;
-  const Notifications = await import('expo-notifications');
-  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-    name: '习惯打卡提醒',
-    importance: Notifications.AndroidImportance.DEFAULT,
-    vibrationPattern: [0, 200, 120, 200],
-    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-  });
+export function habitReminderIdentifier(habitId: string): string {
+  return buildNotificationIdentifier('habit-reminder', habitId) ?? `selfapp-habit-reminder:${habitId}`;
 }
 
 /** 取消某习惯的本地提醒（删除习惯或关闭提醒时调用）。 */
 export async function cancelScheduledHabitReminder(habitId: string): Promise<void> {
-  if (Platform.OS === 'web') return;
-  try {
-    const Notifications = await import('expo-notifications');
-    await Notifications.cancelScheduledNotificationAsync(notificationIdentifier(habitId));
-  } catch (e) {
-    console.warn('取消习惯提醒失败', habitId, e);
-  }
+  await cancelScheduledByIdentifier(habitReminderIdentifier(habitId));
 }
 
 /**
@@ -133,26 +128,13 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   scheduled: boolean;
   permissionDenied: boolean;
 }> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
+  if (isLocalNotificationSchedulingUnavailable()) {
     return { scheduled: false, permissionDenied: false };
   }
 
   const { habitId, enabled, hour, minute, title } = params;
-  const id = notificationIdentifier(habitId);
-
-  let Notifications: typeof import('expo-notifications');
-  try {
-    Notifications = await import('expo-notifications');
-  } catch (e) {
-    console.warn('expo-notifications 不可用', e);
-    return { scheduled: false, permissionDenied: false };
-  }
-
-  try {
-    await Notifications.cancelScheduledNotificationAsync(id);
-  } catch {
-    /* 无已登记通知时忽略 */
-  }
+  const id = habitReminderIdentifier(habitId);
+  await cancelScheduledByIdentifier(id);
 
   if (!enabled) {
     return { scheduled: false, permissionDenied: false };
@@ -171,22 +153,6 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   if (habitUsesScheduleSlotReminderChannel(extraData)) {
     return { scheduled: false, permissionDenied: false };
   }
-
-  if (!(await canScheduleAppNotification({ category: 'habit-reminder', identifier: id }))) {
-    return { scheduled: false, permissionDenied: false };
-  }
-
-  const perm = await Notifications.getPermissionsAsync();
-  let granted = perm.status === 'granted';
-  if (!granted && perm.canAskAgain !== false) {
-    const req = await Notifications.requestPermissionsAsync();
-    granted = req.status === 'granted';
-  }
-  if (!granted) {
-    return { scheduled: false, permissionDenied: true };
-  }
-
-  await ensureAndroidChannel();
 
   const h = Math.max(0, Math.min(23, Math.floor(hour)));
   const m = Math.max(0, Math.min(59, Math.floor(minute)));
@@ -207,48 +173,31 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
     return { scheduled: false, permissionDenied: false };
   }
 
-  const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
   const habitName = title.trim() || '习惯';
   const fingerprint = `${habitId}|${habitName}|${h}:${m}|${fireAt.toISOString().slice(0, 16)}`;
-  const copy = await resolveNotificationAiCopy({
+
+  return scheduleDateReminder({
+    category: 'habit-reminder',
     identifier: id,
-    fingerprint,
+    fireAt,
+    channel: ANDROID_CHANNEL,
+    data: { type: 'habit-reminder', habitId },
     fallback: {
       title: '习惯打卡提醒',
       body: `${habitName}，该打卡啦`,
     },
+    fingerprint,
     contextBlock: [`【频道】习惯打卡提醒`, `【习惯名】${habitName}`].join('\n'),
   });
-
-  try {
-    await Notifications.scheduleNotificationAsync({
-      identifier: id,
-      content: {
-        title: copy.title,
-        body: copy.body,
-        sound: true,
-        data: { type: 'habit-reminder', habitId },
-      },
-      trigger: {
-        type: SchedulableTriggerInputTypes.DATE,
-        date: fireAt,
-        channelId: Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined,
-      },
-    });
-    return { scheduled: true, permissionDenied: false };
-  } catch (e) {
-    console.warn('登记习惯提醒失败', habitId, e);
-    return { scheduled: false, permissionDenied: false };
-  }
 }
 
 /** 按当前习惯与打卡状态，重新登记所有已开启提醒的习惯。 */
 export async function resyncAllHabitReminders(): Promise<void> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
+  if (isLocalNotificationSchedulingUnavailable()) return;
 
   const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
   await Promise.all(
-    habits.map(async (habit) => {
+    habits.map(async habit => {
       const reminder = parseHabitReminder(habit.extra_data);
       if (!reminder.enabled) {
         await cancelScheduledHabitReminder(habit.id);
@@ -276,7 +225,7 @@ export async function resyncAllHabitReminders(): Promise<void> {
 
 /** 单个习惯打卡/撤销后刷新其下一次提醒。 */
 export async function resyncHabitReminderForHabitId(habitId: string): Promise<void> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
+  if (isLocalNotificationSchedulingUnavailable()) return;
   const habit = await getHabitById(habitId);
   if (!habit) {
     await cancelScheduledHabitReminder(habitId);

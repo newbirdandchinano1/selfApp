@@ -1,4 +1,18 @@
-/** MySQL DATETIME 不接受 ISO8601（如 2026-05-28T07:56:00.549Z），REST 上传前统一规范化 */
+/**
+ * MySQL DATETIME 读写规范化（与 REST / 本地 SQLite 同步）。
+ *
+ * ## 日界约定（按业务字段）
+ *
+ * | 语义 | 字段 / 表 | 存库形态 | 读日历日 |
+ * |------|-----------|----------|----------|
+ * | **墙上时钟** | `happened_at`、`completed_at`；以及 `tasks` / `task_execution_events` / `frog_completion_events` / `project_completion_logs` 的 `created_at`/`updated_at`；积分钱包 OCC 的 `updated_at` | `YYYY-MM-DD HH:mm:ss` 与手机本地时刻一致，**不做 UTC 偏移** | `ymdFromDatetime` / `ymdFromAuditDatetime` |
+ * | **DATE 列** | 如健康 `record_date`、复盘归属日 | 纯 `YYYY-MM-DD` | 原样；日历运算用 `@/lib/date` |
+ * | **UTC 瞬间** | 其余表通用 `created_at`/`updated_at` 等（上传 normalize 时） | 按 UTC 写入 DATETIME 数字 | 仅当值带 `Z`/offset 时按瞬间解析；无时区 naive 串仍按墙上时钟理解，避免东八区错一天 |
+ *
+ * 日历日加减 / `formatYmd` 等见 `@/lib/date`。自定义日界逻辑日见 `@/lib/tasks-logical-day`。
+ */
+
+import { formatYmd, ymdPrefix } from '@/lib/date';
 
 const ISO_LIKE_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 const MYSQL_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/;
@@ -7,13 +21,7 @@ const MYSQL_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}
 const DATETIME_FIELD_RE =
   /(_at|_date|At|Date|happened_at|due_date|record_date|review_at|generated_at|fulfilled_at|last_ai_at|inbox_entered_at|completed_at|earned_at|redeemed_at|assigned_ymd|cache_date_ymd|startTime|endTime|fetchedAt)$/i;
 
-/**
- * 时间字段约定（与 MySQL REST 同步）：
- * - **墙上时钟**：按设备本地时区存 YYYY-MM-DD HH:mm:ss，读写都不做 UTC 偏移。
- * - 无时区的 MySQL DATETIME 一律按墙上时钟理解；带 `Z` / offset 的 ISO 仍按标准瞬间解析。
- * - 任务模块（tasks / 执行事件 / 青蛙事件）的 created_at、updated_at、completed_at 上传时保持墙上时钟。
- * 读取「逻辑日」相关字段请用 parseTaskAuditDatetimeForLogicalDay / ymdFromAuditDatetime。
- */
+/** 上传时强制按墙上时钟写出（与界面一致） */
 const WALL_CLOCK_DATETIME_FIELDS = new Set(['happened_at', 'completed_at']);
 const WALL_CLOCK_DATETIME_TABLES = new Set([
   'tasks',
@@ -42,12 +50,12 @@ function pad2(n: number): string {
 
 /** 本地墙上时钟 → MySQL DATETIME（秒精度） */
 export function formatWallClockDatetimeLocal(date: Date): string {
-  const day = [date.getFullYear(), pad2(date.getMonth() + 1), pad2(date.getDate())].join('-');
+  const day = formatYmd(date);
   const time = [pad2(date.getHours()), pad2(date.getMinutes()), pad2(date.getSeconds())].join(':');
   return `${day} ${time}`;
 }
 
-/** 解析 ISO 或 MySQL DATETIME；`YYYY-MM-DD HH:mm:ss` 按本地墙上时钟理解 */
+/** 解析 ISO 或 MySQL DATETIME；无时区 `YYYY-MM-DD HH:mm:ss` 按本地墙上时钟理解 */
 export function parseStoredDatetime(value: string): Date {
   const trimmed = value.trim();
   const m = MYSQL_DATETIME_RE.exec(trimmed);
@@ -66,7 +74,8 @@ export function formatStoredDatetimeHm(value: string): string {
 }
 
 /**
- * 仅用于带时区的 ISO 瞬间。无时区 MySQL DATETIME 不要走这里，否则东八区会错一天。
+ * 仅用于带时区的 ISO 瞬间，或明确按 UTC 理解的 naive DATETIME。
+ * 用户可见的账单/任务/健康日界字段不要走这里，否则东八区会错一天。
  */
 export function parseAuditDatetimeUtc(value: string): Date {
   const trimmed = value.trim();
@@ -94,17 +103,19 @@ export function formatTaskAuditDatetimeLocal(date: Date = new Date()): string {
   return formatWallClockDatetimeLocal(date);
 }
 
-/** 从 completed_at / updated_at 等审计时间取本地日历 YMD（墙上时钟，无 UTC 偏移） */
-export function ymdFromAuditDatetime(value: string | null | undefined): string | null {
+/**
+ * 任意存库 DATETIME / ISO → 本地日历 YYYY-MM-DD（墙上时钟，无 UTC 偏移）。
+ * 财务 `happened_at`、任务审计时间、健康记录时间戳等用户可见日界统一走这里。
+ */
+export function ymdFromDatetime(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
-  const d = parseTaskAuditDatetimeForLogicalDay(value);
-  if (Number.isNaN(d.getTime())) {
-    const m = value.trim().match(/^(\d{4}-\d{2}-\d{2})/);
-    return m?.[1] ?? null;
-  }
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const d = parseStoredDatetime(value);
+  if (Number.isNaN(d.getTime())) return ymdPrefix(value);
+  return formatYmd(d);
 }
+
+/** @alias ymdFromDatetime — 任务 completed_at / 执行事件 created_at 等审计字段语义名 */
+export const ymdFromAuditDatetime = ymdFromDatetime;
 
 function shouldNormalizeDateTimeString(value: string, fieldKey?: string): boolean {
   const trimmed = value.trim();
@@ -180,5 +191,5 @@ export function normalizeRecordForMysqlApi(row: Record<string, unknown>, table?:
   return out;
 }
 
-/** @alias 财务流水消费/支付时刻（本地墙上时钟） */
+/** 财务流水消费/支付时刻（本地墙上时钟） */
 export const formatFinanceHappenedAt = formatWallClockDatetimeLocal;

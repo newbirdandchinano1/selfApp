@@ -30,7 +30,6 @@ import type {
   CreateFinanceTransactionInput,
   CreateFinanceTransferInput,
   FinanceAccountTypeRow,
-  FinanceDailySummaryRow,
   FinanceAccountBalanceRow,
   FinanceAccountRow,
   FinanceFlowCategoryRow,
@@ -1088,23 +1087,9 @@ export async function getFinanceDailySummariesByDateRange(
   endYmd: string,
   opts?: { localOnly?: boolean },
 ) {
+  const { aggregateTransactions } = await import('@/lib/finance-aggregate');
   const rows = await loadFinanceTransactionsForActiveAccounts({ localOnly: opts?.localOnly ?? true });
-  const byDay = new Map<string, { income: number; expense: number; net: number }>();
-  for (const t of rows) {
-    const day = ymdFromDatetime(t.happened_at);
-    if (!day || day < startYmd || day > endYmd) continue;
-    // 转账只影响账户余额，不计入收入/支出/结余统计
-    if (t.transaction_type === 'transfer') continue;
-    const effect = computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
-    const agg = byDay.get(day) ?? { income: 0, expense: 0, net: 0 };
-    if (effect > 0) agg.income += effect;
-    else if (effect < 0) agg.expense += Math.abs(effect);
-    agg.net += effect;
-    byDay.set(day, agg);
-  }
-  return [...byDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, v]) => ({ day, ...v })) satisfies FinanceDailySummaryRow[];
+  return aggregateTransactions(rows, { start: startYmd, end: endYmd }).days;
 }
 
 export async function updateFinanceTransaction(id: string, input: UpdateFinanceTransactionInput) {

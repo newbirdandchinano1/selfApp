@@ -3,14 +3,23 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   dueDateFromScheduleMeta,
+  hasDateLimitBounds,
   mergeDateLimit,
   resolveInheritedDefaultSchedule,
+  scheduleMetaHasConcreteDates,
   scheduleMetaToDateLimit,
+  toYmd,
 } from '@/lib/schedule-inherit';
-import { tightenAllProjectTasks } from '@/lib/tighten-task-schedules';
+import { applyProjectScheduleToAllTasks } from '@/lib/tighten-task-schedules';
 import { consumeAddTaskResult } from '@/lib/add-task-bridge';
-import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import {
+  consumeSchedulePickerResult,
+  normalizeRouteParam,
+  type SchedulePickerInitPayload,
+  type PickedScheduleMeta,
+} from '@/lib/schedule-picker-bridge';
+import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import {
@@ -53,6 +62,7 @@ import {
 } from '@/lib/repositories/projects/project-tag';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
+import { setTaskTagIds } from '@/lib/repositories/tags/tag';
 import {
   countIncompleteTasksByProjectId,
   createTask,
@@ -102,59 +112,10 @@ type Subtask = {
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
-type SchedulePickerResult = {
-  mode: 'date' | 'time';
-  source: string;
-  quickChip: string;
-  allDay: boolean;
-  hasExactTime: boolean;
-  reminderOption: TaskReminderOption;
-  repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary: string;
-  weeklyDays: number[];
-  monthlyDays: number[];
-  yearlyDate: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime: string;
-  endTime: string;
-};
-
-type SchedulePickerInitPayload = {
-  mode?: 'date' | 'time';
-  quickChip?: string;
-  allDay?: boolean;
-  hasExactTime?: boolean;
-  reminderOption?: TaskReminderOption;
-  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary?: string;
-  weeklyDays?: number[];
-  monthlyDays?: number[];
-  yearlyDate?: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime?: string;
-  endTime?: string;
-};
 
 const TITLE_MAX_LENGTH = 80;
 
-type ProjectScheduleMeta = Pick<
-  SchedulePickerResult,
-  | 'mode'
-  | 'allDay'
-  | 'hasExactTime'
-  | 'reminderOption'
-  | 'repeatOption'
-  | 'repeatSummary'
-  | 'weeklyDays'
-  | 'monthlyDays'
-  | 'yearlyDate'
-  | 'date'
-  | 'range'
-  | 'startTime'
-  | 'endTime'
->;
+type ProjectScheduleMeta = PickedScheduleMeta;
 
 type ProjectExtraData = {
   schedule?: ProjectScheduleMeta | null;
@@ -183,12 +144,6 @@ function formatTime(value: string): string {
   const hour = String(date.getHours()).padStart(2, '0');
   const minute = String(date.getMinutes()).padStart(2, '0');
   return `${hour}:${minute}`;
-}
-
-function extractDueDate(deadlineText: string) {
-  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
-  if (!all?.length) return null;
-  return all[all.length - 1] ?? null;
 }
 
 function normalizeProjectCategoryId(categoryId: string | null | undefined): string | null {
@@ -296,7 +251,7 @@ function isProjectSubtaskUnchanged(
     repeat: subtask.repeat || subtask.repeatText || '',
   });
   const nextStatus = (subtask.done ? 'done' : 'todo') as TaskRow['status'];
-  const nextDue = extractDueDate(subtask.deadline || subtask.deadlineText || '');
+  const nextDue = extractDueDateFromDeadlineText(subtask.deadline || subtask.deadlineText || '');
   return (
     existing.title === (subtask.title.trim() || '未命名任务') &&
     (existing.description ?? null) === (subtask.acceptanceCriteria?.trim() || null) &&
@@ -400,17 +355,6 @@ function buildDeadlineTextFromSchedule(schedule: ProjectScheduleMeta | null) {
   return '';
 }
 
-function toYmd(value: string): string | null {
-  const t = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 const PAGE_API_KEY = 'edit-project';
 
 export default function EditProjectScreen() {
@@ -496,47 +440,11 @@ export default function EditProjectScreen() {
   const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
     if (!picked) return false;
-
-    if (picked.repeatOption !== '不重复') {
-      setDeadlineText('');
-    } else if (picked.mode === 'time' && picked.range) {
-      const rangeStart = formatDate(picked.range.start);
-      const rangeEnd = formatDate(picked.range.end);
-      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
-      const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
-      setDeadlineText(`${rangeLabel} ${timeLabel}`);
-    } else if (picked.date) {
-      const dateLabel = formatDate(picked.date);
-      const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
-      setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
-    } else {
-      setDeadlineText('');
-    }
-    setReminderText(
-      formatTaskReminderLabel({
-        reminderOption: picked.reminderOption,
-        reminderHour: picked.reminderHour,
-        reminderMinute: picked.reminderMinute,
-      }),
-    );
-    setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
-    setScheduleMeta({
-      mode: picked.mode,
-      allDay: picked.allDay,
-      hasExactTime: picked.hasExactTime,
-      reminderOption: picked.reminderOption,
-      reminderHour: picked.reminderHour,
-      reminderMinute: picked.reminderMinute,
-      repeatOption: picked.repeatOption,
-      repeatSummary: picked.repeatSummary,
-      weeklyDays: picked.weeklyDays,
-      monthlyDays: picked.monthlyDays,
-      yearlyDate: picked.yearlyDate,
-      date: picked.date,
-      range: picked.range,
-      startTime: picked.startTime,
-      endTime: picked.endTime,
-    });
+    const labels = labelsFromPickerResult(picked);
+    setDeadlineText(labels.deadlineText);
+    setReminderText(labels.reminderText);
+    setRepeatText(labels.repeatText);
+    setScheduleMeta(labels.scheduleMeta);
     return true;
   }, [scheduleSource]);
 
@@ -556,7 +464,7 @@ export default function EditProjectScreen() {
       const taskSchedule = (task.schedule ?? null) as ProjectScheduleMeta | null;
       const dueDate = dueDateFromScheduleMeta(
         taskSchedule,
-        extractDueDate(task.deadline || task.deadlineText || ''),
+        extractDueDateFromDeadlineText(task.deadline || task.deadlineText || ''),
       );
       await createTask({
         id: task.id,
@@ -791,7 +699,7 @@ export default function EditProjectScreen() {
       const date = toYmd(scheduleMeta.date);
       if (date) return { start: date, end: date };
     }
-    const end = extractDueDate(deadlineText);
+    const end = extractDueDateFromDeadlineText(deadlineText);
     if (end) return { end };
     return null;
   }, [deadlineText, scheduleMeta]);
@@ -908,10 +816,10 @@ export default function EditProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withReward), isLongTermProject);
-      // 保存后若已有任务，清除项目级青蛙标记（项目不可再作青蛙）
+      // 项目一旦有子任务，不再可作为青蛙实体
       const nextExtraAfterTasks =
         subtasks.length > 0 ? clearProjectFrogFields(withLongTerm) : withLongTerm;
-      const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDate(deadlineText));
+      const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         name: trimmedTitle,
@@ -948,7 +856,7 @@ export default function EditProjectScreen() {
           note: null,
           status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
           priority: projectPriorityValue,
-          due_date: extractDueDate(subtask.deadline || subtask.deadlineText || ''),
+          due_date: extractDueDateFromDeadlineText(subtask.deadline || subtask.deadlineText || ''),
           extra_data: JSON.stringify({
             ...existingExtra,
             reminder: subtask.reminder || subtask.reminderText || '',
@@ -971,7 +879,7 @@ export default function EditProjectScreen() {
           );
         }
       }
-      // 同步未出现在编辑分录中的项目任务优先级（继承母项目）
+      // 保存后若已有任务，清除项目级青蛙标记（项目不可再作青蛙）
       const editedSubtaskIds = new Set(flatWithParents.map((x) => x.subtask.id));
       for (const [tid, existingTask] of existingTaskById) {
         if (editedSubtaskIds.has(tid)) continue;
@@ -979,7 +887,23 @@ export default function EditProjectScreen() {
           await updateTask(tid, { priority: projectPriorityValue }, writeOpts);
         }
       }
-      await tightenAllProjectTasks(projectId, projectFrame, writeOpts);
+      // 项目已设日程 → 下属任务完全继承；未设则不改任务自有日程
+      const scheduleForInherit =
+        scheduleMetaHasConcreteDates(scheduleToSave)
+          ? scheduleToSave
+          : hasDateLimitBounds(projectFrame)
+            ? resolveInheritedDefaultSchedule(scheduleToSave, projectFrame)
+            : null;
+      if (scheduleForInherit) {
+        await applyProjectScheduleToAllTasks(projectId, scheduleForInherit, writeOpts);
+      }
+      // 项目已贴标签 → 清除任务自有标签（展示/排序走项目标签）
+      if (selectedTagIds.length > 0) {
+        for (const [tid, existingTask] of existingTaskById) {
+          if (existingTask.parent_task_id) continue;
+          await setTaskTagIds(tid, []);
+        }
+      }
       await db.execAsync('COMMIT');
       committed = true;
     } catch (error) {
@@ -989,7 +913,7 @@ export default function EditProjectScreen() {
       } catch {
         /* 无活动事务时 ROLLBACK 可能失败，忽略 */
       }
-      console.warn('保存项目失败', error);
+      console.warn('删除项目失败', error);
       Alert.alert('保存失败', formatWriteError(error));
       setSaving(false);
     } finally {
@@ -1350,38 +1274,13 @@ export default function EditProjectScreen() {
               />
             </View>
 
-            <Pressable
+            <EntityFormScheduleField
+              deadlineText={deadlineText}
+              reminderText={reminderText}
+              repeatText={repeatText}
               onPress={openSchedulePicker}
-              disabled={loading || saving}
-              style={({ pressed }) => [
-                styles.scheduleRow,
-                { backgroundColor: fieldBg, opacity: loading || saving ? 0.65 : pressed ? 0.85 : 1 },
-              ]}>
-              <View style={[styles.scheduleIcon, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={20} color={primary} />
-              </View>
-              <View style={styles.deadlineBody}>
-                <Text style={[styles.fieldLabel, { color: outline }]}>时间限制</Text>
-                <Text style={[styles.fieldValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
-                {!!(reminderText || repeatText) && (
-                  <View style={styles.tagRow}>
-                    {!!reminderText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={13} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
-                      </View>
-                    )}
-                    {!!repeatText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={13} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color={outline} />
-            </Pressable>
+              label="时间限制"
+            />
           </View>
 
           <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
@@ -1410,6 +1309,10 @@ export default function EditProjectScreen() {
                         source: addTaskSource,
                         dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
                         defaultSchedule: inheritedTaskSchedule ? JSON.stringify(inheritedTaskSchedule) : '',
+                        lockSchedule:
+                          scheduleMetaHasConcreteDates(scheduleMeta) || hasDateLimitBounds(taskDateLimit ?? {})
+                            ? '1'
+                            : '',
                       },
                     })
                   }
@@ -1451,7 +1354,7 @@ export default function EditProjectScreen() {
               <View style={styles.longTermTextWrap}>
                 <Text style={[styles.longTermTitle, { color: theme.text }]}>长期项目</Text>
                 <Text style={[styles.longTermHint, { color: outline }]}>
-                  无子任务时可指派为青蛙；完成时确认是否结束整项
+                  删除后在同步或恢复功能前无法找回，确认删除吗？
                 </Text>
               </View>
               <MaterialIcons

@@ -17,6 +17,7 @@ import {
   type TasksCalendarProjectItem,
   type TasksCalendarTaskItem,
 } from '@/lib/tasks-calendar-data';
+import { formatYmd } from '@/lib/date';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -43,13 +44,6 @@ const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
 
 function roundCalendarWidth(width: number): number {
   return PixelRatio.roundToNearestPixel(width);
-}
-
-function formatYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 function monthStart(d: Date): Date {

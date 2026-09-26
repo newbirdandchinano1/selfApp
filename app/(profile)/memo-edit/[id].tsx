@@ -1,6 +1,8 @@
+import { CrudEditScreen } from '@/components/crud';
 import { MemoFormatToolbar } from '@/components/memo/memo-format-toolbar';
 import { MemoRichBodyInput } from '@/components/memo/memo-rich-body-input';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { AppIconButton } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
@@ -24,15 +26,12 @@ import {
 } from '@/lib/memos';
 import { getTagIdsByEntity, getTags } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
-import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -66,7 +65,6 @@ export default function MemoEditScreen() {
   const ink = colors.text;
   const muted = colors.textSecondary;
   const line = isDark ? 'rgba(148,163,184,0.22)' : colors.outlineStrong;
-  const headerBg = colors.headerScrim;
   const primary = colors.primary;
   const inputBg = isDark ? colors.input : colors.surface;
   const toolbarBg = isDark ? colors.surfaceMuted : colors.surfaceSubtle;
@@ -83,10 +81,12 @@ export default function MemoEditScreen() {
   const [pinned, setPinned] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setTagsLoading(true);
+    setError(null);
     try {
       const tags = await getTags();
       setAllTags(tags);
@@ -101,7 +101,7 @@ export default function MemoEditScreen() {
       if (!id) return;
       const row = await getMemo(id);
       if (!row) {
-        Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
+        setError('该备忘可能已删除');
         return;
       }
       setTitle(row.title);
@@ -109,12 +109,12 @@ export default function MemoEditScreen() {
       setPinned(Boolean(row.is_pinned));
       setSelectedTagIds(await getTagIdsByEntity('memo', id));
     } catch {
-      Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+      setError('加载失败，请重试');
     } finally {
       setLoading(false);
       setTagsLoading(false);
     }
-  }, [id, isNew, router]);
+  }, [id, isNew]);
 
   const { refreshControl } = usePullToRefresh(reload);
 
@@ -163,7 +163,6 @@ export default function MemoEditScreen() {
           body,
           tagIds: selectedTagIds,
           is_pinned: pinned,
-          dimensionId: null,
         });
         if (!ok) {
           Alert.alert('保存失败', '该备忘可能已删除');
@@ -181,31 +180,23 @@ export default function MemoEditScreen() {
 
   if (!id || (!isNew && id === '')) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <Text style={{ fontSize: 15, fontWeight: '600' }}>缺少备忘 ID</Text>
-      </View>
+      <CrudEditScreen title="编辑备忘" onBack={() => router.back()} missing missingMessage="缺少备忘 ID" />
     );
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: paper }]}>
-      <View
-        style={[
-          styles.topBarWrap,
-          { paddingTop: insets.top, backgroundColor: headerBg, borderBottomColor: line },
-        ]}>
-        <View style={styles.topBar}>
-          <Pressable style={styles.iconBtn} onPress={() => router.back()} disabled={saving}>
-            <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
-          </Pressable>
-          <Text style={[styles.topTitle, { color: ink }]}>{isNew ? '新建备忘' : '编辑备忘'}</Text>
-          <Pressable
-            style={styles.iconBtn}
+    <CrudEditScreen
+      title={isNew ? '新建备忘' : '编辑备忘'}
+      onBack={saving ? undefined : () => router.back()}
+      headerRight={
+        <View style={styles.headerActions}>
+          <AppIconButton
+            icon="push-pin"
             onPress={() => setPinned(p => !p)}
             disabled={saving || loading}
-            accessibilityLabel={pinned ? '取消置顶' : '置顶'}>
-            <MaterialIcons name="push-pin" size={22} color={pinned ? colors.tertiary : muted} />
-          </Pressable>
+            color={pinned ? colors.tertiary : muted}
+            accessibilityLabel={pinned ? '取消置顶' : '置顶'}
+          />
           <Pressable style={styles.saveBtn} onPress={() => void onSave()} disabled={saving || loading}>
             {saving ? (
               <ActivityIndicator size="small" color={primary} />
@@ -214,108 +205,81 @@ export default function MemoEditScreen() {
             )}
           </Pressable>
         </View>
-      </View>
+      }
+      loading={loading}
+      loadingHint="加载备忘…"
+      error={error}
+      onRetryError={() => void reload()}
+      style={{ backgroundColor: paper }}>
+      <ScrollView
+        refreshControl={refreshControl}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[
+          styles.scrollInner,
+          { paddingBottom: Math.max(insets.bottom, 20) + 24 },
+        ]}
+        showsVerticalScrollIndicator={false}>
+        <Text style={[styles.label, { color: muted }]}>标签（可选，可多选）</Text>
+        <ProjectTagPickerField
+          selectedIds={selectedTagIds}
+          allTags={allTags}
+          loading={tagsLoading}
+          disabled={saving}
+          onChange={setSelectedTagIds}
+          textColor={ink}
+          outline={muted}
+          placeholderColor={muted}
+          primary={primary}
+          surfaceLow={inputBg}
+          surfaceLowest={colors.surface}
+          isDark={isDark}
+        />
 
-      {loading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color={primary} />
-        </View>
-      ) : (
-        <KeyboardAvoidingView
-          style={styles.flexOne}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={insets.top + 56}>
-          <ScrollView
-            refreshControl={refreshControl}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={[
-              styles.scrollInner,
-              { paddingBottom: Math.max(insets.bottom, 20) + 24 },
-            ]}
-            showsVerticalScrollIndicator={false}>
-            <Text style={[styles.label, { color: muted }]}>标签（可选，可多选）</Text>
-            <ProjectTagPickerField
-              selectedIds={selectedTagIds}
-              allTags={allTags}
-              loading={tagsLoading}
-              disabled={saving}
-              onChange={setSelectedTagIds}
-              textColor={ink}
-              outline={muted}
-              placeholderColor={muted}
-              primary={primary}
-              surfaceLow={inputBg}
-              surfaceLowest={colors.surface}
-              isDark={isDark}
-            />
+        <TextInput
+          value={title}
+          onChangeText={x => setTitle(x.length > MEMO_TITLE_MAX ? x.slice(0, MEMO_TITLE_MAX) : x)}
+          placeholder="标题（可选）"
+          placeholderTextColor={muted}
+          style={[styles.titleInput, { color: ink, borderBottomColor: line }]}
+        />
 
-            <TextInput
-              value={title}
-              onChangeText={x => setTitle(x.length > MEMO_TITLE_MAX ? x.slice(0, MEMO_TITLE_MAX) : x)}
-              placeholder="标题（可选）"
-              placeholderTextColor={muted}
-              style={[styles.titleInput, { color: ink, borderBottomColor: line }]}
-            />
-
-            <MemoFormatToolbar
-              onAction={onFormatAction}
-              primary={primary}
-              borderColor={line}
-              backgroundColor={toolbarBg}
-            />
-            <Text style={[styles.formatHint, { color: muted }]}>
-              选中文字后点工具栏设置格式；保存后查看页一致
-            </Text>
-            <MemoRichBodyInput
-              model={bodyModel}
-              onChangePlain={onBodyPlainChange}
-              onSelectionChange={sel => {
-                setBodySelection(sel);
-                if (controlledSelection != null) setControlledSelection(undefined);
-              }}
-              controlledSelection={controlledSelection}
-              placeholder="写下想法…"
-              textColor={ink}
-              placeholderColor={muted}
-              caretColor={primary}
-              containerStyle={[
-                styles.bodyInputWrap,
-                {
-                  borderColor: line,
-                  backgroundColor: inputBg,
-                  minHeight: bodyMinHeight,
-                },
-              ]}
-            />
-          </ScrollView>
-        </KeyboardAvoidingView>
-      )}
-    </View>
+        <MemoFormatToolbar
+          onAction={onFormatAction}
+          primary={primary}
+          borderColor={line}
+          backgroundColor={toolbarBg}
+        />
+        <Text style={[styles.formatHint, { color: muted }]}>
+          选中文字后点工具栏设置格式；保存后查看页一致
+        </Text>
+        <MemoRichBodyInput
+          model={bodyModel}
+          onChangePlain={onBodyPlainChange}
+          onSelectionChange={sel => {
+            setBodySelection(sel);
+            if (controlledSelection != null) setControlledSelection(undefined);
+          }}
+          controlledSelection={controlledSelection}
+          placeholder="写下想法…"
+          textColor={ink}
+          placeholderColor={muted}
+          caretColor={primary}
+          containerStyle={[
+            styles.bodyInputWrap,
+            {
+              borderColor: line,
+              backgroundColor: inputBg,
+              minHeight: bodyMinHeight,
+            },
+          ]}
+        />
+      </ScrollView>
+    </CrudEditScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  flexOne: { flex: 1 },
-  topBarWrap: { borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
-  topBar: {
-    height: 48,
-    paddingHorizontal: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  iconBtn: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...Typography.title,
-    fontWeight: '800',
-  },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
   saveBtn: {
     minWidth: 52,
     height: 44,
@@ -324,7 +288,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   saveText: { fontSize: 16, fontWeight: '800' },
-  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scrollInner: { paddingHorizontal: Spacing['5xl'], paddingTop: Spacing['5xl'], gap: 10 },
   label: {
     ...Typography.label,

@@ -1,12 +1,15 @@
 /**
  * 父任务 / 项目保存后：仅当子任务时间超出新框架时收紧，不主动扩大子任务时间。
+ * 项目已设定日程时：下属任务完全继承项目日程（覆盖写入）。
  */
 
 import {
+  applyScheduleMetaToLabels,
   clampScheduleMetaToDateLimit,
   dueDateFromScheduleMeta,
   hasDateLimitBounds,
   mergeDateLimit,
+  scheduleMetaHasConcreteDates,
   scheduleMetaToDateLimit,
   type DateLimitYmd,
   type ScheduleMetaLike,
@@ -73,9 +76,12 @@ async function tightenNodeAndDescendants(
     count += 1;
   }
 
-  const childFrame = mergeDateLimit(frame, scheduleMetaToDateLimit(nextSchedule), {
-    end: dueDateFromScheduleMeta(nextSchedule, dueDate) ?? undefined,
-  });
+  const childFrame = mergeDateLimit(
+    mergeDateLimit(frame, scheduleMetaToDateLimit(nextSchedule)),
+    {
+      end: dueDateFromScheduleMeta(nextSchedule, dueDate) ?? undefined,
+    },
+  );
 
   for (const child of node.children) {
     count += await tightenNodeAndDescendants(child, childFrame, writeOpts);
@@ -109,6 +115,70 @@ export async function tightenAllProjectTasks(
   let count = 0;
   for (const root of roots) {
     count += await tightenNodeAndDescendants(root, frame, writeOpts);
+  }
+  return count;
+}
+
+async function applyScheduleToNodeAndDescendants(
+  node: TaskTreeNode,
+  schedule: ScheduleMetaLike,
+  dueDate: string | null,
+  reminder: string,
+  repeat: string,
+  writeOpts?: TaskWriteOptions,
+): Promise<number> {
+  let count = 0;
+  const extra = parseTaskExtraData(node.extra_data);
+  await updateTask(
+    node.id,
+    {
+      due_date: dueDate,
+      extra_data: JSON.stringify({
+        ...extra,
+        reminder,
+        repeat,
+        schedule,
+      }),
+    },
+    writeOpts,
+  );
+  count += 1;
+  for (const child of node.children) {
+    count += await applyScheduleToNodeAndDescendants(
+      child,
+      schedule,
+      dueDate,
+      reminder,
+      repeat,
+      writeOpts,
+    );
+  }
+  return count;
+}
+
+/**
+ * 项目已设定日程时：将完整日程覆盖写入项目内全部任务/子任务。
+ * 项目未设定日程时返回 0（调用方勿用此函数收紧）。
+ */
+export async function applyProjectScheduleToAllTasks(
+  projectId: string,
+  schedule: ScheduleMetaLike | null | undefined,
+  writeOpts?: TaskWriteOptions,
+): Promise<number> {
+  if (!scheduleMetaHasConcreteDates(schedule)) return 0;
+  const labels = applyScheduleMetaToLabels(schedule!);
+  const dueDate = dueDateFromScheduleMeta(schedule, null);
+  const roots = await getTasksByProjectId(projectId);
+  let count = 0;
+  for (const root of roots) {
+    count += await applyScheduleToNodeAndDescendants(
+      root,
+      schedule!,
+      dueDate,
+      labels.reminderText,
+      labels.repeatText,
+      writeOpts,
+    );
   }
   return count;
 }

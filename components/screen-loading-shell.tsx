@@ -16,18 +16,27 @@ export type ScreenLoadingShellProps = {
   loading: boolean;
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
-  /** 加载中的提示文案 */
+  /** 加载中的提示文案（spinner 模式） */
   hint?: string;
+  /**
+   * 自定义骨架；传入后加载中展示骨架而非居中 spinner。
+   * 首页 Tab 请优先用 HomeSkeletonShell + useHomeSkeletonReveal。
+   */
+  skeleton?: React.ReactNode;
 };
 
 /**
- * 页面级加载壳：加载中显示占位，数据就绪后淡入内容（避免 spinner 与列表硬切换）。
+ * 统一页面级加载壳：
+ * - 默认 spinner + 文案
+ * - 可配置 skeleton 占位
+ * - 数据就绪后淡入内容
  */
 export function ScreenLoadingShell({
   loading,
   children,
   style,
   hint = '加载中…',
+  skeleton,
 }: ScreenLoadingShellProps) {
   const { colors } = useAppTheme();
   const opacity = useRef(new Animated.Value(loading ? 0 : 1)).current;
@@ -46,6 +55,9 @@ export function ScreenLoadingShell({
   }, [loading, opacity]);
 
   if (loading) {
+    if (skeleton) {
+      return <View style={[styles.content, { backgroundColor: colors.background }, style]}>{skeleton}</View>;
+    }
     return (
       <View style={[styles.placeholder, { backgroundColor: colors.background }, style]}>
         <ActivityIndicator size="large" color={colors.primary} />

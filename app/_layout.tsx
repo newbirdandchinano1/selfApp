@@ -2,25 +2,21 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from "expo-router/react-naviga
 import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 import { InteractionManager, Platform, AppState, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { AppSplashScreen } from '@/components/app-splash-screen';
-import { ApiContentTransition } from '@/components/api-content-transition';
-import { ApiDebugOverlay } from '@/components/api-debug-overlay';
-import { ApiLoadingIndicator } from '@/components/api-loading-indicator';
+import { ApiLoadingShell } from '@/components/api-loading-shell';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
 import { CompletionCelebrationHost } from '@/components/completion-celebration-host';
 import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
-import { FinanceSheetHost } from '@/components/finance/finance-sheet-host';
+import { FinanceTransactionSheet } from '@/components/finance/finance-transaction-sheet';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
-import { DailyReviewReminderNotificationListener } from '@/components/daily-review-reminder-notification-listener';
-import { HabitReminderNotificationListener } from '@/components/habit-reminder-notification-listener';
-import { ScheduleSlotReminderNotificationListener } from '@/components/schedule-slot-reminder-notification-listener';
+import { NotificationRouter } from '@/components/notification-router';
 import {
   shouldSuppressDailyReviewReminderNotification,
 } from '@/lib/daily-review-reminder-notifications';
@@ -33,7 +29,6 @@ import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
-import { loadApiDebugEnabled } from '@/lib/api-debug';
 import { initDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
@@ -52,6 +47,13 @@ import { isNotificationCategoryAllowed } from '@/lib/notification-center-setting
 import {
   resolveNotificationCategoryFromData,
 } from '@/lib/notification-catalog';
+
+/** 正式包剥离 API 调试蒙层（仅开发包 require）。 */
+let ApiDebugOverlay: ComponentType = () => null;
+if (__DEV__) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  ApiDebugOverlay = require('@/components/api-debug-overlay').ApiDebugOverlay as ComponentType;
+}
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
@@ -127,7 +129,10 @@ function RootLayoutInner() {
           await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
           await loadAiLlmProviderPreference();
-          await loadApiDebugEnabled();
+          if (__DEV__) {
+            const { loadApiDebugEnabled } = require('@/lib/api-debug') as typeof import('@/lib/api-debug');
+            await loadApiDebugEnabled();
+          }
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
@@ -181,9 +186,13 @@ function RootLayoutInner() {
       }
 
       await hydratePageApiSession();
+      // P0-03：历史 Worker 脏表迁入 API Outbox；日常写入只走 markApiTableDirty
       await hydrateCloudDirtyFromStorage();
       await hydrateApiDirtyFromStorage();
-      await loadApiDebugEnabled();
+      if (__DEV__) {
+        const { loadApiDebugEnabled } = require('@/lib/api-debug') as typeof import('@/lib/api-debug');
+        await loadApiDebugEnabled();
+      }
     };
 
     const run = async () => {
@@ -249,12 +258,10 @@ function RootLayoutInner() {
             <ScreenshotDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <ScheduledExpenseCoordinator dbReady={isDbReady} />
-            <ScheduleSlotReminderNotificationListener />
-            <HabitReminderNotificationListener />
-            <DailyReviewReminderNotificationListener />
-            <FinanceSheetHost />
+            <NotificationRouter />
+            <FinanceTransactionSheet />
             <AppErrorBoundary>
-            <ApiContentTransition>
+            <ApiLoadingShell>
             <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="add-task" />
@@ -310,15 +317,14 @@ function RootLayoutInner() {
             <Stack.Screen name="my-recipes" />
             <Stack.Screen name="recipe-view/[id]" />
             <Stack.Screen name="recipe-edit/[id]" />
-            <Stack.Screen name="zhipu-api-test" />
+            {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
           </Stack>
-            </ApiContentTransition>
+            </ApiLoadingShell>
             </AppErrorBoundary>
-            <ApiLoadingIndicator />
             <PointsEarnedToastHost />
             <CompletionCelebrationHost />
           </View>
@@ -334,7 +340,7 @@ function RootLayoutInner() {
             }}
           />
         ) : null}
-        <ApiDebugOverlay />
+        {__DEV__ ? <ApiDebugOverlay /> : null}
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>
   );

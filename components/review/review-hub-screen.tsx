@@ -1,6 +1,4 @@
-import { DailyReviewGridView } from '@/components/review/daily-review-grid-view';
-import { MonthlyReviewGridView } from '@/components/review/monthly-review-grid-view';
-import { WeeklyReviewGridView } from '@/components/review/weekly-review-grid-view';
+import { ReviewJournalScreen } from '@/components/review/review-journal-screen';
 import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
 import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
@@ -234,7 +232,8 @@ export function ReviewHubScreen() {
 
         <View style={styles.content}>
           {scope === 'daily' ? (
-            <DailyReviewGridView
+            <ReviewJournalScreen
+              scope="daily"
               ymd={selectedYmd}
               onYmdChange={setSelectedYmd}
               pageApiKey={PAGE_API_KEY}
@@ -245,13 +244,15 @@ export function ReviewHubScreen() {
               }}
             />
           ) : scope === 'weekly' ? (
-            <WeeklyReviewGridView
+            <ReviewJournalScreen
+              scope="weekly"
               pageApiKey={PAGE_API_KEY}
               refreshControl={refreshControl}
               onRegisterReload={registerWeeklyReload}
             />
           ) : (
-            <MonthlyReviewGridView
+            <ReviewJournalScreen
+              scope="monthly"
               pageApiKey={PAGE_API_KEY}
               refreshControl={refreshControl}
               onRegisterReload={registerMonthlyReload}

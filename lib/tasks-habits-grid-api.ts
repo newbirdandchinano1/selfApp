@@ -224,10 +224,10 @@ async function mergeHabitGridExtraFields(
         ? subTotal
         : parseHabitIncrementCap(extraData, resolvedKind) ??
           (dailyGoal != null && dailyGoal > 0 && resolvedKind !== 'break' ? dailyGoal : null);
-      // 养成/任务：子项全完成；戒除：无破戒项时交给服务端/本地 hasTodayRecord 判定（此处仅在有破戒时强制未完成）
+      // 养成/任务：子项全完成；戒除：有破戒项或已确认保持均视为已处理（不再待完成）
       const displayCompleted = subActive
         ? resolvedKind === 'break'
-          ? subCompleted === 0 && Boolean(item.displayCompleted)
+          ? subCompleted > 0 || Boolean(item.displayCompleted)
           : subTotal > 0 && subCompleted >= subTotal
         : resolvedKind === 'task'
           ? taskShowPeriodCheck

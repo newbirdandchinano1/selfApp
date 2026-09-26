@@ -1096,7 +1096,8 @@ export default function AddHabitScreen() {
               placeholderColor={colors.textMuted}
               primary={colors.primary}
               surfaceLow={colors.input}
-              surfaceLowest={colors.surfaceSubtle}
+              // 弹层用实色 surface，避免夜间 surfaceSubtle 半透明发虚
+              surfaceLowest={colors.surface}
               isDark={isDark}
             />
           </View>

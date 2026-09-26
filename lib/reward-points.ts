@@ -76,6 +76,12 @@ export function roundPoints(raw: unknown): number {
   return Math.round(n * f) / f;
 }
 
+/** 钱包/流水用：非法值归一为 0（与后端 asPoints 对齐） */
+export function asPoints(raw: unknown): number {
+  const n = roundPoints(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /** 展示用：去掉多余尾零（1.50 → 1.5，2.00 → 2） */
 export function formatPoints(raw: unknown): string {
   const n = roundPoints(raw);

@@ -1,4 +1,4 @@
-import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { setFinanceSheetLaunchIntent } from '@/lib/finance-transaction-sheet/controller';
 import {
   abandonStaleShortcutHandoff,
   getShortcutHandoffKey,

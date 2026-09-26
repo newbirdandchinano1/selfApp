@@ -1,7 +1,10 @@
 import { getLastCloudAlignAtIso, setLastCloudAlignAtIso } from '@/lib/cloud-backup-meta';
 import { alignAllLocalTablesToCloud } from '@/lib/cloud-sql-sync';
 
-/** 每 4 小时将本地 SQLite 全表与云端 D1 对齐（以本机为准全量覆盖云端各表） */
+/**
+ * 每 4 小时将本地 SQLite 全表备份到云端 D1（以本机为准全量覆盖云端各表）。
+ * P0-03：这是 Worker 链路的唯一自动入口；日常写入只走 MySQL `/api` Outbox。
+ */
 export const CLOUD_ALIGN_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let alignTimer: ReturnType<typeof setInterval> | null = null;

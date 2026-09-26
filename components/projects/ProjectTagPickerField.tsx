@@ -17,6 +17,10 @@ type ProjectTagPickerFieldProps = {
   allTags: ProjectTagRow[];
   loading?: boolean;
   disabled?: boolean;
+  /** 只读展示（如继承项目标签），不可打开选择器 */
+  locked?: boolean;
+  /** locked 时主文案前缀，默认「与项目一致」 */
+  lockedHint?: string;
   onChange: (ids: string[]) => void;
   textColor: string;
   outline: string;
@@ -32,6 +36,8 @@ export function ProjectTagPickerField({
   allTags,
   loading = false,
   disabled = false,
+  locked = false,
+  lockedHint = '与项目一致',
   onChange,
   textColor,
   outline,
@@ -56,19 +62,22 @@ export function ProjectTagPickerField({
   );
 
   const selectedSummary = useMemo(() => {
-    if (selectedTags.length === 0) return '未贴标签';
-    if (selectedTags.length <= 3) return selectedTags.map((t) => t.name).join('、');
-    return `${selectedTags
-      .slice(0, 2)
-      .map((t) => t.name)
-      .join('、')} 等 ${selectedTags.length} 个`;
-  }, [selectedTags]);
+    if (selectedTags.length === 0) return locked ? `${lockedHint}：未贴标签` : '未贴标签';
+    const names =
+      selectedTags.length <= 3
+        ? selectedTags.map((t) => t.name).join('、')
+        : `${selectedTags
+            .slice(0, 2)
+            .map((t) => t.name)
+            .join('、')} 等 ${selectedTags.length} 个`;
+    return locked ? `${lockedHint}：${names}` : names;
+  }, [locked, lockedHint, selectedTags]);
 
   const openModal = useCallback(() => {
-    if (disabled) return;
+    if (disabled || locked) return;
     setDraftIds(selectedIds);
     setModalVisible(true);
-  }, [disabled, selectedIds]);
+  }, [disabled, locked, selectedIds]);
 
   const closeModal = useCallback(() => {
     setModalVisible(false);
@@ -90,12 +99,12 @@ export function ProjectTagPickerField({
     <>
       <Pressable
         onPress={openModal}
-        disabled={disabled || loading}
+        disabled={disabled || loading || locked}
         style={({ pressed }) => [
           styles.select,
           { backgroundColor: surfaceLow, borderColor: placeholderColor },
-          (disabled || loading) && { opacity: 0.65 },
-          pressed && !disabled && !loading && { opacity: 0.8 },
+          (disabled || loading || locked) && { opacity: locked ? 1 : 0.65 },
+          pressed && !disabled && !loading && !locked && { opacity: 0.8 },
         ]}>
         <View style={styles.selectLeft}>
           <MaterialIcons name="local-offer" size={18} color={primary} />
@@ -108,22 +117,30 @@ export function ProjectTagPickerField({
                 {selectedTags.slice(0, 4).map((tag) => (
                   <View
                     key={tag.id}
-                    style={[styles.miniChip, { backgroundColor: `${tag.color}22`, borderColor: `${tag.color}55` }]}>
-                    <View style={[styles.miniDot, { backgroundColor: tag.color }]} />
-                    <Text style={[styles.miniChipText, { color: tag.color }]} numberOfLines={1}>
+                    style={[
+                      styles.miniChip,
+                      // 夜间模式用不透明实色，避免半透明底在深色背景上发虚
+                      isDark
+                        ? { backgroundColor: tag.color, borderColor: tag.color }
+                        : { backgroundColor: `${tag.color}22`, borderColor: `${tag.color}55` },
+                    ]}>
+                    {!isDark ? <View style={[styles.miniDot, { backgroundColor: tag.color }]} /> : null}
+                    <Text
+                      style={[styles.miniChipText, { color: isDark ? '#ffffff' : tag.color }]}
+                      numberOfLines={1}>
                       {tag.name}
                     </Text>
                   </View>
                 ))}
               </View>
-            ) : (
+            ) : locked ? null : (
               <Text style={[styles.selectHint, { color: outline }]}>可选多个标签；可在标签管理中新建</Text>
             )}
           </View>
         </View>
         {loading ? (
           <ActivityIndicator size="small" color={primary} />
-        ) : (
+        ) : locked ? null : (
           <MaterialIcons name="expand-more" size={20} color={outline} />
         )}
       </Pressable>
@@ -150,7 +167,10 @@ export function ProjectTagPickerField({
               }}
               style={({ pressed }) => [
                 styles.manageBtn,
-                { borderColor: `${primary}33`, backgroundColor: `${primary}10`, opacity: pressed ? 0.85 : 1 },
+                // 夜间模式用实色底与描边，取消半透明 primary 叠色
+                isDark
+                  ? { borderColor: primary, backgroundColor: surfaceLow, opacity: pressed ? 0.85 : 1 }
+                  : { borderColor: `${primary}33`, backgroundColor: `${primary}10`, opacity: pressed ? 0.85 : 1 },
               ]}>
               <MaterialIcons name="settings" size={16} color={primary} />
               <Text style={[styles.manageBtnText, { color: primary }]}>管理标签（新建 / 删除 / 权重）</Text>

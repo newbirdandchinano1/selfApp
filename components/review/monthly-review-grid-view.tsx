@@ -1,7 +1,7 @@
 import { DailyReviewSaveStatus } from '@/components/review/daily-review-grid-parts';
 import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
-import { ReviewGridSkeleton } from '@/components/review/review-home-skeletons';
+import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import {
   ReviewEmptyState,
   ReviewNoticeBanner,
@@ -34,7 +34,7 @@ import { listReviewTemplate } from '@/lib/repositories/insights/review-template'
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
   fetchReviewCatalog,
-  fetchReviewMonthly,
+  fetchReviewJournal,
   shouldFetchReviewFromApi,
 } from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -100,7 +100,7 @@ export function MonthlyReviewGridView({
         if (shouldFetchReviewFromApi()) {
           await Promise.all([
             fetchReviewCatalog({ scope: 'monthly', offlineFallback: true }),
-            fetchReviewMonthly({ monthStart: monthStartYmd, offlineFallback: true }),
+            fetchReviewJournal({ scope: 'monthly', monthStart: monthStartYmd, offlineFallback: true }),
           ]);
         }
         const [tpl, row] = await Promise.all([

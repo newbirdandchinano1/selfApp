@@ -5,6 +5,7 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import type { FinanceStatsSampleTxn } from '@/lib/api-client';
 import { fetchFinanceStats, type FinanceStatsData } from '@/lib/finance-page-api';
 import { parseFinanceTransactionExtra } from '@/lib/repositories/finance/finance-transaction-extra';
+import { addDays, formatYmd, ymdPrefix } from '@/lib/date';
 import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from "expo-router/react-navigation";
@@ -68,13 +69,6 @@ type TrendDetailItem = {
 
 const DEFAULT_CATEGORY_ICON: keyof typeof MaterialIcons.glyphMap = 'category';
 
-function formatYmd(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -95,12 +89,6 @@ function formatAxisDate(value: Date, shouldShowYear: boolean) {
   return shouldShowYear
     ? `${String(value.getFullYear()).slice(2)}.${value.getMonth() + 1}`
     : `${value.getMonth() + 1}.${value.getDate()}`;
-}
-
-function addDays(value: Date, days: number) {
-  const next = new Date(value);
-  next.setDate(next.getDate() + days);
-  return next;
 }
 
 const MAX_CUSTOM_RANGE_DAYS = 731;
@@ -133,17 +121,12 @@ function asMaterialIcon(raw: string | null | undefined): keyof typeof MaterialIc
   return DEFAULT_CATEGORY_ICON;
 }
 
-function parseYmd(value: string) {
-  const datePart = value.includes('T') ? value.split('T')[0] : value.split(' ')[0];
-  return datePart || value;
-}
-
 function sampleMatchesTrendPoint(
   txn: FinanceStatsSampleTxn,
   point: TrendPoint,
   isMonthGranularity: boolean,
 ) {
-  const ymd = parseYmd(txn.happened_at);
+  const ymd = ymdPrefix(txn.happened_at) ?? txn.happened_at;
   if (isMonthGranularity) return ymd.slice(0, 7) === point.dateKey;
   return ymd === point.dateKey;
 }
@@ -520,7 +503,7 @@ export default function FinanceStatsScreen() {
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
       .slice(0, 6)
       .map((t) => {
-        const d = parseYmd(t.happened_at);
+        const d = ymdPrefix(t.happened_at) ?? t.happened_at;
         const typ = t.transaction_type === 'income' ? '收入' : '支出';
         const title = (t.name?.trim() || '未命名').slice(0, 28);
         return `  - ${d} ${typ}「${title}」${Math.abs(t.amount).toFixed(2)} 元`;

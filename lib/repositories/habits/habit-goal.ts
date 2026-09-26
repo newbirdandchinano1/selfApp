@@ -1,4 +1,5 @@
 import { type HabitKind, parseHabitKind } from './habit-kind';
+import { addDaysToYmd } from '@/lib/date';
 
 export type BuildHabitExpectedGoalType = 'days' | 'times' | 'consecutive_days';
 
@@ -244,12 +245,15 @@ export function resolveBreakHabitDayUiState(ctx: BreakHabitDayContext): BreakHab
   return 'clean';
 }
 
-/** 戒除习惯当日是否视为完成：已确认保持戒除；破戒或未确认则未完成 */
+/** 戒除习惯当日是否达标（连续挑战 / 绑定任务）：须已确认且保持未破戒 */
 export function isBreakHabitDayCompleted(ctx: BreakHabitDayContext): boolean {
   return resolveBreakHabitDayUiState(ctx) === 'clean';
 }
 
-/** 任务页展示 / 习惯绑定：养成/完成任务看达标，戒除看是否已确认保持戒除 */
+/**
+ * 任务页展示用「已处理」：养成/完成任务看达标；
+ * 戒除：保持与破戒均为当日状态确认，有记录即不再计入待完成。
+ */
 export function isHabitDayDisplayCompleted(params: {
   kind: HabitKind;
   todayCount: number;
@@ -259,13 +263,7 @@ export function isHabitDayDisplayCompleted(params: {
   logicalTodayYmd?: string;
 }): boolean {
   if (params.kind === 'break') {
-    return isBreakHabitDayCompleted({
-      todayCount: params.todayCount,
-      dailyGoal: params.dailyGoal,
-      hasDayRecord: params.hasDayRecord,
-      ymd: params.ymd,
-      logicalTodayYmd: params.logicalTodayYmd,
-    });
+    return Boolean(params.hasDayRecord);
   }
   return isHabitDayGoalMet(params);
 }
@@ -339,17 +337,6 @@ export function parseHabitIncrementCap(extraData: string | null, kind?: HabitKin
   if (resolvedKind === 'break') return null;
   const goal = parseHabitDailyGoal(extraData, resolvedKind);
   return goal != null && goal > 0 ? goal : null;
-}
-
-function addDaysToYmd(ymd: string, days: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
-  if (!m) return ymd;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
 }
 
 /** 自 endYmd 起向前连续达成目标的天数（含 endYmd）；minYmd 为当前挑战周期起点（不含更早日期） */

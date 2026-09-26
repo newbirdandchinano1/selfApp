@@ -33,7 +33,7 @@ export async function apiGetFrogScheduleWeek(
 ): Promise<FrogScheduleWeekPayload | null> {
   try {
     return await apiRequest<FrogScheduleWeekPayload>(
-      `/api/pages/tasks/frog-schedule?weekStartYmd=${encodeURIComponent(weekStartYmd)}`,
+      `/api/app/pages/tasks/frog-schedule?weekStartYmd=${encodeURIComponent(weekStartYmd)}`,
       { method: 'GET', signal },
     );
   } catch (err) {
@@ -47,7 +47,7 @@ export async function pushFrogScheduleAxis(
   axis: ScheduleAxisSettings,
   signal?: AbortSignal,
 ): Promise<void> {
-  await apiRequest('/api/pages/tasks/frog-schedule/axis', {
+  await apiRequest('/api/app/pages/tasks/frog-schedule/axis', {
     method: 'POST',
     body: JSON.stringify({
       startMinutes: axis.startMinutes,
@@ -67,7 +67,7 @@ export async function pushFrogSchedulePlacement(body: {
   id?: string;
   signal?: AbortSignal;
 }): Promise<void> {
-  await apiRequest('/api/pages/tasks/frog-schedule/placement', {
+  await apiRequest('/api/app/pages/tasks/frog-schedule/placement', {
     method: 'POST',
     body: JSON.stringify({
       action: body.action,
@@ -123,7 +123,7 @@ export async function apiCopyFrogScheduleWeek(body: {
   overwrite: boolean;
   signal?: AbortSignal;
 }): Promise<{ copied: number; skipped: number; overwritten: number }> {
-  return apiRequest('/api/pages/tasks/frog-schedule/copy-week', {
+  return apiRequest('/api/app/pages/tasks/frog-schedule/copy-week', {
     method: 'POST',
     body: JSON.stringify({
       thisWeekStartYmd: body.thisWeekStartYmd,

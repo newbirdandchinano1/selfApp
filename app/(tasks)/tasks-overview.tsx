@@ -9,6 +9,7 @@ import {
   type TasksOverviewInsightCounts,
   type TasksOverviewStatKey,
 } from '@/lib/tasks-overview-api';
+import { formatYmdCN } from '@/lib/date';
 import { getTaskRepeatDisplayText } from '@/lib/task-repeat-rollover';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -31,12 +32,6 @@ function formatDateTimeCN(value: string | null) {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `${y}年${m}月${d}日 · ${hh}:${mm}`;
-}
-
-function formatYmdTitleCN(ymd: string) {
-  const [y, m, d] = ymd.split('-').map((x) => Number(x));
-  if (!y || !m || !d) return ymd;
-  return `${y}年${m}月${d}日`;
 }
 
 function actionLabel(action: string) {
@@ -731,7 +726,7 @@ export default function TasksOverviewScreen() {
                 </Text>
               ) : selectedHeatYmd ? (
                 <Text style={[styles.subHint, { color: outline, marginTop: 6 }]}>
-                  {formatYmdTitleCN(selectedHeatYmd)}
+                  {formatYmdCN(selectedHeatYmd)}
                   {selectedHeatInRange ? ` · 当日标记完成 ${selectedHeatCount} 次` : ' · 该日不在热力图统计范围内'}
                 </Text>
               ) : (

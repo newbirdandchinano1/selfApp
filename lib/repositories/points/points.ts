@@ -2,19 +2,13 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord } from '@/lib/api-read';
 import type { PageApiReadOpts } from '@/lib/page-api-session';
-import { notifyPointsBalanceChanged } from '@/lib/points-balance-events';
-import { notifyPointsEarned } from '@/lib/points-earned-toast-events';
+import { notifyPointsMutation } from '@/lib/points-events';
 import { enqueuePointsAdjust } from '@/lib/points-adjust-queue';
-import { roundPoints } from '@/lib/reward-points';
+import { asPoints } from '@/lib/reward-points';
 import { getDatabase } from '../../database.native';
 import type { PointsWalletRow } from './points.types';
 
 export const POINTS_WALLET_ID = 'default';
-
-function asPoints(raw: unknown): number {
-  const n = roundPoints(Number(raw) || 0);
-  return Number.isFinite(n) ? n : 0;
-}
 
 export function createPointsLedgerId(): string {
   return makeTimestampEntityId('plg_', 8);
@@ -146,8 +140,7 @@ export async function adjustPointsBalance(input: {
     } finally {
       endCloudSqliteDirtyIgnoreBatch();
     }
-    notifyPointsBalanceChanged(balance);
-    if (appliedDelta !== 0) notifyPointsEarned(appliedDelta);
+    notifyPointsMutation({ balance, delta: appliedDelta });
     return { balance, delta: appliedDelta, ledger_id: ledgerId };
   } catch (e) {
     if (e instanceof Error && /积分不足/.test(e.message)) throw e;
@@ -186,14 +179,20 @@ export async function adjustPointsBalance(input: {
       [ledgerId, delta, next, reason, refType, refId, nowIso, nowIso],
     );
     await db.execAsync('COMMIT');
-    notifyPointsBalanceChanged(next);
-    if (delta !== 0) notifyPointsEarned(delta);
+    notifyPointsMutation({ balance: next, delta });
     return { balance: next, delta, ledger_id: ledgerId };
   } catch (e) {
     await db.execAsync('ROLLBACK');
     throw e;
   }
 }
+
+/**
+ * 发分 / 调账语义别名：业务侧统一走 PointsService.grant | adjust。
+ * 领域 grant 文件（习惯/任务/健康）仍只负责「何时发」，写钱包只经此入口。
+ */
+export const grantPoints = adjustPointsBalance;
+export const adjustPoints = adjustPointsBalance;
 
 /**
  * 重置积分：优先 `POST /api/app/points/reset`。
@@ -241,7 +240,7 @@ export async function resetPointsBalance(): Promise<{
       } finally {
         endCloudSqliteDirtyIgnoreBatch();
       }
-      notifyPointsBalanceChanged(balance);
+      notifyPointsMutation({ balance });
       return { balance, delta, ledger_id: ledgerId };
     } catch (e) {
       if (__DEV__) console.warn('[points] reset API failed, local fallback', e);
@@ -249,7 +248,7 @@ export async function resetPointsBalance(): Promise<{
 
     const balance = await getLocalPointsBalance();
     if (balance === 0) {
-      notifyPointsBalanceChanged(0);
+      notifyPointsMutation({ balance: 0 });
       return { balance: 0, delta: 0, ledger_id: null };
     }
     return adjustPointsBalance({
@@ -317,7 +316,7 @@ export async function deletePointsLedgerRecord(
     endCloudSqliteDirtyIgnoreBatch();
   }
 
-  notifyPointsBalanceChanged(balance);
+  notifyPointsMutation({ balance });
   return { balance, delta, rollback_delta: rollbackDelta };
 }
 

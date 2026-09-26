@@ -5,13 +5,11 @@ import {
 } from '@/lib/api-allowed-tables';
 import {
   applyApiRecordMissingToLocal,
+  overlayLocalPendingOnApiRecord,
+  overlayLocalPendingOnApiTableRows,
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
 import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
-import {
-  overlayLocalPendingOnApiRecord,
-  overlayLocalPendingOnApiTableRows,
-} from '@/lib/api-read-pending-overlay';
 import { getDatabase } from '@/lib/database';
 import { markPageLoadRestFailed, resolveReadLocalOnly, resolveReadOfflineFallback } from '@/lib/page-api-session';
 

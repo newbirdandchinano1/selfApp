@@ -1,4 +1,5 @@
-import { isYmdInRange, ymdFromAuditDatetime, ymdFromDatetime } from '@/lib/api-read-helpers';
+import { ymdFromAuditDatetime, ymdFromDatetime } from '@/lib/api-mysql-datetime';
+import { formatYmd, isYmdInRange } from '@/lib/date';
 import { fetchReviewWeekMetrics } from '@/lib/review-page-api';
 import { getDatabase } from '../../database.native';
 
@@ -17,14 +18,6 @@ export type WeeklyReviewMetrics = {
   financeExpense: number;
 };
 
-function pad2(n: number) {
-  return String(n).padStart(2, '0');
-}
-
-function toYmd(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
 /** 本周一至本周日（本地日历） */
 export function getCurrentWeekRange(anchor: Date = new Date()): {
   startYmd: string;
@@ -42,8 +35,8 @@ export function getCurrentWeekRange(anchor: Date = new Date()): {
   return {
     start: monday,
     end: sunday,
-    startYmd: toYmd(monday),
-    endYmd: toYmd(sunday),
+    startYmd: formatYmd(monday),
+    endYmd: formatYmd(sunday),
   };
 }
 
@@ -60,8 +53,8 @@ export function getRollingSevenDayRange(anchor: Date = new Date()): {
   return {
     start,
     end,
-    startYmd: toYmd(start),
-    endYmd: toYmd(end),
+    startYmd: formatYmd(start),
+    endYmd: formatYmd(end),
   };
 }
 
@@ -93,8 +86,8 @@ export function getRollingSevenDayRangeEndingOnNextReviewDay(
   return {
     start,
     end,
-    startYmd: toYmd(start),
-    endYmd: toYmd(end),
+    startYmd: formatYmd(start),
+    endYmd: formatYmd(end),
   };
 }
 

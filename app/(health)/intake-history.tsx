@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
+import { formatYmd, parseYmd } from '@/lib/date';
 import {
   createQuickAddItemMap,
   getQuickAddMetricTypes,
@@ -97,17 +98,14 @@ function normalizeDate(d: Date) {
 }
 
 function formatLocalYmd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatYmd(d);
 }
 
 function toDateFromYmd(raw: string | string[] | undefined) {
   const rawValue = Array.isArray(raw) ? raw[0] : raw;
   if (!rawValue) return normalizeDate(new Date());
-  const d = new Date(rawValue);
-  if (Number.isNaN(d.getTime())) return normalizeDate(new Date());
+  const d = parseYmd(rawValue.trim().slice(0, 10));
+  if (!d) return normalizeDate(new Date());
   return normalizeDate(d);
 }
 

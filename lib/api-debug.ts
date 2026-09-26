@@ -41,10 +41,15 @@ export function subscribeApiDebug(listener: () => void): () => void {
 }
 
 export function isApiDebugEnabled(): boolean {
-  return enabled;
+  return __DEV__ && enabled;
 }
 
 export async function loadApiDebugEnabled(): Promise<boolean> {
+  if (!__DEV__) {
+    enabled = false;
+    enabledLoaded = true;
+    return false;
+  }
   if (enabledLoaded) return enabled;
   try {
     const raw = await AsyncStorage.getItem(API_DEBUG_ENABLED_KEY);
@@ -58,6 +63,7 @@ export async function loadApiDebugEnabled(): Promise<boolean> {
 }
 
 export async function setApiDebugEnabled(next: boolean): Promise<void> {
+  if (!__DEV__) return;
   enabled = next;
   enabledLoaded = true;
   try {
@@ -158,7 +164,7 @@ function appendApiDebugLog(partial: Omit<ApiDebugLogEntry, 'id' | 'at'>): void {
 }
 
 export function pushApiDebugSystemMessage(message: string): void {
-  if (!enabled) return;
+  if (!__DEV__ || !enabled) return;
   appendApiDebugLog({
     method: 'SYS',
     url: '(local)',
@@ -180,7 +186,7 @@ export async function logHttpFetchDebug(opts: {
   response?: Response;
   error?: string | null;
 }): Promise<void> {
-  if (!enabled) return;
+  if (!__DEV__ || !enabled) return;
 
   let responseBody: string | null = null;
   let apiCode: number | null = null;
@@ -219,15 +225,15 @@ export async function logHttpFetchDebug(opts: {
 
 /** 开启调试后立即打一条探测请求，确认日志链路可用 */
 export async function probeApiDebugConnection(): Promise<void> {
-  if (!enabled) return;
+  if (!__DEV__ || !enabled) return;
   try {
     const { apiHealthCheck, apiGetTablesMeta } = await import('@/lib/api-client');
     pushApiDebugSystemMessage('正在请求 GET /health …');
     const healthy = await apiHealthCheck();
     pushApiDebugSystemMessage(healthy ? 'GET /health 成功' : 'GET /health 返回非 2xx');
-    pushApiDebugSystemMessage('正在请求 GET /api/tables …');
+    pushApiDebugSystemMessage('正在请求 GET /api/app/tables …');
     const tables = await apiGetTablesMeta();
-    pushApiDebugSystemMessage(`GET /api/tables 成功，共 ${tables.length} 张表`);
+    pushApiDebugSystemMessage(`GET /api/app/tables 成功，共 ${tables.length} 张表`);
   } catch (e) {
     pushApiDebugSystemMessage(`探测失败：${e instanceof Error ? e.message : String(e)}`);
   }
@@ -259,13 +265,15 @@ function countTasksInProjectList(projects: unknown[]): number {
   return total;
 }
 
-/** 项目/任务分页列表接口：控制台输出请求与完整响应，便于联调 */
+/** 项目/任务分页列表接口：控制台输出请求与完整响应，便于联调（仅开发包）。 */
 export function logPageListApiResponse(
   kind: PageListApiLogKind,
   pathWithQuery: string,
   params: Record<string, unknown> | undefined,
   result: { list: unknown[]; pagination?: unknown; meta?: unknown },
 ): void {
+  if (!__DEV__) return;
+
   const label = kind === 'projects-list' ? '项目列表' : '任务列表';
   const summary: Record<string, unknown> = {
     接口: `GET ${pathWithQuery}`,

@@ -4,10 +4,12 @@ import {
   HealthMetricsSkeleton,
   HealthQuickAddSkeleton,
   HealthTrendCardSkeleton,
-} from '@/components/health/health-home-skeletons';
+} from '@/components/skeletons/health';
+import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { AppIconButton } from '@/components/ui/app-icon-button';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { Directory, File, Paths } from 'expo-file-system';
@@ -19,6 +21,7 @@ import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession, resetPageApiSe
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
+import { addDays, formatYmd } from '@/lib/date';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 
@@ -163,10 +166,7 @@ function formatHeaderDate(d: Date) {
 
 /** 与 health_records.record_date 对齐的本地日历 YYYY-MM-DD */
 function formatLocalYmd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return formatYmd(d);
 }
 
 function sumHealthRecordsDayTotals(rows: HealthRecordRow[]): HealthIntakeDayTotals {
@@ -492,12 +492,6 @@ function resolveManualGoalForSelection(
   return sanitizeAssistantManualGoalInput(String(suggestNumeric[selection.kind]));
 }
 
-function addDays(d: Date, days: number) {
-  const next = new Date(d);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
 function isFutureDate(d: Date, today: Date) {
   return normalizeDate(d).getTime() > normalizeDate(today).getTime();
 }
@@ -758,9 +752,11 @@ export default function HealthScreen() {
   const [pageLoadRetrying, setPageLoadRetrying] = React.useState(false);
   /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
   const [initialHealthLoadPending, setInitialHealthLoadPending] = React.useState(true);
-  const [healthSkeletonMounted, setHealthSkeletonMounted] = React.useState(true);
   const healthContentRevealDoneRef = React.useRef(false);
-  const healthSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
+  const { showSkeleton, skeletonMounted, skeletonOpacity } = useHomeSkeletonReveal(
+    initialHealthLoadPending,
+    { fadeContent: false },
+  );
 
   // 获取用户信息
   const [user, setUser] = React.useState<UserRow | null>(null);
@@ -1560,18 +1556,8 @@ export default function HealthScreen() {
 
     if (!healthContentRevealDoneRef.current) {
       healthContentRevealDoneRef.current = true;
-      setHealthSkeletonMounted(true);
-      healthSkeletonOpacity.setValue(1);
-      Animated.timing(healthSkeletonOpacity, {
-        toValue: 0,
-        duration: 280,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) setHealthSkeletonMounted(false);
-      });
     }
-  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending, healthSkeletonOpacity]);
+  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending]);
 
   React.useEffect(() => {
     const pulse = Animated.loop(
@@ -2620,16 +2606,13 @@ export default function HealthScreen() {
         </View>
           ) : null}
 
-          {initialHealthLoadPending || healthSkeletonMounted ? (
-            <Animated.View
-              pointerEvents={initialHealthLoadPending ? 'auto' : 'none'}
-              style={[
-                initialHealthLoadPending ? undefined : styles.healthSkeletonOverlay,
-                {
-                  opacity: initialHealthLoadPending ? 1 : healthSkeletonOpacity,
-                  backgroundColor: initialHealthLoadPending ? undefined : colors.background,
-                },
-              ]}
+          {showSkeleton ? (
+            <HomeSkeletonShell
+              pending={initialHealthLoadPending}
+              mounted={skeletonMounted}
+              opacity={skeletonOpacity}
+              backgroundColor={colors.background}
+              style={{ gap: Spacing.xl }}
             >
               <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.outlineStrong }]}>
                 <View style={[styles.sectionHeader, { borderBottomColor: colors.outline }]}>
@@ -2653,7 +2636,7 @@ export default function HealthScreen() {
                 <HealthTrendCardSkeleton colors={colors} isDark={isDark} />
               </View>
               <View style={{ height: 40 }} />
-            </Animated.View>
+            </HomeSkeletonShell>
           ) : null}
         </View>
       </ScrollView>
@@ -3134,14 +3117,6 @@ const styles = StyleSheet.create({
   },
   healthBodyStack: {
     position: 'relative',
-  },
-  healthSkeletonOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 2,
-    gap: Spacing.xl,
   },
   sectionStack: {
     gap: Spacing['3xl'],

@@ -1,7 +1,42 @@
 /**
  * 财务页专用 REST：灌入本地 SQLite 后供仓库只读。
  * 失败时只回退本地，禁止降级 `/api/data/*` 全表 List。
+ * 脚手架见 `@/lib/page-api-fetch`；本文件保留财务 DTO 规范化逻辑。
  */
+import { asRecordArray, upsertPageRows } from '@/lib/page-api-fetch';
+import { withApiTableSyncLock } from '@/lib/api-read';
+import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import { ymdFromDatetime } from '@/lib/api-read-helpers';
+import {
+  rememberFinanceAccountBalances,
+  rememberFinanceNetWorth,
+} from '@/lib/finance-account-balance-cache';
+import {
+  aggregateTransactions,
+  isAggregatableFinanceTxn,
+  listMonthKeysInclusive,
+  listYmdInclusive,
+  resolveStatsGranularity,
+  roundFinanceMoney,
+} from '@/lib/finance-aggregate';
+import {
+  isFinanceLiabilityAccount,
+  normalizeFinanceAccountLedgerBalance,
+} from '@/lib/finance-net-worth';
+import { normalizeFinanceSignRule } from '@/lib/repositories/finance/finance';
+import type {
+  FinanceAccountBalanceRow,
+  FinanceAccountTypeRow,
+  FinanceDailySummaryRow,
+  FinanceFlowCategoryRow,
+  FinanceTransactionRow,
+} from '@/lib/repositories/finance/finance.types';
+import type {
+  CashFlowExpenseLineRow,
+  CashFlowHoldingRow,
+  CashFlowIncomeRow,
+  CashFlowProfileRow,
+} from '@/lib/repositories/cash-flow/cash-flow.types';
 import {
   apiGetFinanceAccountDetail,
   apiGetFinanceCashFlow,
@@ -26,35 +61,7 @@ import {
   type FinanceStatsTrendPoint,
   type FinanceTransactionsPagePayload,
 } from '@/lib/api-client';
-import { withApiTableSyncLock } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import {
-  rememberFinanceAccountBalances,
-  rememberFinanceNetWorth,
-} from '@/lib/finance-account-balance-cache';
-import {
-  isFinanceLiabilityAccount,
-  normalizeFinanceAccountLedgerBalance,
-} from '@/lib/finance-net-worth';
-import { normalizeFinanceSignRule } from '@/lib/repositories/finance/finance';
-import type {
-  FinanceAccountBalanceRow,
-  FinanceAccountTypeRow,
-  FinanceDailySummaryRow,
-  FinanceFlowCategoryRow,
-  FinanceTransactionRow,
-} from '@/lib/repositories/finance/finance.types';
-import type {
-  CashFlowExpenseLineRow,
-  CashFlowHoldingRow,
-  CashFlowIncomeRow,
-  CashFlowProfileRow,
-} from '@/lib/repositories/cash-flow/cash-flow.types';
 
-function asRecordArray(raw: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x));
-}
 
 function asBalanceRows(raw: unknown): FinanceAccountBalanceRow[] {
   return asRecordArray(raw).map((row) => {
@@ -80,10 +87,7 @@ function asTxnRows(raw: unknown): FinanceTransactionRow[] {
 }
 
 async function upsertFinanceRows(table: string, rows: Record<string, unknown>[]): Promise<void> {
-  if (rows.length === 0) return;
-  await withApiTableSyncLock(table, async () => {
-    await syncApiReadResultToLocal(table, rows);
-  });
+  await upsertPageRows(table, rows);
 }
 
 async function syncAccountsWithBalance(raw: unknown): Promise<FinanceAccountBalanceRow[]> {
@@ -334,20 +338,12 @@ export type FinanceDailySummariesData = {
   fromApi: boolean;
 };
 
-function toDailyYmdKey(raw: unknown): string {
-  if (raw == null) return '';
-  const s = String(raw).trim();
-  // 兼容 "2026-08-01" / "2026-08-01T00:00:00Z" / "2026-08-01 00:00:00"
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  return '';
-}
-
 function dailySummariesHaveFlow(days: FinanceDailySummaryRow[]): boolean {
   return days.some((d) => d.income !== 0 || d.expense !== 0);
 }
 
-/** 兼容后端多种返回形状，避免成功但空/字段不对导致格子全是 -- */
-function normalizeDailySummaryDays(payload: unknown): FinanceDailySummaryRow[] {
+/** 仅解析服务端 daily-summaries 响应形状，不做本地重算/补齐 */
+function parseDailySummaryDays(payload: unknown): FinanceDailySummaryRow[] {
   let list: unknown[] = [];
   if (Array.isArray(payload)) {
     list = payload;
@@ -361,7 +357,9 @@ function normalizeDailySummaryDays(payload: unknown): FinanceDailySummaryRow[] {
   for (const item of list) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
     const row = item as Record<string, unknown>;
-    const day = toDailyYmdKey(row.day ?? row.date ?? row.ymd ?? row.dayKey);
+    const rawDay = row.day ?? row.date ?? row.ymd ?? row.dayKey;
+    const s = rawDay == null ? '' : String(rawDay).trim();
+    const day = /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
     if (!day) continue;
     const income = Math.abs(Number(row.income) || 0);
     const expense = Math.abs(Number(row.expense) || 0);
@@ -375,36 +373,10 @@ function normalizeDailySummaryDays(payload: unknown): FinanceDailySummaryRow[] {
   return out;
 }
 
-async function aggregateDailySummariesFromTransactionsRange(opts: {
-  start: string;
-  end: string;
-  signal?: AbortSignal;
-}): Promise<FinanceDailySummaryRow[]> {
-  const { transactions } = await fetchFinanceTransactionsRange({
-    start: opts.start,
-    end: opts.end,
-    signal: opts.signal,
-    offlineFallback: false,
-  });
-  const { computeTransactionLedgerEffect } = await import('@/lib/repositories/finance/finance');
-  const { ymdFromDatetime } = await import('@/lib/api-read-helpers');
-  const byDay = new Map<string, { income: number; expense: number; net: number }>();
-  for (const t of transactions) {
-    const day = ymdFromDatetime(t.happened_at);
-    if (!day || day < opts.start || day > opts.end) continue;
-    if (t.transaction_type === 'transfer') continue;
-    const effect = computeTransactionLedgerEffect(t.transaction_type, t.amount, t.extra_data);
-    const agg = byDay.get(day) ?? { income: 0, expense: 0, net: 0 };
-    if (effect > 0) agg.income += effect;
-    else if (effect < 0) agg.expense += Math.abs(effect);
-    agg.net += effect;
-    byDay.set(day, agg);
-  }
-  return [...byDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, v]) => ({ day, ...v }));
-}
-
+/**
+ * 三级 fallback：专口 → 交易列表灌库后 aggregateTransactions → 本地 SQLite 再聚合。
+ * 本地重算只走 `aggregateTransactions`。
+ */
 export async function fetchFinanceDailySummaries(opts: {
   start: string;
   end: string;
@@ -418,40 +390,45 @@ export async function fetchFinanceDailySummaries(opts: {
       end: opts.end,
       signal: opts.signal,
     });
-    apiDays = normalizeDailySummaryDays(payload);
+    apiDays = parseDailySummaryDays(payload);
     if (dailySummariesHaveFlow(apiDays)) {
       return { days: apiDays, fromApi: true };
     }
   } catch (e) {
     if (opts.offlineFallback === false) throw e;
-    console.warn('[finance-page-api] daily-summaries 失败，回退本地/流水聚合', e);
+    console.warn('[finance-page-api] daily-summaries 失败，回退流水聚合', e);
   }
 
   if (opts.offlineFallback === false) {
     return { days: apiDays ?? [], fromApi: true };
   }
 
-  const { getFinanceDailySummariesByDateRange } = await import('@/lib/repositories/finance/finance');
-  const localDays = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { localOnly: true });
-  if (dailySummariesHaveFlow(localDays)) {
-    if (apiDays) {
-      console.warn('[finance-page-api] daily-summaries 无有效流水，改用本地聚合');
-    }
-    return { days: localDays, fromApi: false };
-  }
-
   try {
-    const fromTxns = await aggregateDailySummariesFromTransactionsRange({
+    const { transactions } = await fetchFinanceTransactionsRange({
       start: opts.start,
       end: opts.end,
       signal: opts.signal,
+      offlineFallback: true,
     });
+    const fromTxns = aggregateTransactions(transactions, {
+      start: opts.start,
+      end: opts.end,
+    }).days;
     if (dailySummariesHaveFlow(fromTxns)) {
-      console.warn('[finance-page-api] daily-summaries 无有效流水，改用 transactions 区间聚合');
+      if (apiDays) {
+        console.warn('[finance-page-api] daily-summaries 无有效流水，改用 transactions 聚合');
+      }
       return { days: fromTxns, fromApi: true };
     }
   } catch (e) {
-    console.warn('[finance-page-api] transactions 区间聚合失败', e);
+    console.warn('[finance-page-api] transactions 区间聚合失败，再试本地', e);
+  }
+
+  const { getFinanceDailySummariesByDateRange } = await import('@/lib/repositories/finance/finance');
+  const localDays = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { localOnly: true });
+  if (dailySummariesHaveFlow(localDays)) {
+    console.warn('[finance-page-api] daily-summaries 改用本地 SQLite 聚合');
+    return { days: localDays, fromApi: false };
   }
 
   return { days: apiDays ?? localDays, fromApi: apiDays != null };
@@ -571,63 +548,6 @@ export async function fetchFinanceInsights(opts?: {
 
 export type FinanceStatsData = FinanceStatsPayload & { fromApi: boolean };
 
-function roundStatsMoney(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.round(n * 100) / 100;
-}
-
-function ymdParts(ymd: string): { y: number; m: number; d: number } | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) return null;
-  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
-}
-
-function listYmdInclusive(start: string, end: string): string[] {
-  const a = ymdParts(start);
-  const b = ymdParts(end);
-  if (!a || !b || start > end) return [];
-  const out: string[] = [];
-  const cursor = new Date(a.y, a.m - 1, a.d);
-  const last = new Date(b.y, b.m - 1, b.d);
-  while (cursor <= last) {
-    const y = cursor.getFullYear();
-    const mo = String(cursor.getMonth() + 1).padStart(2, '0');
-    const d = String(cursor.getDate()).padStart(2, '0');
-    out.push(`${y}-${mo}-${d}`);
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return out;
-}
-
-function listMonthKeysInclusive(start: string, end: string): string[] {
-  const a = ymdParts(start);
-  const b = ymdParts(end);
-  if (!a || !b || start > end) return [];
-  const out: string[] = [];
-  let y = a.y;
-  let m = a.m;
-  while (y < b.y || (y === b.y && m <= b.m)) {
-    out.push(`${y}-${String(m).padStart(2, '0')}`);
-    m += 1;
-    if (m > 12) {
-      m = 1;
-      y += 1;
-    }
-  }
-  return out;
-}
-
-function resolveStatsGranularity(
-  requested: 'day' | 'month' | 'auto' | undefined,
-  start: string,
-  end: string,
-): 'day' | 'month' {
-  if (requested === 'day' || requested === 'month') return requested;
-  const days = listYmdInclusive(start, end).length;
-  if (days > 90 || start.slice(0, 4) !== end.slice(0, 4)) return 'month';
-  return 'day';
-}
-
 async function buildFinanceStatsLocally(opts: {
   start: string;
   end: string;
@@ -636,7 +556,6 @@ async function buildFinanceStatsLocally(opts: {
   recentDaysLimit?: number;
 }): Promise<FinanceStatsPayload> {
   const {
-    isBalanceCorrectionFinanceTransaction,
     isInitialBalanceFinanceTransaction,
     parseFinanceTransactionExtra,
     BUILTIN_SHEET_CATEGORY_LABELS,
@@ -660,6 +579,8 @@ async function buildFinanceStatsLocally(opts: {
   const categoryByName = new Map(categories.map((c) => [c.name, c]));
   const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
 
+  const agg = aggregateTransactions(allTxns, { start: opts.start, end: opts.end });
+
   type LocalTxn = {
     id: string;
     name: string;
@@ -678,13 +599,9 @@ async function buildFinanceStatsLocally(opts: {
 
   const txns: LocalTxn[] = [];
   for (const row of allTxns) {
-    const day = String(row.happened_at ?? '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}/.test(day)) continue;
-    const ymd = day.slice(0, 10);
-    if (ymd < opts.start || ymd > opts.end) continue;
-    if (row.transaction_type === 'transfer') continue;
-    if (row.transaction_type !== 'income' && row.transaction_type !== 'expense') continue;
-    if (isBalanceCorrectionFinanceTransaction(row)) continue;
+    if (!isAggregatableFinanceTxn(row)) continue;
+    const day = ymdFromDatetime(row.happened_at);
+    if (!day || day < opts.start || day > opts.end) continue;
 
     let iconKey: string | null = null;
     let categoryName =
@@ -727,41 +644,23 @@ async function buildFinanceStatsLocally(opts: {
       id: row.id,
       name: row.name,
       happenedAt: row.happened_at,
-      type: row.transaction_type,
+      type: row.transaction_type === 'income' ? 'income' : 'expense',
       amount: Math.abs(Number(row.amount) || 0),
       note: row.note,
       aiComment: row.ai_comment,
       extraData: row.extra_data,
       flowCategoryId: row.flow_category_id,
-      logicalDay: ymd,
+      logicalDay: day,
       isInitialBalance: isInitialBalanceFinanceTransaction(row),
       categoryName,
       iconKey,
     });
   }
 
-  let income = 0;
-  let expense = 0;
   const expenseCats = new Map<string, FinanceStatsCategoryItem & { key: string }>();
   const incomeCats = new Map<string, FinanceStatsCategoryItem & { key: string }>();
-  const dayBuckets = new Map<string, { income: number; expense: number }>();
-  const monthBuckets = new Map<string, { income: number; expense: number }>();
 
   for (const txn of txns) {
-    if (txn.type === 'income') income += txn.amount;
-    else expense += txn.amount;
-
-    const dayBucket = dayBuckets.get(txn.logicalDay) ?? { income: 0, expense: 0 };
-    if (txn.type === 'income') dayBucket.income += txn.amount;
-    else dayBucket.expense += txn.amount;
-    dayBuckets.set(txn.logicalDay, dayBucket);
-
-    const mk = txn.logicalDay.slice(0, 7);
-    const monthBucket = monthBuckets.get(mk) ?? { income: 0, expense: 0 };
-    if (txn.type === 'income') monthBucket.income += txn.amount;
-    else monthBucket.expense += txn.amount;
-    monthBuckets.set(mk, monthBucket);
-
     const side = txn.type === 'income' ? incomeCats : expenseCats;
     const key = txn.flowCategoryId ? `id:${txn.flowCategoryId}` : `name:${txn.categoryName}`;
     const cur = side.get(key) ?? {
@@ -779,26 +678,26 @@ async function buildFinanceStatsLocally(opts: {
     side.set(key, cur);
   }
 
-  income = roundStatsMoney(income);
-  expense = roundStatsMoney(expense);
-  const balance = roundStatsMoney(income - expense);
+  const income = agg.income;
+  const expense = agg.expense;
+  const balance = agg.net;
 
   const toSide = (map: Map<string, FinanceStatsCategoryItem & { key: string }>, total: number) =>
     Array.from(map.values())
       .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh-CN'))
       .map(({ key: _k, ...item }) => ({
         ...item,
-        amount: roundStatsMoney(item.amount),
-        percent: total > 0 ? roundStatsMoney((item.amount / total) * 100) : 0,
+        amount: roundFinanceMoney(item.amount),
+        percent: total > 0 ? roundFinanceMoney((item.amount / total) * 100) : 0,
       }));
 
-  const trendSource = granularity === 'month' ? monthBuckets : dayBuckets;
+  const trendSource = granularity === 'month' ? agg.byMonth : agg.byDay;
   const trendKeys =
     granularity === 'month' ? listMonthKeysInclusive(opts.start, opts.end) : dayList;
   const points: FinanceStatsTrendPoint[] = trendKeys.map((key) => {
-    const found = trendSource.get(key) ?? { income: 0, expense: 0 };
-    const pointIncome = roundStatsMoney(found.income);
-    const pointExpense = roundStatsMoney(found.expense);
+    const found = trendSource.get(key) ?? { income: 0, expense: 0, net: 0 };
+    const pointIncome = roundFinanceMoney(found.income);
+    const pointExpense = roundFinanceMoney(found.expense);
     const label =
       granularity === 'month'
         ? `${Number(key.slice(5, 7))}月`
@@ -808,21 +707,21 @@ async function buildFinanceStatsLocally(opts: {
       label,
       income: pointIncome,
       expense: pointExpense,
-      balance: roundStatsMoney(pointIncome - pointExpense),
+      balance: roundFinanceMoney(pointIncome - pointExpense),
     };
   });
 
-  const recentDays = Array.from(dayBuckets.entries())
+  const recentDays = Array.from(agg.byDay.entries())
     .sort(([a], [b]) => (a < b ? 1 : -1))
     .slice(0, recentDaysLimit)
     .map(([day, item]) => {
-      const dayIncome = roundStatsMoney(item.income);
-      const dayExpense = roundStatsMoney(item.expense);
+      const dayIncome = roundFinanceMoney(item.income);
+      const dayExpense = roundFinanceMoney(item.expense);
       return {
         day,
         expense: dayExpense,
         income: dayIncome,
-        balance: roundStatsMoney(dayIncome - dayExpense),
+        balance: roundFinanceMoney(dayIncome - dayExpense),
       };
     });
 
@@ -836,7 +735,7 @@ async function buildFinanceStatsLocally(opts: {
         name: t.categoryName === '未分类' ? t.name : `${t.categoryName}-${t.name}`,
         categoryName: t.categoryName === '未分类' ? null : t.categoryName,
         note: t.note ?? t.aiComment,
-        amount: roundStatsMoney(t.amount),
+        amount: roundFinanceMoney(t.amount),
         happenedAt: t.happenedAt,
       }));
 
@@ -849,14 +748,14 @@ async function buildFinanceStatsLocally(opts: {
       happened_at: t.happenedAt,
       transaction_type: t.type,
       flow_category_id: t.flowCategoryId,
-      amount: roundStatsMoney(t.amount),
+      amount: roundFinanceMoney(t.amount),
       note: t.note,
       ai_comment: t.aiComment,
       extra_data: t.extraData,
     }));
 
   return {
-    summary: { income, expense, balance, days, txnCount: txns.length },
+    summary: { income, expense, balance, days, txnCount: agg.txnCount },
     categories: {
       expense: toSide(expenseCats, expense),
       income: toSide(incomeCats, income),
@@ -865,9 +764,9 @@ async function buildFinanceStatsLocally(opts: {
     billTable: {
       total: { expense, income, balance },
       dailyAvg: {
-        expense: roundStatsMoney(expense / days),
-        income: roundStatsMoney(income / days),
-        balance: roundStatsMoney(balance / days),
+        expense: roundFinanceMoney(expense / days),
+        income: roundFinanceMoney(income / days),
+        balance: roundFinanceMoney(balance / days),
       },
       recentDays,
     },
@@ -892,7 +791,8 @@ export async function fetchFinanceStats(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<FinanceStatsData> {
-  const normalize = (payload: FinanceStatsPayload, fromApi: boolean): FinanceStatsData => ({
+  /** 仅补空结构，不做本地重算 */
+  const asStatsData = (payload: FinanceStatsPayload, fromApi: boolean): FinanceStatsData => ({
     summary: payload.summary ?? { income: 0, expense: 0, balance: 0, days: 1, txnCount: 0 },
     categories: {
       expense: Array.isArray(payload.categories?.expense) ? payload.categories.expense : [],
@@ -929,7 +829,7 @@ export async function fetchFinanceStats(opts: {
       excludeCorrections: wantExclude,
       signal: opts.signal,
     });
-    const normalized = normalize(payload, true);
+    const normalized = asStatsData(payload, true);
     const empty =
       (normalized.summary.txnCount ?? 0) === 0 &&
       (normalized.summary.income ?? 0) === 0 &&
@@ -954,7 +854,7 @@ export async function fetchFinanceStats(opts: {
           recentDaysLimit: opts.recentDaysLimit,
         });
         if ((local.summary.txnCount ?? 0) > 0) {
-          console.warn('[finance-page-api] stats 专口为空，已用流水本地聚合兜底');
+          console.warn('[finance-page-api] stats 专口为空，已用 aggregateTransactions 兜底');
           return { ...local, fromApi: false };
         }
       } catch (fallbackErr) {

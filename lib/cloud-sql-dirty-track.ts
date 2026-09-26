@@ -1,5 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+/**
+ * P0-03：本地写入的统一入口。
+ * - 在线权威：仅 MySQL `/api/*` Outbox（markApiTableDirty）
+ * - Tab 缓存失效：markTabPagesDirtyForTable
+ * - Worker / cloud-sql：不再由脏表驱动增量推送（仅保留周期全量备份）
+ */
+
 const CLOUD_DIRTY_STATE_KEY = 'selfapp:cloud-sql-dirty-tables-v1';
 const LEGACY_GITHUB_DIRTY_KEY = 'selfapp:github-cloud-dirty-state-v1';
 const LEGACY_SQLITE_DIRTY_KEY = 'selfapp:github-sqlite-dirty-tables-v1';
@@ -19,10 +26,6 @@ export const beginGithubSqliteDirtyIgnoreBatch = beginCloudSqliteDirtyIgnoreBatc
 /** @deprecated 使用 endCloudSqliteDirtyIgnoreBatch */
 export const endGithubSqliteDirtyIgnoreBatch = endCloudSqliteDirtyIgnoreBatch;
 
-const dirtyTables = new Set<string>();
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let pushDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-
 const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
 
 function isSafeTableName(name: string): boolean {
@@ -31,14 +34,15 @@ function isSafeTableName(name: string): boolean {
   return true;
 }
 
+/**
+ * 本地表变更 → 单一 Outbox（API）+ Tab 缓存失效。
+ * 不再写入 Worker 脏表队列，也不再调度 cloud-sql 增量推送。
+ */
 export function markCloudSqliteTableDirty(table: string): void {
   const t = table.trim();
   if (!t || !isSafeTableName(t)) return;
   if (ignoreMutationDepth > 0) return;
   if (t.startsWith('sqlite_')) return;
-  dirtyTables.add(t);
-  schedulePersistCloudDirty();
-  scheduleCloudTablePushDebounced();
   void import('@/lib/page-api-session').then(m => m.markTabPagesDirtyForTable(t));
   void import('@/lib/api-incremental-sync').then(m => m.markApiTableDirty(t));
 }
@@ -46,62 +50,44 @@ export function markCloudSqliteTableDirty(table: string): void {
 /** @deprecated 使用 markCloudSqliteTableDirty */
 export const markGithubSqliteTableDirty = markCloudSqliteTableDirty;
 
-function schedulePersistCloudDirty(): void {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    void persistCloudDirtyNow();
-  }, 400);
-}
-
-async function persistCloudDirtyNow(): Promise<void> {
+function parseDirtyTableNames(raw: string | null): string[] {
+  if (!raw) return [];
   try {
-    const sqlite = [...dirtyTables].sort();
-    if (sqlite.length === 0) {
-      await AsyncStorage.removeItem(CLOUD_DIRTY_STATE_KEY);
-      return;
+    const parsed = JSON.parse(raw) as unknown;
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object'
+        ? (parsed as { sqlite?: unknown }).sqlite
+        : null;
+    if (!Array.isArray(arr)) return [];
+    const out: string[] = [];
+    for (const x of arr) {
+      if (typeof x === 'string' && isSafeTableName(x) && !x.startsWith('sqlite_')) {
+        if (x === 'ON' || x === 'on') continue;
+        out.push(x);
+      }
     }
-    await AsyncStorage.setItem(CLOUD_DIRTY_STATE_KEY, JSON.stringify({ sqlite }));
+    return out;
   } catch {
-    /* 非致命 */
+    return [];
   }
 }
 
+/**
+ * 启动时：将历史 Worker 脏表迁移进 API Outbox，并清除旧存储。
+ * 不再调度 Worker 增量推送。
+ */
 export async function hydrateCloudDirtyFromStorage(): Promise<void> {
   try {
-    const rawNew = await AsyncStorage.getItem(CLOUD_DIRTY_STATE_KEY);
-    if (rawNew) {
-      const o = JSON.parse(rawNew) as unknown;
-      if (o && typeof o === 'object' && !Array.isArray(o)) {
-        const sqliteRaw = (o as Record<string, unknown>).sqlite;
-        if (Array.isArray(sqliteRaw)) {
-          for (const x of sqliteRaw) {
-            if (typeof x === 'string' && isSafeTableName(x)) dirtyTables.add(x);
-          }
-        }
-        dirtyTables.delete('ON');
-        dirtyTables.delete('on');
-      }
-    } else {
-      for (const legacyKey of [LEGACY_GITHUB_DIRTY_KEY, LEGACY_SQLITE_DIRTY_KEY]) {
-        const rawLegacy = await AsyncStorage.getItem(legacyKey);
-        if (!rawLegacy) continue;
-        const parsed = JSON.parse(rawLegacy) as unknown;
-        const arr = Array.isArray(parsed)
-          ? parsed
-          : parsed && typeof parsed === 'object'
-            ? (parsed as { sqlite?: unknown }).sqlite
-            : null;
-        if (Array.isArray(arr)) {
-          for (const x of arr) {
-            if (typeof x === 'string' && isSafeTableName(x)) dirtyTables.add(x);
-          }
-        }
-        await AsyncStorage.removeItem(legacyKey);
-      }
-      await persistCloudDirtyNow();
+    const migrated = new Set<string>();
+    for (const key of [CLOUD_DIRTY_STATE_KEY, LEGACY_GITHUB_DIRTY_KEY, LEGACY_SQLITE_DIRTY_KEY]) {
+      const raw = await AsyncStorage.getItem(key);
+      for (const t of parseDirtyTableNames(raw)) migrated.add(t);
+      if (raw != null) await AsyncStorage.removeItem(key);
     }
-    if (dirtyTables.size > 0) scheduleCloudTablePushDebounced();
+    if (migrated.size === 0) return;
+    const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    for (const t of migrated) markApiTableDirty(t);
   } catch {
     /* ignore */
   }
@@ -110,39 +96,39 @@ export async function hydrateCloudDirtyFromStorage(): Promise<void> {
 /** @deprecated 使用 hydrateCloudDirtyFromStorage */
 export const hydrateGithubCloudDirtyFromStorage = hydrateCloudDirtyFromStorage;
 
+/** @deprecated Worker 脏表队列已退役；恒为空 */
 export function peekCloudSqliteDirtyTables(): string[] {
-  return [...dirtyTables].sort();
+  return [];
 }
 
 /** @deprecated */
 export const peekGithubSqliteDirtyTables = peekCloudSqliteDirtyTables;
 
-export function clearCloudSqliteDirtyTables(tables: Iterable<string>): void {
-  for (const t of tables) dirtyTables.delete(t);
-  void persistCloudDirtyNow();
+/** @deprecated Worker 脏表队列已退役；无操作 */
+export function clearCloudSqliteDirtyTables(_tables: Iterable<string>): void {
+  /* no-op */
 }
 
 /** @deprecated */
 export const clearGithubSqliteDirtyTables = clearCloudSqliteDirtyTables;
 
+/** @deprecated Worker 脏表队列已退役；顺带清掉残留存储 */
 export function clearAllCloudSqliteDirtyTables(): void {
-  dirtyTables.clear();
-  void persistCloudDirtyNow();
+  void AsyncStorage.multiRemove([
+    CLOUD_DIRTY_STATE_KEY,
+    LEGACY_GITHUB_DIRTY_KEY,
+    LEGACY_SQLITE_DIRTY_KEY,
+  ]).catch(() => {});
 }
 
 /** @deprecated */
 export const clearAllGithubSqliteDirtyTables = clearAllCloudSqliteDirtyTables;
 
-const INCREMENTAL_PUSH_DELAY_MS = 4500;
-
+/**
+ * @deprecated Worker 增量推送已退役（P0-03）。备份仅走周期全量 / 手动全量。
+ */
 export function scheduleCloudTablePushDebounced(): void {
-  if (pushDebounceTimer) clearTimeout(pushDebounceTimer);
-  pushDebounceTimer = setTimeout(() => {
-    pushDebounceTimer = null;
-    void import('@/lib/cloud-sql-sync').then(m => {
-      void m.pushCloudDirtyTablesIfNeeded();
-    });
-  }, INCREMENTAL_PUSH_DELAY_MS);
+  /* no-op */
 }
 
 /** @deprecated */

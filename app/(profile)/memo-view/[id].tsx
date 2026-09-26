@@ -1,5 +1,7 @@
+import { CrudDetailScreen } from '@/components/crud';
 import { MemoFormattedBody } from '@/components/memo/memo-formatted-body';
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { AppIconButton } from '@/components/ui';
+import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { memoHasAiReview } from '@/lib/memo-format';
@@ -15,15 +17,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 function normalizeId(raw: string | string[] | undefined): string {
@@ -46,7 +40,6 @@ export default function MemoViewScreen() {
   const ink = colors.text;
   const muted = colors.textSecondary;
   const line = isDark ? 'rgba(148,163,184,0.22)' : colors.outlineStrong;
-  const headerBg = colors.headerScrim;
   const primary = colors.primary;
   const secondary = colors.secondary;
   const quoteBg = isDark ? colors.surfaceMuted : colors.primaryMuted;
@@ -55,6 +48,7 @@ export default function MemoViewScreen() {
   const [tags, setTags] = useState<TagRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [pinning, setPinning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(
     async (forceApi = false) => {
@@ -62,11 +56,11 @@ export default function MemoViewScreen() {
         setLoading(false);
         return;
       }
+      setError(null);
       try {
         await wrapLoad(async () => {
           const item = await getMemo(id);
           if (!item) {
-            Alert.alert('未找到', '该备忘可能已删除', [{ text: '确定', onPress: () => router.back() }]);
             setRow(null);
             setTags([]);
             return;
@@ -75,12 +69,14 @@ export default function MemoViewScreen() {
           setTags(await getTagsByEntity('memo', id));
         }, forceApi);
       } catch {
-        Alert.alert('加载失败', '请返回重试', [{ text: '确定', onPress: () => router.back() }]);
+        setError('加载失败，请重试');
+        setRow(null);
+        setTags([]);
       } finally {
         setLoading(false);
       }
     },
-    [id, router, wrapLoad],
+    [id, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
@@ -115,47 +111,43 @@ export default function MemoViewScreen() {
 
   if (!id) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <Text style={{ fontSize: 15, fontWeight: '600' }}>缺少备忘 ID</Text>
-      </View>
+      <CrudDetailScreen title="备忘" onBack={() => router.back()} missing missingMessage="缺少备忘 ID" />
     );
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: paper }]}>
-      <View
-        style={[
-          styles.topBarWrap,
-          { paddingTop: insets.top, backgroundColor: headerBg, borderBottomColor: line },
-        ]}>
-        <View style={styles.topBar}>
-          <Pressable style={styles.iconBtn} onPress={() => router.back()}>
-            <MaterialIcons name="arrow-back-ios-new" size={20} color={primary} />
-          </Pressable>
-          <Text style={[styles.topTitle, { color: ink }]} numberOfLines={1}>
-            备忘
-          </Text>
-          <Pressable style={styles.iconBtn} onPress={() => void onTogglePin()} disabled={!row || pinning}>
-            <MaterialIcons
-              name="push-pin"
-              size={22}
-              color={row?.is_pinned ? colors.tertiary : muted}
-            />
-          </Pressable>
-          <Pressable
-            style={styles.iconBtn}
+    <CrudDetailScreen
+      title="备忘"
+      onBack={() => router.back()}
+      headerRight={
+        <View style={styles.headerActions}>
+          <AppIconButton
+            icon="push-pin"
+            onPress={() => void onTogglePin()}
+            disabled={!row || pinning}
+            color={row?.is_pinned ? colors.tertiary : muted}
+            accessibilityLabel={row?.is_pinned ? '取消置顶' : '置顶'}
+          />
+          <AppIconButton
+            icon="edit"
             onPress={() => router.push({ pathname: '/memo-edit/[id]', params: { id } })}
-            disabled={!row}>
-            <MaterialIcons name="edit" size={22} color={primary} />
-          </Pressable>
+            disabled={!row}
+            color={primary}
+            accessibilityLabel="编辑"
+          />
         </View>
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator size="large" color={primary} />
-        </View>
-      ) : row ? (
+      }
+      loading={loading}
+      loadingHint="加载备忘…"
+      error={error}
+      onRetryError={() => {
+        setLoading(true);
+        void reload(true);
+      }}
+      missing={!loading && !error && !row}
+      missingMessage="未找到该备忘"
+      style={{ backgroundColor: paper }}>
+      {row ? (
         <ScrollView
           refreshControl={refreshControl}
           contentContainerStyle={[
@@ -214,37 +206,13 @@ export default function MemoViewScreen() {
             </View>
           ) : null}
         </ScrollView>
-      ) : (
-        <View style={styles.loadingWrap}>
-          <Text style={{ color: muted, fontWeight: '600' }}>未找到该备忘</Text>
-        </View>
-      )}
-    </View>
+      ) : null}
+    </CrudDetailScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  topBarWrap: { borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 10 },
-  topBar: {
-    height: 48,
-    paddingHorizontal: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  iconBtn: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...Typography.title,
-    fontWeight: '800',
-  },
-  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
   scrollInner: { paddingHorizontal: Spacing['5xl'], paddingTop: Spacing['5xl'] },
   title: {
     fontSize: 26,

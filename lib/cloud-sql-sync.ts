@@ -5,10 +5,7 @@ import { executeCloudSql } from '@/lib/cloud-sql-client';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
   clearAllCloudSqliteDirtyTables,
-  clearCloudSqliteDirtyTables,
   endCloudSqliteDirtyIgnoreBatch,
-  peekCloudSqliteDirtyTables,
-  scheduleCloudTablePushDebounced,
 } from '@/lib/cloud-sql-dirty-track';
 import { isSilentCloudRestoreInFlight, setSilentCloudRestoreInFlight } from '@/lib/cloud-sync-flags';
 import { getDatabase, initDatabase } from '@/lib/database';
@@ -516,7 +513,7 @@ function expandTablesForCloudApply(seedTables: string[], graph: LocalForeignKeyG
   return graph.tables.filter(t => set.has(t));
 }
 
-/** 父表在前、子表在后 */
+/** 父表在前、子表在后（API Outbox 与 Worker 备份共用同一拓扑排序） */
 function sortTablesForCloudInsert(tables: string[], graph: LocalForeignKeyGraph): string[] {
   const tableSet = new Set(tables);
   const sorted: string[] = [];
@@ -549,7 +546,10 @@ function sortTablesForCloudDelete(insertOrder: string[]): string[] {
   return [...insertOrder].reverse();
 }
 
-/** REST 增量推送：按外键依赖排序（仅扩展父表） */
+/**
+ * REST 增量推送外键顺序（P0-03 唯一在线权威路径）。
+ * 仅扩展父表 + 共用 sortTablesForCloudInsert；Worker 全量备份另用 expandTablesForCloudUpload（含子女表），但排序同一套。
+ */
 export async function resolveApiPushInsertOrder(seedTables: string[]): Promise<string[]> {
   if (seedTables.length === 0) return [];
   const graph = await buildLocalForeignKeyGraph();
@@ -803,47 +803,6 @@ export async function ensureFinanceAccountRefsForApiUpload(
 
   if (existing.length > 0) {
     rowsByTable.set('finance_accounts', existing);
-  }
-}
-
-/** 备忘 dimension_id 引用 memo_dimensions；补全待上传 bundle 中的维度行 */
-export async function ensureMemoDimensionRefsForApiUpload(
-  rowsByTable: Map<string, Record<string, unknown>[]>,
-): Promise<void> {
-  const memoRows = rowsByTable.get('memos') ?? [];
-  if (memoRows.length === 0) return;
-
-  const neededIds = new Set<string>();
-  for (const row of memoRows) {
-    const did = row.dimension_id;
-    if (did != null && did !== '') neededIds.add(String(did));
-  }
-  if (neededIds.size === 0) return;
-
-  const existing = rowsByTable.get('memo_dimensions') ?? [];
-  const byId = new Map(
-    existing
-      .filter(r => r.id != null && r.id !== '')
-      .map(r => [String(r.id), r]),
-  );
-
-  const db = await getDatabase();
-  if (!db) return;
-
-  for (const id of neededIds) {
-    if (byId.has(id)) continue;
-    const row = await db.getFirstAsync<Record<string, unknown>>(
-      'SELECT * FROM memo_dimensions WHERE id = ? LIMIT 1',
-      [id],
-    );
-    if (row) {
-      existing.push(row);
-      byId.set(id, row);
-    }
-  }
-
-  if (existing.length > 0) {
-    rowsByTable.set('memo_dimensions', existing);
   }
 }
 
@@ -1488,33 +1447,18 @@ export async function triggerCloudFullRestore(opts?: {
   }
 }
 
-/** 脏表增量：将本地变更表推送到云端 */
+/**
+ * @deprecated P0-03：Worker 脏表增量已退役。
+ * 在线权威为 MySQL `/api` Outbox；D1 仅保留周期全量对齐与手动全量备份。
+ */
 export async function pushCloudDirtyTablesIfNeeded(): Promise<void> {
-  if (isSilentCloudRestoreInFlight()) {
-    scheduleCloudTablePushDebounced();
-    return;
-  }
-
-  const dirtyList = peekCloudSqliteDirtyTables();
-  if (dirtyList.length === 0) return;
-
-  const token = await getCloudAuthToken();
-  if (!token) return;
-
-  const db = await getDatabase();
-  if (!db) return;
-
-  try {
-    await pushLocalTablesToCloudBatch(dirtyList);
-    clearCloudSqliteDirtyTables(dirtyList);
-    await setLastCloudAlignAtIso(new Date().toISOString());
-  } catch (e) {
-    if (__DEV__) console.warn('[cloud incremental] 批量推送失败', e);
-    scheduleCloudTablePushDebounced();
-  }
+  /* no-op */
 }
 
-/** 每 4 小时对齐：将全部本地表推送到云端 */
+/**
+ * 每 4 小时对齐：将全部本地表推送到云端 D1（备份用途，非在线权威）。
+ * 日常写入请走 MySQL `/api` Outbox（markApiTableDirty）。
+ */
 export async function alignAllLocalTablesToCloud(opts?: { signal?: AbortSignal }): Promise<void> {
   const token = await getCloudAuthToken();
   if (!token) return;

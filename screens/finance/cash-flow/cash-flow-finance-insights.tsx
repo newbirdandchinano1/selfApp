@@ -1,4 +1,7 @@
 import { buildCashFlowAiSummaryText, type CashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
+import { formatYmd } from '@/lib/date';
+import { aggregateTransactions, isAggregatableFinanceTxn } from '@/lib/finance-aggregate';
+import { ymdFromDatetime } from '@/lib/api-read-helpers';
 import { buildSavingsForecastSeries, computeNetWorthTotal } from '@/lib/finance-net-worth';
 import { fetchFinanceCatalog, fetchFinanceInsights, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import type { FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
@@ -129,12 +132,10 @@ export function CashFlowFinanceInsightsProvider({
       const insights = await fetchFinanceInsights({ months: 6, offlineFallback: true });
       const end = new Date();
       const start = new Date(end.getFullYear(), end.getMonth() - 6, 1);
-      const ymd = (d: Date) =>
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       const [txnResult, catalog] = await Promise.all([
         fetchFinanceTransactionsRange({
-          start: ymd(start),
-          end: ymd(end),
+          start: formatYmd(start),
+          end: formatYmd(end),
           offlineFallback: true,
         }),
         fetchFinanceCatalog({ offlineFallback: true }),
@@ -146,38 +147,55 @@ export function CashFlowFinanceInsightsProvider({
       setCurrentNetWorth(
         typeof insights?.netWorth === 'number' ? insights.netWorth : computeNetWorthTotal(accounts),
       );
+
       const now = new Date();
-      const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const monthKey = (date: Date) =>
+        `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const thisKey = monthKey(now);
+      const prevKey = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      const monthStarts = Array.from(
+        { length: 6 },
+        (_, idx) => new Date(now.getFullYear(), now.getMonth() - (5 - idx), 1),
+      );
+      const pastKeys = monthStarts.map(monthKey);
+
+      const serverMonthly = Array.isArray(insights?.monthly) ? insights.monthly : null;
+      const useServer = Boolean(insights?.fromApi && serverMonthly && serverMonthly.length > 0);
 
       let thisIncome = 0;
       let thisExpense = 0;
       let prevIncome = 0;
       let prevExpense = 0;
-      const expenseBucket = new Map<string, number>();
-      const categoryNameMap = new Map(categories.map((c) => [c.id, c.name]));
-
-      transactions.forEach((txn) => {
-        const happenedAt = new Date(txn.happened_at);
-        if (Number.isNaN(happenedAt.getTime())) return;
-        const amount = Math.abs(txn.amount);
-        const inThisMonth = happenedAt >= thisMonthStart && happenedAt < nextMonthStart;
-        const inPrevMonth = happenedAt >= prevMonthStart && happenedAt < thisMonthStart;
-
-        if (inThisMonth) {
-          if (txn.transaction_type === 'income') thisIncome += amount;
-          if (txn.transaction_type === 'expense') {
-            thisExpense += amount;
-            const categoryKey = txn.flow_category_id ?? 'uncategorized';
-            expenseBucket.set(categoryKey, (expenseBucket.get(categoryKey) ?? 0) + amount);
-          }
-        }
-        if (inPrevMonth) {
-          if (txn.transaction_type === 'income') prevIncome += amount;
-          if (txn.transaction_type === 'expense') prevExpense += amount;
-        }
+      const monthIncome = new Map<string, number>();
+      const monthExpense = new Map<string, number>();
+      pastKeys.forEach((key) => {
+        monthIncome.set(key, 0);
+        monthExpense.set(key, 0);
       });
+
+      if (useServer && serverMonthly) {
+        for (const row of serverMonthly) {
+          monthIncome.set(row.key, row.income);
+          monthExpense.set(row.key, row.expense);
+        }
+        thisIncome = monthIncome.get(thisKey) ?? 0;
+        thisExpense = monthExpense.get(thisKey) ?? 0;
+        prevIncome = monthIncome.get(prevKey) ?? 0;
+        prevExpense = monthExpense.get(prevKey) ?? 0;
+      } else {
+        const rangeStart = formatYmd(monthStarts[0]!);
+        const rangeEnd = formatYmd(end);
+        const agg = aggregateTransactions(transactions, { start: rangeStart, end: rangeEnd });
+        for (const [mk, bucket] of agg.byMonth) {
+          if (!monthIncome.has(mk)) continue;
+          monthIncome.set(mk, bucket.income);
+          monthExpense.set(mk, bucket.expense);
+        }
+        thisIncome = monthIncome.get(thisKey) ?? 0;
+        thisExpense = monthExpense.get(thisKey) ?? 0;
+        prevIncome = monthIncome.get(prevKey) ?? 0;
+        prevExpense = monthExpense.get(prevKey) ?? 0;
+      }
 
       const thisSavingsRate = thisIncome > 0 ? ((thisIncome - thisExpense) / thisIncome) * 100 : 0;
       const prevSavingsRate = prevIncome > 0 ? ((prevIncome - prevExpense) / prevIncome) * 100 : 0;
@@ -185,50 +203,49 @@ export function CashFlowFinanceInsightsProvider({
       setMonthlyIncome(thisIncome);
       setMonthlyExpense(thisExpense);
       setMonthlySavingsDelta(thisSavingsRate - prevSavingsRate);
-      setExpenseBreakdownRows(
-        Array.from(expenseBucket.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(([categoryId, amount]) => ({
-            name: categoryNameMap.get(categoryId) ?? '未分类',
-            amount,
-            pct: thisExpense > 0 ? amount / thisExpense : 0,
+
+      const categoryNameMap = new Map(categories.map((c) => [c.id, c.name]));
+      if (useServer && Array.isArray(insights?.categoryTop) && insights.categoryTop.length > 0) {
+        setExpenseBreakdownRows(
+          insights.categoryTop.slice(0, 5).map((row) => ({
+            name: row.name || '未分类',
+            amount: row.amount,
+            pct: thisExpense > 0 ? row.amount / thisExpense : 0,
           })),
-      );
-
-      const monthStarts = Array.from({ length: 6 }, (_, idx) => new Date(now.getFullYear(), now.getMonth() - (5 - idx), 1));
-      const monthIncome = new Map<string, number>();
-      const monthExpense = new Map<string, number>();
-      const monthKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      monthStarts.forEach((start) => {
-        const key = monthKey(start);
-        monthIncome.set(key, 0);
-        monthExpense.set(key, 0);
-      });
-
-      transactions.forEach((txn) => {
-        const happenedAt = new Date(txn.happened_at);
-        if (Number.isNaN(happenedAt.getTime())) return;
-        const key = monthKey(new Date(happenedAt.getFullYear(), happenedAt.getMonth(), 1));
-        if (!monthIncome.has(key)) return;
-        const amount = Math.abs(txn.amount);
-        if (txn.transaction_type === 'income') monthIncome.set(key, (monthIncome.get(key) ?? 0) + amount);
-        if (txn.transaction_type === 'expense') monthExpense.set(key, (monthExpense.get(key) ?? 0) + amount);
-      });
+        );
+      } else {
+        const expenseBucket = new Map<string, number>();
+        const thisMonthStartYmd = formatYmd(new Date(now.getFullYear(), now.getMonth(), 1));
+        const thisMonthEndYmd = formatYmd(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+        for (const txn of transactions) {
+          if (!isAggregatableFinanceTxn(txn) || txn.transaction_type !== 'expense') continue;
+          const day = ymdFromDatetime(txn.happened_at);
+          if (!day || day < thisMonthStartYmd || day > thisMonthEndYmd) continue;
+          const categoryKey = txn.flow_category_id ?? 'uncategorized';
+          expenseBucket.set(categoryKey, (expenseBucket.get(categoryKey) ?? 0) + Math.abs(txn.amount));
+        }
+        setExpenseBreakdownRows(
+          Array.from(expenseBucket.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([categoryId, amount]) => ({
+              name: categoryNameMap.get(categoryId) ?? '未分类',
+              amount,
+              pct: thisExpense > 0 ? amount / thisExpense : 0,
+            })),
+        );
+      }
 
       setPast6Net(
-        monthStarts.map((start) => {
-          const key = monthKey(start);
-          return (monthIncome.get(key) ?? 0) - (monthExpense.get(key) ?? 0);
-        }),
+        pastKeys.map((key) => (monthIncome.get(key) ?? 0) - (monthExpense.get(key) ?? 0)),
       );
-      setPast6Income(monthStarts.map((start) => monthIncome.get(monthKey(start)) ?? 0));
-      setPast6MonthKeys(monthStarts.map((start) => monthKey(start)));
+      setPast6Income(pastKeys.map((key) => monthIncome.get(key) ?? 0));
+      setPast6MonthKeys(pastKeys);
 
       const timeline = Array.from({ length: 12 }, (_, idx) => {
         const date = new Date(now.getFullYear(), now.getMonth() - 5 + idx, 1);
         return {
-          key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+          key: monthKey(date),
           label: `${date.getMonth() + 1}月`,
           isForecast: idx > 5,
         };

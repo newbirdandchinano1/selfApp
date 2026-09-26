@@ -1,3 +1,7 @@
+/**
+ * 青蛙周课表：视图 / 排课层类型（placement + 轴）。
+ * 任务截止与重复规则见 `./meta` / `./repeat`；勿在此扩展 ScheduleMeta。
+ */
 import type { SyncStatus } from '@/lib/database.native';
 
 /** 格宽仅允许 1–4 小时 */

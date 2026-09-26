@@ -1,5 +1,15 @@
+/**
+ * 每日复盘本地提醒：业务只决定「哪天几点是否该填」；权限/通道/排期走 scheduler。
+ */
+
 import type { DailyReviewReminderSettings } from '@/lib/daily-review-reminder-settings';
 import { getDailyReviewReminderSettings } from '@/lib/daily-review-reminder-settings';
+import { getNotificationCategoryMeta } from '@/lib/notification-catalog';
+import {
+  cancelScheduledByIdentifier,
+  isLocalNotificationSchedulingUnavailable,
+  scheduleDateReminder,
+} from '@/lib/notification-scheduler';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import {
   collectColumnIds,
@@ -9,18 +19,24 @@ import {
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
+import { formatYmd } from '@/lib/date';
 import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
-import { canScheduleAppNotification } from '@/lib/notification-center-settings';
-import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
-import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
-import { Platform } from 'react-native';
 
-const NOTIFICATION_ID = 'selfapp-daily-review-reminder';
-const ANDROID_CHANNEL_ID = 'daily-review-reminders';
+const ANDROID_CHANNEL = {
+  id: 'daily-review-reminders',
+  name: '每日复盘提醒',
+  importance: 'default' as const,
+  vibrationPattern: [0, 200, 120, 200],
+};
+
+const NOTIFICATION_ID =
+  getNotificationCategoryMeta('daily-review-reminder').identifierPrefix ??
+  'selfapp-daily-review-reminder';
+
 const MAX_LOOKAHEAD_DAYS = 21;
 
 function dailyEntryHasContent(fields: ReviewFieldValues): boolean {
-  return Object.values(fields).some((v) => (v ?? '').trim().length > 0);
+  return Object.values(fields).some(v => (v ?? '').trim().length > 0);
 }
 
 /** 与 `components/review/review-utils` 的周复盘日跳过日复盘规则一致 */
@@ -33,17 +49,6 @@ function isDailyReviewSkippedForYmd(ymd: string, configuredDow: number | null): 
   return ymd === endYmd;
 }
 
-async function ensureAndroidChannel() {
-  if (Platform.OS !== 'android') return;
-  const Notifications = await import('expo-notifications');
-  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-    name: '每日复盘提醒',
-    importance: Notifications.AndroidImportance.DEFAULT,
-    vibrationPattern: [0, 200, 120, 200],
-    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-  });
-}
-
 export type SyncDailyReviewReminderResult = {
   scheduled: boolean;
   permissionDenied: boolean;
@@ -51,7 +56,10 @@ export type SyncDailyReviewReminderResult = {
 
 /** 指定逻辑日是否已填写日复盘（有任一栏目非空）。 */
 export async function isDailyReviewFilledForYmd(ymd: string): Promise<boolean> {
-  const [tpl, rows] = await Promise.all([listReviewTemplate('daily'), listDailyReviewsBetween(ymd, ymd)]);
+  const [tpl, rows] = await Promise.all([
+    listReviewTemplate('daily'),
+    listDailyReviewsBetween(ymd, ymd),
+  ]);
   const row = rows[0];
   if (!row?.body?.trim()) return false;
 
@@ -63,20 +71,13 @@ export async function isDailyReviewFilledForYmd(ymd: string): Promise<boolean> {
     const o = JSON.parse(row.body) as { fields?: unknown };
     if (o?.fields && typeof o.fields === 'object' && !Array.isArray(o.fields)) {
       return Object.values(o.fields as Record<string, unknown>).some(
-        (v) => String(v ?? '').trim().length > 0,
+        v => String(v ?? '').trim().length > 0,
       );
     }
   } catch {
     return row.body.trim().length > 0;
   }
   return false;
-}
-
-function formatYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 /** 本周期已复盘天数文案，用于通知 body */
@@ -144,7 +145,7 @@ async function findNextDailyReviewReminderFireAt(
       const o = JSON.parse(row.body) as { fields?: unknown };
       if (o?.fields && typeof o.fields === 'object' && !Array.isArray(o.fields)) {
         const has = Object.values(o.fields as Record<string, unknown>).some(
-          (v) => String(v ?? '').trim().length > 0,
+          v => String(v ?? '').trim().length > 0,
         );
         if (has) filledYmds.add(row.record_date_ymd);
       }
@@ -172,50 +173,16 @@ async function findNextDailyReviewReminderFireAt(
 export async function syncDailyReviewReminderNotification(
   settings?: DailyReviewReminderSettings,
 ): Promise<SyncDailyReviewReminderResult> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) {
+  if (isLocalNotificationSchedulingUnavailable()) {
     return { scheduled: false, permissionDenied: false };
   }
 
   const resolved = settings ?? (await getDailyReviewReminderSettings());
-
-  let Notifications: typeof import('expo-notifications');
-  try {
-    Notifications = await import('expo-notifications');
-  } catch (e) {
-    console.warn('expo-notifications 不可用', e);
-    return { scheduled: false, permissionDenied: false };
-  }
-
-  try {
-    await Notifications.cancelScheduledNotificationAsync(NOTIFICATION_ID);
-  } catch {
-    /* 无已登记通知时忽略 */
-  }
+  await cancelScheduledByIdentifier(NOTIFICATION_ID);
 
   if (!resolved.enabled) {
     return { scheduled: false, permissionDenied: false };
   }
-
-  if (
-    !(await canScheduleAppNotification({
-      category: 'daily-review-reminder',
-      identifier: NOTIFICATION_ID,
-    }))
-  ) {
-    return { scheduled: false, permissionDenied: false };
-  }
-
-  const perm = await Notifications.getPermissionsAsync();
-  let granted = perm.status === 'granted';
-  if (!granted && perm.canAskAgain !== false) {
-    const req = await Notifications.requestPermissionsAsync();
-    granted = req.status === 'granted';
-  }
-  if (!granted) {
-    return { scheduled: false, permissionDenied: true };
-  }
-
-  await ensureAndroidChannel();
 
   const hour = Math.max(0, Math.min(23, Math.floor(resolved.hour)));
   const minute = Math.max(0, Math.min(59, Math.floor(resolved.minute)));
@@ -224,47 +191,29 @@ export async function syncDailyReviewReminderNotification(
     return { scheduled: false, permissionDenied: false };
   }
 
-  const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
-  const channelId = Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined;
   const fingerprint = `daily-review|${hour}:${minute}|${fireAt.toISOString().slice(0, 16)}`;
   const progressHint = await buildWeekProgressBodyHint(new Date());
-  const copy = await resolveNotificationAiCopy({
+
+  return scheduleDateReminder({
+    category: 'daily-review-reminder',
     identifier: NOTIFICATION_ID,
-    fingerprint,
+    fireAt,
+    channel: ANDROID_CHANNEL,
+    data: {
+      type: 'daily-review-reminder',
+      href: '/(tabs)/review',
+    },
     fallback: {
       title: '今日复盘',
       body: progressHint,
     },
+    fingerprint,
     contextBlock: [
       '【频道】每日复盘提醒',
       '【语境】提醒用户填写今日日复盘',
       `【进度提示】${progressHint}`,
     ].join('\n'),
   });
-
-  try {
-    await Notifications.scheduleNotificationAsync({
-      identifier: NOTIFICATION_ID,
-      content: {
-        title: copy.title,
-        body: copy.body,
-        sound: true,
-        data: {
-          type: 'daily-review-reminder',
-          href: '/(tabs)/review',
-        },
-      },
-      trigger: {
-        type: SchedulableTriggerInputTypes.DATE,
-        date: fireAt,
-        channelId,
-      },
-    });
-    return { scheduled: true, permissionDenied: false };
-  } catch (e) {
-    console.warn('登记每日复盘提醒失败', e);
-    return { scheduled: false, permissionDenied: false };
-  }
 }
 
 /** 前台送达前：今日已填写复盘（或周复盘日）则抑制展示。 */

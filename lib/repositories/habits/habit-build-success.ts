@@ -1,4 +1,5 @@
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
+import { isValidYmd } from '@/lib/date';
 import { InteractionManager } from 'react-native';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
@@ -17,8 +18,6 @@ export type BuildHabitCycleMeta = {
   completedValue: number | null;
 };
 
-const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 function parseExtraObject(extraData: string | null): Record<string, unknown> {
   if (!extraData) return {};
   try {
@@ -31,7 +30,7 @@ function parseExtraObject(extraData: string | null): Record<string, unknown> {
 }
 
 function parseYmdField(value: unknown): string | null {
-  if (typeof value !== 'string' || !YMD_RE.test(value.trim())) return null;
+  if (typeof value !== 'string' || !isValidYmd(value)) return null;
   return value.trim();
 }
 

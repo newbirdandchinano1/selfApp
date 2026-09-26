@@ -1,55 +1,38 @@
 /**
  * 健康摄入本地提醒：
- * - 逻辑日（resolveDayBoundaryForPage('health')）任一指标相对目标不足 → 未达标才登记
- * - 固定时刻 / 间隔模式；免打扰内延后到结束；每逻辑日最多 2 条
- * - masterEnabled / 频道关闭 / 沙箱 / Web：由 canSchedule + 同步入口统一处理
+ * - 逻辑日未达标才登记；固定时刻 / 间隔；免打扰延后；每逻辑日最多 2 条
+ * - 权限/通道/排期走统一 scheduler
  */
 
-import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
+import { buildNotificationIdentifier } from '@/lib/notification-catalog';
 import {
-  canScheduleAppNotification,
   getNotificationCenterSettings,
   type HealthIntakeReminderPrefs,
 } from '@/lib/notification-center-settings';
-import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
-import { getResolvedGlobalIntakeTargets } from '@/lib/global-intake-targets';
 import {
-  getHealthDayMetricsForUser,
-} from '@/lib/repositories/health/health';
+  cancelScheduledByCategory,
+  isLocalNotificationSchedulingUnavailable,
+  scheduleDateReminder,
+} from '@/lib/notification-scheduler';
+import { getResolvedGlobalIntakeTargets } from '@/lib/global-intake-targets';
+import { getHealthDayMetricsForUser } from '@/lib/repositories/health/health';
 import type { HealthIntakeDayTotals, HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
-import {
-  getLogicalLocalYmd,
-  resolveDayBoundaryForPage,
-} from '@/lib/tasks-logical-day';
-import { Platform } from 'react-native';
+import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 
-const NOTIFICATION_PREFIX = 'selfapp-health-intake-reminder:';
-const ANDROID_CHANNEL_ID = 'health-intake-reminders';
+const ANDROID_CHANNEL = {
+  id: 'health-intake-reminders',
+  name: '健康摄入提醒',
+  importance: 'default' as const,
+  vibrationPattern: [0, 200, 120, 200],
+};
+
 const MAX_PER_LOGICAL_DAY = 2;
 
 export function healthIntakeReminderIdentifier(logicalYmd: string, index: number): string {
-  return `${NOTIFICATION_PREFIX}${logicalYmd}:${index}`;
-}
-
-async function ensureAndroidChannel() {
-  if (Platform.OS !== 'android') return;
-  const Notifications = await import('expo-notifications');
-  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-    name: '健康摄入提醒',
-    importance: Notifications.AndroidImportance.DEFAULT,
-    vibrationPattern: [0, 200, 120, 200],
-    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-  });
-}
-
-async function cancelAllHealthIntakeReminders() {
-  const Notifications = await import('expo-notifications');
-  const pending = await Notifications.getAllScheduledNotificationsAsync();
-  await Promise.all(
-    pending
-      .filter(r => typeof r.identifier === 'string' && r.identifier.startsWith(NOTIFICATION_PREFIX))
-      .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
+  return (
+    buildNotificationIdentifier('health-intake-reminder', `${logicalYmd}:${index}`) ??
+    `selfapp-health-intake-reminder:${logicalYmd}:${index}`
   );
 }
 
@@ -162,25 +145,17 @@ export function computeHealthIntakeFireAts(params: {
     const base = buildFireAtOnLogicalDay(logicalYmd, prefs.fixedHour, prefs.fixedMinute);
     if (base) candidates.push(deferOutOfQuietHours(base, prefs));
   } else {
-    // 间隔：从日界后首个整点步长起扫到逻辑日结束附近
     const dayStart = buildFireAtOnLogicalDay(logicalYmd, 0, 0);
     if (!dayStart) return [];
-    let cursor = new Date(dayStart);
-    // 从「现在」对齐到下一间隔点，同时扫整天以统计已过配额
     const endOfScan = addMinutes(dayStart, 24 * 60);
-    cursor = new Date(Math.max(cursor.getTime(), dayStart.getTime()));
-    // 对齐到当天 00:00 + n*interval
     const interval = prefs.intervalMinutes;
     let t = new Date(dayStart);
     while (t.getTime() < endOfScan.getTime()) {
-      const deferred = deferOutOfQuietHours(t, prefs);
-      // 延后后仍属同一逻辑日才计入（跨日延后由下次 sync 处理）
-      candidates.push(deferred);
+      candidates.push(deferOutOfQuietHours(t, prefs));
       t = addMinutes(t, interval);
     }
   }
 
-  // 去重（同分）
   const uniq: Date[] = [];
   const seen = new Set<number>();
   for (const d of candidates) {
@@ -198,42 +173,19 @@ export function computeHealthIntakeFireAts(params: {
   return future.slice(0, remain);
 }
 
-async function ensurePermission(
-  Notifications: typeof import('expo-notifications'),
-): Promise<boolean> {
-  const perm = await Notifications.getPermissionsAsync();
-  let granted = perm.status === 'granted';
-  if (!granted && perm.canAskAgain !== false) {
-    const req = await Notifications.requestPermissionsAsync();
-    granted = req.status === 'granted';
-  }
-  return granted;
-}
-
 /**
  * 按当前摄入与偏好重新登记健康提醒。
  * 达标后取消当天后续；master 关闭由 resync 入口先 cancelAll。
  */
 export async function syncHealthIntakeReminderNotifications(): Promise<void> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
+  if (isLocalNotificationSchedulingUnavailable()) return;
 
-  let Notifications: typeof import('expo-notifications');
-  try {
-    Notifications = await import('expo-notifications');
-  } catch (e) {
-    console.warn('expo-notifications 不可用', e);
-    return;
-  }
-
-  await cancelAllHealthIntakeReminders();
+  await cancelScheduledByCategory('health-intake-reminder');
 
   const settings = await getNotificationCenterSettings();
   if (!settings.masterEnabled || settings.categories['health-intake-reminder'] === false) {
     return;
   }
-
-  if (!(await ensurePermission(Notifications))) return;
-  await ensureAndroidChannel();
 
   const user = await getDefaultUser();
   if (!user?.id) return;
@@ -253,10 +205,7 @@ export async function syncHealthIntakeReminderNotifications(): Promise<void> {
   };
   const targets = resolveTargets(metrics?.latest ?? null);
   const deficits = listHealthIntakeDeficits(totals, targets);
-  if (deficits.length === 0) {
-    // 达标：不再登记当天后续
-    return;
-  }
+  if (deficits.length === 0) return;
 
   const fireAts = computeHealthIntakeFireAts({
     prefs: settings.health,
@@ -270,47 +219,26 @@ export async function syncHealthIntakeReminderNotifications(): Promise<void> {
     .join('；');
   const fingerprint = `${logicalYmd}|${settings.health.mode}|${deficitSummary}`;
 
-  const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
-
   for (let i = 0; i < fireAts.length; i++) {
     const fireAt = fireAts[i]!;
     const id = healthIntakeReminderIdentifier(logicalYmd, i);
-    if (!(await canScheduleAppNotification({ category: 'health-intake-reminder', identifier: id }))) {
-      continue;
-    }
-
-    const copy = await resolveNotificationAiCopy({
+    await scheduleDateReminder({
+      category: 'health-intake-reminder',
       identifier: id,
-      fingerprint,
+      fireAt,
+      channel: ANDROID_CHANNEL,
+      data: { type: 'health-intake-reminder', logicalYmd },
       fallback: {
         title: '健康摄入提醒',
         body: `今日还有未达标：${deficits.map(d => d.label).join('、')}`,
       },
+      fingerprint,
       contextBlock: [
         '【频道】健康摄入提醒',
         `【逻辑日】${logicalYmd}`,
         `【未达标】${deficitSummary}`,
       ].join('\n'),
     });
-
-    try {
-      await Notifications.scheduleNotificationAsync({
-        identifier: id,
-        content: {
-          title: copy.title,
-          body: copy.body,
-          sound: true,
-          data: { type: 'health-intake-reminder', logicalYmd },
-        },
-        trigger: {
-          type: SchedulableTriggerInputTypes.DATE,
-          date: fireAt,
-          channelId: Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined,
-        },
-      });
-    } catch (e) {
-      console.warn('登记健康摄入提醒失败', id, e);
-    }
   }
 }
 

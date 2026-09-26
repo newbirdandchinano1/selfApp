@@ -1,9 +1,10 @@
+import { buildStyledChildren } from '@/components/rich-text/build-styled-runs';
 import type { CharStyle, MemoEditModel } from '@/lib/memo-format';
+import type { RichCharStyle } from '@/lib/rich-text/index';
 import React, { useMemo } from 'react';
 import {
   Platform,
   StyleSheet,
-  Text,
   TextInput,
   type StyleProp,
   type TextStyle,
@@ -27,55 +28,11 @@ type Props = {
 const BASE_SIZE = 16;
 const BASE_LINE = 24;
 
-function segmentFontSize(style: CharStyle, baseSize: number): number {
-  if (style.size === 'small') return Math.max(12, baseSize - 3);
-  if (style.size === 'large') return baseSize + 4;
-  return baseSize;
-}
-
-/** 在 TextInput 内嵌套 Text，让光标与可见字形共用同一套原生排版，避免透明层叠方案错位 */
-function buildStyledChildren(model: MemoEditModel, textColor: string): React.ReactNode {
-  const { plain, styles: charStyles } = model;
-  if (!plain) return null;
-
-  const out: React.ReactNode[] = [];
-  let runStart = 0;
-  const sigAt = (i: number) => {
-    const s = charStyles[i] ?? {};
-    return `${s.bold ? 'b' : ''}|${s.size ?? ''}`;
-  };
-
-  const flush = (end: number) => {
-    if (end <= runStart) return;
-    const style = charStyles[runStart] ?? {};
-    const size = segmentFontSize(style, BASE_SIZE);
-    out.push(
-      <Text
-        key={`${runStart}-${end}`}
-        style={{
-          fontSize: size,
-          lineHeight: BASE_LINE,
-          fontWeight: style.bold ? '800' : '600',
-          color: textColor,
-        }}
-      >
-        {plain.slice(runStart, end)}
-      </Text>,
-    );
-    runStart = end;
-  };
-
-  for (let i = 1; i <= plain.length; i++) {
-    if (i === plain.length || sigAt(i - 1) !== sigAt(i)) {
-      flush(i);
-    }
-  }
-
-  return (
-    <Text style={[styles.textBase, { color: textColor }]}>
-      {out}
-    </Text>
-  );
+function resolveMemoFontSize(style: RichCharStyle): number {
+  const size = style.size as CharStyle['size'] | undefined;
+  if (size === 'small') return Math.max(12, BASE_SIZE - 3);
+  if (size === 'large') return BASE_SIZE + 4;
+  return BASE_SIZE;
 }
 
 export function MemoRichBodyInput({
@@ -91,7 +48,17 @@ export function MemoRichBodyInput({
   inputStyle,
 }: Props) {
   const children = useMemo(
-    () => buildStyledChildren(model, textColor),
+    () =>
+      buildStyledChildren(
+        model,
+        {
+          textColor,
+          resolveFontSize: resolveMemoFontSize,
+          resolveLineHeight: () => BASE_LINE,
+          resolveFontWeight: style => (style.bold ? '800' : '600'),
+        },
+        styles.textBase,
+      ),
     [model, textColor],
   );
 

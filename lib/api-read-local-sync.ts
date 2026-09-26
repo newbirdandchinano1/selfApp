@@ -81,16 +81,6 @@ function normalizeApiRowForLocal(
   const out = { ...row };
   delete out.deleted_at;
   delete out.version;
-  if (table === 'memo_dimensions' && colNames.includes('name')) {
-    let name = String(out.name ?? '').trim();
-    if (!name && typeof out.title === 'string') {
-      name = out.title.trim();
-    }
-    if (!name) {
-      name = '未命名维度';
-    }
-    out.name = name;
-  }
   if (colNames.includes('sync_status')) {
     out.sync_status = 'synced';
   }
@@ -234,13 +224,6 @@ async function upsertRowsToLocalTable(
                 typeof obj.extra_data === 'string' ? obj.extra_data : null,
                 typeof existing.extra_data === 'string' ? existing.extra_data : null,
               );
-            }
-          }
-          if (table === 'memo_dimensions' && colNames.includes('name')) {
-            const apiName = typeof obj.name === 'string' ? obj.name.trim() : '';
-            const localName = typeof existing.name === 'string' ? existing.name.trim() : '';
-            if (localName && (!apiName || apiName === '未命名维度')) {
-              obj.name = localName;
             }
           }
           if (table === 'finance_transactions' && colNames.includes('extra_data')) {
@@ -413,4 +396,85 @@ export async function syncApiReadResultToLocal(
     console.warn('[api-read-local-sync] 写入本地失败', table, e);
     if (opts?.throwOnError) throw e;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Pending overlay（读路径的另一侧：API 结果被本地未推送行覆盖，供 UI 立即可见）
+// 与上方 sync（API → 本地）职责不同，但同属「读路径本地对齐」，集中维护。
+// ---------------------------------------------------------------------------
+
+async function tableHasSyncStatusColumn(table: string): Promise<boolean> {
+  const db = await getDatabase();
+  if (!db) return false;
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${quoteIdent(table)})`);
+  return cols.some(c => c.name === 'sync_status');
+}
+
+/** 本地尚未同步到 REST 的行（含 pending_create / pending_update / pending_delete） */
+async function readLocalPendingRows(table: string): Promise<Record<string, unknown>[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  if (!(await tableHasSyncStatusColumn(table))) return [];
+  const rows = await db.getAllAsync(
+    `SELECT * FROM ${quoteIdent(table)} WHERE sync_status != 'synced'`,
+  );
+  return (rows as Record<string, unknown>[]) ?? [];
+}
+
+async function readLocalPendingRowByPk(
+  table: string,
+  pkValue: string,
+): Promise<Record<string, unknown> | null> {
+  const db = await getDatabase();
+  if (!db || !pkValue.trim()) return null;
+  if (!(await tableHasSyncStatusColumn(table))) return null;
+  const pkCol = getApiTablePrimaryKey(table);
+  const row = await db.getFirstAsync<Record<string, unknown>>(
+    `SELECT * FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ? AND sync_status != 'synced' LIMIT 1`,
+    [pkValue],
+  );
+  return row ?? null;
+}
+
+/**
+ * API_ONLY_READS 下：用本地待同步行覆盖 REST 结果，使写入后 UI 立即可见。
+ * pending_delete 会从列表中移除；pending_create/update 覆盖同主键的 API 行。
+ */
+export async function overlayLocalPendingOnApiTableRows<T extends Record<string, unknown>>(
+  table: string,
+  apiRows: T[],
+): Promise<T[]> {
+  const pending = await readLocalPendingRows(table);
+  if (pending.length === 0) return apiRows;
+
+  const pkCol = getApiTablePrimaryKey(table);
+  const byPk = new Map<string, T>();
+  for (const row of apiRows) {
+    const pk = String(row[pkCol] ?? '').trim();
+    if (pk) byPk.set(pk, row);
+  }
+
+  for (const local of pending) {
+    const pk = String(local[pkCol] ?? '').trim();
+    if (!pk) continue;
+    if (local.sync_status === 'pending_delete') {
+      byPk.delete(pk);
+    } else {
+      byPk.set(pk, local as T);
+    }
+  }
+
+  return [...byPk.values()];
+}
+
+/** 单条记录：若本地有待同步版本则优先返回；pending_delete 视为不存在 */
+export async function overlayLocalPendingOnApiRecord<T extends Record<string, unknown>>(
+  table: string,
+  pkValue: string,
+  apiRow: T | null,
+): Promise<T | null> {
+  const local = await readLocalPendingRowByPk(table, pkValue);
+  if (!local) return apiRow;
+  if (local.sync_status === 'pending_delete') return null;
+  return local as T;
 }

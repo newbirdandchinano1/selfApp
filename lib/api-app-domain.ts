@@ -4,52 +4,24 @@
  */
 
 import {
-  ApiRequestError,
+  APP_API_PREFIX,
   apiRequest,
   type ApiListQueryOpts,
   type ApiListResponse,
 } from '@/lib/api-client';
 import { formatPointsLedgerReasonLabel } from '@/lib/points-ledger-reason-label';
-import { roundPoints } from '@/lib/reward-points';
+import { asPoints } from '@/lib/reward-points';
 
-export const APP_API_PREFIX = '/api/app';
-
-/** 远端仍挂旧路径 /wish-board/points/*；新路径 /points/* 未部署时回退 */
-function isPointsRouteMissingError(err: unknown): boolean {
-  if (err instanceof ApiRequestError && err.httpStatus === 404) return true;
-  if (!(err instanceof Error)) return false;
-  return /Cannot (GET|POST|PUT|PATCH|DELETE)\s|404|Not Found/i.test(err.message);
-}
-
-async function apiRequestPointsCompat<T>(
-  modernPath: string,
-  legacyPath: string,
-  opts?: Parameters<typeof apiRequest<T>>[1],
-): Promise<T> {
-  try {
-    return await apiRequest<T>(modernPath, opts);
-  } catch (e) {
-    if (!isPointsRouteMissingError(e)) throw e;
-    if (__DEV__) {
-      console.warn('[points] modern route missing, fallback legacy', modernPath, '→', legacyPath);
-    }
-    return apiRequest<T>(legacyPath, opts);
-  }
-}
-
-function asPoints(raw: unknown): number {
-  const n = roundPoints(Number(raw) || 0);
-  return Number.isFinite(n) ? n : 0;
-}
+export { APP_API_PREFIX };
 
 /** 走专用业务接口的表（写入/读取由本模块适配） */
 export const APP_DOMAIN_CRUD_TABLES = new Set([
   'recipe_categories',
   'recipe_items',
-  'memo_dimensions',
   'memos',
   'health_records',
   'wish_board_items',
+  'finance_transactions',
 ]);
 
 function asRecord(row: unknown): Record<string, unknown> {
@@ -110,18 +82,12 @@ function prepareRecipeItemBody(row: Record<string, unknown>): Record<string, unk
   return out;
 }
 
-function prepareMemoDimensionBody(row: Record<string, unknown>): Record<string, unknown> {
-  const out = stripSyncFields(row);
-  const name =
-    (typeof out.name === 'string' ? out.name.trim() : '') ||
-    (typeof out.title === 'string' ? out.title.trim() : '');
-  if (name) out.name = name;
-  delete out.title;
-  return out;
-}
-
 function prepareMemoBody(row: Record<string, unknown>): Record<string, unknown> {
-  return stripSyncFields(row);
+  const out = stripSyncFields(row);
+  delete out.dimension_id;
+  delete out.dimension;
+  delete out.dimension_detail;
+  return out;
 }
 
 function prepareHealthIntakeBody(row: Record<string, unknown>): Record<string, unknown> {
@@ -176,12 +142,6 @@ export async function appDomainCreateRecord<T = unknown>(
         body: prepareRecipeItemBody(row),
         signal,
       });
-    case 'memo_dimensions':
-      return apiRequest<T>(`${APP_API_PREFIX}/memos/dimensions`, {
-        method: 'POST',
-        body: prepareMemoDimensionBody(row),
-        signal,
-      });
     case 'memos':
       return apiRequest<T>(`${APP_API_PREFIX}/memos`, {
         method: 'POST',
@@ -198,6 +158,12 @@ export async function appDomainCreateRecord<T = unknown>(
       return apiRequest<T>(`${APP_API_PREFIX}/wish-board/items`, {
         method: 'POST',
         body: prepareWishBoardItemBody(row),
+        signal,
+      });
+    case 'finance_transactions':
+      return apiRequest<T>(`${APP_API_PREFIX}/pages/finance/transactions`, {
+        method: 'POST',
+        body: stripSyncFields(row),
         signal,
       });
     default:
@@ -226,12 +192,6 @@ export async function appDomainUpdateRecord<T = unknown>(
         body: prepareRecipeItemBody(row),
         signal,
       });
-    case 'memo_dimensions':
-      return apiRequest<T>(`${APP_API_PREFIX}/memos/dimensions/${enc}`, {
-        method: 'PATCH',
-        body: prepareMemoDimensionBody(row),
-        signal,
-      });
     case 'memos':
       return apiRequest<T>(`${APP_API_PREFIX}/memos/${enc}`, {
         method: 'PUT',
@@ -239,10 +199,23 @@ export async function appDomainUpdateRecord<T = unknown>(
         signal,
       });
     case 'wish_board_items':
-      // 专用文档暂无编辑接口；保留通用 CRUD 由调用方回退
-      throw new AppDomainFallbackError(table, 'update');
+      return apiRequest<T>(`${APP_API_PREFIX}/wish-board/items/${enc}`, {
+        method: 'PATCH',
+        body: prepareWishBoardItemBody(row),
+        signal,
+      });
     case 'health_records':
-      throw new AppDomainFallbackError(table, 'update');
+      return apiRequest<T>(`${APP_API_PREFIX}/health/intakes/${enc}`, {
+        method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
+        body: prepareHealthIntakeBody(row),
+        signal,
+      });
+    case 'finance_transactions':
+      return apiRequest<T>(`${APP_API_PREFIX}/pages/finance/transactions/${enc}`, {
+        method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
+        body: stripSyncFields(row),
+        signal,
+      });
     default:
       throw new Error(`表「${table}」无 App 专用更新接口`);
   }
@@ -262,9 +235,6 @@ export async function appDomainDeleteRecord(
     case 'recipe_items':
       await apiRequest(`${APP_API_PREFIX}/recipes/${enc}`, { method: 'DELETE', signal });
       return;
-    case 'memo_dimensions':
-      await apiRequest(`${APP_API_PREFIX}/memos/dimensions/${enc}`, { method: 'DELETE', signal });
-      return;
     case 'memos':
       await apiRequest(`${APP_API_PREFIX}/memos/${enc}`, { method: 'DELETE', signal });
       return;
@@ -272,7 +242,14 @@ export async function appDomainDeleteRecord(
       await apiRequest(`${APP_API_PREFIX}/wish-board/items/${enc}`, { method: 'DELETE', signal });
       return;
     case 'health_records':
-      throw new AppDomainFallbackError(table, 'delete');
+      await apiRequest(`${APP_API_PREFIX}/health/intakes/${enc}`, { method: 'DELETE', signal });
+      return;
+    case 'finance_transactions':
+      await apiRequest(`${APP_API_PREFIX}/pages/finance/transactions/${enc}`, {
+        method: 'DELETE',
+        signal,
+      });
+      return;
     default:
       throw new Error(`表「${table}」无 App 专用删除接口`);
   }
@@ -298,7 +275,6 @@ export async function appDomainGetRecord<T extends Record<string, unknown>>(
       return normalizeMemoRow(data) as T;
     }
     case 'recipe_categories':
-    case 'memo_dimensions':
     case 'health_records':
     case 'wish_board_items':
       throw new AppDomainFallbackError(table, 'get');
@@ -334,25 +310,28 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
       }
       return wrapList(items as T[]);
     }
-    case 'memo_dimensions': {
-      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/memos/dimensions`, {
-        method: 'GET',
-        signal,
-      });
-      return wrapList(asRecordList(data).map(normalizeMemoDimensionRow) as T[]);
-    }
     case 'memos': {
       const data = await apiRequest<unknown>(`${APP_API_PREFIX}/memos`, { method: 'GET', signal });
       return wrapList(asRecordList(data).map(normalizeMemoRow) as T[]);
     }
     case 'health_records': {
-      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/intakes/last-30-days`, {
-        method: 'GET',
-        signal,
-      });
-      const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
-      await enrichHealthRecordsWithDailyTargets(items, signal);
-      return wrapList(items as T[]);
+      try {
+        const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/intakes?days=30`, {
+          method: 'GET',
+          signal,
+        });
+        const items = extractHealthIntakeItems(data).map(normalizeHealthRecordRow);
+        await enrichHealthRecordsWithDailyTargets(items, signal);
+        return wrapList(items as T[]);
+      } catch (e) {
+        // 旧后端无 days、要求 date 时回退通用 /api/app/data/health_records List
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/请传\s*date/i.test(msg)) {
+          console.warn('[api-app-domain] health/intakes 需 date，回退通用 List');
+          return null;
+        }
+        throw e;
+      }
     }
     case 'wish_board_items': {
       const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {
@@ -387,19 +366,11 @@ function normalizeRecipeItemRow(row: Record<string, unknown>): Record<string, un
   return out;
 }
 
-function normalizeMemoDimensionRow(row: Record<string, unknown>): Record<string, unknown> {
-  const out = { ...row };
-  if (typeof out.name !== 'string' || !out.name.trim()) {
-    if (typeof out.title === 'string' && out.title.trim()) {
-      out.name = out.title.trim();
-    }
-  }
-  return out;
-}
-
 function normalizeMemoRow(row: Record<string, unknown>): Record<string, unknown> {
   const out = { ...row };
   delete out.dimension_detail;
+  out.dimension_id = null;
+  out.dimension = null;
   return out;
 }
 
@@ -458,7 +429,7 @@ async function enrichHealthRecordsWithDailyTargets(
   let list: HealthDailyTargetRow[] = [];
   try {
     const data = await apiRequest<{ list?: HealthDailyTargetRow[] } | HealthDailyTargetRow[]>(
-      '/api/data/health_daily_targets?limit=500',
+      '/api/app/data/health_daily_targets?limit=500',
       { method: 'GET', signal, skipGlobalLoading: true },
     );
     list = Array.isArray(data) ? data : Array.isArray(data?.list) ? data.list : [];
@@ -491,7 +462,7 @@ async function enrichHealthRecordsWithDailyTargets(
   }
 }
 
-/** 专用接口未覆盖的操作，回退到 /api/data */
+/** 专用接口未覆盖的操作，回退到 /api/app/data */
 export class AppDomainFallbackError extends Error {
   readonly table: string;
   readonly op: string;
@@ -504,17 +475,13 @@ export class AppDomainFallbackError extends Error {
   }
 }
 
-// —— 积分专用动作 ——
+// —— 积分专用动作（权威路径 /api/app/points/*，不再回退 /wish-board/points/*）——
 
 export async function appPointsGetBalance(opts?: { signal?: AbortSignal }): Promise<number> {
-  const data = await apiRequestPointsCompat<{ balance?: number }>(
-    `${APP_API_PREFIX}/points/balance`,
-    `${APP_API_PREFIX}/wish-board/points/balance`,
-    {
-      method: 'GET',
-      signal: opts?.signal,
-    },
-  );
+  const data = await apiRequest<{ balance?: number }>(`${APP_API_PREFIX}/points/balance`, {
+    method: 'GET',
+    signal: opts?.signal,
+  });
   return asPoints(data?.balance);
 }
 
@@ -528,7 +495,7 @@ export async function appPointsAdjust(
   },
   opts?: { signal?: AbortSignal },
 ): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequestPointsCompat(`${APP_API_PREFIX}/points/adjust`, `${APP_API_PREFIX}/wish-board/points/adjust`, {
+  return apiRequest(`${APP_API_PREFIX}/points/adjust`, {
     method: 'POST',
     body: {
       delta: input.delta,
@@ -544,7 +511,7 @@ export async function appPointsAdjust(
 export async function appPointsReset(opts?: {
   signal?: AbortSignal;
 }): Promise<{ balance?: number; delta?: number; ledger_id?: string | null }> {
-  return apiRequestPointsCompat(`${APP_API_PREFIX}/points/reset`, `${APP_API_PREFIX}/wish-board/points/reset`, {
+  return apiRequest(`${APP_API_PREFIX}/points/reset`, {
     method: 'POST',
     signal: opts?.signal,
   });
@@ -574,7 +541,7 @@ export type AppPointsLedgerResult = {
   };
 };
 
-/** GET /api/app/points/ledger（兼容 /wish-board/points/ledger）；失败时回退本地 SQLite */
+/** GET /api/app/points/ledger；失败时回退本地 SQLite */
 export async function appPointsListLedger(
   params?: { page?: number; limit?: number },
   opts?: { signal?: AbortSignal },
@@ -584,12 +551,12 @@ export async function appPointsListLedger(
   const qs = `?page=${page}&limit=${limit}`;
 
   try {
-    const data = await apiRequestPointsCompat<{
+    const data = await apiRequest<{
       items?: AppPointsLedgerItem[];
       balance?: number;
       pagination?: Partial<AppPointsLedgerResult['pagination']>;
       total?: number;
-    }>(`${APP_API_PREFIX}/points/ledger${qs}`, `${APP_API_PREFIX}/wish-board/points/ledger${qs}`, {
+    }>(`${APP_API_PREFIX}/points/ledger${qs}`, {
       method: 'GET',
       signal: opts?.signal,
     });
@@ -676,7 +643,7 @@ export async function appPointsDeleteLedger(
   const ledgerId = String(id ?? '').trim();
   if (!ledgerId) throw new Error('缺少流水 id');
   const enc = encodeURIComponent(ledgerId);
-  const data = await apiRequestPointsCompat<{
+  const data = await apiRequest<{
     deleted?: boolean;
     id?: string;
     delta?: number;
@@ -685,7 +652,7 @@ export async function appPointsDeleteLedger(
     reason?: string;
     ref_type?: string | null;
     ref_id?: string | null;
-  }>(`${APP_API_PREFIX}/points/ledger/${enc}`, `${APP_API_PREFIX}/wish-board/points/ledger/${enc}`, {
+  }>(`${APP_API_PREFIX}/points/ledger/${enc}`, {
     method: 'DELETE',
     signal: opts?.signal,
   });
@@ -801,12 +768,8 @@ export async function appHealthListIntakesLastDays(params: {
   user_id?: string;
   signal?: AbortSignal;
 }): Promise<Record<string, unknown>[]> {
-  const path =
-    params.days === 7
-      ? `${APP_API_PREFIX}/health/intakes/last-7-days`
-      : `${APP_API_PREFIX}/health/intakes/last-30-days`;
-  const qs = buildQuery({ user_id: params.user_id });
-  const data = await apiRequest<unknown>(`${path}${qs}`, {
+  const qs = buildQuery({ days: params.days, user_id: params.user_id });
+  const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/intakes${qs}`, {
     method: 'GET',
     signal: params.signal,
   });

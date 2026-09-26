@@ -7,25 +7,16 @@ import {
   apiGetProfileRecipes,
   apiGetProfileWishBoard,
 } from '@/lib/api-client';
-import { withApiTableSyncLock } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import { getActivePageApiReadOpts } from '@/lib/page-api-session';
+import {
+  asRecordArray,
+  fetchPage,
+  shouldFetchPageFromApi,
+  upsertPageRows,
+} from '@/lib/page-api-fetch';
 
-function asRecordArray(raw: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x));
-}
-
-/** wrapLoad 上下文为 localOnly 时跳过 REST，只读本地 */
+/** @deprecated 使用 shouldFetchPageFromApi */
 export function shouldFetchProfileFromApi(): boolean {
-  return getActivePageApiReadOpts()?.localOnly !== true;
-}
-
-async function upsertProfileRows(table: string, rows: Record<string, unknown>[]): Promise<void> {
-  if (rows.length === 0) return;
-  await withApiTableSyncLock(table, async () => {
-    await syncApiReadResultToLocal(table, rows);
-  });
+  return shouldFetchPageFromApi();
 }
 
 /** 备忘录列表子页 */
@@ -33,19 +24,20 @@ export async function fetchProfileMemoList(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
-  if (!shouldFetchProfileFromApi()) return { fromApi: false };
-  try {
-    const payload = await apiGetProfileMemoList({ signal: opts?.signal });
-    await Promise.all([
-      upsertProfileRows('memo_dimensions', asRecordArray(payload.dimensions)),
-      upsertProfileRows('memos', asRecordArray(payload.memos)),
-    ]);
-    return { fromApi: true };
-  } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
-    console.warn('[profile-page-api] memo-list 失败，回退本地', e);
-    return { fromApi: false };
-  }
+  return fetchPage({
+    domain: 'profile',
+    op: 'memo-list',
+    opts,
+    fetch: (signal) => apiGetProfileMemoList({ signal }),
+    apply: async (payload) => {
+      await Promise.all([
+        upsertPageRows('memos', asRecordArray(payload.memos)),
+        upsertPageRows('tags', asRecordArray(payload.tags)),
+        upsertPageRows('tag_links', asRecordArray(payload.tagLinks)),
+      ]);
+      return { fromApi: true };
+    },
+  });
 }
 
 /** 心愿板子页 */
@@ -53,20 +45,20 @@ export async function fetchProfileWishBoard(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
-  if (!shouldFetchProfileFromApi()) return { fromApi: false };
-  try {
-    const payload = await apiGetProfileWishBoard({ signal: opts?.signal });
-    await Promise.all([
-      upsertProfileRows('points_wallet', asRecordArray(payload.pointsWallet ?? payload.wallet)),
-      upsertProfileRows('wish_board_items', asRecordArray(payload.items ?? payload.wishBoardItems)),
-      upsertProfileRows('points_ledger', asRecordArray(payload.pointsLedger ?? payload.ledger)),
-    ]);
-    return { fromApi: true };
-  } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
-    console.warn('[profile-page-api] wish-board 失败，回退本地', e);
-    return { fromApi: false };
-  }
+  return fetchPage({
+    domain: 'profile',
+    op: 'wish-board',
+    opts,
+    fetch: (signal) => apiGetProfileWishBoard({ signal }),
+    apply: async (payload) => {
+      await Promise.all([
+        upsertPageRows('points_wallet', asRecordArray(payload.pointsWallet ?? payload.wallet)),
+        upsertPageRows('wish_board_items', asRecordArray(payload.items ?? payload.wishBoardItems)),
+        upsertPageRows('points_ledger', asRecordArray(payload.pointsLedger ?? payload.ledger)),
+      ]);
+      return { fromApi: true };
+    },
+  });
 }
 
 /** 我的菜谱子页 */
@@ -74,17 +66,17 @@ export async function fetchProfileRecipes(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
-  if (!shouldFetchProfileFromApi()) return { fromApi: false };
-  try {
-    const payload = await apiGetProfileRecipes({ signal: opts?.signal });
-    await Promise.all([
-      upsertProfileRows('recipe_categories', asRecordArray(payload.categories)),
-      upsertProfileRows('recipe_items', asRecordArray(payload.items ?? payload.recipes)),
-    ]);
-    return { fromApi: true };
-  } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
-    console.warn('[profile-page-api] recipes 失败，回退本地', e);
-    return { fromApi: false };
-  }
+  return fetchPage({
+    domain: 'profile',
+    op: 'recipes',
+    opts,
+    fetch: (signal) => apiGetProfileRecipes({ signal }),
+    apply: async (payload) => {
+      await Promise.all([
+        upsertPageRows('recipe_categories', asRecordArray(payload.categories)),
+        upsertPageRows('recipe_items', asRecordArray(payload.items ?? payload.recipes)),
+      ]);
+      return { fromApi: true };
+    },
+  });
 }

@@ -3,28 +3,29 @@ import {
   legacyWeeklyColumnsFromFields,
   serializeWeeklyReviewExtraData,
 } from './review-journal-body';
+import {
+  getReviewJournalByPeriod,
+  journalIdForPeriod,
+  listReviewJournalsBetween,
+} from './review-journal-store';
 import type { UpsertWeeklyReviewJournalInput, WeeklyReviewJournalRow } from './weekly-review-journal.types';
-
-function journalIdForWeek(weekStartYmd: string) {
-  return `wrj_${weekStartYmd.replace(/-/g, '')}`;
-}
 
 /** 读路径已改走 `/api/pages/review/*`；仓库层只读 SQLite，禁止 List 全表。 */
 export async function getWeeklyReviewJournalByWeek(weekStartYmd: string): Promise<WeeklyReviewJournalRow | null> {
-  const db = await getDatabase();
-  if (!db) return null;
-  return db.getFirstAsync<WeeklyReviewJournalRow>(
-    `SELECT * FROM weekly_review_journal
-     WHERE week_start_ymd = ? AND sync_status != 'pending_delete'
-     LIMIT 1`,
-    [weekStartYmd],
-  );
+  return getReviewJournalByPeriod('weekly', weekStartYmd);
+}
+
+export async function listWeeklyReviewsBetween(
+  startYmd: string,
+  endYmd: string,
+): Promise<WeeklyReviewJournalRow[]> {
+  return listReviewJournalsBetween('weekly', startYmd, endYmd);
 }
 
 export async function upsertWeeklyReviewJournal(input: UpsertWeeklyReviewJournalInput): Promise<void> {
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
-  const id = journalIdForWeek(input.week_start_ymd);
+  const id = journalIdForPeriod('weekly', input.week_start_ymd);
   const legacy = legacyWeeklyColumnsFromFields(input.fields);
   const extra_data = serializeWeeklyReviewExtraData(input.fields);
   const adjustTasks = input.adjust_tasks ? 1 : 0;

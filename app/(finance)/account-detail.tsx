@@ -1,9 +1,10 @@
-import { AppButton, AppCard, AppIconButton, AppInput, ScreenHeader } from '@/components/ui';
+import { CrudDetailScreen } from '@/components/crud';
+import { AppButton, AppCard, AppIconButton, AppInput } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
-import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
+import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-transaction-sheet/controller';
 import {
   applyFinanceAccountBalanceCorrection,
   computeTransactionLedgerEffect,
@@ -35,7 +36,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DetailItem = {
   id: string;
@@ -79,6 +80,8 @@ export default function AccountDetailScreen() {
 
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState(false);
   const [balanceModalOpen, setBalanceModalOpen] = React.useState(false);
   const [balanceDraft, setBalanceDraft] = React.useState('');
@@ -142,6 +145,7 @@ export default function AccountDetailScreen() {
   const loadAccountDetail = React.useCallback(async (forceRefresh = false) => {
     const seq = ++loadAccountDetailSeqRef.current;
     try {
+      setError(null);
       const { account: target, transactions: txRows } = await fetchFinanceAccountDetail({
         accountId: routeAccountId,
         accountName: routeAccountName,
@@ -150,11 +154,16 @@ export default function AccountDetailScreen() {
       if (seq !== loadAccountDetailSeqRef.current) return;
       setAccount(target);
       setTransactions(target ? txRows : []);
-    } catch (error) {
+    } catch (loadErr) {
       if (seq !== loadAccountDetailSeqRef.current) return;
-      console.warn('Failed to load account detail:', error);
+      console.warn('Failed to load account detail:', loadErr);
+      setError('加载失败，请重试');
       setAccount(null);
       setTransactions([]);
+    } finally {
+      if (seq === loadAccountDetailSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [routeAccountId, routeAccountName]);
 
@@ -434,11 +443,11 @@ export default function AccountDetailScreen() {
   }, [routeAccountId, routeAccountName]);
 
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right']}>
-      <ScreenHeader
+    <>
+      <CrudDetailScreen
         title="账户详情"
         onBack={() => router.back()}
-        right={
+        headerRight={
           <AppIconButton
             icon="delete-outline"
             onPress={onDeleteAccount}
@@ -447,21 +456,29 @@ export default function AccountDetailScreen() {
             accessibilityLabel="删除账户"
           />
         }
-      />
-
-      <ScrollView
-        refreshControl={refreshControl}
-        contentContainerStyle={[
-          styles.scrollContent,
-          {
-            paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md),
-            maxWidth: Layout.contentMaxWidth,
-            alignSelf: 'center',
-            width: '100%',
-          },
-        ]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled">
+        loading={loading}
+        loadingHint="加载账户…"
+        error={error}
+        onRetryError={() => {
+          setLoading(true);
+          void reloadAccountDetail(true);
+        }}
+        missing={!loading && !error && !account}
+        missingMessage="未找到该账户"
+      >
+        <ScrollView
+          refreshControl={refreshControl}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.md),
+              maxWidth: Layout.contentMaxWidth,
+              alignSelf: 'center',
+              width: '100%',
+            },
+          ]}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled">
         <AppCard padded style={shadows.card}>
           <Pressable
             onPress={onPressEditAccountMeta}
@@ -688,6 +705,7 @@ export default function AccountDetailScreen() {
           ))}
         </View>
       </ScrollView>
+      </CrudDetailScreen>
 
       <Modal
         transparent
@@ -747,14 +765,11 @@ export default function AccountDetailScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
-    </SafeAreaView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-  },
   scrollContent: {
     paddingHorizontal: Spacing['5xl'],
     paddingTop: Spacing['3xl'],

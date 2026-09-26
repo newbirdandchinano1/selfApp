@@ -1,15 +1,15 @@
 /**
- * 课程表占用提醒：按 schedule_placements 在格子开始前 N 分钟推送。
+ * 课程表占用提醒：业务只决定「哪格何时、给谁」；权限/通道/排期走 scheduler。
  * 亦覆盖养成习惯虚拟入格块（不写占用表）。
- * 替代旧「截止日当天/提前 N 天」待办提醒（selfapp-task-reminder:）。
  */
 
-import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
+import { buildNotificationIdentifier } from '@/lib/notification-catalog';
+import { getNotificationCenterSettings } from '@/lib/notification-center-settings';
 import {
-  canScheduleAppNotification,
-  getNotificationCenterSettings,
-} from '@/lib/notification-center-settings';
-import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+  cancelScheduledByPrefix,
+  isLocalNotificationSchedulingUnavailable,
+  scheduleDateReminder,
+} from '@/lib/notification-scheduler';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import {
@@ -33,44 +33,33 @@ import {
   loadTasksDayBoundary,
   logicalYmdToLocalDate,
 } from '@/lib/tasks-logical-day';
-import { Platform } from 'react-native';
 
-const NOTIFICATION_PREFIX = 'selfapp-schedule-reminder:';
-const LEGACY_TASK_PREFIX = 'selfapp-task-reminder:';
-const ANDROID_CHANNEL_ID = 'schedule-slot-reminders';
+const ANDROID_CHANNEL = {
+  id: 'schedule-slot-reminders',
+  name: '日程表提醒',
+  importance: 'high' as const,
+  vibrationPattern: [0, 250, 250, 250],
+};
+
 /** 虚拟习惯入格提醒向前扫描天数 */
 const HABIT_VIRTUAL_LOOKAHEAD_DAYS = 21;
 
+/** 一次性清掉历史截止日待办前缀（不再映射为业务类别） */
+const LEGACY_TASK_PREFIX = 'selfapp-task-reminder:';
+
 export function scheduleSlotReminderIdentifier(placementId: string): string {
-  return `${NOTIFICATION_PREFIX}${placementId}`;
-}
-
-async function ensureAndroidChannel() {
-  if (Platform.OS !== 'android') return;
-  const Notifications = await import('expo-notifications');
-  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-    name: '日程表提醒',
-    importance: Notifications.AndroidImportance.HIGH,
-    vibrationPattern: [0, 250, 250, 250],
-    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-  });
-}
-
-async function cancelPrefixed(prefix: string) {
-  const Notifications = await import('expo-notifications');
-  const pending = await Notifications.getAllScheduledNotificationsAsync();
-  await Promise.all(
-    pending
-      .filter(r => typeof r.identifier === 'string' && r.identifier.startsWith(prefix))
-      .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
+  return (
+    buildNotificationIdentifier('schedule-slot-reminder', placementId) ??
+    `selfapp-schedule-reminder:${placementId}`
   );
 }
 
 export async function cancelAllScheduleSlotReminders(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (isLocalNotificationSchedulingUnavailable()) return;
   try {
-    await cancelPrefixed(NOTIFICATION_PREFIX);
-    await cancelPrefixed(LEGACY_TASK_PREFIX);
+    await cancelScheduledByPrefix('selfapp-schedule-reminder:');
+    // 清掉历史截止日待办前缀，避免残留预约
+    await cancelScheduledByPrefix(LEGACY_TASK_PREFIX);
   } catch (e) {
     console.warn('取消日程表提醒失败', e);
   }
@@ -100,12 +89,15 @@ async function resolveAxisForWeek(weekStartYmd: string): Promise<{
   };
 }
 
-function placementStartDate(placement: SchedulePlacementRow, axis: {
-  startMinutes: number;
-  endMinutes: number;
-  slotHours: number;
-  breaks?: ScheduleAxisSettings['breaks'];
-}): Date | null {
+function placementStartDate(
+  placement: SchedulePlacementRow,
+  axis: {
+    startMinutes: number;
+    endMinutes: number;
+    slotHours: number;
+    breaks?: ScheduleAxisSettings['breaks'];
+  },
+): Date | null {
   if (placement.orphaned || placement.startSlotIndex == null) return null;
   const ymd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
   const day = logicalYmdToLocalDate(ymd);
@@ -139,32 +131,12 @@ async function resolveSubjectTitle(
   return { title: project.name?.trim() || '项目', skip: false };
 }
 
-async function ensurePermission(
-  Notifications: typeof import('expo-notifications'),
-): Promise<boolean> {
-  const perm = await Notifications.getPermissionsAsync();
-  let granted = perm.status === 'granted';
-  if (!granted && perm.canAskAgain !== false) {
-    const req = await Notifications.requestPermissionsAsync();
-    granted = req.status === 'granted';
-  }
-  return granted;
-}
-
 /**
  * 按当前课程表占用重新登记：每条有效占用一条，开始前 advanceMinutes 分钟。
  * 未入格（orphaned / 无 startSlotIndex）完全不推送。
  */
 export async function syncScheduleSlotReminderNotifications(): Promise<void> {
-  if (Platform.OS === 'web' || isExpoSandboxNotificationDisabled()) return;
-
-  let Notifications: typeof import('expo-notifications');
-  try {
-    Notifications = await import('expo-notifications');
-  } catch (e) {
-    console.warn('expo-notifications 不可用', e);
-    return;
-  }
+  if (isLocalNotificationSchedulingUnavailable()) return;
 
   await cancelAllScheduleSlotReminders();
 
@@ -173,9 +145,6 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
     return;
   }
 
-  if (!(await ensurePermission(Notifications))) return;
-  await ensureAndroidChannel();
-
   const boundary = await loadTasksDayBoundary();
   const now = new Date();
   const todayYmd = getLogicalLocalYmd(now, boundary);
@@ -183,7 +152,6 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
   const placements = await listPlacementsForEditableWeeks(thisMonday);
 
   const advanceMs = Math.max(5, Math.min(60, settings.schedule.advanceMinutes)) * 60_000;
-  const SchedulableTriggerInputTypes = Notifications.SchedulableTriggerInputTypes;
   const axisCache = new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
 
   for (const placement of placements) {
@@ -198,27 +166,31 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
     const startAt = placementStartDate(placement, axis);
     if (!startAt || Number.isNaN(startAt.getTime())) continue;
     const fireAt = new Date(startAt.getTime() - advanceMs);
-    if (fireAt.getTime() <= now.getTime() + 2000) continue;
 
     const subject = await resolveSubjectTitle(placement.subjectKind, placement.subjectId);
     if (!subject || subject.skip) continue;
 
     const id = scheduleSlotReminderIdentifier(placement.id);
-    if (!(await canScheduleAppNotification({ category: 'schedule-slot-reminder', identifier: id }))) {
-      continue;
-    }
-
     const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
     const dayYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
     const fingerprint = `${placement.id}|${subject.title}|${dayYmd}|${startHm}|${settings.schedule.advanceMinutes}`;
 
-    const copy = await resolveNotificationAiCopy({
+    await scheduleDateReminder({
+      category: 'schedule-slot-reminder',
       identifier: id,
-      fingerprint,
+      fireAt,
+      channel: ANDROID_CHANNEL,
+      data: {
+        type: 'schedule-slot-reminder',
+        placementId: placement.id,
+        subjectKind: placement.subjectKind,
+        subjectId: placement.subjectId,
+      },
       fallback: {
         title: '日程表提醒',
         body: subject.title,
       },
+      fingerprint,
       contextBlock: [
         '【频道】日程表提醒',
         `【类型】${placement.subjectKind === 'project' ? '项目' : '待办'}`,
@@ -227,30 +199,6 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
         `【提前】${settings.schedule.advanceMinutes} 分钟`,
       ].join('\n'),
     });
-
-    try {
-      await Notifications.scheduleNotificationAsync({
-        identifier: id,
-        content: {
-          title: copy.title,
-          body: copy.body,
-          sound: true,
-          data: {
-            type: 'schedule-slot-reminder',
-            placementId: placement.id,
-            subjectKind: placement.subjectKind,
-            subjectId: placement.subjectId,
-          },
-        },
-        trigger: {
-          type: SchedulableTriggerInputTypes.DATE,
-          date: fireAt,
-          channelId: Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined,
-        },
-      });
-    } catch (e) {
-      console.warn('登记日程表提醒失败', placement.id, e);
-    }
   }
 
   // 养成习惯虚拟入格：按格子开始时间登记（与占用提醒同一频道）
@@ -296,22 +244,28 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
           0,
         );
         const fireAt = new Date(startAt.getTime() - advanceMs);
-        if (fireAt.getTime() <= now.getTime() + 2000) continue;
 
         const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
         const id = scheduleSlotReminderIdentifier(placementId);
-        if (!(await canScheduleAppNotification({ category: 'schedule-slot-reminder', identifier: id }))) {
-          continue;
-        }
         const startHm = formatMinutesAsHm(startMins);
         const fingerprint = `${placementId}|${v.name}|${v.assignYmd}|${startHm}|${settings.schedule.advanceMinutes}`;
-        const copy = await resolveNotificationAiCopy({
+
+        await scheduleDateReminder({
+          category: 'schedule-slot-reminder',
           identifier: id,
-          fingerprint,
+          fireAt,
+          channel: ANDROID_CHANNEL,
+          data: {
+            type: 'schedule-slot-reminder',
+            placementId,
+            subjectKind: 'habit',
+            subjectId: v.habitId,
+          },
           fallback: {
             title: '日程表提醒',
             body: v.name,
           },
+          fingerprint,
           contextBlock: [
             '【频道】日程表提醒',
             '【类型】习惯',
@@ -320,39 +274,11 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
             `【提前】${settings.schedule.advanceMinutes} 分钟`,
           ].join('\n'),
         });
-        try {
-          await Notifications.scheduleNotificationAsync({
-            identifier: id,
-            content: {
-              title: copy.title,
-              body: copy.body,
-              sound: true,
-              data: {
-                type: 'schedule-slot-reminder',
-                placementId,
-                subjectKind: 'habit',
-                subjectId: v.habitId,
-              },
-            },
-            trigger: {
-              type: SchedulableTriggerInputTypes.DATE,
-              date: fireAt,
-              channelId: Platform.OS === 'android' ? ANDROID_CHANNEL_ID : undefined,
-            },
-          });
-        } catch (e) {
-          console.warn('登记习惯日程提醒失败', placementId, e);
-        }
       }
     }
   } catch (e) {
     console.warn('登记习惯虚拟入格提醒失败', e);
   }
-}
-
-/** @deprecated 截止日待办提醒已废除；保留空实现以免旧调用崩溃 */
-export async function syncScheduledTaskReminders(_tasks?: unknown): Promise<void> {
-  await syncScheduleSlotReminderNotifications();
 }
 
 export async function listScheduleSlotReminderBusinessItems(): Promise<

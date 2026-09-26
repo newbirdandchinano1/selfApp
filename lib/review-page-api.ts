@@ -9,36 +9,24 @@ import {
   apiGetReviewMonthly,
   apiGetReviewWeekMetrics,
   apiGetReviewWeekly,
-  type ReviewCatalogPayload,
-  type ReviewDailyPayload,
-  type ReviewHomePayload,
-  type ReviewMonthlyPayload,
   type ReviewWeekMetricsPayload,
-  type ReviewWeeklyPayload,
 } from '@/lib/api-client';
-import { withApiTableSyncLock } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import { getActivePageApiReadOpts } from '@/lib/page-api-session';
+import {
+  asRecordArray,
+  fetchPage,
+  shouldFetchPageFromApi,
+  upsertPageRows,
+} from '@/lib/page-api-fetch';
 import type { DailyReviewJournalRow } from '@/lib/repositories/insights/daily-review-journal.types';
 import type { MonthlyReviewJournalRow } from '@/lib/repositories/insights/monthly-review-journal.types';
+import type { ReviewJournalScope } from '@/lib/repositories/insights/review-journal-store';
+import { REVIEW_JOURNAL_SCOPE } from '@/lib/repositories/insights/review-journal-store';
 import type { ReviewColumnRow, ReviewDimensionRow } from '@/lib/repositories/insights/review-template.types';
 import type { WeeklyReviewJournalRow } from '@/lib/repositories/insights/weekly-review-journal.types';
 
-function asRecordArray(raw: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x));
-}
-
-/** wrapLoad 上下文为 localOnly 时跳过 REST，只读本地 */
+/** @deprecated 使用 shouldFetchPageFromApi */
 export function shouldFetchReviewFromApi(): boolean {
-  return getActivePageApiReadOpts()?.localOnly !== true;
-}
-
-async function upsertReviewRows(table: string, rows: Record<string, unknown>[]): Promise<void> {
-  if (rows.length === 0) return;
-  await withApiTableSyncLock(table, async () => {
-    await syncApiReadResultToLocal(table, rows);
-  });
+  return shouldFetchPageFromApi();
 }
 
 async function syncCatalogParts(payload: {
@@ -48,8 +36,8 @@ async function syncCatalogParts(payload: {
   const dimensions = asRecordArray(payload.dimensions) as ReviewDimensionRow[];
   const columns = asRecordArray(payload.columns) as ReviewColumnRow[];
   await Promise.all([
-    upsertReviewRows('review_dimensions', dimensions as Record<string, unknown>[]),
-    upsertReviewRows('review_columns', columns as Record<string, unknown>[]),
+    upsertPageRows('review_dimensions', dimensions as Record<string, unknown>[]),
+    upsertPageRows('review_columns', columns as Record<string, unknown>[]),
   ]);
   return { dimensions, columns };
 }
@@ -65,18 +53,21 @@ export async function fetchReviewCatalog(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewCatalogData> {
-  try {
-    const payload: ReviewCatalogPayload = await apiGetReviewCatalog({
-      scope: opts?.scope,
-      signal: opts?.signal,
-    });
-    const { dimensions, columns } = await syncCatalogParts(payload);
-    return { dimensions, columns, fromApi: true };
-  } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
-    console.warn('[review-page-api] catalog 失败，回退本地', e);
-    return { dimensions: [], columns: [], fromApi: false };
-  }
+  return fetchPage<
+    { dimensions?: unknown; columns?: unknown },
+    ReviewCatalogData
+  >({
+    domain: 'review',
+    op: 'catalog',
+    opts,
+    respectLocalOnly: false,
+    fetch: (signal) => apiGetReviewCatalog({ scope: opts?.scope, signal }),
+    apply: async (payload) => {
+      const { dimensions, columns } = await syncCatalogParts(payload);
+      return { dimensions, columns, fromApi: true };
+    },
+    fallback: (): ReviewCatalogData => ({ dimensions: [], columns: [], fromApi: false }),
+  });
 }
 
 export type ReviewHomeData = {
@@ -97,61 +88,143 @@ export async function fetchReviewHome(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewHomeData> {
-  try {
-    const payload: ReviewHomePayload = await apiGetReviewHome({
-      logicalToday: opts.logicalToday,
-      dailyStart: opts.dailyStart,
-      dailyEnd: opts.dailyEnd,
-      weekStart: opts.weekStart,
-      monthStart: opts.monthStart,
-      signal: opts.signal,
-    });
-    const { dimensions, columns } = await syncCatalogParts(payload);
-    const dailyJournals = asRecordArray(payload.dailyJournals) as DailyReviewJournalRow[];
-    await upsertReviewRows('daily_review_journal', dailyJournals as Record<string, unknown>[]);
+  return fetchPage<
+    {
+      dimensions?: unknown;
+      columns?: unknown;
+      dailyJournals?: unknown;
+      weeklyJournal?: unknown;
+      monthlyJournal?: unknown;
+    },
+    ReviewHomeData
+  >({
+    domain: 'review',
+    op: 'home',
+    opts,
+    respectLocalOnly: false,
+    fetch: (signal) =>
+      apiGetReviewHome({
+        logicalToday: opts.logicalToday,
+        dailyStart: opts.dailyStart,
+        dailyEnd: opts.dailyEnd,
+        weekStart: opts.weekStart,
+        monthStart: opts.monthStart,
+        signal,
+      }),
+    apply: async (payload) => {
+      const { dimensions, columns } = await syncCatalogParts(payload);
+      const dailyJournals = asRecordArray(payload.dailyJournals) as DailyReviewJournalRow[];
+      await upsertPageRows('daily_review_journal', dailyJournals as Record<string, unknown>[]);
 
-    const weeklyRaw =
-      payload.weeklyJournal && typeof payload.weeklyJournal === 'object'
-        ? (payload.weeklyJournal as WeeklyReviewJournalRow)
-        : null;
-    if (weeklyRaw) {
-      await upsertReviewRows('weekly_review_journal', [weeklyRaw as Record<string, unknown>]);
-    }
+      const weeklyRaw =
+        payload.weeklyJournal && typeof payload.weeklyJournal === 'object'
+          ? (payload.weeklyJournal as WeeklyReviewJournalRow)
+          : null;
+      if (weeklyRaw) {
+        await upsertPageRows('weekly_review_journal', [weeklyRaw as Record<string, unknown>]);
+      }
 
-    const monthlyRaw =
-      payload.monthlyJournal && typeof payload.monthlyJournal === 'object'
-        ? (payload.monthlyJournal as MonthlyReviewJournalRow)
-        : null;
-    if (monthlyRaw) {
-      await upsertReviewRows('monthly_review_journal', [monthlyRaw as Record<string, unknown>]);
-    }
+      const monthlyRaw =
+        payload.monthlyJournal && typeof payload.monthlyJournal === 'object'
+          ? (payload.monthlyJournal as MonthlyReviewJournalRow)
+          : null;
+      if (monthlyRaw) {
+        await upsertPageRows('monthly_review_journal', [monthlyRaw as Record<string, unknown>]);
+      }
 
-    return {
-      dimensions,
-      columns,
-      dailyJournals,
-      weeklyJournal: weeklyRaw,
-      monthlyJournal: monthlyRaw,
-      fromApi: true,
-    };
-  } catch (e) {
-    if (opts.offlineFallback === false) throw e;
-    console.warn('[review-page-api] home 失败，回退本地', e);
-    return {
+      return {
+        dimensions,
+        columns,
+        dailyJournals,
+        weeklyJournal: weeklyRaw,
+        monthlyJournal: monthlyRaw,
+        fromApi: true,
+      };
+    },
+    fallback: (): ReviewHomeData => ({
       dimensions: [],
       columns: [],
       dailyJournals: [],
       weeklyJournal: null,
       monthlyJournal: null,
       fromApi: false,
-    };
-  }
+    }),
+  });
 }
+
+export type ReviewJournalRow = DailyReviewJournalRow | WeeklyReviewJournalRow | MonthlyReviewJournalRow;
+
+export type ReviewJournalData = {
+  journals: ReviewJournalRow[];
+  fromApi: boolean;
+};
 
 export type ReviewDailyData = {
   journals: DailyReviewJournalRow[];
   fromApi: boolean;
 };
+
+export type ReviewWeeklyData = {
+  journals: WeeklyReviewJournalRow[];
+  fromApi: boolean;
+};
+
+export type ReviewMonthlyData = {
+  journals: MonthlyReviewJournalRow[];
+  fromApi: boolean;
+};
+
+/**
+ * 日 / 周 / 月 journal 同构拉取：按 scope 选表与 REST，灌入本地后返回。
+ * 日刊要求 start+end；周/月可用 weekStart / monthStart 或 start/end。
+ */
+export async function fetchReviewJournal(opts: {
+  scope: ReviewJournalScope;
+  start?: string;
+  end?: string;
+  weekStart?: string;
+  monthStart?: string;
+  signal?: AbortSignal;
+  offlineFallback?: boolean;
+}): Promise<ReviewJournalData> {
+  const { scope } = opts;
+  const table = REVIEW_JOURNAL_SCOPE[scope].table;
+
+  return fetchPage<{ journals?: unknown }, ReviewJournalData>({
+    domain: 'review',
+    op: scope,
+    opts,
+    respectLocalOnly: false,
+    fetch: async (signal) => {
+      if (scope === 'daily') {
+        if (!opts.start || !opts.end) {
+          throw new Error('fetchReviewJournal(daily) 需要 start 与 end');
+        }
+        return apiGetReviewDaily({ start: opts.start, end: opts.end, signal });
+      }
+      if (scope === 'weekly') {
+        return apiGetReviewWeekly({
+          weekStart: opts.weekStart,
+          start: opts.start,
+          end: opts.end,
+          signal,
+        });
+      }
+      return apiGetReviewMonthly({
+        monthStart: opts.monthStart,
+        start: opts.start,
+        end: opts.end,
+        signal,
+      });
+    },
+    apply: async (payload) => {
+      const journals = asRecordArray(payload.journals) as ReviewJournalRow[];
+      await upsertPageRows(table, journals as Record<string, unknown>[]);
+      return { journals, fromApi: true };
+    },
+    fallback: (): ReviewJournalData => ({ journals: [], fromApi: false }),
+  });
+}
 
 export async function fetchReviewDaily(opts: {
   start: string;
@@ -159,26 +232,9 @@ export async function fetchReviewDaily(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewDailyData> {
-  try {
-    const payload: ReviewDailyPayload = await apiGetReviewDaily({
-      start: opts.start,
-      end: opts.end,
-      signal: opts.signal,
-    });
-    const journals = asRecordArray(payload.journals) as DailyReviewJournalRow[];
-    await upsertReviewRows('daily_review_journal', journals as Record<string, unknown>[]);
-    return { journals, fromApi: true };
-  } catch (e) {
-    if (opts.offlineFallback === false) throw e;
-    console.warn('[review-page-api] daily 失败，回退本地', e);
-    return { journals: [], fromApi: false };
-  }
+  const result = await fetchReviewJournal({ scope: 'daily', ...opts });
+  return { journals: result.journals as DailyReviewJournalRow[], fromApi: result.fromApi };
 }
-
-export type ReviewWeeklyData = {
-  journals: WeeklyReviewJournalRow[];
-  fromApi: boolean;
-};
 
 export async function fetchReviewWeekly(opts: {
   weekStart?: string;
@@ -187,27 +243,9 @@ export async function fetchReviewWeekly(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewWeeklyData> {
-  try {
-    const payload: ReviewWeeklyPayload = await apiGetReviewWeekly({
-      weekStart: opts.weekStart,
-      start: opts.start,
-      end: opts.end,
-      signal: opts.signal,
-    });
-    const journals = asRecordArray(payload.journals) as WeeklyReviewJournalRow[];
-    await upsertReviewRows('weekly_review_journal', journals as Record<string, unknown>[]);
-    return { journals, fromApi: true };
-  } catch (e) {
-    if (opts.offlineFallback === false) throw e;
-    console.warn('[review-page-api] weekly 失败，回退本地', e);
-    return { journals: [], fromApi: false };
-  }
+  const result = await fetchReviewJournal({ scope: 'weekly', ...opts });
+  return { journals: result.journals as WeeklyReviewJournalRow[], fromApi: result.fromApi };
 }
-
-export type ReviewMonthlyData = {
-  journals: MonthlyReviewJournalRow[];
-  fromApi: boolean;
-};
 
 export async function fetchReviewMonthly(opts: {
   monthStart?: string;
@@ -216,21 +254,8 @@ export async function fetchReviewMonthly(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewMonthlyData> {
-  try {
-    const payload: ReviewMonthlyPayload = await apiGetReviewMonthly({
-      monthStart: opts.monthStart,
-      start: opts.start,
-      end: opts.end,
-      signal: opts.signal,
-    });
-    const journals = asRecordArray(payload.journals) as MonthlyReviewJournalRow[];
-    await upsertReviewRows('monthly_review_journal', journals as Record<string, unknown>[]);
-    return { journals, fromApi: true };
-  } catch (e) {
-    if (opts.offlineFallback === false) throw e;
-    console.warn('[review-page-api] monthly 失败，回退本地', e);
-    return { journals: [], fromApi: false };
-  }
+  const result = await fetchReviewJournal({ scope: 'monthly', ...opts });
+  return { journals: result.journals as MonthlyReviewJournalRow[], fromApi: result.fromApi };
 }
 
 function emptyWeekMetrics(
@@ -260,15 +285,21 @@ export async function fetchReviewWeekMetrics(opts: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
 }): Promise<ReviewWeekMetricsPayload & { fromApi: boolean }> {
+  type WeekMetricsResult = ReviewWeekMetricsPayload & { fromApi: boolean };
   const rangeKind = opts.rangeKind ?? 'rolling-7';
-  try {
-    const payload: ReviewWeekMetricsPayload = await apiGetReviewWeekMetrics({
-      start: opts.start,
-      end: opts.end,
-      rangeKind,
-      signal: opts.signal,
-    });
-    return {
+  return fetchPage<ReviewWeekMetricsPayload, WeekMetricsResult>({
+    domain: 'review',
+    op: 'week-metrics',
+    opts,
+    respectLocalOnly: false,
+    fetch: (signal) =>
+      apiGetReviewWeekMetrics({
+        start: opts.start,
+        end: opts.end,
+        rangeKind,
+        signal,
+      }),
+    apply: (payload): WeekMetricsResult => ({
       rangeKind: payload.rangeKind ?? rangeKind,
       weekStartYmd: payload.weekStartYmd || opts.start,
       weekEndYmd: payload.weekEndYmd || opts.end,
@@ -281,10 +312,7 @@ export async function fetchReviewWeekMetrics(opts: {
       financeIncome: Math.round(Number(payload.financeIncome) || 0),
       financeExpense: Math.round(Number(payload.financeExpense) || 0),
       fromApi: true,
-    };
-  } catch (e) {
-    if (opts.offlineFallback === false) throw e;
-    console.warn('[review-page-api] week-metrics 失败，回退空指标（不 List 全表）', e);
-    return { ...emptyWeekMetrics(opts.start, opts.end, rangeKind), fromApi: false };
-  }
+    }),
+    fallback: (): WeekMetricsResult => ({ ...emptyWeekMetrics(opts.start, opts.end, rangeKind), fromApi: false }),
+  });
 }

@@ -1,6 +1,7 @@
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
+import { addDays } from '@/lib/date';
 import {
   normalizeRouteParam,
   setSchedulePickerResult,
@@ -88,12 +89,6 @@ function getMonthInfo(year: number, month: number): MonthInfo {
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDays(base: Date, amount: number): Date {
-  const d = new Date(base);
-  d.setDate(d.getDate() + amount);
-  return d;
 }
 
 function getMonthDiff(from: Date, to: Date): number {

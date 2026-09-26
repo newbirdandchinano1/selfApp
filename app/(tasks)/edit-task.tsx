@@ -2,23 +2,28 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
+  applyScheduleMetaToLabels,
   buildDeadlineTextFromSchedule,
   dueDateFromScheduleMeta,
   extractScheduleLimitFromExtra,
   formatDate,
-  formatTime,
   mergeDateLimit,
+  projectDefinesSchedule,
   resolveInheritedDefaultSchedule,
+  scheduleMetaHasConcreteDates,
   scheduleMetaToDateLimit,
   toYmd,
   type DateLimitYmd,
+  type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
+import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
-import { consumeSchedulePickerResult, normalizeRouteParam } from '@/lib/schedule-picker-bridge';
-import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import {
+  consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerInitPayload, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   countIncompleteDescendantTasks,
@@ -52,6 +57,8 @@ import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerFie
 import {
   getTagIdsByEntity,
   getTags,
+  getTagsByProjectId,
+  getTagIdsByProjectId,
   setTaskTagIds,
 } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
@@ -78,59 +85,7 @@ type PriorityKey =
   | 'not-urgent-important'
   | 'not-urgent-not-important';
 
-type SchedulePickerResult = {
-  mode: 'date' | 'time';
-  source: string;
-  quickChip: string;
-  allDay: boolean;
-  hasExactTime: boolean;
-  reminderOption: TaskReminderOption;
-  repeatOption: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary: string;
-  weeklyDays: number[];
-  monthlyDays: number[];
-  yearlyDate: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime: string;
-  endTime: string;
-};
-
-type SchedulePickerInitPayload = {
-  mode?: 'date' | 'time';
-  quickChip?: string;
-  allDay?: boolean;
-  hasExactTime?: boolean;
-  reminderOption?: TaskReminderOption;
-  repeatOption?: '不重复' | '每天' | '每周' | '每月' | '每年';
-  repeatSummary?: string;
-  weeklyDays?: number[];
-  monthlyDays?: number[];
-  yearlyDate?: string;
-  date?: string;
-  range?: { start: string; end: string };
-  startTime?: string;
-  endTime?: string;
-};
-
-type TaskScheduleMeta = Pick<
-  SchedulePickerResult,
-  | 'mode'
-  | 'allDay'
-  | 'hasExactTime'
-  | 'reminderOption'
-  | 'reminderHour'
-  | 'reminderMinute'
-  | 'repeatOption'
-  | 'repeatSummary'
-  | 'weeklyDays'
-  | 'monthlyDays'
-  | 'yearlyDate'
-  | 'date'
-  | 'range'
-  | 'startTime'
-  | 'endTime'
->;
+type TaskScheduleMeta = PickedScheduleMeta;
 
 type SubtaskDraft = {
   id: string;
@@ -147,12 +102,6 @@ type SubtaskDraft = {
   note?: string;
   schedule?: TaskScheduleMeta | null;
 };
-
-function extractDueDate(deadlineText: string) {
-  const all = deadlineText.match(/\d{4}-\d{2}-\d{2}/g);
-  if (!all?.length) return null;
-  return all[all.length - 1] ?? null;
-}
 
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
@@ -385,6 +334,9 @@ export default function EditTaskScreen() {
   const [parentTask, setParentTask] = React.useState<SubtaskDraft | null>(null);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
+  const [projectScheduleMeta, setProjectScheduleMeta] = React.useState<ScheduleMetaLike | null>(null);
+  const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
+  const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
@@ -426,11 +378,13 @@ export default function EditTaskScreen() {
   selectedTagIdsRef.current = selectedTagIds;
 
   const inheritsProjectPriority = !!taskSnapshot?.project_id;
-  const canTagTask = !taskSnapshot?.parent_task_id;
+  const isRootTask = !taskSnapshot?.parent_task_id;
+  /** 顶层任务可编辑标签（项目未贴标签时）；子任务仅展示继承的项目标签 */
+  const showTagField = isRootTask || inheritsProjectTags;
 
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
-      end: extractDueDate(deadlineText) || undefined,
+      end: extractDueDateFromDeadlineText(deadlineText) || undefined,
     });
     const merged = mergeDateLimit(selfLimit, projectDateLimit);
     return merged.start || merged.end ? merged : null;
@@ -441,10 +395,18 @@ export default function EditTaskScreen() {
     return merged.start || merged.end ? merged : null;
   }, [parentDateLimit, projectDateLimit]);
 
-  const inheritedSubtaskSchedule = React.useMemo(
-    () => resolveInheritedDefaultSchedule(scheduleMeta, subtaskDateLimit),
-    [scheduleMeta, subtaskDateLimit],
-  );
+  const inheritedSubtaskSchedule = React.useMemo(() => {
+    if (inheritsProjectSchedule && projectScheduleMeta) {
+      return resolveInheritedDefaultSchedule(projectScheduleMeta, projectDateLimit);
+    }
+    return resolveInheritedDefaultSchedule(scheduleMeta, subtaskDateLimit);
+  }, [
+    inheritsProjectSchedule,
+    projectDateLimit,
+    projectScheduleMeta,
+    scheduleMeta,
+    subtaskDateLimit,
+  ]);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
@@ -503,52 +465,16 @@ export default function EditTaskScreen() {
   const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
     if (!picked) return false;
-
-    if (picked.repeatOption !== '不重复') {
-      setDeadlineText('');
-    } else if (picked.mode === 'time' && picked.range) {
-      const rangeStart = formatDate(picked.range.start);
-      const rangeEnd = formatDate(picked.range.end);
-      const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
-      const timeLabel = picked.allDay ? '全天' : `${formatTime(picked.startTime)} - ${formatTime(picked.endTime)}`;
-      setDeadlineText(`${rangeLabel} ${timeLabel}`);
-    } else if (picked.date) {
-      const dateLabel = formatDate(picked.date);
-      const timeLabel = picked.allDay ? '全天' : picked.hasExactTime ? formatTime(picked.startTime) : '';
-      setDeadlineText(timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel);
-    } else {
-      setDeadlineText('');
-    }
-    setReminderText(
-      formatTaskReminderLabel({
-        reminderOption: picked.reminderOption,
-        reminderHour: picked.reminderHour,
-        reminderMinute: picked.reminderMinute,
-      }),
-    );
-    setRepeatText(picked.repeatOption === '不重复' ? '' : picked.repeatSummary);
-    setScheduleMeta({
-      mode: picked.mode,
-      allDay: picked.allDay,
-      hasExactTime: picked.hasExactTime,
-      reminderOption: picked.reminderOption,
-      reminderHour: picked.reminderHour,
-      reminderMinute: picked.reminderMinute,
-      repeatOption: picked.repeatOption,
-      repeatSummary: picked.repeatSummary,
-      weeklyDays: picked.weeklyDays,
-      monthlyDays: picked.monthlyDays,
-      yearlyDate: picked.yearlyDate,
-      date: picked.date,
-      range: picked.range,
-      startTime: picked.startTime,
-      endTime: picked.endTime,
-    });
-
+    const labels = labelsFromPickerResult(picked, taskDateLimit);
+    setDeadlineText(labels.deadlineText);
+    setReminderText(labels.reminderText);
+    setRepeatText(labels.repeatText);
+    setScheduleMeta(labels.scheduleMeta);
     return true;
-  }, [scheduleSource]);
+  }, [scheduleSource, taskDateLimit]);
 
   const openSchedulePicker = React.useCallback(() => {
+    if (inheritsProjectSchedule) return;
     const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
       ? {
           mode: scheduleMeta.mode,
@@ -577,7 +503,7 @@ export default function EditTaskScreen() {
         dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
       },
     });
-  }, [router, scheduleMeta, scheduleSource, taskDateLimit]);
+  }, [inheritsProjectSchedule, router, scheduleMeta, scheduleSource, taskDateLimit]);
 
   const readAddSubtaskResult = React.useCallback(async () => {
     const payload = globalThis.__addSubtaskResult as { source: string; task: SubtaskDraft } | undefined;
@@ -597,7 +523,7 @@ export default function EditTaskScreen() {
       const subtaskSchedule = payload.task.schedule ?? null;
       const dueDate = dueDateFromScheduleMeta(
         subtaskSchedule,
-        extractDueDate(payload.task.deadline || payload.task.deadlineText || ''),
+        extractDueDateFromDeadlineText(payload.task.deadline || payload.task.deadlineText || ''),
       );
       let subtaskPriority = parentTask.priority;
       if (parentTask.project_id) {
@@ -730,12 +656,9 @@ export default function EditTaskScreen() {
       if (!task.parent_task_id) {
         setTagsLoading(true);
         try {
-          const [tags, tagIds] = await Promise.all([
-            getTags(),
-            getTagIdsByEntity('task', taskId),
-          ]);
+          const tags = await getTags();
           setAllTags(tags);
-          setSelectedTagIds(tagIds);
+          setSelectedTagIds(await getTagIdsByEntity('task', taskId));
         } catch (tagErr) {
           console.warn('加载任务标签失败', tagErr);
           setAllTags([]);
@@ -785,22 +708,81 @@ export default function EditTaskScreen() {
       }
       let projectLimit: DateLimitYmd = {};
       let inheritedPriorityLabel = '';
+      let nextInheritsSchedule = false;
+      let nextInheritsTags = false;
+      let nextProjectSchedule: ScheduleMetaLike | null = null;
       if (task.project_id) {
         const project = await getProjectById(task.project_id);
         if (project) {
           projectLimit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
+          nextInheritsSchedule = projectDefinesSchedule(project.extra_data, project.due_date);
+          try {
+            const parsed = project.extra_data
+              ? (JSON.parse(project.extra_data) as { schedule?: ScheduleMetaLike })
+              : {};
+            nextProjectSchedule = parsed.schedule ?? null;
+            if (!scheduleMetaHasConcreteDates(nextProjectSchedule) && nextInheritsSchedule) {
+              nextProjectSchedule = resolveInheritedDefaultSchedule(null, projectLimit);
+            }
+          } catch {
+            nextProjectSchedule = nextInheritsSchedule
+              ? resolveInheritedDefaultSchedule(null, projectLimit)
+              : null;
+          }
+          if (nextInheritsSchedule && nextProjectSchedule) {
+            const applied = applyScheduleMetaToLabels(nextProjectSchedule);
+            setDeadlineText(applied.deadlineText);
+            setReminderText(applied.reminderText);
+            setRepeatText(applied.repeatText);
+            setScheduleMeta(applied.scheduleMeta as TaskScheduleMeta);
+            setLoadedFormSnapshot((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    deadlineText: applied.deadlineText,
+                    reminderText: applied.reminderText,
+                    repeatText: applied.repeatText,
+                    scheduleMeta: applied.scheduleMeta as TaskScheduleMeta,
+                  }
+                : prev,
+            );
+          }
           inheritedPriorityLabel = fromTaskPriority(project.priority ?? 0);
           setPriority(mapPriorityTextToKey(inheritedPriorityLabel));
           setLoadedFormSnapshot((prev) =>
             prev
-              ? { ...prev, priority: mapPriorityTextToKey(inheritedPriorityLabel), acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note) }
+              ? {
+                  ...prev,
+                  priority: mapPriorityTextToKey(inheritedPriorityLabel),
+                  acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
+                }
               : prev,
           );
+          try {
+            const [projectTags, projectTagIds] = await Promise.all([
+              getTagsByProjectId(task.project_id),
+              getTagIdsByProjectId(task.project_id),
+            ]);
+            nextInheritsTags = projectTagIds.length > 0;
+            if (nextInheritsTags) {
+              setAllTags(projectTags);
+              setSelectedTagIds(projectTagIds);
+              setTagsLoading(false);
+            } else if (task.parent_task_id) {
+              setAllTags([]);
+              setSelectedTagIds([]);
+            }
+          } catch (tagErr) {
+            console.warn('加载项目标签失败', tagErr);
+          }
         }
       }
       setProjectPriorityLabel(inheritedPriorityLabel);
       setParentDateLimit(parentLimit);
       setProjectDateLimit(projectLimit);
+      setProjectScheduleMeta(nextProjectSchedule);
+      setInheritsProjectSchedule(nextInheritsSchedule);
+      setInheritsProjectTags(nextInheritsTags);
 
       await reload();
     } catch (error) {
@@ -851,8 +833,65 @@ export default function EditTaskScreen() {
 
     try {
       setSaving(true);
-      const meta = scheduleMetaRef.current;
-      const dueDate = dueDateFromScheduleMeta(meta, extractDueDate(deadlineTextRef.current));
+
+      let meta = scheduleMetaRef.current;
+      let deadlineForDue = deadlineTextRef.current;
+      let reminderForExtra = reminderTextRef.current;
+      let repeatForExtra = repeatTextRef.current;
+      let nextInheritsSchedule = inheritsProjectSchedule;
+      let nextInheritsTags = inheritsProjectTags;
+      let forcedProjectSchedule = projectScheduleMeta;
+
+      if (snapshot.project_id) {
+        const project = await getProjectById(snapshot.project_id);
+        if (project) {
+          const projLimit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
+          nextInheritsSchedule = projectDefinesSchedule(project.extra_data, project.due_date);
+          try {
+            const parsed = project.extra_data
+              ? (JSON.parse(project.extra_data) as { schedule?: ScheduleMetaLike })
+              : {};
+            forcedProjectSchedule = parsed.schedule ?? null;
+            if (!scheduleMetaHasConcreteDates(forcedProjectSchedule) && nextInheritsSchedule) {
+              forcedProjectSchedule = resolveInheritedDefaultSchedule(null, projLimit);
+            }
+          } catch {
+            forcedProjectSchedule = nextInheritsSchedule
+              ? resolveInheritedDefaultSchedule(null, projLimit)
+              : null;
+          }
+          if (nextInheritsSchedule && forcedProjectSchedule) {
+            const applied = applyScheduleMetaToLabels(forcedProjectSchedule);
+            meta = applied.scheduleMeta as TaskScheduleMeta;
+            deadlineForDue = applied.deadlineText;
+            reminderForExtra = applied.reminderText;
+            repeatForExtra = applied.repeatText;
+            setDeadlineText(applied.deadlineText);
+            setReminderText(applied.reminderText);
+            setRepeatText(applied.repeatText);
+            setScheduleMeta(meta);
+            setProjectScheduleMeta(forcedProjectSchedule);
+            setInheritsProjectSchedule(true);
+          } else {
+            setInheritsProjectSchedule(false);
+            setProjectScheduleMeta(null);
+          }
+          try {
+            const projectTagIds = await getTagIdsByProjectId(snapshot.project_id);
+            nextInheritsTags = projectTagIds.length > 0;
+            setInheritsProjectTags(nextInheritsTags);
+            if (nextInheritsTags) {
+              const projectTags = await getTagsByProjectId(snapshot.project_id);
+              setAllTags(projectTags);
+              setSelectedTagIds(projectTagIds);
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      const dueDate = dueDateFromScheduleMeta(meta, extractDueDateFromDeadlineText(deadlineForDue));
       const parsedExtra = parseTaskExtraData(snapshot.extra_data);
       delete (parsedExtra as Record<string, unknown>).completion_reward;
       const mergedExtra = mergeRewardPointsIntoExtraData(
@@ -860,8 +899,8 @@ export default function EditTaskScreen() {
           mergeBoundHabitIdsIntoExtraData(
             JSON.stringify({
               ...parsedExtra,
-              reminder: reminderTextRef.current,
-              repeat: repeatTextRef.current,
+              reminder: reminderForExtra,
+              repeat: repeatForExtra,
               schedule: meta,
             }),
             boundHabitIdsRef.current,
@@ -890,23 +929,27 @@ export default function EditTaskScreen() {
         extra_data: mergedExtra,
       });
       if (!snapshot.parent_task_id) {
-        await setTaskTagIds(taskId, selectedTagIdsRef.current);
+        // 项目已贴标签 → 清空任务自有标签；否则保存任务标签
+        await setTaskTagIds(taskId, nextInheritsTags ? [] : selectedTagIdsRef.current);
         await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
       }
       const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
       });
       const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
-      await tightenDescendantTasksOf(taskId, tightenFrame);
+      // 项目已设日程时子任务已随项目继承，不必再按本任务框架收紧
+      if (!nextInheritsSchedule) {
+        await tightenDescendantTasksOf(taskId, tightenFrame);
+      }
       await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
 
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,
         acceptanceCriteria: acceptanceCriteriaRef.current,
         priority: mapPriorityTextToKey(fromTaskPriority(nextPriority)),
-        deadlineText: deadlineTextRef.current,
-        reminderText: reminderTextRef.current,
-        repeatText: repeatTextRef.current,
+        deadlineText: deadlineForDue,
+        reminderText: reminderForExtra,
+        repeatText: repeatForExtra,
         scheduleMeta: meta,
         boundHabitIds: boundHabitIdsRef.current,
         isLongTermTask: isLongTermTaskRef.current,
@@ -945,16 +988,7 @@ export default function EditTaskScreen() {
     } finally {
       setSaving(false);
     }
-  }, [loading, projectDateLimit, taskId]);
-
-  const handleSavePress = React.useCallback(() => {
-    if (saving || loading) return;
-    void (async () => {
-      const ok = await persistTask();
-      if (!ok) return;
-      performLeave();
-    })();
-  }, [loading, performLeave, persistTask, saving]);
+  }, [inheritsProjectSchedule, inheritsProjectTags, loading, projectDateLimit, projectScheduleMeta, taskId]);
 
   /** 从详情→编辑离开（保存或删除）时跳过详情页，直接回到任务 Tab */
   const navigateAfterLeaveEdit = React.useCallback(() => {
@@ -975,6 +1009,15 @@ export default function EditTaskScreen() {
     },
     [navigateAfterLeaveEdit, saving],
   );
+
+  const handleSavePress = React.useCallback(() => {
+    if (saving || loading) return;
+    void (async () => {
+      const ok = await persistTask();
+      if (!ok) return;
+      performLeave();
+    })();
+  }, [loading, performLeave, persistTask, saving]);
 
   const promptUnsavedChanges = React.useCallback(
     (onLeave: () => void) => {
@@ -1174,7 +1217,7 @@ export default function EditTaskScreen() {
               )}
             </View>
 
-            {canTagTask ? (
+            {showTagField ? (
               <View style={styles.fieldBlock}>
                 <Text style={[styles.fieldLabel, { color: outline }]}>标签</Text>
                 <ProjectTagPickerField
@@ -1182,6 +1225,7 @@ export default function EditTaskScreen() {
                   allTags={allTags}
                   loading={tagsLoading}
                   disabled={loading}
+                  locked={inheritsProjectTags}
                   onChange={setSelectedTagIds}
                   textColor={theme.text}
                   outline={outline}
@@ -1197,38 +1241,14 @@ export default function EditTaskScreen() {
 
           <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
             <Text style={[styles.panelTitle, { color: theme.text }]}>日程</Text>
-            <Pressable
+            <EntityFormScheduleField
+              deadlineText={deadlineText}
+              reminderText={reminderText}
+              repeatText={repeatText}
               onPress={openSchedulePicker}
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.scheduleRow,
-                { backgroundColor: fieldBg, opacity: loading ? 0.65 : pressed ? 0.85 : 1 },
-              ]}>
-              <View style={[styles.scheduleIcon, { backgroundColor: surfaceLowest }]}>
-                <MaterialIcons name="event-note" size={20} color={primary} />
-              </View>
-              <View style={styles.deadlineBody}>
-                <Text style={[styles.fieldLabel, { color: outline }]}>时间限制</Text>
-                <Text style={[styles.fieldValue, { color: theme.text }]}>{deadlineText || '未设置'}</Text>
-                {!!(reminderText || repeatText) && (
-                  <View style={styles.tagRow}>
-                    {!!reminderText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="notifications-active" size={13} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{reminderText}</Text>
-                      </View>
-                    )}
-                    {!!repeatText && (
-                      <View style={[styles.metaTag, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-                        <MaterialIcons name="repeat" size={13} color={primary} />
-                        <Text style={[styles.metaTagText, { color: theme.text }]}>{repeatText}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color={outline} />
-            </Pressable>
+              locked={inheritsProjectSchedule}
+              label="时间限制"
+            />
           </View>
 
           <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
@@ -1349,7 +1369,10 @@ export default function EditTaskScreen() {
                     params: {
                       source: addSubtaskSource,
                       dateLimit: subtaskDateLimit ? JSON.stringify(subtaskDateLimit) : '',
-                      defaultSchedule: inheritedSubtaskSchedule ? JSON.stringify(inheritedSubtaskSchedule) : '',
+                      defaultSchedule: inheritedSubtaskSchedule
+                        ? JSON.stringify(inheritedSubtaskSchedule)
+                        : '',
+                      lockSchedule: inheritsProjectSchedule ? '1' : '',
                     },
                   })
                 }

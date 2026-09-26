@@ -3,12 +3,14 @@ import {
   FinanceAccountCarouselSkeleton,
   FinanceBudgetCardSkeleton,
   FinanceTxnListSkeleton,
-} from '@/components/finance/finance-home-skeletons';
+} from '@/components/skeletons/finance';
+import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-goal-block';
 import { AppIconButton } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
@@ -67,13 +69,13 @@ import {
     type ScheduledFinanceExpense,
 } from '@/lib/finance-scheduled-expense';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
-import { setFinanceSheetBridge } from '@/lib/finance-sheet-bridge';
-import { notifyFinanceSheetSaved, subscribeFinanceSheetSaved } from '@/lib/finance-sheet-controller';
 import {
     consumeFinanceSheetLaunchIntent,
+    notifyFinanceSheetSaved,
     peekFinanceSheetLaunchIntent,
+    subscribeFinanceSheetSaved,
     type FinanceSheetLaunchIntent,
-} from '@/lib/finance-sheet-launch-intent';
+} from '@/lib/finance-transaction-sheet/controller';
 import {
     describeFinanceTransferPair,
     resolveTransferLaunchAccounts,
@@ -91,6 +93,8 @@ import {
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { fetchFinanceHome, fetchFinanceRecentDays } from '@/lib/finance-page-api';
+import { aggregateTransactions } from '@/lib/finance-aggregate';
+import { formatYmd } from '@/lib/date';
 import {
   computeNetWorthTotal,
   computeTotalAssets,
@@ -533,10 +537,13 @@ export default function FinanceScreen() {
   const markPageDirty = resetSync;
   /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
   const [initialFinanceLoadPending, setInitialFinanceLoadPending] = React.useState(true);
-  const [financeSkeletonMounted, setFinanceSkeletonMounted] = React.useState(true);
   const financeContentRevealDoneRef = React.useRef(false);
-  const financeSkeletonOpacity = React.useRef(new Animated.Value(1)).current;
-  const financeContentOpacity = React.useRef(new Animated.Value(0)).current;
+  const {
+    showSkeleton: showFinanceSkeleton,
+    skeletonMounted: financeSkeletonMounted,
+    skeletonOpacity: financeSkeletonOpacity,
+    contentOpacity: financeContentOpacity,
+  } = useHomeSkeletonReveal(initialFinanceLoadPending);
   const { colors, isDark } = useAppTheme();
 
   const bg = colors.background;
@@ -605,6 +612,8 @@ export default function FinanceScreen() {
   const [transferFeeAmount, setTransferFeeAmount] = React.useState('');
   const [isSavingTransaction, setIsSavingTransaction] = React.useState(false);
   const [financeTransactions, setFinanceTransactions] = React.useState<FinanceTransactionRow[]>([]);
+  /** 服务端 home.monthly；有值时优先于本地 aggregateTransactions */
+  const [serverMonthly, setServerMonthly] = React.useState<{ income: number; expense: number } | null>(null);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [generatingTxnAiId, setGeneratingTxnAiId] = React.useState<string | null>(null);
   const [txnAiFailEpoch, setTxnAiFailEpoch] = React.useState(0);
@@ -695,26 +704,7 @@ export default function FinanceScreen() {
 
     if (!financeContentRevealDoneRef.current) {
       financeContentRevealDoneRef.current = true;
-      setFinanceSkeletonMounted(true);
-      financeSkeletonOpacity.setValue(1);
-      financeContentOpacity.setValue(0);
       revealAnim.setValue(1);
-      Animated.parallel([
-        Animated.timing(financeSkeletonOpacity, {
-          toValue: 0,
-          duration: 280,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(financeContentOpacity, {
-          toValue: 1,
-          duration: 320,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start(({ finished }) => {
-        if (finished) setFinanceSkeletonMounted(false);
-      });
       return;
     }
 
@@ -726,12 +716,7 @@ export default function FinanceScreen() {
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [
-    financeContentOpacity,
-    financeSkeletonOpacity,
-    initialFinanceLoadPending,
-    revealAnim,
-  ]);
+  }, [financeContentOpacity, initialFinanceLoadPending, revealAnim]);
 
   const scheduleFinanceTransactionsFlush = React.useCallback(() => {
     if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
@@ -1484,30 +1469,18 @@ export default function FinanceScreen() {
     txnAiFailEpoch,
   ]);
 
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-  const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  const monthlyTransactions = React.useMemo(() => {
-    return financeTransactions.filter((txn) => {
-      const happenedAt = parseStoredDatetime(txn.happened_at);
-      return happenedAt >= monthStart && happenedAt < monthEnd;
-    });
-  }, [financeTransactions, monthEnd, monthStart]);
-  const monthlyIncome = React.useMemo(
+  const monthStartYmd = formatYmd(new Date(today.getFullYear(), today.getMonth(), 1));
+  const monthEndYmd = formatYmd(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+  const localMonthlyAgg = React.useMemo(
     () =>
-      monthlyTransactions.reduce((sum, txn) => {
-        if (txn.transaction_type !== 'income') return sum;
-        return sum + Math.abs(txn.amount);
-      }, 0),
-    [monthlyTransactions]
+      aggregateTransactions(financeTransactions, {
+        start: monthStartYmd,
+        end: monthEndYmd,
+      }),
+    [financeTransactions, monthEndYmd, monthStartYmd],
   );
-  const monthlyExpense = React.useMemo(
-    () =>
-      monthlyTransactions.reduce((sum, txn) => {
-        if (txn.transaction_type !== 'expense') return sum;
-        return sum + Math.abs(txn.amount);
-      }, 0),
-    [monthlyTransactions]
-  );
+  const monthlyIncome = serverMonthly?.income ?? localMonthlyAgg.income;
+  const monthlyExpense = serverMonthly?.expense ?? localMonthlyAgg.expense;
 
   const budgetPeriodStart = getBudgetPeriodStartForDate(today, budgetRefreshDay);
   const budgetPeriodEndExclusive = getNextBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
@@ -2360,19 +2333,6 @@ export default function FinanceScreen() {
     [getDefaultSheetAccountIdForTab, resetSheetForm],
   );
 
-  /** 仅在财务 Tab 聚焦时接管弹窗；账户详情等栈页由根级 FinanceSheetHost 渲染 */
-  useFocusEffect(
-    React.useCallback(() => {
-      setFinanceSheetBridge({
-        open: (intent) => {
-          void reloadFinanceAccounts().then(() => applyManualOrTransferSheetIntent(intent));
-        },
-      });
-      return () => setFinanceSheetBridge(null);
-    }, [applyManualOrTransferSheetIntent, loadFinanceAccounts]),
-  );
-
-
   const reload = React.useCallback(async (forceApi = false) => {
     return wrapLoad(async () => {
       try {
@@ -2397,6 +2357,7 @@ export default function FinanceScreen() {
           );
           financeTransactionsRef.current = home.transactions;
           setFinanceTransactions(home.transactions);
+          setServerMonthly(home.fromApi && home.monthly ? home.monthly : null);
           // 首页账户一律再走本地规范化（负债类型/余额），避免直接使用 API 原始行漏计总负债
           const normalizedAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
           financeAccountsRef.current = normalizedAccounts;
@@ -2408,6 +2369,7 @@ export default function FinanceScreen() {
             void runTxnAiBackfillRef.current();
           });
         } else {
+          setServerMonthly(null);
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
         }
 
@@ -3889,16 +3851,12 @@ export default function FinanceScreen() {
             </Animated.View>
           ) : null}
 
-          {initialFinanceLoadPending || financeSkeletonMounted ? (
-            <Animated.View
-              pointerEvents={initialFinanceLoadPending ? 'auto' : 'none'}
-              style={[
-                initialFinanceLoadPending ? undefined : styles.financeSkeletonOverlay,
-                {
-                  opacity: initialFinanceLoadPending ? 1 : financeSkeletonOpacity,
-                  backgroundColor: initialFinanceLoadPending ? undefined : bg,
-                },
-              ]}
+          {showFinanceSkeleton ? (
+            <HomeSkeletonShell
+              pending={initialFinanceLoadPending}
+              mounted={financeSkeletonMounted}
+              opacity={financeSkeletonOpacity}
+              backgroundColor={bg}
             >
               <View style={styles.sectionStack}>
                 <FinanceBudgetCardSkeleton
@@ -3911,7 +3869,7 @@ export default function FinanceScreen() {
                   <FinanceTxnListSkeleton colors={{ surface: surfaceSubtle, outline: outlineVariant, cardBg: surfaceSubtle }} />
                 </View>
               </View>
-            </Animated.View>
+            </HomeSkeletonShell>
           ) : null}
           </View>
         </View>
@@ -4322,13 +4280,15 @@ export default function FinanceScreen() {
                           : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
                       </Text>
                     </View>
-                    <Pressable
-                      onPress={() => router.push('/zhipu-api-test')}
-                      style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-                      <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
-                        智谱 API 调试页（验证密钥与请求）
-                      </Text>
-                    </Pressable>
+                    {__DEV__ ? (
+                      <Pressable
+                        onPress={() => router.push('/zhipu-api-test')}
+                        style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
+                        <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
+                          智谱 API 调试页（验证密钥与请求）
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 )}
 
@@ -5175,13 +5135,6 @@ const styles = StyleSheet.create({
   },
   financeBodyStack: {
     position: 'relative',
-  },
-  financeSkeletonOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 2,
   },
   sectionStack: {
     gap: Spacing.xl,

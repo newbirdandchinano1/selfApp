@@ -9,6 +9,7 @@ import { listReviewTemplate } from '@/lib/repositories/insights/review-template'
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
+import { addDaysToYmd, formatYmd } from '@/lib/date';
 import {
   getWeeklyReviewConfiguredWeekday,
   isDailyReviewSkippedOnWeeklyReviewDay,
@@ -23,9 +24,7 @@ export type DailyEntry = { ymd: string; label: string; fields: ReviewFieldValues
 const HEADER_WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as const;
 
 export function toYmdLocal(d: Date): string {
-  const m = d.getMonth() + 1;
-  const day = d.getDate();
-  return `${d.getFullYear()}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return formatYmd(d);
 }
 
 export function formatReviewHeaderDate(ymd: string): string {
@@ -69,11 +68,7 @@ export function getYesterdayYmd(todayYmd: string): string {
 }
 
 export function shiftYmd(ymd: string, deltaDays: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
-  if (!m) return ymd;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  d.setDate(d.getDate() + deltaDays);
-  return toYmdLocal(d);
+  return addDaysToYmd(ymd, deltaDays);
 }
 
 /** 当前复盘周期（7 天区间） */

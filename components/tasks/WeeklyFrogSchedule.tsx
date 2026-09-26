@@ -21,6 +21,7 @@ import {
 } from '@/lib/schedule/habit-virtual-placement';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
+import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import {
   centerYmdForPeriod,
   formatThreeDayRangeLabel,
@@ -131,6 +132,14 @@ type SubjectLookup = {
 
 export type SchedulePendingPlace = SchedulePlacePreselected;
 
+/** 日程入格/取消指派后，供列表立刻刷新「已指派」标识 */
+export type ScheduleChangedDetail = {
+  kind: 'task' | 'project';
+  id: string;
+  assignYmd: string;
+  action: 'assign' | 'unassign';
+};
+
 type Props = {
   logicalTodayYmd: string;
   /** 当前墙钟时刻（用于「现在」线） */
@@ -141,7 +150,7 @@ type Props = {
   /** 从项目列表长按预选：展开课表并点空格入格 */
   pendingPlace?: SchedulePendingPlace | null;
   onClearPendingPlace?: () => void;
-  onChanged?: () => void;
+  onChanged?: (detail?: ScheduleChangedDetail) => void;
   onOpenSubject?: (kind: 'task' | 'project', id: string) => void;
   onToggleDone?: (info: {
     kind: 'task' | 'project';
@@ -150,6 +159,8 @@ type Props = {
   }) => void;
   /** 点日程表习惯块：等同小习惯打卡（仅今日） */
   onHabitCheckIn?: (habitId: string) => void;
+  /** 点已达标的日程习惯块：撤销当日打卡（仅今日） */
+  onHabitUndo?: (habitId: string) => void;
 };
 
 type CellKey = string; // `${ymd}-${slot}`
@@ -335,6 +346,31 @@ function confirmTogglePlacementDone(
   ]);
 }
 
+/** 日程虚拟习惯：打卡 / 撤销前确认，交互对齐青蛙格 */
+function confirmToggleVirtualHabit(
+  habit: VirtualHabitPlacement,
+  opts: {
+    onCheckIn?: (habitId: string) => void;
+    onUndo?: (habitId: string) => void;
+  },
+) {
+  const titleLabel = (habit.name ?? '').trim() || '该习惯';
+  if (habit.done) {
+    Alert.alert('取消完成？', `确定将「${titleLabel}」标记为未完成吗？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '取消完成',
+        onPress: () => opts.onUndo?.(habit.habitId),
+      },
+    ]);
+    return;
+  }
+  Alert.alert('确认完成？', `确定将「${titleLabel}」标记为已完成吗？`, [
+    { text: '取消', style: 'cancel' },
+    { text: '完成', onPress: () => opts.onCheckIn?.(habit.habitId) },
+  ]);
+}
+
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
   return isEditableScheduleDay(ymd, logicalTodayYmd);
 }
@@ -381,6 +417,7 @@ export function WeeklyFrogSchedule({
   onOpenSubject,
   onToggleDone,
   onHabitCheckIn,
+  onHabitUndo,
 }: Props) {
   const { colors: theme, isDark, shadows } = useAppTheme();
   const primary = theme.primary;
@@ -416,6 +453,9 @@ export function WeeklyFrogSchedule({
   const [view, setView] = React.useState<WeekScheduleView | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [virtualHabits, setVirtualHabits] = React.useState<VirtualHabitPlacement[]>([]);
+  /** 防止指派连发 notify 时旧 reload 用空打卡 Map 覆盖已完成习惯 */
+  const reloadGenerationRef = React.useRef(0);
+  const checkInsMapsRef = React.useRef<Map<string, Record<string, number>>>(new Map());
   const [gridWidth, setGridWidth] = React.useState(0);
   const hPagerRef = React.useRef<ScrollView>(null);
   const headerPagerRef = React.useRef<ScrollView>(null);
@@ -607,15 +647,23 @@ export function WeeklyFrogSchedule({
   const reload = React.useCallback(
     async (days: string[], opts?: { silent?: boolean }) => {
       if (!opts?.silent) setLoading(true);
+      const generation = ++reloadGenerationRef.current;
       try {
         const [data, habits, checkInsMaps, boundary] = await Promise.all([
           loadScheduleForDayWindow(days, logicalTodayYmd, {
             hydrateRemote: !opts?.silent,
           }),
           getHabits().catch(() => []),
-          getAllHabitCheckInsMaps().catch(() => new Map()),
+          // 读失败时保留上一份打卡 Map，避免指派后并发 reload 把已完成习惯刷回未完成
+          getAllHabitCheckInsMaps().catch((err) => {
+            console.warn('[WeeklyFrogSchedule] check-ins load failed, keep previous', err);
+            return checkInsMapsRef.current;
+          }),
           loadTasksDayBoundary(),
         ]);
+        // 过期请求直接丢弃，避免后返回的旧结果盖掉新指派/新打卡
+        if (generation !== reloadGenerationRef.current) return;
+        checkInsMapsRef.current = checkInsMaps;
         setView(data);
         setVirtualHabits(
           buildVirtualHabitPlacementsForDays({
@@ -628,10 +676,13 @@ export function WeeklyFrogSchedule({
           }),
         );
       } catch (err) {
+        if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
         if (!opts?.silent) Alert.alert('加载失败', '无法加载日程表');
       } finally {
-        if (!opts?.silent) setLoading(false);
+        if (!opts?.silent && generation === reloadGenerationRef.current) {
+          setLoading(false);
+        }
       }
     },
     [logicalTodayYmd],
@@ -722,20 +773,20 @@ export function WeeklyFrogSchedule({
     return map;
   }, [virtualHabits]);
 
-  /** 合并色块：仅在起点格渲染 */
-  const blockStarts = React.useMemo(() => {
-    const map = new Map<CellKey, SchedulePlacementRow[]>();
-    if (!view) return map;
-    for (const p of view.placements) {
-      if (p.orphaned || p.startSlotIndex == null) continue;
-      const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
-      const key = cellKey(ymd, p.startSlotIndex);
-      const list = map.get(key) ?? [];
-      list.push(p);
-      map.set(key, list);
-    }
-    return map;
-  }, [view]);
+  // 指派/打卡后 virtualHabits、placements 会变：同步已打开的「本格内容」列表里的完成态
+  React.useEffect(() => {
+    setCellList((prev) => {
+      if (!prev) return prev;
+      const key = cellKey(prev.assignYmd, prev.slotIndex);
+      const habits = habitsByCell.get(key) ?? [];
+      const covering = placementsByCell.get(key) ?? [];
+      return {
+        ...prev,
+        habits: [...habits],
+        placements: uniquePlacementsBySubject(covering),
+      };
+    });
+  }, [habitsByCell, placementsByCell]);
 
   const nowLineTop = React.useMemo(() => {
     if (!view || !layout || !dayYmds.includes(logicalTodayYmd)) return null;
@@ -894,7 +945,12 @@ export function WeeklyFrogSchedule({
     setPlaceTarget(null);
     onClearPendingPlace?.();
     await reload(loadDayYmds, { silent: true });
-    onChanged?.();
+    onChanged?.({
+      kind: result.kind,
+      id: result.id,
+      assignYmd: placeTarget.assignYmd,
+      action: 'assign',
+    });
   };
 
   const startReassignTime = (placement: SchedulePlacementRow, subject: ScheduleSubjectInfo) => {
@@ -934,13 +990,18 @@ export function WeeklyFrogSchedule({
         Alert.alert(habit.name, '未到打卡日，请到当天再打卡。可在习惯编辑页关闭入格。');
         return;
       }
-      if (habit.done) {
-        Alert.alert(habit.name, '今日已达标。取消入格请到习惯编辑页关闭提醒。');
+      // 子习惯走清单弹窗，不在此做整卡确认
+      if (hasActiveSubHabits(habit.extraData)) {
+        if (habit.done) onHabitUndo?.(habit.habitId);
+        else onHabitCheckIn?.(habit.habitId);
         return;
       }
-      onHabitCheckIn?.(habit.habitId);
+      confirmToggleVirtualHabit(habit, {
+        onCheckIn: onHabitCheckIn,
+        onUndo: onHabitUndo,
+      });
     },
-    [logicalTodayYmd, onHabitCheckIn],
+    [logicalTodayYmd, onHabitCheckIn, onHabitUndo],
   );
 
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
@@ -1338,7 +1399,6 @@ export function WeeklyFrogSchedule({
             const slotIndex = row.slotIndex;
             const key = cellKey(ymd, slotIndex);
             const covering = placementsByCell.get(key) ?? [];
-            const starts = blockStarts.get(key) ?? [];
             const cellHabits = habitsByCell.get(key) ?? [];
             const isEmpty = covering.length === 0 && cellHabits.length === 0;
             return (
@@ -1356,23 +1416,18 @@ export function WeeklyFrogSchedule({
                   },
                 ]}>
                 {(() => {
-                  if (starts.length === 0 && cellHabits.length === 0) return null;
+                  // 跨格占用的每一格都画色块+任务名（与角标 covering 口径一致）
+                  if (covering.length === 0 && cellHabits.length === 0) return null;
                   const display =
-                    starts.length > 0
-                      ? pickDisplayPlacement(starts, subjects, ymd)
+                    covering.length > 0
+                      ? pickDisplayPlacement(covering, subjects, ymd)
                       : null;
                   const primaryHabit =
                     !display && cellHabits.length > 0
                       ? [...cellHabits].sort((a, b) => Number(a.done) - Number(b.done))[0]
                       : null;
-                  const spanSlots = display?.primary.spanSlots ?? 1;
-                  const startIdx =
-                    display?.primary.startSlotIndex ??
-                    primaryHabit?.startSlotIndex ??
-                    slotIndex;
-                  const h =
-                    placementBlockHeight(view.axis, layout, startIdx, spanSlots) - 6;
-                  const titleLines = Math.max(1, Math.min(3, spanSlots));
+                  // 按当前格单格高度绘制，避免「起点合并色块」被下一格背景盖住后只剩角标
+                  const h = placementBlockHeight(view.axis, layout, slotIndex, 1) - 6;
                   const unfinishedFrogTitles = listUnfinishedTitlesInCell(
                     covering,
                     subjects,
@@ -1389,7 +1444,7 @@ export function WeeklyFrogSchedule({
                     unfinishedTitles.length > 0 ? unfinishedTitles : null;
                   const titleDone = !showUnfinished;
                   const taskCount =
-                    uniquePlacementsBySubject(starts).length + cellHabits.length;
+                    uniquePlacementsBySubject(covering).length + cellHabits.length;
                   const allDone =
                     (display?.done ?? true) && cellHabits.every((x) => x.done);
                   const fill = scheduleBlockColors(taskCount, {
@@ -1429,7 +1484,7 @@ export function WeeklyFrogSchedule({
                             style={titleStyle}
                           />
                         ) : (
-                          <Text numberOfLines={titleLines} style={titleStyle}>
+                          <Text numberOfLines={1} style={titleStyle}>
                             {showUnfinished?.[0] ?? fallbackTitle}
                           </Text>
                         )}
@@ -2231,7 +2286,12 @@ export function WeeklyFrogSchedule({
                                           try {
                                             await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
                                             await reload(loadDayYmds, { silent: true });
-                                            onChanged?.();
+                                            onChanged?.({
+                                              kind: p.subjectKind,
+                                              id: p.subjectId,
+                                              assignYmd,
+                                              action: 'unassign',
+                                            });
                                           } catch (err) {
                                             Alert.alert(
                                               '取消失败',
@@ -2413,10 +2473,19 @@ export function WeeklyFrogSchedule({
           if (!detail) return;
           void (async () => {
             try {
+              const assignYmd = ymdForWeekday(
+                detail.placement.weekStartYmd,
+                detail.placement.weekday,
+              );
               await cancelAssignForPlacementDay(detail.placement.id, logicalTodayYmd);
               setDetail(null);
               await reload(loadDayYmds, { silent: true });
-              onChanged?.();
+              onChanged?.({
+                kind: detail.placement.subjectKind,
+                id: detail.placement.subjectId,
+                assignYmd,
+                action: 'unassign',
+              });
             } catch (err) {
               Alert.alert('取消失败', err instanceof Error ? err.message : '请稍后重试');
             }

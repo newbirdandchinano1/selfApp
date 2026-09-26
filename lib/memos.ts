@@ -4,36 +4,20 @@ import {
   markCloudSqliteTableDirty,
 } from '@/lib/cloud-sql-dirty-track';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
-import { readApiRecord, readApiTable } from '@/lib/api-read';
-import type { PageApiReadOpts } from '@/lib/page-api-session';
-import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { getDatabase } from '@/lib/database';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type * as SQLite from 'expo-sqlite';
-
-/** 旧版个人页单条备忘，迁移用 */
-const LEGACY_SINGLE_MEMO_KEY = 'profile_screen_memo_v1';
-const MEMO_LIST_KEY = 'memo_list_v2';
-const MEMOS_ASYNC_MIGRATED_KEY = 'memos_async_migrated_v1';
 
 export const MEMO_TITLE_MAX = 120;
 export const MEMO_BODY_MAX = 8000;
-export const MEMO_DIMENSION_MAX = 32;
-
-export type MemoDimension = {
-  id: string;
-  name: string;
-  sort_order: number;
-  created_at: string;
-  updated_at: string;
-};
 
 export type MemoItem = {
   id: string;
   title: string;
   body: string;
+  /** @deprecated 分类以 tags 为准；仅兼容旧备份 */
   dimension_id?: string;
+  /** @deprecated 分类以 tags 为准；仅兼容旧备份 */
   dimension?: string;
   /** 置顶：1/true 置顶 */
   is_pinned?: boolean;
@@ -46,14 +30,6 @@ export type MemoItem = {
 };
 
 export type MemoSortMode = 'updated' | 'created' | 'title';
-
-type MemoDimensionRow = {
-  id: string;
-  name: string;
-  sort_order: number | null;
-  created_at: string;
-  updated_at: string;
-};
 
 type MemoRow = {
   id: string;
@@ -79,10 +55,6 @@ function newId(): string {
   return makeTimestampEntityId('', 9);
 }
 
-function newDimensionId(): string {
-  return makeTimestampEntityId('md_', 8);
-}
-
 function clampTitle(t: string): string {
   return t.length > MEMO_TITLE_MAX ? t.slice(0, MEMO_TITLE_MAX) : t;
 }
@@ -91,19 +63,9 @@ function clampBody(t: string): string {
   return t.length > MEMO_BODY_MAX ? t.slice(0, MEMO_BODY_MAX) : t;
 }
 
-function clampDimension(t: string): string {
+function clampTagName(t: string): string {
   const x = t.trim();
-  return x.length > MEMO_DIMENSION_MAX ? x.slice(0, MEMO_DIMENSION_MAX) : x;
-}
-
-function rowToDimension(row: MemoDimensionRow & { title?: string | null }): MemoDimension {
-  return {
-    id: row.id,
-    name: (row.name ?? row.title ?? '').trim(),
-    sort_order: Number(row.sort_order ?? 1000),
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
+  return x.length > 32 ? x.slice(0, 32) : x;
 }
 
 function rowToMemo(row: MemoRow): MemoItem {
@@ -111,8 +73,6 @@ function rowToMemo(row: MemoRow): MemoItem {
     id: row.id,
     title: row.title,
     body: row.body,
-    ...(row.dimension_id?.trim() ? { dimension_id: row.dimension_id.trim() } : {}),
-    ...(row.dimension?.trim() ? { dimension: row.dimension.trim() } : {}),
     ...(coercePinned(row.is_pinned) ? { is_pinned: true } : {}),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -135,8 +95,6 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
       const id = typeof r.id === 'string' ? r.id : '';
       const title = typeof r.title === 'string' ? r.title : '';
       const body = typeof r.body === 'string' ? r.body : '';
-      const dimension_id = typeof r.dimension_id === 'string' ? r.dimension_id : undefined;
-      const dimension = typeof r.dimension === 'string' ? r.dimension : undefined;
       const is_pinned = coercePinned(r.is_pinned);
       const created_at = typeof r.created_at === 'string' ? r.created_at : '';
       const updated_at = typeof r.updated_at === 'string' ? r.updated_at : '';
@@ -149,8 +107,6 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
         id,
         title,
         body,
-        ...(dimension_id != null && dimension_id.trim() !== '' ? { dimension_id: dimension_id.trim() } : {}),
-        ...(dimension != null && dimension.trim() !== '' ? { dimension: clampDimension(dimension) } : {}),
         ...(is_pinned ? { is_pinned: true } : {}),
         created_at,
         updated_at,
@@ -168,33 +124,6 @@ export function parseMemoItemsFromJson(raw: string | null): MemoItem[] {
 
 function markMemosDirty(): void {
   markCloudSqliteTableDirty('memos');
-  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
-}
-
-function markMemoDimensionsDirty(): void {
-  markCloudSqliteTableDirty('memo_dimensions');
-  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
-}
-
-async function readAsyncStorageMemosForMigration(): Promise<MemoItem[]> {
-  const raw = await AsyncStorage.getItem(MEMO_LIST_KEY);
-  if (raw != null && raw !== '') {
-    return parseMemoItemsFromJson(raw);
-  }
-  const legacy = await AsyncStorage.getItem(LEGACY_SINGLE_MEMO_KEY);
-  if (legacy?.trim()) {
-    const now = new Date().toISOString();
-    return [
-      {
-        id: newId(),
-        title: '备忘录',
-        body: legacy.trim(),
-        created_at: now,
-        updated_at: now,
-      },
-    ];
-  }
-  return [];
 }
 
 async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Promise<void> {
@@ -202,40 +131,16 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
   try {
     await db.execAsync('BEGIN IMMEDIATE');
     await db.runAsync('DELETE FROM memos');
-    const dimensionIdsByName = new Map<string, string>();
-    const existingDims = await db.getAllAsync<MemoDimensionRow>(
-      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions',
-    );
-    for (const dim of existingDims) {
-      dimensionIdsByName.set(dim.name.trim(), dim.id);
-    }
     for (const item of items) {
-      let dimensionId = item.dimension_id?.trim() || null;
-      const dimensionName = item.dimension ? clampDimension(item.dimension) : '';
-      if (!dimensionId && dimensionName) {
-        dimensionId = dimensionIdsByName.get(dimensionName) ?? null;
-        if (!dimensionId) {
-          dimensionId = newDimensionId();
-          dimensionIdsByName.set(dimensionName, dimensionId);
-          await db.runAsync(
-            `INSERT INTO memo_dimensions (
-              id, name, sort_order, created_at, updated_at, sync_status
-            ) VALUES (?, ?, ?, ?, ?, 'synced')`,
-            [dimensionId, dimensionName, dimensionIdsByName.size * 1000, item.created_at, item.updated_at],
-          );
-        }
-      }
       await db.runAsync(
         `INSERT INTO memos (
           id, title, body, dimension_id, dimension, is_pinned, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
           created_at, updated_at, sync_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+        ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           clampTitle(item.title),
           clampBody(item.body),
-          dimensionId,
-          dimensionName || null,
           item.is_pinned ? 1 : 0,
           item.ai_evaluation?.trim() || null,
           item.ai_suggestions?.trim() || null,
@@ -258,151 +163,17 @@ async function importMemosToDb(db: SQLite.SQLiteDatabase, items: MemoItem[]): Pr
     endCloudSqliteDirtyIgnoreBatch();
   }
   markMemosDirty();
-  markMemoDimensionsDirty();
 }
 
-/** 启动时：将 AsyncStorage 中的备忘一次性迁入 SQLite */
-export async function migrateMemosStorageToSqliteIfNeeded(db?: SQLite.SQLiteDatabase): Promise<void> {
-  const database = db ?? (await getDatabase());
-  const flag = await database.getFirstAsync<{ value: string }>(
-    'SELECT value FROM app_meta WHERE key = ?',
-    [MEMOS_ASYNC_MIGRATED_KEY],
-  );
-  if (flag?.value === '1') return;
-
-  const count = await database.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(1) AS c FROM memos',
-  );
-  const hasSqliteData = Number(count?.c ?? 0) > 0;
-
-  await backfillMemoDimensionsIfNeeded(database);
-
-  if (!hasSqliteData) {
-    const asyncItems = await readAsyncStorageMemosForMigration();
-    if (asyncItems.length > 0) {
-      await importMemosToDb(database, asyncItems);
-    }
-  }
-
-  await AsyncStorage.multiRemove([MEMO_LIST_KEY, LEGACY_SINGLE_MEMO_KEY]);
-  await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    MEMOS_ASYNC_MIGRATED_KEY,
-    '1',
-  ]);
-}
-
-async function backfillMemoDimensionsIfNeeded(db: SQLite.SQLiteDatabase): Promise<void> {
-  const flag = await db.getFirstAsync<{ value: string }>(
-    'SELECT value FROM app_meta WHERE key = ?',
-    ['memo_dimensions_backfilled_v1'],
-  );
-  if (flag?.value === '1') return;
-
-  const rows = await db.getAllAsync<{ dimension: string }>(
-    `SELECT DISTINCT TRIM(dimension) AS dimension
-     FROM memos
-     WHERE dimension IS NOT NULL AND TRIM(dimension) != ''`,
-  );
-  let sort = 1000;
-  for (const row of rows) {
-    const name = clampDimension(row.dimension);
-    if (!name) continue;
-    const existing = await db.getFirstAsync<{ id: string }>(
-      'SELECT id FROM memo_dimensions WHERE name = ? LIMIT 1',
-      [name],
-    );
-    const dimensionId = existing?.id ?? newDimensionId();
-    if (!existing) {
-      await db.runAsync(
-        `INSERT INTO memo_dimensions (
-          id, name, sort_order, created_at, updated_at, sync_status
-        ) VALUES (?, ?, ?, datetime('now'), datetime('now'), 'synced')`,
-        [dimensionId, name, sort],
-      );
-      sort += 1000;
-    }
-    await db.runAsync(
-      `UPDATE memos SET dimension_id = ?
-       WHERE dimension_id IS NULL AND TRIM(COALESCE(dimension, '')) = ?`,
-      [dimensionId, name],
-    );
-  }
-  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    'memo_dimensions_backfilled_v1',
-    '1',
-  ]);
-}
-
-async function repairEmptyMemoDimensionNames(db: SQLite.SQLiteDatabase): Promise<void> {
-  await db.runAsync(
-    `UPDATE memo_dimensions
-     SET name = COALESCE(
-       (
-         SELECT TRIM(m.dimension)
-         FROM memos m
-         WHERE m.dimension_id = memo_dimensions.id
-           AND TRIM(COALESCE(m.dimension, '')) != ''
-         LIMIT 1
-       ),
-       '未命名维度'
-     ),
-     updated_at = datetime('now')
-     WHERE TRIM(COALESCE(name, '')) = ''`,
-  );
-}
-
-/** 启动时：从 memos.dimension 回填 memo_dimensions，并修复空名称 */
-export async function ensureMemoDimensionsBackfilled(db?: SQLite.SQLiteDatabase): Promise<void> {
-  const database = db ?? (await getDatabase());
-  await backfillMemoDimensionsIfNeeded(database);
-  await repairEmptyMemoDimensionNames(database);
-}
-
-async function listMemosFromApi(dimensionId?: string, opts?: PageApiReadOpts): Promise<MemoItem[]> {
-  const readOpts = { offlineFallback: true as const, localOnly: opts?.localOnly };
-  const [memoRows, dimensionRows] = await Promise.all([
-    readApiTable<MemoRow>('memos', readOpts),
-    readApiTable<MemoDimensionRow>('memo_dimensions', readOpts),
-  ]);
-  const dimNameById = new Map(dimensionRows.map(d => [d.id, d.name]));
-  let filtered = memoRows;
-  if (dimensionId) filtered = memoRows.filter(m => m.dimension_id === dimensionId);
-  return sortByUpdatedDesc(filtered).map(row =>
-    rowToMemo({
-      ...row,
-      dimension: dimNameById.get(row.dimension_id ?? '') ?? row.dimension ?? '',
-    }),
-  );
-}
-
-async function getMemoFromApi(id: string): Promise<MemoItem | null> {
-  const row = await readApiRecord<MemoRow>('memos', id, { offlineFallback: true });
-  if (!row) return null;
-  let dimension = row.dimension ?? '';
-  if (row.dimension_id) {
-    const dim = await readApiRecord<MemoDimensionRow>('memo_dimensions', row.dimension_id, {
-      offlineFallback: true,
-    });
-    if (dim?.name) dimension = dim.name;
-  }
-  return rowToMemo({ ...row, dimension });
-}
-
-async function listMemosFromDb(db: SQLite.SQLiteDatabase, dimensionId?: string): Promise<MemoItem[]> {
-  const where = dimensionId
-    ? 'WHERE memos.dimension_id = ?'
-    : '';
+async function listMemosFromDb(db: SQLite.SQLiteDatabase): Promise<MemoItem[]> {
   const rows = await db.getAllAsync<MemoRow>(
-    `SELECT memos.id, memos.title, memos.body, memos.dimension_id,
-       COALESCE(memo_dimensions.name, memos.dimension) AS dimension,
-       COALESCE(memos.is_pinned, 0) AS is_pinned,
-       memos.ai_evaluation, memos.ai_suggestions, memos.ai_review_at, memos.linked_task_id,
-       memos.created_at, memos.updated_at
+    `SELECT id, title, body, dimension_id, dimension,
+       COALESCE(is_pinned, 0) AS is_pinned,
+       ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+       created_at, updated_at
      FROM memos
-     LEFT JOIN memo_dimensions ON memo_dimensions.id = memos.dimension_id
-     ${where}
-     ORDER BY COALESCE(memos.is_pinned, 0) DESC, memos.updated_at DESC`,
-    dimensionId ? [dimensionId] : [],
+     WHERE sync_status != 'pending_delete'
+     ORDER BY COALESCE(is_pinned, 0) DESC, updated_at DESC`,
   );
   return rows.map(rowToMemo);
 }
@@ -416,156 +187,46 @@ export function memoItemsFromBackupPayload(payload: unknown): MemoItem[] {
 /** 云恢复：用备份中的备忘列表整表覆盖本地。 */
 export async function replaceMemosFromCloudRestore(items: MemoItem[]): Promise<void> {
   const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
   await importMemosToDb(db, items);
 }
 
-export async function listMemoDimensions(opts?: PageApiReadOpts): Promise<MemoDimension[]> {
-  await ensureMemoDimensionsBackfilled();
-  const rows = await readApiTable<MemoDimensionRow>('memo_dimensions', {
-    offlineFallback: true,
-    localOnly: opts?.localOnly,
-  });
-  return sortBySortOrderAsc(rows).map(rowToDimension).filter(d => d.id);
-}
-
-export async function createMemoDimension(input: { name: string }): Promise<MemoDimension> {
+/**
+ * 列表/详情只读本地 SQLite。
+ * 远端灌库由 fetchProfileMemoList（pages/profile/memo-list）负责。
+ */
+export async function listMemos(): Promise<MemoItem[]> {
   const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
-  const name = clampDimension(input.name);
-  if (!name) throw new Error('维度名称不能为空');
-  const now = new Date().toISOString();
-  const maxSort = await db.getFirstAsync<{ v: number }>(
-    'SELECT MAX(COALESCE(sort_order, 0)) AS v FROM memo_dimensions',
-  );
-  const item: MemoDimension = {
-    id: newDimensionId(),
-    name,
-    sort_order: Number(maxSort?.v ?? 0) + 1000,
-    created_at: now,
-    updated_at: now,
-  };
-  await db.runAsync(
-    `INSERT INTO memo_dimensions (
-      id, name, sort_order, created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, 'pending_create')`,
-    [item.id, item.name, item.sort_order, item.created_at, item.updated_at],
-  );
-  markMemoDimensionsDirty();
-  return item;
-}
-
-export async function updateMemoDimension(id: string, patch: { name: string }): Promise<MemoDimension | null> {
-  const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
-  const name = clampDimension(patch.name);
-  if (!name) throw new Error('维度名称不能为空');
-  const prev = await ensureLocalRowForWrite<MemoDimensionRow>('memo_dimensions', id);
-  if (!prev) return null;
-  const now = new Date().toISOString();
-  await db.runAsync(
-    `UPDATE memo_dimensions
-     SET name = ?, updated_at = ?,
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
-     WHERE id = ?`,
-    [name, now, id],
-  );
-  await db.runAsync(
-    `UPDATE memos
-     SET dimension = ?, updated_at = ?,
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
-     WHERE dimension_id = ?`,
-    [name, now, id],
-  );
-  markMemoDimensionsDirty();
-  markMemosDirty();
-  return rowToDimension({ ...prev, name, updated_at: now });
-}
-
-export async function deleteMemoDimension(id: string): Promise<boolean> {
-  const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
-  const dim = await db.getFirstAsync<{ sync_status: string }>(
-    'SELECT sync_status FROM memo_dimensions WHERE id = ? LIMIT 1',
-    [id],
-  );
-  if (!dim) return false;
-
-  await db.execAsync('BEGIN IMMEDIATE');
-  try {
-    const memos = await db.getAllAsync<{ id: string; sync_status: string }>(
-      'SELECT id, sync_status FROM memos WHERE dimension_id = ?',
-      [id],
-    );
-    for (const m of memos) {
-      if (m.sync_status === 'pending_create') {
-        await db.runAsync('DELETE FROM memos WHERE id = ?', [m.id]);
-      } else {
-        await db.runAsync(
-          `UPDATE memos SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
-          [m.id],
-        );
-      }
-    }
-    if (dim.sync_status === 'pending_create') {
-      await db.runAsync('DELETE FROM memo_dimensions WHERE id = ?', [id]);
-    } else {
-      await db.runAsync(
-        `UPDATE memo_dimensions SET updated_at = datetime('now'), sync_status = 'pending_delete' WHERE id = ?`,
-        [id],
-      );
-    }
-    await db.execAsync('COMMIT');
-    markMemoDimensionsDirty();
-    markMemosDirty();
-    return true;
-  } catch (e) {
-    try {
-      await db.execAsync('ROLLBACK');
-    } catch {
-      /* ignore */
-    }
-    throw e;
-  }
-}
-
-export async function listMemos(dimensionId?: string, opts?: PageApiReadOpts): Promise<MemoItem[]> {
-  return listMemosFromApi(dimensionId, opts);
+  return listMemosFromDb(db);
 }
 
 export async function getMemo(id: string): Promise<MemoItem | null> {
-  return getMemoFromApi(id);
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<MemoRow>(
+    `SELECT id, title, body, dimension_id, dimension,
+       COALESCE(is_pinned, 0) AS is_pinned,
+       ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
+       created_at, updated_at
+     FROM memos
+     WHERE id = ? AND sync_status != 'pending_delete'
+     LIMIT 1`,
+    [id],
+  );
+  return row ? rowToMemo(row) : null;
 }
 
 export async function createMemo(input: {
   title: string;
   body: string;
-  dimensionId?: string;
   tagIds?: string[];
   is_pinned?: boolean;
 }): Promise<MemoItem> {
   const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
-  let dimensionId: string | null = null;
-  let dimensionName: string | null = null;
-  const dimId = input.dimensionId?.trim() || '';
-  if (dimId) {
-    const dimension = await db.getFirstAsync<MemoDimensionRow>(
-      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
-      [dimId],
-    );
-    if (!dimension) throw new Error('请先选择有效维度');
-    dimensionId = dimension.id;
-    dimensionName = dimension.name;
-  }
   const now = new Date().toISOString();
   const pinned = Boolean(input.is_pinned);
   const item: MemoItem = {
     id: newId(),
     title: clampTitle(input.title),
     body: clampBody(input.body),
-    ...(dimensionId ? { dimension_id: dimensionId } : {}),
-    ...(dimensionName ? { dimension: dimensionName } : {}),
     ...(pinned ? { is_pinned: true } : {}),
     created_at: now,
     updated_at: now,
@@ -574,85 +235,47 @@ export async function createMemo(input: {
     `INSERT INTO memos (
       id, title, body, dimension_id, dimension, is_pinned, ai_evaluation, ai_suggestions, ai_review_at, linked_task_id,
       created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 'pending_create')`,
-    [
-      item.id,
-      item.title,
-      item.body,
-      dimensionId,
-      dimensionName,
-      pinned ? 1 : 0,
-      item.created_at,
-      item.updated_at,
-    ],
+    ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, ?, ?, 'pending_create')`,
+    [item.id, item.title, item.body, pinned ? 1 : 0, item.created_at, item.updated_at],
   );
   markMemosDirty();
   if (input.tagIds && input.tagIds.length > 0) {
     const { setMemoTagIds } = await import('@/lib/repositories/tags/tag');
     await setMemoTagIds(item.id, input.tagIds);
     markCloudSqliteTableDirty('tag_links');
-    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
   }
   return item;
 }
 
 export async function updateMemo(
   id: string,
-  patch: { title?: string; body?: string; dimensionId?: string | null; tagIds?: string[]; is_pinned?: boolean },
+  patch: { title?: string; body?: string; tagIds?: string[]; is_pinned?: boolean },
 ): Promise<MemoItem | null> {
   const row = await ensureLocalRowForWrite<MemoRow>('memos', id);
   const prev = row ? rowToMemo(row) : null;
   if (!prev) return null;
   const nextTitle = patch.title !== undefined ? clampTitle(patch.title) : prev.title;
   const nextBody = patch.body !== undefined ? clampBody(patch.body) : prev.body;
-  let nextDimensionId =
-    patch.dimensionId !== undefined
-      ? (patch.dimensionId?.trim() || '')
-      : prev.dimension_id ?? '';
-  let nextDimension = prev.dimension ?? '';
-  const db = await getDatabase();
-  if (patch.dimensionId !== undefined) {
-    if (nextDimensionId) {
-      const dim = await db.getFirstAsync<MemoDimensionRow>(
-        'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
-        [nextDimensionId],
-      );
-      if (!dim) throw new Error('请选择有效维度');
-      nextDimensionId = dim.id;
-      nextDimension = dim.name;
-    } else {
-      nextDimensionId = '';
-      nextDimension = '';
-    }
-  } else if (nextDimensionId) {
-    const dim = await db.getFirstAsync<MemoDimensionRow>(
-      'SELECT id, name, sort_order, created_at, updated_at FROM memo_dimensions WHERE id = ? LIMIT 1',
-      [nextDimensionId],
-    );
-    if (dim) {
-      nextDimensionId = dim.id;
-      nextDimension = dim.name;
-    }
-  }
   const nextPinned = patch.is_pinned !== undefined ? Boolean(patch.is_pinned) : Boolean(prev.is_pinned);
   const contentChanged =
     (patch.title !== undefined && nextTitle !== prev.title) ||
     (patch.body !== undefined && nextBody !== prev.body);
   const updated_at = new Date().toISOString();
+  const db = await getDatabase();
   if (contentChanged) {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, is_pinned = ?,
+      `UPDATE memos SET title = ?, body = ?, dimension_id = NULL, dimension = NULL, is_pinned = ?,
         ai_evaluation = NULL, ai_suggestions = NULL, ai_review_at = NULL,
         updated_at = ?,
         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
-      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, nextPinned ? 1 : 0, updated_at, id],
+      [nextTitle, nextBody, nextPinned ? 1 : 0, updated_at, id],
     );
   } else {
     await db.runAsync(
-      `UPDATE memos SET title = ?, body = ?, dimension_id = ?, dimension = ?, is_pinned = ?, updated_at = ?,
+      `UPDATE memos SET title = ?, body = ?, dimension_id = NULL, dimension = NULL, is_pinned = ?, updated_at = ?,
         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
        WHERE id = ?`,
-      [nextTitle, nextBody, nextDimensionId || null, nextDimension || null, nextPinned ? 1 : 0, updated_at, id],
+      [nextTitle, nextBody, nextPinned ? 1 : 0, updated_at, id],
     );
   }
   markMemosDirty();
@@ -660,14 +283,11 @@ export async function updateMemo(
     const { setMemoTagIds } = await import('@/lib/repositories/tags/tag');
     await setMemoTagIds(id, patch.tagIds);
     markCloudSqliteTableDirty('tag_links');
-    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
   }
   const next: MemoItem = {
     id: prev.id,
     title: nextTitle,
     body: nextBody,
-    ...(nextDimensionId ? { dimension_id: nextDimensionId } : {}),
-    ...(nextDimension ? { dimension: nextDimension } : {}),
     ...(nextPinned ? { is_pinned: true } : {}),
     created_at: prev.created_at,
     updated_at,
@@ -764,7 +384,6 @@ export async function runMemoAiReviewOnServer(id: string): Promise<MemoItem | nu
 
 export async function deleteMemo(id: string): Promise<boolean> {
   const db = await getDatabase();
-  await migrateMemosStorageToSqliteIfNeeded(db);
   const row = await db.getFirstAsync<{ sync_status: string }>(
     'SELECT sync_status FROM memos WHERE id = ? LIMIT 1',
     [id],
@@ -789,7 +408,10 @@ export async function deleteMemo(id: string): Promise<boolean> {
   return true;
 }
 
-/** 将旧「维度」一次性迁成全局标签并挂到备忘上（幂等） */
+/**
+ * 将旧「维度」一次性迁成全局标签并挂到备忘上（幂等）。
+ * 在 DROP memo_dimensions 前由 schema 升级调用。
+ */
 export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteDatabase): Promise<void> {
   const database = db ?? (await getDatabase());
   const flag = await database.getFirstAsync<{ value: string }>(
@@ -798,7 +420,16 @@ export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteData
   );
   if (flag?.value === '1') return;
 
-  await ensureMemoDimensionsBackfilled(database);
+  const tableExists = await database.getFirstAsync<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memo_dimensions' LIMIT 1`,
+  );
+  if (!tableExists) {
+    await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+      'memo_dimensions_to_tags_v1',
+      '1',
+    ]);
+    return;
+  }
 
   const dims = await database.getAllAsync<{ id: string; name: string }>(
     `SELECT id, name FROM memo_dimensions WHERE sync_status != 'pending_delete'`,
@@ -816,13 +447,11 @@ export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteData
   );
 
   const existingTags = await getTags();
-  const tagIdByName = new Map(
-    existingTags.map(t => [t.name.trim().toLowerCase(), t.id]),
-  );
+  const tagIdByName = new Map(existingTags.map(t => [t.name.trim().toLowerCase(), t.id]));
 
   const dimToTag = new Map<string, string>();
   for (const dim of dims) {
-    const name = clampDimension(dim.name);
+    const name = clampTagName(dim.name);
     if (!name) continue;
     const key = name.toLowerCase();
     let tagId = tagIdByName.get(key);
@@ -847,13 +476,17 @@ export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteData
     await setMemoTagIds(memo.id, [...existing, tagId]);
   }
 
+  await database.runAsync(
+    `UPDATE memos SET dimension_id = NULL, dimension = NULL WHERE dimension_id IS NOT NULL OR dimension IS NOT NULL`,
+  );
+
   await database.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'memo_dimensions_to_tags_v1',
     '1',
   ]);
   markCloudSqliteTableDirty('tags');
   markCloudSqliteTableDirty('tag_links');
-  void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
+  markMemosDirty();
 }
 
 export function sortMemos(items: MemoItem[], mode: MemoSortMode = 'updated'): MemoItem[] {
@@ -880,11 +513,7 @@ export function sortMemos(items: MemoItem[], mode: MemoSortMode = 'updated'): Me
 export function memoMatchesSearch(item: MemoItem, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return (
-    item.title.toLowerCase().includes(q) ||
-    item.body.toLowerCase().includes(q) ||
-    (item.dimension?.toLowerCase().includes(q) ?? false)
-  );
+  return item.title.toLowerCase().includes(q) || item.body.toLowerCase().includes(q);
 }
 
 export function memoListPreviewTitle(row: MemoItem): string {
@@ -908,7 +537,6 @@ export function memoContextForAiReview(row: MemoItem): string {
   if (!title && !body) return '';
   const parts: string[] = [];
   const bodyLines = body ? body.split(/\n/).filter(l => l.trim().length > 0).length : 0;
-  const dimension = row.dimension?.trim() || '';
   const updatedLabel = row.updated_at
     ? new Date(row.updated_at).toLocaleString('zh-CN', {
         year: 'numeric',
@@ -919,9 +547,8 @@ export function memoContextForAiReview(row: MemoItem): string {
       })
     : '未知';
   parts.push(
-    `【元信息】标题 ${title.length} 字；正文 ${body.length} 字${bodyLines > 0 ? `（约 ${bodyLines} 段/行）` : ''}；标签维度 ${dimension || '未设置'}；最近更新 ${updatedLabel}`,
+    `【元信息】标题 ${title.length} 字；正文 ${body.length} 字${bodyLines > 0 ? `（约 ${bodyLines} 段/行）` : ''}；最近更新 ${updatedLabel}`,
   );
-  if (dimension) parts.push(`【分类】\n${dimension}`);
   if (title) parts.push(`【标题】\n${title}`);
   if (body) parts.push(`【正文】\n${body}`);
   return parts.join('\n\n');

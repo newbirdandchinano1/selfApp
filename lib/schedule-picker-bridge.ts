@@ -1,6 +1,7 @@
 /** 日程选择器回传：用模块内 pending 传递，避免 globalThis 在路由切换时丢失 */
 
 import type { TaskReminderOption } from '@/lib/task-reminder-schedule';
+import type { ScheduleMeta } from '@/lib/schedule/meta';
 
 export type SchedulePickerReminderOption = TaskReminderOption;
 export type SchedulePickerRepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
@@ -25,6 +26,39 @@ export type SchedulePickerResult = {
   startTime: string;
   endTime: string;
 };
+
+/** 打开选择器时的初始值（无 source） */
+export type SchedulePickerInitPayload = {
+  mode?: 'date' | 'time';
+  quickChip?: string;
+  allDay?: boolean;
+  hasExactTime?: boolean;
+  reminderOption?: SchedulePickerReminderOption;
+  reminderHour?: number;
+  reminderMinute?: number;
+  repeatOption?: SchedulePickerRepeatOption;
+  repeatSummary?: string;
+  weeklyDays?: number[];
+  monthlyDays?: number[];
+  yearlyDate?: string;
+  date?: string;
+  range?: { start: string; end: string };
+  startTime?: string;
+  endTime?: string;
+};
+
+/**
+ * 选择器结果落到任务/项目 extra_data.schedule 的字段子集。
+ * 与 ScheduleMeta 对齐，供各编辑页共用，避免再抄一份 Pick。
+ */
+export type PickedScheduleMeta = Omit<SchedulePickerResult, 'source' | 'quickChip'>;
+
+/** @deprecated 使用 PickedScheduleMeta / ScheduleMeta */
+export type TaskScheduleMeta = PickedScheduleMeta;
+
+export function pickedScheduleToMeta(picked: PickedScheduleMeta): ScheduleMeta {
+  return { ...picked };
+}
 
 let pending: SchedulePickerResult | null = null;
 

@@ -2,6 +2,8 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerResult } from '@/lib/schedule-picker-bridge';
+import type { ScheduleMeta } from '@/lib/schedule/meta';
+import { formatYmd, parseYmd } from '@/lib/date';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
@@ -28,24 +30,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 type ReminderOption = TaskReminderOption;
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
 type SettingPickerType = 'reminder' | 'repeat' | null;
-type TaskScheduleMeta = Pick<
-  SchedulePickerResult,
-  | 'mode'
-  | 'allDay'
-  | 'hasExactTime'
-  | 'reminderOption'
-  | 'reminderHour'
-  | 'reminderMinute'
-  | 'repeatOption'
-  | 'repeatSummary'
-  | 'weeklyDays'
-  | 'monthlyDays'
-  | 'yearlyDate'
-  | 'date'
-  | 'range'
-  | 'startTime'
-  | 'endTime'
->;
+type TaskScheduleMeta = ScheduleMeta;
 
 type TaskMetaExtra = Record<string, unknown> & {
   reminder?: string;
@@ -139,12 +124,12 @@ function buildScheduleDisplayLabel(schedule: TaskScheduleMeta | null | undefined
     const rangeStart = formatDate(schedule.range.start);
     const rangeEnd = formatDate(schedule.range.end);
     const rangeLabel = rangeStart === rangeEnd ? rangeStart : `${rangeStart} ~ ${rangeEnd}`;
-    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime)} - ${formatTime(schedule.endTime)}`;
+    const timeLabel = schedule.allDay ? '全天' : `${formatTime(schedule.startTime ?? '')} - ${formatTime(schedule.endTime ?? '')}`;
     return `${rangeLabel} ${timeLabel}`.trim();
   }
   if (schedule?.date) {
     const dateLabel = formatDate(schedule.date);
-    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime) : '';
+    const timeLabel = schedule.allDay ? '全天' : schedule.hasExactTime ? formatTime(schedule.startTime ?? '') : '';
     return timeLabel ? `${dateLabel} ${timeLabel}` : dateLabel;
   }
   return formatDateTimeCN(dueDate);
@@ -165,17 +150,11 @@ const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1);
 
 function parseYmdToDate(ymd: string | undefined | null): Date | null {
   if (!ymd?.trim()) return null;
-  const m = ymd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isNaN(d.getTime()) ? null : d;
+  return parseYmd(ymd);
 }
 
 function toLocalYmd(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return formatYmd(d);
 }
 
 function patchMetaWithRepeat(

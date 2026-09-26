@@ -1,4 +1,4 @@
-import { setFinanceSheetLaunchIntent } from '@/lib/finance-sheet-launch-intent';
+import { setFinanceSheetLaunchIntent } from '@/lib/finance-transaction-sheet/controller';
 import { markShortcutImageHandoffExpected } from '@/lib/shortcut-auto-ledger-route-bridge';
 import {
   clearShortcutHandoffArtifacts,

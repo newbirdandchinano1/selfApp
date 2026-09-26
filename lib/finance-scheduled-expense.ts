@@ -1,24 +1,29 @@
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { AppSettingKey, getAppSetting, removeAppSetting, setAppSetting } from '@/lib/app-settings-store';
-import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { formatWallClockDatetimeLocal, ymdFromDatetime } from '@/lib/api-mysql-datetime';
+import { addDaysToYmd as addDaysToYmdCore, compareYmd, formatYmd } from '@/lib/date';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
-  createFinanceScheduledExpense,
-  deleteFinanceScheduledExpense as deleteFinanceScheduledExpenseRow,
-  getFinanceScheduledExpenseByIdLocal,
-  listFinanceScheduledExpensesLocal,
-  updateFinanceScheduledExpense,
-} from '@/lib/repositories/finance/finance-scheduled-expense';
-import type { FinanceScheduledExpenseRow } from '@/lib/repositories/finance/finance-scheduled-expense.types';
-import { isTaskRepeatDueOnLogicalDay, type TaskRepeatSchedule } from '@/lib/task-repeat-rollover';
+  describeTaskRepeatSchedule,
+  isRepeatDueOnLogicalDay,
+  normalizeMonthlyDays,
+  normalizeScheduledExpenseRepeatStorage,
+  normalizeWeeklyDays,
+  scheduledExpenseStorageToTaskRepeat,
+  type ScheduledExpenseRepeatStorage,
+} from '@/lib/schedule/repeat';
+import type { TaskRepeatSchedule } from '@/lib/task-repeat-rollover';
+import { getDatabase, type SyncStatus } from '@/lib/database.native';
 
-export type ScheduledExpenseRepeat = 'daily' | 'weekly' | 'monthly';
+/** @deprecated 使用 ScheduledExpenseRepeatStorage；DB 字段仍为英文枚举 */
+export type ScheduledExpenseRepeat = ScheduledExpenseRepeatStorage;
 
 export type ScheduledFinanceExpense = {
   id: string;
   name: string;
   amount: number;
   accountId: string;
-  repeatOption: ScheduledExpenseRepeat;
+  repeatOption: ScheduledExpenseRepeatStorage;
   weeklyDays: number[];
   monthlyDays: number[];
   hour: number;
@@ -38,41 +43,71 @@ export type UpsertScheduledFinanceExpenseInput = Omit<ScheduledFinanceExpense, '
   createdAt?: string;
 };
 
-const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const;
+const TABLE = 'finance_scheduled_expenses';
 const SETTINGS_MIGRATED_META = 'finance_scheduled_expenses_settings_migrated_v1';
 
-function normalizeWeeklyDays(raw: unknown): number[] {
-  if (typeof raw === 'string') {
-    try {
-      return normalizeWeeklyDays(JSON.parse(raw) as unknown);
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(raw)) return [];
-  return [...new Set(raw.map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10))).filter((n) => n >= 1 && n <= 7))].sort(
-    (a, b) => a - b,
-  );
-}
+type FinanceScheduledExpenseRow = {
+  id: string;
+  name: string;
+  amount: number;
+  account_id: string;
+  repeat_option: string;
+  weekly_days: string | null;
+  monthly_days: string | null;
+  hour: number;
+  minute: number;
+  times_per_day: number;
+  flow_category_id: string | null;
+  category_key: string | null;
+  category_label: string | null;
+  include_in_budget: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+  sync_status: SyncStatus;
+  extra_data: string | null;
+};
 
-function normalizeMonthlyDays(raw: unknown): number[] {
-  if (typeof raw === 'string') {
-    try {
-      return normalizeMonthlyDays(JSON.parse(raw) as unknown);
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(raw)) return [];
-  return [...new Set(raw.map((x) => (typeof x === 'number' ? Math.round(x) : parseInt(String(x), 10))).filter((n) => n >= 1 && n <= 31))].sort(
-    (a, b) => a - b,
-  );
-}
+type CreateFinanceScheduledExpenseInput = {
+  id: string;
+  name: string;
+  amount: number;
+  account_id: string;
+  repeat_option: string;
+  weekly_days?: string | null;
+  monthly_days?: string | null;
+  hour?: number;
+  minute?: number;
+  times_per_day?: number;
+  flow_category_id?: string | null;
+  category_key?: string | null;
+  category_label?: string | null;
+  include_in_budget?: number;
+  enabled?: number;
+  created_at?: string;
+  extra_data?: string | null;
+};
 
-function normalizeRepeatOption(raw: unknown): ScheduledExpenseRepeat {
-  if (raw === 'weekly' || raw === 'monthly' || raw === 'daily') return raw;
-  return 'daily';
-}
+type UpdateFinanceScheduledExpenseInput = Partial<
+  Pick<
+    FinanceScheduledExpenseRow,
+    | 'name'
+    | 'amount'
+    | 'account_id'
+    | 'repeat_option'
+    | 'weekly_days'
+    | 'monthly_days'
+    | 'hour'
+    | 'minute'
+    | 'times_per_day'
+    | 'flow_category_id'
+    | 'category_key'
+    | 'category_label'
+    | 'include_in_budget'
+    | 'enabled'
+    | 'extra_data'
+  >
+>;
 
 function serializeDays(days: number[]): string {
   return JSON.stringify(days);
@@ -83,6 +118,146 @@ function boolFromDb(raw: unknown, defaultValue = true): boolean {
   if (raw === true || raw === 1 || raw === '1') return true;
   if (raw == null) return defaultValue;
   return defaultValue;
+}
+
+async function listFinanceScheduledExpenseRows(): Promise<FinanceScheduledExpenseRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<FinanceScheduledExpenseRow>(
+    `SELECT * FROM ${TABLE} WHERE sync_status != 'pending_delete' ORDER BY created_at ASC, id ASC`,
+  );
+  return rows ?? [];
+}
+
+async function getFinanceScheduledExpenseRowById(id: string): Promise<FinanceScheduledExpenseRow | null> {
+  const pk = id.trim();
+  if (!pk) return null;
+  const db = await getDatabase();
+  if (!db) return null;
+  const row = await db.getFirstAsync<FinanceScheduledExpenseRow>(
+    `SELECT * FROM ${TABLE} WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [pk],
+  );
+  return row ?? null;
+}
+
+async function insertFinanceScheduledExpenseRow(input: CreateFinanceScheduledExpenseInput): Promise<void> {
+  const name = input.name.trim();
+  if (!name) throw new Error('定时支出名称不能为空');
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error('定时支出金额无效');
+  }
+  const accountId = input.account_id.trim();
+  if (!accountId) throw new Error('定时支出账户无效');
+
+  const db = await getDatabase();
+  if (!db) throw new Error('数据库未就绪');
+
+  const createdAt = input.created_at?.trim() || null;
+  await db.runAsync(
+    `INSERT INTO ${TABLE} (
+      id, name, amount, account_id, repeat_option, weekly_days, monthly_days,
+      hour, minute, times_per_day, flow_category_id, category_key, category_label,
+      include_in_budget, enabled, created_at, updated_at, sync_status, extra_data
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, COALESCE(?, datetime('now')), datetime('now'), 'pending_create', ?
+    )`,
+    [
+      input.id,
+      name,
+      input.amount,
+      accountId,
+      input.repeat_option || 'daily',
+      input.weekly_days ?? null,
+      input.monthly_days ?? null,
+      input.hour ?? 8,
+      input.minute ?? 0,
+      input.times_per_day ?? 1,
+      input.flow_category_id ?? null,
+      input.category_key ?? null,
+      input.category_label ?? null,
+      input.include_in_budget ?? 1,
+      input.enabled ?? 1,
+      createdAt,
+      input.extra_data ?? null,
+    ],
+  );
+}
+
+async function updateFinanceScheduledExpenseRow(
+  id: string,
+  input: UpdateFinanceScheduledExpenseInput,
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) throw new Error('数据库未就绪');
+  const current = await ensureLocalRowForWrite<FinanceScheduledExpenseRow>(TABLE, id);
+  if (!current) throw new Error('未找到定时支出');
+
+  const nextName = input.name !== undefined ? input.name.trim() : current.name;
+  if (!nextName) throw new Error('定时支出名称不能为空');
+
+  const nextAmount = input.amount !== undefined ? input.amount : current.amount;
+  if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+    throw new Error('定时支出金额无效');
+  }
+
+  const nextAccountId =
+    input.account_id !== undefined ? input.account_id.trim() : current.account_id;
+  if (!nextAccountId) throw new Error('定时支出账户无效');
+
+  await db.runAsync(
+    `UPDATE ${TABLE}
+     SET name = ?,
+         amount = ?,
+         account_id = ?,
+         repeat_option = ?,
+         weekly_days = ?,
+         monthly_days = ?,
+         hour = ?,
+         minute = ?,
+         times_per_day = ?,
+         flow_category_id = ?,
+         category_key = ?,
+         category_label = ?,
+         include_in_budget = ?,
+         enabled = ?,
+         extra_data = ?,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
+    [
+      nextName,
+      nextAmount,
+      nextAccountId,
+      input.repeat_option !== undefined ? input.repeat_option : current.repeat_option,
+      input.weekly_days !== undefined ? input.weekly_days : current.weekly_days,
+      input.monthly_days !== undefined ? input.monthly_days : current.monthly_days,
+      input.hour !== undefined ? input.hour : current.hour,
+      input.minute !== undefined ? input.minute : current.minute,
+      input.times_per_day !== undefined ? input.times_per_day : current.times_per_day,
+      input.flow_category_id !== undefined ? input.flow_category_id : current.flow_category_id,
+      input.category_key !== undefined ? input.category_key : current.category_key,
+      input.category_label !== undefined ? input.category_label : current.category_label,
+      input.include_in_budget !== undefined ? input.include_in_budget : current.include_in_budget,
+      input.enabled !== undefined ? input.enabled : current.enabled,
+      input.extra_data !== undefined ? input.extra_data : current.extra_data,
+      id,
+    ],
+  );
+}
+
+async function softDeleteFinanceScheduledExpenseRow(id: string): Promise<void> {
+  await ensureLocalRowForWrite(TABLE, id);
+  const db = await getDatabase();
+  if (!db) return;
+  await db.runAsync(
+    `UPDATE ${TABLE}
+     SET updated_at = datetime('now'), sync_status = 'pending_delete'
+     WHERE id = ?`,
+    [id],
+  );
 }
 
 function normalizeScheduledExpense(raw: unknown): ScheduledFinanceExpense | null {
@@ -96,7 +271,7 @@ function normalizeScheduledExpense(raw: unknown): ScheduledFinanceExpense | null
   if (!id || !name || !accountId) return null;
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
-  const repeatOption = normalizeRepeatOption(o.repeatOption ?? o.repeat_option);
+  const repeatOption = normalizeScheduledExpenseRepeatStorage(o.repeatOption ?? o.repeat_option);
   const weeklyDays = normalizeWeeklyDays(o.weeklyDays ?? o.weekly_days);
   const monthlyDays = normalizeMonthlyDays(o.monthlyDays ?? o.monthly_days);
   if (repeatOption === 'weekly' && weeklyDays.length === 0) return null;
@@ -157,14 +332,14 @@ async function migrateScheduledExpensesFromAppSettingsIfNeeded(): Promise<void> 
     const flag = await readAppMeta(SETTINGS_MIGRATED_META);
     if (flag === '1') return;
 
-    const existing = await listFinanceScheduledExpensesLocal();
+    const existing = await listFinanceScheduledExpenseRows();
     if (existing.length === 0) {
       const parsed = await getAppSetting<unknown>(AppSettingKey.financeScheduledExpenses);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
           const normalized = normalizeScheduledExpense(item);
           if (!normalized) continue;
-          await createFinanceScheduledExpense({
+          await insertFinanceScheduledExpenseRow({
             id: normalized.id,
             name: normalized.name,
             amount: normalized.amount,
@@ -199,7 +374,7 @@ async function migrateScheduledExpensesFromAppSettingsIfNeeded(): Promise<void> 
 
 export async function loadScheduledFinanceExpenses(): Promise<ScheduledFinanceExpense[]> {
   await migrateScheduledExpensesFromAppSettingsIfNeeded();
-  const rows = await listFinanceScheduledExpensesLocal();
+  const rows = await listFinanceScheduledExpenseRows();
   const out: ScheduledFinanceExpense[] = [];
   for (const row of rows) {
     const normalized = rowToDomain(row);
@@ -215,7 +390,7 @@ export async function persistScheduledFinanceExpenses(_items: ScheduledFinanceEx
 
 export async function getScheduledFinanceExpenseById(id: string): Promise<ScheduledFinanceExpense | null> {
   await migrateScheduledExpensesFromAppSettingsIfNeeded();
-  const row = await getFinanceScheduledExpenseByIdLocal(id);
+  const row = await getFinanceScheduledExpenseRowById(id);
   return row ? rowToDomain(row) : null;
 }
 
@@ -232,7 +407,7 @@ export async function upsertScheduledFinanceExpense(
     throw new Error('定时支出参数无效');
   }
 
-  const existing = await getFinanceScheduledExpenseByIdLocal(normalized.id);
+  const existing = await getFinanceScheduledExpenseRowById(normalized.id);
   const payload = {
     name: normalized.name,
     amount: normalized.amount,
@@ -251,9 +426,9 @@ export async function upsertScheduledFinanceExpense(
   };
 
   if (existing) {
-    await updateFinanceScheduledExpense(normalized.id, payload);
+    await updateFinanceScheduledExpenseRow(normalized.id, payload);
   } else {
-    await createFinanceScheduledExpense({
+    await insertFinanceScheduledExpenseRow({
       id: normalized.id,
       ...payload,
       created_at: normalized.createdAt,
@@ -264,22 +439,15 @@ export async function upsertScheduledFinanceExpense(
 
 export async function deleteScheduledFinanceExpense(id: string): Promise<void> {
   await migrateScheduledExpensesFromAppSettingsIfNeeded();
-  await deleteFinanceScheduledExpenseRow(id);
+  await softDeleteFinanceScheduledExpenseRow(id);
 }
 
 export function scheduledExpenseToTaskRepeatSchedule(item: ScheduledFinanceExpense): TaskRepeatSchedule {
-  const repeatOption =
-    item.repeatOption === 'daily' ? '每天' : item.repeatOption === 'weekly' ? '每周' : '每月';
-  return {
-    repeatOption,
-    weeklyDays: item.weeklyDays,
-    monthlyDays: item.monthlyDays,
-    yearlyDate: '',
-  };
+  return scheduledExpenseStorageToTaskRepeat(item.repeatOption, item.weeklyDays, item.monthlyDays);
 }
 
 export function isScheduledFinanceExpenseDueOnDay(item: ScheduledFinanceExpense, logicalYmd: string): boolean {
-  return isTaskRepeatDueOnLogicalDay(logicalYmd, scheduledExpenseToTaskRepeatSchedule(item));
+  return isRepeatDueOnLogicalDay(logicalYmd, scheduledExpenseToTaskRepeatSchedule(item));
 }
 
 export function formatScheduledExpenseTime(hour: number, minute: number): string {
@@ -287,17 +455,11 @@ export function formatScheduledExpenseTime(hour: number, minute: number): string
 }
 
 export function describeScheduledFinanceExpense(item: ScheduledFinanceExpense): string {
-  const time = formatScheduledExpenseTime(item.hour, item.minute);
-  const timesLabel = item.timesPerDay > 1 ? ` · 每天${item.timesPerDay}次` : '';
-  if (item.repeatOption === 'daily') {
-    return `每天 ${time}${timesLabel}`;
-  }
-  if (item.repeatOption === 'weekly') {
-    const days = item.weeklyDays.map((d) => WEEKDAY_LABELS[d - 1] ?? `周${d}`).join('、');
-    return `每周 ${days} ${time}${timesLabel}`;
-  }
-  const days = item.monthlyDays.map((d) => `${d}日`).join('、');
-  return `每月 ${days} ${time}${timesLabel}`;
+  return describeTaskRepeatSchedule(scheduledExpenseToTaskRepeatSchedule(item), {
+    hour: item.hour,
+    minute: item.minute,
+    timesPerDay: item.timesPerDay,
+  });
 }
 
 /** 旧版槽位键（无定时支出 id），仅用于兼容历史流水去重。 */
@@ -330,34 +492,19 @@ export function scheduledExpenseHappenedAtIso(ymd: string, hour: number, minute:
 }
 
 export function ymdFromIso(iso: string): string | null {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
+  return ymdFromDatetime(iso);
 }
 
+/** 非法 YMD 时返回 null（定时支出 runner 依赖此语义） */
 export function addDaysToYmd(ymd: string, delta: number): string | null {
-  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  d.setDate(d.getDate() + delta);
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd.trim())) return null;
+  return addDaysToYmdCore(ymd, delta);
 }
 
-export function compareYmd(a: string, b: string): number {
-  return a.localeCompare(b);
-}
+export { compareYmd };
 
 export function dateToFinanceYmd(d: Date): string {
-  const y = d.getFullYear();
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
+  return formatYmd(d);
 }
 
 /**

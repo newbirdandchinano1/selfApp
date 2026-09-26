@@ -1,7 +1,8 @@
-/** 服务端 ALLOWED_TABLES，与后端 src/config/tables.ts 对齐 */
+/**
+ * 服务端 ALLOWED_TABLES，与后端 src/config/tables.ts 对齐。
+ * 财务权威：finance_*；卫星：cash_flow_* / savings_*；遗留 accounts / account_transactions 已下线。
+ */
 export const API_ALLOWED_TABLES = new Set([
-  'account_transactions',
-  'accounts',
   'admin_users',
   'app_meta',
   'app_settings',
@@ -22,7 +23,6 @@ export const API_ALLOWED_TABLES = new Set([
   'habit_contexts',
   'habits',
   'health_records',
-  'memo_dimensions',
   'memos',
   'project_categories',
   'projects',
@@ -43,8 +43,6 @@ export const API_ALLOWED_TABLES = new Set([
   'points_wallet',
   'points_ledger',
   'wish_board_items',
-  'project_tags',
-  'project_tag_links',
   'tags',
   'tag_links',
   'health_daily_targets',
@@ -59,6 +57,29 @@ export const API_TABLE_PRIMARY_KEY: Record<string, string> = {
 
 /** 始终从本地 SQLite 读取（迁移标记等，不走 REST） */
 export const API_LOCAL_READ_ONLY_TABLES = new Set(['app_meta']);
+
+/**
+ * 禁止经 `/api/data/:table` 通用写的高危表（与后端 GENERIC_WRITE_FORBIDDEN_TABLES 对齐）。
+ * 写入须走专用业务接口；增量同步不得再 POST/PUT/PATCH/DELETE 这些表的通用端点。
+ * 已在 APP_DOMAIN_CRUD_TABLES 中的表由专用接口适配，仍可出现在脏表集合里并由 api-app-domain 上传。
+ */
+export const API_GENERIC_WRITE_FORBIDDEN_TABLES = new Set([
+  'points_ledger',
+  'points_wallet',
+  'wish_board_items',
+  'memos',
+  'health_records',
+  'recipe_categories',
+  'recipe_items',
+  /** 课表：仅 frog-schedule 专用接口可写 */
+  'schedule_placements',
+  'schedule_week_axis_snapshot',
+  'finance_transactions',
+]);
+
+export function isApiGenericWriteForbidden(table: string): boolean {
+  return API_GENERIC_WRITE_FORBIDDEN_TABLES.has(table);
+}
 
 export function getApiTablePrimaryKey(table: string): string {
   return API_TABLE_PRIMARY_KEY[table] ?? 'id';

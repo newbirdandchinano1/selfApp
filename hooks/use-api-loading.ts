@@ -1,20 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSyncExternalStore } from 'react';
 
-import { isApiLoadingActive, subscribeApiLoading } from '@/lib/api-loading-tracker';
+import { useApiLoadingRaw } from '@/hooks/use-api-loading-overlay';
 
-function getSnapshot(): boolean {
-  return isApiLoadingActive();
-}
-
-function getServerSnapshot(): boolean {
-  return false;
-}
-
-/** 是否有进行中的 REST 读请求 */
-export function useApiLoadingRaw(): boolean {
-  return useSyncExternalStore(subscribeApiLoading, getSnapshot, getServerSnapshot);
-}
+export { useApiLoadingRaw } from '@/hooks/use-api-loading-overlay';
 
 /**
  * 带最短展示时间的加载态，避免指示器一闪而过看不见。

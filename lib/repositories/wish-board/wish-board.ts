@@ -4,9 +4,8 @@ import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import type { PageApiReadOpts } from '@/lib/page-api-session';
 import { DEFAULT_WISH_BOARD_ICON_KEY } from '@/lib/constants/wish-board-icons';
-import { notifyPointsBalanceChanged } from '@/lib/points-balance-events';
-import { notifyPointsEarned } from '@/lib/points-earned-toast-events';
-import { assertNonNegativeCostPoints, roundPoints } from '@/lib/reward-points';
+import { notifyPointsMutation } from '@/lib/points-events';
+import { assertNonNegativeCostPoints, asPoints } from '@/lib/reward-points';
 import { getDatabase } from '../../database.native';
 import {
   POINTS_WALLET_ID,
@@ -38,11 +37,6 @@ export {
   adjustPointsBalance,
   deletePointsLedgerRecord,
 } from '@/lib/repositories/points/points';
-
-function asPoints(raw: unknown): number {
-  const n = roundPoints(Number(raw) || 0);
-  return Number.isFinite(n) ? n : 0;
-}
 
 export function createWishBoardItemId(): string {
   return makeTimestampEntityId('wbi_', 8);
@@ -442,13 +436,11 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
     } finally {
       endCloudSqliteDirtyIgnoreBatch();
     }
-    notifyPointsBalanceChanged(balance);
     const appliedDelta = asPoints(balance - preBalance);
-    if (appliedDelta !== 0) {
-      notifyPointsEarned(appliedDelta);
-    } else if (costPoints !== 0) {
-      notifyPointsEarned(-costPoints);
-    }
+    notifyPointsMutation({
+      balance,
+      delta: appliedDelta !== 0 ? appliedDelta : costPoints !== 0 ? -costPoints : undefined,
+    });
     return { balance };
   } catch (e) {
     // 业务错误（积分不足、绑定未完成等）直接抛出；网络类错误走本地回退
@@ -532,11 +524,13 @@ export async function redeemWishBoardItem(id: string): Promise<{ balance: number
       );
     }
     await db.execAsync('COMMIT');
-    notifyPointsBalanceChanged(next);
-    if (cost !== 0) notifyPointsEarned(-cost);
+    notifyPointsMutation({ balance: next, delta: cost !== 0 ? -cost : undefined });
     return { balance: next };
   } catch (e) {
     await db.execAsync('ROLLBACK');
     throw e;
   }
 }
+
+/** 兑换语义别名：与 grant/adjust 并列的 PointsService 入口 */
+export const redeemPoints = redeemWishBoardItem;

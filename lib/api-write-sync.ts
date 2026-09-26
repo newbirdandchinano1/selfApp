@@ -1,6 +1,7 @@
 /**
  * 本地 SQLite 写入后尽快推送到 REST 后端（串行队列 + 防抖，避免并发推送竞态）。
- * 由 markApiTableDirty 全局触发；关键流程可 awaitSync 等待完成。
+ * P0-03：这是唯一在线推送出口；由 markApiTableDirty（经 markCloudSqliteTableDirty）全局触发。
+ * 关键流程可 awaitSync 等待完成。Worker / cloud-sql 仅作周期备份，不参与此队列。
  */
 import { withApiWriteLoading } from '@/lib/api-loading-tracker';
 import { isSkeletonLoadingTabActive } from '@/lib/page-api-health-ui';

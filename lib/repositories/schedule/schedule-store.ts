@@ -28,6 +28,8 @@ function sqlNow(): string {
 }
 
 function markScheduleDirty(): void {
+  // 仅标记本地/Tab 失效；schedule_* 已在 REST_SKIP + GENERIC_WRITE_FORBIDDEN，
+  // 不会经 /api/data 通用推送。线上权威写仍走 schedule-api → frog-schedule。
   markCloudSqliteTableDirty('schedule_placements');
   markCloudSqliteTableDirty('schedule_week_axis_snapshot');
   // 入格/移格/改轴后立刻重同步课程表占用提醒

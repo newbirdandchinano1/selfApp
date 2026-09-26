@@ -19,6 +19,11 @@ import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder
 import { cancelScheduledHabitReminder, resyncAllHabitReminders } from '@/lib/habit-reminder-notifications';
 import { syncHealthIntakeReminderNotifications } from '@/lib/health-intake-reminder-notifications';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
+import {
+  cancelScheduledByCategory,
+  cancelScheduledByIdentifier,
+  cancelScheduledByPrefix,
+} from '@/lib/notification-scheduler';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import {
   formatHabitReminderClock,
@@ -387,17 +392,7 @@ export async function cancelAllScheduledAppNotifications(): Promise<void> {
 }
 
 async function cancelByPrefix(prefix: string): Promise<void> {
-  try {
-    const Notifications = await import('expo-notifications');
-    const pending = await Notifications.getAllScheduledNotificationsAsync();
-    await Promise.all(
-      pending
-        .filter(r => typeof r.identifier === 'string' && r.identifier.startsWith(prefix))
-        .map(r => Notifications.cancelScheduledNotificationAsync(r.identifier)),
-    );
-  } catch {
-    /* ignore */
-  }
+  await cancelScheduledByPrefix(prefix);
 }
 
 /**
@@ -417,7 +412,7 @@ export async function resyncAppNotificationsAfterPreferenceChange(
   }
 
   if (!resolved.categories['health-intake-reminder']) {
-    await cancelByPrefix('selfapp-health-intake-reminder:');
+    await cancelScheduledByCategory('health-intake-reminder');
   } else {
     try {
       await syncHealthIntakeReminderNotifications();
@@ -427,7 +422,8 @@ export async function resyncAppNotificationsAfterPreferenceChange(
   }
 
   if (!resolved.categories['schedule-slot-reminder']) {
-    await cancelByPrefix('selfapp-schedule-reminder:');
+    await cancelScheduledByCategory('schedule-slot-reminder');
+    // 清历史截止日待办前缀残留
     await cancelByPrefix('selfapp-task-reminder:');
   } else {
     try {
@@ -438,7 +434,7 @@ export async function resyncAppNotificationsAfterPreferenceChange(
   }
 
   if (!resolved.categories['habit-reminder']) {
-    await cancelByPrefix('selfapp-habit-reminder:');
+    await cancelScheduledByCategory('habit-reminder');
   } else {
     try {
       await resyncAllHabitReminders();
@@ -448,12 +444,8 @@ export async function resyncAppNotificationsAfterPreferenceChange(
   }
 
   if (!resolved.categories['daily-review-reminder']) {
-    try {
-      const Notifications = await import('expo-notifications');
-      await Notifications.cancelScheduledNotificationAsync('selfapp-daily-review-reminder');
-    } catch {
-      /* ignore */
-    }
+    const id = getNotificationCategoryMeta('daily-review-reminder').identifierPrefix;
+    if (id) await cancelScheduledByIdentifier(id);
   } else {
     try {
       await syncDailyReviewReminderNotification();
