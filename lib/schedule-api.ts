@@ -49,13 +49,13 @@ export async function pushFrogScheduleAxis(
 ): Promise<void> {
   await apiRequest('/api/app/pages/tasks/frog-schedule/axis', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       startMinutes: axis.startMinutes,
       endMinutes: axis.endMinutes,
       slotHours: axis.slotHours,
       breaks: axis.breaks ?? [],
       updatedAt: axis.updatedAt,
-    }),
+    },
     signal,
   });
 }
@@ -69,11 +69,11 @@ export async function pushFrogSchedulePlacement(body: {
 }): Promise<void> {
   await apiRequest('/api/app/pages/tasks/frog-schedule/placement', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       action: body.action,
       placement: body.placement,
       id: body.id,
-    }),
+    },
     signal: body.signal,
   });
 }
@@ -125,10 +125,10 @@ export async function apiCopyFrogScheduleWeek(body: {
 }): Promise<{ copied: number; skipped: number; overwritten: number }> {
   return apiRequest('/api/app/pages/tasks/frog-schedule/copy-week', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       thisWeekStartYmd: body.thisWeekStartYmd,
       overwrite: body.overwrite,
-    }),
+    },
     signal: body.signal,
   });
 }

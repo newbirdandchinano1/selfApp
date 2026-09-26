@@ -70,12 +70,12 @@ export async function apiPostFrogAssign(body: {
 }): Promise<FrogAssignPayload> {
   return apiRequest<FrogAssignPayload>('/api/app/pages/tasks/frog-assign', {
     method: 'POST',
-    body: JSON.stringify({
+    body: {
       kind: body.kind,
       id: body.id,
       assignYmd: body.assignYmd,
       action: body.action ?? 'assign',
-    }),
+    },
     signal: body.signal,
   });
 }

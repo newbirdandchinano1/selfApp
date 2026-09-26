@@ -170,43 +170,56 @@ export async function apiLogin(opts?: {
   signal?: AbortSignal;
   username?: string;
   password?: string;
+  /**
+   * 已在 apiRequest 队列内时跳过再入队，避免写队列重入死锁。
+   * 独立调用登录仍走 write 队列。
+   */
+  skipQueue?: boolean;
 }): Promise<string> {
-  const baseUrl = await getApiBaseUrl();
-  const username = opts?.username ?? (await getApiUsername());
-  const password = opts?.password ?? (await getApiPassword());
+  const run = async (): Promise<string> => {
+    const baseUrl = await getApiBaseUrl();
+    const username = opts?.username ?? (await getApiUsername());
+    const password = opts?.password ?? (await getApiPassword());
 
-  throwIfAborted(opts?.signal);
+    throwIfAborted(opts?.signal);
 
-  const res = await fetchWithTimeoutAndRetry(
-    `${baseUrl}/api/app/auth/login`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    },
-    { signal: opts?.signal, perAttemptTimeoutMs: 8_000, maxAttempts: 2 },
-  );
+    const res = await fetchWithTimeoutAndRetry(
+      `${baseUrl}/api/app/auth/login`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      },
+      { signal: opts?.signal, perAttemptTimeoutMs: 8_000, maxAttempts: 2 },
+    );
 
-  const { parsed, text } = await parseResponseBody(res);
-  const envelope = extractEnvelope(parsed);
+    const { parsed, text } = await parseResponseBody(res);
+    const envelope = extractEnvelope(parsed);
 
-  if (!envelope || !isApiResponseSuccess(res.status, envelope.code)) {
-    const message = envelope?.message || `登录失败：HTTP ${res.status}`;
-    throw new ApiRequestError(message, res.status, envelope?.code ?? -1, {
-      retryable: res.status >= 500,
-    });
-  }
+    if (!envelope || !isApiResponseSuccess(res.status, envelope.code)) {
+      const message = envelope?.message || `登录失败：HTTP ${res.status}`;
+      throw new ApiRequestError(message, res.status, envelope?.code ?? -1, {
+        retryable: res.status >= 500,
+      });
+    }
 
-  const token = (envelope.data as { token?: string } | null)?.token;
-  if (!token) {
-    throw new ApiRequestError('登录响应缺少 token', res.status, envelope.code);
-  }
+    const token = (envelope.data as { token?: string } | null)?.token;
+    if (!token) {
+      throw new ApiRequestError('登录响应缺少 token', res.status, envelope.code);
+    }
 
-  await setApiAuthToken(token);
-  return token;
+    await setApiAuthToken(token);
+    return token;
+  };
+
+  if (opts?.skipQueue) return run();
+  return enqueueApiRequest(run, { kind: 'write' });
 }
 
-export async function ensureApiLoggedIn(opts?: { signal?: AbortSignal }): Promise<string> {
+export async function ensureApiLoggedIn(opts?: {
+  signal?: AbortSignal;
+  skipQueue?: boolean;
+}): Promise<string> {
   const existing = await getApiAuthToken();
   if (existing) return existing;
   return apiLogin(opts);
@@ -263,11 +276,17 @@ export async function apiRequest<T = unknown>(
   const runOnce = async (token: string | null): Promise<T> => {
     throwIfAborted(options.signal);
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+    const headers: Record<string, string> = {};
     if (!options.skipAuth && token) {
       headers.Authorization = `Bearer ${token}`;
+    }
+
+    let requestBody: string | undefined;
+    if (options.body !== undefined && options.body !== null) {
+      // 已是 JSON 文本则不再二次 stringify（否则服务端收到的是字符串而非对象）
+      requestBody =
+        typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+      headers['Content-Type'] = 'application/json';
     }
 
     const res = await fetchWithTimeoutAndRetry(
@@ -275,7 +294,7 @@ export async function apiRequest<T = unknown>(
       {
         method,
         headers,
-        ...(options.body != null ? { body: JSON.stringify(options.body) } : {}),
+        ...(requestBody !== undefined ? { body: requestBody } : {}),
       },
       { signal: options.signal, perAttemptTimeoutMs: options.perAttemptTimeoutMs },
     );
@@ -334,12 +353,15 @@ export async function apiRequest<T = unknown>(
   const execute = async (): Promise<T> => {
     const runAuth = async (): Promise<T> => {
       try {
-        const token = options.skipAuth ? null : await ensureApiLoggedIn({ signal: options.signal });
+        // 已在外层队列内：登录不再入队，避免写队列重入死锁
+        const token = options.skipAuth
+          ? null
+          : await ensureApiLoggedIn({ signal: options.signal, skipQueue: true });
         return await runOnce(token);
       } catch (e) {
         if (retryOnUnauthorized && e instanceof ApiUnauthorizedError && !options.skipAuth) {
           await clearApiAuthToken();
-          const token = await apiLogin({ signal: options.signal });
+          const token = await apiLogin({ signal: options.signal, skipQueue: true });
           return runOnce(token);
         }
         if (isAbortError(e)) throw e;
@@ -356,5 +378,7 @@ export async function apiRequest<T = unknown>(
     return runAuth();
   };
 
-  return enqueueApiRequest(execute);
+  return enqueueApiRequest(execute, {
+    kind: method === 'GET' ? 'read' : 'write',
+  });
 }
