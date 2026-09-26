@@ -1,65 +1,37 @@
 /**
- * 队列语义自测（读宽写严）。
+ * 队列语义自测（共享软限流）。
  * 用法：node scripts/test-api-request-queue.mjs
- * 直接复刻 lib/api-request-queue.ts 逻辑，避免依赖 tsx / path alias。
  */
 
-const MAX_READ_IN_FLIGHT = 6;
-const MAX_WRITE_IN_FLIGHT = 2;
+const MAX_IN_FLIGHT = 24;
 
-let readInFlight = 0;
-let writeInFlight = 0;
-const readWaiters = [];
-const writeWaiters = [];
+let inFlight = 0;
+const waiters = [];
 
-function pumpRead() {
-  while (readInFlight < MAX_READ_IN_FLIGHT && readWaiters.length > 0) {
-    const next = readWaiters.shift();
+function pump() {
+  while (inFlight < MAX_IN_FLIGHT && waiters.length > 0) {
+    const next = waiters.shift();
     if (next) next();
   }
 }
 
-function pumpWrite() {
-  while (writeInFlight < MAX_WRITE_IN_FLIGHT && writeWaiters.length > 0) {
-    const next = writeWaiters.shift();
-    if (next) next();
-  }
-}
-
-function enqueueApiRequest(fn, options) {
-  const kind = options?.kind === 'read' ? 'read' : 'write';
-  const isRead = kind === 'read';
+function enqueueApiRequest(fn, _options) {
   return new Promise((resolve, reject) => {
     const start = () => {
-      if (isRead) {
-        readInFlight += 1;
-        fn().then(resolve, reject).finally(() => {
-          readInFlight = Math.max(0, readInFlight - 1);
-          pumpRead();
-        });
-        return;
-      }
-      writeInFlight += 1;
+      inFlight += 1;
       fn().then(resolve, reject).finally(() => {
-        writeInFlight = Math.max(0, writeInFlight - 1);
-        pumpWrite();
+        inFlight = Math.max(0, inFlight - 1);
+        pump();
       });
     };
-    if (isRead) {
-      readWaiters.push(start);
-      pumpRead();
-    } else {
-      writeWaiters.push(start);
-      pumpWrite();
-    }
+    waiters.push(start);
+    pump();
   });
 }
 
 function reset() {
-  readInFlight = 0;
-  writeInFlight = 0;
-  readWaiters.length = 0;
-  writeWaiters.length = 0;
+  inFlight = 0;
+  waiters.length = 0;
 }
 
 function sleep(ms) {
@@ -70,80 +42,47 @@ function assert(cond, msg) {
   if (!cond) throw new Error(`FAIL: ${msg}`);
 }
 
-async function testReadsParallel() {
+async function testSharedCap() {
   reset();
-  let peakRead = 0;
-  const jobs = Array.from({ length: 6 }, (_, i) =>
+  let peak = 0;
+  const jobs = Array.from({ length: 30 }, (_, i) =>
     enqueueApiRequest(async () => {
-      peakRead = Math.max(peakRead, readInFlight);
-      await sleep(40);
+      peak = Math.max(peak, inFlight);
+      await sleep(30);
       return i;
-    }, { kind: 'read' }),
+    }, { kind: i % 2 === 0 ? 'read' : 'write' }),
   );
   await Promise.all(jobs);
-  assert(peakRead === 6, `read peak should be 6, got ${peakRead}`);
-  console.log(`[pass] 6 reads parallel, peak read in-flight = ${peakRead}`);
+  assert(peak === 24, `shared peak should be 24, got ${peak}`);
+  console.log(`[pass] 30 mixed requests, peak in-flight = ${peak}`);
 }
 
-async function testWritesCapped() {
+async function testKindIgnoredSamePool() {
   reset();
-  let peakWrite = 0;
-  const jobs = Array.from({ length: 4 }, (_, i) =>
+  let peak = 0;
+  const reads = Array.from({ length: 16 }, (_, i) =>
     enqueueApiRequest(async () => {
-      peakWrite = Math.max(peakWrite, writeInFlight);
-      await sleep(40);
-      return i;
-    }, { kind: 'write' }),
-  );
-  await Promise.all(jobs);
-  assert(peakWrite === 2, `write peak should be 2, got ${peakWrite}`);
-  console.log(`[pass] 4 writes capped, peak write in-flight = ${peakWrite}`);
-}
-
-async function testMixed() {
-  reset();
-  let peakRead = 0;
-  let peakWrite = 0;
-  const writes = Array.from({ length: 4 }, (_, i) =>
-    enqueueApiRequest(async () => {
-      peakWrite = Math.max(peakWrite, writeInFlight);
-      await sleep(50);
-      return `w${i}`;
-    }, { kind: 'write' }),
-  );
-  const reads = Array.from({ length: 6 }, (_, i) =>
-    enqueueApiRequest(async () => {
-      peakRead = Math.max(peakRead, readInFlight);
+      peak = Math.max(peak, inFlight);
       await sleep(40);
       return `r${i}`;
     }, { kind: 'read' }),
   );
-  await Promise.all([...writes, ...reads]);
-  assert(peakWrite === 2, `writes capped at 2, peak=${peakWrite}`);
-  assert(peakRead >= 4, `reads should concurrency, got ${peakRead}`);
-  console.log(`[pass] mixed: write peak=${peakWrite}, read peak=${peakRead}`);
-}
-
-async function testDefaultKindIsWrite() {
-  reset();
-  let peakWrite = 0;
-  const jobs = Array.from({ length: 3 }, () =>
+  const writes = Array.from({ length: 16 }, (_, i) =>
     enqueueApiRequest(async () => {
-      peakWrite = Math.max(peakWrite, writeInFlight);
-      await sleep(20);
-    }),
+      peak = Math.max(peak, inFlight);
+      await sleep(40);
+      return `w${i}`;
+    }, { kind: 'write' }),
   );
-  await Promise.all(jobs);
-  assert(peakWrite === 2, `default kind write capped 2, peak=${peakWrite}`);
-  console.log(`[pass] omitted kind defaults to write, peak=${peakWrite}`);
+  await Promise.all([...reads, ...writes]);
+  assert(peak === 24, `read+write share pool, peak should be 24, got ${peak}`);
+  console.log(`[pass] read+write share one pool, peak = ${peak}`);
 }
 
 async function main() {
-  console.log('=== api-request-queue semantic tests ===');
-  await testReadsParallel();
-  await testWritesCapped();
-  await testMixed();
-  await testDefaultKindIsWrite();
+  console.log('=== api-request-queue shared-pool tests ===');
+  await testSharedCap();
+  await testKindIgnoredSamePool();
   console.log('=== ALL PASSED ===');
 }
 

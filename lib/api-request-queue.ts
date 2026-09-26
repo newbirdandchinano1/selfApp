@@ -1,93 +1,60 @@
 /**
- * API 请求队列：读宽写严
- * - read（GET / 长耗时 AI 类）：默认最多 6 并发
- * - write（CRUD 增删改）：默认最多 2 并发（写=1 时脏表推送与用户操作会互相堵死）
- * 读/写独立计数与等待队列，互不抢对方名额。
+ * 全局 API 软限流：读写共用同一并发池。
  *
- * 同表乱序防护主要靠 withApiTableSyncLock / pushChain；本队列只做全局写压限。
+ * 背景：曾拆成「读 6 / 写 1~2」分车道——一级 Tab 容易占满读槽，
+ * 二三级页入队排队体感 7–10s；写全局串行也多余（已有 withApiTableSyncLock + pushChain）。
+ *
+ * 现恢复共用池，上限 24（接近放开，仅防极端打爆）；`kind` 兼容保留但不分槽。
  */
 
 export type ApiRequestKind = 'read' | 'write';
 
 export type EnqueueApiRequestOptions = {
-  /** 缺省按 write（安全默认：非显式 read 一律当写） */
+  /** 保留兼容；当前与共享池无关 */
   kind?: ApiRequestKind;
 };
 
-const MAX_READ_IN_FLIGHT = 6;
-const MAX_WRITE_IN_FLIGHT = 2;
+/** 软上限：24 ≈ 接近放开，仅防极端打爆 */
+const MAX_IN_FLIGHT = 24;
 
-let readInFlight = 0;
-let writeInFlight = 0;
-const readWaiters: Array<() => void> = [];
-const writeWaiters: Array<() => void> = [];
+let inFlight = 0;
+const waiters: Array<() => void> = [];
 
-function pumpRead(): void {
-  while (readInFlight < MAX_READ_IN_FLIGHT && readWaiters.length > 0) {
-    const next = readWaiters.shift();
-    if (next) next();
-  }
-}
-
-function pumpWrite(): void {
-  while (writeInFlight < MAX_WRITE_IN_FLIGHT && writeWaiters.length > 0) {
-    const next = writeWaiters.shift();
+function pump(): void {
+  while (inFlight < MAX_IN_FLIGHT && waiters.length > 0) {
+    const next = waiters.shift();
     if (next) next();
   }
 }
 
 export function enqueueApiRequest<T>(
   fn: () => Promise<T>,
-  options?: EnqueueApiRequestOptions,
+  _options?: EnqueueApiRequestOptions,
 ): Promise<T> {
-  const kind: ApiRequestKind = options?.kind === 'read' ? 'read' : 'write';
-  const isRead = kind === 'read';
-
   return new Promise<T>((resolve, reject) => {
     const start = () => {
-      if (isRead) {
-        readInFlight += 1;
-        fn().then(resolve, reject).finally(() => {
-          readInFlight = Math.max(0, readInFlight - 1);
-          pumpRead();
-        });
-        return;
-      }
-      writeInFlight += 1;
+      inFlight += 1;
       fn().then(resolve, reject).finally(() => {
-        writeInFlight = Math.max(0, writeInFlight - 1);
-        pumpWrite();
+        inFlight = Math.max(0, inFlight - 1);
+        pump();
       });
     };
-    if (isRead) {
-      readWaiters.push(start);
-      pumpRead();
-    } else {
-      writeWaiters.push(start);
-      pumpWrite();
-    }
+    waiters.push(start);
+    pump();
   });
 }
 
-/** @internal 仅供自测脚本重置队列状态 */
+/** @internal 仅供自测 */
 export function __resetApiRequestQueueForTest(): void {
-  readInFlight = 0;
-  writeInFlight = 0;
-  readWaiters.length = 0;
-  writeWaiters.length = 0;
+  inFlight = 0;
+  waiters.length = 0;
 }
 
-/** @internal 仅供自测脚本观测在途峰值 */
+/** @internal 仅供自测 */
 export function __getApiRequestQueueStatsForTest(): {
-  readInFlight: number;
-  writeInFlight: number;
-  readWaiting: number;
-  writeWaiting: number;
+  inFlight: number;
+  waiting: number;
+  maxInFlight: number;
 } {
-  return {
-    readInFlight,
-    writeInFlight,
-    readWaiting: readWaiters.length,
-    writeWaiting: writeWaiters.length,
-  };
+  return { inFlight, waiting: waiters.length, maxInFlight: MAX_IN_FLIGHT };
 }
