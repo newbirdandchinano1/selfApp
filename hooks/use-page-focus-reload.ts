@@ -2,7 +2,10 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import {
+  shouldForceApiOnFocusRefresh,
+  shouldSkipPageFocusApiRefresh,
+} from '@/lib/page-api-session';
 
 /** 极短后台（切多任务预览等）不触发重载，避免无意义抢主线程 */
 const SHORT_BACKGROUND_SKIP_MS = 2_500;
@@ -10,6 +13,7 @@ const SHORT_BACKGROUND_SKIP_MS = 2_500;
 /**
  * 挂载时必定 reload 一次（冷启动首次进 Tab 触发同步/读库）。
  * 热会话内同 Tab 再次聚焦时按页面策略跳过重载；从后台回前台且当前页仍聚焦时也会尝试刷新（多端对齐）。
+ * 任务页在冷却外的 focus 会带 forceApi，以便多端增量拉齐且不绕过 localOnly 上下文。
  */
 export function usePageFocusReload(
   pageKey: string,
@@ -22,7 +26,13 @@ export function usePageFocusReload(
   const isFocusedRef = useRef(false);
   const backgroundedAtMsRef = useRef<number | null>(null);
 
+  const invokeReload = useCallback((forceApi?: boolean) => {
+    const force = forceApi === true || shouldForceApiOnFocusRefresh(pageKey);
+    void reloadRef.current?.(force);
+  }, [pageKey]);
+
   useEffect(() => {
+    // 挂载首次：不强制 forceApi，交给 resolvePageApiReadOpts（未同步则 REST，已同步则本地）
     void reloadRef.current?.();
   }, [pageKey]);
 
@@ -36,12 +46,12 @@ export function usePageFocusReload(
         };
       }
       if (!shouldSkipPageFocusApiRefresh(pageKey)) {
-        void reloadRef.current?.();
+        invokeReload();
       }
       return () => {
         isFocusedRef.current = false;
       };
-    }, [pageKey]),
+    }, [pageKey, invokeReload]),
   );
 
   useEffect(() => {
@@ -60,7 +70,7 @@ export function usePageFocusReload(
       if (cancelled) return;
       if (!isFocusedRef.current) return;
       if (shouldSkipPageFocusApiRefresh(pageKey)) return;
-      void reloadRef.current?.();
+      invokeReload();
     };
 
     const onChange = (next: AppStateStatus) => {
@@ -98,5 +108,5 @@ export function usePageFocusReload(
       clearRetry();
       sub.remove();
     };
-  }, [pageKey]);
+  }, [pageKey, invokeReload]);
 }

@@ -3,7 +3,7 @@
  * 失败时只回退本地，禁止降级 `/api/data/*` 全表 List。
  * 脚手架见 `@/lib/page-api-fetch`；本文件保留财务 DTO 规范化逻辑。
  */
-import { asRecordArray, upsertPageRows } from '@/lib/page-api-fetch';
+import { asRecordArray, shouldSkipPageNetwork, upsertPageRows } from '@/lib/page-api-fetch';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { ymdFromDatetime } from '@/lib/api-read-helpers';
@@ -145,7 +145,24 @@ export type FinanceCatalogData = {
 export async function fetchFinanceCatalog(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
+  forceLocal?: boolean;
+  forceApi?: boolean;
 }): Promise<FinanceCatalogData> {
+  const readLocal = async (): Promise<FinanceCatalogData> => {
+    const { getFinanceAccountsWithBalance, getFinanceAccountTypes, getFinanceFlowCategories } =
+      await import('@/lib/repositories/finance/finance');
+    const [accounts, accountTypes, categories] = await Promise.all([
+      getFinanceAccountsWithBalance({ localOnly: true }),
+      getFinanceAccountTypes({ localOnly: true }),
+      getFinanceFlowCategories({ localOnly: true }),
+    ]);
+    return { accounts, accountTypes, categories, fromApi: false };
+  };
+
+  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceApi: opts?.forceApi })) {
+    return readLocal();
+  }
+
   try {
     const payload: FinanceCatalogPayload = await apiGetFinanceCatalog({ signal: opts?.signal });
     const [accounts, accountTypes, categories] = await Promise.all([
@@ -158,14 +175,7 @@ export async function fetchFinanceCatalog(opts?: {
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;
     console.warn('[finance-page-api] catalog 失败，回退本地', e);
-    const { getFinanceAccountsWithBalance, getFinanceAccountTypes, getFinanceFlowCategories } =
-      await import('@/lib/repositories/finance/finance');
-    const [accounts, accountTypes, categories] = await Promise.all([
-      getFinanceAccountsWithBalance({ localOnly: true }),
-      getFinanceAccountTypes({ localOnly: true }),
-      getFinanceFlowCategories({ localOnly: true }),
-    ]);
-    return { accounts, accountTypes, categories, fromApi: false };
+    return readLocal();
   }
 }
 
@@ -188,7 +198,32 @@ export async function fetchFinanceHome(opts?: {
   budgetRefreshDay?: number;
   signal?: AbortSignal;
   offlineFallback?: boolean;
+  forceLocal?: boolean;
+  forceApi?: boolean;
 }): Promise<FinanceHomeData> {
+  const readLocal = async (): Promise<FinanceHomeData> => {
+    const { getFinanceAccountsWithBalance, getFinanceFlowCategories, getFinanceTransactions } =
+      await import('@/lib/repositories/finance/finance');
+    const [accounts, categories, transactions] = await Promise.all([
+      getFinanceAccountsWithBalance({ localOnly: true }),
+      getFinanceFlowCategories({ localOnly: true }),
+      getFinanceTransactions({ localOnly: true }),
+    ]);
+    return {
+      accounts,
+      categories,
+      transactions,
+      historyHasMore: false,
+      netWorth: null,
+      monthly: null,
+      fromApi: false,
+    };
+  };
+
+  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceApi: opts?.forceApi })) {
+    return readLocal();
+  }
+
   try {
     const payload: FinanceHomePayload = await apiGetFinanceHome({
       logicalToday: opts?.logicalToday,
@@ -220,22 +255,7 @@ export async function fetchFinanceHome(opts?: {
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;
     console.warn('[finance-page-api] home 失败，回退本地', e);
-    const { getFinanceAccountsWithBalance, getFinanceFlowCategories, getFinanceTransactions } =
-      await import('@/lib/repositories/finance/finance');
-    const [accounts, categories, transactions] = await Promise.all([
-      getFinanceAccountsWithBalance({ localOnly: true }),
-      getFinanceFlowCategories({ localOnly: true }),
-      getFinanceTransactions({ localOnly: true }),
-    ]);
-    return {
-      accounts,
-      categories,
-      transactions,
-      historyHasMore: false,
-      netWorth: null,
-      monthly: null,
-      fromApi: false,
-    };
+    return readLocal();
   }
 }
 

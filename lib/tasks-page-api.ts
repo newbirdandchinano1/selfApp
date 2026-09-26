@@ -14,6 +14,8 @@ import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 
+import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
+
 import { sortByUpdatedDesc } from '@/lib/api-read-helpers';
 
 import { getProjectCategories, getProjects } from '@/lib/repositories/projects/project';
@@ -766,7 +768,7 @@ async function pullTasksView(opts: {
 
 
 
-  if (!opts?.forceLocal) {
+  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
 
     try {
 
@@ -1184,7 +1186,7 @@ export async function fetchTasksPageData(opts?: {
 
 
 
-  if (!opts?.forceLocal) {
+  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
 
     try {
 

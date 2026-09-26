@@ -19,6 +19,7 @@ import {
   type HabitSubItem,
 } from '@/lib/repositories/habits/habit-sub';
 import { normalizeRewardPoints } from '@/lib/reward-points';
+import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 
 export const TASKS_HABITS_GRID_FILTERS_VERSION = 'tasks-page-v1';
@@ -304,7 +305,7 @@ export async function fetchTasksHabitsGrid(opts?: {
   const boundary = opts?.boundary ?? (await loadTasksDayBoundary());
   const logicalToday = getLogicalLocalYmd(new Date(), boundary);
 
-  if (!opts?.forceLocal) {
+  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal })) {
     try {
       return await pullHabitsGridFromApi({ boundary, logicalToday, signal: opts?.signal });
     } catch (e) {

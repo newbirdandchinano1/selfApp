@@ -9,11 +9,13 @@ import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   isProjectInInboxCategory,
 } from '@/lib/repositories/projects/constants';
+import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   buildTaskTreeFromRows,
@@ -38,6 +40,7 @@ export type ProjectsListData = {
 
 export type ProjectsListFetchOpts = Omit<ProjectsListQueryParams, 'page' | 'limit'> & {
   forceRefresh?: boolean;
+  forceLocal?: boolean;
   offlineFallback?: boolean;
   /** 与任务页「隐藏已完成任务」开关联动；优先于 includeCompleted / includeCancelled */
   hideCompletedProjectTasks?: boolean;
@@ -472,6 +475,12 @@ export async function fetchProjectsListForTab(
   projectTab: string,
   opts?: ProjectsListFetchOpts,
 ): Promise<ProjectsListData> {
+  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
+    const localProjects = filterProjectsForTab(projectTab, await getProjects());
+    const projectTaskTreeMap = await getProjectTaskTreeMap(localProjects.map((p) => p.id));
+    return { projects: localProjects, projectTaskTreeMap };
+  }
+
   const terminalFilters = resolveTerminalFilters(opts);
   const baseQuery: ProjectsListQueryParams = {
     ...terminalFilters,
@@ -480,11 +489,19 @@ export async function fetchProjectsListForTab(
     signal: opts?.signal,
   };
   const queries = resolveProjectsListQueries(projectTab).map((q) => ({ ...baseQuery, ...q }));
-  const data = await pullProjectsListFromApi(queries, { forceRefresh: opts?.forceRefresh });
-  return {
-    ...data,
-    projects: filterProjectsForTab(projectTab, data.projects),
-  };
+  try {
+    const data = await pullProjectsListFromApi(queries, { forceRefresh: opts?.forceRefresh });
+    return {
+      ...data,
+      projects: filterProjectsForTab(projectTab, data.projects),
+    };
+  } catch (e) {
+    if (opts?.offlineFallback === false) throw e;
+    console.warn('[projects-list-api] 接口失败，回退本地', e);
+    const localProjects = filterProjectsForTab(projectTab, await getProjects());
+    const projectTaskTreeMap = await getProjectTaskTreeMap(localProjects.map((p) => p.id));
+    return { projects: localProjects, projectTaskTreeMap };
+  }
 }
 
 /**

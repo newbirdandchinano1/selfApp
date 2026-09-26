@@ -228,6 +228,14 @@ export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
   return hasPageSyncedWithApi(pageKey);
 }
 
+/**
+ * focus 重载是否应 forceApi。
+ * 任务页在冷却过后需要打网做多端对齐；其它页走 local-first / synced 即可。
+ */
+export function shouldForceApiOnFocusRefresh(pageKey: string): boolean {
+  return pageKey.trim() === TAB_PAGE_KEYS.tasks;
+}
+
 /** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
 const syncedPages = new Set<string>();
 

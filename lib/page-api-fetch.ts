@@ -18,6 +18,20 @@ export function shouldFetchPageFromApi(): boolean {
   return getActivePageApiReadOpts()?.localOnly !== true;
 }
 
+/**
+ * 领域 page-api 是否跳过网络：forceApi/forceRefresh 强制打网；
+ * forceLocal 或 wrapLoad 的 localOnly 则跳过。
+ */
+export function shouldSkipPageNetwork(opts?: {
+  forceLocal?: boolean;
+  forceApi?: boolean;
+  forceRefresh?: boolean;
+}): boolean {
+  if (opts?.forceApi || opts?.forceRefresh) return false;
+  if (opts?.forceLocal) return true;
+  return !shouldFetchPageFromApi();
+}
+
 export function asRecordArray(raw: unknown): Record<string, unknown>[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(

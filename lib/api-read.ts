@@ -70,23 +70,16 @@ function isCoreSnapshotTable(table: string): boolean {
   return CORE_SNAPSHOT_TABLES.has(table.trim());
 }
 
-/** 同表 reconcile 串行化（bootstrap 与 fetchApiTableAll 共用，正式包并行时避免互相删行） */
-const tableSyncLockDepth = new Map<string, number>();
+/**
+ * 同表 reconcile 真正串行（bootstrap / fetchApiTableAll / page upsert 共用）。
+ * 旧实现在 held>0 时让并发调用直接进 fn，造成多写同时打 SQLite；现改为一律排队。
+ * 同调用栈嵌套同表锁会死锁——调用方不得在持锁回调内再 withApiTableSyncLock 同表。
+ */
 const tableSyncLockTail = new Map<string, Promise<void>>();
 
 export async function withApiTableSyncLock<T>(table: string, fn: () => Promise<T>): Promise<T> {
   const t = table.trim();
   if (!t) return fn();
-
-  const held = tableSyncLockDepth.get(t) ?? 0;
-  if (held > 0) {
-    tableSyncLockDepth.set(t, held + 1);
-    try {
-      return await fn();
-    } finally {
-      tableSyncLockDepth.set(t, held);
-    }
-  }
 
   const prev = tableSyncLockTail.get(t) ?? Promise.resolve();
   let release!: () => void;
@@ -97,11 +90,9 @@ export async function withApiTableSyncLock<T>(table: string, fn: () => Promise<T
   tableSyncLockTail.set(t, chained);
 
   await prev.catch(() => {});
-  tableSyncLockDepth.set(t, 1);
   try {
     return await fn();
   } finally {
-    tableSyncLockDepth.delete(t);
     release();
     if (tableSyncLockTail.get(t) === chained) {
       tableSyncLockTail.delete(t);
@@ -284,15 +275,13 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
   assertApiReadable(table);
 
   const existingInflight = inflightTableFetchAll.get(table);
-  if (opts?.forceRefresh && existingInflight) {
-    invalidateInflightApiTableFetch(table);
-    try {
-      await existingInflight;
-    } catch {
-      /* 作废进行中的陈旧全量拉取，随后发起新的 forceRefresh */
-    }
-  } else if (existingInflight) {
+  if (existingInflight && !opts?.forceRefresh) {
     return existingInflight as Promise<T[]>;
+  }
+  if (opts?.forceRefresh && existingInflight) {
+    // 只 bump generation，不 await 旧请求——避免慢请求把后续刷新全部串死；
+    // 旧拉取结束时 applyToLocal 会因 generation 不匹配而跳过写库。
+    invalidateInflightApiTableFetch(table);
   }
 
   const isIncompletePaginationError = (e: unknown): boolean =>

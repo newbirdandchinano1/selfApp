@@ -3,6 +3,7 @@ import { localDbHasSubstantialUserData, readAppMeta, writeAppMeta } from '@/lib/
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { sleep, throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 import {
   INBOX_PROJECT_CATEGORY_ID,
   isProjectInInboxCategory,
@@ -309,7 +310,7 @@ export async function fetchTasksCatalog(opts?: {
   forceRefresh?: boolean;
   signal?: AbortSignal;
 }): Promise<TasksCatalogData> {
-  if (!opts?.forceLocal) {
+  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
     try {
       return await pullTasksCatalogFromApiWithRetry({
         forceRefresh: opts?.forceRefresh,

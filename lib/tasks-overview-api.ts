@@ -6,6 +6,7 @@ import {
   type TasksOverviewStatKey,
 } from '@/lib/api-client';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 import { getTasksForOverviewList } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -338,7 +339,7 @@ async function ensureRecurringFromLocal(
 /** 待办总览：`GET /api/pages/tasks/tasks-overview` */
 export async function fetchTasksOverview(opts: FetchTasksOverviewOpts): Promise<TasksOverviewData> {
   let data: TasksOverviewData;
-  if (!opts.forceLocal) {
+  if (!shouldSkipPageNetwork({ forceLocal: opts.forceLocal })) {
     try {
       data = await pullTasksOverviewFromApi(opts);
       return await ensureRecurringFromLocal(data, opts);

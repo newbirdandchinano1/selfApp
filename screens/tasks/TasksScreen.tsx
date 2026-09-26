@@ -2819,7 +2819,7 @@ export default function TasksScreen() {
       fetchTasksPageData({
         boundary: dayBoundary,
         offlineFallback: true,
-        forceLocal: false,
+        // 尊重 wrapLoad 的 localOnly；下拉/focus forceApi 时由 forceRefresh 打网
         forceRefresh: forceApiRefresh,
       }),
       fetchProjectsListForTab(projectTab, {
