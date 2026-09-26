@@ -1,8 +1,10 @@
 /**
  * API 请求队列：读宽写严
- * - read（GET）：默认最多 6 并发，冷启动多 Tab 并行拉数更快
- * - write（POST/PUT/PATCH/DELETE）：严格串行（同时最多 1），避免写乱序
- * 读/写独立计数与等待队列，互不抢对方名额（写串行时读仍可继续）。
+ * - read（GET / 长耗时 AI 类）：默认最多 6 并发
+ * - write（CRUD 增删改）：默认最多 2 并发（写=1 时脏表推送与用户操作会互相堵死）
+ * 读/写独立计数与等待队列，互不抢对方名额。
+ *
+ * 同表乱序防护主要靠 withApiTableSyncLock / pushChain；本队列只做全局写压限。
  */
 
 export type ApiRequestKind = 'read' | 'write';
@@ -13,7 +15,7 @@ export type EnqueueApiRequestOptions = {
 };
 
 const MAX_READ_IN_FLIGHT = 6;
-const MAX_WRITE_IN_FLIGHT = 1;
+const MAX_WRITE_IN_FLIGHT = 2;
 
 let readInFlight = 0;
 let writeInFlight = 0;
@@ -43,16 +45,18 @@ export function enqueueApiRequest<T>(
 
   return new Promise<T>((resolve, reject) => {
     const start = () => {
-      if (isRead) readInFlight += 1;
-      else writeInFlight += 1;
-      fn().then(resolve, reject).finally(() => {
-        if (isRead) {
+      if (isRead) {
+        readInFlight += 1;
+        fn().then(resolve, reject).finally(() => {
           readInFlight = Math.max(0, readInFlight - 1);
           pumpRead();
-        } else {
-          writeInFlight = Math.max(0, writeInFlight - 1);
-          pumpWrite();
-        }
+        });
+        return;
+      }
+      writeInFlight += 1;
+      fn().then(resolve, reject).finally(() => {
+        writeInFlight = Math.max(0, writeInFlight - 1);
+        pumpWrite();
       });
     };
     if (isRead) {

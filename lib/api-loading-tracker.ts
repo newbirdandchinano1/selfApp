@@ -91,6 +91,22 @@ export async function withApiWriteLoading<T>(fn: () => Promise<T>): Promise<T> {
   return withApiLoading(fn);
 }
 
+/** 后台脏表推送等：抑制 apiRequest 内逐条写蒙层，避免连闪/假死 */
+let suppressWriteOverlayDepth = 0;
+
+export function isApiWriteOverlaySuppressed(): boolean {
+  return suppressWriteOverlayDepth > 0;
+}
+
+export async function withSuppressedApiWriteOverlay<T>(fn: () => Promise<T>): Promise<T> {
+  suppressWriteOverlayDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    suppressWriteOverlayDepth = Math.max(0, suppressWriteOverlayDepth - 1);
+  }
+}
+
 /** 加载超时或用户重试时强制清零，避免计数与 UI 卡住 */
 export function forceResetApiLoading(): void {
   if (pendingCount === 0 && !loadingError) return;

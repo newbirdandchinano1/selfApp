@@ -21,7 +21,11 @@ function clearWritePushDebounce(): void {
 async function runFlush(opts?: { rethrow?: boolean; awaitSync?: boolean; quiet?: boolean }): Promise<void> {
   const flush = async () => {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
-    await flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false });
+    const { withSuppressedApiWriteOverlay } = await import('@/lib/api-loading-tracker');
+    // 推送过程中抑制逐条写蒙层；awaitSync 时由外层统一挂一次蒙层
+    await withSuppressedApiWriteOverlay(() =>
+      flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false }),
+    );
   };
 
   const showGlobalLoading =

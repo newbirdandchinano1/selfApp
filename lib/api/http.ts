@@ -272,6 +272,12 @@ export async function apiRequest<T = unknown>(
     : `${baseUrl}${normalizedPath.startsWith('/') ? '' : '/'}${normalizedPath}`;
   const method = options.method ?? 'GET';
   const retryOnUnauthorized = options.retryOnUnauthorized ?? true;
+  // 长耗时推理类 POST：不占 CRUD 写槽、不挂同步蒙层
+  const isLongAiStylePost =
+    /\/api(?:\/app)?\/ai(?:\/|$)/.test(normalizedPath) ||
+    /\/memos\/[^/]+\/ai-review(?:\?|$)/.test(normalizedPath);
+  const queueKind: 'read' | 'write' =
+    method === 'GET' || isLongAiStylePost ? 'read' : 'write';
 
   const runOnce = async (token: string | null): Promise<T> => {
     throwIfAborted(options.signal);
@@ -369,16 +375,18 @@ export async function apiRequest<T = unknown>(
       }
     };
 
-    const isAiEndpoint = /\/api(?:\/app)?\/ai(?:\/|$)/.test(normalizedPath);
-    const skipOverlay = options.skipGlobalLoading === true || isAiEndpoint;
+    const skipOverlay =
+      options.skipGlobalLoading === true || isLongAiStylePost;
     if (method !== 'GET' && !skipOverlay) {
-      const { withApiWriteLoading } = await import('@/lib/api-loading-tracker');
-      return withApiWriteLoading(runAuth);
+      const { withApiWriteLoading, isApiWriteOverlaySuppressed } = await import(
+        '@/lib/api-loading-tracker'
+      );
+      if (!isApiWriteOverlaySuppressed()) {
+        return withApiWriteLoading(runAuth);
+      }
     }
     return runAuth();
   };
 
-  return enqueueApiRequest(execute, {
-    kind: method === 'GET' ? 'read' : 'write',
-  });
+  return enqueueApiRequest(execute, { kind: queueKind });
 }
