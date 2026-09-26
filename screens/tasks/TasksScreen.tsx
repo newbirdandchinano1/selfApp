@@ -3159,10 +3159,6 @@ export default function TasksScreen() {
         Alert.alert('无法入格', '已搁置的待办请先激活后再指派到日程表。');
         return;
       }
-      if (isFrogAssignedOn(task.extra_data, logicalTodayYmd)) {
-        Alert.alert('无法入格', '该项今日已指派到日程表，请先取消指派后再入格。');
-        return;
-      }
       const ch = Array.isArray((task as TaskTreeNode).children)
         ? (task as TaskTreeNode).children
         : [];
@@ -3209,10 +3205,6 @@ export default function TasksScreen() {
       const taskCount = getProjectTreeTaskProgress(tree).total;
 
       if (isProjectEligibleAsFrog(project, taskCount, locked)) {
-        if (isFrogAssignedOn(project.extra_data, logicalTodayYmd)) {
-          Alert.alert('无法入格', '该项目今日已指派到日程表，请先取消指派后再入格。');
-          return;
-        }
         const tagRows = projectTagsByProjectId.get(project.id) ?? [];
         beginSchedulePlace({
           kind: 'project',
@@ -3251,18 +3243,14 @@ export default function TasksScreen() {
       }
 
       const assignable = collectAssignableFrogTasksFromTree(tree)
-        .filter((t) => !isFrogAssignedOn(t.extra_data, logicalTodayYmd))
         .slice()
         .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
       if (assignable.length === 0) {
-        const anyLeaf = collectAssignableFrogTasksFromTree(tree).length > 0;
         Alert.alert(
           '无法直接入格',
-          anyLeaf
-            ? '该项目下可入格的叶子任务今日均已指派，请先取消指派后再入格。'
-            : taskCount > 0
-              ? '该项目暂无可用的叶子任务（需无未完成子任务）。可展开后长按任务入格。'
-              : '该项目当前不可指派为青蛙。',
+          taskCount > 0
+            ? '该项目暂无可用的叶子任务（需无未完成子任务）。可展开后长按任务入格。'
+            : '该项目当前不可指派为青蛙。',
         );
         return;
       }

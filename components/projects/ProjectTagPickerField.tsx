@@ -1,4 +1,4 @@
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
+import type { ProjectTagRow, TagDomain } from '@/lib/repositories/projects/project-tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -21,6 +21,8 @@ type ProjectTagPickerFieldProps = {
   locked?: boolean;
   /** locked 时主文案前缀，默认「与项目一致」 */
   lockedHint?: string;
+  /** 标签域：决定「管理标签」跳转；默认 task */
+  tagDomain?: TagDomain;
   onChange: (ids: string[]) => void;
   textColor: string;
   outline: string;
@@ -38,6 +40,7 @@ export function ProjectTagPickerField({
   disabled = false,
   locked = false,
   lockedHint = '与项目一致',
+  tagDomain = 'task',
   onChange,
   textColor,
   outline,
@@ -95,6 +98,20 @@ export function ProjectTagPickerField({
     closeModal();
   }, [closeModal, draftIds, onChange]);
 
+  const openManageTags = useCallback(() => {
+    closeModal();
+    if (tagDomain === 'memo') {
+      router.push({ pathname: '/project-tags', params: { domain: 'memo' } });
+    } else {
+      router.push('/project-tags');
+    }
+  }, [closeModal, router, tagDomain]);
+
+  // 夜间模式强制实色底，避免调用方传入的半透明 surface 叠在深色背景上发虚
+  const fieldBg = isDark ? '#161d2b' : surfaceLow;
+  const modalBg = isDark ? '#1e293b' : surfaceLowest;
+  const manageBg = isDark ? '#243044' : `${primary}10`;
+
   return (
     <>
       <Pressable
@@ -102,7 +119,7 @@ export function ProjectTagPickerField({
         disabled={disabled || loading || locked}
         style={({ pressed }) => [
           styles.select,
-          { backgroundColor: surfaceLow, borderColor: placeholderColor },
+          { backgroundColor: fieldBg, borderColor: placeholderColor },
           (disabled || loading || locked) && { opacity: locked ? 1 : 0.65 },
           pressed && !disabled && !loading && !locked && { opacity: 0.8 },
         ]}>
@@ -149,7 +166,7 @@ export function ProjectTagPickerField({
         <Pressable style={styles.modalOverlay} onPress={closeModal}>
           <Pressable
             onPress={() => {}}
-            style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: placeholderColor }]}>
+            style={[styles.modalCard, { backgroundColor: modalBg, borderColor: placeholderColor }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: textColor }]}>选择标签</Text>
               <Pressable onPress={closeModal} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
@@ -161,16 +178,13 @@ export function ProjectTagPickerField({
             </Text>
 
             <Pressable
-              onPress={() => {
-                closeModal();
-                router.push('/project-tags');
-              }}
+              onPress={openManageTags}
               style={({ pressed }) => [
                 styles.manageBtn,
-                // 夜间模式用实色底与描边，取消半透明 primary 叠色
+                // 夜间模式用实色底与描边，取消半透明 primary / surface 叠色
                 isDark
-                  ? { borderColor: primary, backgroundColor: surfaceLow, opacity: pressed ? 0.85 : 1 }
-                  : { borderColor: `${primary}33`, backgroundColor: `${primary}10`, opacity: pressed ? 0.85 : 1 },
+                  ? { borderColor: primary, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 }
+                  : { borderColor: `${primary}33`, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 },
               ]}>
               <MaterialIcons name="settings" size={16} color={primary} />
               <Text style={[styles.manageBtnText, { color: primary }]}>管理标签（新建 / 删除 / 权重）</Text>

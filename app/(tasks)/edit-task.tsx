@@ -56,7 +56,7 @@ import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField'
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import {
   getTagIdsByEntity,
-  getTags,
+  getProjectTags,
   getTagsByProjectId,
   getTagIdsByProjectId,
   setTaskTagIds,
@@ -656,7 +656,7 @@ export default function EditTaskScreen() {
       if (!task.parent_task_id) {
         setTagsLoading(true);
         try {
-          const tags = await getTags();
+          const tags = await getProjectTags();
           setAllTags(tags);
           setSelectedTagIds(await getTagIdsByEntity('task', taskId));
         } catch (tagErr) {

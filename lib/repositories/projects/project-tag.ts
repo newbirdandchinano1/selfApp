@@ -2,10 +2,12 @@
  * 兼容层：旧路径仍可 import，实现已迁到 @/lib/repositories/tags/tag
  */
 export {
+  createMemoTag,
   createProjectTag,
   createTag,
   deleteProjectTag,
   deleteTag,
+  getMemoTags,
   getProjectTagById,
   getProjectTags,
   getTagById,
@@ -14,10 +16,13 @@ export {
   getTags,
   getTagsByEntity,
   getTagsByEntityIds,
+  getTagsByIds,
   getTagsByProjectId,
   getTagsByProjectIds,
+  isMemoTagNameDuplicate,
   isProjectTagNameDuplicate,
   isTagNameDuplicate,
+  normalizeTagDomain,
   setEntityTagIds,
   setHabitTagIds,
   setMemoTagIds,

@@ -23,7 +23,7 @@ import {
   addMemoAiReviewSavedListener,
 } from '@/lib/memo-ai-background';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
-import { getTags, getTagsByEntityIds } from '@/lib/repositories/tags/tag';
+import { getMemoTags, getTagsByEntityIds } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -155,7 +155,7 @@ export default function MemoListScreen() {
       try {
         await wrapLoad(async () => {
           await fetchProfileMemoList({ offlineFallback: true });
-          const [memos, tags] = await Promise.all([listMemos(), getTags()]);
+          const [memos, tags] = await Promise.all([listMemos(), getMemoTags()]);
           setItems(memos);
           setAllTags(tags);
           const map = await getTagsByEntityIds(
@@ -200,11 +200,16 @@ export default function MemoListScreen() {
   );
 
   const usedTags = useMemo(() => {
-    const ids = new Set<string>();
+    const byId = new Map<string, TagRow>();
     for (const list of tagsByMemoId.values()) {
-      for (const t of list) ids.add(t.id);
+      for (const t of list) byId.set(t.id, t);
     }
-    return allTags.filter(t => ids.has(t.id));
+    // 优先展示本域标签；历史跨域也一并出现在筛选里
+    for (const t of allTags) byId.set(t.id, t);
+    return [...byId.values()].sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    });
   }, [allTags, tagsByMemoId]);
 
   const runAiForMemo = useCallback(async (row: MemoItem): Promise<{ ok: true } | { ok: false; error: string }> => {
@@ -442,7 +447,7 @@ export default function MemoListScreen() {
               );
             })}
             <Pressable
-              onPress={() => router.push('/project-tags')}
+              onPress={() => router.push({ pathname: '/project-tags', params: { domain: 'memo' } })}
               style={[styles.chip, { borderColor: line, backgroundColor: chipBg }]}>
               <MaterialIcons name="local-offer" size={14} color={primary} />
               <Text style={[styles.chipText, { color: primary }]}>管理标签</Text>

@@ -262,6 +262,49 @@ async function unassignSubjectDay(
   );
 }
 
+/** 两段格子是否有重叠（同一主体不可重复占用同一格） */
+function placementSlotsOverlap(
+  startA: number,
+  spanA: number,
+  startB: number,
+  spanB: number,
+): boolean {
+  const endA = startA + Math.max(1, spanA);
+  const endB = startB + Math.max(1, spanB);
+  return startA < endB && startB < endA;
+}
+
+/** 同主体同日是否已占用目标格段（可排除自身，供重新入格） */
+async function assertSubjectNotAlreadyInSlots(params: {
+  weekStartYmd: string;
+  weekday: number;
+  startSlotIndex: number;
+  spanSlots: number;
+  subjectKind: ScheduleSubjectKind;
+  subjectId: string;
+  excludePlacementId?: string;
+}): Promise<void> {
+  const existing = await listSubjectPlacementsOnDay(
+    params.weekStartYmd,
+    params.weekday,
+    params.subjectKind,
+    params.subjectId,
+  );
+  const conflict = existing.find((p) => {
+    if (params.excludePlacementId && p.id === params.excludePlacementId) return false;
+    if (p.orphaned || p.startSlotIndex == null) return false;
+    return placementSlotsOverlap(
+      params.startSlotIndex,
+      params.spanSlots,
+      p.startSlotIndex,
+      p.spanSlots,
+    );
+  });
+  if (conflict) {
+    throw new Error('该项已在该格子内，请选择其他空格');
+  }
+}
+
 export async function placeFrogOnSchedule(params: {
   weekStartYmd: string;
   weekday: number;
@@ -284,6 +327,15 @@ export async function placeFrogOnSchedule(params: {
   if (params.spanSlots < 1 || params.spanSlots > maxSpan) {
     throw new Error(`连续格数须为 1–${maxSpan}`);
   }
+
+  await assertSubjectNotAlreadyInSlots({
+    weekStartYmd: params.weekStartYmd,
+    weekday: params.weekday,
+    startSlotIndex: params.startSlotIndex,
+    spanSlots: params.spanSlots,
+    subjectKind: params.subjectKind,
+    subjectId: params.subjectId,
+  });
 
   // 先写本地占用并广播，避免指派接口挂起时页面一直不刷新
   const input: SchedulePlacementInput = {
@@ -341,6 +393,16 @@ export async function rematerializeOrphanedPlacement(params: {
   if (params.spanSlots < 1 || params.spanSlots > maxSpan) {
     throw new Error(`连续格数须为 1–${maxSpan}`);
   }
+
+  await assertSubjectNotAlreadyInSlots({
+    weekStartYmd,
+    weekday,
+    startSlotIndex: params.startSlotIndex,
+    spanSlots: params.spanSlots,
+    subjectKind: placement.subjectKind,
+    subjectId: placement.subjectId,
+    excludePlacementId: placement.id,
+  });
 
   const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
 

@@ -6,6 +6,7 @@ export type {
   CreateTagInput,
   ProjectTagLinkRow,
   ProjectTagRow,
+  TagDomain,
   TagEntityType,
   TagLinkRow,
   TagRow,

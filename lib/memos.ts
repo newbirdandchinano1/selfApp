@@ -442,11 +442,11 @@ export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteData
     return;
   }
 
-  const { createTag, getTags, setMemoTagIds, getTagIdsByEntity } = await import(
+  const { createTag, getMemoTags, setMemoTagIds, getTagIdsByEntity } = await import(
     '@/lib/repositories/tags/tag'
   );
 
-  const existingTags = await getTags();
+  const existingTags = await getMemoTags();
   const tagIdByName = new Map(existingTags.map(t => [t.name.trim().toLowerCase(), t.id]));
 
   const dimToTag = new Map<string, string>();
@@ -457,7 +457,7 @@ export async function migrateMemoDimensionsToTagsIfNeeded(db?: SQLite.SQLiteData
     let tagId = tagIdByName.get(key);
     if (!tagId) {
       tagId = makeTimestampEntityId('ptag_', 8);
-      await createTag({ id: tagId, name, color: '#64748B' });
+      await createTag({ id: tagId, name, color: '#64748B', domain: 'memo' });
       tagIdByName.set(key, tagId);
     }
     dimToTag.set(dim.id, tagId);

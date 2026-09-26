@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 53;
+export const DB_VERSION = 54;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -404,6 +404,7 @@ async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promis
       color TEXT NOT NULL DEFAULT '#64748B',
       description TEXT,
       weight INTEGER NOT NULL DEFAULT 0,
+      domain TEXT NOT NULL DEFAULT 'task',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
@@ -460,6 +461,51 @@ async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promis
   ]);
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'drop_legacy_project_tags_v52',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/**
+ * 标签按域拆分：task（项目/习惯/待办）与 memo（备忘录）互不混用。
+ * 仅挂在备忘录上的旧标签归为 memo；其余（含无关联）归为 task。
+ */
+async function migrateTagDomainSplit(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['tag_domain_split_v54'],
+  );
+  if (done) return;
+
+  await ensureColumn(db, 'tags', 'domain', `TEXT NOT NULL DEFAULT 'task'`);
+
+  // 先全部标为 task，再把「仅被 memo 关联」的改为 memo
+  await db.runAsync(
+    `UPDATE tags SET domain = 'task' WHERE domain IS NULL OR trim(domain) = '' OR domain NOT IN ('task', 'memo')`,
+  );
+
+  await db.runAsync(
+    `UPDATE tags
+     SET domain = 'memo',
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE sync_status != 'pending_delete'
+       AND id IN (
+         SELECT DISTINCT tl.tag_id
+         FROM tag_links tl
+         WHERE tl.sync_status != 'pending_delete'
+           AND tl.entity_type = 'memo'
+           AND tl.tag_id NOT IN (
+             SELECT DISTINCT tl2.tag_id
+             FROM tag_links tl2
+             WHERE tl2.sync_status != 'pending_delete'
+               AND tl2.entity_type IN ('project', 'habit', 'task')
+           )
+       )`,
+  );
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'tag_domain_split_v54',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -590,6 +636,7 @@ export async function initDatabase() {
       color TEXT NOT NULL DEFAULT '#64748B',
       description TEXT,
       weight INTEGER NOT NULL DEFAULT 0,
+      domain TEXT NOT NULL DEFAULT 'task',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'pending_create',
@@ -1558,6 +1605,7 @@ export async function initDatabase() {
   await migratePointsAllowDecimalAndSignedBalance(db);
   await migrateRemoveSeededHabitContexts(db);
   await migrateProjectTagsToGlobalTags(db);
+  await migrateTagDomainSplit(db);
   await migrateDropLegacyAccountsLedger(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');

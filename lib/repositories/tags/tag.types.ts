@@ -3,6 +3,11 @@ import type { SyncStatus } from '../../database.native';
 /** 可打标实体：项目 / 习惯 / 独立待办（无 parent_task_id 的 task）/ 备忘录 */
 export type TagEntityType = 'project' | 'habit' | 'task' | 'memo';
 
+/**
+ * 标签所属域：任务侧（项目 / 习惯 / 待办）与备忘录彼此独立，不可混选。
+ */
+export type TagDomain = 'task' | 'memo';
+
 export type TagRow = {
   id: string;
   name: string;
@@ -10,6 +15,8 @@ export type TagRow = {
   description: string | null;
   /** 权重：数值越大越靠前 */
   weight: number;
+  /** 所属域；缺省/旧数据按 task 处理 */
+  domain: TagDomain;
   created_at: string;
   updated_at: string;
   sync_status: SyncStatus;
@@ -22,11 +29,12 @@ export type CreateTagInput = {
   color: string;
   description?: string | null;
   weight?: number;
+  domain?: TagDomain;
   extra_data?: string | null;
 };
 
 export type UpdateTagInput = Partial<
-  Pick<TagRow, 'name' | 'color' | 'description' | 'weight' | 'extra_data'>
+  Pick<TagRow, 'name' | 'color' | 'description' | 'weight' | 'domain' | 'extra_data'>
 >;
 
 export type TagLinkRow = {

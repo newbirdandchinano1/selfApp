@@ -16,7 +16,7 @@ import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import {
   getTagIdsByEntity,
-  getTags,
+  getProjectTags,
   setHabitTagIds,
 } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
@@ -359,7 +359,7 @@ export default function AddHabitScreen() {
     }
     setTagsLoading(true);
     try {
-      setAllTags(await getTags());
+      setAllTags(await getProjectTags());
     } catch (err) {
       console.warn('加载标签失败', err);
       setAllTags([]);

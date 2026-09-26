@@ -3,6 +3,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import type {
   CreateTagInput,
+  TagDomain,
   TagEntityType,
   TagLinkRow,
   TagRow,
@@ -32,6 +33,10 @@ function normalizeTagWeight(weight: number | null | undefined): number {
   return Math.max(-9999, Math.min(9999, Math.round(weight)));
 }
 
+export function normalizeTagDomain(domain: string | null | undefined): TagDomain {
+  return domain === 'memo' ? 'memo' : 'task';
+}
+
 function sortTagsByWeightDesc(rows: TagRow[]): TagRow[] {
   return [...rows].sort((a, b) => {
     if (b.weight !== a.weight) return b.weight - a.weight;
@@ -41,37 +46,50 @@ function sortTagsByWeightDesc(rows: TagRow[]): TagRow[] {
   });
 }
 
+function coerceTagRow(row: TagRow): TagRow {
+  return {
+    ...row,
+    domain: normalizeTagDomain(row.domain),
+    weight: typeof row.weight === 'number' ? row.weight : Number(row.weight) || 0,
+  };
+}
+
 async function readLocalTagsVisible(): Promise<TagRow[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<TagRow>(
     `SELECT * FROM tags WHERE sync_status != 'pending_delete'`,
   );
-  return rows ?? [];
+  return (rows ?? []).map(coerceTagRow);
 }
 
 export async function createTag(input: CreateTagInput) {
   const name = normalizeTagName(input.name);
   if (!name) throw new Error('标签名称不能为空');
 
+  const domain = normalizeTagDomain(input.domain);
   const db = await getDatabase();
   await db.runAsync(
     `INSERT INTO tags (
-      id, name, color, description, weight, created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
+      id, name, color, description, weight, domain, created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [
       input.id,
       name,
       normalizeTagColor(input.color),
       input.description?.trim() || null,
       normalizeTagWeight(input.weight),
+      domain,
       input.extra_data ?? null,
     ],
   );
 }
 
-export async function getTags() {
+/** @param domain 传入则只返回该域；不传则返回全部（兼容旧调用） */
+export async function getTags(domain?: TagDomain) {
   const rows = await readLocalTagsVisible();
-  return sortTagsByWeightDesc(rows);
+  const filtered =
+    domain === undefined ? rows : rows.filter((t) => normalizeTagDomain(t.domain) === domain);
+  return sortTagsByWeightDesc(filtered);
 }
 
 export async function getTagById(id: string) {
@@ -80,16 +98,34 @@ export async function getTagById(id: string) {
     `SELECT * FROM tags WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
     [id],
   );
-  return row ?? null;
+  return row ? coerceTagRow(row) : null;
 }
 
-export async function isTagNameDuplicate(name: string, excludeId?: string) {
+export async function getTagsByIds(ids: string[]): Promise<TagRow[]> {
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const db = await getDatabase();
+  const placeholders = unique.map(() => '?').join(',');
+  const rows = await db.getAllAsync<TagRow>(
+    `SELECT * FROM tags WHERE id IN (${placeholders}) AND sync_status != 'pending_delete'`,
+    unique,
+  );
+  return sortTagsByWeightDesc((rows ?? []).map(coerceTagRow));
+}
+
+export async function isTagNameDuplicate(
+  name: string,
+  excludeId?: string,
+  domain: TagDomain = 'task',
+) {
   const normalized = normalizeTagName(name).toLowerCase();
   if (!normalized) return false;
   const rows = await readLocalTagsVisible();
+  const targetDomain = normalizeTagDomain(domain);
   return rows.some(
     (t) =>
       t.id !== excludeId &&
+      normalizeTagDomain(t.domain) === targetDomain &&
       String(t.name ?? '')
         .trim()
         .toLowerCase() === normalized,
@@ -104,7 +140,7 @@ export async function updateTag(id: string, input: UpdateTagInput) {
 
   const result = await db.runAsync(
     `UPDATE tags
-     SET name = ?, color = ?, description = ?, weight = ?, extra_data = ?,
+     SET name = ?, color = ?, description = ?, weight = ?, domain = ?, extra_data = ?,
          updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
@@ -115,6 +151,9 @@ export async function updateTag(id: string, input: UpdateTagInput) {
         ? input.description?.trim() || null
         : current.description,
       input.weight !== undefined ? normalizeTagWeight(input.weight) : current.weight,
+      input.domain !== undefined
+        ? normalizeTagDomain(input.domain)
+        : normalizeTagDomain(current.domain),
       input.extra_data !== undefined ? input.extra_data : current.extra_data,
       id,
     ],
@@ -148,7 +187,7 @@ export async function deleteTag(id: string) {
 export async function softDeleteTagLinksForEntity(
   entityType: TagEntityType,
   entityId: string,
-) {
+): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE tag_links
@@ -175,133 +214,89 @@ export async function getTagsByEntity(
   entityType: TagEntityType,
   entityId: string,
 ): Promise<TagRow[]> {
-  const db = await getDatabase();
-  const rows = await db.getAllAsync<TagRow>(
-    `SELECT t.*
-     FROM tags t
-     INNER JOIN tag_links l ON l.tag_id = t.id
-     WHERE l.entity_type = ?
-       AND l.entity_id = ?
-       AND l.sync_status != 'pending_delete'
-       AND t.sync_status != 'pending_delete'`,
-    [entityType, entityId],
-  );
-  return sortTagsByWeightDesc(rows ?? []);
+  const ids = await getTagIdsByEntity(entityType, entityId);
+  if (ids.length === 0) return [];
+  return getTagsByIds(ids);
 }
 
-/** 批量：entityId -> 已按权重排序的标签列表 */
 export async function getTagsByEntityIds(
   entityType: TagEntityType,
   entityIds: string[],
 ): Promise<Map<string, TagRow[]>> {
-  const map = new Map<string, TagRow[]>();
-  const ids = [...new Set(entityIds.filter(Boolean))];
-  if (ids.length === 0) return map;
+  const result = new Map<string, TagRow[]>();
+  const unique = [...new Set(entityIds.map((id) => id.trim()).filter(Boolean))];
+  for (const id of unique) result.set(id, []);
+  if (unique.length === 0) return result;
 
   const db = await getDatabase();
-  const chunkSize = 200;
-  const rows: Array<TagRow & { entity_id: string }> = [];
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    const chunk = ids.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    const part = await db.getAllAsync<TagRow & { entity_id: string }>(
-      `SELECT t.*, l.entity_id AS entity_id
-       FROM tags t
-       INNER JOIN tag_links l ON l.tag_id = t.id
-       WHERE l.entity_type = ?
-         AND l.entity_id IN (${placeholders})
-         AND l.sync_status != 'pending_delete'
-         AND t.sync_status != 'pending_delete'`,
-      [entityType, ...chunk],
-    );
-    if (part?.length) rows.push(...part);
+  const placeholders = unique.map(() => '?').join(',');
+  const links = await db.getAllAsync<TagLinkRow>(
+    `SELECT * FROM tag_links
+     WHERE entity_type = ? AND entity_id IN (${placeholders}) AND sync_status != 'pending_delete'`,
+    [entityType, ...unique],
+  );
+  if (!links?.length) return result;
+
+  const tagIds = [...new Set(links.map((l) => l.tag_id))];
+  const tags = await getTagsByIds(tagIds);
+  const tagById = new Map(tags.map((t) => [t.id, t]));
+
+  for (const link of links) {
+    const tag = tagById.get(link.tag_id);
+    if (!tag) continue;
+    const list = result.get(link.entity_id) ?? [];
+    list.push(tag);
+    result.set(link.entity_id, list);
   }
 
-  for (const row of rows) {
-    const { entity_id, ...tag } = row;
-    const list = map.get(entity_id) ?? [];
-    list.push(tag);
-    map.set(entity_id, list);
+  for (const [entityId, list] of result) {
+    result.set(entityId, sortTagsByWeightDesc(list));
   }
-  for (const [eid, list] of map) {
-    map.set(eid, sortTagsByWeightDesc(list));
-  }
-  return map;
+  return result;
 }
 
-/**
- * 覆盖设置实体的标签集合（0 到多个）。
- * 子任务（有 parent_task_id）拒绝写 link。
- */
 export async function setEntityTagIds(
   entityType: TagEntityType,
   entityId: string,
   tagIds: string[],
-) {
-  if (entityType === 'task') {
-    const db = await getDatabase();
-    const task = await db.getFirstAsync<{ parent_task_id: string | null }>(
-      `SELECT parent_task_id FROM tasks WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
-      [entityId],
-    );
-    if (task?.parent_task_id) {
-      throw new Error('子任务不支持打标签');
-    }
-  }
-
+): Promise<void> {
   await ensureLocalRowPresent(ENTITY_TABLE[entityType], entityId);
-  const uniqueIds = [...new Set(tagIds.map((id) => id.trim()).filter(Boolean))];
-
-  for (const tagId of uniqueIds) {
-    const ready = await ensureLocalRowPresent('tags', tagId);
-    if (!ready) {
-      throw new Error('部分标签尚未同步到本地，请刷新后重试');
-    }
-  }
-
   const db = await getDatabase();
-  const allLinks = await db.getAllAsync<TagLinkRow>(
-    `SELECT * FROM tag_links WHERE entity_type = ? AND entity_id = ?`,
+  const desiredDomain: TagDomain = entityType === 'memo' ? 'memo' : 'task';
+
+  const uniqueDesired = [...new Set(tagIds.map((id) => id.trim()).filter(Boolean))];
+
+  const existingLinks = await db.getAllAsync<TagLinkRow>(
+    `SELECT * FROM tag_links
+     WHERE entity_type = ? AND entity_id = ? AND sync_status != 'pending_delete'`,
     [entityType, entityId],
   );
-  const byTag = new Map<string, TagLinkRow>();
-  for (const row of allLinks ?? []) {
-    const prev = byTag.get(row.tag_id);
-    if (!prev) {
-      byTag.set(row.tag_id, row);
-      continue;
-    }
-    const prevDead = prev.sync_status === 'pending_delete';
-    const rowDead = row.sync_status === 'pending_delete';
-    if (prevDead && !rowDead) byTag.set(row.tag_id, row);
-  }
-  const nextSet = new Set(uniqueIds);
+  const existingByTagId = new Map((existingLinks ?? []).map((l) => [l.tag_id, l]));
 
-  for (const row of byTag.values()) {
-    if (row.sync_status === 'pending_delete') continue;
-    if (!nextSet.has(row.tag_id)) {
-      await db.runAsync(
-        `UPDATE tag_links
-         SET updated_at = datetime('now'), sync_status = 'pending_delete'
-         WHERE id = ?`,
-        [row.id],
-      );
-    }
+  const candidateTags = await getTagsByIds(uniqueDesired);
+  const tagById = new Map(candidateTags.map((t) => [t.id, t]));
+
+  // 本域可新建关联；历史跨域关联仅在调用方仍传入时保留，避免静默摘掉
+  const finalIds = uniqueDesired.filter((id) => {
+    const tag = tagById.get(id);
+    if (!tag) return false;
+    if (normalizeTagDomain(tag.domain) === desiredDomain) return true;
+    return existingByTagId.has(id);
+  });
+  const finalSet = new Set(finalIds);
+
+  for (const link of existingLinks ?? []) {
+    if (finalSet.has(link.tag_id)) continue;
+    await db.runAsync(
+      `UPDATE tag_links
+       SET updated_at = datetime('now'), sync_status = 'pending_delete'
+       WHERE id = ?`,
+      [link.id],
+    );
   }
 
-  for (const tagId of uniqueIds) {
-    const existing = byTag.get(tagId);
-    if (existing && existing.sync_status !== 'pending_delete') continue;
-    if (existing && existing.sync_status === 'pending_delete') {
-      await db.runAsync(
-        `UPDATE tag_links
-         SET updated_at = datetime('now'),
-             sync_status = 'pending_update'
-         WHERE id = ?`,
-        [existing.id],
-      );
-      continue;
-    }
+  for (const tagId of finalIds) {
+    if (existingByTagId.has(tagId)) continue;
     await db.runAsync(
       `INSERT INTO tag_links (
         id, entity_type, entity_id, tag_id, created_at, updated_at, sync_status
@@ -314,11 +309,19 @@ export async function setEntityTagIds(
 // —— 项目侧薄封装（保持旧调用方 API）——
 
 export async function createProjectTag(input: CreateTagInput) {
-  return createTag(input);
+  return createTag({ ...input, domain: 'task' });
 }
 
 export async function getProjectTags() {
-  return getTags();
+  return getTags('task');
+}
+
+export async function getMemoTags() {
+  return getTags('memo');
+}
+
+export async function createMemoTag(input: CreateTagInput) {
+  return createTag({ ...input, domain: 'memo' });
 }
 
 export async function getProjectTagById(id: string) {
@@ -326,7 +329,11 @@ export async function getProjectTagById(id: string) {
 }
 
 export async function isProjectTagNameDuplicate(name: string, excludeId?: string) {
-  return isTagNameDuplicate(name, excludeId);
+  return isTagNameDuplicate(name, excludeId, 'task');
+}
+
+export async function isMemoTagNameDuplicate(name: string, excludeId?: string) {
+  return isTagNameDuplicate(name, excludeId, 'memo');
 }
 
 export async function updateProjectTag(id: string, input: UpdateTagInput) {

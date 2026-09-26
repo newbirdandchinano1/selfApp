@@ -6,19 +6,22 @@ import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
 import {
+  createMemoTag,
   createProjectTag,
   deleteProjectTag,
+  getMemoTags,
   getProjectTags,
+  isMemoTagNameDuplicate,
   isProjectTagNameDuplicate,
   updateProjectTag,
 } from '@/lib/repositories/projects/project-tag';
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
+import type { ProjectTagRow, TagDomain } from '@/lib/repositories/projects/project-tag.types';
 import {
   DEFAULT_PROJECT_TAG_COLOR,
   PROJECT_TAG_COLOR_PRESETS,
 } from '@/lib/repositories/projects/project-tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -37,8 +40,17 @@ function buildTagId() {
   return makeTimestampEntityId('ptag_', 8);
 }
 
+function resolveDomain(raw: string | string[] | undefined): TagDomain {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return v === 'memo' ? 'memo' : 'task';
+}
+
 export default function ProjectTagsScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ domain?: string }>();
+  const domain = resolveDomain(params.domain);
+  const isMemoDomain = domain === 'memo';
+
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
@@ -61,17 +73,25 @@ export default function ProjectTagsScreen() {
   const soft = isDark ? 'rgba(15,23,42,0.55)' : '#f1f5f9';
   const error = isDark ? '#f87171' : '#dc2626';
 
+  const titleText = isMemoDomain ? '备忘录标签' : '任务标签';
+  const hintText = isMemoDomain
+    ? '仅用于备忘录分类；与任务侧标签相互独立。权重越大在列表中越靠前。'
+    : '仅用于项目、习惯与独立待办；与备忘录标签相互独立。权重越大在列表中越靠前。';
+  const deleteScopeHint = isMemoDomain
+    ? '已贴到备忘录上的关联会一并移除。'
+    : '已贴到项目、习惯、待办上的关联会一并移除。';
+
   const load = React.useCallback(async () => {
     setLoading(true);
     try {
-      setTags(await getProjectTags());
+      setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
     } catch (err) {
-      console.warn('加载项目标签失败', err);
+      console.warn(isMemoDomain ? '加载备忘录标签失败' : '加载任务标签失败', err);
       setTags([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isMemoDomain]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -115,9 +135,11 @@ export default function ProjectTagsScreen() {
       Alert.alert('无法保存', '权重请输入整数。');
       return;
     }
-    const dup = await isProjectTagNameDuplicate(trimmed, editingId ?? undefined);
+    const dup = isMemoDomain
+      ? await isMemoTagNameDuplicate(trimmed, editingId ?? undefined)
+      : await isProjectTagNameDuplicate(trimmed, editingId ?? undefined);
     if (dup) {
-      Alert.alert('无法保存', '标签名称不能重复。');
+      Alert.alert('无法保存', '同域内标签名称不能重复。');
       return;
     }
 
@@ -125,6 +147,15 @@ export default function ProjectTagsScreen() {
     try {
       if (editingId) {
         await updateProjectTag(editingId, {
+          name: trimmed,
+          color,
+          description: description.trim() || null,
+          weight,
+          domain,
+        });
+      } else if (isMemoDomain) {
+        await createMemoTag({
+          id: buildTagId(),
           name: trimmed,
           color,
           description: description.trim() || null,
@@ -156,7 +187,7 @@ export default function ProjectTagsScreen() {
   };
 
   const confirmDelete = (tag: ProjectTagRow) => {
-            Alert.alert('删除标签', `确认删除「${tag.name}」？已贴到项目、习惯、待办、备忘录上的关联会一并移除。`, [
+    Alert.alert('删除标签', `确认删除「${tag.name}」？${deleteScopeHint}`, [
       { text: '取消', style: 'cancel' },
       {
         text: '删除',
@@ -193,7 +224,7 @@ export default function ProjectTagsScreen() {
         <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
-        <Text style={[styles.title, { color: primary }]}>标签</Text>
+        <Text style={[styles.title, { color: primary }]}>{titleText}</Text>
         <Pressable onPress={openCreate} style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
           <Text style={[styles.doneText, { color: primary }]}>新建</Text>
         </Pressable>
@@ -203,9 +234,7 @@ export default function ProjectTagsScreen() {
         refreshControl={refreshControl}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
-        <Text style={[styles.hint, { color: outline }]}>
-          标签可打在项目、习惯、独立待办与备忘录上；权重越大在列表中越靠前。
-        </Text>
+        <Text style={[styles.hint, { color: outline }]}>{hintText}</Text>
 
         {loading ? (
           <View style={styles.loadingWrap}>
@@ -259,7 +288,7 @@ export default function ProjectTagsScreen() {
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="例如：重要客户"
+              placeholder={isMemoDomain ? '例如：灵感 / 待查' : '例如：重要客户'}
               placeholderTextColor={outline}
               maxLength={40}
               style={[styles.input, { color: theme.text, backgroundColor: soft, borderColor: border }]}
@@ -335,73 +364,71 @@ export default function ProjectTagsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
-    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  title: { fontSize: 17, fontWeight: '800' },
-  doneBtn: { paddingHorizontal: 10, paddingVertical: 8 },
-  doneText: { fontSize: 15, fontWeight: '700' },
+  doneBtn: { paddingHorizontal: 8, paddingVertical: 8 },
+  doneText: { fontSize: 15, fontWeight: '600' },
+  title: { fontSize: 17, fontWeight: '700' },
   pressed: { opacity: 0.7 },
   content: { padding: 16, gap: 10, paddingBottom: 40 },
-  hint: { fontSize: 12, fontWeight: '600', lineHeight: 18, marginBottom: 4 },
-  loadingWrap: { paddingVertical: 48, alignItems: 'center' },
+  hint: { fontSize: 13, lineHeight: 18, marginBottom: 4 },
+  loadingWrap: { paddingVertical: 40, alignItems: 'center' },
   emptyCard: {
-    borderWidth: 1,
-    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
     padding: 28,
     alignItems: 'center',
     gap: 8,
-    marginTop: 24,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800' },
-  emptyDesc: { fontSize: 13, fontWeight: '600' },
+  emptyTitle: { fontSize: 16, fontWeight: '600' },
+  emptyDesc: { fontSize: 13, textAlign: 'center' },
   item: {
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     gap: 10,
   },
   colorDot: { width: 14, height: 14, borderRadius: 7 },
   itemBody: { flex: 1, gap: 2 },
-  itemName: { fontSize: 15, fontWeight: '800' },
-  itemMeta: { fontSize: 12, fontWeight: '600' },
+  itemName: { fontSize: 15, fontWeight: '600' },
+  itemMeta: { fontSize: 12 },
   itemAction: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  modalRoot: { flex: 1, justifyContent: 'center', paddingHorizontal: 18 },
+  modalRoot: { flex: 1, justifyContent: 'center', padding: 24 },
   modalBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(15,23,42,0.42)',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.45)',
   },
-  editorCard: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 8 },
-  editorTitle: { fontSize: 17, fontWeight: '800', marginBottom: 4 },
-  fieldLabel: { fontSize: 12, fontWeight: '700', marginTop: 4 },
+  editorCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 16,
+    padding: 18,
+    gap: 8,
+  },
+  editorTitle: { fontSize: 17, fontWeight: '700', marginBottom: 4 },
+  fieldLabel: { fontSize: 12, fontWeight: '600', marginTop: 6 },
   input: {
-    borderWidth: 1,
-    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 15,
   },
-  descInput: { minHeight: 72, textAlignVertical: 'top' },
+  descInput: { minHeight: 64, textAlignVertical: 'top' },
   colorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingVertical: 4 },
-  colorSwatch: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-  },
-  weightHint: { fontSize: 11, fontWeight: '600', marginTop: -2 },
-  editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 10 },
+  colorSwatch: { width: 28, height: 28, borderRadius: 14, borderWidth: 2 },
+  weightHint: { fontSize: 12, marginTop: -2 },
+  editorActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 12 },
   ghostBtn: { paddingHorizontal: 14, paddingVertical: 10 },
-  ghostText: { fontSize: 14, fontWeight: '700' },
-  primaryBtn: { borderRadius: 12, paddingHorizontal: 18, paddingVertical: 10 },
-  primaryText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  ghostText: { fontSize: 15 },
+  primaryBtn: { borderRadius: 10, paddingHorizontal: 18, paddingVertical: 10 },
+  primaryText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 });

@@ -36,7 +36,7 @@ import type { TaskPriority, TaskRow, TaskStatus } from '@/lib/repositories/tasks
 import {
   getTagIdsByEntity,
   getTagIdsByProjectId,
-  getTags,
+  getProjectTags,
   getTagsByProjectId,
   setTaskTagIds,
 } from '@/lib/repositories/tags/tag';
@@ -294,7 +294,7 @@ export default function AddTaskScreen() {
     void (async () => {
       try {
         const [tags, projectTagIds] = await Promise.all([
-          getTags(),
+          getProjectTags(),
           getTagIdsByProjectId(quickProjectId),
         ]);
         if (cancelled) return;
@@ -366,7 +366,7 @@ export default function AddTaskScreen() {
         if (isStandalone) {
           setTagsLoading(true);
           try {
-            setAllTags(await getTags());
+            setAllTags(await getProjectTags());
           } catch (err) {
             console.warn('加载标签失败', err);
             setAllTags([]);
