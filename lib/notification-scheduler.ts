@@ -1,5 +1,5 @@
 /**
- * 本地通知统一排期层：权限、Android 通道、按前缀取消、DATE 登记 + AI 文案。
+ * 本地通知统一排期层：权限、Android 通道、按前缀取消、DATE 登记 + 文案解析。
  * 业务侧只声明「何时 / 给谁 / 哪一类」，不复制样板。
  */
 
@@ -128,7 +128,7 @@ export async function cancelScheduledByCategory(
 }
 
 /**
- * 登记一条 DATE 本地通知：门禁 → 权限 → 通道 → AI 文案 → schedule。
+ * 登记一条 DATE 本地通知：门禁 → 权限 → 通道 → 文案 → schedule。
  * `fireAt` 已过（含 2s 余量）则跳过。
  */
 export async function scheduleDateReminder(

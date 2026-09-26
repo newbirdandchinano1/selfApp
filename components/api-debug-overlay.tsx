@@ -21,7 +21,6 @@ export function ApiDebugOverlay() {
   const [panelOpen, setPanelOpen] = React.useState(false);
 
   React.useEffect(() => {
-    if (!__DEV__) return;
     let mounted = true;
     void loadApiDebugEnabled().then(v => {
       if (mounted) setEnabled(v);
@@ -31,7 +30,7 @@ export function ApiDebugOverlay() {
     });
   }, []);
 
-  if (!__DEV__ || !enabled) return null;
+  if (!enabled) return null;
 
   return (
     <>

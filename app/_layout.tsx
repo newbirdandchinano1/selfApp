@@ -2,7 +2,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from "expo-router/react-naviga
 import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState, type ComponentType } from 'react';
+import { useEffect, useState } from 'react';
 import { InteractionManager, Platform, AppState, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
@@ -44,16 +44,11 @@ import {
   isExpoSandboxNotificationDisabled,
 } from '@/lib/notification-policy';
 import { isNotificationCategoryAllowed } from '@/lib/notification-center-settings';
+import { ApiDebugOverlay } from '@/components/api-debug-overlay';
+import { loadApiDebugEnabled } from '@/lib/api-debug';
 import {
   resolveNotificationCategoryFromData,
 } from '@/lib/notification-catalog';
-
-/** 正式包剥离 API 调试蒙层（仅开发包 require）。 */
-let ApiDebugOverlay: ComponentType = () => null;
-if (__DEV__) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  ApiDebugOverlay = require('@/components/api-debug-overlay').ApiDebugOverlay as ComponentType;
-}
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
@@ -129,10 +124,7 @@ function RootLayoutInner() {
           await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
           await loadAiLlmProviderPreference();
-          if (__DEV__) {
-            const { loadApiDebugEnabled } = require('@/lib/api-debug') as typeof import('@/lib/api-debug');
-            await loadApiDebugEnabled();
-          }
+          await loadApiDebugEnabled();
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
@@ -189,10 +181,7 @@ function RootLayoutInner() {
       // P0-03：历史 Worker 脏表迁入 API Outbox；日常写入只走 markApiTableDirty
       await hydrateCloudDirtyFromStorage();
       await hydrateApiDirtyFromStorage();
-      if (__DEV__) {
-        const { loadApiDebugEnabled } = require('@/lib/api-debug') as typeof import('@/lib/api-debug');
-        await loadApiDebugEnabled();
-      }
+      await loadApiDebugEnabled();
     };
 
     const run = async () => {
@@ -318,7 +307,7 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-view/[id]" />
             <Stack.Screen name="recipe-edit/[id]" />
             {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
-            {__DEV__ ? <Stack.Screen name="api-request-monitor" /> : null}
+            <Stack.Screen name="api-request-monitor" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />
@@ -341,7 +330,7 @@ function RootLayoutInner() {
             }}
           />
         ) : null}
-        {__DEV__ ? <ApiDebugOverlay /> : null}
+        <ApiDebugOverlay />
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>
   );

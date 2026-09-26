@@ -14,7 +14,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-/** 开发包：实时监控 APP 发出的 HTTP 请求与响应，支持复制详情。 */
+/** 实时监控 APP 发出的 HTTP 请求与响应，支持复制详情。 */
 export default function ApiRequestMonitorScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();

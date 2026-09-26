@@ -41,15 +41,10 @@ export function subscribeApiDebug(listener: () => void): () => void {
 }
 
 export function isApiDebugEnabled(): boolean {
-  return __DEV__ && enabled;
+  return enabled;
 }
 
 export async function loadApiDebugEnabled(): Promise<boolean> {
-  if (!__DEV__) {
-    enabled = false;
-    enabledLoaded = true;
-    return false;
-  }
   if (enabledLoaded) return enabled;
   try {
     const raw = await AsyncStorage.getItem(API_DEBUG_ENABLED_KEY);
@@ -63,7 +58,6 @@ export async function loadApiDebugEnabled(): Promise<boolean> {
 }
 
 export async function setApiDebugEnabled(next: boolean): Promise<void> {
-  if (!__DEV__) return;
   enabled = next;
   enabledLoaded = true;
   try {
@@ -74,7 +68,7 @@ export async function setApiDebugEnabled(next: boolean): Promise<void> {
   if (!next) {
     entries.length = 0;
   } else {
-    pushApiDebugSystemMessage('接口调试模式已开启');
+    pushApiDebugSystemMessage('接口监控已开启');
     void probeApiDebugConnection();
   }
   notifyListeners();
@@ -164,7 +158,7 @@ function appendApiDebugLog(partial: Omit<ApiDebugLogEntry, 'id' | 'at'>): void {
 }
 
 export function pushApiDebugSystemMessage(message: string): void {
-  if (!__DEV__ || !enabled) return;
+  if (!enabled) return;
   appendApiDebugLog({
     method: 'SYS',
     url: '(local)',
@@ -186,7 +180,7 @@ export async function logHttpFetchDebug(opts: {
   response?: Response;
   error?: string | null;
 }): Promise<void> {
-  if (!__DEV__ || !enabled) return;
+  if (!enabled) return;
 
   let responseBody: string | null = null;
   let apiCode: number | null = null;
@@ -223,9 +217,9 @@ export async function logHttpFetchDebug(opts: {
   });
 }
 
-/** 开启调试后立即打一条探测请求，确认日志链路可用 */
+/** 开启监控后立即打一条探测请求，确认日志链路可用 */
 export async function probeApiDebugConnection(): Promise<void> {
-  if (!__DEV__ || !enabled) return;
+  if (!enabled) return;
   try {
     const { apiHealthCheck, apiGetTablesMeta } = await import('@/lib/api-client');
     pushApiDebugSystemMessage('正在请求 GET /health …');
@@ -265,15 +259,13 @@ function countTasksInProjectList(projects: unknown[]): number {
   return total;
 }
 
-/** 项目/任务分页列表接口：控制台输出请求与完整响应，便于联调（仅开发包）。 */
+/** 项目/任务分页列表接口：写入监控日志；控制台详细输出仅开发包。 */
 export function logPageListApiResponse(
   kind: PageListApiLogKind,
   pathWithQuery: string,
   params: Record<string, unknown> | undefined,
   result: { list: unknown[]; pagination?: unknown; meta?: unknown },
 ): void {
-  if (!__DEV__) return;
-
   const label = kind === 'projects-list' ? '项目列表' : '任务列表';
   const summary: Record<string, unknown> = {
     接口: `GET ${pathWithQuery}`,
@@ -286,11 +278,13 @@ export function logPageListApiResponse(
     delete summary['项目数'];
   }
 
-  console.log(`\n========== [${label}] 接口响应 ==========`);
-  console.log(`[${label}] 请求参数`, params ?? {});
-  console.log(`[${label}] 响应摘要`, summary);
-  console.log(`[${label}] 完整 list`, result.list);
-  console.log(`========== [${label}] END ==========\n`);
+  if (__DEV__) {
+    console.log(`\n========== [${label}] 接口响应 ==========`);
+    console.log(`[${label}] 请求参数`, params ?? {});
+    console.log(`[${label}] 响应摘要`, summary);
+    console.log(`[${label}] 完整 list`, result.list);
+    console.log(`========== [${label}] END ==========\n`);
+  }
 
   if (enabled) {
     appendApiDebugLog({
