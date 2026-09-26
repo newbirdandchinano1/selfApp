@@ -136,7 +136,7 @@ export async function insertFrogCompletionEvent(
 
   invalidateInflightApiTableFetch('frog_completion_events');
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  void pushLocalChangesToApi();
 }
 
 /** 按指派日返回已完成青蛙的 task_id / project_id 集合（与热力图口径一致，仅计 net completed） */

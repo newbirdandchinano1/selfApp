@@ -261,9 +261,9 @@ export async function applyRepeatingTaskRollovers(
         status: 'todo',
         completed_at: null,
         extra_data: patchExtraDataOnRepeatRollover(task.extra_data, logicalTodayYmd),
-      });
+      }, { deferSync: true });
       try {
-        await insertTaskExecutionEvent(task.id, 'reopened', task.title ?? null);
+        await insertTaskExecutionEvent(task.id, 'reopened', task.title ?? null, { deferSync: true });
       } catch (e) {
         console.warn('记录重复待办恢复事件失败', task.id, e);
       }

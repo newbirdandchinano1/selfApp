@@ -102,15 +102,22 @@ export function markPageLoadedInSession(pageKey: string): void {
   }
 }
 
-export function clearPageLoadedInSession(pageKey?: string): void {
+export function clearPageLoadedInSession(
+  pageKey?: string,
+  opts?: { preserveFocusCooldown?: boolean },
+): void {
   if (pageKey?.trim()) {
     const key = pageKey.trim();
     sessionLoadedPages.delete(key);
-    pageLastFocusRefreshAtMs.delete(key);
+    if (!opts?.preserveFocusCooldown) {
+      pageLastFocusRefreshAtMs.delete(key);
+    }
     return;
   }
   sessionLoadedPages.clear();
-  pageLastFocusRefreshAtMs.clear();
+  if (!opts?.preserveFocusCooldown) {
+    pageLastFocusRefreshAtMs.clear();
+  }
 }
 
 export function hasPageLoadedInSession(pageKey: string): boolean {
@@ -145,7 +152,7 @@ export function notifyAncestorPagesLocalReload(pageKey: string): void {
     console.log('[page-api-session] 本地数据变更', pageKey, '→', ancestors);
   }
   for (const ancestor of ancestors) {
-    clearPageLoadedInSession(ancestor);
+    clearPageLoadedInSession(ancestor, { preserveFocusCooldown: true });
   }
 }
 
@@ -229,11 +236,12 @@ export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
 }
 
 /**
- * focus 重载是否应 forceApi。
- * 任务页在冷却过后需要打网做多端对齐；其它页走 local-first / synced 即可。
+ * @deprecated 写后 Tab focus 不得再强制 forceApi（会变成全局 REST）。
+ * 多端对齐仅在较长后台回前台时由 usePageFocusReload 触发。
+ * 保留函数以免旧调用方编译失败，恒返回 false。
  */
-export function shouldForceApiOnFocusRefresh(pageKey: string): boolean {
-  return pageKey.trim() === TAB_PAGE_KEYS.tasks;
+export function shouldForceApiOnFocusRefresh(_pageKey: string): boolean {
+  return false;
 }
 
 /** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
@@ -271,14 +279,14 @@ export function markTabPagesDirtyForTable(table: string): void {
   const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
   if (!pages?.length && !childPages?.length) return;
   if (isLocalFirstReads()) {
-    // local-first：本地写入已即时可见，只清会话加载标记以便下次聚焦重读 SQLite。
-    // 切勿对子页 force REST，否则会用服务端旧快照盖掉刚写入的 pending（如重置积分）。
+    // local-first：写后只清会话标记，下次 focus 重读 SQLite（局部），禁止升级成全局 REST。
+    // 保留 focus 冷却，避免与「写 → 立刻 forceApi」叠加。
     for (const key of pages ?? []) {
-      clearPageLoadedInSession(key);
+      clearPageLoadedInSession(key, { preserveFocusCooldown: true });
     }
     for (const key of childPages ?? []) {
       const trimmed = key.trim();
-      if (trimmed) clearPageLoadedInSession(trimmed);
+      if (trimmed) clearPageLoadedInSession(trimmed, { preserveFocusCooldown: true });
     }
     return;
   }

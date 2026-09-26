@@ -107,7 +107,6 @@ import {
     buildFinanceTransferTxnExtra,
     isFinanceTransactionExcludedFromBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
-import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
@@ -171,7 +170,7 @@ type Txn = {
   amountColor: string;
   insight: string;
   insightIsAiBody: boolean;
-  /** 已配置模型且 AI 评价尚未写入：生成中或队列等待 */
+  /** 截图自动记账等进行中占位 */
   insightPendingAi: boolean;
   /** 截图自动记账 AI 分析中占位，尚未落库 */
   isPendingPlaceholder?: boolean;
@@ -234,24 +233,11 @@ function readTransferLeg(extra_data: string | null): 'out' | 'in' | null {
 
 function buildTxnAiInsightLine(
   txn: FinanceTransactionRow,
-  opts: { zhipuReady: boolean; generatingId: string | null; skippedIds: Set<string> },
 ): { text: string; isAiBody: boolean; pendingAi: boolean } {
   const trimmed = txn.ai_comment?.trim();
+  // 历史无评价不强制补全；有评价才展示，避免列表页轰炸后端 txn-comment
   if (trimmed) return { text: `AI 评价：${trimmed}`, isAiBody: true, pendingAi: false };
-  if (opts.skippedIds.has(txn.id)) {
-    return { text: 'AI 评价：生成失败，离开再进入本页或重新加载列表后可重试', isAiBody: false, pendingAi: false };
-  }
-  if (txn.id === opts.generatingId) {
-    return { text: 'AI 正在分析这笔收支…', isAiBody: false, pendingAi: true };
-  }
-  if (!opts.zhipuReady) {
-    return {
-      text: 'AI 评价：未配置智谱密钥，无法自动生成（EXPO_PUBLIC_ZHIPU_API_KEY）',
-      isAiBody: false,
-      pendingAi: false,
-    };
-  }
-  return { text: 'AI 分析排队中，请稍候…', isAiBody: false, pendingAi: true };
+  return { text: '', isAiBody: false, pendingAi: false };
 }
 
 function buildTxnMetaTags(input: {
@@ -615,8 +601,6 @@ export default function FinanceScreen() {
   /** 服务端 home.monthly；有值时优先于本地 aggregateTransactions */
   const [serverMonthly, setServerMonthly] = React.useState<{ income: number; expense: number } | null>(null);
   const [financeAccounts, setFinanceAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
-  const [generatingTxnAiId, setGeneratingTxnAiId] = React.useState<string | null>(null);
-  const [txnAiFailEpoch, setTxnAiFailEpoch] = React.useState(0);
   const [pendingAutoLedgers, setPendingAutoLedgers] = React.useState<PendingAutoLedgerRow[]>([]);
   const [autoLedgerToastVisible, setAutoLedgerToastVisible] = React.useState(false);
   const [autoLedgerToastMessage, setAutoLedgerToastMessage] = React.useState('正在识别截图并记账…');
@@ -631,10 +615,6 @@ export default function FinanceScreen() {
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
-  const txnAiBackfillRunning = React.useRef(false);
-  const txnAiFlushTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const txnAiSkippedIdsRef = React.useRef<Set<string>>(new Set());
-  const runTxnAiBackfillRef = React.useRef<() => Promise<void>>(async () => undefined);
 
   React.useLayoutEffect(() => {
     financeTransactionsRef.current = financeTransactions;
@@ -718,28 +698,15 @@ export default function FinanceScreen() {
     }).start();
   }, [financeContentOpacity, initialFinanceLoadPending, revealAnim]);
 
-  const scheduleFinanceTransactionsFlush = React.useCallback(() => {
-    if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
-    txnAiFlushTimerRef.current = setTimeout(() => {
-      txnAiFlushTimerRef.current = null;
-      setFinanceTransactions([...financeTransactionsRef.current]);
-    }, 400);
-  }, []);
-
   const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {
     try {
       const [rows, categories] = await Promise.all([
         getFinanceTransactions({ forceRefresh, localOnly: true }),
         getFinanceFlowCategories({ localOnly: true }),
       ]);
-      txnAiSkippedIdsRef.current.clear();
       flowCategoryNamesRef.current = Object.fromEntries(categories.map((c) => [c.id, c.name]));
       financeTransactionsRef.current = rows;
       setFinanceTransactions(rows);
-      setTxnAiFailEpoch((e) => e + 1);
-      queueMicrotask(() => {
-        void runTxnAiBackfillRef.current();
-      });
     } catch (error) {
       console.warn('Failed to load finance transactions:', error);
       flowCategoryNamesRef.current = {};
@@ -826,12 +793,6 @@ export default function FinanceScreen() {
     },
     [loadFinanceAccounts, loadFinanceTransactions, markPageDirty],
   );
-
-  React.useEffect(() => {
-    return () => {
-      if (txnAiFlushTimerRef.current) clearTimeout(txnAiFlushTimerRef.current);
-    };
-  }, []);
 
   React.useEffect(() => {
     void loadMonthBudgetSettings().then(setMonthBudgetSettings);
@@ -947,59 +908,6 @@ export default function FinanceScreen() {
     }
     return txn.amount;
   }, []);
-
-  const runTxnAiBackfill = React.useCallback(async () => {
-    const key = getActiveAiLlmApiKey().trim();
-    if (!key || txnAiBackfillRunning.current) return;
-    txnAiBackfillRunning.current = true;
-    try {
-      const cats = flowCategoryNamesRef.current;
-      while (true) {
-        const accMap = new Map(financeAccountsRef.current.map((a) => [a.id, a.name]));
-        const snapshot = financeTransactionsRef.current;
-        const txn = snapshot.find((r) => !r.ai_comment?.trim() && !txnAiSkippedIdsRef.current.has(r.id));
-        if (!txn) break;
-
-        const accountLabel = accMap.get(txn.account_id) ?? '未知账户';
-        const categoryLabel = txn.flow_category_id ? cats[txn.flow_category_id] ?? '未分类' : '未分类';
-
-        setGeneratingTxnAiId(txn.id);
-        try {
-          const result = await tryPersistFinanceTxnAiComment(txn.id, {
-            name: txn.name,
-            happened_at: txn.happened_at,
-            transaction_type: txn.transaction_type,
-            amount: txn.amount,
-            note: txn.note,
-            accountLabel,
-            categoryLabel,
-          });
-          if (result.ok) {
-            financeTransactionsRef.current = financeTransactionsRef.current.map((t) =>
-              t.id === txn.id ? { ...t, ai_comment: result.comment } : t,
-            );
-            scheduleFinanceTransactionsFlush();
-          } else {
-            txnAiSkippedIdsRef.current.add(txn.id);
-            setTxnAiFailEpoch((e) => e + 1);
-          }
-        } finally {
-          setGeneratingTxnAiId(null);
-        }
-      }
-    } finally {
-      if (txnAiFlushTimerRef.current) {
-        clearTimeout(txnAiFlushTimerRef.current);
-        txnAiFlushTimerRef.current = null;
-      }
-      setFinanceTransactions([...financeTransactionsRef.current]);
-      txnAiBackfillRunning.current = false;
-    }
-  }, [scheduleFinanceTransactionsFlush]);
-
-  React.useLayoutEffect(() => {
-    runTxnAiBackfillRef.current = runTxnAiBackfill;
-  }, [runTxnAiBackfill]);
 
   const todayTxns = React.useMemo(
     () =>
@@ -1245,11 +1153,7 @@ export default function FinanceScreen() {
         const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
         const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
-        const aiLine = buildTxnAiInsightLine(txn, {
-          zhipuReady: zhipuTxnReady,
-          generatingId: generatingTxnAiId,
-          skippedIds: txnAiSkippedIdsRef.current,
-        });
+        const aiLine = buildTxnAiInsightLine(txn);
 
         return {
           id: txn.id,
@@ -1274,7 +1178,6 @@ export default function FinanceScreen() {
   }, [
     accountNameMap,
     formatCurrencyWithDecimals,
-    generatingTxnAiId,
     getTxnDisplayAmount,
     pendingAutoLedgers,
     danger,
@@ -1284,8 +1187,6 @@ export default function FinanceScreen() {
     text,
     todayDayKey,
     todayTxns,
-    txnAiFailEpoch,
-    zhipuTxnReady,
   ]);
 
   const historySections = React.useMemo(() => {
@@ -1347,11 +1248,7 @@ export default function FinanceScreen() {
       const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
       const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
-      const aiLine = buildTxnAiInsightLine(txn, {
-        zhipuReady: zhipuTxnReady,
-        generatingId: generatingTxnAiId,
-        skippedIds: txnAiSkippedIdsRef.current,
-      });
+      const aiLine = buildTxnAiInsightLine(txn);
 
       section.items.push({
         id: txn.id,
@@ -1378,7 +1275,6 @@ export default function FinanceScreen() {
   }, [
     accountNameMap,
     formatCurrencyWithDecimals,
-    generatingTxnAiId,
     getDayKey,
     getTxnDisplayAmount,
     danger,
@@ -1391,8 +1287,6 @@ export default function FinanceScreen() {
     visibleDayKeySet,
     calendarYesterdayYmd,
     weekdayCn,
-    zhipuTxnReady,
-    txnAiFailEpoch,
   ]);
 
   const displayTxns = React.useMemo<Txn[]>(() => {
@@ -1426,11 +1320,7 @@ export default function FinanceScreen() {
       const amountColor = isTransfer ? text : isIncome ? secondary : isExpense ? danger : text;
       const amountPrefix = displayAmount > 0 ? '+' : displayAmount < 0 ? '-' : '';
 
-      const aiLine = buildTxnAiInsightLine(txn, {
-        zhipuReady: zhipuTxnReady,
-        generatingId: generatingTxnAiId,
-        skippedIds: txnAiSkippedIdsRef.current,
-      });
+      const aiLine = buildTxnAiInsightLine(txn);
 
       return {
         id: txn.id,
@@ -1454,7 +1344,6 @@ export default function FinanceScreen() {
   }, [
     accountNameMap,
     formatCurrencyWithDecimals,
-    generatingTxnAiId,
     getDayKey,
     getTxnDisplayAmount,
     danger,
@@ -1465,8 +1354,6 @@ export default function FinanceScreen() {
     text,
     todayDayKey,
     visibleDayKeySet,
-    zhipuTxnReady,
-    txnAiFailEpoch,
   ]);
 
   const monthStartYmd = formatYmd(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -2364,10 +2251,6 @@ export default function FinanceScreen() {
           setFinanceAccounts(normalizedAccounts);
           setHistoryHasMoreRemote(home.historyHasMore);
           setVisibleDayCount(INITIAL_HISTORY_DAY_SLICES);
-          setTxnAiFailEpoch((e) => e + 1);
-          queueMicrotask(() => {
-            void runTxnAiBackfillRef.current();
-          });
         } else {
           setServerMonthly(null);
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);

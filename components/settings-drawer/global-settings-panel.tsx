@@ -533,6 +533,25 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
         <View style={styles.section}>
           {renderSectionHead('系统管理')}
+          {__DEV__ ? (
+            <Pressable
+              onPress={() => {
+                closeSettingsDrawer();
+                router.push('/api-request-monitor');
+              }}
+              style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+              <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+                <MaterialIcons name="bug-report" size={26} color={primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.rowTitle, { color: text }]}>API 请求监控</Text>
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                    实时查看本机发出的接口请求与返回，支持复制详情（仅开发包）
+                  </Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={outline} />
+              </View>
+            </Pressable>
+          ) : null}
           <View onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}>
             <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
               <View style={styles.rowBetween}>

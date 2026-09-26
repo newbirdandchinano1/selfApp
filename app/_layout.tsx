@@ -318,6 +318,7 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-view/[id]" />
             <Stack.Screen name="recipe-edit/[id]" />
             {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
+            {__DEV__ ? <Stack.Screen name="api-request-monitor" /> : null}
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />

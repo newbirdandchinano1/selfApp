@@ -1511,7 +1511,7 @@ async function applyOverdueTaskPriorityBump(rows: TaskRow[], logicalTodayYmd: st
   for (const t of rows) {
     if (normalizeTaskPriority(t.priority) >= URGENT_IMPORTANT_PRIORITY) continue;
     if (!isTaskRowOverdue(t, logicalTodayYmd)) continue;
-    await updateTask(t.id, { priority: URGENT_IMPORTANT_PRIORITY });
+    await updateTask(t.id, { priority: URGENT_IMPORTANT_PRIORITY }, { deferSync: true });
     count += 1;
   }
   return count;
@@ -2359,6 +2359,8 @@ export default function TasksScreen() {
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
       if (rolled > 0 || overdueBumped > 0) {
+        const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+        void pushLocalChangesToApi({ quiet: true });
         if (!opts?.silent) {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         }
@@ -2788,9 +2790,12 @@ export default function TasksScreen() {
   }, [categoryModalVisible, loadProjectCategories]);
 
   const reload = React.useCallback(async (forceApi = false) => {
+    // forceApi 由 wrapLoad 写入 page read opts（决定是否 localOnly）；此处只在清库后全量 forceRefresh
+    void forceApi;
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
-    const forceApiRefresh = forceApi || consumeForceFullApiRefreshAfterLocalClear();
+    // 清库后才全量 forceRefresh；focus/下拉的 forceApi 只走增量（updatedSince），避免写后回首页全表翻页卡死
+    const forceFullRefresh = consumeForceFullApiRefreshAfterLocalClear();
     const localTaskOpts = { forceLocal: true as const };
     const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
       ...extra,
@@ -2819,12 +2824,11 @@ export default function TasksScreen() {
       fetchTasksPageData({
         boundary: dayBoundary,
         offlineFallback: true,
-        // 尊重 wrapLoad 的 localOnly；下拉/focus forceApi 时由 forceRefresh 打网
-        forceRefresh: forceApiRefresh,
+        forceRefresh: forceFullRefresh,
       }),
       fetchProjectsListForTab(projectTab, {
         hideCompletedProjectTasks: effectiveHideCompleted,
-        forceRefresh: forceApiRefresh,
+        forceRefresh: forceFullRefresh,
         offlineFallback: true,
       }).catch((err) => {
         console.warn('加载项目列表 API 失败，回退本地组树', err);
@@ -2906,6 +2910,8 @@ export default function TasksScreen() {
     const overdueBumped = await applyOverdueTaskPriorityBump(cachedTasks, logicalToday);
     const taskRolled = rolled + overdueBumped;
     if (taskRolled > 0) {
+      const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
+      void pushLocalChangesToApi({ quiet: true });
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       cachedTasks = await getTasks(localTaskOpts);
       await loadTasks({ forceLocal: true });

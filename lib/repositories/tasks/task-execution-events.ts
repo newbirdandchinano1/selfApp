@@ -92,7 +92,8 @@ async function loadScopedExecutionEvents(): Promise<ScopedExecutionEvents> {
 export async function insertTaskExecutionEvent(
   taskId: string,
   action: TaskExecutionEventAction,
-  taskTitle: string | null
+  taskTitle: string | null,
+  opts?: { deferSync?: boolean },
 ): Promise<void> {
   const taskReady = await ensureLocalRowPresent('tasks', taskId);
   if (!taskReady) {
@@ -107,8 +108,6 @@ export async function insertTaskExecutionEvent(
     [id, taskId, action, createdAt, taskTitle?.trim() || null]
   );
   invalidateInflightApiTableFetch('task_execution_events');
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
 }
 
 /** 某一本地日内的全部执行事件（含完成与恢复），按时间正序 */

@@ -493,9 +493,10 @@ export default function AddTaskScreen() {
         }
         try {
           await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
-          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+          // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回列表
+          void pushLocalChangesToApi();
         } catch (syncErr) {
-          console.warn('待办保存后同步到服务器失败', syncErr);
+          console.warn('待办保存后标记同步失败', syncErr);
         }
         notifyAncestorsDataChanged();
         router.back();
@@ -551,9 +552,9 @@ export default function AddTaskScreen() {
         }
         try {
           await markPendingTablesDirty(['tasks', 'projects', 'tags', 'tag_links']);
-          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+          void pushLocalChangesToApi();
         } catch (syncErr) {
-          console.warn('任务保存后同步到服务器失败', syncErr);
+          console.warn('任务保存后标记同步失败', syncErr);
         }
         notifyAncestorsDataChanged();
         router.back();
@@ -608,9 +609,9 @@ export default function AddTaskScreen() {
             await deleteTask(editTaskId);
             try {
               await markPendingTablesDirty(['tasks']);
-              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+              void pushLocalChangesToApi();
             } catch (syncErr) {
-              console.warn('待办删除后同步到服务器失败', syncErr);
+              console.warn('待办删除后标记同步失败', syncErr);
             }
             notifyAncestorsDataChanged();
             router.back();

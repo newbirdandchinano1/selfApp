@@ -36,7 +36,8 @@ export function buildFinanceTxnAiSummaryText(input: FinanceTxnAiSummaryInput): s
 
 /**
  * 调用智谱生成单条评价并写入 `finance_transactions.ai_comment`。
- * 无密钥或请求失败时返回 `{ ok: false }`（流水仍已成功写入时可依赖列表页补全）。
+ * 无密钥或请求失败时返回 `{ ok: false }`。
+ * 仅用于新建/编辑后主动生成或用户手动刷新；列表页不对历史无评价流水强制补全。
  */
 export async function tryPersistFinanceTxnAiComment(
   txnId: string,

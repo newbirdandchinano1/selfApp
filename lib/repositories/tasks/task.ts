@@ -353,7 +353,8 @@ export async function clearProjectTasksCategoryIds(
   );
   if (!opts?.deferSync) {
     const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-    await pushLocalChangesToApi({ awaitSync: true });
+    // SQL 脏标已会 scheduleCoalescedApiPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
+    void pushLocalChangesToApi();
   }
 }
 
@@ -412,7 +413,8 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
 
   if (!opts?.deferSync) {
     const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-    await pushLocalChangesToApi({ awaitSync: true });
+    // SQL 脏标已会 scheduleCoalescedApiPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
+    void pushLocalChangesToApi();
   }
 }
 
@@ -637,10 +639,6 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
   );
   if ((result.changes ?? 0) === 0) {
     throw new Error('任务保存失败，请返回列表刷新后重试');
-  }
-  if (!opts?.deferSync) {
-    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-    await pushLocalChangesToApi({ awaitSync: true });
   }
   if (input.status !== undefined && input.status !== current.status) {
     void import('@/lib/notification-center')

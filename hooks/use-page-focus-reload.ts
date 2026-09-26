@@ -2,18 +2,20 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
-import {
-  shouldForceApiOnFocusRefresh,
-  shouldSkipPageFocusApiRefresh,
-} from '@/lib/page-api-session';
+import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 
 /** 极短后台（切多任务预览等）不触发重载，避免无意义抢主线程 */
 const SHORT_BACKGROUND_SKIP_MS = 2_500;
+/**
+ * 较长后台才 forceApi 做多端增量对齐。
+ * Tab 内 focus / 写后重进页：只走 local-first 本地重读，禁止「写一次 → 全局 REST」。
+ */
+const FORCE_API_AFTER_BACKGROUND_MS = 30_000;
 
 /**
  * 挂载时必定 reload 一次（冷启动首次进 Tab 触发同步/读库）。
- * 热会话内同 Tab 再次聚焦时按页面策略跳过重载；从后台回前台且当前页仍聚焦时也会尝试刷新（多端对齐）。
- * 任务页在冷却外的 focus 会带 forceApi，以便多端增量拉齐且不绕过 localOnly 上下文。
+ * 热会话内同 Tab 再次聚焦：按策略跳过，或仅本地重读（forceApi=false）。
+ * 仅从较长后台回前台时 forceApi，避免写操作被误升级成全局重新拉网。
  */
 export function usePageFocusReload(
   pageKey: string,
@@ -25,11 +27,6 @@ export function usePageFocusReload(
   const skipNextFocusReloadRef = useRef(true);
   const isFocusedRef = useRef(false);
   const backgroundedAtMsRef = useRef<number | null>(null);
-
-  const invokeReload = useCallback((forceApi?: boolean) => {
-    const force = forceApi === true || shouldForceApiOnFocusRefresh(pageKey);
-    void reloadRef.current?.(force);
-  }, [pageKey]);
 
   useEffect(() => {
     // 挂载首次：不强制 forceApi，交给 resolvePageApiReadOpts（未同步则 REST，已同步则本地）
@@ -46,12 +43,13 @@ export function usePageFocusReload(
         };
       }
       if (!shouldSkipPageFocusApiRefresh(pageKey)) {
-        invokeReload();
+        // 写后脏标清会话 → 这里只重读本地，不打全局 REST
+        void reloadRef.current?.(false);
       }
       return () => {
         isFocusedRef.current = false;
       };
-    }, [pageKey, invokeReload]),
+    }, [pageKey]),
   );
 
   useEffect(() => {
@@ -66,11 +64,11 @@ export function usePageFocusReload(
       }
     };
 
-    const tryReload = () => {
+    const tryReload = (forceApi: boolean) => {
       if (cancelled) return;
       if (!isFocusedRef.current) return;
-      if (shouldSkipPageFocusApiRefresh(pageKey)) return;
-      invokeReload();
+      if (!forceApi && shouldSkipPageFocusApiRefresh(pageKey)) return;
+      void reloadRef.current?.(forceApi);
     };
 
     const onChange = (next: AppStateStatus) => {
@@ -85,12 +83,13 @@ export function usePageFocusReload(
       backgroundedAtMsRef.current = null;
       if (!isFocusedRef.current) return;
 
-      if (
-        backgroundedAt != null &&
-        Date.now() - backgroundedAt < SHORT_BACKGROUND_SKIP_MS
-      ) {
+      const backgroundMs =
+        backgroundedAt != null ? Date.now() - backgroundedAt : 0;
+      if (backgroundMs > 0 && backgroundMs < SHORT_BACKGROUND_SKIP_MS) {
         return;
       }
+
+      const forceApi = backgroundMs >= FORCE_API_AFTER_BACKGROUND_MS;
 
       // 回前台先让首帧画完，再拉数
       cancelAfterInteractions?.cancel();
@@ -98,7 +97,7 @@ export function usePageFocusReload(
       cancelAfterInteractions = InteractionManager.runAfterInteractions(() => {
         cancelAfterInteractions = null;
         clearRetry();
-        retryTimer = setTimeout(() => tryReload(), 120);
+        retryTimer = setTimeout(() => tryReload(forceApi), 120);
       });
     };
     const sub = AppState.addEventListener('change', onChange);
@@ -108,5 +107,5 @@ export function usePageFocusReload(
       clearRetry();
       sub.remove();
     };
-  }, [pageKey, invokeReload]);
+  }, [pageKey]);
 }

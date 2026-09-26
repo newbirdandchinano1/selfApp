@@ -405,7 +405,7 @@ export default function EditFinanceTransactionScreen() {
             <View style={[styles.aiCommentCard, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#faf8ff' }]}>
             <MaterialIcons name="auto-awesome" size={18} color={aiComment ? secondary : subtle} />
             <Text style={[styles.aiCommentText, { color: aiComment ? text : subtle }]}>
-              {aiComment || '暂无 AI 评价，保存后会尝试自动生成；也可在列表页查看完整评价。'}
+              {aiComment || '暂无 AI 评价。保存本笔（尚无评价时）会尝试生成；也可点下方按钮手动刷新。'}
             </Text>
           </View>
 
