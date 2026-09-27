@@ -23,6 +23,10 @@ import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import {
   consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerInitPayload, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
+import {
+  canEnableAutoPlaceIntoSchedule,
+  parseAutoPlaceIntoSchedule,
+} from '@/lib/schedule/task-virtual-placement';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
@@ -226,6 +230,7 @@ type EditTaskFormSnapshot = {
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
   isLongTermTask: boolean;
+  autoPlaceIntoSchedule: boolean;
   rewardPointsText: string;
 };
 
@@ -259,6 +264,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     scheduleMeta,
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
     isLongTermTask: getIsLongTermTask(task.extra_data),
+    autoPlaceIntoSchedule: parseAutoPlaceIntoSchedule(task.extra_data),
     rewardPointsText: String(parseRewardPointsFromExtraData(task.extra_data)),
   };
 }
@@ -273,6 +279,7 @@ function buildFormSnapshotFromFields(input: {
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
   isLongTermTask: boolean;
+  autoPlaceIntoSchedule: boolean;
   rewardPointsText: string;
 }): EditTaskFormSnapshot {
   return {
@@ -285,6 +292,7 @@ function buildFormSnapshotFromFields(input: {
     scheduleMeta: input.scheduleMeta,
     boundHabitIds: input.boundHabitIds,
     isLongTermTask: input.isLongTermTask,
+    autoPlaceIntoSchedule: input.autoPlaceIntoSchedule,
     rewardPointsText: String(normalizeRewardPoints(input.rewardPointsText)),
   };
 }
@@ -339,6 +347,7 @@ export default function EditTaskScreen() {
   const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
+  const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<TagRow[]>([]);
@@ -362,6 +371,7 @@ export default function EditTaskScreen() {
   const taskSnapshotRef = React.useRef(taskSnapshot);
   const boundHabitIdsRef = React.useRef(boundHabitIds);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
+  const autoPlaceIntoScheduleRef = React.useRef(autoPlaceIntoSchedule);
   const rewardPointsTextRef = React.useRef(rewardPointsText);
   const selectedTagIdsRef = React.useRef(selectedTagIds);
   titleRef.current = title;
@@ -374,8 +384,39 @@ export default function EditTaskScreen() {
   taskSnapshotRef.current = taskSnapshot;
   boundHabitIdsRef.current = boundHabitIds;
   isLongTermTaskRef.current = isLongTermTask;
+  autoPlaceIntoScheduleRef.current = autoPlaceIntoSchedule;
   rewardPointsTextRef.current = rewardPointsText;
   selectedTagIdsRef.current = selectedTagIds;
+
+  React.useEffect(() => {
+    if (!autoPlaceIntoSchedule) return;
+    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
+    if (!gate.ok) setAutoPlaceIntoSchedule(false);
+  }, [autoPlaceIntoSchedule, scheduleMeta, repeatText]);
+
+  const openSchedulePickerRef = React.useRef<() => void>(() => {});
+  const toggleAutoPlaceIntoSchedule = React.useCallback(() => {
+    if (autoPlaceIntoSchedule) {
+      setAutoPlaceIntoSchedule(false);
+      return;
+    }
+    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
+    if (!gate.ok) {
+      if (gate.reason === 'no-repeat') {
+        Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
+          { text: '取消', style: 'cancel' },
+          { text: '去设置', onPress: () => openSchedulePickerRef.current() },
+        ]);
+        return;
+      }
+      Alert.alert('无法开启自动入格', '自动入格需在日程中开启「具体时间」。', [
+        { text: '取消', style: 'cancel' },
+        { text: '去设置', onPress: () => openSchedulePickerRef.current() },
+      ]);
+      return;
+    }
+    setAutoPlaceIntoSchedule(true);
+  }, [autoPlaceIntoSchedule, repeatText, scheduleMeta]);
 
   const inheritsProjectPriority = !!taskSnapshot?.project_id;
   const isRootTask = !taskSnapshot?.parent_task_id;
@@ -441,10 +482,11 @@ export default function EditTaskScreen() {
       scheduleMeta,
       boundHabitIds,
       isLongTermTask,
+      autoPlaceIntoSchedule,
       rewardPointsText,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [acceptanceCriteria, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
+  }, [acceptanceCriteria, autoPlaceIntoSchedule, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
 
   const reload = React.useCallback(async (forceApi = false) => {
     if (!taskId) return;
@@ -504,6 +546,7 @@ export default function EditTaskScreen() {
       },
     });
   }, [inheritsProjectSchedule, router, scheduleMeta, scheduleSource, taskDateLimit]);
+  openSchedulePickerRef.current = openSchedulePicker;
 
   const readAddSubtaskResult = React.useCallback(async () => {
     const payload = globalThis.__addSubtaskResult as { source: string; task: SubtaskDraft } | undefined;
@@ -651,6 +694,7 @@ export default function EditTaskScreen() {
       }
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
       setIsLongTermTask(getIsLongTermTask(task.extra_data));
+      setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
       if (!task.parent_task_id) {
@@ -838,6 +882,19 @@ export default function EditTaskScreen() {
       let deadlineForDue = deadlineTextRef.current;
       let reminderForExtra = reminderTextRef.current;
       let repeatForExtra = repeatTextRef.current;
+      let wantAutoPlace = autoPlaceIntoScheduleRef.current;
+      if (wantAutoPlace) {
+        const gate = canEnableAutoPlaceIntoSchedule(meta, repeatForExtra);
+        if (!gate.ok) {
+          Alert.alert(
+            '无法保存任务',
+            gate.reason === 'no-repeat'
+              ? '自动入格需先设置重复规则。'
+              : '自动入格需在日程中设置具体时间。',
+          );
+          return false;
+        }
+      }
       let nextInheritsSchedule = inheritsProjectSchedule;
       let nextInheritsTags = inheritsProjectTags;
       let forcedProjectSchedule = projectScheduleMeta;
@@ -894,6 +951,11 @@ export default function EditTaskScreen() {
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDateFromDeadlineText(deadlineForDue));
       const parsedExtra = parseTaskExtraData(snapshot.extra_data);
       delete (parsedExtra as Record<string, unknown>).completion_reward;
+      if (wantAutoPlace) {
+        parsedExtra.autoPlaceIntoSchedule = true;
+      } else {
+        delete parsedExtra.autoPlaceIntoSchedule;
+      }
       const mergedExtra = mergeRewardPointsIntoExtraData(
         mergeLongTermTaskIntoExtraData(
           mergeBoundHabitIdsIntoExtraData(
@@ -953,6 +1015,7 @@ export default function EditTaskScreen() {
         scheduleMeta: meta,
         boundHabitIds: boundHabitIdsRef.current,
         isLongTermTask: isLongTermTaskRef.current,
+        autoPlaceIntoSchedule: wantAutoPlace,
         rewardPointsText: rewardPointsTextRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
@@ -1249,6 +1312,32 @@ export default function EditTaskScreen() {
               locked={inheritsProjectSchedule}
               label="时间限制"
             />
+            <Pressable
+              onPress={toggleAutoPlaceIntoSchedule}
+              disabled={loading}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: autoPlaceIntoSchedule }}
+              style={({ pressed }) => [
+                styles.longTermRow,
+                {
+                  backgroundColor: autoPlaceIntoSchedule ? `${primary}12` : fieldBg,
+                  borderColor: autoPlaceIntoSchedule ? primary : 'transparent',
+                  opacity: loading ? 0.65 : pressed ? 0.88 : 1,
+                  marginTop: 10,
+                },
+              ]}>
+              <View style={styles.longTermTextWrap}>
+                <Text style={[styles.longTermTitle, { color: theme.text }]}>自动入格</Text>
+                <Text style={[styles.longTermHint, { color: outline }]}>
+                  按重复日自动叠到日程表对应格子；需先设置重复与具体时间
+                </Text>
+              </View>
+              <MaterialIcons
+                name={autoPlaceIntoSchedule ? 'check-box' : 'check-box-outline-blank'}
+                size={22}
+                color={autoPlaceIntoSchedule ? primary : outline}
+              />
+            </Pressable>
           </View>
 
           <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>

@@ -20,6 +20,7 @@ export type AddTaskBridgePayload = {
     acceptanceCriteria?: string;
     schedule?: Record<string, unknown> | null;
     isLongTermTask?: boolean;
+    autoPlaceIntoSchedule?: boolean;
   };
 };
 

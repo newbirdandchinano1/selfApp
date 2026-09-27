@@ -643,13 +643,16 @@ export default function SchedulePickerScreen() {
 
   const buildReturnPayload = React.useCallback((): SchedulePickerResult => {
     const currentRepeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
-    /** 设置了重复规则时，不把日历/时刻区间的选择带回来源页（仅提醒 + 重复规则生效） */
+    /**
+     * 设置了重复规则时，不把日历/时刻区间带回（date/range 无效）。
+     * 仍保留「具体时间」：供重复待办自动入格映射到日程表格子。
+     */
     const repeatLocksSchedule = repeatOption !== '不重复';
     const basePayload = {
       source: sourceKey,
       quickChip: selectedQuickChip,
-      allDay: repeatLocksSchedule ? true : allDay,
-      hasExactTime: repeatLocksSchedule ? false : hasExactTime,
+      allDay: repeatLocksSchedule ? !hasExactTime : allDay,
+      hasExactTime,
       reminderOption,
       ...(reminderOption !== '不提前' && reminderTimeUserSetRef.current
         ? { reminderHour: reminderTime.getHours(), reminderMinute: reminderTime.getMinutes() }
@@ -659,8 +662,8 @@ export default function SchedulePickerScreen() {
       weeklyDays: [...weeklyDays],
       monthlyDays: [...monthlyDays],
       yearlyDate: toLocalYMD(yearlyDate),
-      startTime: repeatLocksSchedule ? '' : startTime.toISOString(),
-      endTime: repeatLocksSchedule ? '' : endTime.toISOString(),
+      startTime: hasExactTime ? startTime.toISOString() : '',
+      endTime: hasExactTime ? endTime.toISOString() : '',
     };
 
     if (tab === 'time') {

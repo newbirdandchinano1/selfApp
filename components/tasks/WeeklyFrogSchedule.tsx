@@ -19,6 +19,10 @@ import {
   buildVirtualHabitPlacementsForDays,
   type VirtualHabitPlacement,
 } from '@/lib/schedule/habit-virtual-placement';
+import {
+  buildVirtualTaskPlacementsForDays,
+  type VirtualTaskPlacement,
+} from '@/lib/schedule/task-virtual-placement';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
@@ -92,9 +96,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 export type ScheduleZoomMode = 'minimal' | 'agenda' | 'grid';
 
 type TodayCompactItem = {
-  /** 青蛙占用；习惯虚拟块时为空 */
+  /** 青蛙占用；习惯/自动入格待办虚拟块时为空 */
   placement: SchedulePlacementRow | null;
   habit: VirtualHabitPlacement | null;
+  virtualTask: VirtualTaskPlacement | null;
   title: string;
   done: boolean;
   timeLabel: string;
@@ -453,9 +458,12 @@ export function WeeklyFrogSchedule({
   const [view, setView] = React.useState<WeekScheduleView | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [virtualHabits, setVirtualHabits] = React.useState<VirtualHabitPlacement[]>([]);
+  const [virtualTasks, setVirtualTasks] = React.useState<VirtualTaskPlacement[]>([]);
   /** 防止指派连发 notify 时旧 reload 用空打卡 Map 覆盖已完成习惯 */
   const reloadGenerationRef = React.useRef(0);
   const checkInsMapsRef = React.useRef<Map<string, Record<string, number>>>(new Map());
+  const subjectsRef = React.useRef(subjects);
+  subjectsRef.current = subjects;
   const [gridWidth, setGridWidth] = React.useState(0);
   const hPagerRef = React.useRef<ScrollView>(null);
   const headerPagerRef = React.useRef<ScrollView>(null);
@@ -477,6 +485,7 @@ export function WeeklyFrogSchedule({
     slotIndex: number;
     placements: SchedulePlacementRow[];
     habits: VirtualHabitPlacement[];
+    virtualTasks: VirtualTaskPlacement[];
     editable: boolean;
   } | null>(null);
 
@@ -675,6 +684,16 @@ export function WeeklyFrogSchedule({
             checkInsByHabit: checkInsMaps,
           }),
         );
+        setVirtualTasks(
+          buildVirtualTaskPlacementsForDays({
+            tasks: subjectsRef.current.tasks,
+            dayYmds: days,
+            logicalTodayYmd,
+            axis: data.axis,
+            dayBoundary: boundary,
+            placements: data.placements,
+          }),
+        );
       } catch (err) {
         if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
@@ -694,6 +713,28 @@ export function WeeklyFrogSchedule({
   React.useEffect(() => {
     void reload(loadDayYmds);
   }, [loadDaysKey, reload, loadDayYmds]);
+
+  // 任务列表变更（完成/编辑自动入格）时重算虚拟待办，不必整表 reload
+  React.useEffect(() => {
+    if (!view) return;
+    let cancelled = false;
+    void loadTasksDayBoundary().then((boundary) => {
+      if (cancelled) return;
+      setVirtualTasks(
+        buildVirtualTaskPlacementsForDays({
+          tasks: subjects.tasks,
+          dayYmds: loadDayYmdsRef.current,
+          logicalTodayYmd,
+          axis: view.axis,
+          dayBoundary: boundary,
+          placements: view.placements,
+        }),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [subjects.tasks, view, logicalTodayYmd]);
 
   // 任意本地课表变更（含设置弹窗改轴）立即静默重载
   React.useEffect(() => {
@@ -773,20 +814,33 @@ export function WeeklyFrogSchedule({
     return map;
   }, [virtualHabits]);
 
-  // 指派/打卡后 virtualHabits、placements 会变：同步已打开的「本格内容」列表里的完成态
+  const virtualTasksByCell = React.useMemo(() => {
+    const map = new Map<CellKey, VirtualTaskPlacement[]>();
+    for (const t of virtualTasks) {
+      const key = cellKey(t.assignYmd, t.startSlotIndex);
+      const list = map.get(key) ?? [];
+      list.push(t);
+      map.set(key, list);
+    }
+    return map;
+  }, [virtualTasks]);
+
+  // 指派/打卡后 virtualHabits、virtualTasks、placements 会变：同步已打开的「本格内容」列表里的完成态
   React.useEffect(() => {
     setCellList((prev) => {
       if (!prev) return prev;
       const key = cellKey(prev.assignYmd, prev.slotIndex);
       const habits = habitsByCell.get(key) ?? [];
+      const vTasks = virtualTasksByCell.get(key) ?? [];
       const covering = placementsByCell.get(key) ?? [];
       return {
         ...prev,
         habits: [...habits],
+        virtualTasks: [...vTasks],
         placements: uniquePlacementsBySubject(covering),
       };
     });
-  }, [habitsByCell, placementsByCell]);
+  }, [habitsByCell, virtualTasksByCell, placementsByCell]);
 
   const nowLineTop = React.useMemo(() => {
     if (!view || !layout || !dayYmds.includes(logicalTodayYmd)) return null;
@@ -973,6 +1027,7 @@ export function WeeklyFrogSchedule({
     slotIndex: number,
     list: SchedulePlacementRow[],
     habits: VirtualHabitPlacement[],
+    vTasks: VirtualTaskPlacement[],
     editable: boolean,
   ) => {
     setCellList({
@@ -980,6 +1035,7 @@ export function WeeklyFrogSchedule({
       slotIndex,
       placements: uniquePlacementsBySubject(list),
       habits: [...habits],
+      virtualTasks: [...vTasks],
       editable,
     });
   };
@@ -1004,10 +1060,21 @@ export function WeeklyFrogSchedule({
     [logicalTodayYmd, onHabitCheckIn, onHabitUndo],
   );
 
+  const tapVirtualTask = React.useCallback(
+    (task: VirtualTaskPlacement) => {
+      if (!onToggleDone) return;
+      const subject = resolveSubject('task', task.taskId, subjects, task.assignYmd);
+      if (!subject) return;
+      confirmTogglePlacementDone(subject, task.assignYmd, onToggleDone);
+    },
+    [onToggleDone, subjects],
+  );
+
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
     const habits = habitsByCell.get(key) ?? [];
+    const vTasks = virtualTasksByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
 
     if (reassignPending && editable) {
@@ -1026,7 +1093,7 @@ export function WeeklyFrogSchedule({
       return;
     }
 
-    if (list.length === 0 && habits.length === 0) {
+    if (list.length === 0 && habits.length === 0 && vTasks.length === 0) {
       if (editable) openPlace(assignYmd, slotIndex);
       return;
     }
@@ -1036,14 +1103,18 @@ export function WeeklyFrogSchedule({
       return;
     }
     const unique = uniquePlacementsBySubject(list);
-    const totalItems = unique.length + habits.length;
-    /** 多只 / 含习惯 / 只读：先弹出列表 */
+    const totalItems = unique.length + habits.length + vTasks.length;
+    /** 多只 / 含习惯或虚拟待办 / 只读：先弹出列表 */
     if (totalItems > 1 || !editable) {
-      openCellList(assignYmd, slotIndex, list, habits, editable);
+      openCellList(assignYmd, slotIndex, list, habits, vTasks, editable);
       return;
     }
-    if (habits.length === 1 && unique.length === 0) {
+    if (habits.length === 1 && unique.length === 0 && vTasks.length === 0) {
       tapVirtualHabit(habits[0]!);
+      return;
+    }
+    if (vTasks.length === 1 && unique.length === 0 && habits.length === 0) {
+      tapVirtualTask(vTasks[0]!);
       return;
     }
     const display = pickDisplayPlacement(unique, subjects, assignYmd);
@@ -1066,12 +1137,13 @@ export function WeeklyFrogSchedule({
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
     const habits = habitsByCell.get(key) ?? [];
+    const vTasks = virtualTasksByCell.get(key) ?? [];
     const editable = dayEditable(assignYmd, logicalTodayYmd);
-    if (list.length === 0 && habits.length === 0) {
+    if (list.length === 0 && habits.length === 0 && vTasks.length === 0) {
       if (editable) openPlace(assignYmd, slotIndex);
       return;
     }
-    openCellList(assignYmd, slotIndex, list, habits, editable);
+    openCellList(assignYmd, slotIndex, list, habits, vTasks, editable);
   };
 
   const openDetail = (p: SchedulePlacementRow) => {
@@ -1124,7 +1196,8 @@ export function WeeklyFrogSchedule({
       if (p.orphaned || p.startSlotIndex == null) return false;
       return ymdForWeekday(p.weekStartYmd, p.weekday) === logicalTodayYmd;
     }) ?? false) ||
-    virtualHabits.some((h) => h.assignYmd === logicalTodayYmd);
+    virtualHabits.some((h) => h.assignYmd === logicalTodayYmd) ||
+    virtualTasks.some((t) => t.assignYmd === logicalTodayYmd);
 
   const todayCompactItems = React.useMemo(() => {
     if (!view) return [];
@@ -1139,6 +1212,7 @@ export function WeeklyFrogSchedule({
       items.push({
         placement: p,
         habit: null,
+        virtualTask: null,
         title: sub?.title?.trim() || '青蛙',
         done: !!sub?.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1154,6 +1228,7 @@ export function WeeklyFrogSchedule({
       items.push({
         placement: null,
         habit: h,
+        virtualTask: null,
         title: h.name,
         done: h.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1162,14 +1237,32 @@ export function WeeklyFrogSchedule({
         endMins,
       });
     }
+    for (const t of virtualTasks) {
+      if (t.assignYmd !== logicalTodayYmd) continue;
+      const startMins = slotStartMinutes(view.axis, t.startSlotIndex);
+      const endMins = placementEndMinutes(view.axis, t.startSlotIndex, 1);
+      items.push({
+        placement: null,
+        habit: null,
+        virtualTask: t,
+        title: t.title,
+        done: t.done,
+        timeLabel: formatMinutesAsHm(startMins),
+        endLabel: formatMinutesAsHm(endMins),
+        startMins,
+        endMins,
+      });
+    }
     items.sort((a, b) => {
-      const sa = a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? 0;
-      const sb = b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? 0;
+      const sa =
+        a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? a.virtualTask?.startSlotIndex ?? 0;
+      const sb =
+        b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? b.virtualTask?.startSlotIndex ?? 0;
       if (sa !== sb) return sa - sb;
       return a.title.localeCompare(b.title, 'zh');
     });
     return items;
-  }, [view, logicalTodayYmd, subjects, virtualHabits]);
+  }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks]);
 
   const minimalFocus = React.useMemo(() => {
     const nowMins =
@@ -1182,19 +1275,24 @@ export function WeeklyFrogSchedule({
       (x) => !x.done && x.endMins <= nowMins,
     );
 
+    const compactItemId = (x: TodayCompactItem) =>
+      x.placement?.id ??
+      (x.habit ? `habit:${x.habit.habitId}` : null) ??
+      (x.virtualTask ? `vtask:${x.virtualTask.taskId}` : x.title);
+
     const mergeFocusItems = (slotItems: TodayCompactItem[]) => {
       const byId = new Map<string, TodayCompactItem>();
       for (const x of overdueItems) {
-        const id = x.placement?.id ?? (x.habit ? `habit:${x.habit.habitId}` : x.title);
-        byId.set(id, x);
+        byId.set(compactItemId(x), x);
       }
       for (const x of slotItems) {
-        const id = x.placement?.id ?? (x.habit ? `habit:${x.habit.habitId}` : x.title);
-        byId.set(id, x);
+        byId.set(compactItemId(x), x);
       }
       return [...byId.values()].sort((a, b) => {
-        const sa = a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? 0;
-        const sb = b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? 0;
+        const sa =
+          a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? a.virtualTask?.startSlotIndex ?? 0;
+        const sb =
+          b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? b.virtualTask?.startSlotIndex ?? 0;
         if (sa !== sb) return sa - sb;
         return a.title.localeCompare(b.title, 'zh');
       });
@@ -1400,7 +1498,9 @@ export function WeeklyFrogSchedule({
             const key = cellKey(ymd, slotIndex);
             const covering = placementsByCell.get(key) ?? [];
             const cellHabits = habitsByCell.get(key) ?? [];
-            const isEmpty = covering.length === 0 && cellHabits.length === 0;
+            const cellVirtualTasks = virtualTasksByCell.get(key) ?? [];
+            const isEmpty =
+              covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0;
             return (
               <Pressable
                 key={`work-${slotIndex}`}
@@ -1417,7 +1517,9 @@ export function WeeklyFrogSchedule({
                 ]}>
                 {(() => {
                   // 跨格占用的每一格都画色块+任务名（与角标 covering 口径一致）
-                  if (covering.length === 0 && cellHabits.length === 0) return null;
+                  if (covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0) {
+                    return null;
+                  }
                   const display =
                     covering.length > 0
                       ? pickDisplayPlacement(covering, subjects, ymd)
@@ -1425,6 +1527,10 @@ export function WeeklyFrogSchedule({
                   const primaryHabit =
                     !display && cellHabits.length > 0
                       ? [...cellHabits].sort((a, b) => Number(a.done) - Number(b.done))[0]
+                      : null;
+                  const primaryVirtualTask =
+                    !display && !primaryHabit && cellVirtualTasks.length > 0
+                      ? [...cellVirtualTasks].sort((a, b) => Number(a.done) - Number(b.done))[0]
                       : null;
                   // 按当前格单格高度绘制，避免「起点合并色块」被下一格背景盖住后只剩角标
                   const h = placementBlockHeight(view.axis, layout, slotIndex, 1) - 6;
@@ -1436,17 +1542,25 @@ export function WeeklyFrogSchedule({
                   const unfinishedHabitTitles = cellHabits
                     .filter((x) => !x.done)
                     .map((x) => x.name);
+                  const unfinishedVirtualTaskTitles = cellVirtualTasks
+                    .filter((x) => !x.done)
+                    .map((x) => x.title);
                   const unfinishedTitles = [
                     ...unfinishedFrogTitles,
                     ...unfinishedHabitTitles,
+                    ...unfinishedVirtualTaskTitles,
                   ];
                   const showUnfinished =
                     unfinishedTitles.length > 0 ? unfinishedTitles : null;
                   const titleDone = !showUnfinished;
                   const taskCount =
-                    uniquePlacementsBySubject(covering).length + cellHabits.length;
+                    uniquePlacementsBySubject(covering).length +
+                    cellHabits.length +
+                    cellVirtualTasks.length;
                   const allDone =
-                    (display?.done ?? true) && cellHabits.every((x) => x.done);
+                    (display?.done ?? true) &&
+                    cellHabits.every((x) => x.done) &&
+                    cellVirtualTasks.every((x) => x.done);
                   const fill = scheduleBlockColors(taskCount, {
                     isPast: isPastCol,
                     allDone,
@@ -1463,10 +1577,18 @@ export function WeeklyFrogSchedule({
                     },
                   ];
                   const fallbackTitle =
-                    display?.title ?? primaryHabit?.name ?? '日程';
+                    display?.title ??
+                    primaryHabit?.name ??
+                    primaryVirtualTask?.title ??
+                    '日程';
                   return (
                     <View
-                      key={display?.primary.id ?? `habit-${primaryHabit?.habitId}`}
+                      key={
+                        display?.primary.id ??
+                        (primaryHabit
+                          ? `habit-${primaryHabit.habitId}`
+                          : `vtask-${primaryVirtualTask?.taskId}`)
+                      }
                       pointerEvents="none"
                       style={[
                         styles.block,
@@ -1504,7 +1626,8 @@ export function WeeklyFrogSchedule({
                 {(() => {
                   const unfinishedFrogs = countUnfinishedInCell(covering, subjects, ymd);
                   const unfinishedHabits = cellHabits.filter((x) => !x.done).length;
-                  const unfinished = unfinishedFrogs + unfinishedHabits;
+                  const unfinishedVTasks = cellVirtualTasks.filter((x) => !x.done).length;
+                  const unfinished = unfinishedFrogs + unfinishedHabits + unfinishedVTasks;
                   if (unfinished <= 1 || isPastCol) return null;
                   return (
                     <View style={[styles.badge, { backgroundColor: primary }]}>
@@ -1726,10 +1849,19 @@ export function WeeklyFrogSchedule({
     opts?: { dense?: boolean },
   ) => (
     <Pressable
-      key={item.placement?.id ?? `habit-${item.habit?.habitId}-${item.startMins}`}
+      key={
+        item.placement?.id ??
+        (item.habit
+          ? `habit-${item.habit.habitId}-${item.startMins}`
+          : `vtask-${item.virtualTask?.taskId}-${item.startMins}`)
+      }
       onPress={() => {
         if (item.habit) {
           tapVirtualHabit(item.habit);
+          return;
+        }
+        if (item.virtualTask) {
+          tapVirtualTask(item.virtualTask);
           return;
         }
         if (item.placement) openDetail(item.placement);
@@ -2343,7 +2475,10 @@ export function WeeklyFrogSchedule({
               { backgroundColor: theme.surface, borderColor: theme.outline },
             ]}>
             <Text style={[styles.listTitle, { color: theme.text }]}>
-              {(cellList?.placements.length ?? 0) + (cellList?.habits.length ?? 0) > 1
+              {(cellList?.placements.length ?? 0) +
+                (cellList?.habits.length ?? 0) +
+                (cellList?.virtualTasks.length ?? 0) >
+              1
                 ? '选择本格内容'
                 : '本格占用'}
             </Text>
@@ -2374,6 +2509,36 @@ export function WeeklyFrogSchedule({
                     习惯 · {h.name}
                   </Text>
                   {h.done ? (
+                    <MaterialIcons name="check-circle" size={16} color={successTint} />
+                  ) : null}
+                </Pressable>
+              ))}
+              {(cellList?.virtualTasks ?? []).map((t) => (
+                <Pressable
+                  key={`vtask-${t.taskId}`}
+                  onPress={() => {
+                    setCellList(null);
+                    tapVirtualTask(t);
+                  }}
+                  style={({ pressed }) => [
+                    styles.listRow,
+                    {
+                      backgroundColor: surfaceLow,
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <View
+                    style={[
+                      styles.listRowRail,
+                      { backgroundColor: t.done ? `${outline}66` : primary },
+                    ]}
+                  />
+                  <Text
+                    style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }}
+                    numberOfLines={2}>
+                    待办 · {t.title}
+                  </Text>
+                  {t.done ? (
                     <MaterialIcons name="check-circle" size={16} color={successTint} />
                   ) : null}
                 </Pressable>

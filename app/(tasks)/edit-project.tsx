@@ -109,6 +109,7 @@ type Subtask = {
   schedule?: ProjectScheduleMeta | null;
   boundHabitIds?: string[];
   isLongTermTask?: boolean;
+  autoPlaceIntoSchedule?: boolean;
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
@@ -482,6 +483,7 @@ export default function EditProjectScreen() {
             reminder: task.reminder || task.reminderText || '',
             repeat: task.repeat || task.repeatText || '',
             schedule: taskSchedule,
+            ...(task.autoPlaceIntoSchedule ? { autoPlaceIntoSchedule: true } : {}),
           }),
           task.isLongTermTask === true,
         ),

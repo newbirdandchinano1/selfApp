@@ -4,6 +4,9 @@ import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
+import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
+import { getTodayHabitCountsMap } from '@/lib/repositories/habits/habit-check-in';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import {
   isHabitDayDisplayCompleted,
   parseHabitDailyGoal,
@@ -295,6 +298,97 @@ async function pullHabitsGridFromApi(opts: {
   };
 }
 
+function resolveHabitContextBucket(
+  raw: string | null | undefined,
+  contexts: { id: string; name: string }[],
+): { id: string; title: string } {
+  const value = raw?.trim() || '';
+  if (!value) return { id: '__uncategorized__', title: '未分类' };
+  for (const ctx of contexts) {
+    if (value === ctx.id || value === ctx.name) {
+      return { id: ctx.id || ctx.name, title: ctx.name || ctx.id };
+    }
+  }
+  return { id: value, title: value };
+}
+
+/**
+ * localOnly / 接口失败时从 SQLite 拼网格。
+ * 次数与完成态由 TasksScreen 的 overlayHabitSectionsWithLocalCheckIns 再覆盖。
+ */
+async function readHabitsGridFromLocal(logicalToday: string): Promise<TasksHabitsGridData> {
+  const [habits, contexts, todayCounts] = await Promise.all([
+    getHabits(),
+    getHabitContexts().catch(() => []),
+    getTodayHabitCountsMap(logicalToday).catch(() => new Map<string, number>()),
+  ]);
+
+  const contextRefs = contexts.map((c) => ({
+    id: String(c.id ?? '').trim(),
+    name: String(c.name ?? '').trim(),
+  }));
+
+  const itemsByBucket = new Map<string, HabitsGridSection['items']>();
+  const bucketMeta = new Map<string, { id: string; title: string }>();
+
+  for (const habit of habits) {
+    const kind = parseHabitKind(habit.extra_data);
+    if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) continue;
+
+    const bucket = resolveHabitContextBucket(habit.context, contextRefs);
+    const key = bucket.title;
+    if (!bucketMeta.has(key)) bucketMeta.set(key, bucket);
+    const list = itemsByBucket.get(key) ?? [];
+    list.push({
+      id: habit.id,
+      name: habit.name,
+      icon: habit.icon || '✓',
+      kind,
+      todayCount: todayCounts.get(habit.id) ?? 0,
+      dailyGoal: parseHabitDailyGoal(habit.extra_data, kind),
+      displayCompleted: false,
+      hiddenOnViewDay: false,
+      periodProgress: null,
+      periodGoal: null,
+      note: habit.note,
+      extraData: habit.extra_data,
+      context: habit.context,
+    });
+    itemsByBucket.set(key, list);
+  }
+
+  const rawSections: HabitsGridSection[] = [];
+  const usedTitles = new Set<string>();
+  for (const ctx of contextRefs) {
+    if (!ctx.name) continue;
+    const items = itemsByBucket.get(ctx.name);
+    if (!items || items.length === 0) continue;
+    usedTitles.add(ctx.name);
+    rawSections.push({
+      id: ctx.id || ctx.name,
+      title: ctx.name,
+      items,
+    });
+  }
+  for (const [title, items] of itemsByBucket) {
+    if (usedTitles.has(title) || items.length === 0) continue;
+    const meta = bucketMeta.get(title) ?? { id: title || '__uncategorized__', title: title || '未分类' };
+    rawSections.push({
+      id: meta.id,
+      title: meta.title,
+      items,
+    });
+  }
+
+  const sections = await mergeHabitGridExtraFields(rawSections, logicalToday);
+  return {
+    logicalToday,
+    sections,
+    serverFiltered: false,
+    filtersVersion: null,
+  };
+}
+
 /** 习惯网格：`GET /api/pages/tasks/habits-grid` */
 export async function fetchTasksHabitsGrid(opts?: {
   boundary?: TasksDayBoundary;
@@ -310,16 +404,11 @@ export async function fetchTasksHabitsGrid(opts?: {
       return await pullHabitsGridFromApi({ boundary, logicalToday, signal: opts?.signal });
     } catch (e) {
       if (!opts?.offlineFallback) throw e;
-      console.warn('[tasks-habits-grid-api] 接口失败，回退空列表', e);
+      console.warn('[tasks-habits-grid-api] 接口失败，回退本地 SQLite', e);
     }
   }
 
-  return {
-    logicalToday: '',
-    sections: [],
-    serverFiltered: false,
-    filtersVersion: null,
-  };
+  return readHabitsGridFromLocal(logicalToday);
 }
 
 /** 打卡写操作后刷新单条 incrementCap（本地 habits 表） */

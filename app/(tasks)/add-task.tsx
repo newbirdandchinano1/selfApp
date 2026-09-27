@@ -27,6 +27,10 @@ import {
   normalizeRewardPoints,
   parseRewardPointsFromExtraData,
 } from '@/lib/reward-points';
+import {
+  canEnableAutoPlaceIntoSchedule,
+  parseAutoPlaceIntoSchedule,
+} from '@/lib/schedule/task-virtual-placement';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
@@ -86,6 +90,7 @@ type Subtask = {
   acceptanceCriteria?: string;
   schedule?: TaskScheduleMeta | null;
   isLongTermTask?: boolean;
+  autoPlaceIntoSchedule?: boolean;
 };
 type MainTask = { id: string; title: string; due: string };
 
@@ -179,6 +184,7 @@ export default function AddTaskScreen() {
   const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
+  const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
   const [projectName, setProjectName] = React.useState<string | null>(null);
   const [projectPriority, setProjectPriority] = React.useState<TaskPriority>(0);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
@@ -236,6 +242,36 @@ export default function AddTaskScreen() {
     },
   });
   const defaultScheduleApplied = React.useRef(false);
+
+  /** 清除重复或去掉具体时间时关掉自动入格 */
+  React.useEffect(() => {
+    if (!autoPlaceIntoSchedule) return;
+    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
+    if (!gate.ok) setAutoPlaceIntoSchedule(false);
+  }, [autoPlaceIntoSchedule, scheduleMeta, repeatText]);
+
+  const toggleAutoPlaceIntoSchedule = React.useCallback(() => {
+    if (autoPlaceIntoSchedule) {
+      setAutoPlaceIntoSchedule(false);
+      return;
+    }
+    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
+    if (!gate.ok) {
+      if (gate.reason === 'no-repeat') {
+        Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
+          { text: '取消', style: 'cancel' },
+          { text: '去设置', onPress: openSchedulePicker },
+        ]);
+        return;
+      }
+      Alert.alert('无法开启自动入格', '自动入格需在日程中开启「具体时间」。', [
+        { text: '取消', style: 'cancel' },
+        { text: '去设置', onPress: openSchedulePicker },
+      ]);
+      return;
+    }
+    setAutoPlaceIntoSchedule(true);
+  }, [autoPlaceIntoSchedule, openSchedulePicker, repeatText, scheduleMeta]);
 
   React.useEffect(() => {
     if (lockScheduleFromParam) setInheritsProjectSchedule(true);
@@ -332,10 +368,12 @@ export default function AddTaskScreen() {
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
+    setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
     const shelved = task.status === 'shelved';
     setStandaloneIntent(shelved ? 'shelved' : 'active');
     if (shelved) {
       clearSchedule();
+      setAutoPlaceIntoSchedule(false);
       return;
     }
     const loadedSchedule = parseStandaloneTaskScheduleMeta(task.extra_data);
@@ -447,6 +485,20 @@ export default function AddTaskScreen() {
       return;
     }
     const trimmedTitle = titleCheck.title;
+    const wantAutoPlace =
+      autoPlaceIntoSchedule && (!isStandalone || standaloneIntent === 'active');
+    if (wantAutoPlace) {
+      const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
+      if (!gate.ok) {
+        Alert.alert(
+          '无法保存',
+          gate.reason === 'no-repeat'
+            ? '自动入格需先设置重复规则。'
+            : '自动入格需在日程中设置具体时间。',
+        );
+        return;
+      }
+    }
     if (isStandalone) {
       try {
         setIsSubmitting(true);
@@ -459,6 +511,7 @@ export default function AddTaskScreen() {
                 reminder: reminderText || '',
                 repeat: repeatText || '',
                 schedule: scheduleMeta,
+                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
               }),
           normalizeRewardPoints(rewardPointsText),
         );
@@ -529,6 +582,7 @@ export default function AddTaskScreen() {
                 reminder: reminderText || '',
                 repeat: repeatText || '',
                 schedule: scheduleMeta,
+                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
               }),
               isLongTermTask,
             ),
@@ -582,6 +636,7 @@ export default function AddTaskScreen() {
         acceptanceCriteria: acceptanceCriteria.trim(),
         schedule: scheduleMeta,
         isLongTermTask,
+        autoPlaceIntoSchedule: wantAutoPlace,
       },
     });
     router.back();
@@ -782,6 +837,31 @@ export default function AddTaskScreen() {
                     onPress={openSchedulePicker}
                     locked={inheritsProjectSchedule}
                   />
+                  <Pressable
+                    onPress={toggleAutoPlaceIntoSchedule}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: autoPlaceIntoSchedule }}
+                    style={({ pressed }) => [
+                      styles.longTermRow,
+                      {
+                        backgroundColor: autoPlaceIntoSchedule ? `${colors.primary}12` : fieldBg,
+                        borderColor: autoPlaceIntoSchedule ? colors.primary : 'transparent',
+                        opacity: pressed ? 0.88 : 1,
+                        marginTop: Spacing.md,
+                      },
+                    ]}>
+                    <View style={styles.longTermTextWrap}>
+                      <Text style={[styles.longTermTitle, { color: colors.text }]}>自动入格</Text>
+                      <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
+                        按重复日自动叠到日程表对应格子；需先设置重复与具体时间
+                      </Text>
+                    </View>
+                    <MaterialIcons
+                      name={autoPlaceIntoSchedule ? 'check-box' : 'check-box-outline-blank'}
+                      size={22}
+                      color={autoPlaceIntoSchedule ? colors.primary : colors.textSecondary}
+                    />
+                  </Pressable>
                 </View>
               ) : null}
 
