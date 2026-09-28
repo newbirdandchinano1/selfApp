@@ -16,9 +16,11 @@ import {
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
   getFinanceAccounts,
+  loadFinanceAccountDetail,
   updateFinanceAccount,
   upsertFinanceAccountType,
 } from '@/lib/repositories/finance/finance';
+import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
   getCustomAccountTypeDraft,
   getCustomAccountTypeOptions,
@@ -173,8 +175,17 @@ export default function AddAccountScreen() {
         await wrapLoad(async () => {
           try {
             const catalog = await fetchFinanceCatalog({ offlineFallback: true });
-            const rows = catalog.accounts;
-            const row = rows.find((r) => r.id === editAccountId);
+            let row: FinanceAccountBalanceRow | null | undefined = catalog.accounts.find(
+              (r) => r.id === editAccountId,
+            );
+            // catalog 偶发缺少仅本地可见账户时，回退本地详情，避免误报「账户不存在」
+            if (!row) {
+              const local = await loadFinanceAccountDetail({
+                accountId: editAccountId,
+                localOnly: true,
+              });
+              row = local.account;
+            }
             if (!row) {
               Alert.alert('账户不存在', '该账户可能已被删除。', [{ text: '确定', onPress: () => router.back() }]);
               return;

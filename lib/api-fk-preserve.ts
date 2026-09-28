@@ -21,6 +21,8 @@ export const UPLOAD_PRESERVE_FK: ReadonlyArray<{ table: string } & ForeignKeyRef
   { table: 'tasks', fromColumn: 'project_id', parentTable: 'projects' },
   { table: 'tasks', fromColumn: 'parent_task_id', parentTable: 'tasks' },
   { table: 'finance_transactions', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
+  /** 余额校正等流水依赖账户；勿因本批未登记 uploadedPk 而把 account_id 置空，否则服务端报「账户不存在」 */
+  { table: 'finance_transactions', fromColumn: 'account_id', parentTable: 'finance_accounts' },
   { table: 'recipe_items', fromColumn: 'category_id', parentTable: 'recipe_categories' },
   { table: 'habit_check_ins', fromColumn: 'habit_id', parentTable: 'habits' },
 ];

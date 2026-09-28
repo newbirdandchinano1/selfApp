@@ -605,10 +605,29 @@ export async function upsertFinanceAccountsReferencedByTransactions(
   const uploadedAccounts = uploadedPkByTable.get('finance_accounts') ?? new Set<string>();
   uploadedPkByTable.set('finance_accounts', uploadedAccounts);
 
+  const { getDatabase } = await import('@/lib/database');
+  const db = await getDatabase();
+
   for (const aid of accountIds) {
     if (uploadedAccounts.has(aid)) continue;
-    const accountRow = accountRows.find(a => String(a.id) === aid);
-    if (!accountRow) continue;
+    let accountRow = accountRows.find(a => String(a.id) === aid);
+    if (!accountRow && db) {
+      // bundle 可能漏带已 synced 账户：再读一次本地，避免流水先上传导致服务端「账户不存在」
+      const fresh = await db.getFirstAsync<Record<string, unknown>>(
+        'SELECT * FROM finance_accounts WHERE id = ? AND sync_status != ? LIMIT 1',
+        [aid, 'pending_delete'],
+      );
+      if (fresh) {
+        accountRow = fresh;
+        accountRows.push(fresh);
+        rowsByTable.set('finance_accounts', accountRows);
+      }
+    }
+    if (!accountRow) {
+      throw new Error(
+        `关联账户（id: ${aid}）本地不存在，无法同步流水。请返回账户列表刷新后重试。`,
+      );
+    }
     try {
       await upsertRowToApi('finance_accounts', accountRow, accountPkCols, {
         signal,
@@ -622,7 +641,10 @@ export async function upsertFinanceAccountsReferencedByTransactions(
     } catch (e) {
       if (e instanceof ApiRowUploadSkippedError) {
         if (__DEV__) console.warn('[api-sync] 预上传 finance_accounts 跳过', aid, e.message);
-        continue;
+        // 跳过会导致后续流水在服务端报「账户不存在」；必须失败以便重试
+        throw new Error(
+          `关联账户「${String(accountRow.name ?? aid)}」未能同步到服务器：${e.message}`,
+        );
       }
       throw e;
     }

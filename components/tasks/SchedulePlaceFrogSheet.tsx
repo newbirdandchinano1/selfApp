@@ -76,6 +76,13 @@ function kindLabel(c: Pick<DisplayCandidate, 'kind' | 'projectId'>): string {
   return '任务';
 }
 
+function normalizeChipColor(color: unknown): string {
+  const raw = String(color ?? '').trim();
+  if (/^#[0-9A-Fa-f]{6}$/.test(raw)) return raw.toUpperCase();
+  if (/^#[0-9A-Fa-f]{8}$/.test(raw)) return `#${raw.slice(1, 7).toUpperCase()}`;
+  return DEFAULT_PROJECT_TAG_COLOR;
+}
+
 function resolveTags(
   item: {
     tags?: SchedulePlaceTag[] | null;
@@ -84,18 +91,27 @@ function resolveTags(
   colorByName: Map<string, string>,
 ): SchedulePlaceTag[] {
   if (Array.isArray(item.tags) && item.tags.length > 0) {
-    return item.tags.map((t) => {
-      const mapped = colorByName.get(t.name);
-      const raw = (t.color ?? '').trim();
-      const apiOk = /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw.toUpperCase() : null;
-      // 与项目列表同源：本地色表优先
-      return { name: t.name, color: mapped ?? apiOk ?? DEFAULT_PROJECT_TAG_COLOR };
-    });
+    const out: SchedulePlaceTag[] = [];
+    for (const t of item.tags) {
+      if (!t || typeof t !== 'object') continue;
+      const name = String(t.name ?? '').trim();
+      if (!name) continue;
+      const mapped = colorByName.get(name);
+      // 与项目列表同源：本地色表优先，但必须是合法 #RRGGBB（避免 `${color}18` 变成非法 backgroundColor）
+      out.push({
+        name,
+        color: normalizeChipColor(mapped ?? t.color ?? DEFAULT_PROJECT_TAG_COLOR),
+      });
+    }
+    return out;
   }
-  return (item.tagNames ?? []).map((name) => ({
-    name,
-    color: colorByName.get(name) ?? DEFAULT_PROJECT_TAG_COLOR,
-  }));
+  return (item.tagNames ?? [])
+    .map((name) => String(name ?? '').trim())
+    .filter(Boolean)
+    .map((name) => ({
+      name,
+      color: normalizeChipColor(colorByName.get(name) ?? DEFAULT_PROJECT_TAG_COLOR),
+    }));
 }
 
 function resolveOverdue(
@@ -250,22 +266,26 @@ function CandidateMetaChips({
           </Text>
         </View>
       ))}
-      {candidate.tags.slice(0, 3).map((tag) => (
-        <View
-          key={`tag-${tag.name}`}
-          style={[
-            styles.metaChip,
-            {
-              backgroundColor: `${tag.color}18`,
-              borderColor: `${tag.color}44`,
-            },
-          ]}>
-          <View style={[styles.tagDot, { backgroundColor: tag.color }]} />
-          <Text style={[styles.metaChipText, { color: tag.color }]} numberOfLines={1}>
-            {tag.name}
-          </Text>
-        </View>
-      ))}
+      {(candidate.tags ?? []).slice(0, 3).map((tag, index) => {
+        const color = normalizeChipColor(tag?.color);
+        const name = String(tag?.name ?? '').trim() || `标签${index + 1}`;
+        return (
+          <View
+            key={`tag-${name}-${index}`}
+            style={[
+              styles.metaChip,
+              {
+                backgroundColor: `${color}18`,
+                borderColor: `${color}44`,
+              },
+            ]}>
+            <View style={[styles.tagDot, { backgroundColor: color }]} />
+            <Text style={[styles.metaChipText, { color }]} numberOfLines={1}>
+              {name}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -313,7 +333,7 @@ export function SchedulePlaceFrogSheet({
         for (const t of rows) {
           const name = t.name?.trim();
           if (!name) continue;
-          map.set(name, t.color || DEFAULT_PROJECT_TAG_COLOR);
+          map.set(name, normalizeChipColor(t.color || DEFAULT_PROJECT_TAG_COLOR));
         }
         setTagColorByName(map);
       })

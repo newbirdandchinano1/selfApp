@@ -1,5 +1,5 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { ensureLocalRowForWrite, readLocalRowForWrite } from '@/lib/api-local-row';
+import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch, readApiRecord } from '@/lib/api-read';
 import { compareDatetimeDesc, sortBySortOrderAsc, ymdFromDatetime } from '@/lib/api-read-helpers';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
@@ -44,8 +44,9 @@ import type {
 async function getFinanceAccountById(id: string) {
   const pk = id.trim();
   if (!pk) return null;
-  const local = await readLocalRowForWrite<FinanceAccountRow>('finance_accounts', pk);
-  if (local) return local;
+  // 写入前确保本地有行：API 能读到但 SQLite 尚未灌库时，先 seed，避免后续流水同步找不到账户
+  const ensured = await ensureLocalRowForWrite<FinanceAccountRow>('finance_accounts', pk);
+  if (ensured) return ensured;
   return readApiRecord<FinanceAccountRow>('finance_accounts', pk, { offlineFallback: true });
 }
 
@@ -146,7 +147,7 @@ async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<
 async function assertTransactionAmountSign(accountId: string, amount: number) {
   const account = await getFinanceAccountById(accountId);
   if (!account) {
-    throw new Error('finance account not found');
+    throw new Error('账户不存在，请返回列表刷新后重试');
   }
   const signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
   if (amount === 0) {
@@ -684,13 +685,13 @@ export async function deleteFinanceFlowCategory(id: string) {
 
 export async function createFinanceTransaction(
   input: CreateFinanceTransactionInput,
-  opts?: { skipBalanceRecheck?: boolean },
+  opts?: { skipBalanceRecheck?: boolean; awaitSync?: boolean },
 ) {
   await assertTransactionAmountSign(input.account_id, input.amount);
   if (!opts?.skipBalanceRecheck) {
     const account = await getFinanceAccountById(input.account_id);
     if (!account) {
-      throw new Error('finance account not found');
+      throw new Error('账户不存在，请返回列表刷新后重试');
     }
     const signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
     const [curBalance, txnCount] = await Promise.all([
@@ -738,7 +739,11 @@ export async function createFinanceTransaction(
       input.extra_data ?? null,
     ),
   );
-  void pushFinanceChangesToApi();
+  if (opts?.awaitSync) {
+    await pushFinanceChangesToApi({ awaitSync: true });
+  } else {
+    void pushFinanceChangesToApi();
+  }
 
   const txnType = input.transaction_type ?? 'expense';
   if (txnType === 'expense' || txnType === 'income') {
@@ -812,7 +817,7 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
   const fromAccount = await getFinanceAccountById(input.fromAccountId);
   const toAccount = await getFinanceAccountById(input.toAccountId);
   if (!fromAccount || !toAccount) {
-    throw new Error('finance account not found');
+    throw new Error('账户不存在，请返回列表刷新后重试');
   }
 
   const fromIsLiability = isFinanceLiabilityAccount(fromAccount);
@@ -932,7 +937,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
 }): Promise<void> {
   const account = await getFinanceAccountById(input.accountId);
   if (!account) {
-    throw new Error('finance account not found');
+    throw new Error('账户不存在，请返回列表刷新后重试');
   }
 
   let target = input.targetLedgerBalance;
@@ -942,6 +947,19 @@ export async function applyFinanceAccountBalanceCorrection(input: {
   const current = await getFinanceAccountComputedBalance(input.accountId);
   const delta = target - current;
   if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
+
+  // 幽灵 synced：本地有账户但服务端可能缺失。强制标 pending_update，保证本批先推账户再推校正流水。
+  if (account.sync_status === 'synced') {
+    const db = await getDatabase();
+    if (db) {
+      await db.runAsync(
+        `UPDATE finance_accounts
+         SET sync_status = 'pending_update', updated_at = datetime('now')
+         WHERE id = ? AND sync_status = 'synced'`,
+        [input.accountId],
+      );
+    }
+  }
 
   const id = makeTimestampEntityId('ft_badj_', 6);
   const happened_at = formatFinanceHappenedAt(new Date());
@@ -954,55 +972,69 @@ export async function applyFinanceAccountBalanceCorrection(input: {
       ...(transactionType === 'expense' ? { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true } : {}),
     });
 
+  const syncOpts = { awaitSync: true as const };
+
   if (account.sign_rule > 0) {
     if (delta > 0) {
-      await createFinanceTransaction({
-        id,
-        name: '余额校正',
-        happened_at,
-        account_id: input.accountId,
-        transaction_type: 'income',
-        amount: delta,
-        note,
-        extra_data: buildBalanceCorrectionExtra('income'),
-      });
+      await createFinanceTransaction(
+        {
+          id,
+          name: '余额校正',
+          happened_at,
+          account_id: input.accountId,
+          transaction_type: 'income',
+          amount: delta,
+          note,
+          extra_data: buildBalanceCorrectionExtra('income'),
+        },
+        syncOpts,
+      );
     } else {
-      await createFinanceTransaction({
-        id,
-        name: '余额校正',
-        happened_at,
-        account_id: input.accountId,
-        transaction_type: 'expense',
-        amount: -delta,
-        note,
-        extra_data: buildBalanceCorrectionExtra('expense'),
-      });
+      await createFinanceTransaction(
+        {
+          id,
+          name: '余额校正',
+          happened_at,
+          account_id: input.accountId,
+          transaction_type: 'expense',
+          amount: -delta,
+          note,
+          extra_data: buildBalanceCorrectionExtra('expense'),
+        },
+        syncOpts,
+      );
     }
     return;
   }
 
   if (delta > 0) {
-    await createFinanceTransaction({
-      id,
-      name: '余额校正',
-      happened_at,
-      account_id: input.accountId,
-      transaction_type: 'income',
-      amount: -delta,
-      note,
-      extra_data: buildBalanceCorrectionExtra('income'),
-    });
+    await createFinanceTransaction(
+      {
+        id,
+        name: '余额校正',
+        happened_at,
+        account_id: input.accountId,
+        transaction_type: 'income',
+        amount: -delta,
+        note,
+        extra_data: buildBalanceCorrectionExtra('income'),
+      },
+      syncOpts,
+    );
   } else {
-    await createFinanceTransaction({
-      id,
-      name: '余额校正',
-      happened_at,
-      account_id: input.accountId,
-      transaction_type: 'expense',
-      amount: delta,
-      note,
-      extra_data: buildBalanceCorrectionExtra('expense'),
-    });
+    await createFinanceTransaction(
+      {
+        id,
+        name: '余额校正',
+        happened_at,
+        account_id: input.accountId,
+        transaction_type: 'expense',
+        amount: delta,
+        note,
+        extra_data: buildBalanceCorrectionExtra('expense'),
+      },
+      syncOpts,
+    );
   }
 }
 

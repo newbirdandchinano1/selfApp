@@ -6,7 +6,7 @@ import {
   type ProjectsListQueryParams,
 } from '@/lib/api-client';
 import { withApiTableSyncLock } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import { applyApiRecordMissingToLocal, syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
@@ -46,6 +46,21 @@ export type ProjectsListFetchOpts = Omit<ProjectsListQueryParams, 'page' | 'limi
   hideCompletedProjectTasks?: boolean;
 };
 
+/** 项目是否属于当前分类 Tab（与列表展示过滤一致） */
+export function projectBelongsToTab(
+  project: Pick<ProjectRow, 'category_id'>,
+  projectTab: string,
+): boolean {
+  if (projectTab === 'all') return !isProjectInInboxCategory(project.category_id);
+  if (projectTab === INBOX_PROJECT_CATEGORY_ID) return isProjectInInboxCategory(project.category_id);
+  return String(project.category_id ?? '') === projectTab;
+}
+
+function isLocalPendingProjectKeep(project: ProjectRow): boolean {
+  const status = String(project.sync_status ?? 'synced');
+  return status === 'pending_create' || status === 'pending_update';
+}
+
 /** 将 projects-list 接口结果并入已有列表（按 id 覆盖，updated_at 降序） */
 export function mergeProjectRowsById(existing: ProjectRow[], fromApi: ProjectRow[]): ProjectRow[] {
   const map = new Map(existing.map((p) => [String(p.id), p]));
@@ -53,6 +68,24 @@ export function mergeProjectRowsById(existing: ProjectRow[], fromApi: ProjectRow
     map.set(String(p.id), p);
   }
   return [...map.values()].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at));
+}
+
+/**
+ * 以当前 Tab 的接口快照为准：剔除本 Tab 内已不在接口中的项目，
+ * 保留其它 Tab 的行，以及尚未推送的本地 pending_create / pending_update。
+ */
+export function reconcileProjectRowsForTab(
+  existing: ProjectRow[],
+  fromApi: ProjectRow[],
+  projectTab: string,
+): ProjectRow[] {
+  const apiIds = new Set(fromApi.map((p) => String(p.id)));
+  const kept = existing.filter((p) => {
+    if (!projectBelongsToTab(p, projectTab)) return true;
+    if (apiIds.has(String(p.id))) return true;
+    return isLocalPendingProjectKeep(p);
+  });
+  return mergeProjectRowsById(kept, fromApi);
 }
 
 export { countTaskTreeNodes };
@@ -78,6 +111,33 @@ export function mergeProjectTaskTreeMaps(
     }
     if (!tree || tree.length === 0) continue;
     next[projectId] = unionProjectTaskTrees(prev, tree);
+  }
+  return next;
+}
+
+/**
+ * 按 Tab 对账任务树：丢掉本 Tab 内已删除项目的树，接口带回的项目以接口树覆盖（不做并集）。
+ */
+export function reconcileProjectTaskTreeMapsForTab(
+  existing: Record<string, TaskTreeNode[]>,
+  incoming: Record<string, TaskTreeNode[]>,
+  existingProjects: ProjectRow[],
+  projectTab: string,
+  keptProjects: ProjectRow[],
+): Record<string, TaskTreeNode[]> {
+  const keptIds = new Set(keptProjects.map((p) => String(p.id)));
+  const next: Record<string, TaskTreeNode[]> = {};
+  for (const [projectId, tree] of Object.entries(existing)) {
+    if (keptIds.has(projectId)) {
+      next[projectId] = tree;
+      continue;
+    }
+    const row = existingProjects.find((p) => String(p.id) === projectId);
+    if (row && projectBelongsToTab(row, projectTab)) continue;
+    next[projectId] = tree;
+  }
+  for (const [projectId, tree] of Object.entries(incoming)) {
+    next[projectId] = tree;
   }
   return next;
 }
@@ -367,13 +427,32 @@ export function resolveProjectsListQueries(projectTab: string): ProjectsListQuer
 }
 
 function filterProjectsForTab(projectTab: string, projects: ProjectRow[]): ProjectRow[] {
-  if (projectTab === 'all') {
-    return projects.filter((p) => !isProjectInInboxCategory(p.category_id));
+  return projects.filter((p) => projectBelongsToTab(p, projectTab));
+}
+
+/** 本 Tab 接口快照中缺席的已同步本地项目视为服务端已删，物理清除以免列表残留 */
+async function purgeSyncedProjectsAbsentFromTab(
+  projectTab: string,
+  apiProjects: ProjectRow[],
+): Promise<void> {
+  const apiIds = new Set(apiProjects.map((p) => String(p.id)));
+  let local: ProjectRow[];
+  try {
+    local = await getProjects();
+  } catch (err) {
+    console.warn('[projects-list-api] 读取本地项目失败，跳过缺席清理', err);
+    return;
   }
-  if (projectTab === INBOX_PROJECT_CATEGORY_ID) {
-    return projects.filter((p) => isProjectInInboxCategory(p.category_id));
+  for (const project of local) {
+    if (!projectBelongsToTab(project, projectTab)) continue;
+    if (apiIds.has(String(project.id))) continue;
+    if (isLocalPendingProjectKeep(project)) continue;
+    try {
+      await applyApiRecordMissingToLocal('projects', String(project.id));
+    } catch (err) {
+      console.warn('[projects-list-api] 清理缺席项目失败', project.id, err);
+    }
   }
-  return projects.filter((p) => p.category_id === projectTab);
 }
 
 async function hydrateTreesFromLocal(
@@ -491,9 +570,11 @@ export async function fetchProjectsListForTab(
   const queries = resolveProjectsListQueries(projectTab).map((q) => ({ ...baseQuery, ...q }));
   try {
     const data = await pullProjectsListFromApi(queries, { forceRefresh: opts?.forceRefresh });
+    const projects = filterProjectsForTab(projectTab, data.projects);
+    await purgeSyncedProjectsAbsentFromTab(projectTab, projects);
     return {
       ...data,
-      projects: filterProjectsForTab(projectTab, data.projects),
+      projects,
     };
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;

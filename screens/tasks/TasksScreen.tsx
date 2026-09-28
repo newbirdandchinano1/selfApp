@@ -63,7 +63,14 @@ import {
 } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
-import { fetchProjectsListForProject, fetchProjectsListForTab, mergeProjectRowsById, mergeProjectTaskTreeMaps } from '@/lib/projects-list-api';
+import {
+  fetchProjectsListForProject,
+  fetchProjectsListForTab,
+  mergeProjectRowsById,
+  mergeProjectTaskTreeMaps,
+  reconcileProjectRowsForTab,
+  reconcileProjectTaskTreeMapsForTab,
+} from '@/lib/projects-list-api';
 import { formatPoints, getRewardBadgeBackgroundColor, normalizeRewardPoints, parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
@@ -2605,8 +2612,23 @@ export default function TasksScreen() {
           offlineFallback: true,
         });
         if (shouldApply()) {
-          setProjects((prev) => mergeProjectRowsById(prev, result.projects));
-          setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, result.projectTaskTreeMap));
+          if (opts?.replaceMap) {
+            const prevProjects = projectsRef.current;
+            const nextProjects = reconcileProjectRowsForTab(prevProjects, result.projects, tab);
+            setProjects(nextProjects);
+            setProjectTaskTreeMap((treePrev) =>
+              reconcileProjectTaskTreeMapsForTab(
+                treePrev,
+                result.projectTaskTreeMap,
+                prevProjects,
+                tab,
+                nextProjects,
+              ),
+            );
+          } else {
+            setProjects((prev) => mergeProjectRowsById(prev, result.projects));
+            setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, result.projectTaskTreeMap));
+          }
         }
         return result.projectTaskTreeMap;
       } catch (err) {
@@ -2839,7 +2861,7 @@ export default function TasksScreen() {
 
     const catalogProjects = pageData.projects;
     const mergedProjects = projectsListResult
-      ? mergeProjectRowsById(catalogProjects, projectsListResult.projects)
+      ? reconcileProjectRowsForTab(catalogProjects, projectsListResult.projects, projectTab)
       : catalogProjects;
     setProjects(mergedProjects);
     setProjectCategories(pageData.projectCategories);
@@ -2868,7 +2890,15 @@ export default function TasksScreen() {
     let treeMap: Record<string, TaskTreeNode[]>;
     if (projectsListResult) {
       treeMap = projectsListResult.projectTaskTreeMap;
-      setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, treeMap));
+      setProjectTaskTreeMap((prev) =>
+        reconcileProjectTaskTreeMapsForTab(
+          prev,
+          treeMap,
+          catalogProjects,
+          projectTab,
+          mergedProjects,
+        ),
+      );
     } else {
       const tabProjects =
         projectTab === 'all'
