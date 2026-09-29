@@ -6,6 +6,7 @@ import {
   type AppPointsLedgerItem,
 } from '@/lib/api-app-domain';
 import {
+  formatDailyReviewLedgerRefTitle,
   formatHealthMetricLedgerRefTitle,
   formatPointsLedgerReasonLabel,
 } from '@/lib/points-ledger-reason-label';
@@ -52,7 +53,10 @@ function ledgerItemTitle(item: AppPointsLedgerItem): string {
 function ledgerItemRefTitle(item: AppPointsLedgerItem): string | null {
   const fromApi = item.ref_title?.trim() || null;
   if (fromApi) return fromApi;
-  return formatHealthMetricLedgerRefTitle(item.ref_type, item.ref_id);
+  return (
+    formatHealthMetricLedgerRefTitle(item.ref_type, item.ref_id) ??
+    formatDailyReviewLedgerRefTitle(item.ref_type, item.ref_id)
+  );
 }
 
 export default function PointsLedgerScreen() {

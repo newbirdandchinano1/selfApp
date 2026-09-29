@@ -16,4 +16,12 @@ export async function getDailyReviewJournalByDay(ymd: string): Promise<DailyRevi
 
 export async function upsertDailyReviewJournal(record_date_ymd: string, body: string): Promise<void> {
   await upsertBodyReviewJournal('daily', record_date_ymd, body);
+  try {
+    const { syncDailyReviewPointsForYmd } = await import(
+      '@/lib/repositories/insights/review-points-grant'
+    );
+    await syncDailyReviewPointsForYmd({ ymd: record_date_ymd });
+  } catch (e) {
+    if (__DEV__) console.warn('[daily-review-points]', record_date_ymd, e);
+  }
 }

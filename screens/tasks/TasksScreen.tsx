@@ -3,7 +3,10 @@
   type ScheduleChangedDetail,
   type SchedulePendingPlace,
 } from '@/components/tasks/WeeklyFrogSchedule';
-import { notifyCompletionCelebration } from '@/lib/completion-celebration-events';
+import {
+  dismissCompletionCelebration,
+  notifyCompletionCelebration,
+} from '@/lib/completion-celebration-events';
 import { suppressPointsEarnedToastForMs } from '@/lib/points-earned-toast-events';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import {
@@ -4158,6 +4161,8 @@ export default function TasksScreen() {
       if (!isFrogAssignedOn(current.extra_data, assignYmd)) return;
 
       markPageDirty();
+      // 取消完成时收起庆祝层，避免与 Alert/课表 Modal 叠层后 Android 触摸死锁
+      dismissCompletionCelebration();
       // 仅当会话完成日就是该指派日时才清除
       const nextExtraData =
         getFrogSessionCompletedOn(current.extra_data) === assignYmd
@@ -4254,6 +4259,7 @@ export default function TasksScreen() {
 
       if (frogDone) {
         playFrogDoneBounce(taskId);
+        dismissCompletionCelebration();
         if (isProjectFrog && project) {
           void reopenProjectFromList(project);
         } else {

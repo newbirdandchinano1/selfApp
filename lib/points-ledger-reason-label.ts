@@ -22,6 +22,10 @@ const POINTS_LEDGER_REASON_LABELS: Record<string, string> = {
   health_metric_complete_undo: '撤销健康指标达标',
   health_metric_over_penalty: '热量超额扣分',
   health_metric_over_penalty_undo: '撤销热量超额扣分',
+  daily_review_complete: '完成日复盘',
+  daily_review_complete_undo: '撤销日复盘完成',
+  daily_review_streak7: '连续七天复盘奖励',
+  daily_review_streak7_undo: '撤销连续七天复盘奖励',
 };
 
 const HEALTH_METRIC_NAME_ZH: Record<string, string> = {
@@ -81,4 +85,18 @@ export function formatHealthMetricLedgerRefTitle(
   const metricZh = HEALTH_METRIC_NAME_ZH[metric] ?? metric;
   if (!ymd) return metricZh;
   return `${ymd} · ${metricZh}`;
+}
+
+/**
+ * 日复盘 / 七天坚持流水 ref_id 为 `YYYY-MM-DD`。
+ */
+export function formatDailyReviewLedgerRefTitle(
+  refType: string | null | undefined,
+  refId: string | null | undefined,
+): string | null {
+  const type = String(refType ?? '').trim();
+  if (type !== 'daily_review' && type !== 'daily_review_streak7') return null;
+  const ymd = String(refId ?? '').trim();
+  if (!ymd) return null;
+  return ymd;
 }

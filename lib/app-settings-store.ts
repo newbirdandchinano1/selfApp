@@ -27,6 +27,8 @@ export const AppSettingKey = {
   savingsOverviewLegacy: '@selfapp/savings_overview_settings_v1',
   globalIntakeTargets: '@global_intake_targets_v1',
   healthMetricPoints: '@health_metric_points_v1',
+  /** 日复盘：每日奖励 + 连续七天总奖励 */
+  reviewPoints: '@review_points_v1',
   dailyIntakeAiTargets: '@daily_intake_ai_targets_v1',
   intakeAssistantSelection: '@intake_assistant_selection_v1',
   tasksCompletionDayStart: '@tasks_completion_day_start_v1',

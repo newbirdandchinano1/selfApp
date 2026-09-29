@@ -1,7 +1,7 @@
 import { ReviewNavRow } from '@/components/review/review-ui-parts';
 import { loadReviewPeriodSnapshot, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/components/review/review-utils';
 import { AppCard, ScreenHeader } from '@/components/ui';
-import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -13,6 +13,13 @@ import {
   setDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import {
+  DEFAULT_REVIEW_POINTS_SETTINGS,
+  loadReviewPointsSettings,
+  saveReviewPointsSettings,
+  type ReviewPointsSettings,
+} from '@/lib/review-points-settings';
+import { formatPoints, normalizeRewardPoints } from '@/lib/reward-points';
 import { setWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -29,6 +36,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -50,20 +58,32 @@ export function ReviewSettingsScreen() {
   const [dailyReminderTime, setDailyReminderTime] = useState(() => dailyReviewReminderTimeToDate(21, 0));
   const [dailyReminderTimePickerOpen, setDailyReminderTimePickerOpen] = useState(false);
   const [dailyReminderBusy, setDailyReminderBusy] = useState(false);
+  const [pointsSettings, setPointsSettings] = useState<ReviewPointsSettings>(DEFAULT_REVIEW_POINTS_SETTINGS);
+  const [dailyRewardText, setDailyRewardText] = useState(
+    formatPoints(DEFAULT_REVIEW_POINTS_SETTINGS.dailyRewardPoints),
+  );
+  const [streak7BonusText, setStreak7BonusText] = useState(
+    formatPoints(DEFAULT_REVIEW_POINTS_SETTINGS.streak7BonusPoints),
+  );
+  const [pointsBusy, setPointsBusy] = useState(false);
 
   const reload = useCallback(
     async (forceApi = false) => {
       setLoading(true);
       try {
         await wrapLoad(async () => {
-          const [snapshot, reminderSettings] = await Promise.all([
+          const [snapshot, reminderSettings, reviewPoints] = await Promise.all([
             loadReviewPeriodSnapshot(todayYmd),
             getDailyReviewReminderSettings(),
+            loadReviewPointsSettings(),
           ]);
           setConfiguredDow(snapshot.configuredDow);
           setDailyPeriodLabel(snapshot.dailyPeriodLabel);
           setDailyReminderEnabled(reminderSettings.enabled);
           setDailyReminderTime(dailyReviewReminderTimeToDate(reminderSettings.hour, reminderSettings.minute));
+          setPointsSettings(reviewPoints);
+          setDailyRewardText(formatPoints(reviewPoints.dailyRewardPoints));
+          setStreak7BonusText(formatPoints(reviewPoints.streak7BonusPoints));
         }, forceApi);
       } finally {
         setLoading(false);
@@ -111,6 +131,47 @@ export function ReviewSettingsScreen() {
     },
     [],
   );
+
+  const persistPointsSettings = useCallback(async (next: ReviewPointsSettings) => {
+    setPointsBusy(true);
+    try {
+      const saved = await saveReviewPointsSettings(next);
+      setPointsSettings(saved);
+      setDailyRewardText(formatPoints(saved.dailyRewardPoints));
+      setStreak7BonusText(formatPoints(saved.streak7BonusPoints));
+    } catch (e) {
+      console.warn('review points settings', e);
+      Alert.alert('保存失败', '请稍后再试');
+    } finally {
+      setPointsBusy(false);
+    }
+  }, []);
+
+  const onTogglePointsEnabled = useCallback(() => {
+    const nextEnabled = !pointsSettings.enabled;
+    const next: ReviewPointsSettings = {
+      ...pointsSettings,
+      enabled: nextEnabled,
+      dailyRewardPoints: normalizeRewardPoints(dailyRewardText),
+      streak7BonusPoints: normalizeRewardPoints(streak7BonusText),
+    };
+    setPointsSettings(next);
+    void persistPointsSettings(next);
+  }, [dailyRewardText, persistPointsSettings, pointsSettings, streak7BonusText]);
+
+  const onBlurDailyReward = useCallback(() => {
+    const dailyRewardPoints = normalizeRewardPoints(dailyRewardText);
+    setDailyRewardText(formatPoints(dailyRewardPoints));
+    if (dailyRewardPoints === pointsSettings.dailyRewardPoints) return;
+    void persistPointsSettings({ ...pointsSettings, dailyRewardPoints });
+  }, [dailyRewardText, persistPointsSettings, pointsSettings]);
+
+  const onBlurStreak7Bonus = useCallback(() => {
+    const streak7BonusPoints = normalizeRewardPoints(streak7BonusText);
+    setStreak7BonusText(formatPoints(streak7BonusPoints));
+    if (streak7BonusPoints === pointsSettings.streak7BonusPoints) return;
+    void persistPointsSettings({ ...pointsSettings, streak7BonusPoints });
+  }, [persistPointsSettings, pointsSettings, streak7BonusText]);
 
   const onToggleDailyReminder = useCallback(() => {
     const nextEnabled = !dailyReminderEnabled;
@@ -171,6 +232,7 @@ export function ReviewSettingsScreen() {
       ) : (
         <ScrollView
           refreshControl={refreshControl}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.scroll,
@@ -252,6 +314,91 @@ export function ReviewSettingsScreen() {
                   {Platform.OS !== 'web' ? <MaterialIcons name="schedule" size={20} color={colors.primary} /> : null}
                 </View>
               </Pressable>
+            ) : null}
+          </AppCard>
+
+          <AppCard style={[shadows.card, styles.card]}>
+            <View style={styles.reminderHead}>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={[Typography.title, { color: colors.text }]}>积分奖励</Text>
+                <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
+                  完成日复盘发放每日奖励；连续完成七天（跳过周复盘日）再发放坚持总奖励。清空内容会自动冲正。
+                </Text>
+              </View>
+              <Pressable
+                onPress={onTogglePointsEnabled}
+                disabled={pointsBusy}
+                style={[
+                  styles.reminderSwitchTrack,
+                  {
+                    backgroundColor: pointsSettings.enabled ? colors.success : colors.outline,
+                    opacity: pointsBusy ? 0.6 : 1,
+                  },
+                ]}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: pointsSettings.enabled }}>
+                <View
+                  style={[
+                    styles.reminderSwitchDot,
+                    { backgroundColor: colors.onPrimary },
+                    pointsSettings.enabled && styles.reminderSwitchDotOn,
+                  ]}
+                />
+              </Pressable>
+            </View>
+
+            {pointsSettings.enabled ? (
+              <View style={styles.pointsFields}>
+                <View style={styles.pointsField}>
+                  <Text style={[Typography.label, { color: colors.textMuted }]}>每日奖励</Text>
+                  <View
+                    style={[
+                      styles.pointsInputRow,
+                      { borderColor: colors.outline, backgroundColor: colors.surface },
+                    ]}>
+                    <TextInput
+                      value={dailyRewardText}
+                      onChangeText={setDailyRewardText}
+                      onBlur={onBlurDailyReward}
+                      onSubmitEditing={onBlurDailyReward}
+                      keyboardType="decimal-pad"
+                      returnKeyType="done"
+                      editable={!pointsBusy}
+                      placeholder="5"
+                      placeholderTextColor={colors.textMuted}
+                      style={[styles.pointsInput, { color: colors.text }]}
+                      accessibilityLabel="每日复盘奖励积分"
+                    />
+                    <Text style={[styles.pointsSuffix, { color: colors.textMuted }]}>分</Text>
+                  </View>
+                </View>
+                <View style={styles.pointsField}>
+                  <Text style={[Typography.label, { color: colors.textMuted }]}>七天坚持总奖励</Text>
+                  <View
+                    style={[
+                      styles.pointsInputRow,
+                      { borderColor: colors.outline, backgroundColor: colors.surface },
+                    ]}>
+                    <TextInput
+                      value={streak7BonusText}
+                      onChangeText={setStreak7BonusText}
+                      onBlur={onBlurStreak7Bonus}
+                      onSubmitEditing={onBlurStreak7Bonus}
+                      keyboardType="decimal-pad"
+                      returnKeyType="done"
+                      editable={!pointsBusy}
+                      placeholder="30"
+                      placeholderTextColor={colors.textMuted}
+                      style={[styles.pointsInput, { color: colors.text }]}
+                      accessibilityLabel="连续七天复盘总奖励积分"
+                    />
+                    <Text style={[styles.pointsSuffix, { color: colors.textMuted }]}>分</Text>
+                  </View>
+                  <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
+                    连续满 7、14、21… 天时各发放一次
+                  </Text>
+                </View>
+              </View>
             ) : null}
           </AppCard>
 
@@ -461,6 +608,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing['3xl'],
   },
   reminderTimeValue: { fontSize: 18, fontWeight: '900' },
+  pointsFields: { gap: Spacing.xl },
+  pointsField: { gap: Spacing.sm },
+  pointsInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    paddingHorizontal: Spacing['3xl'],
+    minHeight: 48,
+  },
+  pointsInput: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '800',
+    paddingVertical: Spacing.lg,
+  },
+  pointsSuffix: { fontSize: 14, fontWeight: '700', marginLeft: 8 },
   section: { gap: Spacing.lg },
   reminderTimeModalRoot: {
     flex: 1,

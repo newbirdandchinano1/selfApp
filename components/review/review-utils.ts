@@ -215,26 +215,21 @@ export function isDailyReviewDoneLight(fields: ReviewFieldValues): boolean {
 }
 
 /**
- * 连续复盘天数：从 todayYmd 往前数（跳过周复盘日），遇到未填即停。
- * 若今天尚未填写，则从昨天起算（已养成的连续仍可见）。
+ * 以 endYmd 为终点的连续复盘天数（跳过周复盘日）。
+ * endYmd 本身未填或为周复盘日时返回 0。
  */
-export function countDailyReviewStreak(
+export function countDailyReviewStreakEndingAt(
   entries: DailyEntry[],
-  _reviewCycleEndYmd: string,
   configuredDow: number | null,
-  todayYmd: string,
+  endYmd: string,
 ): number {
+  if (!endYmd || isDailyReviewSkippedForYmd(endYmd, configuredDow)) return 0;
   const byYmd = new Map(entries.map(e => [e.ymd, e]));
-  let cursor = todayYmd;
-  const todaySkipped = isDailyReviewSkippedForYmd(todayYmd, configuredDow);
-  const todayEntry = byYmd.get(todayYmd);
-  const todayDone =
-    !todaySkipped && todayEntry != null && isDailyReviewDoneLight(todayEntry.fields);
-  if (!todayDone && !todaySkipped) {
-    cursor = getYesterdayYmd(todayYmd);
-  }
+  const endEntry = byYmd.get(endYmd);
+  if (!endEntry || !isDailyReviewDoneLight(endEntry.fields)) return 0;
 
   let streak = 0;
+  let cursor = endYmd;
   for (let i = 0; i < 366; i++) {
     if (isDailyReviewSkippedForYmd(cursor, configuredDow)) {
       cursor = getYesterdayYmd(cursor);
@@ -247,6 +242,25 @@ export function countDailyReviewStreak(
     cursor = getYesterdayYmd(cursor);
   }
   return streak;
+}
+
+/**
+ * 连续复盘天数：从 todayYmd 往前数（跳过周复盘日），遇到未填即停。
+ * 若今天尚未填写，则从昨天起算（已养成的连续仍可见）。
+ */
+export function countDailyReviewStreak(
+  entries: DailyEntry[],
+  _reviewCycleEndYmd: string,
+  configuredDow: number | null,
+  todayYmd: string,
+): number {
+  const todaySkipped = isDailyReviewSkippedForYmd(todayYmd, configuredDow);
+  const byYmd = new Map(entries.map(e => [e.ymd, e]));
+  const todayEntry = byYmd.get(todayYmd);
+  const todayDone =
+    !todaySkipped && todayEntry != null && isDailyReviewDoneLight(todayEntry.fields);
+  const endYmd = !todayDone && !todaySkipped ? getYesterdayYmd(todayYmd) : todayYmd;
+  return countDailyReviewStreakEndingAt(entries, configuredDow, endYmd);
 }
 
 export function formatWeekReviewProgressLabel(filled: number, editable: number): string {

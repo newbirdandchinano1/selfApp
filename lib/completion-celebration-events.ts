@@ -28,6 +28,19 @@ function emit(payload: CompletionCelebrationPayload | null): void {
   }
 }
 
+/** 立刻收起庆祝层（取消完成等场景，避免与 Alert/其它交互叠层卡死触摸）。 */
+export function dismissCompletionCelebration(): void {
+  if (startTimer) {
+    clearTimeout(startTimer);
+    startTimer = null;
+  }
+  if (hideTimer) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+  if (visiblePayload != null) emit(null);
+}
+
 /**
  * 触发全页完成庆祝（课程表 / 待办 / 项目完成时调用）。
  * 短时间内重复调用会重启动画。

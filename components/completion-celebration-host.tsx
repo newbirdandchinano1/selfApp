@@ -5,7 +5,6 @@ import {
   Animated,
   Dimensions,
   Easing,
-  Modal,
   Platform,
   StyleSheet,
   Text,
@@ -119,7 +118,11 @@ function buildMessage(payload: CompletionCelebrationPayload): { titleLine: strin
   return { titleLine, pointsLine: `+${formatPointsToastAmount(delta)} 积分` };
 }
 
-/** 根级挂载：完成庆祝彩屑 + 底部文案 toast（Modal 盖过原生 Stack）。 */
+/**
+ * 根级挂载：完成庆祝彩屑 + 底部文案 toast。
+ * 不用 RN Modal：Android 上透明 Modal 即使子树 pointerEvents=none 也会吞触摸，
+ * 完成后再「取消完成」时与 Alert / LayoutAnimation 叠层会整页卡死，而原生驱动动画仍在播。
+ */
 export function CompletionCelebrationHost() {
   const reduceMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
@@ -214,57 +217,52 @@ export function CompletionCelebrationHost() {
     };
   }, [animKey, burst, payload, reduceMotion, toastOpacity, toastTranslate]);
 
-  const lines = payload ? buildMessage(payload) : null;
+  if (payload == null) return null;
+
+  const lines = buildMessage(payload);
 
   return (
-    <Modal
-      visible={payload != null}
-      transparent
-      animationType="none"
-      statusBarTranslucent
-      hardwareAccelerated
-      onRequestClose={() => {}}
-      presentationStyle="overFullScreen">
-      <View pointerEvents="none" style={styles.root}>
-        {!reduceMotion
-          ? particles.map((p) => (
-              <ParticleView
-                key={`${animKey}-${p.id}`}
-                spec={p}
-                progress={burst}
-                originY={particleOriginY}
-              />
-            ))
-          : null}
-        <Animated.View
-          style={[
-            styles.toastWrap,
-            {
-              bottom: toastBottom,
-              opacity: toastOpacity,
-              transform: [{ translateY: toastTranslate }],
-            },
-          ]}>
-          <View style={styles.toast}>
-            <MaterialIcons name="auto-awesome" size={18} color="#fbbf24" />
-            <View style={styles.toastTextCol}>
-              <Text style={styles.toastTitle} numberOfLines={2}>
-                {lines?.titleLine}
-              </Text>
-              {lines?.pointsLine ? (
-                <Text style={styles.toastPoints}>{lines.pointsLine}</Text>
-              ) : null}
-            </View>
+    <View pointerEvents="none" style={styles.root}>
+      {!reduceMotion
+        ? particles.map((p) => (
+            <ParticleView
+              key={`${animKey}-${p.id}`}
+              spec={p}
+              progress={burst}
+              originY={particleOriginY}
+            />
+          ))
+        : null}
+      <Animated.View
+        style={[
+          styles.toastWrap,
+          {
+            bottom: toastBottom,
+            opacity: toastOpacity,
+            transform: [{ translateY: toastTranslate }],
+          },
+        ]}>
+        <View style={styles.toast}>
+          <MaterialIcons name="auto-awesome" size={18} color="#fbbf24" />
+          <View style={styles.toastTextCol}>
+            <Text style={styles.toastTitle} numberOfLines={2}>
+              {lines.titleLine}
+            </Text>
+            {lines.pointsLine ? (
+              <Text style={styles.toastPoints}>{lines.pointsLine}</Text>
+            ) : null}
           </View>
-        </Animated.View>
-      </View>
-    </Modal>
+        </View>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 400,
+    elevation: 400,
     backgroundColor: 'transparent',
   },
   particle: {

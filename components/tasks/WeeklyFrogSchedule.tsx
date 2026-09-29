@@ -55,6 +55,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -318,6 +319,16 @@ function uniquePlacementsBySubject(list: SchedulePlacementRow[]): SchedulePlacem
   return [...new Map(list.map((p) => [`${p.subjectKind}:${p.subjectId}`, p])).values()];
 }
 
+/** Alert / Modal 关闭后再改状态，避免 Android 触摸层与 LayoutAnimation 抢焦点卡死 */
+function runAfterUiSettles(action: () => void) {
+  InteractionManager.runAfterInteractions(() => {
+    // 再等一帧，让原生 Dialog / Modal dismiss 动画真正卸掉
+    requestAnimationFrame(() => {
+      action();
+    });
+  });
+}
+
 function confirmTogglePlacementDone(
   subject: ScheduleSubjectInfo,
   assignYmd: string,
@@ -325,11 +336,13 @@ function confirmTogglePlacementDone(
 ) {
   const titleLabel = (subject.title ?? '').trim() || '该青蛙';
   const run = () =>
-    onToggleDone({
-      kind: subject.kind,
-      id: subject.id,
-      assignYmd,
-    });
+    runAfterUiSettles(() =>
+      onToggleDone({
+        kind: subject.kind,
+        id: subject.id,
+        assignYmd,
+      }),
+    );
 
   // 长期未完成：沿用既有多选项确认（完成任务 / 仅结束当日会话）
   if (!subject.done && getIsLongTermFrog(subject.extraData)) {
@@ -365,14 +378,17 @@ function confirmToggleVirtualHabit(
       { text: '取消', style: 'cancel' },
       {
         text: '取消完成',
-        onPress: () => opts.onUndo?.(habit.habitId),
+        onPress: () => runAfterUiSettles(() => opts.onUndo?.(habit.habitId)),
       },
     ]);
     return;
   }
   Alert.alert('确认完成？', `确定将「${titleLabel}」标记为已完成吗？`, [
     { text: '取消', style: 'cancel' },
-    { text: '完成', onPress: () => opts.onCheckIn?.(habit.habitId) },
+    {
+      text: '完成',
+      onPress: () => runAfterUiSettles(() => opts.onCheckIn?.(habit.habitId)),
+    },
   ]);
 }
 
@@ -2488,7 +2504,7 @@ export function WeeklyFrogSchedule({
                   key={`habit-${h.habitId}`}
                   onPress={() => {
                     setCellList(null);
-                    tapVirtualHabit(h);
+                    runAfterUiSettles(() => tapVirtualHabit(h));
                   }}
                   style={({ pressed }) => [
                     styles.listRow,
@@ -2518,7 +2534,7 @@ export function WeeklyFrogSchedule({
                   key={`vtask-${t.taskId}`}
                   onPress={() => {
                     setCellList(null);
-                    tapVirtualTask(t);
+                    runAfterUiSettles(() => tapVirtualTask(t));
                   }}
                   style={({ pressed }) => [
                     styles.listRow,
@@ -2553,7 +2569,10 @@ export function WeeklyFrogSchedule({
                 return (
                   <Pressable
                     key={p.id}
-                    onPress={() => openDetail(p)}
+                    onPress={() => {
+                      setCellList(null);
+                      runAfterUiSettles(() => openDetail(p));
+                    }}
                     style={({ pressed }) => [
                       styles.listRow,
                       {
@@ -2614,12 +2633,14 @@ export function WeeklyFrogSchedule({
         onToggleDone={() => {
           if (!detail || !onToggleDone) return;
           const assignYmd = ymdForWeekday(detail.placement.weekStartYmd, detail.placement.weekday);
-          onToggleDone({
+          const payload = {
             kind: detail.placement.subjectKind,
             id: detail.placement.subjectId,
             assignYmd,
-          });
+          } as const;
+          // 先关详情 Modal，再切换完成态，避免 Android Modal 卸掉时 LayoutAnimation 卡死触摸
           setDetail(null);
+          runAfterUiSettles(() => onToggleDone(payload));
         }}
         onRemoveSegment={() => {
           if (!detail) return;

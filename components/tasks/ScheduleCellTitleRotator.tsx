@@ -16,6 +16,8 @@ const OUT_MS = 200;
 const IN_MS = 280;
 const SLIDE_PX = 10;
 const EASE = Easing.bezier(0.4, 0.0, 0.2, 1);
+/** animating 卡住时的重试间隔（勿用 DWELL，避免长时间假死感） */
+const BUSY_RETRY_MS = 120;
 
 type Props = {
   titles: string[];
@@ -80,23 +82,28 @@ export function ScheduleCellTitleRotator({
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    const scheduleNext = () => {
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled) return;
+      if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
-        if (cancelled || animatingRef.current) {
-          scheduleNext();
+        timeoutId = null;
+        if (cancelled) return;
+        // LayoutAnimation / 卸载可能打断原生动画回调，animating 会短暂卡住：短重试，勿在 cancelled 后再排程
+        if (animatingRef.current) {
+          scheduleNext(BUSY_RETRY_MS);
           return;
         }
         const from = indexRef.current;
         const next = (from + 1) % safeTitles.length;
         if (next === from) {
-          scheduleNext();
+          scheduleNext(DWELL_MS);
           return;
         }
 
         if (reduceMotionRef.current) {
           indexRef.current = next;
           setIndex(next);
-          scheduleNext();
+          scheduleNext(DWELL_MS);
           return;
         }
 
@@ -118,6 +125,9 @@ export function ScheduleCellTitleRotator({
         ]).start(({ finished }) => {
           if (!finished || cancelled) {
             animatingRef.current = false;
+            opacity.setValue(1);
+            translateY.setValue(0);
+            if (!cancelled) scheduleNext(DWELL_MS);
             return;
           }
           // 2) 透明时换字，再从下方滑入淡入（用户看不见换字瞬间）
@@ -143,13 +153,13 @@ export function ScheduleCellTitleRotator({
               translateY.setValue(0);
             }
             animatingRef.current = false;
-            if (!cancelled) scheduleNext();
+            if (!cancelled) scheduleNext(DWELL_MS);
           });
         });
-      }, DWELL_MS);
+      }, delayMs);
     };
 
-    scheduleNext();
+    scheduleNext(DWELL_MS);
     return () => {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
