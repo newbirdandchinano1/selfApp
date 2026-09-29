@@ -160,12 +160,23 @@ export async function appDomainCreateRecord<T = unknown>(
         body: prepareWishBoardItemBody(row),
         signal,
       });
-    case 'finance_transactions':
+    case 'finance_transactions': {
+      const body = stripSyncFields(row);
+      const aid =
+        body.account_id != null && body.account_id !== ''
+          ? String(body.account_id).trim()
+          : body.accountId != null && body.accountId !== ''
+            ? String(body.accountId).trim()
+            : '';
+      if (!aid) throw new Error('finance_transactions.account_id 必填');
+      body.account_id = aid;
+      delete body.accountId;
       return apiRequest<T>(`${APP_API_PREFIX}/pages/finance/transactions`, {
         method: 'POST',
-        body: stripSyncFields(row),
+        body,
         signal,
       });
+    }
     default:
       throw new Error(`表「${table}」无 App 专用创建接口`);
   }
@@ -210,12 +221,24 @@ export async function appDomainUpdateRecord<T = unknown>(
         body: prepareHealthIntakeBody(row),
         signal,
       });
-    case 'finance_transactions':
+    case 'finance_transactions': {
+      const body = stripSyncFields(row);
+      const aid =
+        body.account_id != null && body.account_id !== ''
+          ? String(body.account_id).trim()
+          : body.accountId != null && body.accountId !== ''
+            ? String(body.accountId).trim()
+            : '';
+      if (aid) {
+        body.account_id = aid;
+        delete body.accountId;
+      }
       return apiRequest<T>(`${APP_API_PREFIX}/pages/finance/transactions/${enc}`, {
         method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
-        body: stripSyncFields(row),
+        body,
         signal,
       });
+    }
     default:
       throw new Error(`表「${table}」无 App 专用更新接口`);
   }

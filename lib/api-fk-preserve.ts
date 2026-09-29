@@ -10,6 +10,7 @@ export const PRESERVE_ON_EMPTY_API: Record<string, readonly string[]> = {
   tasks: ['category_id', 'project_id', 'parent_task_id'],
   projects: ['category_id'],
   finance_transactions: ['flow_category_id', 'account_id'],
+  finance_scheduled_expenses: ['flow_category_id', 'account_id'],
   recipe_items: ['category_id'],
 };
 
@@ -21,8 +22,10 @@ export const UPLOAD_PRESERVE_FK: ReadonlyArray<{ table: string } & ForeignKeyRef
   { table: 'tasks', fromColumn: 'project_id', parentTable: 'projects' },
   { table: 'tasks', fromColumn: 'parent_task_id', parentTable: 'tasks' },
   { table: 'finance_transactions', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
-  /** 余额校正等流水依赖账户；勿因本批未登记 uploadedPk 而把 account_id 置空，否则服务端报「账户不存在」 */
+  /** 余额校正等流水依赖账户；勿因本批未登记 uploadedPk 而把 account_id 置空，否则服务端报 Column 'account_id' cannot be null / 账户不存在 */
   { table: 'finance_transactions', fromColumn: 'account_id', parentTable: 'finance_accounts' },
+  { table: 'finance_scheduled_expenses', fromColumn: 'account_id', parentTable: 'finance_accounts' },
+  { table: 'finance_scheduled_expenses', fromColumn: 'flow_category_id', parentTable: 'finance_flow_categories' },
   { table: 'recipe_items', fromColumn: 'category_id', parentTable: 'recipe_categories' },
   { table: 'habit_check_ins', fromColumn: 'habit_id', parentTable: 'habits' },
 ];

@@ -255,6 +255,30 @@ function sanitizeRowForeignKeysForApiUpload(
   return out;
 }
 
+/** 财务子表 account_id 为 NOT NULL；上传前归一并拒绝空值，避免服务端 Column 'account_id' cannot be null */
+function ensureFinanceAccountIdOnUploadBody(
+  table: string,
+  row: Record<string, unknown>,
+  pk: string | null,
+): Record<string, unknown> {
+  if (table !== 'finance_transactions' && table !== 'finance_scheduled_expenses') return row;
+  const fromSnake = row.account_id;
+  const fromCamel = row.accountId;
+  const aid =
+    fromSnake != null && fromSnake !== ''
+      ? String(fromSnake).trim()
+      : fromCamel != null && fromCamel !== ''
+        ? String(fromCamel).trim()
+        : '';
+  if (!aid) {
+    // 必须抛普通 Error（非 ApiRowUploadSkippedError），否则 awaitSync 会静默跳过并误判成功
+    throw new Error(`account_id 缺失，无法同步到服务器（表 ${table}，id: ${pk ?? 'unknown'}）`);
+  }
+  const out = { ...row, account_id: aid };
+  delete out.accountId;
+  return out;
+}
+
 export async function upsertRowToApi(
   table: string,
   row: Record<string, unknown>,
@@ -273,6 +297,7 @@ export async function upsertRowToApi(
     body = sanitizeRowForeignKeysForApiUpload(table, row, opts.uploadedPkByTable, opts.fkRefs);
   }
   const pk = rowPrimaryKeyValue(body, pkCols);
+  body = ensureFinanceAccountIdOnUploadBody(table, body, pk);
 
   if (body.sync_status === 'pending_delete') {
     if (!pk) {

@@ -117,13 +117,22 @@ function countLedgerTransactionsFromList(
 
 let financeApiSyncChain: Promise<void> = Promise.resolve();
 
-/** 本地写入后推送到 REST；默认后台执行，不阻塞记账 UI */
-async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<void> {
+const FINANCE_SYNC_TABLES = ['finance_accounts', 'finance_transactions'] as const;
+
+/** 本地写入后推送到 REST；默认后台执行，不阻塞记账 UI。仅推财务表，避免其它脏表失败污染记账/余额校正。 */
+async function pushFinanceChangesToApi(opts?: {
+  awaitSync?: boolean;
+  /** awaitSync 失败时是否包装成「本地已保存但同步失败」（余额校正会自行回滚，应关掉） */
+  wrapLocalSavedSyncError?: boolean;
+}): Promise<void> {
   const run = async () => {
     const { flushApiDirtyTablesNow, markApiTableDirty } = await import('@/lib/api-incremental-sync');
     markApiTableDirty('finance_accounts');
     markApiTableDirty('finance_transactions');
-    await flushApiDirtyTablesNow({ rethrow: true });
+    await flushApiDirtyTablesNow({
+      rethrow: true,
+      onlyTables: [...FINANCE_SYNC_TABLES],
+    });
   };
 
   const task = financeApiSyncChain.then(run);
@@ -133,6 +142,7 @@ async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<
     try {
       await task;
     } catch (e) {
+      if (opts.wrapLocalSavedSyncError === false) throw e;
       const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
       throw new Error(`本地已保存，但同步到服务器失败：${detail}\n请检查网络或 API 登录状态后重试。`);
     }
@@ -142,6 +152,32 @@ async function pushFinanceChangesToApi(opts?: { awaitSync?: boolean }): Promise<
   void task.catch(e => {
     if (__DEV__) console.warn('[finance] 后台同步到服务器失败', e);
   });
+}
+
+/** 余额校正同步失败时物理删除本地未同步流水，避免「本地有、服务端无」中间态 */
+async function rollbackLocalUnsyncedFinanceTransaction(input: {
+  txnId: string;
+  accountId: string;
+  ledgerEffect: number;
+  restoreAccountSynced?: boolean;
+}): Promise<void> {
+  const db = await getDatabase();
+  if (!db) return;
+  await db.runAsync(
+    `DELETE FROM finance_transactions
+     WHERE id = ? AND sync_status IN ('pending_create', 'pending_update')`,
+    [input.txnId],
+  );
+  applyFinanceAccountBalanceDelta(input.accountId, -input.ledgerEffect);
+  invalidateInflightApiTableFetch('finance_transactions');
+  if (input.restoreAccountSynced) {
+    await db.runAsync(
+      `UPDATE finance_accounts
+       SET sync_status = 'synced', updated_at = datetime('now')
+       WHERE id = ? AND sync_status = 'pending_update'`,
+      [input.accountId],
+    );
+  }
 }
 
 async function assertTransactionAmountSign(accountId: string, amount: number) {
@@ -685,7 +721,13 @@ export async function deleteFinanceFlowCategory(id: string) {
 
 export async function createFinanceTransaction(
   input: CreateFinanceTransactionInput,
-  opts?: { skipBalanceRecheck?: boolean; awaitSync?: boolean },
+  opts?: {
+    skipBalanceRecheck?: boolean;
+    awaitSync?: boolean;
+    wrapLocalSavedSyncError?: boolean;
+    /** 只写本地并标脏，由调用方自行 push（余额校正需失败回滚） */
+    skipPush?: boolean;
+  },
 ) {
   await assertTransactionAmountSign(input.account_id, input.amount);
   if (!opts?.skipBalanceRecheck) {
@@ -739,8 +781,15 @@ export async function createFinanceTransaction(
       input.extra_data ?? null,
     ),
   );
-  if (opts?.awaitSync) {
-    await pushFinanceChangesToApi({ awaitSync: true });
+  if (opts?.skipPush) {
+    const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    markApiTableDirty('finance_accounts');
+    markApiTableDirty('finance_transactions');
+  } else if (opts?.awaitSync) {
+    await pushFinanceChangesToApi({
+      awaitSync: true,
+      wrapLocalSavedSyncError: opts.wrapLocalSavedSyncError,
+    });
   } else {
     void pushFinanceChangesToApi();
   }
@@ -949,6 +998,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
   if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
 
   // 幽灵 synced：本地有账户但服务端可能缺失。强制标 pending_update，保证本批先推账户再推校正流水。
+  let forcedAccountPending = false;
   if (account.sync_status === 'synced') {
     const db = await getDatabase();
     if (db) {
@@ -958,6 +1008,7 @@ export async function applyFinanceAccountBalanceCorrection(input: {
          WHERE id = ? AND sync_status = 'synced'`,
         [input.accountId],
       );
+      forcedAccountPending = true;
     }
   }
 
@@ -972,69 +1023,69 @@ export async function applyFinanceAccountBalanceCorrection(input: {
       ...(transactionType === 'expense' ? { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true } : {}),
     });
 
-  const syncOpts = { awaitSync: true as const };
+  const txnInput: CreateFinanceTransactionInput =
+    account.sign_rule > 0
+      ? delta > 0
+        ? {
+            id,
+            name: '余额校正',
+            happened_at,
+            account_id: input.accountId,
+            transaction_type: 'income',
+            amount: delta,
+            note,
+            extra_data: buildBalanceCorrectionExtra('income'),
+          }
+        : {
+            id,
+            name: '余额校正',
+            happened_at,
+            account_id: input.accountId,
+            transaction_type: 'expense',
+            amount: -delta,
+            note,
+            extra_data: buildBalanceCorrectionExtra('expense'),
+          }
+      : delta > 0
+        ? {
+            id,
+            name: '余额校正',
+            happened_at,
+            account_id: input.accountId,
+            transaction_type: 'income',
+            amount: -delta,
+            note,
+            extra_data: buildBalanceCorrectionExtra('income'),
+          }
+        : {
+            id,
+            name: '余额校正',
+            happened_at,
+            account_id: input.accountId,
+            transaction_type: 'expense',
+            amount: delta,
+            note,
+            extra_data: buildBalanceCorrectionExtra('expense'),
+          };
 
-  if (account.sign_rule > 0) {
-    if (delta > 0) {
-      await createFinanceTransaction(
-        {
-          id,
-          name: '余额校正',
-          happened_at,
-          account_id: input.accountId,
-          transaction_type: 'income',
-          amount: delta,
-          note,
-          extra_data: buildBalanceCorrectionExtra('income'),
-        },
-        syncOpts,
-      );
-    } else {
-      await createFinanceTransaction(
-        {
-          id,
-          name: '余额校正',
-          happened_at,
-          account_id: input.accountId,
-          transaction_type: 'expense',
-          amount: -delta,
-          note,
-          extra_data: buildBalanceCorrectionExtra('expense'),
-        },
-        syncOpts,
-      );
-    }
-    return;
-  }
+  const ledgerEffect = computeTransactionLedgerEffect(
+    txnInput.transaction_type ?? 'expense',
+    txnInput.amount,
+    txnInput.extra_data ?? null,
+  );
 
-  if (delta > 0) {
-    await createFinanceTransaction(
-      {
-        id,
-        name: '余额校正',
-        happened_at,
-        account_id: input.accountId,
-        transaction_type: 'income',
-        amount: -delta,
-        note,
-        extra_data: buildBalanceCorrectionExtra('income'),
-      },
-      syncOpts,
-    );
-  } else {
-    await createFinanceTransaction(
-      {
-        id,
-        name: '余额校正',
-        happened_at,
-        account_id: input.accountId,
-        transaction_type: 'expense',
-        amount: delta,
-        note,
-        extra_data: buildBalanceCorrectionExtra('expense'),
-      },
-      syncOpts,
-    );
+  await createFinanceTransaction(txnInput, { skipPush: true });
+  try {
+    await pushFinanceChangesToApi({ awaitSync: true, wrapLocalSavedSyncError: false });
+  } catch (e) {
+    await rollbackLocalUnsyncedFinanceTransaction({
+      txnId: id,
+      accountId: input.accountId,
+      ledgerEffect,
+      restoreAccountSynced: forcedAccountPending,
+    });
+    const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
+    throw new Error(`调整余额失败：${detail}\n请检查网络或 API 登录状态后重试。`);
   }
 }
 
