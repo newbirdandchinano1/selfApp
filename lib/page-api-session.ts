@@ -224,8 +224,11 @@ export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
   if (!warmProcessSession) return false;
   if (pageNeedsRestRefresh(pageKey)) return false;
   const key = pageKey.trim();
-  // 任务页：多端完成/编辑需在再次聚焦时增量拉齐，不能整会话永久跳过
+  // 任务页：多端完成/编辑需在再次聚焦时增量拉齐，不能整会话永久跳过。
+  // 子页写入后会 clearPageLoadedInSession（常保留 cooldown）——此时必须重读本地，
+  // 否则删除项目等写操作在冷却窗内返回列表会残留旧数据。
   if (key === TAB_PAGE_KEYS.tasks) {
+    if (!hasPageLoadedInSession(key)) return false;
     const last = pageLastFocusRefreshAtMs.get(key) ?? 0;
     return Date.now() - last < TASKS_FOCUS_REFRESH_COOLDOWN_MS;
   }

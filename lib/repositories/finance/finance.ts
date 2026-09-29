@@ -117,7 +117,11 @@ function countLedgerTransactionsFromList(
 
 let financeApiSyncChain: Promise<void> = Promise.resolve();
 
-const FINANCE_SYNC_TABLES = ['finance_accounts', 'finance_transactions'] as const;
+const FINANCE_SYNC_TABLES = [
+  'finance_accounts',
+  'finance_transactions',
+  'finance_scheduled_expenses',
+] as const;
 
 /** 本地写入后推送到 REST；默认后台执行，不阻塞记账 UI。仅推财务表，避免其它脏表失败污染记账/余额校正。 */
 async function pushFinanceChangesToApi(opts?: {
@@ -129,6 +133,7 @@ async function pushFinanceChangesToApi(opts?: {
     const { flushApiDirtyTablesNow, markApiTableDirty } = await import('@/lib/api-incremental-sync');
     markApiTableDirty('finance_accounts');
     markApiTableDirty('finance_transactions');
+    markApiTableDirty('finance_scheduled_expenses');
     await flushApiDirtyTablesNow({
       rethrow: true,
       onlyTables: [...FINANCE_SYNC_TABLES],

@@ -19,22 +19,29 @@ export function shouldFetchProfileFromApi(): boolean {
   return shouldFetchPageFromApi();
 }
 
-/** 备忘录列表子页 */
+/** 备忘录列表子页（含 tags / tag_links 全量拼盘） */
 export async function fetchProfileMemoList(opts?: {
   signal?: AbortSignal;
   offlineFallback?: boolean;
+  forceApi?: boolean;
+  forceRefresh?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',
     op: 'memo-list',
     opts,
+    // 子页无 PAGE_SCOPE 时 wrapLoad 常为 localOnly；标签/备忘管理页需软同步覆盖本地
+    respectLocalOnly: false,
     fetch: (signal) => apiGetProfileMemoList({ signal }),
     apply: async (payload) => {
       await Promise.all([
-        upsertPageRows('memos', asRecordArray(payload.memos)),
-        upsertPageRows('tags', asRecordArray(payload.tags)),
-        upsertPageRows('tag_links', asRecordArray(payload.tagLinks)),
+        upsertPageRows('memos', asRecordArray(payload.memos), { reconcileSnapshot: true }),
+        upsertPageRows('tags', asRecordArray(payload.tags), { reconcileSnapshot: true }),
+        upsertPageRows('tag_links', asRecordArray(payload.tagLinks), { reconcileSnapshot: true }),
       ]);
+      // 服务端历史缺 domain / 被默认成 task 时，按关联把仅备忘录标签纠正为 memo
+      const { repairTagDomainsFromLinks } = await import('@/lib/repositories/tags/tag');
+      await repairTagDomainsFromLinks();
       return { fromApi: true };
     },
   });

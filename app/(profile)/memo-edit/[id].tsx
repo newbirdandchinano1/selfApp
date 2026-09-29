@@ -24,7 +24,7 @@ import {
   MEMO_TITLE_MAX,
   updateMemo,
 } from '@/lib/memos';
-import { getTagIdsByEntity, getMemoTags, getTagsByIds } from '@/lib/repositories/tags/tag';
+import { getTagIdsByEntity, getMemoTags } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -108,13 +108,9 @@ export default function MemoEditScreen() {
       setBodyModel(parseMemoBodyToEditModel(row.body));
       setPinned(Boolean(row.is_pinned));
       const selected = await getTagIdsByEntity('memo', id);
-      setSelectedTagIds(selected);
-      // 历史跨域关联：补进列表以便展示，但不影响本域新建
-      const missing = selected.filter((sid) => !tags.some((t) => t.id === sid));
-      if (missing.length > 0) {
-        const extras = await getTagsByIds(missing);
-        if (extras.length > 0) setAllTags([...tags, ...extras]);
-      }
+      const memoTagIdSet = new Set(tags.map((t) => t.id));
+      // 只保留备忘录域标签，跨域历史关联不进入选择态
+      setSelectedTagIds(selected.filter((sid) => memoTagIdSet.has(sid)));
     } catch {
       setError('加载失败，请重试');
     } finally {

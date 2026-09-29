@@ -465,7 +465,15 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
       only.length > 0
         ? new Set(
             insertOrder.filter(
-              t => only.includes(t) || t === 'habits' || t === 'habit_check_ins',
+              t =>
+                only.includes(t) ||
+                t === 'habits' ||
+                t === 'habit_check_ins' ||
+                // FK 父表：由 ensure*Refs 扩进 bundle，不得被 onlyTables 滤掉
+                t === 'finance_accounts' ||
+                t === 'finance_flow_categories' ||
+                t === 'project_categories' ||
+                t === 'task_categories',
             ),
           )
         : null;
@@ -547,7 +555,8 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
       const uploadedRows: Record<string, unknown>[] = [];
       const uploadedPks = uploadedPkByTable.get(table)!;
 
-      if (table === 'finance_transactions') {
+      if (table === 'finance_transactions' || table === 'finance_scheduled_expenses') {
+        // 幽灵 synced：本地账户已标 synced 但服务端缺失时，须强制预传，否则定时支出/流水报「请先同步 finance_accounts」
         await upsertFinanceAccountsReferencedByTransactions(
           rows,
           rowsByTable,

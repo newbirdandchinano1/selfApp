@@ -396,6 +396,13 @@ export default function NotificationCenterScreen() {
                             : '系统通知权限：未决定'}
                   </Text>
                 ) : null}
+                {Platform.OS === 'ios' ? (
+                  <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
+                    习惯、日程表、每日复盘使用强提醒：Time
+                    Sensitive、专属铃声；未处理时约 5/15
+                    分钟后再提醒。可在通知上点「完成」或「贪睡」。
+                  </Text>
+                ) : null}
               </View>
               <Switch
                 value={masterOn}

@@ -925,8 +925,20 @@ export default function EditProjectScreen() {
     if (!committed) return;
 
     try {
-      await markPendingTablesDirty(['projects', 'project_categories', 'tasks', 'task_categories', 'tags', 'tag_links']);
-      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      const projectSyncTables = [
+        'projects',
+        'project_categories',
+        'tasks',
+        'task_categories',
+        'tags',
+        'tag_links',
+      ];
+      await markPendingTablesDirty(projectSyncTables);
+      await pushLocalChangesToApi({
+        awaitSync: true,
+        rethrow: true,
+        onlyTables: projectSyncTables,
+      });
       notifyAncestorsDataChanged();
     } catch (syncErr) {
       console.warn('项目保存后同步到服务器失败', syncErr);
@@ -979,10 +991,16 @@ export default function EditProjectScreen() {
       try {
         setSaving(true);
         await deleteProject(projectId);
+        // 本地已软删：无论云端同步是否成功，都通知任务列表下次聚焦重读 SQLite
+        notifyAncestorsDataChanged();
         try {
-          await markPendingTablesDirty(['projects', 'tasks']);
-          await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
-          notifyAncestorsDataChanged();
+          const projectSyncTables = ['projects', 'tasks'];
+          await markPendingTablesDirty(projectSyncTables);
+          await pushLocalChangesToApi({
+            awaitSync: true,
+            rethrow: true,
+            onlyTables: projectSyncTables,
+          });
         } catch (syncErr) {
           console.warn('项目删除后同步到服务器失败', syncErr);
         }

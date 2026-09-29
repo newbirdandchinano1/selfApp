@@ -24,6 +24,7 @@ import {
   cancelScheduledByIdentifier,
   cancelScheduledByPrefix,
 } from '@/lib/notification-scheduler';
+import { isEscalationOrSnoozeIdentifier } from '@/lib/notification-strong-reminder';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import {
   formatHabitReminderClock,
@@ -173,7 +174,14 @@ export async function requestAppNotificationPermission(): Promise<NotificationPe
   }
   try {
     const Notifications = await import('expo-notifications');
-    await Notifications.requestPermissionsAsync();
+    await Notifications.requestPermissionsAsync({
+      ios: {
+        allowAlert: true,
+        allowBadge: true,
+        allowSound: true,
+        provideAppNotificationSettings: true,
+      },
+    });
   } catch (e) {
     console.warn('请求通知权限失败', e);
   }
@@ -266,6 +274,7 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
 
   // 健康：仅展示系统队列中已有的健康预约
   for (const [identifier, fireAt] of osMap) {
+    if (isEscalationOrSnoozeIdentifier(identifier)) continue;
     if (!identifier.startsWith('selfapp-health-intake-reminder:')) continue;
     const meta = getNotificationCategoryMeta('health-intake-reminder');
     const { status, statusLabel } = resolveItemStatus({
@@ -317,8 +326,9 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     });
   }
 
-  // 兜底：系统队列里有、但业务侧未扫到的其它预约
+  // 兜底：系统队列里有、但业务侧未扫到的其它预约（隐藏升级/贪睡附属预约）
   for (const [identifier, fireAt] of osMap) {
+    if (isEscalationOrSnoozeIdentifier(identifier)) continue;
     if (items.some(i => i.identifier === identifier)) continue;
     const category = resolveNotificationCategoryFromIdentifier(identifier);
     const meta = category ? getNotificationCategoryMeta(category) : null;

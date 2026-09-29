@@ -239,8 +239,13 @@ export default function AddProjectScreen() {
       });
       await setProjectTagIds(projectId, selectedTagIds);
       try {
-        await markPendingTablesDirty(['projects', 'tags', 'tag_links']);
-        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        const projectSyncTables = ['projects', 'project_categories', 'tags', 'tag_links'];
+        await markPendingTablesDirty(projectSyncTables);
+        await pushLocalChangesToApi({
+          awaitSync: true,
+          rethrow: true,
+          onlyTables: projectSyncTables,
+        });
       } catch (syncErr) {
         console.warn('项目创建后同步到服务器失败', syncErr);
       }

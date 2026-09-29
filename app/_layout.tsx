@@ -49,6 +49,11 @@ import { loadApiDebugEnabled } from '@/lib/api-debug';
 import {
   resolveNotificationCategoryFromData,
 } from '@/lib/notification-catalog';
+import { resyncReminderAfterAcknowledge } from '@/lib/notification-navigate';
+import {
+  acknowledgeStrongReminder,
+  stripReminderAccessorySuffix,
+} from '@/lib/notification-strong-reminder';
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
@@ -88,6 +93,18 @@ if (Platform.OS !== 'web') {
         }
       }
       if (suppress) {
+        // 已完成/无需提醒时清掉主提醒与升级链，并重排下一次
+        const record =
+          data && typeof data === 'object' && !Array.isArray(data)
+            ? (data as Record<string, unknown>)
+            : null;
+        const base =
+          typeof record?.baseIdentifier === 'string' && record.baseIdentifier
+            ? record.baseIdentifier
+            : notification.request.identifier;
+        void acknowledgeStrongReminder(stripReminderAccessorySuffix(base)).then(() => {
+          resyncReminderAfterAcknowledge(record);
+        });
         return {
           shouldShowBanner: false,
           shouldShowList: false,
@@ -293,6 +310,14 @@ function RootLayoutInner() {
             <Stack.Screen name="memo-edit/[id]" />
             <Stack.Screen name="notification-center" />
             <Stack.Screen name="notification-center-scheduled" />
+            <Stack.Screen
+              name="reminder-dispose"
+              options={{
+                presentation: 'fullScreenModal',
+                animation: 'fade',
+                gestureEnabled: true,
+              }}
+            />
             <Stack.Screen name="weekly-review" />
             <Stack.Screen name="weekly-review-form" />
             <Stack.Screen name="weekly-review/[weekStartYmd]/[dimensionId]" />

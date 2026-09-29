@@ -1,4 +1,5 @@
 import type { ProjectTagRow, TagDomain } from '@/lib/repositories/projects/project-tag.types';
+import { filterTagsByDomain, normalizeTagDomain } from '@/lib/repositories/tags/tag';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -21,7 +22,7 @@ type ProjectTagPickerFieldProps = {
   locked?: boolean;
   /** locked 时主文案前缀，默认「与项目一致」 */
   lockedHint?: string;
-  /** 标签域：决定「管理标签」跳转；默认 task */
+  /** 标签域：任务侧 / 备忘录互斥；决定可选列表与「管理标签」跳转 */
   tagDomain?: TagDomain;
   onChange: (ids: string[]) => void;
   textColor: string;
@@ -54,14 +55,27 @@ export function ProjectTagPickerField({
   const [modalVisible, setModalVisible] = useState(false);
   const [draftIds, setDraftIds] = useState<string[]>([]);
 
+  const domain = normalizeTagDomain(tagDomain);
+
+  // 选择列表严格按域隔离；已选跨域历史项仅用于展示摘要，不出现在可选列表
+  const selectableTags = useMemo(
+    () => filterTagsByDomain(allTags, domain),
+    [allTags, domain],
+  );
+
   const tagById = useMemo(() => new Map(allTags.map((t) => [t.id, t])), [allTags]);
+  const selectableIdSet = useMemo(
+    () => new Set(selectableTags.map((t) => t.id)),
+    [selectableTags],
+  );
 
   const selectedTags = useMemo(
     () =>
       selectedIds
         .map((id) => tagById.get(id))
-        .filter((t): t is ProjectTagRow => !!t),
-    [selectedIds, tagById],
+        .filter((t): t is ProjectTagRow => !!t)
+        .filter((t) => normalizeTagDomain(t.domain) === domain),
+    [domain, selectedIds, tagById],
   );
 
   const selectedSummary = useMemo(() => {
@@ -78,9 +92,10 @@ export function ProjectTagPickerField({
 
   const openModal = useCallback(() => {
     if (disabled || locked) return;
-    setDraftIds(selectedIds);
+    // 打开时丢掉跨域 id，避免确认时把备忘录标签写回任务侧
+    setDraftIds(selectedIds.filter((id) => selectableIdSet.has(id)));
     setModalVisible(true);
-  }, [disabled, locked, selectedIds]);
+  }, [disabled, locked, selectableIdSet, selectedIds]);
 
   const closeModal = useCallback(() => {
     setModalVisible(false);
@@ -94,18 +109,14 @@ export function ProjectTagPickerField({
   }, []);
 
   const confirmModal = useCallback(() => {
-    onChange(draftIds);
+    onChange(draftIds.filter((id) => selectableIdSet.has(id)));
     closeModal();
-  }, [closeModal, draftIds, onChange]);
+  }, [closeModal, draftIds, onChange, selectableIdSet]);
 
   const openManageTags = useCallback(() => {
     closeModal();
-    if (tagDomain === 'memo') {
-      router.push({ pathname: '/project-tags', params: { domain: 'memo' } });
-    } else {
-      router.push('/project-tags');
-    }
-  }, [closeModal, router, tagDomain]);
+    router.push({ pathname: '/project-tags', params: { domain } });
+  }, [closeModal, domain, router]);
 
   // 夜间模式强制实色底，避免调用方传入的半透明 surface 叠在深色背景上发虚
   const fieldBg = isDark ? '#161d2b' : surfaceLow;
@@ -174,7 +185,9 @@ export function ProjectTagPickerField({
               </Pressable>
             </View>
             <Text style={[styles.modalDesc, { color: outline }]}>
-              可贴 0 到多个标签；权重高的标签会优先展示。
+              {domain === 'memo'
+                ? '仅备忘录标签；与项目/待办标签相互独立。可贴多个，权重高的优先展示。'
+                : '仅项目/习惯/待办标签；与备忘录标签相互独立。可贴多个，权重高的优先展示。'}
             </Text>
 
             <Pressable
@@ -190,12 +203,12 @@ export function ProjectTagPickerField({
               <Text style={[styles.manageBtnText, { color: primary }]}>管理标签（新建 / 删除 / 权重）</Text>
             </Pressable>
 
-            {allTags.length === 0 ? (
+            {selectableTags.length === 0 ? (
               <Text style={[styles.modalEmpty, { color: outline }]}>暂无标签，请先去管理页新建</Text>
             ) : (
               <>
                 <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                  {allTags.map((tag) => {
+                  {selectableTags.map((tag) => {
                     const picked = draftIds.includes(tag.id);
                     return (
                       <Pressable

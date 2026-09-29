@@ -37,6 +37,39 @@ export function normalizeTagDomain(domain: string | null | undefined): TagDomain
   return domain === 'memo' ? 'memo' : 'task';
 }
 
+/**
+ * 按关联实体修复 domain：仅挂在备忘录上的标签归为 memo；
+ * 已挂项目/习惯/待办的保持 task。幂等，可在同步灌库后调用。
+ */
+export async function repairTagDomainsFromLinks(): Promise<number> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE tags SET domain = 'task'
+     WHERE domain IS NULL OR trim(domain) = '' OR domain NOT IN ('task', 'memo')`,
+  );
+  const result = await db.runAsync(
+    `UPDATE tags
+     SET domain = 'memo',
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE sync_status != 'pending_delete'
+       AND (domain IS NULL OR domain != 'memo')
+       AND id IN (
+         SELECT DISTINCT tl.tag_id
+         FROM tag_links tl
+         WHERE tl.sync_status != 'pending_delete'
+           AND tl.entity_type = 'memo'
+           AND tl.tag_id NOT IN (
+             SELECT DISTINCT tl2.tag_id
+             FROM tag_links tl2
+             WHERE tl2.sync_status != 'pending_delete'
+               AND tl2.entity_type IN ('project', 'habit', 'task')
+           )
+       )`,
+  );
+  return result.changes ?? 0;
+}
+
 function sortTagsByWeightDesc(rows: TagRow[]): TagRow[] {
   return [...rows].sort((a, b) => {
     if (b.weight !== a.weight) return b.weight - a.weight;
@@ -90,6 +123,12 @@ export async function getTags(domain?: TagDomain) {
   const filtered =
     domain === undefined ? rows : rows.filter((t) => normalizeTagDomain(t.domain) === domain);
   return sortTagsByWeightDesc(filtered);
+}
+
+/** 按域过滤标签列表（选择器防御：避免误传跨域标签） */
+export function filterTagsByDomain(tags: TagRow[], domain: TagDomain): TagRow[] {
+  const target = normalizeTagDomain(domain);
+  return tags.filter((t) => normalizeTagDomain(t.domain) === target);
 }
 
 export async function getTagById(id: string) {
@@ -276,12 +315,11 @@ export async function setEntityTagIds(
   const candidateTags = await getTagsByIds(uniqueDesired);
   const tagById = new Map(candidateTags.map((t) => [t.id, t]));
 
-  // 本域可新建关联；历史跨域关联仅在调用方仍传入时保留，避免静默摘掉
+  // 严格分域：只保留本域标签；跨域历史关联在保存时摘掉
   const finalIds = uniqueDesired.filter((id) => {
     const tag = tagById.get(id);
     if (!tag) return false;
-    if (normalizeTagDomain(tag.domain) === desiredDomain) return true;
-    return existingByTagId.has(id);
+    return normalizeTagDomain(tag.domain) === desiredDomain;
   });
   const finalSet = new Set(finalIds);
 

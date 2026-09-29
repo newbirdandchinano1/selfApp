@@ -23,7 +23,7 @@ import {
   addMemoAiReviewSavedListener,
 } from '@/lib/memo-ai-background';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
-import { getMemoTags, getTagsByEntityIds } from '@/lib/repositories/tags/tag';
+import { getMemoTags, getTagsByEntityIds, normalizeTagDomain } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -201,11 +201,13 @@ export default function MemoListScreen() {
 
   const usedTags = useMemo(() => {
     const byId = new Map<string, TagRow>();
-    for (const list of tagsByMemoId.values()) {
-      for (const t of list) byId.set(t.id, t);
-    }
-    // 优先展示本域标签；历史跨域也一并出现在筛选里
+    // 筛选芯片只用备忘录域标签，不混入任务侧标签
     for (const t of allTags) byId.set(t.id, t);
+    for (const list of tagsByMemoId.values()) {
+      for (const t of list) {
+        if (normalizeTagDomain(t.domain) === 'memo') byId.set(t.id, t);
+      }
+    }
     return [...byId.values()].sort((a, b) => {
       if (b.weight !== a.weight) return b.weight - a.weight;
       return a.name.localeCompare(b.name, 'zh-CN');

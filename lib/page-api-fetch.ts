@@ -9,6 +9,9 @@ import { getActivePageApiReadOpts } from '@/lib/page-api-session';
 export type PageFetchOpts = {
   signal?: AbortSignal;
   offlineFallback?: boolean;
+  /** 强制打网（忽略 wrapLoad 的 localOnly） */
+  forceApi?: boolean;
+  forceRefresh?: boolean;
 };
 
 export type PageFetchResult = { fromApi: boolean };
@@ -40,10 +43,14 @@ export function asRecordArray(raw: unknown): Record<string, unknown>[] {
 }
 
 /** 将 page API 返回的行灌入本地 SQLite（带表级锁） */
-export async function upsertPageRows(table: string, rows: Record<string, unknown>[]): Promise<void> {
-  if (rows.length === 0) return;
+export async function upsertPageRows(
+  table: string,
+  rows: Record<string, unknown>[],
+  opts?: { reconcileSnapshot?: boolean },
+): Promise<void> {
+  if (rows.length === 0 && !opts?.reconcileSnapshot) return;
   await withApiTableSyncLock(table, async () => {
-    await syncApiReadResultToLocal(table, rows);
+    await syncApiReadResultToLocal(table, rows, { reconcileSnapshot: opts?.reconcileSnapshot });
   });
 }
 
@@ -68,7 +75,8 @@ export async function fetchPage<TPayload, TResult extends PageFetchResult>(
   params: FetchPageParams<TPayload, TResult>,
 ): Promise<TResult> {
   const respectLocalOnly = params.respectLocalOnly !== false;
-  if (respectLocalOnly && !shouldFetchPageFromApi()) {
+  const forceNetwork = Boolean(params.opts?.forceApi || params.opts?.forceRefresh);
+  if (respectLocalOnly && !forceNetwork && !shouldFetchPageFromApi()) {
     return (params.fallback ? await params.fallback() : ({ fromApi: false } as TResult));
   }
 

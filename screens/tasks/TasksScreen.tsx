@@ -8118,7 +8118,7 @@ export default function TasksScreen() {
                   } },
                   { icon: 'local-offer', label: '管理标签', color: tertiary, onPress: () => {
                     closeCategoryMenu();
-                    router.push('/project-tags');
+                    router.push({ pathname: '/project-tags', params: { domain: 'task' } });
                   } },
                   { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => {
                     if (!activeCategoryId) {

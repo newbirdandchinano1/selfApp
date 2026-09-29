@@ -67,7 +67,7 @@
       [
         "expo-notifications",
         {
-          "sounds": [],
+          "sounds": ["./assets/sounds/strong_reminder.wav"],
           "enableBackgroundRemoteNotifications": false
         }
       ],

@@ -2,6 +2,8 @@
  * App 内本地通知类型目录：用于通知管理页展示来源与跳转。
  */
 
+import { stripReminderAccessorySuffix } from './notification-strong-reminder';
+
 export type NotificationCategoryId =
   | 'health-intake-reminder'
   | 'schedule-slot-reminder'
@@ -39,7 +41,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     id: 'schedule-slot-reminder',
     title: '日程表提醒',
     sourceLabel: '日程表',
-    description: '已入格占用在开始前 N 分钟提醒（未入格任务不推送）。',
+    description: '已入格占用在开始前 N 分钟提醒（未入格任务不推送）。iOS 为强提醒：Time Sensitive、未确认会再次提醒。',
     customizeLabel: '在通知管理中设置提前分钟',
     customizeHref: '/notification-center',
     identifierPrefix: 'selfapp-schedule-reminder:',
@@ -48,7 +50,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     id: 'habit-reminder',
     title: '习惯打卡提醒',
     sourceLabel: '习惯',
-    description: '已开启提醒的习惯，在打卡日按设定时刻本地推送。',
+    description: '已开启提醒的习惯，在打卡日按设定时刻本地推送。iOS 为强提醒：Time Sensitive、未确认会再次提醒。',
     customizeLabel: '在习惯详情或通知管理中设置提醒时间',
     customizeHref: '/habit-manage',
     identifierPrefix: 'selfapp-habit-reminder:',
@@ -57,7 +59,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     id: 'daily-review-reminder',
     title: '每日复盘提醒',
     sourceLabel: '复盘',
-    description: '每日固定时刻提醒填写日复盘（已填写或周复盘日会跳过）。',
+    description: '每日固定时刻提醒填写日复盘（已填写或周复盘日会跳过）。iOS 为强提醒：Time Sensitive、未确认会再次提醒。',
     customizeLabel: '在复盘设置或通知管理中开关与改时间',
     customizeHref: '/review-settings',
     identifierPrefix: 'selfapp-daily-review-reminder',
@@ -98,7 +100,7 @@ export function buildNotificationIdentifier(
 export function resolveNotificationCategoryFromIdentifier(
   identifier: string,
 ): NotificationCategoryId | null {
-  const id = identifier.trim();
+  const id = stripReminderAccessorySuffix(identifier);
   if (!id) return null;
   for (const cat of NOTIFICATION_CATEGORIES) {
     if (!cat.identifierPrefix) continue;
@@ -133,8 +135,9 @@ export function extractEntityIdFromIdentifier(
   const meta = getNotificationCategoryMeta(category);
   const prefix = meta.identifierPrefix;
   if (!prefix) return null;
+  const id = stripReminderAccessorySuffix(identifier);
   if (prefix.endsWith(':')) {
-    const rest = identifier.slice(prefix.length).trim();
+    const rest = id.slice(prefix.length).trim();
     return rest || null;
   }
   return null;

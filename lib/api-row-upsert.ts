@@ -69,10 +69,12 @@ function isMissingParentRecordApiError(err: unknown): boolean {
     (/请先同步\s*projects/i.test(err.message) ||
       /请先同步\s*project_categories/i.test(err.message) ||
       /请先同步\s*habits/i.test(err.message) ||
+      /请先同步\s*finance_accounts/i.test(err.message) ||
       /请先.*task_categories/i.test(err.message) ||
       /任务分类.*不存在/i.test(err.message) ||
       /项目分类.*不存在/i.test(err.message) ||
       /习惯.*不存在/i.test(err.message) ||
+      /财务账户.*不存在/i.test(err.message) ||
       /引用的\s*项目[\s（(]*projects/i.test(err.message) ||
       /projects[\s）)]*不存在/i.test(err.message))
   );
@@ -443,6 +445,52 @@ export async function upsertRowToApi(
     opts.uploadedPkByTable?.get('habits')?.add(hid);
   };
 
+  const tryUpsertReferencedFinanceAccount = async (payload: Record<string, unknown>): Promise<void> => {
+    if (
+      (table !== 'finance_transactions' && table !== 'finance_scheduled_expenses') ||
+      !opts?.rowsByTable
+    ) {
+      return;
+    }
+    const accountId = payload.account_id ?? payload.accountId;
+    if (accountId == null || accountId === '') return;
+
+    const aid = String(accountId);
+    if (opts.uploadedPkByTable?.get('finance_accounts')?.has(aid)) return;
+
+    let accountRow = (opts.rowsByTable.get('finance_accounts') ?? []).find(a => String(a.id) === aid);
+    if (!accountRow) {
+      const { getDatabase } = await import('@/lib/database');
+      const db = await getDatabase();
+      if (db) {
+        const fresh = await db.getFirstAsync<Record<string, unknown>>(
+          'SELECT * FROM finance_accounts WHERE id = ? AND sync_status != ? LIMIT 1',
+          [aid, 'pending_delete'],
+        );
+        if (fresh) {
+          accountRow = fresh;
+          const accountRows = opts.rowsByTable.get('finance_accounts') ?? [];
+          accountRows.push(fresh);
+          opts.rowsByTable.set('finance_accounts', accountRows);
+        }
+      }
+    }
+    if (!accountRow) return;
+
+    const accountPkCols = opts.pkColsByTable?.get('finance_accounts') ?? ['id'];
+    await upsertRowToApi('finance_accounts', accountRow, accountPkCols, {
+      signal: opts?.signal,
+      uploadedPkByTable: opts.uploadedPkByTable,
+      fkRefs: opts.fkRefsByTable?.get('finance_accounts') ?? [],
+      rowsByTable: opts.rowsByTable,
+      pkColsByTable: opts.pkColsByTable,
+      fkRefsByTable: opts.fkRefsByTable,
+    });
+    const uploaded = opts.uploadedPkByTable?.get('finance_accounts') ?? new Set<string>();
+    uploaded.add(aid);
+    opts.uploadedPkByTable?.set('finance_accounts', uploaded);
+  };
+
   const tryUpsertReferencedTaskCategory = async (payload: Record<string, unknown>): Promise<void> => {
     if (table !== 'tasks' || !opts?.rowsByTable) return;
     const categoryId = payload.category_id;
@@ -490,6 +538,9 @@ export async function upsertRowToApi(
       try {
         if (table === 'habit_check_ins') {
           await tryUpsertReferencedHabit(body);
+        }
+        if (table === 'finance_transactions' || table === 'finance_scheduled_expenses') {
+          await tryUpsertReferencedFinanceAccount(body);
         }
         if (table === 'tasks') {
           await tryUpsertReferencedTaskCategory(body);
@@ -650,7 +701,7 @@ export async function upsertFinanceAccountsReferencedByTransactions(
     }
     if (!accountRow) {
       throw new Error(
-        `关联账户（id: ${aid}）本地不存在，无法同步流水。请返回账户列表刷新后重试。`,
+        `关联账户（id: ${aid}）本地不存在，无法同步财务数据。请返回账户列表刷新后重试。`,
       );
     }
     try {

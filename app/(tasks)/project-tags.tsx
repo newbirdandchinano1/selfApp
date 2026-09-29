@@ -5,6 +5,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { hasPageSyncedWithApi } from '@/lib/page-api-session';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import {
   createMemoTag,
@@ -87,12 +88,14 @@ export default function ProjectTagsScreen() {
 
   const load = React.useCallback(
     async (forceApi = false) => {
+      // 子页无 PAGE_SCOPE：未同步过时必须 forceApi，否则 resolvePageApiReadOpts 会永远 localOnly
+      const hitApi = forceApi || !hasPageSyncedWithApi(PAGE_API_KEY);
       try {
         await wrapLoad(async () => {
-          // tags / tag_links 由 profile/memo-list 拼盘灌入本地
-          await fetchProfileMemoList({ offlineFallback: true });
+          // tags / tag_links 由 profile/memo-list 拼盘灌入并 reconcile 覆盖本地
+          await fetchProfileMemoList({ offlineFallback: true, forceApi: hitApi });
           setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
-        }, forceApi);
+        }, hitApi);
       } catch (err) {
         console.warn(isMemoDomain ? '加载备忘录标签失败' : '加载任务标签失败', err);
         setTags([]);
@@ -103,13 +106,14 @@ export default function ProjectTagsScreen() {
     [isMemoDomain, wrapLoad],
   );
 
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, load);
+
+  // 管理页每次聚焦都重载：fetchProfileMemoList 会软同步 tags 覆盖本地
   useFocusEffect(
     React.useCallback(() => {
       void load();
     }, [load]),
   );
-
-  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, load);
 
   const openCreate = () => {
     setEditingId(null);
@@ -183,8 +187,13 @@ export default function ProjectTagsScreen() {
       setEditorVisible(false);
       await load();
       try {
-        await markPendingTablesDirty(['tags', 'tag_links']);
-        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        const tagSyncTables = ['tags', 'tag_links'];
+        await markPendingTablesDirty(tagSyncTables);
+        await pushLocalChangesToApi({
+          awaitSync: true,
+          rethrow: true,
+          onlyTables: tagSyncTables,
+        });
       } catch (syncErr) {
         console.warn('标签保存后同步失败', syncErr);
       }
@@ -207,8 +216,13 @@ export default function ProjectTagsScreen() {
             await deleteProjectTag(tag.id);
             await load();
             try {
-              await markPendingTablesDirty(['tags', 'tag_links']);
-              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+              const tagSyncTables = ['tags', 'tag_links'];
+              await markPendingTablesDirty(tagSyncTables);
+              await pushLocalChangesToApi({
+                awaitSync: true,
+                rethrow: true,
+                onlyTables: tagSyncTables,
+              });
             } catch (syncErr) {
               console.warn('标签删除后同步失败', syncErr);
             }
@@ -243,6 +257,7 @@ export default function ProjectTagsScreen() {
       <ScrollView
         refreshControl={refreshControl}
         contentContainerStyle={styles.content}
+        alwaysBounceVertical
         showsVerticalScrollIndicator={false}>
         <Text style={[styles.hint, { color: outline }]}>{hintText}</Text>
 
@@ -386,7 +401,7 @@ const styles = StyleSheet.create({
   doneText: { fontSize: 15, fontWeight: '600' },
   title: { fontSize: 17, fontWeight: '700' },
   pressed: { opacity: 0.7 },
-  content: { padding: 16, gap: 10, paddingBottom: 40 },
+  content: { flexGrow: 1, padding: 16, gap: 10, paddingBottom: 40 },
   hint: { fontSize: 13, lineHeight: 18, marginBottom: 4 },
   loadingWrap: { paddingVertical: 40, alignItems: 'center' },
   emptyCard: {

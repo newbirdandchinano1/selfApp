@@ -84,6 +84,15 @@ function normalizeApiRowForLocal(
   if (colNames.includes('sync_status')) {
     out.sync_status = 'synced';
   }
+  // tags.domain：API 缺字段/空值时删除，便于后续从本地行回填，避免 REPLACE 落成默认 task
+  if (table === 'tags' && colNames.includes('domain')) {
+    const raw = out.domain;
+    if (raw === 'memo' || raw === 'task') {
+      out.domain = raw;
+    } else {
+      delete out.domain;
+    }
+  }
   if (table === 'finance_accounts') {
     const accountType = out.account_type;
     const extra = typeof out.extra_data === 'string' ? out.extra_data : null;
@@ -249,6 +258,15 @@ async function upsertRowsToLocalTable(
             }
           }
           preserveLocalForeignKeysOnEmptyApi(table, obj, existing, colNames);
+          // 标签域：服务端仍为默认 task、本地已是 memo 时保留本地（避免同步把备忘录标签冲回任务侧）
+          if (
+            table === 'tags' &&
+            colNames.includes('domain') &&
+            String(existing.domain ?? '') === 'memo' &&
+            (obj.domain == null || obj.domain === '' || obj.domain === 'task')
+          ) {
+            obj.domain = 'memo';
+          }
           if (table === 'tasks') {
             const apiStatus = obj.status;
             const apiCompletedAt = obj.completed_at;

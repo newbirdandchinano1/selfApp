@@ -18,13 +18,21 @@ function clearWritePushDebounce(): void {
   }
 }
 
-async function runFlush(opts?: { rethrow?: boolean; awaitSync?: boolean; quiet?: boolean }): Promise<void> {
+async function runFlush(opts?: {
+  rethrow?: boolean;
+  awaitSync?: boolean;
+  quiet?: boolean;
+  onlyTables?: string[];
+}): Promise<void> {
   const flush = async () => {
     const { flushApiDirtyTablesNow } = await import('@/lib/api-incremental-sync');
     const { withSuppressedApiWriteOverlay } = await import('@/lib/api-loading-tracker');
     // 推送过程中抑制逐条写蒙层；awaitSync 时由外层统一挂一次蒙层
     await withSuppressedApiWriteOverlay(() =>
-      flushApiDirtyTablesNow({ rethrow: opts?.rethrow ?? false }),
+      flushApiDirtyTablesNow({
+        rethrow: opts?.rethrow ?? false,
+        onlyTables: opts?.onlyTables,
+      }),
     );
   };
 
@@ -44,9 +52,16 @@ export async function pushLocalChangesToApi(opts?: {
   /** 等待推送但不挂全局加载蒙层（后台静默同步等） */
   quiet?: boolean;
   rethrow?: boolean;
+  /** 仅推送这些表（及其 FK 父表）；避免项目写操作被无关财务脏表失败污染 */
+  onlyTables?: string[];
 }): Promise<void> {
   const run = () =>
-    runFlush({ rethrow: opts?.rethrow, awaitSync: opts?.awaitSync, quiet: opts?.quiet });
+    runFlush({
+      rethrow: opts?.rethrow,
+      awaitSync: opts?.awaitSync,
+      quiet: opts?.quiet,
+      onlyTables: opts?.onlyTables,
+    });
 
   if (opts?.awaitSync) {
     clearWritePushDebounce();
