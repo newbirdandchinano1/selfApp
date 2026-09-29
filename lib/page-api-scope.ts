@@ -65,8 +65,8 @@ export const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   points_ledger: ['points-ledger', 'wish-board'],
   wish_board_items: ['wish-board'],
   memos: ['memo-list', 'memo-view', 'memo-edit'],
-  tags: ['memo-list', 'memo-view', 'memo-edit'],
-  tag_links: ['memo-list', 'memo-view', 'memo-edit'],
+  tags: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
+  tag_links: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
 };
 
 /** 走专用 page API、禁止通用 List 全表同步的 Tab */

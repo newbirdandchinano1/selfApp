@@ -1,10 +1,11 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import {
   createMemoTag,
   createProjectTag,
@@ -36,6 +37,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+const PAGE_API_KEY = 'project-tags';
+
 function buildTagId() {
   return makeTimestampEntityId('ptag_', 8);
 }
@@ -54,6 +57,7 @@ export default function ProjectTagsScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
   const isDark = colorScheme === 'dark';
+  const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -81,17 +85,23 @@ export default function ProjectTagsScreen() {
     ? '已贴到备忘录上的关联会一并移除。'
     : '已贴到项目、习惯、待办上的关联会一并移除。';
 
-  const load = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
-    } catch (err) {
-      console.warn(isMemoDomain ? '加载备忘录标签失败' : '加载任务标签失败', err);
-      setTags([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [isMemoDomain]);
+  const load = React.useCallback(
+    async (forceApi = false) => {
+      try {
+        await wrapLoad(async () => {
+          // tags / tag_links 由 profile/memo-list 拼盘灌入本地
+          await fetchProfileMemoList({ offlineFallback: true });
+          setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
+        }, forceApi);
+      } catch (err) {
+        console.warn(isMemoDomain ? '加载备忘录标签失败' : '加载任务标签失败', err);
+        setTags([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [isMemoDomain, wrapLoad],
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -99,7 +109,7 @@ export default function ProjectTagsScreen() {
     }, [load]),
   );
 
-  const { refreshControl } = usePullToRefresh(load);
+  const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, load);
 
   const openCreate = () => {
     setEditingId(null);

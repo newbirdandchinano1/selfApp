@@ -40,6 +40,8 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'memo-list': [TAB_PAGE_KEYS.profile],
   'memo-view': ['memo-list', TAB_PAGE_KEYS.profile],
   'memo-edit': ['memo-view', 'memo-list', TAB_PAGE_KEYS.profile],
+  /** 备忘录 / 任务标签管理；标签数据由 profile/memo-list 拼盘灌入 */
+  'project-tags': ['memo-list', TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
   'points-ledger': [TAB_PAGE_KEYS.profile],
   'wish-board': [TAB_PAGE_KEYS.profile],
   'edit-wish-board-item': ['wish-board', TAB_PAGE_KEYS.profile],
