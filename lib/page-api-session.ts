@@ -9,6 +9,7 @@ import {
   TAB_PAGE_KEYS,
   TABLE_CHILD_PAGE_DIRTY_MAP,
   TABLE_TAB_DIRTY_MAP,
+  isPageApiOnlyTab,
   listPageScopeTables,
 } from '@/lib/page-api-scope';
 import {
@@ -304,6 +305,26 @@ export type PageApiReadOpts = {
   offlineFallback?: boolean;
 };
 
+/**
+ * 是否应只读本地（供 resolvePageApiReadOpts / 单测共用）。
+ * 专用 page API 的 Tab（任务/财务/复盘/我的）未同步时必须打网，不能因 scope 为空被当成「子页直读本地」。
+ */
+export function shouldReadPageLocalOnly(input: {
+  forceApi?: boolean;
+  needsRestRefresh?: boolean;
+  hasSynced?: boolean;
+  isPageApiOnly?: boolean;
+  scopeTableCount?: number;
+}): boolean {
+  if (input.forceApi || input.needsRestRefresh) return false;
+  if (input.hasSynced) return true;
+  // 专用 page API Tab：首次由各页 fetch* 拉网；禁止误走「无 scope → localOnly」
+  if (input.isPageApiOnly) return false;
+  // 普通子页无范围表：不走首次全量 REST，直接读本地（各页自行软同步）
+  if ((input.scopeTableCount ?? 0) === 0) return true;
+  return false;
+}
+
 /** 根据页面是否已同步，决定本次是否只读本地 */
 export function resolvePageApiReadOpts(
   pageKey: string,
@@ -312,16 +333,20 @@ export function resolvePageApiReadOpts(
   if (isApiOnlyReads()) {
     return { localOnly: false, offlineFallback: false };
   }
-  if (forceApi || pageNeedsRestRefresh(pageKey)) {
-    return { localOnly: false, offlineFallback: false };
-  }
-  if (hasPageSyncedWithApi(pageKey)) {
+  const key = pageKey.trim();
+  const localOnly = shouldReadPageLocalOnly({
+    forceApi,
+    needsRestRefresh: pageNeedsRestRefresh(key),
+    hasSynced: hasPageSyncedWithApi(key),
+    isPageApiOnly: isPageApiOnlyTab(key),
+    scopeTableCount: listPageScopeTables(key).length,
+  });
+  if (localOnly) {
     return { localOnly: true, offlineFallback: true };
   }
-  // local-first 且无页面范围表：子页不走「首次全量 REST」门禁，直接读本地
-  // （各页自行软同步；避免首次进详情被空转 needsRest / 同表锁拖 7–10s）
-  if (isLocalFirstReads() && listPageScopeTables(pageKey).length === 0) {
-    return { localOnly: true, offlineFallback: true };
+  // 专用 page API Tab 首次拉网允许离线回退本地，避免骨架屏卡死
+  if (isPageApiOnlyTab(key)) {
+    return { localOnly: false, offlineFallback: true };
   }
   return { localOnly: false, offlineFallback: false };
 }

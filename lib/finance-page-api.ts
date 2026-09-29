@@ -5,8 +5,12 @@
  */
 import { asRecordArray, shouldSkipPageNetwork, upsertPageRows } from '@/lib/page-api-fetch';
 import { withApiTableSyncLock } from '@/lib/api-read';
-import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import {
+  overlayLocalPendingOnApiTableRows,
+  syncApiReadResultToLocal,
+} from '@/lib/api-read-local-sync';
 import { ymdFromDatetime } from '@/lib/api-read-helpers';
+import { markPageLoadRestFailed } from '@/lib/page-api-session';
 import {
   rememberFinanceAccountBalances,
   rememberFinanceNetWorth,
@@ -234,7 +238,7 @@ export async function fetchFinanceHome(opts?: {
       budgetRefreshDay: opts?.budgetRefreshDay,
       signal: opts?.signal,
     });
-    const [accounts, categories, transactions] = await Promise.all([
+    const [accounts, categories, apiTransactions] = await Promise.all([
       syncAccountsWithBalance(payload.accounts),
       syncCategories(payload.categories),
       syncTransactions(payload.transactions),
@@ -243,10 +247,15 @@ export async function fetchFinanceHome(opts?: {
     if (typeof payload.netWorth === 'number') {
       rememberFinanceNetWorth(payload.netWorth);
     }
+    // 叠本地 pending，避免慢 home 响应盖掉刚记账、尚未推上云的流水
+    const withPending = (await overlayLocalPendingOnApiTableRows(
+      'finance_transactions',
+      apiTransactions as Record<string, unknown>[],
+    )) as FinanceTransactionRow[];
     return {
       accounts,
       categories,
-      transactions,
+      transactions: mergeFinanceHomeTransactions(apiTransactions, withPending),
       historyHasMore: payload.historyHasMore === true,
       netWorth: typeof payload.netWorth === 'number' ? payload.netWorth : null,
       monthly: payload.monthly ?? null,
@@ -254,9 +263,31 @@ export async function fetchFinanceHome(opts?: {
     };
   } catch (e) {
     if (opts?.offlineFallback === false) throw e;
+    markPageLoadRestFailed();
     console.warn('[finance-page-api] home 失败，回退本地', e);
     return readLocal();
   }
+}
+
+/**
+ * 合并 home API 窗口与本地 pending：同 id 以 pending/本地为准，并并入仅本地存在的新流水。
+ * 纯函数，便于单测。
+ */
+export function mergeFinanceHomeTransactions(
+  apiWindow: FinanceTransactionRow[],
+  withPending: FinanceTransactionRow[],
+): FinanceTransactionRow[] {
+  const byId = new Map<string, FinanceTransactionRow>();
+  for (const row of apiWindow) {
+    const id = String(row?.id ?? '').trim();
+    if (id) byId.set(id, row);
+  }
+  for (const row of withPending) {
+    const id = String(row?.id ?? '').trim();
+    if (!id) continue;
+    byId.set(id, row);
+  }
+  return [...byId.values()];
 }
 
 export type FinanceRecentDaysData = {

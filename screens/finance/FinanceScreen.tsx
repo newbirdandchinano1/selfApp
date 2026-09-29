@@ -615,6 +615,8 @@ export default function FinanceScreen() {
   const financeTransactionsRef = React.useRef<FinanceTransactionRow[]>([]);
   const flowCategoryNamesRef = React.useRef<Record<string, string>>({});
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
+  /** 作废进行中的 reload，避免慢 home 覆盖刚记账后的本地列表 */
+  const financeReloadGenerationRef = React.useRef(0);
 
   React.useLayoutEffect(() => {
     financeTransactionsRef.current = financeTransactions;
@@ -756,6 +758,7 @@ export default function FinanceScreen() {
   React.useEffect(() => {
     return subscribeAutoLedgerCompleted(() => {
       markPageDirty();
+      financeReloadGenerationRef.current += 1;
       void reloadFinanceTransactions();
       void reloadFinanceAccounts();
     });
@@ -764,6 +767,8 @@ export default function FinanceScreen() {
   React.useEffect(() => {
     return subscribeFinanceSheetSaved(() => {
       markPageDirty();
+      // 作废进行中的 home 拉取，防止慢响应盖掉刚写入的流水
+      financeReloadGenerationRef.current += 1;
       // 经 wrapLoad 读本地，与自动记账一致；勿裸调 load*（会强制 REST，列表不及时更新）
       void reloadFinanceTransactions();
       void reloadFinanceAccounts();
@@ -2221,14 +2226,21 @@ export default function FinanceScreen() {
   );
 
   const reload = React.useCallback(async (forceApi = false) => {
+    const generation = ++financeReloadGenerationRef.current;
+    const isStale = () => generation !== financeReloadGenerationRef.current;
+
     return wrapLoad(async () => {
       try {
         const settings = await loadMonthBudgetSettings();
+        if (isStale()) return;
         setMonthBudgetSettings(settings);
         const rd = await loadBudgetRefreshDay();
+        if (isStale()) return;
         setBudgetRefreshDay(rd);
         await loadFinanceLastUsedAccountId();
+        if (isStale()) return;
 
+        // 未同步或强制刷新：走 home；已有列表时本地重读（含刚记账的 pending）
         if (forceApi || !financeTransactionsRef.current.length) {
           const home = await fetchFinanceHome({
             logicalToday: calendarTodayYmd,
@@ -2238,7 +2250,9 @@ export default function FinanceScreen() {
             daysBack: 90,
             budgetRefreshDay: rd,
             offlineFallback: true,
+            forceApi,
           });
+          if (isStale()) return;
           flowCategoryNamesRef.current = Object.fromEntries(
             home.categories.map((c) => [c.id, c.name]),
           );
@@ -2247,6 +2261,7 @@ export default function FinanceScreen() {
           setServerMonthly(home.fromApi && home.monthly ? home.monthly : null);
           // 首页账户一律再走本地规范化（负债类型/余额），避免直接使用 API 原始行漏计总负债
           const normalizedAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
+          if (isStale()) return;
           financeAccountsRef.current = normalizedAccounts;
           setFinanceAccounts(normalizedAccounts);
           setHistoryHasMoreRemote(home.historyHasMore);
@@ -2254,12 +2269,14 @@ export default function FinanceScreen() {
         } else {
           setServerMonthly(null);
           await Promise.all([loadFinanceTransactions(), loadFinanceAccounts()]);
+          if (isStale()) return;
         }
 
         const [scheduled, savingsGoal] = await Promise.all([
           loadScheduledFinanceExpenses(),
           loadFinanceSavingsGoal(),
         ]);
+        if (isStale()) return;
         setScheduledExpenses(scheduled);
         setSavingsGoalTargetDate(savingsGoal?.targetDate ?? null);
       } catch (e) {
@@ -2576,6 +2593,8 @@ export default function FinanceScreen() {
   const handleSaveTransaction = React.useCallback(async () => {
     if (isSavingTransaction || isParsingSentence) return;
     markPageDirty();
+    // 先作废 in-flight home，再落库，避免保存过程中慢响应清空明细
+    financeReloadGenerationRef.current += 1;
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
         Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
