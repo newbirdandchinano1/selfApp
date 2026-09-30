@@ -700,9 +700,16 @@ export async function upsertFinanceAccountsReferencedByTransactions(
       }
     }
     if (!accountRow) {
-      throw new Error(
-        `关联账户（id: ${aid}）本地不存在，无法同步财务数据。请返回账户列表刷新后重试。`,
-      );
+      // 本地缺账户行时不阻断流水上传：账户权威在服务端；余额校正等写路径已直连专用接口。
+      // 若服务端也无该账户，后续 POST 流水会返回明确错误。
+      if (__DEV__) {
+        console.warn(
+          '[api-sync] 关联账户本地不存在，假定服务端已有，跳过预传',
+          aid,
+        );
+      }
+      uploadedAccounts.add(aid);
+      continue;
     }
     try {
       await upsertRowToApi('finance_accounts', accountRow, accountPkCols, {

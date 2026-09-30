@@ -159,32 +159,6 @@ async function pushFinanceChangesToApi(opts?: {
   });
 }
 
-/** 余额校正同步失败时物理删除本地未同步流水，避免「本地有、服务端无」中间态 */
-async function rollbackLocalUnsyncedFinanceTransaction(input: {
-  txnId: string;
-  accountId: string;
-  ledgerEffect: number;
-  restoreAccountSynced?: boolean;
-}): Promise<void> {
-  const db = await getDatabase();
-  if (!db) return;
-  await db.runAsync(
-    `DELETE FROM finance_transactions
-     WHERE id = ? AND sync_status IN ('pending_create', 'pending_update')`,
-    [input.txnId],
-  );
-  applyFinanceAccountBalanceDelta(input.accountId, -input.ledgerEffect);
-  invalidateInflightApiTableFetch('finance_transactions');
-  if (input.restoreAccountSynced) {
-    await db.runAsync(
-      `UPDATE finance_accounts
-       SET sync_status = 'synced', updated_at = datetime('now')
-       WHERE id = ? AND sync_status = 'pending_update'`,
-      [input.accountId],
-    );
-  }
-}
-
 async function assertTransactionAmountSign(accountId: string, amount: number) {
   const account = await getFinanceAccountById(accountId);
   if (!account) {
@@ -980,98 +954,169 @@ export async function createFinanceTransferTransactions(input: CreateFinanceTran
 
 const FINANCE_BALANCE_ADJUST_EPS = 1e-4;
 
+/** @param transactionType 流水类型，支出默认写入不计入预算标记 */
+function buildBalanceCorrectionExtra(transactionType: 'income' | 'expense'): string {
+  return JSON.stringify({
+    reason: FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON,
+    ...(transactionType === 'expense' ? { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true } : {}),
+  });
+}
+
+/**
+ * 纯函数：按账本符号规则把目标差额编成「余额校正」流水入参。
+ * `|delta|` 过小时返回 null（无需校正）。
+ */
+export function buildFinanceBalanceCorrectionTxnInput(input: {
+  id: string;
+  accountId: string;
+  signRule: number;
+  delta: number;
+  happenedAt: string;
+  note?: string | null;
+}): CreateFinanceTransactionInput | null {
+  const delta = input.delta;
+  if (!Number.isFinite(delta) || Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return null;
+
+  const note = input.note ?? null;
+  const base = {
+    id: input.id,
+    name: '余额校正' as const,
+    happened_at: input.happenedAt,
+    account_id: input.accountId,
+    note,
+  };
+
+  if (input.signRule > 0) {
+    return delta > 0
+      ? {
+          ...base,
+          transaction_type: 'income',
+          amount: delta,
+          extra_data: buildBalanceCorrectionExtra('income'),
+        }
+      : {
+          ...base,
+          transaction_type: 'expense',
+          amount: -delta,
+          extra_data: buildBalanceCorrectionExtra('expense'),
+        };
+  }
+
+  return delta > 0
+    ? {
+        ...base,
+        transaction_type: 'income',
+        amount: -delta,
+        extra_data: buildBalanceCorrectionExtra('income'),
+      }
+    : {
+        ...base,
+        transaction_type: 'expense',
+        amount: delta,
+        extra_data: buildBalanceCorrectionExtra('expense'),
+      };
+}
+
+/**
+ * 服务端已创建成功后，尽力把校正流水镜像到本地（账户本地缺失时跳过，不阻断）。
+ */
+async function mirrorBalanceCorrectionTxnLocally(
+  txnInput: CreateFinanceTransactionInput,
+  ledgerEffect: number,
+): Promise<void> {
+  applyFinanceAccountBalanceDelta(txnInput.account_id, ledgerEffect);
+  invalidateInflightApiTableFetch('finance_transactions');
+
+  const db = await getDatabase();
+  if (!db) return;
+
+  const localAccount = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM finance_accounts WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
+    [txnInput.account_id],
+  );
+  if (!localAccount) return;
+
+  const existing = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM finance_transactions WHERE id = ? LIMIT 1`,
+    [txnInput.id],
+  );
+  if (existing) {
+    await db.runAsync(
+      `UPDATE finance_transactions
+       SET sync_status = 'synced', updated_at = datetime('now')
+       WHERE id = ?`,
+      [txnInput.id],
+    );
+    return;
+  }
+
+  await db.runAsync(
+    `INSERT INTO finance_transactions (
+      id, name, happened_at, account_id, ai_comment, transaction_type, flow_category_id, amount, note,
+      created_at, updated_at, sync_status, extra_data
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'synced', ?)`,
+    [
+      txnInput.id,
+      txnInput.name,
+      txnInput.happened_at,
+      txnInput.account_id,
+      txnInput.ai_comment ?? null,
+      txnInput.transaction_type ?? 'expense',
+      txnInput.flow_category_id ?? null,
+      txnInput.amount,
+      txnInput.note ?? null,
+      txnInput.extra_data ?? null,
+    ],
+  );
+}
+
 /**
  * 通过一笔「余额校正」流水把账户账本余额对齐到目标值（不改变账户元数据）。
  * 支出类校正默认写入 `exclude_from_budget`，不计入月度/今日预算。
+ *
+ * 写路径：直接 POST `/api/app/pages/finance/transactions`，不依赖本地账户行 / 增量同步预传。
+ * 调用方若已持有账户符号与当前账本余额，请传入以避免再读本地 SQLite。
  */
 export async function applyFinanceAccountBalanceCorrection(input: {
   accountId: string;
   targetLedgerBalance: number;
   note?: string | null;
+  /** 调用方已知的符号规则；缺省才回退读账户 */
+  signRule?: number;
+  accountType?: string | null;
+  /** 调用方已知的当前账本余额；缺省才回退缓存/本地汇总 */
+  currentLedgerBalance?: number;
 }): Promise<void> {
-  const account = await getFinanceAccountById(input.accountId);
-  if (!account) {
-    throw new Error('账户不存在，请返回列表刷新后重试');
+  let signRule: -1 | 1;
+  if (input.signRule != null && Number.isFinite(Number(input.signRule))) {
+    signRule = normalizeFinanceSignRule(input.signRule, input.accountType);
+  } else {
+    const account = await getFinanceAccountById(input.accountId);
+    if (!account) {
+      throw new Error('账户不存在，请返回列表刷新后重试');
+    }
+    signRule = normalizeFinanceSignRule(account.sign_rule, account.account_type);
   }
 
   let target = input.targetLedgerBalance;
-  if (account.sign_rule > 0 && target < 0) target = 0;
-  if (account.sign_rule < 0 && target > 0) target = 0;
+  if (signRule > 0 && target < 0) target = 0;
+  if (signRule < 0 && target > 0) target = 0;
 
-  const current = await getFinanceAccountComputedBalance(input.accountId);
+  const current =
+    input.currentLedgerBalance != null && Number.isFinite(input.currentLedgerBalance)
+      ? input.currentLedgerBalance
+      : await getFinanceAccountComputedBalance(input.accountId);
   const delta = target - current;
-  if (Math.abs(delta) < FINANCE_BALANCE_ADJUST_EPS) return;
-
-  // 幽灵 synced：本地有账户但服务端可能缺失。强制标 pending_update，保证本批先推账户再推校正流水。
-  let forcedAccountPending = false;
-  if (account.sync_status === 'synced') {
-    const db = await getDatabase();
-    if (db) {
-      await db.runAsync(
-        `UPDATE finance_accounts
-         SET sync_status = 'pending_update', updated_at = datetime('now')
-         WHERE id = ? AND sync_status = 'synced'`,
-        [input.accountId],
-      );
-      forcedAccountPending = true;
-    }
-  }
-
   const id = makeTimestampEntityId('ft_badj_', 6);
-  const happened_at = formatFinanceHappenedAt(new Date());
-  const note = input.note ?? null;
-
-  /** @param transactionType 流水类型，支出默认写入不计入预算标记 */
-  const buildBalanceCorrectionExtra = (transactionType: 'income' | 'expense') =>
-    JSON.stringify({
-      reason: FINANCE_TXN_EXTRA_BALANCE_CORRECTION_REASON,
-      ...(transactionType === 'expense' ? { [FINANCE_TXN_EXTRA_EXCLUDE_FROM_BUDGET]: true } : {}),
-    });
-
-  const txnInput: CreateFinanceTransactionInput =
-    account.sign_rule > 0
-      ? delta > 0
-        ? {
-            id,
-            name: '余额校正',
-            happened_at,
-            account_id: input.accountId,
-            transaction_type: 'income',
-            amount: delta,
-            note,
-            extra_data: buildBalanceCorrectionExtra('income'),
-          }
-        : {
-            id,
-            name: '余额校正',
-            happened_at,
-            account_id: input.accountId,
-            transaction_type: 'expense',
-            amount: -delta,
-            note,
-            extra_data: buildBalanceCorrectionExtra('expense'),
-          }
-      : delta > 0
-        ? {
-            id,
-            name: '余额校正',
-            happened_at,
-            account_id: input.accountId,
-            transaction_type: 'income',
-            amount: -delta,
-            note,
-            extra_data: buildBalanceCorrectionExtra('income'),
-          }
-        : {
-            id,
-            name: '余额校正',
-            happened_at,
-            account_id: input.accountId,
-            transaction_type: 'expense',
-            amount: delta,
-            note,
-            extra_data: buildBalanceCorrectionExtra('expense'),
-          };
+  const txnInput = buildFinanceBalanceCorrectionTxnInput({
+    id,
+    accountId: input.accountId,
+    signRule,
+    delta,
+    happenedAt: formatFinanceHappenedAt(new Date()),
+    note: input.note ?? null,
+  });
+  if (!txnInput) return;
 
   const ledgerEffect = computeTransactionLedgerEffect(
     txnInput.transaction_type ?? 'expense',
@@ -1079,18 +1124,29 @@ export async function applyFinanceAccountBalanceCorrection(input: {
     txnInput.extra_data ?? null,
   );
 
-  await createFinanceTransaction(txnInput, { skipPush: true });
   try {
-    await pushFinanceChangesToApi({ awaitSync: true, wrapLocalSavedSyncError: false });
-  } catch (e) {
-    await rollbackLocalUnsyncedFinanceTransaction({
-      txnId: id,
-      accountId: input.accountId,
-      ledgerEffect,
-      restoreAccountSynced: forcedAccountPending,
+    const { appDomainCreateRecord } = await import('@/lib/api-app-domain');
+    await appDomainCreateRecord('finance_transactions', {
+      id: txnInput.id,
+      name: txnInput.name,
+      happened_at: txnInput.happened_at,
+      account_id: txnInput.account_id,
+      transaction_type: txnInput.transaction_type,
+      amount: txnInput.amount,
+      note: txnInput.note,
+      extra_data: txnInput.extra_data,
     });
+  } catch (e) {
     const detail = e instanceof Error && e.message.trim() ? e.message : '未知错误';
     throw new Error(`调整余额失败：${detail}\n请检查网络或 API 登录状态后重试。`);
+  }
+
+  try {
+    await mirrorBalanceCorrectionTxnLocally(txnInput, ledgerEffect);
+  } catch (e) {
+    if (__DEV__) {
+      console.warn('[finance] 余额校正已写入服务端，本地镜像失败（可忽略，下拉刷新即可）', e);
+    }
   }
 }
 

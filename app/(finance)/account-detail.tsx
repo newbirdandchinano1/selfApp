@@ -271,6 +271,9 @@ export default function AccountDetailScreen() {
       await applyFinanceAccountBalanceCorrection({
         accountId: account.id,
         targetLedgerBalance: targetLedger,
+        signRule: account.sign_rule,
+        accountType: account.account_type,
+        currentLedgerBalance: account.balance ?? 0,
       });
       setBalanceModalOpen(false);
       await reloadAccountDetail();

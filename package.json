@@ -10,7 +10,8 @@
     "web": "node -r ./scripts/patch-fs.js ./node_modules/expo/bin/cli start --web",
     "lint": "expo lint",
     "test:strong-reminder": "node --experimental-strip-types scripts/test-notification-strong-reminder.mjs",
-    "test:finance-page-load": "node scripts/test-finance-page-load-fix.mjs"
+    "test:finance-page-load": "node scripts/test-finance-page-load-fix.mjs",
+    "test:finance-balance-correction": "node scripts/test-finance-balance-correction.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

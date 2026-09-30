@@ -90,9 +90,14 @@ export default function AddAccountScreen() {
   }, [iconGridGap, iconGridWidth]);
 
   const editExtraBaselineRef = React.useRef<Record<string, unknown>>({});
-  const editLedgerMetaRef = React.useRef<{ sign_rule: number; account_type: string }>({
+  const editLedgerMetaRef = React.useRef<{
+    sign_rule: number;
+    account_type: string;
+    ledger_balance: number;
+  }>({
     sign_rule: 1,
     account_type: 'asset',
+    ledger_balance: 0,
   });
 
   const [accountType, setAccountType] = React.useState<AccountType>('bank');
@@ -193,7 +198,11 @@ export default function AddAccountScreen() {
             setAccountName(row.name);
             setAccountNo(row.account_no ?? '');
             setNotes(row.note ?? '');
-            editLedgerMetaRef.current = { sign_rule: row.sign_rule, account_type: row.account_type };
+            editLedgerMetaRef.current = {
+              sign_rule: row.sign_rule,
+              account_type: row.account_type,
+              ledger_balance: typeof row.balance === 'number' && Number.isFinite(row.balance) ? row.balance : 0,
+            };
             setBalance(financeBalanceInputTextFromLedger(row.balance ?? 0, row.sign_rule, row.account_type));
             let parsed: Record<string, unknown> = {};
             try {
@@ -327,6 +336,9 @@ export default function AddAccountScreen() {
         await applyFinanceAccountBalanceCorrection({
           accountId: editAccountId,
           targetLedgerBalance: targetLedger,
+          signRule: meta.sign_rule,
+          accountType: meta.account_type,
+          currentLedgerBalance: meta.ledger_balance,
         });
         router.back();
       } catch (e) {

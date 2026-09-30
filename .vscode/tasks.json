@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "test: finance balance correction",
+      "type": "shell",
+      "command": "npm run test:finance-balance-correction",
+      "options": {
+        "cwd": "${workspaceFolder}/selfApp"
+      },
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "test: finance page load",
+      "type": "shell",
+      "command": "npm run test:finance-page-load",
+      "options": {
+        "cwd": "${workspaceFolder}/selfApp"
+      },
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
