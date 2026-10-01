@@ -64,8 +64,6 @@ export default function WishBoardScreen() {
   const [addVisible, setAddVisible] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  const activeItems = useMemo(() => items.filter(i => i.status === 'active'), [items]);
-
   const entityLookups = useMemo(() => {
     const projectsById = new Map(projects.map(p => [p.id, p]));
     const tasksById = new Map(tasks.map(t => [t.id, t]));
@@ -74,7 +72,8 @@ export default function WishBoardScreen() {
 
   const eligibilityById = useMemo(() => {
     const map = new Map<string, WishBoardRedeemEligibility>();
-    for (const item of activeItems) {
+    for (const item of items) {
+      if (item.status !== 'active') continue;
       map.set(
         item.id,
         evaluateWishBoardRedeemEligibilitySync(item, balance, {
@@ -84,7 +83,21 @@ export default function WishBoardScreen() {
       );
     }
     return map;
-  }, [activeItems, balance, currentNetWorth, entityLookups]);
+  }, [items, balance, currentNetWorth, entityLookups]);
+
+  /** 一次性 → 重复性；同类型内可兑换 → 暂时无法兑换；其余保持仓库层相对顺序 */
+  const activeItems = useMemo(() => {
+    return items
+      .filter(i => i.status === 'active')
+      .slice()
+      .sort((a, b) => {
+        if (a.wish_type !== b.wish_type) return a.wish_type === 'once' ? -1 : 1;
+        const aOk = eligibilityById.get(a.id)?.ok ?? false;
+        const bOk = eligibilityById.get(b.id)?.ok ?? false;
+        if (aOk !== bOk) return aOk ? -1 : 1;
+        return 0;
+      });
+  }, [items, eligibilityById]);
 
   const reload = useCallback(
     async (forceApi = false) => {

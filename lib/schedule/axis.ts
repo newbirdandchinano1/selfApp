@@ -275,10 +275,6 @@ export type AxisConflict = {
   reason: string;
 };
 
-function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean {
-  return a0 < b1 && b0 < a1;
-}
-
 /** 改日开始/结束时：用旧轴算出占用绝对时间，再对照新起止校验是否会被裁掉 */
 export function findAxisRangeConflicts(
   oldAxis: AxisLike,
@@ -326,7 +322,8 @@ function findWorkSlotIndexForStart(slots: ScheduleWorkSlot[], startMins: number)
 /**
  * 改格宽 / 断开：按绝对时间重映射并保留占用时长。
  * - 变宽：开始并入所在大格；变窄：按时长拆格。
- * - 落入断开时段 → orphaned。
+ * - 开始时刻落入断开时段 → orphaned。
+ * - 跨断开的多格占用按工作格索引保留（跳过断开行）。
  */
 export function remapPlacementsForSlotHours(
   oldAxis: AxisLike,
@@ -357,13 +354,10 @@ export function remapPlacementsForSlotHours(
       ? placementEndMinutes(oldAxis, p.startSlotIndex, oldSpan)
       : startMins + oldSpan * oldAxis.slotHours * 60;
 
-    if (newBreaks.some((b) => rangesOverlap(startMins, endMins, b.startMinutes, b.endMinutes))) {
-      // 与断开重叠：尝试截到断开前；若开始已在断开内则 orphan
-      const hit = newBreaks.find((b) => rangesOverlap(startMins, endMins, b.startMinutes, b.endMinutes));
-      if (hit && startMins >= hit.startMinutes && startMins < hit.endMinutes) {
-        results.push({ placementId: p.id, nextStartSlotIndex: null, orphaned: true });
-        continue;
-      }
+    // 开始时刻落在断开内 → 无法入格
+    if (newBreaks.some((b) => startMins >= b.startMinutes && startMins < b.endMinutes)) {
+      results.push({ placementId: p.id, nextStartSlotIndex: null, orphaned: true });
+      continue;
     }
 
     const newIndex = findWorkSlotIndexForStart(newSlots, startMins);
@@ -373,53 +367,20 @@ export function remapPlacementsForSlotHours(
     }
 
     const snapped = newSlots[newIndex]!;
-    // 目标覆盖到原结束；跨断开时只保留断开前连续格
+    // 按工作格索引扩展到盖住原结束；中间可跳过断开（断开本身不是可排格）
     let newSpan = 1;
     let coverEnd = snapped.endMinutes;
-    for (let i = newIndex + 1; i < newSlots.length; i++) {
-      if (coverEnd >= endMins) break;
-      const next = newSlots[i]!;
-      if (next.startMinutes !== coverEnd) break; // 中间有断开，不可跨
-      if (newBreaks.some((b) => rangesOverlap(snapped.startMinutes, next.endMinutes, b.startMinutes, b.endMinutes))) {
-        break;
-      }
+    while (coverEnd < endMins && newIndex + newSpan < newSlots.length) {
+      const next = newSlots[newIndex + newSpan]!;
       newSpan += 1;
       coverEnd = next.endMinutes;
     }
-    // 若单格已够（变宽并入）且原时长不超过该格，span=1
-    if (snapped.endMinutes >= endMins) {
-      newSpan = 1;
-    } else {
-      // 继续扩展直到盖住 endMins 或碰到断开
-      newSpan = 1;
-      coverEnd = snapped.endMinutes;
-      while (coverEnd < endMins && newIndex + newSpan < newSlots.length) {
-        const next = newSlots[newIndex + newSpan]!;
-        if (next.startMinutes !== coverEnd) break;
-        newSpan += 1;
-        coverEnd = next.endMinutes;
-      }
-    }
-
-    if (newSpan < 1) {
-      results.push({ placementId: p.id, nextStartSlotIndex: null, orphaned: true });
-      continue;
-    }
-
-    const finalEnd = placementEndMinutes(newAxis, newIndex, newSpan);
-    if (
-      newBreaks.some((b) =>
-        rangesOverlap(snapped.startMinutes, finalEnd, b.startMinutes, b.endMinutes),
-      )
-    ) {
-      results.push({ placementId: p.id, nextStartSlotIndex: null, orphaned: true });
-      continue;
-    }
+    newSpan = Math.min(newSpan, newSlots.length - newIndex);
 
     results.push({
       placementId: p.id,
       nextStartSlotIndex: newIndex,
-      nextSpanSlots: newSpan,
+      nextSpanSlots: Math.max(1, newSpan),
       orphaned: false,
     });
   }
@@ -437,19 +398,14 @@ export function axisFromSnapshot(
   };
 }
 
-/** 从起点起连续可排格数（遇断开即停，不可跨断开跨格） */
+/**
+ * 从起点起剩余可排格数（按工作格索引连续）。
+ * 断开时段不是可排格，不截断可选格数；跨断开的多格占用跳过断开行。
+ */
 export function maxSpanFromSlot(axis: AxisLike, startSlotIndex: number): number {
   const slots = listWorkSlots(axis);
   if (startSlotIndex < 0 || startSlotIndex >= slots.length) return 0;
-  let n = 1;
-  let end = slots[startSlotIndex]!.endMinutes;
-  for (let i = startSlotIndex + 1; i < slots.length; i++) {
-    const next = slots[i]!;
-    if (next.startMinutes !== end) break;
-    n += 1;
-    end = next.endMinutes;
-  }
-  return n;
+  return slots.length - startSlotIndex;
 }
 
 /** 格高基准：按 2h 格宽铺满时的单格高度；可视区高度不随格宽变 */
