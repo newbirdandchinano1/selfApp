@@ -241,29 +241,36 @@ export function WishBoardRedeemConditionsField({
   }, [netWorthText, onChange, value]);
 
   const modalOptions = useMemo(() => {
+    // 选择器只展示未完成项；已绑定且已完成的 id 仍保留在 draft 中（确认时不丢）
     if (modalKind === 'project') {
-      return projects.map(p => ({
-        id: p.id,
-        title: p.name,
-        subtitle: isProjectRedeemConditionMet(p) ? '已完成' : '进行中',
-        icon: 'folder' as const,
-      }));
+      return projects
+        .filter(p => !isProjectRedeemConditionMet(p))
+        .map(p => ({
+          id: p.id,
+          title: p.name,
+          subtitle: '进行中',
+          icon: 'folder' as const,
+        }));
     }
     if (modalKind === 'task') {
-      return projectTasks.map(t => ({
-        id: t.id,
-        title: t.title,
-        subtitle: isTaskRedeemConditionMet(t) ? '已完成' : '未完成',
-        icon: 'checklist' as const,
-      }));
+      return projectTasks
+        .filter(t => !isTaskRedeemConditionMet(t))
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          subtitle: '未完成',
+          icon: 'checklist' as const,
+        }));
     }
     if (modalKind === 'todo') {
-      return todoTasks.map(t => ({
-        id: t.id,
-        title: t.title,
-        subtitle: isTaskRedeemConditionMet(t) ? '已完成' : '未完成',
-        icon: 'event-note' as const,
-      }));
+      return todoTasks
+        .filter(t => !isTaskRedeemConditionMet(t))
+        .map(t => ({
+          id: t.id,
+          title: t.title,
+          subtitle: '未完成',
+          icon: 'event-note' as const,
+        }));
     }
     return [];
   }, [modalKind, projectTasks, projects, todoTasks]);

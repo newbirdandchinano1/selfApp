@@ -13,7 +13,13 @@ function readTransferLeg(extraData: string | null): 'out' | 'in' | null {
   }
 }
 
-function readUiLiabilityHints(extraData: string | null): { uiType?: string; uiIsLiability?: boolean } {
+type UiLiabilityHints = {
+  uiType?: string;
+  /** true/false 仅在 extra 显式写入时有值；缺省为 undefined */
+  uiIsLiability?: boolean;
+};
+
+function readUiLiabilityHints(extraData: string | null): UiLiabilityHints {
   if (!extraData?.trim()) return {};
   try {
     const raw = JSON.parse(extraData) as unknown;
@@ -21,31 +27,49 @@ function readUiLiabilityHints(extraData: string | null): { uiType?: string; uiIs
     const obj = raw as Record<string, unknown>;
     const uiType = typeof obj.ui_account_type === 'string' ? obj.ui_account_type.trim().toLowerCase() : undefined;
     const rawFlag = obj.ui_is_liability;
-    const uiIsLiability =
-      rawFlag === true || rawFlag === 1 || rawFlag === '1' || rawFlag === 'true';
+    let uiIsLiability: boolean | undefined;
+    if (rawFlag === true || rawFlag === 1 || rawFlag === '1' || rawFlag === 'true') {
+      uiIsLiability = true;
+    } else if (rawFlag === false || rawFlag === 0 || rawFlag === '0' || rawFlag === 'false') {
+      uiIsLiability = false;
+    }
     return { uiType, uiIsLiability };
   } catch {
     return {};
   }
 }
 
+/** UI 明确标为资产（含自定义非负债），优先于可能被误 heal 的 account_type/sign_rule */
+export function financeUiHintsSayAsset(extraData: string | null | undefined): boolean {
+  const hints = readUiLiabilityHints(extraData ?? null);
+  if (hints.uiIsLiability === true || hints.uiType === 'liability') return false;
+  if (hints.uiType === 'cash_wallet' || hints.uiType === 'bank' || hints.uiType === 'investment') {
+    return true;
+  }
+  if (hints.uiType === 'custom' && hints.uiIsLiability === false) return true;
+  return false;
+}
+
 /**
  * 负债账户判定：
- * account_type / sign_rule，以及 extra_data 里的 ui 标记。
+ * 优先信任 extra_data 的 UI 标记（避免本地流水不全把资产误写成负债后无法恢复），
+ * 再看 account_type / sign_rule。
  */
 export function isFinanceLiabilityAccount(
   account: Pick<FinanceAccountBalanceRow, 'sign_rule' | 'account_type'> & {
     extra_data?: string | null;
   },
 ): boolean {
+  const hints = readUiLiabilityHints(account.extra_data ?? null);
+  if (hints.uiType === 'liability' || hints.uiIsLiability === true) return true;
+  if (financeUiHintsSayAsset(account.extra_data)) return false;
   const type = String(account.account_type ?? '')
     .trim()
     .toLowerCase();
   if (type === 'liability') return true;
   const n = typeof account.sign_rule === 'number' ? account.sign_rule : Number(account.sign_rule);
   if (Number.isFinite(n) && n < 0) return true;
-  const hints = readUiLiabilityHints(account.extra_data ?? null);
-  return hints.uiType === 'liability' || hints.uiIsLiability === true;
+  return false;
 }
 
 /**
@@ -71,8 +95,8 @@ export function financeLiabilityDebtMagnitude(balance: number | null | undefined
 }
 
 /**
- * 将账户余额规范为账本约定：资产 ≥0，负债 ≤0。
- * 负债若误存为正数额度，转为对应负数；负余额一律保留为负债账本。
+ * 将账户余额规范为账本约定：负债 ≤0；资产保持原值（不全量本地流水可能短暂为负，勿因此改类型或强制取负）。
+ * 负债若误存为正数额度，转为对应负数。
  */
 export function normalizeFinanceAccountLedgerBalance(
   account: Pick<FinanceAccountBalanceRow, 'sign_rule' | 'account_type'> & {
@@ -81,8 +105,8 @@ export function normalizeFinanceAccountLedgerBalance(
   balance: number | null | undefined,
 ): number {
   const n = typeof balance === 'number' && Number.isFinite(balance) ? balance : 0;
-  if (isFinanceLiabilityAccount(account) || n < 0) return -Math.abs(n);
-  return Math.max(0, n);
+  if (isFinanceLiabilityAccount(account)) return -Math.abs(n);
+  return n;
 }
 
 /** 与 `getFinanceAccountsWithBalance` 汇总规则一致：收入 +、支出 -、转账按转出/转入计入。 */

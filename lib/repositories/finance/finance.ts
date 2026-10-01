@@ -8,6 +8,7 @@ import {
   getRememberedFinanceAccountBalance,
 } from '@/lib/finance-account-balance-cache';
 import {
+  financeUiHintsSayAsset,
   isFinanceLiabilityAccount,
   normalizeFinanceAccountLedgerBalance,
 } from '@/lib/finance-net-worth';
@@ -457,18 +458,20 @@ export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolea
   const db = await getDatabase();
   const result: FinanceAccountBalanceRow[] = [];
   for (const a of accounts) {
-    const normalizedSign = normalizeFinanceSignRule(a.sign_rule, a.account_type);
-    let liability = isFinanceLiabilityAccount({
-      sign_rule: normalizedSign,
+    const liability = isFinanceLiabilityAccount({
+      sign_rule: a.sign_rule,
       account_type: a.account_type,
       extra_data: a.extra_data,
     });
+    // UI 资产优先：即使 DB 被误写成 liability/-1，展示与后续规范化仍按资产
+    const sign_rule: -1 | 1 = liability ? -1 : 1;
+    const account_type = liability ? 'liability' : a.account_type === 'liability' ? 'asset' : a.account_type;
 
     const remembered = getRememberedFinanceAccountBalance(a.id);
     const ledger = computeLedgerBalanceFromTransactions(a.id, transactions);
-    let meta = {
-      sign_rule: (liability ? -1 : normalizedSign) as -1 | 1,
-      account_type: liability ? 'liability' : a.account_type,
+    const meta = {
+      sign_rule,
+      account_type,
       extra_data: a.extra_data,
     };
 
@@ -480,18 +483,17 @@ export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolea
         rawBalance = led;
       } else if (liability) {
         rawBalance = Math.abs(rem) >= Math.abs(led) ? rem : led;
+      } else if (rem < -FINANCE_BALANCE_EPS) {
+        // 旧逻辑曾把资产余额翻成负数写入缓存：优先用本地流水，否则取绝对值恢复
+        rawBalance = Math.abs(led) > FINANCE_BALANCE_EPS ? led : Math.abs(rem);
       } else {
         rawBalance = rem;
       }
     }
 
-    let balance = normalizeFinanceAccountLedgerBalance(meta, rawBalance);
-    // 负余额但未标负债：按负债处理，避免被夹成 0 后从净资产消失
-    if (!liability && balance < -FINANCE_BALANCE_EPS) {
-      liability = true;
-      meta = { sign_rule: -1, account_type: 'liability', extra_data: a.extra_data };
-      balance = -Math.abs(balance);
-    }
+    const balance = normalizeFinanceAccountLedgerBalance(meta, rawBalance);
+    // 负余额只在汇总层按负债口径计入（countsAsLiabilityInAggregates），禁止据此改写账户类型。
+    // 本地流水常不完整，短暂负余额会把资产永久 heal 成负债，刷新后再把正余额翻成负数。
 
     let extraData = a.extra_data;
     // 负债上的「不计入总资产」会导致总负债漏计；清除该标记
@@ -499,33 +501,51 @@ export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolea
       extraData = mergeFinanceAccountExcludeFromTotalAssets(extraData, false);
     }
 
-    const needsHeal =
+    // 列一致性：已判定为负债则补齐 liability/-1；UI 明确为资产则从误标负债回滚
+    const needsLiabilityHeal =
       liability &&
       (a.account_type !== 'liability' ||
         normalizeFinanceSignRule(a.sign_rule, a.account_type) !== -1 ||
         extraData !== a.extra_data);
+    const needsAssetHeal =
+      !liability &&
+      financeUiHintsSayAsset(a.extra_data) &&
+      (a.account_type === 'liability' || Number(a.sign_rule) < 0);
 
-    if (needsHeal && db) {
+    if (db && (needsLiabilityHeal || needsAssetHeal)) {
       try {
-        await db.runAsync(
-          `UPDATE finance_accounts
-           SET account_type = 'liability',
-               sign_rule = -1,
-               extra_data = ?,
-               updated_at = datetime('now'),
-               sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
-           WHERE id = ?`,
-          [extraData, a.id],
-        );
+        if (needsAssetHeal) {
+          await db.runAsync(
+            `UPDATE finance_accounts
+             SET account_type = 'asset',
+                 sign_rule = 1,
+                 extra_data = ?,
+                 updated_at = datetime('now'),
+                 sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+             WHERE id = ?`,
+            [extraData, a.id],
+          );
+        } else {
+          await db.runAsync(
+            `UPDATE finance_accounts
+             SET account_type = 'liability',
+                 sign_rule = -1,
+                 extra_data = ?,
+                 updated_at = datetime('now'),
+                 sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+             WHERE id = ?`,
+            [extraData, a.id],
+          );
+        }
       } catch (e) {
-        if (__DEV__) console.warn('[finance] heal liability account columns failed', a.id, e);
+        if (__DEV__) console.warn('[finance] heal account type columns failed', a.id, e);
       }
     }
 
     result.push({
       ...a,
-      account_type: liability ? 'liability' : a.account_type,
-      sign_rule: liability ? -1 : normalizedSign,
+      account_type,
+      sign_rule,
       extra_data: extraData,
       balance,
     });
@@ -1194,16 +1214,19 @@ export async function loadFinanceAccountDetail(input: {
   }
 
   const remembered = getRememberedFinanceAccountBalance(target.id);
-  const rawBalance =
+  let rawBalance =
     remembered != null ? remembered : computeLedgerBalanceFromTransactions(target.id, allTransactions);
-  const normalizedSign = normalizeFinanceSignRule(target.sign_rule, target.account_type);
   const liability = isFinanceLiabilityAccount({
-    sign_rule: normalizedSign,
+    sign_rule: target.sign_rule,
     account_type: target.account_type,
     extra_data: target.extra_data,
   });
-  const sign_rule: -1 | 1 = liability ? -1 : normalizedSign;
-  const account_type = liability ? 'liability' : target.account_type;
+  const sign_rule: -1 | 1 = liability ? -1 : 1;
+  const account_type = liability ? 'liability' : target.account_type === 'liability' ? 'asset' : target.account_type;
+  if (!liability && typeof rawBalance === 'number' && rawBalance < -1e-4) {
+    const ledger = computeLedgerBalanceFromTransactions(target.id, allTransactions);
+    rawBalance = Math.abs(ledger) > 1e-4 ? ledger : Math.abs(rawBalance);
+  }
   const account: FinanceAccountBalanceRow = {
     ...target,
     account_type,

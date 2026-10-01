@@ -13,6 +13,12 @@ import {
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import {
+  areAllSubHabitsCompletedForYmd,
+  countSubHabitsCompletedForYmd,
+  hasActiveSubHabits,
+  parseHabitSubHabitsMeta,
+} from '@/lib/repositories/habits/habit-sub';
+import {
   getTaskHabitTasksViewState,
   TASK_REPEAT_PERIODS,
   type TaskRepeatPeriod,
@@ -199,8 +205,12 @@ export function buildVirtualHabitPlacementsForDays(params: {
     const kind = parseHabitKind(habit.extra_data);
     if (kind !== 'build' && kind !== 'task') continue;
 
-    const dailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
+    const parsedDailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
     const checkIns = checkInsByHabit?.get(habit.id) ?? {};
+    // 子习惯：完成态与习惯列一致（看 subHabitCheckIns），不单靠父打卡次数
+    const subActive = hasActiveSubHabits(habit.extra_data);
+    const subMeta = subActive ? parseHabitSubHabitsMeta(habit.extra_data) : null;
+    const subTotal = subMeta?.items.length ?? 0;
 
     for (const ymd of dayYmds) {
       if (
@@ -214,14 +224,21 @@ export function buildVirtualHabitPlacementsForDays(params: {
       ) {
         continue;
       }
-      const todayCount = checkIns[ymd] ?? 0;
+      const parentCount = checkIns[ymd] ?? 0;
+      let todayCount = parentCount;
+      let dailyGoal = parsedDailyGoal;
       let done = isHabitDayGoalMet({
         kind,
-        todayCount,
-        dailyGoal,
+        todayCount: parentCount,
+        dailyGoal: parsedDailyGoal,
       });
-      // 任务型：达成日当日也视为完成（与任务页 showPeriodCheck 对齐）
-      if (kind === 'task' && !done) {
+      if (subActive && subTotal > 0) {
+        const subCompleted = countSubHabitsCompletedForYmd(habit.extra_data, ymd);
+        todayCount = subCompleted;
+        dailyGoal = subTotal;
+        done = areAllSubHabitsCompletedForYmd(habit.extra_data, ymd);
+      } else if (kind === 'task' && !done) {
+        // 任务型：达成日当日也视为完成（与任务页 showPeriodCheck 对齐）
         const taskView = getTaskHabitTasksViewState({
           extraData: habit.extra_data,
           checkIns,

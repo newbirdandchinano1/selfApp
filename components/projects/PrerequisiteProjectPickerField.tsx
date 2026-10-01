@@ -48,7 +48,13 @@ export function PrerequisiteProjectPickerField({
   const [draftIds, setDraftIds] = useState<string[]>([]);
 
   const selectableProjects = useMemo(
-    () => allProjects.filter((p) => p.id !== excludeProjectId),
+    () =>
+      allProjects.filter(
+        (p) =>
+          p.id !== excludeProjectId &&
+          p.status !== 'completed' &&
+          p.status !== 'archived',
+      ),
     [allProjects, excludeProjectId],
   );
 
@@ -138,7 +144,6 @@ export function PrerequisiteProjectPickerField({
                 <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                   {selectableProjects.map((p) => {
                     const picked = draftIds.includes(p.id);
-                    const done = p.status === 'completed' || p.status === 'archived';
                     return (
                       <Pressable
                         key={p.id}
@@ -155,11 +160,7 @@ export function PrerequisiteProjectPickerField({
                           <Text style={[styles.modalRowTitle, { color: textColor }]} numberOfLines={2}>
                             {p.name}
                           </Text>
-                          {done ? (
-                            <Text style={[styles.modalRowSub, { color: outline }]}>已执行完毕</Text>
-                          ) : (
-                            <Text style={[styles.modalRowSub, { color: outline }]}>进行中</Text>
-                          )}
+                          <Text style={[styles.modalRowSub, { color: outline }]}>进行中</Text>
                         </View>
                         {picked ? (
                           <MaterialIcons name="check-circle" size={22} color={primary} />

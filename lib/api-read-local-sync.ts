@@ -97,19 +97,33 @@ function normalizeApiRowForLocal(
     const accountType = out.account_type;
     const extra = typeof out.extra_data === 'string' ? out.extra_data : null;
     let uiSaysLiability = false;
+    let uiSaysAsset = false;
     if (extra) {
       try {
         const parsed = JSON.parse(extra) as Record<string, unknown>;
-        uiSaysLiability =
-          parsed?.ui_account_type === 'liability' || parsed?.ui_is_liability === true;
+        const uiType =
+          typeof parsed?.ui_account_type === 'string'
+            ? parsed.ui_account_type.trim().toLowerCase()
+            : '';
+        uiSaysLiability = uiType === 'liability' || parsed?.ui_is_liability === true;
+        uiSaysAsset =
+          !uiSaysLiability &&
+          (uiType === 'cash_wallet' ||
+            uiType === 'bank' ||
+            uiType === 'investment' ||
+            (uiType === 'custom' && parsed?.ui_is_liability === false));
       } catch {
         uiSaysLiability = false;
+        uiSaysAsset = false;
       }
     }
-    const isLiability = accountType === 'liability' || uiSaysLiability;
-    if (isLiability) {
+    if (uiSaysLiability || (!uiSaysAsset && accountType === 'liability')) {
       out.account_type = 'liability';
       out.sign_rule = -1;
+    } else if (uiSaysAsset) {
+      // UI 明确为资产时，纠正被误写成 liability 的服务端/本地行
+      out.account_type = accountType === 'liability' || accountType == null || accountType === '' ? 'asset' : accountType;
+      out.sign_rule = 1;
     } else {
       out.sign_rule = normalizeFinanceSignRuleForApiRow(out.sign_rule, out.account_type);
       if (out.account_type == null || out.account_type === '') {
@@ -139,15 +153,35 @@ function parseExtraObject(extraData: unknown): Record<string, unknown> {
   return {};
 }
 
+function financeExtraUiSaysAsset(extra: Record<string, unknown>): boolean {
+  const uiType =
+    typeof extra.ui_account_type === 'string' ? extra.ui_account_type.trim().toLowerCase() : '';
+  if (uiType === 'liability' || extra.ui_is_liability === true) return false;
+  return (
+    uiType === 'cash_wallet' ||
+    uiType === 'bank' ||
+    uiType === 'investment' ||
+    (uiType === 'custom' && extra.ui_is_liability === false)
+  );
+}
+
+function financeExtraUiSaysLiability(extra: Record<string, unknown>): boolean {
+  const uiType =
+    typeof extra.ui_account_type === 'string' ? extra.ui_account_type.trim().toLowerCase() : '';
+  return uiType === 'liability' || extra.ui_is_liability === true;
+}
+
 function isFinanceAccountRowLiability(row: Record<string, unknown>): boolean {
+  const extra = parseExtraObject(row.extra_data);
+  if (financeExtraUiSaysLiability(extra)) return true;
+  if (financeExtraUiSaysAsset(extra)) return false;
   if (row.account_type === 'liability') return true;
   const sign = typeof row.sign_rule === 'number' ? row.sign_rule : Number(row.sign_rule);
   if (Number.isFinite(sign) && sign < 0) return true;
-  const extra = parseExtraObject(row.extra_data);
-  return extra.ui_account_type === 'liability' || extra.ui_is_liability === true;
+  return false;
 }
 
-/** 同步时保留本地负债 UI 标记，避免服务端丢掉 ui_account_type / ui_is_liability */
+/** 同步时合并 extra：保留明确的负债/资产 UI 意图，避免误标互相覆盖 */
 function mergeFinanceAccountExtraKeepLiabilityUi(
   apiExtra: string | null,
   localExtra: string | null,
@@ -155,12 +189,17 @@ function mergeFinanceAccountExtraKeepLiabilityUi(
   const api = parseExtraObject(apiExtra);
   const local = parseExtraObject(localExtra);
   const merged = { ...local, ...api };
-  if (local.ui_account_type === 'liability' || api.ui_account_type === 'liability') {
+
+  if (financeExtraUiSaysAsset(local) || financeExtraUiSaysAsset(api)) {
+    const src = financeExtraUiSaysAsset(api) ? api : local;
+    if (typeof src.ui_account_type === 'string') merged.ui_account_type = src.ui_account_type;
+    if ('ui_is_liability' in src) merged.ui_is_liability = src.ui_is_liability;
+    else delete merged.ui_is_liability;
+  } else if (financeExtraUiSaysLiability(local) || financeExtraUiSaysLiability(api)) {
     merged.ui_account_type = 'liability';
-  }
-  if (local.ui_is_liability === true || api.ui_is_liability === true) {
     merged.ui_is_liability = true;
   }
+
   if (Object.keys(merged).length === 0) return apiExtra ?? localExtra;
   try {
     return JSON.stringify(merged);
@@ -225,8 +264,9 @@ async function upsertRowsToLocalTable(
         if (existing) {
           if (table === 'finance_accounts' && existing) {
             const localLiability = isFinanceAccountRowLiability(existing);
-            if (localLiability) {
-              // 禁止 API 把本地负债账户降级为资产，否则首页总负债会漏计
+            const apiLiability = isFinanceAccountRowLiability(obj);
+            // 仅在本地仍判定为负债、且 API 试图降级时锁定；UI 明确为资产的误标行不再锁定
+            if (localLiability && !apiLiability) {
               obj.account_type = 'liability';
               obj.sign_rule = -1;
               obj.extra_data = mergeFinanceAccountExtraKeepLiabilityUi(
