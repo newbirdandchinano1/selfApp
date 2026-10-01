@@ -14,8 +14,11 @@ async function readLocalHabitsVisible(): Promise<HabitRow[]> {
 }
 
 async function pushHabitChangesToApi(): Promise<void> {
+  const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
+  markApiTableDirty('habits');
+  // 与 createTask 一致：本地已落库，后台推送即可，勿 awaitSync 阻塞新建/编辑页返回
   const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  void pushLocalChangesToApi();
 }
 
 export async function createHabit(input: CreateHabitInput) {

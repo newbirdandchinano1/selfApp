@@ -100,6 +100,32 @@ function pickParam(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
+/** 避免软同步反复 setState 导致概览数字/图表乱跳 */
+function checkInsMapsEqual(a: Record<string, number>, b: Record<string, number>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+function habitOverviewEqual(a: HabitRow | null, b: HabitRow | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.icon === b.icon &&
+    a.context === b.context &&
+    a.note === b.note &&
+    a.tag === b.tag &&
+    a.extra_data === b.extra_data &&
+    a.updated_at === b.updated_at
+  );
+}
+
 function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
@@ -316,6 +342,12 @@ export default function HabitDetailScreen() {
   /** 补卡/撤销连点防抖（按习惯 ID） */
   const habitDetailPressAtByIdRef = React.useRef(new Map<string, number>());
   const habitLoadGenerationRef = React.useRef(0);
+  const habitRef = React.useRef(habit);
+  habitRef.current = habit;
+  const boundaryRef = React.useRef(boundary);
+  boundaryRef.current = boundary;
+  const logicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  logicalTodayYmdRef.current = logicalTodayYmd;
 
   const consumeHabitDetailPressDebounce = React.useCallback((id: string) => {
     const now = Date.now();
@@ -327,19 +359,22 @@ export default function HabitDetailScreen() {
 
   const focusYmd = React.useMemo(() => toYMD(focusDate), [focusDate]);
 
+  const applyHabitOverviewState = React.useCallback((row: HabitRow | null, nextCheckIns: Record<string, number>) => {
+    setHabit((prev) => (habitOverviewEqual(prev, row) ? prev : row));
+    setCheckIns((prev) => (checkInsMapsEqual(prev, nextCheckIns) ? prev : nextCheckIns));
+  }, []);
+
   const loadHabitOverview = React.useCallback(async (opts?: { awaitRemote?: boolean }) => {
     const awaitRemote = opts?.awaitRemote === true;
     const generation = ++habitLoadGenerationRef.current;
     if (!habitId) {
-      setHabit(null);
-      setCheckIns({});
+      applyHabitOverviewState(null, {});
       return;
     }
     // 先读本地，保证长按进详情立刻有内容；REST 软同步失败不挡页面
     let row = await getHabitById(habitId);
     if (generation !== habitLoadGenerationRef.current) return;
     if (row) {
-      setHabit(row);
       const localMap = await getCheckInsMapByHabitId(row.id);
       if (generation !== habitLoadGenerationRef.current) return;
       const mergedLocal = { ...localMap };
@@ -347,7 +382,7 @@ export default function HabitDetailScreen() {
       for (const [k, v] of Object.entries(legacyLocal)) {
         if (mergedLocal[k] === undefined) mergedLocal[k] = v;
       }
-      setCheckIns(mergedLocal);
+      applyHabitOverviewState(row, mergedLocal);
       setLoading(false);
     }
 
@@ -360,15 +395,14 @@ export default function HabitDetailScreen() {
       }
 
       try {
-        row = (await syncHabitDetailDataFromApi(habitId, { boundary })) ?? row;
+        row = (await syncHabitDetailDataFromApi(habitId, { boundary: boundaryRef.current })) ?? row;
       } catch (e) {
         console.warn('习惯详情：服务端同步失败，回退本地', e);
         row = row ?? (await getHabitById(habitId));
       }
       if (generation !== habitLoadGenerationRef.current) return;
-      setHabit(row ?? null);
       if (!row) {
-        setCheckIns({});
+        applyHabitOverviewState(null, {});
         return;
       }
       const fromDb = await getCheckInsMapByHabitId(row.id);
@@ -378,7 +412,7 @@ export default function HabitDetailScreen() {
       for (const [k, v] of Object.entries(legacy)) {
         if (merged[k] === undefined) merged[k] = v;
       }
-      setCheckIns(merged);
+      applyHabitOverviewState(row, merged);
     };
 
     // 本地已有数据：软同步放后台，避免二三级页干等 REST；下拉刷新仍可 await
@@ -387,7 +421,7 @@ export default function HabitDetailScreen() {
       return;
     }
     await runRemoteSync();
-  }, [boundary, habitId]);
+  }, [applyHabitOverviewState, habitId]);
 
   React.useEffect(() => {
     habitLoadGenerationRef.current += 1;
@@ -415,38 +449,43 @@ export default function HabitDetailScreen() {
     async (forceApi = false) => {
       await wrapLoad(async () => {
         if (!habitId) {
-          setHabit(null);
+          applyHabitOverviewState(null, {});
           setLoading(false);
           return;
         }
         // 仅无本地缓存时亮骨架；有数据则保持现有 UI，后台软同步
-        if (forceApi || !habit) setLoading(true);
+        if (forceApi || !habitRef.current) setLoading(true);
         try {
           await loadHabitOverview({ awaitRemote: forceApi });
         } catch (e) {
           console.warn('加载习惯详情失败', e);
-          setHabit(null);
+          applyHabitOverviewState(null, {});
         } finally {
           setLoading(false);
         }
       }, forceApi);
     },
-    [habit, habitId, loadHabitOverview, wrapLoad],
+    [applyHabitOverviewState, habitId, loadHabitOverview, wrapLoad],
   );
+
+  const reloadRef = React.useRef(reload);
+  reloadRef.current = reload;
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
+  // 只用稳定回调：勿依赖 reload/habit，否则 setHabit 后会反复触发 focus 重载，概览数据乱跳
   useFocusEffect(
     React.useCallback(() => {
-      void reload();
+      void reloadRef.current();
       setFocusDate((prev) => {
         const ymd = toYMD(prev);
-        if (ymd >= logicalTodayYmd) {
-          return logicalYmdToLocalDate(logicalTodayYmd);
+        const today = logicalTodayYmdRef.current;
+        if (ymd >= today) {
+          return logicalYmdToLocalDate(today);
         }
         return prev;
       });
-    }, [logicalTodayYmd, reload])
+    }, [])
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};

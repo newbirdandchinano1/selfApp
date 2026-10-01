@@ -36,6 +36,9 @@ export async function sanitizeRowForLocalSeed(
   if (table === 'health_records') {
     return sanitizeHealthRecordRowForLocalSeed(row);
   }
+  if (table === 'habit_check_ins') {
+    return sanitizeHabitCheckInRowForLocalSeed(row);
+  }
   return row;
 }
 
@@ -158,6 +161,19 @@ async function sanitizeHealthRecordRowForLocalSeed(row: Record<string, unknown>)
   if (typeof next.record_date === 'string' && next.record_date.length >= 10) {
     const ymd = next.record_date.slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) next.record_date = ymd;
+  }
+  return next;
+}
+
+async function sanitizeHabitCheckInRowForLocalSeed(row: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const next = { ...row };
+  if (typeof next.record_date === 'string' && next.record_date.length >= 10) {
+    const ymd = next.record_date.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) next.record_date = ymd;
+  }
+  const habitId = strId(next.habit_id);
+  if (habitId) {
+    await ensureFkPresent('habits', habitId);
   }
   return next;
 }

@@ -2,6 +2,7 @@ import { ApiRequestError, apiGetRecord, apiListRecords } from '@/lib/api-client'
 import { addDaysToYmd } from '@/lib/api-read-helpers';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
+import { ymdPrefix } from '@/lib/date';
 import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
@@ -12,6 +13,13 @@ export const HABIT_DETAIL_CHECK_IN_MONTHS = 24;
 const HABIT_DETAIL_CHECK_IN_DAYS = HABIT_DETAIL_CHECK_IN_MONTHS * 31;
 const HABIT_DETAIL_CHECK_IN_PAGE_LIMIT = 200;
 const HABIT_DETAIL_CHECK_IN_MAX_PAGES = 100;
+
+function normalizeHabitCheckInApiRow(row: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...row };
+  const ymd = ymdPrefix(String(out.record_date ?? ''));
+  if (ymd) out.record_date = ymd;
+  return out;
+}
 
 /**
  * 仅拉取指定习惯的打卡（带 habitId + 日期窗），写入本地；不做全表 reconcile。
@@ -47,9 +55,15 @@ export async function syncHabitDetailCheckInsFromApi(
     if (backendFiltersByHabitId == null && list.length > 0) {
       backendFiltersByHabitId = forHabit.length === list.length;
       if (!backendFiltersByHabitId) {
-        // 旧后端忽略 habitId 时不要翻页拉全表（易超时/非 JSON 响应）
-        console.warn('[habit-detail-api] 服务端未按 habitId 过滤，跳过打卡 REST 同步，沿用本地');
-        return;
+        // 旧后端忽略 habitId：不要翻页拉全表，但要把本页属于该习惯的行写入本地
+        console.warn('[habit-detail-api] 服务端未按 habitId 过滤，仅同步本页匹配行后停止翻页');
+        for (const row of forHabit) {
+          const pk = String(row.id ?? '').trim();
+          if (!pk || seen.has(pk)) continue;
+          seen.add(pk);
+          all.push(normalizeHabitCheckInApiRow(row));
+        }
+        break;
       }
     }
 
@@ -58,7 +72,7 @@ export async function syncHabitDetailCheckInsFromApi(
       const pk = String(row.id ?? '').trim();
       if (!pk || seen.has(pk)) continue;
       seen.add(pk);
-      all.push(row);
+      all.push(normalizeHabitCheckInApiRow(row));
       newCount += 1;
     }
 
@@ -123,6 +137,7 @@ export async function syncHabitDetailDataFromApi(
   habitId: string,
   opts?: { boundary?: TasksDayBoundary; signal?: AbortSignal },
 ): Promise<HabitRow | null> {
+  // 先确保习惯行（外键），且须用 ON CONFLICT 更新而非 REPLACE，避免 CASCADE 清打卡
   const row = await ensureHabitDetailRowFromApi(habitId, opts);
   try {
     await syncHabitDetailCheckInsFromApi(habitId, opts);

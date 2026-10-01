@@ -1225,7 +1225,30 @@ async function applyCloudRowsToLocalTableWithoutDelete(
     const qCols = keys.map(c => quoteIdent(c)).join(', ');
     const placeholders = keys.map(() => '?').join(', ');
     const vals = keys.map(k => sqliteBindingFromJson(obj[k]));
-    await db.runAsync(`INSERT OR REPLACE INTO ${safe} (${qCols}) VALUES (${placeholders})`, vals);
+    // 同 api-read-local-sync：避免 INSERT OR REPLACE 触发 CASCADE 清子表
+    const conflictCols = pkCols.filter((c) => keys.includes(c));
+    if (conflictCols.length > 0 && conflictCols.length === pkCols.length) {
+      const updateCols = keys.filter((c) => !pkCols.includes(c));
+      if (updateCols.length === 0) {
+        await db.runAsync(
+          `INSERT INTO ${safe} (${qCols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols
+            .map((c) => quoteIdent(c))
+            .join(', ')}) DO NOTHING`,
+          vals,
+        );
+      } else {
+        const setClause = updateCols
+          .map((c) => `${quoteIdent(c)} = excluded.${quoteIdent(c)}`)
+          .join(', ');
+        await db.runAsync(
+          `INSERT INTO ${safe} (${qCols}) VALUES (${placeholders})
+           ON CONFLICT(${conflictCols.map((c) => quoteIdent(c)).join(', ')}) DO UPDATE SET ${setClause}`,
+          vals,
+        );
+      }
+    } else {
+      await db.runAsync(`INSERT OR REPLACE INTO ${safe} (${qCols}) VALUES (${placeholders})`, vals);
+    }
     count += 1;
   }
   return count;

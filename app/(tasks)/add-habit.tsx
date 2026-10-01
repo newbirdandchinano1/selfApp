@@ -307,6 +307,7 @@ export default function AddHabitScreen() {
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
   const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
   const [reminderOpen, setReminderOpen] = React.useState(false);
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
@@ -701,12 +702,14 @@ export default function AddHabitScreen() {
   }, [activeTab, habitKind, monthlyNDays, weeklyNDays]);
 
   const handleSave = React.useCallback(async () => {
+    if (saving || deleting) return;
     const name = habitName.trim();
     if (!name) {
       Alert.alert('提示', '请先输入习惯名称');
       return;
     }
 
+    setSaving(true);
     const context = selectedContext;
     const tag = deriveTagByCycle();
     const tone = deriveToneByContext(context);
@@ -900,36 +903,43 @@ export default function AddHabitScreen() {
       await setHabitTagIds(savedHabitId, selectedTagIds);
       try {
         await markPendingTablesDirty(['habits', 'tags', 'tag_links']);
-        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回（否则其它脏表卡住时页面无反应）
+        void pushLocalChangesToApi();
       } catch (syncErr) {
         console.warn('习惯保存后同步到服务器失败', syncErr);
       }
     } catch (err) {
       const msg = err instanceof Error && err.message.trim() ? err.message : '保存失败，请稍后重试';
       Alert.alert('保存失败', msg);
+      setSaving(false);
       return;
     }
 
-    const { permissionDenied } = await syncHabitReminderNotification({
-      habitId: savedHabitId,
-      enabled: reminderEnabled,
-      hour: reminderTime.getHours(),
-      minute: reminderTime.getMinutes(),
-      title: name,
-    });
     try {
-      await syncScheduleSlotReminderNotifications();
-    } catch (e) {
-      console.warn('同步日程格提醒失败', e);
-    }
-    if (reminderEnabled && permissionDenied) {
-      Alert.alert(
-        '提示',
-        '已保存习惯，但系统未授予通知权限，日程提醒将无法送达。可在系统设置中为本应用开启通知。'
-      );
+      const { permissionDenied } = await syncHabitReminderNotification({
+        habitId: savedHabitId,
+        enabled: reminderEnabled,
+        hour: reminderTime.getHours(),
+        minute: reminderTime.getMinutes(),
+        title: name,
+      });
+      try {
+        await syncScheduleSlotReminderNotifications();
+      } catch (e) {
+        console.warn('同步日程格提醒失败', e);
+      }
+      if (reminderEnabled && permissionDenied) {
+        Alert.alert(
+          '提示',
+          '已保存习惯，但系统未授予通知权限，日程提醒将无法送达。可在系统设置中为本应用开启通知。'
+        );
+      }
+    } catch (reminderErr) {
+      console.warn('习惯提醒同步失败', reminderErr);
     }
 
     notifyAncestorsDataChanged();
+    setSaving(false);
     router.back();
   }, [
     activeMonthlyFilter,
@@ -937,6 +947,7 @@ export default function AddHabitScreen() {
     consecutiveTargetDays,
     dailyGoal,
     dayBoundary,
+    deleting,
     expectedGoalTab,
     expectedGoalValue,
     taskRepeatPeriod,
@@ -960,6 +971,7 @@ export default function AddHabitScreen() {
     reminderEnabled,
     reminderTime,
     router,
+    saving,
     selectedContext,
     selectedDays,
     selectedTagIds,
@@ -1042,11 +1054,11 @@ export default function AddHabitScreen() {
         right={
           <Pressable
             onPress={() => void handleSave()}
-            disabled={deleting}
+            disabled={deleting || saving}
             hitSlop={Layout.hitSlop}
-            style={({ pressed }) => [pressed && { opacity: 0.85 }, deleting && { opacity: 0.5 }]}>
+            style={({ pressed }) => [pressed && { opacity: 0.85 }, (deleting || saving) && { opacity: 0.5 }]}>
             <Text style={[Typography.bodyStrong, styles.headerActionText, { color: colors.primary }]} numberOfLines={1}>
-              {isEditMode ? '保存' : '创建打卡'}
+              {isEditMode ? (saving ? '保存中…' : '保存') : saving ? '创建中…' : '创建打卡'}
             </Text>
           </Pressable>
         }
@@ -2057,7 +2069,8 @@ export default function AddHabitScreen() {
             size="lg"
             fullWidth
             label="创建打卡"
-            disabled={deleting}
+            loading={saving}
+            disabled={deleting || saving}
             onPress={() => void handleSave()}
           />
         )}

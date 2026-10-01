@@ -1,6 +1,7 @@
 import { makeCompositeEntityId } from '@/lib/entity-id';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { isYmdInRange } from '@/lib/api-read-helpers';
+import { ymdPrefix } from '@/lib/date';
 import { getDatabase } from '../../database.native';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '../../tasks-logical-day';
 
@@ -74,7 +75,13 @@ async function loadActiveCheckIns(): Promise<
       `SELECT habit_id, record_date, count FROM habit_check_ins WHERE sync_status != 'pending_delete'`,
     ),
   ]);
-  return (checkIns ?? []).filter((c) => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0);
+  return (checkIns ?? [])
+    .filter((c) => habitIds.has(c.habit_id) && (c.count ?? 0) >= 0)
+    .map((c) => ({
+      ...c,
+      record_date: ymdPrefix(String(c.record_date ?? '')) ?? String(c.record_date ?? '').trim(),
+    }))
+    .filter((c) => Boolean(c.record_date));
 }
 
 /** 本地 SQLite 中该习惯的打卡次数（pending 覆盖 synced；pending_delete 视为无记录） */
@@ -88,17 +95,19 @@ async function readLocalCheckInsForHabit(habitId: string): Promise<Record<string
   const out: Record<string, number> = {};
   const deletedDates = new Set<string>();
   for (const r of rows) {
+    const ymd = ymdPrefix(String(r.record_date ?? '')) ?? String(r.record_date ?? '').trim();
+    if (!ymd) continue;
     if (r.sync_status === 'pending_delete') {
-      if (!Object.prototype.hasOwnProperty.call(out, r.record_date)) {
-        deletedDates.add(r.record_date);
+      if (!Object.prototype.hasOwnProperty.call(out, ymd)) {
+        deletedDates.add(ymd);
       }
       continue;
     }
-    deletedDates.delete(r.record_date);
+    deletedDates.delete(ymd);
     const count = Math.max(0, Math.floor(Number(r.count) || 0));
-    const prev = out[r.record_date];
+    const prev = out[ymd];
     // 同日重复行取较大 count，避免 sync 对齐期间读到旧行把次数打回 1
-    out[r.record_date] = prev == null ? count : Math.max(prev, count);
+    out[ymd] = prev == null ? count : Math.max(prev, count);
   }
   for (const ymd of deletedDates) {
     delete out[ymd];
