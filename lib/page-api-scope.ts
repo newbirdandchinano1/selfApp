@@ -22,6 +22,7 @@ export type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
 export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  health_daily_targets: [TAB_PAGE_KEYS.health],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   projects: [TAB_PAGE_KEYS.tasks],
   project_categories: [TAB_PAGE_KEYS.tasks],
@@ -54,6 +55,9 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],
   memos: [TAB_PAGE_KEYS.profile],
+  tags: [TAB_PAGE_KEYS.profile],
+  tag_links: [TAB_PAGE_KEYS.profile],
+  memo_dimensions: [TAB_PAGE_KEYS.profile],
   review_dimensions: [TAB_PAGE_KEYS.review],
   review_columns: [TAB_PAGE_KEYS.review],
   recipe_categories: [TAB_PAGE_KEYS.profile],
@@ -64,12 +68,15 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 export const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
   habits: ['habit-detail', 'habit-manage'],
+  health_records: ['intake-history', 'intake-record-detail'],
+  health_daily_targets: ['intake-history'],
   points_wallet: ['points-ledger', 'wish-board'],
   points_ledger: ['points-ledger', 'wish-board'],
   wish_board_items: ['wish-board'],
   memos: ['memo-list', 'memo-view', 'memo-edit'],
   tags: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
   tag_links: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
+  memo_dimensions: ['memo-list', 'memo-view', 'memo-edit'],
 };
 
 /** 走专用 page API、禁止通用 List 全表同步的 Tab */
