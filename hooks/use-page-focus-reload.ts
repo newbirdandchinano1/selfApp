@@ -2,20 +2,22 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
-import { shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
+import { shouldSkipPageFocusApiRefresh, pageNeedsRestRefresh } from '@/lib/page-api-session';
+import { pullAndApplySyncChanges } from '@/lib/sync-pull';
 
 /** 极短后台（切多任务预览等）不触发重载，避免无意义抢主线程 */
 const SHORT_BACKGROUND_SKIP_MS = 2_500;
 /**
  * 较长后台才 forceApi 做多端增量对齐。
  * Tab 内 focus / 写后重进页：只走 local-first 本地重读，禁止「写一次 → 全局 REST」。
+ * Change Log pull 成功且脏表命中当前页时，仍会 forceApi。
  */
 const FORCE_API_AFTER_BACKGROUND_MS = 30_000;
 
 /**
  * 挂载时必定 reload 一次（冷启动首次进 Tab 触发同步/读库）。
  * 热会话内同 Tab 再次聚焦：按策略跳过，或仅本地重读（forceApi=false）。
- * 仅从较长后台回前台时 forceApi，避免写操作被误升级成全局重新拉网。
+ * 从后台回前台：先 sync pull，再按脏表 / 后台时长决定是否 forceApi。
  */
 export function usePageFocusReload(
   pageKey: string,
@@ -29,8 +31,11 @@ export function usePageFocusReload(
   const backgroundedAtMsRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // 挂载首次：不强制 forceApi，交给 resolvePageApiReadOpts（未同步则 REST，已同步则本地）
-    void reloadRef.current?.();
+    // 挂载：先追 Change Log，再交给 resolvePageApiReadOpts
+    void (async () => {
+      await pullAndApplySyncChanges();
+      void reloadRef.current?.();
+    })();
   }, [pageKey]);
 
   useFocusEffect(
@@ -42,10 +47,17 @@ export function usePageFocusReload(
           isFocusedRef.current = false;
         };
       }
-      if (!shouldSkipPageFocusApiRefresh(pageKey)) {
-        // 写后脏标清会话 → 这里只重读本地，不打全局 REST
-        void reloadRef.current?.(false);
-      }
+      void (async () => {
+        const pull = await pullAndApplySyncChanges();
+        if (!isFocusedRef.current) return;
+        if (pageNeedsRestRefresh(pageKey) || pull.dirtyTables.length > 0) {
+          void reloadRef.current?.(true);
+          return;
+        }
+        if (!shouldSkipPageFocusApiRefresh(pageKey)) {
+          void reloadRef.current?.(false);
+        }
+      })();
       return () => {
         isFocusedRef.current = false;
       };
@@ -89,15 +101,25 @@ export function usePageFocusReload(
         return;
       }
 
-      const forceApi = backgroundMs >= FORCE_API_AFTER_BACKGROUND_MS;
+      const longBackground = backgroundMs >= FORCE_API_AFTER_BACKGROUND_MS;
 
-      // 回前台先让首帧画完，再拉数
       cancelAfterInteractions?.cancel();
       clearRetry();
       cancelAfterInteractions = InteractionManager.runAfterInteractions(() => {
         cancelAfterInteractions = null;
         clearRetry();
-        retryTimer = setTimeout(() => tryReload(forceApi), 120);
+        retryTimer = setTimeout(() => {
+          void (async () => {
+            const pull = await pullAndApplySyncChanges();
+            if (cancelled || !isFocusedRef.current) return;
+            const forceApi =
+              longBackground ||
+              pageNeedsRestRefresh(pageKey) ||
+              pull.applied ||
+              pull.needFullSync;
+            tryReload(forceApi);
+          })();
+        }, 120);
       });
     };
     const sub = AppState.addEventListener('change', onChange);

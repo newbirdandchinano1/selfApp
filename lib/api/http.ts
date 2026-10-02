@@ -286,6 +286,12 @@ export async function apiRequest<T = unknown>(
     if (!options.skipAuth && token) {
       headers.Authorization = `Bearer ${token}`;
     }
+    try {
+      const { getOrCreateDeviceId } = await import('@/lib/device-id');
+      headers['X-Device-Id'] = await getOrCreateDeviceId();
+    } catch {
+      /* device id 非关键路径 */
+    }
 
     let requestBody: string | undefined;
     if (options.body !== undefined && options.body !== null) {

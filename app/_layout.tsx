@@ -39,6 +39,7 @@ import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-s
 import { loadThemePreference } from '@/lib/theme-preference';
 import { runInitialRestSyncIfNeeded, type InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hydratePageApiSession } from '@/lib/page-api-session';
+import { startSyncPullPolling } from '@/lib/sync-pull';
 import {
   clearExpoSandboxNotifications,
   isExpoSandboxNotificationDisabled,
@@ -145,11 +146,14 @@ function RootLayoutInner() {
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
+            startSyncPullPolling();
             if (isExpoSandboxNotificationDisabled()) {
               await clearExpoSandboxNotifications();
             } else {
               void resyncAppNotificationsAfterPreferenceChange();
             }
+          } else {
+            startSyncPullPolling();
           }
         } catch (e) {
           console.warn('后台初始化失败', e);

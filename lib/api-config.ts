@@ -121,6 +121,18 @@ export async function clearApiAuthToken(): Promise<void> {
   } catch {
     /* ignore */
   }
+  try {
+    const { clearSyncChangeCursor } = await import('@/lib/sync-cursor');
+    await clearSyncChangeCursor();
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { stopSyncPullPolling } = await import('@/lib/sync-pull');
+    stopSyncPullPolling();
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function hasCustomApiCredentials(): Promise<boolean> {

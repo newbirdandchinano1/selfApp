@@ -300,6 +300,33 @@ export function markTabPagesDirtyForTable(table: string): void {
   markChildPagesDirtyForTable(table);
 }
 
+/**
+ * 远端 Change Log 脏表：即使 local-first 也强制下次聚焦走 REST / page API，
+ * 并清会话加载标记，避免热会话跳过刷新。
+ */
+export function markTabPagesDirtyForRemoteSync(table: string): void {
+  const pages = TABLE_TAB_DIRTY_MAP[table.trim()];
+  const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
+  if (!pages?.length && !childPages?.length) return;
+  for (const key of pages ?? []) {
+    const trimmed = key.trim();
+    if (!trimmed) continue;
+    pagesNeedingRestRefresh.add(trimmed);
+    clearPageLoadedInSession(trimmed);
+    resetPageApiSession(trimmed, { force: true });
+  }
+  markChildPagesDirtyForTable(table);
+}
+
+/** cursor 过期 needFullSync：所有 Tab 主页下次聚焦强制 REST */
+export function markAllTabPagesNeedRemoteSync(): void {
+  for (const key of Object.values(TAB_PAGE_KEYS)) {
+    pagesNeedingRestRefresh.add(key);
+    clearPageLoadedInSession(key);
+    resetPageApiSession(key, { force: true });
+  }
+}
+
 export type PageApiReadOpts = {
   localOnly?: boolean;
   offlineFallback?: boolean;
