@@ -116,3 +116,18 @@ export function listPageScopeTables(pageKey: string): string[] {
 export function listAllTabPageKeys(): string[] {
   return Object.values(TAB_PAGE_KEYS);
 }
+
+/** Change Log 脏表是否会影响该 pageKey（Tab 或子页） */
+export function pageKeyAffectedByDirtyTables(pageKey: string, tables: string[]): boolean {
+  const key = pageKey.trim();
+  if (!key || tables.length === 0) return false;
+  for (const raw of tables) {
+    const table = raw.trim();
+    if (!table) continue;
+    const tabs = TABLE_TAB_DIRTY_MAP[table];
+    if (tabs?.some((p) => p === key)) return true;
+    const children = TABLE_CHILD_PAGE_DIRTY_MAP[table];
+    if (children?.some((p) => p === key)) return true;
+  }
+  return false;
+}

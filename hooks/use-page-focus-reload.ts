@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import { AppState, InteractionManager, type AppStateStatus } from 'react-native';
 
 import { shouldSkipPageFocusApiRefresh, pageNeedsRestRefresh } from '@/lib/page-api-session';
-import { pullAndApplySyncChanges } from '@/lib/sync-pull';
+import { pageKeyAffectedByDirtyTables } from '@/lib/page-api-scope';
+import { pullAndApplySyncChanges, subscribeSyncDirty } from '@/lib/sync-pull';
 
 /** 极短后台（切多任务预览等）不触发重载，避免无意义抢主线程 */
 const SHORT_BACKGROUND_SKIP_MS = 2_500;
@@ -50,7 +51,11 @@ export function usePageFocusReload(
       void (async () => {
         const pull = await pullAndApplySyncChanges();
         if (!isFocusedRef.current) return;
-        if (pageNeedsRestRefresh(pageKey) || pull.dirtyTables.length > 0) {
+        if (
+          pageNeedsRestRefresh(pageKey) ||
+          pageKeyAffectedByDirtyTables(pageKey, pull.dirtyTables) ||
+          pull.needFullSync
+        ) {
           void reloadRef.current?.(true);
           return;
         }
@@ -63,6 +68,27 @@ export function usePageFocusReload(
       };
     }, [pageKey]),
   );
+
+  // 前台停留时：SSE / pull 脏表命中当前页则立刻 forceApi，不必切 Tab
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = subscribeSyncDirty((tables, needFullSync) => {
+      if (!isFocusedRef.current) return;
+      if (!(needFullSync || pageKeyAffectedByDirtyTables(pageKey, tables) || pageNeedsRestRefresh(pageKey))) {
+        return;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (!isFocusedRef.current) return;
+        void reloadRef.current?.(true);
+      }, 280);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsub();
+    };
+  }, [pageKey]);
 
   useEffect(() => {
     let cancelAfterInteractions: { cancel: () => void } | null = null;

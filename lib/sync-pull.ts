@@ -12,7 +12,7 @@ import {
   markTabPagesDirtyForRemoteSync,
   markAllTabPagesNeedRemoteSync,
 } from '@/lib/page-api-session';
-import { startSyncSse, stopSyncSse } from '@/lib/sync-sse';
+import { startSyncSse, stopSyncSse, type SyncSseChangesPayload } from '@/lib/sync-sse';
 
 export type SyncChangeEvent = {
   id: number;
@@ -49,10 +49,12 @@ export const SYNC_PULL_POLL_INTERVAL_MS = 60_000;
 const SSE_PULL_DEBOUNCE_MS = 400;
 
 let pullInFlight: Promise<SyncPullResult> | null = null;
+/** inflight 期间又有 pull 时结束后补一次，避免漏掉 SSE 窗口内的新变更 */
+let pullQueued = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let sseDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-type DirtyListener = (dirtyTables: string[]) => void;
+type DirtyListener = (dirtyTables: string[], needFullSync?: boolean) => void;
 const dirtyListeners = new Set<DirtyListener>();
 
 export function subscribeSyncDirty(listener: DirtyListener): () => void {
@@ -62,11 +64,11 @@ export function subscribeSyncDirty(listener: DirtyListener): () => void {
   };
 }
 
-function emitDirty(tables: string[]): void {
-  if (tables.length === 0) return;
+function emitDirty(tables: string[], needFullSync = false): void {
+  if (tables.length === 0 && !needFullSync) return;
   for (const fn of dirtyListeners) {
     try {
-      fn(tables);
+      fn(tables, needFullSync);
     } catch (e) {
       console.warn('[sync-pull] dirty listener error', e);
     }
@@ -115,7 +117,10 @@ export async function pullAndApplySyncChanges(opts?: {
     return { applied: false, needFullSync: false, dirtyTables: [], cursor: await getSyncChangeCursor() };
   }
 
-  if (pullInFlight) return pullInFlight;
+  if (pullInFlight) {
+    pullQueued = true;
+    return pullInFlight;
+  }
 
   pullInFlight = (async (): Promise<SyncPullResult> => {
     let cursor = await getSyncChangeCursor();
@@ -147,7 +152,9 @@ export async function pullAndApplySyncChanges(opts?: {
       const dirtyTables = [...allDirty].sort();
       if (dirtyTables.length > 0) {
         await refreshDirtyTables(dirtyTables);
-        emitDirty(dirtyTables);
+      }
+      if (dirtyTables.length > 0 || needFullSync) {
+        emitDirty(dirtyTables, needFullSync);
       }
 
       return {
@@ -171,10 +178,17 @@ export async function pullAndApplySyncChanges(opts?: {
     return await pullInFlight;
   } finally {
     pullInFlight = null;
+    if (pullQueued) {
+      pullQueued = false;
+      void pullAndApplySyncChanges();
+    }
   }
 }
 
-function schedulePullFromSse(): void {
+function schedulePullFromSse(payload?: SyncSseChangesPayload): void {
+  if (payload?.dirtyTables?.length) {
+    emitDirty(payload.dirtyTables, false);
+  }
   if (sseDebounceTimer != null) clearTimeout(sseDebounceTimer);
   sseDebounceTimer = setTimeout(() => {
     sseDebounceTimer = null;
@@ -194,7 +208,7 @@ export function startSyncPullPolling(intervalMs = SYNC_PULL_POLL_INTERVAL_MS): v
   }, intervalMs);
 
   startSyncSse({
-    onChanges: () => schedulePullFromSse(),
+    onChanges: (payload) => schedulePullFromSse(payload),
     onConnected: () => {
       void pullAndApplySyncChanges();
     },
@@ -210,6 +224,7 @@ export function stopSyncPullPolling(): void {
     clearTimeout(sseDebounceTimer);
     sseDebounceTimer = null;
   }
+  pullQueued = false;
   stopSyncSse();
 }
 
