@@ -13,7 +13,7 @@ import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-st
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import {
   getTagIdsByEntity,
   getProjectTags,
@@ -904,7 +904,7 @@ export default function AddHabitScreen() {
       try {
         await markPendingTablesDirty(['habits', 'tags', 'tag_links']);
         // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回（否则其它脏表卡住时页面无反应）
-        void pushLocalChangesToApi();
+        void requestPush();
       } catch (syncErr) {
         console.warn('习惯保存后同步到服务器失败', syncErr);
       }

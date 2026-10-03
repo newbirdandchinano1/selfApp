@@ -4,7 +4,7 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { hasPageSyncedWithApi } from '@/lib/page-api-session';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import {
@@ -189,7 +189,7 @@ export default function ProjectTagsScreen() {
       try {
         const tagSyncTables = ['tags', 'tag_links'];
         await markPendingTablesDirty(tagSyncTables);
-        await pushLocalChangesToApi({
+        await requestPush({
           awaitSync: true,
           rethrow: true,
           onlyTables: tagSyncTables,
@@ -218,7 +218,7 @@ export default function ProjectTagsScreen() {
             try {
               const tagSyncTables = ['tags', 'tag_links'];
               await markPendingTablesDirty(tagSyncTables);
-              await pushLocalChangesToApi({
+              await requestPush({
                 awaitSync: true,
                 rethrow: true,
                 onlyTables: tagSyncTables,

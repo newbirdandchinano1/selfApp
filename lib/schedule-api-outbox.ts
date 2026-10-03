@@ -51,6 +51,10 @@ async function writeOutbox(items: FrogScheduleOutboxItem[]): Promise<void> {
   await AsyncStorage.setItem(OUTBOX_KEY, JSON.stringify(trimmed));
 }
 
+function scheduleUnifiedPush(): void {
+  void import('@/lib/sync-manager').then((m) => m.requestPush());
+}
+
 function isOutboxItem(x: unknown): x is FrogScheduleOutboxItem {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
   const o = x as Record<string, unknown>;
@@ -91,6 +95,7 @@ export async function enqueueFrogScheduleAxis(axis: ScheduleAxisSettings): Promi
     enqueuedAt: nowIso(),
   };
   await writeOutbox(mergeItem(items, next));
+  scheduleUnifiedPush();
   if (__DEV__) {
     console.warn('[frog-schedule] queued axis push for retry', axis.updatedAt);
   }
@@ -107,6 +112,7 @@ export async function enqueueFrogSchedulePlacementUpsert(
     enqueuedAt: nowIso(),
   };
   await writeOutbox(mergeItem(items, next));
+  scheduleUnifiedPush();
   if (__DEV__) {
     console.warn('[frog-schedule] queued placement upsert for retry', placement.id);
   }
@@ -121,6 +127,7 @@ export async function enqueueFrogSchedulePlacementDelete(placementId: string): P
     enqueuedAt: nowIso(),
   };
   await writeOutbox(mergeItem(items, next));
+  scheduleUnifiedPush();
   if (__DEV__) {
     console.warn('[frog-schedule] queued placement delete for retry', placementId);
   }

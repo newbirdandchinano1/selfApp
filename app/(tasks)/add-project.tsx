@@ -19,7 +19,7 @@ import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerFie
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
@@ -241,7 +241,7 @@ export default function AddProjectScreen() {
       try {
         const projectSyncTables = ['projects', 'project_categories', 'tags', 'tag_links'];
         await markPendingTablesDirty(projectSyncTables);
-        await pushLocalChangesToApi({
+        await requestPush({
           awaitSync: true,
           rethrow: true,
           onlyTables: projectSyncTables,

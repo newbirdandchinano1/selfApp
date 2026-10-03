@@ -242,11 +242,14 @@ async function upsertRowsToLocalTable(
           [pk],
         );
         if (existing && existing.sync_status !== 'synced') {
-          // 本地未推送完成时默认保留 pending，避免覆盖尚未上传的本地编辑。
-          // 若服务端 updated_at 更新（另一端已写入），按 LWW 采用服务端行，避免多端状态永久卡住。
-          if (existing.sync_status === 'pending_delete') {
-            continue;
-          }
+          // pending 行不得被 REST 快照 / updated_at LWW 覆盖；冲突只走 Push OCC 与 Pull apply。
+          continue;
+        } else if (
+          existing &&
+          existing.sync_status === 'synced' &&
+          (table === 'tasks' || table === 'projects')
+        ) {
+          // 已同步行：过期的 tasks List 会把刚 frog-assign 的 extra_data 打回未指派
           const localUpdated = String(existing.updated_at ?? '').trim();
           const apiUpdated = String(obj.updated_at ?? '').trim();
           if (!isApiUpdatedAtNewer(apiUpdated, localUpdated)) {

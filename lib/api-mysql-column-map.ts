@@ -6,6 +6,7 @@ export function mapTableRowForMysqlApiUpload(
 ): Record<string, unknown> {
   const out = { ...row };
   delete out.sync_status;
+  delete out.last_pushed_mutation_id;
 
   if (table === 'memos') {
     delete out.dimension_id;

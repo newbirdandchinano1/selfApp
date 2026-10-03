@@ -1,14 +1,7 @@
-/**
- * 财务页加载 / 记账合并逻辑单测（与 lib 内纯函数同逻辑，脚本内联避免 TS 加载）。
- * 用法：node scripts/test-finance-page-load-fix.mjs
- */
-
 function shouldReadPageLocalOnly(input) {
-  if (input.forceApi || input.needsRestRefresh) return false;
-  if (input.hasSynced) return true;
-  if (input.isPageApiOnly) return false;
-  if ((input.scopeTableCount ?? 0) === 0) return true;
-  return false;
+  if (input.isApiOnly) return false;
+  if (input.forceApi) return false;
+  return true;
 }
 
 function mergeFinanceHomeTransactions(apiWindow, withPending) {
@@ -37,63 +30,58 @@ function assert(cond, msg) {
   console.error('FAIL:', msg);
 }
 
-// --- shouldReadPageLocalOnly ---
 assert(
   shouldReadPageLocalOnly({
     forceApi: false,
-    needsRestRefresh: false,
+    isApiOnly: false,
     hasSynced: false,
     isPageApiOnly: true,
     scopeTableCount: 0,
-  }) === false,
-  '未同步的专用 page API Tab（财务）必须打网，不能因 scope 为空走 localOnly',
+  }) === true,
+  '专用 page API Tab 默认 localOnly，不由 sessionLoaded/hasSynced 决定打网',
 );
 
 assert(
   shouldReadPageLocalOnly({
     forceApi: false,
-    needsRestRefresh: false,
     hasSynced: true,
     isPageApiOnly: true,
     scopeTableCount: 0,
   }) === true,
-  '已同步的财务 Tab 应 localOnly',
+  'bootstrap 后财务 Tab 应 localOnly',
 );
 
 assert(
   shouldReadPageLocalOnly({
     forceApi: true,
-    needsRestRefresh: false,
     hasSynced: true,
     isPageApiOnly: true,
     scopeTableCount: 0,
   }) === false,
-  'forceApi / 下拉刷新必须打网',
+  '显式 forceApi 仍可打网',
 );
 
 assert(
   shouldReadPageLocalOnly({
     forceApi: false,
-    needsRestRefresh: false,
     hasSynced: false,
     isPageApiOnly: false,
     scopeTableCount: 0,
   }) === true,
-  '普通子页无 scope 仍直读本地',
+  '普通子页直读本地',
 );
 
 assert(
   shouldReadPageLocalOnly({
     forceApi: false,
-    needsRestRefresh: false,
     hasSynced: false,
     isPageApiOnly: false,
     scopeTableCount: 3,
-  }) === false,
-  '有 scope 表的未同步页应打网',
+    needsRestRefresh: true,
+  }) === true,
+  '有 scope 表也不得用 RestRefresh/未同步当打网闸门',
 );
 
-// --- mergeFinanceHomeTransactions ---
 const apiWindow = [
   { id: 'ft_a', name: '午餐', amount: 20, sync_status: 'synced' },
   { id: 'ft_b', name: '地铁', amount: 5, sync_status: 'synced' },

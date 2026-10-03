@@ -121,6 +121,8 @@ export async function persistTaskPatchToApi(
   if (isLocalFirstReads()) {
     await updateTask(taskId, merged as UpdateTaskInput);
     invalidateInflightApiTableFetch('tasks');
+    const { markCloudSqliteTableDirty } = await import('@/lib/cloud-sql-dirty-track');
+    markCloudSqliteTableDirty('tasks');
     return;
   }
 

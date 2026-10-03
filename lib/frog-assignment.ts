@@ -1,3 +1,10 @@
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { invalidateInflightApiTableFetch } from '@/lib/api-read';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+} from '@/lib/cloud-sql-dirty-track';
+import { getDatabase } from '@/lib/database';
 import { persistProjectPatchToApi } from '@/lib/project-api-write';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 
@@ -127,6 +134,36 @@ export function clearProjectFrogFields(extraData: string | null): string | null 
 export function getFrogAssignedOn(extraData: string | null): string {
   const dates = getFrogAssignedDates(extraData);
   return dates.length > 0 ? dates[dates.length - 1]! : '';
+}
+
+/**
+ * 服务端 frog-assign 已写入 extra_data 后回写本地。
+ * 不改 sync_status（避免 synced→pending_update 再推一份过期 extra 把指派打回）。
+ */
+export async function applyServerFrogExtraLocally(
+  kind: 'task' | 'project',
+  id: string,
+  extraData: string | null,
+  updatedAt?: string | null,
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) return;
+  const table = kind === 'project' ? 'projects' : 'tasks';
+  const now = (updatedAt && String(updatedAt).trim()) || formatTaskAuditDatetimeLocal();
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `UPDATE ${table}
+          SET extra_data = ?,
+              updated_at = ?
+        WHERE id = ?
+          AND sync_status != 'pending_delete'`,
+      [extraData, now, id],
+    );
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+  invalidateInflightApiTableFetch(table);
 }
 
 /** 直接 PATCH 后端更新任务 extra_data；成功后 best-effort 同步本地库 */

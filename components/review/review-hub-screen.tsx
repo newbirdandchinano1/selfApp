@@ -6,6 +6,8 @@ import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { useLocalQuery } from '@/hooks/use-local-query';
+import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { REVIEW_PAGE_PADDING_X, reviewContentMaxWidth } from '@/lib/review-layout';
 import { isTodayConfiguredWeeklyReviewDay } from '@/lib/weekly-review-settings';
 import { useRouter } from 'expo-router';
@@ -22,6 +24,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/review';
+const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 
 /** 主切换仅日/周；月复盘从「更多」进入 */
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
@@ -154,7 +157,10 @@ export function ReviewHubScreen() {
   }, []);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
-  usePageFocusReload(PAGE_API_KEY, reload);
+  usePageFocusReload(PAGE_API_KEY, () => void reload(false), { observeLocal: false });
+  useLocalQuery(LOCAL_TABLES, () => {
+    void reload(false);
+  });
 
   const openHeaderMore = useCallback(() => {
     Alert.alert('更多', undefined, [

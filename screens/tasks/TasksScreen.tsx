@@ -34,11 +34,12 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { useLocalQuery } from '@/hooks/use-local-query';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import {
@@ -66,6 +67,7 @@ import {
   projectToFrogTaskRow,
 } from '@/lib/project-frog';
 import { consumeForceFullApiRefreshAfterLocalClear } from '@/lib/page-api-session';
+import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   fetchProjectsListForProject,
@@ -281,6 +283,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/tasks';
+const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 
 const MAIN_LIST_VIEW_TABS: Array<{ key: TasksMainListView; label: string }> = [
   { key: 'projects', label: '项目列表' },
@@ -2414,8 +2417,7 @@ export default function TasksScreen() {
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
       const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
       if (rolled > 0 || overdueBumped > 0) {
-        const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-        void pushLocalChangesToApi({ quiet: true });
+        void requestPush({ quiet: true });
         if (!opts?.silent) {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         }
@@ -2989,8 +2991,7 @@ export default function TasksScreen() {
     const overdueBumped = await applyOverdueTaskPriorityBump(cachedTasks, logicalToday);
     const taskRolled = rolled + overdueBumped;
     if (taskRolled > 0) {
-      const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-      void pushLocalChangesToApi({ quiet: true });
+      void requestPush({ quiet: true });
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       cachedTasks = await getTasks(localTaskOpts);
       await loadTasks({ forceLocal: true });
@@ -3045,7 +3046,10 @@ export default function TasksScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  usePageFocusReload(PAGE_API_KEY, reloadPage);
+  usePageFocusReload(PAGE_API_KEY, reloadPage, { observeLocal: false });
+  useLocalQuery(LOCAL_TABLES, () => {
+    void reloadPage(false);
+  });
 
   const reloadPageRef = React.useRef(reloadPage);
   reloadPageRef.current = reloadPage;
@@ -3789,7 +3793,7 @@ export default function TasksScreen() {
                   }
                   await deleteProject(project.id);
                   await markPendingTablesDirty(['projects', 'tasks', 'project_completion_logs']);
-                  await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+                  await requestPush({ awaitSync: true, rethrow: true });
                   const rows = await loadProjects();
                   await loadProjectTasks(rows);
                   await loadProjectsListFromApi(projectTab, { replaceMap: true });
@@ -5338,7 +5342,7 @@ export default function TasksScreen() {
           await loadProjectCategories();
         }
         await markPendingTablesDirty(['project_categories']);
-        await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+        await requestPush({ awaitSync: true, rethrow: true });
         closeCategoryEditor();
       }, categoryEditorTitle.includes('新建') ? '分类已新建' : '分类已修改');
     } catch (err) {
@@ -5391,7 +5395,7 @@ export default function TasksScreen() {
               await deleteProjectCategory(activeCategoryId);
               await loadProjectCategories();
               await markPendingTablesDirty(['project_categories']);
-              await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+              await requestPush({ awaitSync: true, rethrow: true });
               if (projectTab === activeCategoryId) setProjectTab('all');
               closeCategoryMenu();
             }, '分类已删除');

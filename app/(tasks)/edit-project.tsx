@@ -49,7 +49,7 @@ import {
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
   endCloudSqliteDirtyIgnoreBatch,
@@ -934,7 +934,7 @@ export default function EditProjectScreen() {
         'tag_links',
       ];
       await markPendingTablesDirty(projectSyncTables);
-      await pushLocalChangesToApi({
+      await requestPush({
         awaitSync: true,
         rethrow: true,
         onlyTables: projectSyncTables,
@@ -996,7 +996,7 @@ export default function EditProjectScreen() {
         try {
           const projectSyncTables = ['projects', 'tasks'];
           await markPendingTablesDirty(projectSyncTables);
-          await pushLocalChangesToApi({
+          await requestPush({
             awaitSync: true,
             rethrow: true,
             onlyTables: projectSyncTables,

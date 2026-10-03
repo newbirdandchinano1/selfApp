@@ -167,7 +167,7 @@ export async function apiPatchRecord<T = unknown>(
 export async function apiDeleteRecord(
   table: string,
   id: string,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; expectedRev?: number | null; mutationId?: string | null },
 ): Promise<void> {
   const {
     AppDomainFallbackError,
@@ -176,9 +176,20 @@ export async function apiDeleteRecord(
   } = await import('@/lib/api-app-domain');
   const { isApiGenericWriteForbidden } = await import('@/lib/api-allowed-tables');
 
+  const qs = new URLSearchParams();
+  if (opts?.mutationId) qs.set('mutation_id', opts.mutationId);
+  if (opts?.expectedRev != null && Number.isFinite(opts.expectedRev)) {
+    qs.set('expected_rev', String(opts.expectedRev));
+  }
+  const q = qs.toString() ? `?${qs.toString()}` : '';
+
   if (isAppDomainCrudTable(table)) {
     try {
-      await appDomainDeleteRecord(table, id, { signal: opts?.signal });
+      await appDomainDeleteRecord(table, id, {
+        signal: opts?.signal,
+        expectedRev: opts?.expectedRev,
+        mutationId: opts?.mutationId,
+      });
       return;
     } catch (e) {
       if (!(e instanceof AppDomainFallbackError)) throw e;
@@ -192,10 +203,13 @@ export async function apiDeleteRecord(
     throw new Error(`表「${table}」禁止通过通用 CRUD 写入，请使用专用业务接口`);
   }
 
-  await apiRequest<null>(`/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    signal: opts?.signal,
-  });
+  await apiRequest<null>(
+    `/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}${q}`,
+    {
+      method: 'DELETE',
+      signal: opts?.signal,
+    },
+  );
 }
 
 export async function apiListRecords<T extends Record<string, unknown>>(

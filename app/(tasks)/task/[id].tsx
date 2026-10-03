@@ -6,7 +6,7 @@ import type { ScheduleMeta } from '@/lib/schedule/meta';
 import { formatYmd, parseYmd } from '@/lib/date';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
@@ -469,7 +469,7 @@ export default function TaskDetailScreen() {
         due_date: dueDateRef.current,
         extra_data: extraDataRef.current ?? null,
       });
-      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      await requestPush({ awaitSync: true, rethrow: true });
       return true;
     } catch (error) {
       console.warn('保存任务详情失败', error);

@@ -49,6 +49,7 @@ import {
   type WeekScheduleView,
 } from '@/lib/schedule-service';
 import { subscribeFrogScheduleChanged } from '@/lib/schedule-events';
+import { subscribeSyncDirty } from '@/lib/sync-pull';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
@@ -670,13 +671,13 @@ export function WeeklyFrogSchedule({
   const loadDaysKey = loadDayYmds.join(',');
 
   const reload = React.useCallback(
-    async (days: string[], opts?: { silent?: boolean }) => {
+    async (days: string[], opts?: { silent?: boolean; hydrateRemote?: boolean }) => {
       if (!opts?.silent) setLoading(true);
       const generation = ++reloadGenerationRef.current;
       try {
         const [data, habits, checkInsMaps, boundary] = await Promise.all([
           loadScheduleForDayWindow(days, logicalTodayYmd, {
-            hydrateRemote: !opts?.silent,
+            hydrateRemote: opts?.hydrateRemote ?? !opts?.silent,
           }),
           getHabits().catch(() => []),
           // 读失败时保留上一份打卡 Map，避免指派后并发 reload 把已完成习惯刷回未完成
@@ -756,6 +757,30 @@ export function WeeklyFrogSchedule({
   React.useEffect(() => {
     return subscribeFrogScheduleChanged(() => {
       void reload(loadDayYmdsRef.current, { silent: true });
+    });
+  }, [reload]);
+
+  // 他端（桌面）改占用 / 指派 extra 后，带远端合并的静默刷新
+  React.useEffect(() => {
+    return subscribeSyncDirty((tables, needFullSync) => {
+      if (
+        !(
+          needFullSync ||
+          tables.some(
+            (t) =>
+              t === 'schedule_placements' ||
+              t === 'schedule_week_axis_snapshot' ||
+              t === 'tasks' ||
+              t === 'projects' ||
+              t === 'habits' ||
+              t === 'habit_check_ins' ||
+              t === 'frog_completion_events',
+          )
+        )
+      ) {
+        return;
+      }
+      void reload(loadDayYmdsRef.current, { silent: true, hydrateRemote: false });
     });
   }, [reload]);
 

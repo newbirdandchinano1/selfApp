@@ -3,11 +3,11 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 55;
+export const DB_VERSION = 56;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
-export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete' | 'conflict';
+export type SyncStatus = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete';
 
 export interface BaseRecord {
   id: string;
@@ -51,7 +51,34 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
-/** P1-02：下线遗留账本 accounts / account_transactions，权威为 finance_* */
+/** Phase 1：业务表 server_rev / mutation_id / last_pushed_mutation_id */
+async function migrateEnsureSyncRevisionColumns(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['sync_revision_cols_v56'],
+  );
+  if (done) return;
+
+  const tables = await db.getAllAsync<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'app_meta'`,
+  );
+  for (const t of tables ?? []) {
+    const table = String(t.name ?? '').trim();
+    if (!table || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) continue;
+    const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+    if (!columns.some(c => c.name === 'sync_status')) continue;
+    await ensureColumn(db, table, 'server_rev', 'INTEGER NOT NULL DEFAULT 1');
+    await ensureColumn(db, table, 'mutation_id', 'TEXT');
+    await ensureColumn(db, table, 'last_pushed_mutation_id', 'TEXT');
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'sync_revision_cols_v56',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
 async function migrateDropLegacyAccountsLedger(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
@@ -1655,6 +1682,7 @@ export async function initDatabase() {
   await migrateTagDomainSplit(db);
   await migrateTagDomainSplitRepair(db);
   await migrateDropLegacyAccountsLedger(db);
+  await migrateEnsureSyncRevisionColumns(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);

@@ -59,6 +59,7 @@ export type FrogAssignPayload = {
   action: 'assign' | 'unassign';
   extra_data: string | null;
   assignedDates: string[];
+  updated_at?: string;
 };
 
 export async function apiPostFrogAssign(body: {

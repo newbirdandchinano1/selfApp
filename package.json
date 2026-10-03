@@ -11,6 +11,10 @@
     "lint": "expo lint",
     "test:strong-reminder": "node --experimental-strip-types scripts/test-notification-strong-reminder.mjs",
     "test:finance-page-load": "node scripts/test-finance-page-load-fix.mjs",
+    "test:sync-phase5-ui": "node scripts/test-sync-phase5-ui.mjs",
+    "test:sync-phase8-apply": "node --experimental-strip-types scripts/test-sync-phase8-apply.ts",
+    "test:sync-phase8-invariants": "node scripts/test-sync-phase8-invariants.mjs",
+    "test:sync-phase8": "npm run test:sync-phase8-apply && npm run test:sync-phase8-invariants && npm run test:sync-phase5-ui",
     "test:finance-balance-correction": "node scripts/test-finance-balance-correction.mjs"
   },
   "dependencies": {

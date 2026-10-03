@@ -27,8 +27,8 @@ export type PageWrapLoadResult = {
 };
 
 /**
- * 页面数据加载：local-first 下已同步页面直接读 SQLite；
- * 首次访问先展示本地（若有），再后台 REST 拉取并覆盖本地。
+ * 页面数据加载：默认只读 SQLite。
+ * 是否与服务器对齐由 cursor + bootstrap_done + 行字段决定，不由本 hook。
  */
 export function usePageApiSync(pageKey: string) {
   const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));
@@ -100,8 +100,7 @@ export function usePageApiSync(pageKey: string) {
 }
 
 /**
- * 页面下拉刷新：重置本会话同步标记并强制经 wrapLoad 从接口/本地库重载。
- * reload 应接受 forceApi 参数（与 wrapLoad 第二参一致）。
+ * 下拉刷新：SyncManager pull / bootstrap 后重读 SQLite（不 forceApi 打 page REST）。
  */
 export function usePagePullRefresh(
   pageKey: string,
@@ -111,9 +110,10 @@ export function usePagePullRefresh(
 
   const refreshFromApi = useCallback(async () => {
     clearPageLoadedInSession(pageKey);
-    resetPageApiSession(pageKey, { force: true });
-    await reload(true);
-  }, [pageKey, reload, resetPageApiSession]);
+    const { refreshFromUser } = await import('@/lib/sync-manager');
+    await refreshFromUser();
+    await reload(false);
+  }, [pageKey, reload]);
 
   return usePullToRefresh(refreshFromApi);
 }

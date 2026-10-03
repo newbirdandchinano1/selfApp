@@ -9,7 +9,6 @@ import {
   TAB_PAGE_KEYS,
   TABLE_CHILD_PAGE_DIRTY_MAP,
   TABLE_TAB_DIRTY_MAP,
-  isPageApiOnlyTab,
   listPageScopeTables,
 } from '@/lib/page-api-scope';
 import {
@@ -27,19 +26,12 @@ function markChildPagesDirtyForTable(table: string): void {
   if (!childPages?.length) return;
   for (const key of childPages) {
     const trimmed = key.trim();
-    if (!trimmed) continue;
-    clearPageLoadedInSession(trimmed);
-    pagesNeedingRestRefresh.add(trimmed);
-    resetPageApiSession(trimmed, { force: true });
+    if (trimmed) clearPageLoadedInSession(trimmed, { preserveFocusCooldown: true });
   }
 }
 
-/** 本会话内已完成首次加载的页面（切换 Tab 不再重复全量 REST/重载） */
+/** 本会话内已完成首次渲染加载的页面（切 Tab 避免重复重渲染；≠ 数据有效） */
 const sessionLoadedPages = new Set<string>();
-
-/** 热会话内任务页 focus 最短重拉间隔，兼顾多端同步与频繁切 Tab */
-const TASKS_FOCUS_REFRESH_COOLDOWN_MS = 8_000;
-const pageLastFocusRefreshAtMs = new Map<string, number>();
 
 /**
  * 进程是否为「热会话」：至少有一次页面 REST 加载成功后为 true。
@@ -78,9 +70,6 @@ export function isWarmProcessSession(): boolean {
 // 新 JS 进程 / Web 刷新视为冷启动
 markProcessColdStart();
 
-/** 子页面写入后标记需从服务端全量重拉的页面（含祖先链） */
-const pagesNeedingRestRefresh = new Set<string>();
-
 /** REST 读取失败但已回退本地（wrapLoad 不应标记 synced） */
 let pageLoadRestFailed = false;
 
@@ -98,50 +87,26 @@ export function markPageLoadedInSession(pageKey: string): void {
   const key = pageKey.trim();
   if (!key) return;
   sessionLoadedPages.add(key);
-  if (key === TAB_PAGE_KEYS.tasks) {
-    pageLastFocusRefreshAtMs.set(key, Date.now());
-  }
 }
 
 export function clearPageLoadedInSession(
   pageKey?: string,
-  opts?: { preserveFocusCooldown?: boolean },
+  _opts?: { preserveFocusCooldown?: boolean },
 ): void {
   if (pageKey?.trim()) {
-    const key = pageKey.trim();
-    sessionLoadedPages.delete(key);
-    if (!opts?.preserveFocusCooldown) {
-      pageLastFocusRefreshAtMs.delete(key);
-    }
+    sessionLoadedPages.delete(pageKey.trim());
     return;
   }
   sessionLoadedPages.clear();
-  if (!opts?.preserveFocusCooldown) {
-    pageLastFocusRefreshAtMs.clear();
-  }
 }
 
 export function hasPageLoadedInSession(pageKey: string): boolean {
   return sessionLoadedPages.has(pageKey.trim());
 }
 
-export function pageNeedsRestRefresh(pageKey: string): boolean {
-  return pagesNeedingRestRefresh.has(pageKey.trim());
-}
-
-/** 子页面数据变更：向所有祖先页面传递「下次聚焦需 REST 全量拉取」 */
+/** 子页面数据变更：祖先页下次聚焦重读 SQLite（不打网） */
 export function notifyPageDataChanged(pageKey: string): void {
-  const ancestors = collectAncestorPageKeys(pageKey);
-  if (__DEV__ && ancestors.length > 0) {
-    console.log('[page-api-session] 数据变更传递', pageKey, '→', ancestors);
-  }
-  for (const ancestor of ancestors) {
-    const key = ancestor.trim();
-    if (!key) continue;
-    pagesNeedingRestRefresh.add(key);
-    clearPageLoadedInSession(key);
-    resetPageApiSession(key, { force: true });
-  }
+  notifyAncestorPagesLocalReload(pageKey);
 }
 
 /**
@@ -155,10 +120,6 @@ export function notifyAncestorPagesLocalReload(pageKey: string): void {
   for (const ancestor of ancestors) {
     clearPageLoadedInSession(ancestor, { preserveFocusCooldown: true });
   }
-}
-
-export function markPageRestRefreshCompleted(pageKey: string): void {
-  pagesNeedingRestRefresh.delete(pageKey.trim());
 }
 
 /** 首启全量同步完成或升级用户引导后，所有页面直接读本地 */
@@ -199,6 +160,12 @@ function loadSyncedPagesFromJson(raw: string | null): void {
 export async function hydratePageApiSession(): Promise<void> {
   preferLocalReads = (await readAppMeta(PREFER_LOCAL_READS_META_KEY)) === '1';
   loadSyncedPagesFromJson(await readAppMeta(PAGE_SYNC_META_KEY));
+  try {
+    const { hydrateBootstrapDoneCache } = await import('@/lib/sync-bootstrap');
+    await hydrateBootstrapDoneCache();
+  } catch {
+    /* bootstrap cache 非关键 */
+  }
 
   if (preferLocalReads || isApiOnlyReads()) return;
 
@@ -220,35 +187,12 @@ export function hasPageSyncedWithApi(pageKey: string): boolean {
   return syncedPages.has(pageKey.trim());
 }
 
-/** 页面 focus 时是否可跳过数据重载（热会话 + 本会话已加载过；冷启动或待 REST 刷新则不跳过） */
+/** 页面 focus 时是否跳过 UI 重载（本会话已渲染；与 REST / bootstrap 无关） */
 export function shouldSkipPageFocusApiRefresh(pageKey: string): boolean {
-  if (!warmProcessSession) return false;
-  if (pageNeedsRestRefresh(pageKey)) return false;
-  const key = pageKey.trim();
-  // 任务页：多端完成/编辑需在再次聚焦时增量拉齐，不能整会话永久跳过。
-  // 子页写入后会 clearPageLoadedInSession（常保留 cooldown）——此时必须重读本地，
-  // 否则删除项目等写操作在冷却窗内返回列表会残留旧数据。
-  if (key === TAB_PAGE_KEYS.tasks) {
-    if (!hasPageLoadedInSession(key)) return false;
-    const last = pageLastFocusRefreshAtMs.get(key) ?? 0;
-    return Date.now() - last < TASKS_FOCUS_REFRESH_COOLDOWN_MS;
-  }
-  if (isLocalFirstReads()) {
-    return hasPageLoadedInSession(pageKey);
-  }
-  return hasPageSyncedWithApi(pageKey);
+  return hasPageLoadedInSession(pageKey);
 }
 
-/**
- * @deprecated 写后 Tab focus 不得再强制 forceApi（会变成全局 REST）。
- * 多端对齐仅在较长后台回前台时由 usePageFocusReload 触发。
- * 保留函数以免旧调用方编译失败，恒返回 false。
- */
-export function shouldForceApiOnFocusRefresh(_pageKey: string): boolean {
-  return false;
-}
-
-/** 已完成「接口 → 本地」同步的页面（跨重启持久化） */
+/** 已完成「接口 → 本地」同步的页面（跨重启持久化；不决定是否打网） */
 const syncedPages = new Set<string>();
 
 export function markPageSyncedWithApi(pageKey: string): void {
@@ -300,59 +244,29 @@ export function markTabPagesDirtyForTable(table: string): void {
   markChildPagesDirtyForTable(table);
 }
 
-/**
- * 远端 Change Log 脏表：即使 local-first 也强制下次聚焦走 REST / page API，
- * 并清会话加载标记，避免热会话跳过刷新。
- */
-export function markTabPagesDirtyForRemoteSync(table: string): void {
-  const pages = TABLE_TAB_DIRTY_MAP[table.trim()];
-  const childPages = TABLE_CHILD_PAGE_DIRTY_MAP[table.trim()];
-  if (!pages?.length && !childPages?.length) return;
-  for (const key of pages ?? []) {
-    const trimmed = key.trim();
-    if (!trimmed) continue;
-    pagesNeedingRestRefresh.add(trimmed);
-    clearPageLoadedInSession(trimmed);
-    resetPageApiSession(trimmed, { force: true });
-  }
-  markChildPagesDirtyForTable(table);
-}
-
-/** cursor 过期 needFullSync：所有 Tab 主页下次聚焦强制 REST */
-export function markAllTabPagesNeedRemoteSync(): void {
-  for (const key of Object.values(TAB_PAGE_KEYS)) {
-    pagesNeedingRestRefresh.add(key);
-    clearPageLoadedInSession(key);
-    resetPageApiSession(key, { force: true });
-  }
-}
-
 export type PageApiReadOpts = {
   localOnly?: boolean;
   offlineFallback?: boolean;
 };
 
 /**
- * 是否应只读本地（供 resolvePageApiReadOpts / 单测共用）。
- * 专用 page API 的 Tab（任务/财务/复盘/我的）未同步时必须打网，不能因 scope 为空被当成「子页直读本地」。
+ * 是否应只读本地。bootstrap_done 之后（及之前的首屏）默认 SQLite；
+ * 禁止用 hasSynced / sessionLoaded / RestRefresh 决定打网。
  */
 export function shouldReadPageLocalOnly(input: {
   forceApi?: boolean;
+  isApiOnly?: boolean;
   needsRestRefresh?: boolean;
   hasSynced?: boolean;
   isPageApiOnly?: boolean;
   scopeTableCount?: number;
 }): boolean {
-  if (input.forceApi || input.needsRestRefresh) return false;
-  if (input.hasSynced) return true;
-  // 专用 page API Tab：首次由各页 fetch* 拉网；禁止误走「无 scope → localOnly」
-  if (input.isPageApiOnly) return false;
-  // 普通子页无范围表：不走首次全量 REST，直接读本地（各页自行软同步）
-  if ((input.scopeTableCount ?? 0) === 0) return true;
-  return false;
+  if (input.isApiOnly) return false;
+  if (input.forceApi) return false;
+  return true;
 }
 
-/** 根据页面是否已同步，决定本次是否只读本地 */
+/** wrapLoad 默认 localOnly；forceApi 仅留给显式逃生（用户下拉应走 SyncManager.pull） */
 export function resolvePageApiReadOpts(
   pageKey: string,
   forceApi?: boolean,
@@ -360,22 +274,10 @@ export function resolvePageApiReadOpts(
   if (isApiOnlyReads()) {
     return { localOnly: false, offlineFallback: false };
   }
-  const key = pageKey.trim();
-  const localOnly = shouldReadPageLocalOnly({
-    forceApi,
-    needsRestRefresh: pageNeedsRestRefresh(key),
-    hasSynced: hasPageSyncedWithApi(key),
-    isPageApiOnly: isPageApiOnlyTab(key),
-    scopeTableCount: listPageScopeTables(key).length,
-  });
-  if (localOnly) {
-    return { localOnly: true, offlineFallback: true };
-  }
-  // 专用 page API Tab 首次拉网允许离线回退本地，避免骨架屏卡死
-  if (isPageApiOnlyTab(key)) {
+  if (forceApi) {
     return { localOnly: false, offlineFallback: true };
   }
-  return { localOnly: false, offlineFallback: false };
+  return { localOnly: true, offlineFallback: true };
 }
 
 const activePageReadStack: PageApiReadOpts[] = [];
@@ -501,7 +403,6 @@ export function finalizePageLoadSession(
   }
   markPageLoadedInSession(pageKey);
   if (!readOpts.localOnly) {
-    markPageRestRefreshCompleted(pageKey);
     markProcessWarmSession();
   }
 }

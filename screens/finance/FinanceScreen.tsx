@@ -13,6 +13,8 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { useLocalQuery } from '@/hooks/use-local-query';
+import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import {
     subscribeAutoLedgerCompleted,
@@ -153,6 +155,7 @@ import { moveAppToBackground } from 'zheng-background';
 const AUTO_LEDGER_NOT_BILL_MESSAGE =
   '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 const PAGE_API_KEY = 'tabs/finance';
+const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 
 type TxnMetaTag = {
   label: string;
@@ -2306,7 +2309,10 @@ export default function FinanceScreen() {
     }
   }, [reload]);
 
-  usePageFocusReload(PAGE_API_KEY, reloadPage);
+  usePageFocusReload(PAGE_API_KEY, reloadPage, { observeLocal: false });
+  useLocalQuery(LOCAL_TABLES, () => {
+    void reloadPage(false);
+  });
 
   useFocusEffect(
     React.useCallback(() => {

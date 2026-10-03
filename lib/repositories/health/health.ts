@@ -53,8 +53,8 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       now,
     ]
   );
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true });
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
@@ -299,8 +299,8 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       id,
     ]
   );
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true });
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
@@ -329,8 +329,8 @@ export async function deleteHealthRecord(id: string) {
      WHERE id = ?`,
     [formatWallClockDatetimeLocal(new Date()), id],
   );
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true });
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),

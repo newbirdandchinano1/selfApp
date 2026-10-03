@@ -331,7 +331,7 @@ async function resolveCreateTaskForeignKeys(input: CreateTaskInput): Promise<Cre
 }
 
 export type TaskWriteOptions = {
-  /** 批量保存时延后推送，由调用方在事务提交后统一 pushLocalChangesToApi */
+  /** 批量保存时延后推送，由调用方在事务提交后统一 requestPush */
   deferSync?: boolean;
 };
 
@@ -352,9 +352,9 @@ export async function clearProjectTasksCategoryIds(
     [sqlLocalNow(), projectId],
   );
   if (!opts?.deferSync) {
-    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-    // SQL 脏标已会 scheduleCoalescedApiPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
-    void pushLocalChangesToApi();
+    const { requestPush } = await import('@/lib/sync-manager');
+    // SQL 脏标已会 requestPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
+    void requestPush();
   }
 }
 
@@ -412,9 +412,9 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
   }
 
   if (!opts?.deferSync) {
-    const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-    // SQL 脏标已会 scheduleCoalescedApiPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
-    void pushLocalChangesToApi();
+    const { requestPush } = await import('@/lib/sync-manager');
+    // SQL 脏标已会 requestPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
+    void requestPush();
   }
 }
 
@@ -732,8 +732,8 @@ export async function deleteTask(id: string) {
       if (e instanceof ApiRequestError && e.httpStatus === 404) {
         // 服务端已删除，继续清理本地子树
       } else {
-        const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-        await pushLocalChangesToApi({ awaitSync: true });
+        const { requestPush } = await import('@/lib/sync-manager');
+        await requestPush({ awaitSync: true });
         throw e;
       }
     }

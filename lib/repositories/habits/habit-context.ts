@@ -4,8 +4,8 @@ import { getDatabase } from '../../database.native';
 import type { HabitContextRow } from './habit-context.types';
 
 async function pushHabitContextChangesToApi(): Promise<void> {
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true });
 }
 
 export async function getHabitContexts() {

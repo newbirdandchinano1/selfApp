@@ -16,7 +16,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
@@ -547,7 +547,7 @@ export default function AddTaskScreen() {
         try {
           await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
           // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回列表
-          void pushLocalChangesToApi();
+          void requestPush();
         } catch (syncErr) {
           console.warn('待办保存后标记同步失败', syncErr);
         }
@@ -606,7 +606,7 @@ export default function AddTaskScreen() {
         }
         try {
           await markPendingTablesDirty(['tasks', 'projects', 'tags', 'tag_links']);
-          void pushLocalChangesToApi();
+          void requestPush();
         } catch (syncErr) {
           console.warn('任务保存后标记同步失败', syncErr);
         }
@@ -664,7 +664,7 @@ export default function AddTaskScreen() {
             await deleteTask(editTaskId);
             try {
               await markPendingTablesDirty(['tasks']);
-              void pushLocalChangesToApi();
+              void requestPush();
             } catch (syncErr) {
               console.warn('待办删除后标记同步失败', syncErr);
             }

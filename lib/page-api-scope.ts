@@ -117,6 +117,20 @@ export function listAllTabPageKeys(): string[] {
   return Object.values(TAB_PAGE_KEYS);
 }
 
+/** 该 pageKey 应对哪些本地表的 SQLite 变更重读 UI（不是同步判定） */
+export function listUiRefreshTables(pageKey: string): string[] {
+  const key = pageKey.trim();
+  if (!key) return [];
+  const out: string[] = [];
+  for (const [table, pages] of Object.entries(TABLE_TAB_DIRTY_MAP)) {
+    if (pages?.some((p) => p === key)) out.push(table);
+  }
+  for (const [table, pages] of Object.entries(TABLE_CHILD_PAGE_DIRTY_MAP)) {
+    if (pages?.some((p) => p === key)) out.push(table);
+  }
+  return out;
+}
+
 /** Change Log 脏表是否会影响该 pageKey（Tab 或子页） */
 export function pageKeyAffectedByDirtyTables(pageKey: string, tables: string[]): boolean {
   const key = pageKey.trim();

@@ -16,7 +16,9 @@ import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession, resetPageApiSession } from '@/lib/page-api-session';
+import { useLocalQuery } from '@/hooks/use-local-query';
+import { listUiRefreshTables } from '@/lib/page-api-scope';
+import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession } from '@/lib/page-api-session';
 
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
@@ -113,6 +115,7 @@ import Svg, { Circle } from 'react-native-svg';
 
 const { width } = Dimensions.get('window');
 const PAGE_API_KEY = 'tabs/index';
+const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 
 const nutrientMetricMeta = [
   {
@@ -890,12 +893,13 @@ export default function HealthScreen() {
       }
       setInitialHealthLoadPending(false);
 
-      // 本地空库或 REST 同步后仍无数据：自动强制全量拉取（与下拉刷新一致）
+      // 本地空库：走 SyncManager bootstrap/pull，禁止页面 REST 冒充同步
       if (!forceApi && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
         emptyLocalEscalatedRef.current = true;
         clearPageLoadedInSession(PAGE_API_KEY);
-        resetPageApiSession(PAGE_API_KEY, { force: true });
-        await reloadPage(true);
+        const { refreshFromUser } = await import('@/lib/sync-manager');
+        await refreshFromUser();
+        await reloadPage(false);
       }
     } finally {
       if (forceApi) setPageLoadRetrying(false);
@@ -905,8 +909,11 @@ export default function HealthScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  usePageFocusReload(PAGE_API_KEY, (forceApi) => {
-    void reloadPageRef.current?.(forceApi).catch((e) => console.warn('刷新健康页数据失败', e));
+  usePageFocusReload(PAGE_API_KEY, () => {
+    void reloadPageRef.current?.(false).catch((e) => console.warn('刷新健康页数据失败', e));
+  }, { observeLocal: false });
+  useLocalQuery(LOCAL_TABLES, () => {
+    void reloadPageRef.current?.(false).catch((e) => console.warn('刷新健康页数据失败', e));
   });
 
   /** 跨有效日界后：锚定「今天」并重载当日健康数据 */
@@ -1977,8 +1984,11 @@ export default function HealthScreen() {
               disabled={pageLoadRetrying}
               onPress={() => {
                 clearPageLoadedInSession(PAGE_API_KEY);
-                resetPageApiSession(PAGE_API_KEY, { force: true });
-                void reloadPage(true);
+                void (async () => {
+                  const { refreshFromUser } = await import('@/lib/sync-manager');
+                  await refreshFromUser();
+                  await reloadPage(false);
+                })();
               }}
               style={[styles.loadErrorRetryBtn, { backgroundColor: colors.primary }]}
               accessibilityRole="button"

@@ -3,10 +3,9 @@ import {
   apiPostFrogAssign,
   type FrogCandidateApiItem,
 } from '@/lib/api-client';
-import { assignFrogToApi, assignProjectFrogToApi } from '@/lib/frog-assignment';
-import { updateProject } from '@/lib/repositories/projects/project';
+import { applyServerFrogExtraLocally, assignFrogToApi, assignProjectFrogToApi } from '@/lib/frog-assignment';
 import { getProjects } from '@/lib/repositories/projects/project';
-import { getTaskById, updateTask } from '@/lib/repositories/tasks/task';
+import { getTaskById } from '@/lib/repositories/tasks/task';
 import {
   getLogicalLocalYmd,
   loadTasksDayBoundary,
@@ -58,11 +57,12 @@ export async function assignFrogForDay(params: {
       assignYmd: params.assignYmd,
       action: 'assign',
     });
-    if (params.kind === 'project') {
-      await updateProject(params.id, { extra_data: result.extra_data });
-    } else {
-      await updateTask(params.id, { extra_data: result.extra_data }, { deferSync: true });
-    }
+    await applyServerFrogExtraLocally(
+      params.kind,
+      params.id,
+      result.extra_data,
+      result.updated_at,
+    );
     return;
   } catch (err) {
     console.warn('[frog-assign] 服务端指派失败，回退本地写入', err);
@@ -88,5 +88,54 @@ export async function assignFrogForDay(params: {
     task.extra_data,
     params.assignYmd,
     task as unknown as Record<string, unknown>,
+  );
+}
+
+/** 优先走服务端 frog-assign 取消；失败回退 PATCH extra_data */
+export async function unassignFrogForDay(params: {
+  kind: 'task' | 'project';
+  id: string;
+  assignYmd: string;
+}): Promise<void> {
+  try {
+    const result = await apiPostFrogAssign({
+      kind: params.kind,
+      id: params.id,
+      assignYmd: params.assignYmd,
+      action: 'unassign',
+    });
+    await applyServerFrogExtraLocally(
+      params.kind,
+      params.id,
+      result.extra_data,
+      result.updated_at,
+    );
+    return;
+  } catch (err) {
+    console.warn('[frog-assign] 服务端取消指派失败，回退本地写入', err);
+  }
+
+  if (params.kind === 'project') {
+    const { getProjectById } = await import('@/lib/repositories/projects/project');
+    const { unassignProjectFrogFromApi } = await import('@/lib/frog-assignment');
+    const project = await getProjectById(params.id);
+    if (!project) return;
+    await unassignProjectFrogFromApi(
+      params.id,
+      project.extra_data,
+      project as unknown as Record<string, unknown>,
+      params.assignYmd,
+    );
+    return;
+  }
+
+  const { unassignFrogFromApi } = await import('@/lib/frog-assignment');
+  const task = await getTaskById(params.id);
+  if (!task) return;
+  await unassignFrogFromApi(
+    params.id,
+    task.extra_data,
+    task as unknown as Record<string, unknown>,
+    params.assignYmd,
   );
 }

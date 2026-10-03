@@ -119,8 +119,8 @@ export async function insertProjectCompletionLog(
   );
 
   invalidateInflightApiTableFetch('project_completion_logs');
-  const { pushLocalChangesToApi } = await import('@/lib/api-write-sync');
-  await pushLocalChangesToApi({ awaitSync: true });
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true });
   return id;
 }
 

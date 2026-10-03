@@ -72,6 +72,7 @@ function stripSyncFields(row: Record<string, unknown>): Record<string, unknown> 
   delete out.sync_status;
   delete out.deleted_at;
   delete out.version;
+  delete out.last_pushed_mutation_id;
   return out;
 }
 
@@ -247,28 +248,34 @@ export async function appDomainUpdateRecord<T = unknown>(
 export async function appDomainDeleteRecord(
   table: string,
   id: string,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; expectedRev?: number | null; mutationId?: string | null },
 ): Promise<void> {
   const signal = opts?.signal;
   const enc = encodeURIComponent(id);
+  const qs = new URLSearchParams();
+  if (opts?.mutationId) qs.set('mutation_id', opts.mutationId);
+  if (opts?.expectedRev != null && Number.isFinite(opts.expectedRev)) {
+    qs.set('expected_rev', String(opts.expectedRev));
+  }
+  const q = qs.toString() ? `?${qs.toString()}` : '';
   switch (table) {
     case 'recipe_categories':
-      await apiRequest(`${APP_API_PREFIX}/recipes/categories/${enc}`, { method: 'DELETE', signal });
+      await apiRequest(`${APP_API_PREFIX}/recipes/categories/${enc}${q}`, { method: 'DELETE', signal });
       return;
     case 'recipe_items':
-      await apiRequest(`${APP_API_PREFIX}/recipes/${enc}`, { method: 'DELETE', signal });
+      await apiRequest(`${APP_API_PREFIX}/recipes/${enc}${q}`, { method: 'DELETE', signal });
       return;
     case 'memos':
-      await apiRequest(`${APP_API_PREFIX}/memos/${enc}`, { method: 'DELETE', signal });
+      await apiRequest(`${APP_API_PREFIX}/memos/${enc}${q}`, { method: 'DELETE', signal });
       return;
     case 'wish_board_items':
-      await apiRequest(`${APP_API_PREFIX}/wish-board/items/${enc}`, { method: 'DELETE', signal });
+      await apiRequest(`${APP_API_PREFIX}/wish-board/items/${enc}${q}`, { method: 'DELETE', signal });
       return;
     case 'health_records':
-      await apiRequest(`${APP_API_PREFIX}/health/intakes/${enc}`, { method: 'DELETE', signal });
+      await apiRequest(`${APP_API_PREFIX}/health/intakes/${enc}${q}`, { method: 'DELETE', signal });
       return;
     case 'finance_transactions':
-      await apiRequest(`${APP_API_PREFIX}/pages/finance/transactions/${enc}`, {
+      await apiRequest(`${APP_API_PREFIX}/pages/finance/transactions/${enc}${q}`, {
         method: 'DELETE',
         signal,
       });

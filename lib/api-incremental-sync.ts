@@ -74,14 +74,9 @@ function shouldSkipGenericRestUpload(table: string): boolean {
 }
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';
-/** 合并同一交互内的多次脏表标记，再串行推送到 REST */
-const COALESCE_PUSH_DELAY_MS = 50;
-const MAX_PUSH_BACKOFF_MS = 30_000;
 
 const apiDirtyTables = new Set<string>();
 let apiPersistTimer: ReturnType<typeof setTimeout> | null = null;
-let coalescedApiPushTimer: ReturnType<typeof setTimeout> | null = null;
-let coalescedApiPushBackoffMs = COALESCE_PUSH_DELAY_MS;
 let apiPushInFlight = false;
 
 const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
@@ -105,7 +100,7 @@ export function markApiTableDirty(table: string): void {
   apiDirtyTables.add(t);
   invalidateInflightApiTableFetch(t);
   schedulePersistApiDirty();
-  scheduleCoalescedApiPush();
+  scheduleUnifiedPush();
 }
 
 function schedulePersistApiDirty(): void {
@@ -147,7 +142,7 @@ export async function hydrateApiDirtyFromStorage(): Promise<void> {
     apiDirtyTables.delete('ON');
     apiDirtyTables.delete('on');
     for (const t of REST_SKIP_TABLES) apiDirtyTables.delete(t);
-    if (apiDirtyTables.size > 0) scheduleCoalescedApiPush();
+    if (apiDirtyTables.size > 0) scheduleUnifiedPush();
     else void persistApiDirtyNow();
   } catch {
     /* ignore */
@@ -249,6 +244,19 @@ async function markLocalRowsSynced(
         );
         continue;
       }
+      // tasks/projects：extra_data 若已比上传快照新（如刚 frog-assign），勿标 synced，否则下行会用旧 extra 把指派打回
+      if ((table === 'tasks' || table === 'projects') && Object.prototype.hasOwnProperty.call(row, 'extra_data')) {
+        const uploadedExtra = row.extra_data == null ? '' : String(row.extra_data);
+        await db.runAsync(
+          `UPDATE ${quoteIdent(table)}
+              SET sync_status = 'synced'
+            WHERE ${quoteIdent(pkCol)} = ?
+              AND sync_status IN ('pending_create', 'pending_update')
+              AND IFNULL(extra_data, '') = ?`,
+          [pk, uploadedExtra],
+        );
+        continue;
+      }
       await db.runAsync(
         `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
         [pk],
@@ -316,38 +324,21 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   return { insertOrder: effectiveOrder, rowsByTable };
 }
 
-/** 脏表标记后合并推送（全局：所有经 markApiTableDirty 的写入均会触发） */
-function scheduleCoalescedApiPush(): void {
-  if (coalescedApiPushTimer) clearTimeout(coalescedApiPushTimer);
-  coalescedApiPushTimer = setTimeout(() => {
-    coalescedApiPushTimer = null;
-    void import('@/lib/api-write-sync').then(m => m.pushLocalChangesToApi());
-  }, coalescedApiPushBackoffMs);
+/** 脏表标记后走 SyncManager 单一队列（不再自建 50ms timer） */
+function scheduleUnifiedPush(): void {
+  void import('@/lib/sync-manager').then(m => m.requestPush());
 }
 
-function scheduleCoalescedApiPushAfterFailure(): void {
-  coalescedApiPushBackoffMs = Math.min(
-    Math.max(COALESCE_PUSH_DELAY_MS, coalescedApiPushBackoffMs * 2),
-    MAX_PUSH_BACKOFF_MS,
-  );
-  scheduleCoalescedApiPush();
+function scheduleUnifiedPushAfterFailure(): void {
+  void import('@/lib/sync-manager').then(m => m.requestPushAfterFailure());
 }
 
-/** @deprecated 使用 scheduleCoalescedApiPush */
-export function scheduleApiPushDebounced(): void {
-  scheduleCoalescedApiPush();
-}
-
-/** 取消 debounce 并立即推送脏表（财务记账等需即时入库后端的场景） */
+/** 由 SyncManager 调用的脏表 flush 实现；业务代码请走 requestPush */
 export async function flushApiDirtyTablesNow(opts?: {
   rethrow?: boolean;
   /** 仅推送这些表（及其 FK 父表扩展）；未指定则推送全部脏表 */
   onlyTables?: string[];
 }): Promise<void> {
-  if (coalescedApiPushTimer) {
-    clearTimeout(coalescedApiPushTimer);
-    coalescedApiPushTimer = null;
-  }
   const maxWaitMs = 30000;
   const start = Date.now();
   while (apiPushInFlight) {
@@ -393,8 +384,8 @@ async function listPendingApiSyncTableNames(): Promise<string[]> {
   return out;
 }
 
-/** 脏表增量：将本地待同步行推送到 REST 后端 */
-export async function pushApiDirtyTablesIfNeeded(opts?: {
+/** 脏表增量：将本地待同步行推送到 REST 后端。仅 flushApiDirtyTablesNow 可调用。 */
+async function pushApiDirtyTablesIfNeeded(opts?: {
   rethrow?: boolean;
   onlyTables?: string[];
 }): Promise<void> {
@@ -411,7 +402,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
     while (apiPushInFlight) {
       if (Date.now() - start > maxWaitMs) {
         if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
-        scheduleCoalescedApiPush();
+        scheduleUnifiedPushAfterFailure();
         return;
       }
       await new Promise<void>(resolve => setTimeout(resolve, 50));
@@ -419,7 +410,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
   }
 
   if (isSilentCloudRestoreInFlight()) {
-    scheduleCoalescedApiPush();
+    scheduleUnifiedPush();
     return;
   }
 
@@ -435,7 +426,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 登录失败', e);
     if (opts?.rethrow) throw e;
-    scheduleCoalescedApiPush();
+    scheduleUnifiedPushAfterFailure();
     return;
   }
 
@@ -447,7 +438,7 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
       while (apiPushInFlight) {
         if (Date.now() - start > maxWaitMs) {
           if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
-          scheduleCoalescedApiPush();
+          scheduleUnifiedPushAfterFailure();
           return;
         }
         await new Promise<void>(resolve => setTimeout(resolve, 50));
@@ -655,11 +646,12 @@ export async function pushApiDirtyTablesIfNeeded(opts?: {
 
     await clearApiDirtyTablesWithoutPending(dirtyList);
     await setLastApiIncrementalSyncAtIso(new Date().toISOString());
-    coalescedApiPushBackoffMs = COALESCE_PUSH_DELAY_MS;
+    const { resetPushBackoff } = await import('@/lib/sync-manager');
+    resetPushBackoff();
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);
     if (opts?.rethrow) throw e;
-    scheduleCoalescedApiPushAfterFailure();
+    scheduleUnifiedPushAfterFailure();
   } finally {
     apiPushInFlight = false;
   }

@@ -1,15 +1,15 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { newMutationId } from '@/lib/sync-write-meta';
 
 /**
- * P0-03：本地写入的统一入口。
- * - 在线权威：仅 MySQL `/api/*` Outbox（markApiTableDirty）
- * - Tab 缓存失效：markTabPagesDirtyForTable
- * - Worker / cloud-sql：不再由脏表驱动增量推送（仅保留周期全量备份）
+ * 本地 SQL 写入 → API Outbox（markApiTableDirty）+ Tab 缓存失效。
+ * Worker / D1 不再由脏表驱动增量推送（周期全量备份见 cloud-sync-scheduler）。
  */
 
-const CLOUD_DIRTY_STATE_KEY = 'selfapp:cloud-sql-dirty-tables-v1';
-const LEGACY_GITHUB_DIRTY_KEY = 'selfapp:github-cloud-dirty-state-v1';
-const LEGACY_SQLITE_DIRTY_KEY = 'selfapp:github-sqlite-dirty-tables-v1';
+const LEGACY_DIRTY_KEYS = [
+  'selfapp:cloud-sql-dirty-tables-v1',
+  'selfapp:github-cloud-dirty-state-v1',
+  'selfapp:github-sqlite-dirty-tables-v1',
+] as const;
 
 let ignoreMutationDepth = 0;
 
@@ -21,11 +21,6 @@ export function endCloudSqliteDirtyIgnoreBatch(): void {
   ignoreMutationDepth = Math.max(0, ignoreMutationDepth - 1);
 }
 
-/** @deprecated 使用 beginCloudSqliteDirtyIgnoreBatch */
-export const beginGithubSqliteDirtyIgnoreBatch = beginCloudSqliteDirtyIgnoreBatch;
-/** @deprecated 使用 endCloudSqliteDirtyIgnoreBatch */
-export const endGithubSqliteDirtyIgnoreBatch = endCloudSqliteDirtyIgnoreBatch;
-
 const SQLITE_RESERVED_TABLE_NAMES = new Set(['on', 'off', 'begin', 'end', 'commit', 'rollback']);
 
 function isSafeTableName(name: string): boolean {
@@ -34,10 +29,6 @@ function isSafeTableName(name: string): boolean {
   return true;
 }
 
-/**
- * 本地表变更 → 单一 Outbox（API）+ Tab 缓存失效。
- * 不再写入 Worker 脏表队列，也不再调度 cloud-sql 增量推送。
- */
 export function markCloudSqliteTableDirty(table: string): void {
   const t = table.trim();
   if (!t || !isSafeTableName(t)) return;
@@ -46,9 +37,6 @@ export function markCloudSqliteTableDirty(table: string): void {
   void import('@/lib/page-api-session').then(m => m.markTabPagesDirtyForTable(t));
   void import('@/lib/api-incremental-sync').then(m => m.markApiTableDirty(t));
 }
-
-/** @deprecated 使用 markCloudSqliteTableDirty */
-export const markGithubSqliteTableDirty = markCloudSqliteTableDirty;
 
 function parseDirtyTableNames(raw: string | null): string[] {
   if (!raw) return [];
@@ -73,14 +61,11 @@ function parseDirtyTableNames(raw: string | null): string[] {
   }
 }
 
-/**
- * 启动时：将历史 Worker 脏表迁移进 API Outbox，并清除旧存储。
- * 不再调度 Worker 增量推送。
- */
+/** 启动时把历史 Worker 脏表迁进 API Outbox，并清掉旧存储键。 */
 export async function hydrateCloudDirtyFromStorage(): Promise<void> {
   try {
     const migrated = new Set<string>();
-    for (const key of [CLOUD_DIRTY_STATE_KEY, LEGACY_GITHUB_DIRTY_KEY, LEGACY_SQLITE_DIRTY_KEY]) {
+    for (const key of LEGACY_DIRTY_KEYS) {
       const raw = await AsyncStorage.getItem(key);
       for (const t of parseDirtyTableNames(raw)) migrated.add(t);
       if (raw != null) await AsyncStorage.removeItem(key);
@@ -93,46 +78,10 @@ export async function hydrateCloudDirtyFromStorage(): Promise<void> {
   }
 }
 
-/** @deprecated 使用 hydrateCloudDirtyFromStorage */
-export const hydrateGithubCloudDirtyFromStorage = hydrateCloudDirtyFromStorage;
-
-/** @deprecated Worker 脏表队列已退役；恒为空 */
-export function peekCloudSqliteDirtyTables(): string[] {
-  return [];
-}
-
-/** @deprecated */
-export const peekGithubSqliteDirtyTables = peekCloudSqliteDirtyTables;
-
-/** @deprecated Worker 脏表队列已退役；无操作 */
-export function clearCloudSqliteDirtyTables(_tables: Iterable<string>): void {
-  /* no-op */
-}
-
-/** @deprecated */
-export const clearGithubSqliteDirtyTables = clearCloudSqliteDirtyTables;
-
-/** @deprecated Worker 脏表队列已退役；顺带清掉残留存储 */
+/** 清库 / D1 全量备份后丢掉残留脏表键（不调度 Worker 增量）。 */
 export function clearAllCloudSqliteDirtyTables(): void {
-  void AsyncStorage.multiRemove([
-    CLOUD_DIRTY_STATE_KEY,
-    LEGACY_GITHUB_DIRTY_KEY,
-    LEGACY_SQLITE_DIRTY_KEY,
-  ]).catch(() => {});
+  void AsyncStorage.multiRemove([...LEGACY_DIRTY_KEYS]).catch(() => {});
 }
-
-/** @deprecated */
-export const clearAllGithubSqliteDirtyTables = clearAllCloudSqliteDirtyTables;
-
-/**
- * @deprecated Worker 增量推送已退役（P0-03）。备份仅走周期全量 / 手动全量。
- */
-export function scheduleCloudTablePushDebounced(): void {
-  /* no-op */
-}
-
-/** @deprecated */
-export const scheduleGithubIncrementalCloudPushDebounced = scheduleCloudTablePushDebounced;
 
 function extractMutationTablesFromSql(sql: string): string[] {
   const norm = sql.replace(/\s+/g, ' ').trim();
@@ -168,6 +117,60 @@ function splitSqlStatementsRough(sql: string): string[] {
     .filter(s => s.length > 0 && !s.startsWith('--'));
 }
 
+function flattenRunParams(params: unknown[]): unknown[] {
+  if (params.length === 1 && Array.isArray(params[0])) return params[0] as unknown[];
+  return params;
+}
+
+async function stampPendingMutationId(
+  origRun: SqliteDbWithTracking['runAsync'],
+  source: string,
+  params: unknown[],
+  result: unknown,
+): Promise<void> {
+  if (ignoreMutationDepth > 0) return;
+  if (/\blast_pushed_mutation_id\b/i.test(source)) return;
+  if (/\bmutation_id\b/i.test(source)) return;
+  if (
+    /^(pragma|begin|commit|rollback|savepoint|release|vacuum|analyze|reindex|attach|detach|create\s|drop\s|alter\s)/i.test(
+      source.replace(/\s+/g, ' ').trim(),
+    )
+  ) {
+    return;
+  }
+  const tables = extractMutationTablesFromSql(source);
+  if (tables.length === 0) return;
+  const mid = newMutationId();
+  const isInsert = /^\s*(insert|replace)\b/i.test(source);
+  const binds = flattenRunParams(params);
+  for (const table of tables) {
+    if (!isSafeTableName(table) || table.startsWith('sqlite_') || table === 'app_meta') continue;
+    try {
+      if (isInsert) {
+        const rowid = Number((result as { lastInsertRowId?: number } | null)?.lastInsertRowId);
+        if (rowid > 0) {
+          await origRun(
+            `UPDATE \`${table}\` SET mutation_id = ? WHERE rowid = ? AND sync_status IN ('pending_create','pending_update','pending_delete')`,
+            mid,
+            rowid,
+          );
+        }
+        continue;
+      }
+      const whereCol = /\bwhere\s+`?([A-Za-z_][A-Za-z0-9_]*)`?\s*=\s*\?/i.exec(source);
+      if (whereCol?.[1] && binds.length > 0) {
+        await origRun(
+          `UPDATE \`${table}\` SET mutation_id = ? WHERE \`${whereCol[1]}\` = ? AND sync_status IN ('pending_create','pending_update','pending_delete')`,
+          mid,
+          binds[binds.length - 1],
+        );
+      }
+    } catch {
+      /* 无 mutation_id 列或表不存在 */
+    }
+  }
+}
+
 const CLOUD_SQLITE_TRACKING = Symbol('selfappCloudSqliteMutationTracking');
 
 type SqliteDbWithTracking = {
@@ -191,7 +194,13 @@ export function enableCloudSqliteMutationTrackingOnDatabase(db: SqliteDbWithTrac
     } catch {
       /* ignore */
     }
-    return origRun(source, ...params);
+    const result = await origRun(source, ...params);
+    try {
+      await stampPendingMutationId(origRun, source, params, result);
+    } catch {
+      /* ignore */
+    }
+    return result;
   };
 
   db.execAsync = async (source: string) => {
@@ -207,6 +216,3 @@ export function enableCloudSqliteMutationTrackingOnDatabase(db: SqliteDbWithTrac
     return origExec(source);
   };
 }
-
-/** @deprecated 使用 enableCloudSqliteMutationTrackingOnDatabase */
-export const enableGithubSqliteMutationTrackingOnDatabase = enableCloudSqliteMutationTrackingOnDatabase;

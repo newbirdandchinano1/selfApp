@@ -1,10 +1,4 @@
-import { assignFrogForDay } from '@/lib/frog-candidates-api';
-import {
-  unassignFrogFromApi,
-  unassignProjectFrogFromApi,
-} from '@/lib/frog-assignment';
-import { getProjectById } from '@/lib/repositories/projects/project';
-import { getTaskById } from '@/lib/repositories/tasks/task';
+import { assignFrogForDay, unassignFrogForDay } from '@/lib/frog-candidates-api';
 import {
   axisFromSnapshot,
   breaksEqual,
@@ -43,7 +37,6 @@ import {
   listPlacementsForEditableWeeks,
   listPlacementsForWeek,
   listSubjectPlacementsOnDay,
-  markPlacementDeletedRemote,
   saveScheduleAxisSettingsLocal,
   softDeletePlacement,
   softDeletePlacementsForWeek,
@@ -55,7 +48,6 @@ import { apiGetFrogScheduleWeek, apiPostFrogSchedulePlacement, apiSaveFrogSchedu
 import {
   enqueueFrogSchedulePlacementDelete,
   enqueueFrogSchedulePlacementUpsert,
-  flushFrogScheduleApiOutbox,
 } from '@/lib/schedule-api-outbox';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { clampSlotHours } from '@/lib/schedule/axis';
@@ -211,8 +203,9 @@ async function pushPendingLocalPlacements(): Promise<number> {
     }
     pushed += 1;
   }
-  const flushed = await flushFrogScheduleApiOutbox();
-  return Math.max(pushed, flushed);
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true, quiet: true });
+  return pushed;
 }
 
 /**
@@ -234,11 +227,9 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
     // 含 pending_delete：避免刚删又被远端灌回
     const pendingAll = await listPendingSchedulePlacements();
     const pendingIds = new Set(pendingAll.map((p) => p.id));
-    const remoteIds = new Set<string>();
 
     for (const p of remote.placements ?? []) {
       if (!p.id) continue;
-      remoteIds.add(p.id);
       if (pendingIds.has(p.id)) continue;
       const existing = localById.get(p.id);
       if (
@@ -267,14 +258,8 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
       changed += 1;
     }
 
-    // 远端已无、本地仍 synced 的占用 → 清理（桌面端删除后 APP 应对齐）
-    for (const localRow of local) {
-      if (pendingIds.has(localRow.id)) continue;
-      if (localRow.syncStatus !== 'synced') continue;
-      if (remoteIds.has(localRow.id)) continue;
-      await markPlacementDeletedRemote(localRow.id);
-      changed += 1;
-    }
+    // 他端删除走 Change Log delete → applyApiRecordMissingToLocal。
+    // 这里不再按「远端没有就删本地 synced」：入格刚 markSynced 时周 GET 常滞后，会把刚指派的格子抹掉。
 
     if (__DEV__ && changed > 0) {
       console.log('[frog-schedule] merged from remote', weekStartYmd, 'changes', changed);
@@ -313,25 +298,7 @@ async function unassignSubjectDay(
   id: string,
   assignYmd: string,
 ): Promise<void> {
-  if (kind === 'project') {
-    const project = await getProjectById(id);
-    if (!project) return;
-    await unassignProjectFrogFromApi(
-      id,
-      project.extra_data,
-      project as unknown as Record<string, unknown>,
-      assignYmd,
-    );
-    return;
-  }
-  const task = await getTaskById(id);
-  if (!task) return;
-  await unassignFrogFromApi(
-    id,
-    task.extra_data,
-    task as unknown as Record<string, unknown>,
-    assignYmd,
-  );
+  await unassignFrogForDay({ kind, id, assignYmd });
 }
 
 /** 两段格子是否有重叠（同一主体不可重复占用同一格） */
@@ -436,7 +403,12 @@ export async function placeFrogOnSchedule(params: {
     throw err;
   }
 
-  void apiPostFrogSchedulePlacement({ action: 'upsert', placement: row }).catch(() => undefined);
+  try {
+    await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  } catch {
+    // 已入出站队列，加载日程时补推
+  }
+  notifyFrogScheduleChanged();
   return row;
 }
 
@@ -523,8 +495,12 @@ export async function rematerializeOrphanedPlacement(params: {
 
   const row = (await getPlacementById(placement.id))!;
   await enqueueFrogSchedulePlacementUpsert(row);
+  try {
+    await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  } catch {
+    /* 已入出站队列 */
+  }
   notifyFrogScheduleChanged();
-  void apiPostFrogSchedulePlacement({ action: 'upsert', placement: row }).catch(() => undefined);
   return row;
 }
 

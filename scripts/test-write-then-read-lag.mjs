@@ -24,12 +24,8 @@ function read(rel) {
 function testSourceInvariants() {
   const session = read('lib/page-api-session.ts');
   assert(
-    /preserveFocusCooldown:\s*true/.test(session),
-    'markTabPagesDirtyForTable 应保留 focus 冷却 (preserveFocusCooldown: true)',
-  );
-  assert(
-    /opts\?\.preserveFocusCooldown/.test(session),
-    'clearPageLoadedInSession 应支持 preserveFocusCooldown',
+    /preserveFocusCooldown/.test(session),
+    'clearPageLoadedInSession 仍接受 preserveFocusCooldown（兼容写后清会话）',
   );
 
   const tasksScreen = read('screens/tasks/TasksScreen.tsx');
@@ -69,15 +65,14 @@ function testSourceInvariants() {
     `add-task 不应再 awaitSync 阻塞返回（仍有 ${awaitSyncCount} 处）`,
   );
 
-  assert(
-    /shouldForceApiOnFocusRefresh[\s\S]*?return false/.test(session) ||
-      !/shouldForceApiOnFocusRefresh\(pageKey\)/.test(read('hooks/use-page-focus-reload.ts')),
-    'focus 重载不得再对 tasks 恒 forceApi（写后会变全局 REST）',
-  );
   const focusReload = read('hooks/use-page-focus-reload.ts');
   assert(
-    !/shouldForceApiOnFocusRefresh\(pageKey\)/.test(focusReload),
-    'usePageFocusReload 不得在 Tab focus 时调用 shouldForceApiOnFocusRefresh',
+    !/pullAndApplySyncChanges/.test(focusReload),
+    'usePageFocusReload 不得 pull',
+  );
+  assert(
+    !/shouldForceApiOnFocusRefresh/.test(focusReload),
+    'usePageFocusReload 不得调用 shouldForceApiOnFocusRefresh',
   );
   assert(
     /reloadRef\.current\?\.\(false\)/.test(focusReload),
@@ -87,43 +82,30 @@ function testSourceInvariants() {
   console.log('[pass] source invariants');
 }
 
-/** 复刻 shouldSkipPageFocusApiRefresh 的 tasks 冷却逻辑 */
+/** 写后清 sessionLoaded：下次 focus 必须重读 SQLite，但不得打网 */
 function testCooldownLogic() {
-  const COOLDOWN_MS = 8_000;
-  const pageLastFocusRefreshAtMs = new Map();
   const sessionLoadedPages = new Set();
   const TASKS = 'tabs/tasks';
 
   function markLoaded(key) {
     sessionLoadedPages.add(key);
-    pageLastFocusRefreshAtMs.set(key, Date.now());
   }
 
-  function clearLoaded(key, { preserveFocusCooldown = false } = {}) {
+  function clearLoaded(key) {
     sessionLoadedPages.delete(key);
-    if (!preserveFocusCooldown) pageLastFocusRefreshAtMs.delete(key);
   }
 
-  function shouldSkipTasksFocus() {
-    const last = pageLastFocusRefreshAtMs.get(TASKS) ?? 0;
-    return Date.now() - last < COOLDOWN_MS;
+  function shouldSkipFocus(key) {
+    return sessionLoadedPages.has(key);
   }
 
-  // 首次加载后在冷却内
   markLoaded(TASKS);
-  assert(shouldSkipTasksFocus() === true, '加载后 8s 内应跳过 focus 打网');
+  assert(shouldSkipFocus(TASKS) === true, '已渲染过的 Tab 切回可跳过重复重渲染');
 
-  // 旧 bug：脏标清会话时顺带清冷却 → 立刻不能 skip
-  clearLoaded(TASKS, { preserveFocusCooldown: false });
-  assert(shouldSkipTasksFocus() === false, '清冷却后应无法 skip（复现旧 bug）');
+  clearLoaded(TASKS);
+  assert(shouldSkipFocus(TASKS) === false, '写后清会话标记后必须重读本地');
 
-  // 修复：保留冷却
-  markLoaded(TASKS);
-  clearLoaded(TASKS, { preserveFocusCooldown: true });
-  assert(sessionLoadedPages.has(TASKS) === false, '会话加载标记应被清掉以便重读本地');
-  assert(shouldSkipTasksFocus() === true, '保留冷却后写操作不应立刻强制打网');
-
-  console.log('[pass] cooldown logic (旧 bug 可复现，修复后可跳过)');
+  console.log('[pass] sessionLoaded UI skip（不再用 8s 冷却当同步）');
 }
 
 async function testLiveApiCost() {

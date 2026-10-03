@@ -1,19 +1,8 @@
 import { isApiReadableTable } from '@/lib/api-allowed-tables';
-import { REST_SKIP_TABLES } from '@/lib/api-incremental-sync';
-import { fetchApiTableAll } from '@/lib/api-read';
-import { applyApiRecordMissingToLocal } from '@/lib/api-read-local-sync';
 import { apiRequest } from '@/lib/api/http';
 import { getApiAuthToken } from '@/lib/api-config';
-import {
-  clearSyncChangeCursor,
-  getSyncChangeCursor,
-  setSyncChangeCursor,
-} from '@/lib/sync-cursor';
-import {
-  markTabPagesDirtyForRemoteSync,
-  markAllTabPagesNeedRemoteSync,
-} from '@/lib/page-api-session';
-import { startSyncSse, stopSyncSse, type SyncSseChangesPayload } from '@/lib/sync-sse';
+import { clearSyncChangeCursor, getSyncChangeCursor, setSyncChangeCursor } from '@/lib/sync-cursor';
+import { applyOneEvent, decide, readLocalRowState } from '@/lib/sync-apply';
 
 export type SyncChangeEvent = {
   id: number;
@@ -22,6 +11,9 @@ export type SyncChangeEvent = {
   op: 'upsert' | 'delete';
   updatedAt: string | null;
   deviceId: string | null;
+  serverRev: number | null;
+  mutationId: string | null;
+  row: Record<string, unknown> | null;
 };
 
 export type SyncChangesPayload = {
@@ -43,17 +35,10 @@ export type SyncPullResult = {
 const PULL_PAGE_LIMIT = 200;
 const MAX_PULL_PAGES = 20;
 
-/** Phase 3：SSE 为主，轮询仅作 60s 兜底 */
 export const SYNC_PULL_POLL_INTERVAL_MS = 60_000;
 
-/** SSE 触发 pull 的防抖 */
-const SSE_PULL_DEBOUNCE_MS = 400;
-
 let pullInFlight: Promise<SyncPullResult> | null = null;
-/** inflight 期间又有 pull 时结束后补一次，避免漏掉 SSE 窗口内的新变更 */
 let pullQueued = false;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let sseDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 type DirtyListener = (dirtyTables: string[], needFullSync?: boolean) => void;
 const dirtyListeners = new Set<DirtyListener>();
@@ -64,6 +49,9 @@ export function subscribeSyncDirty(listener: DirtyListener): () => void {
     dirtyListeners.delete(listener);
   };
 }
+
+/** apply ???? UI ?????? cursor????? */
+export const subscribeLocalDataChanged = subscribeSyncDirty;
 
 function emitDirty(tables: string[], needFullSync = false): void {
   if (tables.length === 0 && !needFullSync) return;
@@ -79,89 +67,39 @@ function emitDirty(tables: string[], needFullSync = false): void {
 async function fetchChangesPage(since: number): Promise<SyncChangesPayload> {
   return apiRequest<SyncChangesPayload>(
     `/api/app/sync/changes?since=${encodeURIComponent(String(since))}&limit=${PULL_PAGE_LIMIT}`,
-    {
-      method: 'GET',
-      skipGlobalLoading: true,
-      perAttemptTimeoutMs: 12_000,
-    },
+    { method: 'GET', skipGlobalLoading: true, perAttemptTimeoutMs: 12_000 },
   );
 }
 
-/**
- * 将 Change Log 中的 delete 事件落到本地库：增量拉取（updatedSince）查不到已删行，
- * tasks 等表走增量同步时必须靠这里删本地旧行，否则他端删除后本机仍展示。
- * 同一游标区间内同一主键可能有多次事件，按事件顺序只保留最后一次 op（后写的 delete 能覆盖先写的 upsert，反之亦然）。
- */
-async function applySyncDeleteEvents(events: SyncChangeEvent[]): Promise<void> {
-  const lastOpByKey = new Map<string, SyncChangeEvent>();
+function foldPage(events: SyncChangeEvent[]): SyncChangeEvent[] {
+  const m = new Map<string, SyncChangeEvent>();
   for (const ev of events) {
     const table = ev.table?.trim();
     const pk = ev.pk?.trim();
     if (!table || !pk) continue;
     if (!isApiReadableTable(table)) continue;
-    lastOpByKey.set(`${table}::${pk}`, ev);
+    m.set(`${table}::${pk}`, ev);
   }
-  for (const ev of lastOpByKey.values()) {
-    if (ev.op !== 'delete') continue;
-    try {
-      await applyApiRecordMissingToLocal(ev.table, ev.pk);
-    } catch (e) {
-      console.warn(`[sync-pull] 删除本地行失败 ${ev.table}:${ev.pk}`, e);
-    }
-  }
+  return [...m.values()].sort((a, b) => a.id - b.id);
 }
 
-async function refreshDirtyTables(tables: string[]): Promise<void> {
-  const unique = [...new Set(tables.map((t) => t.trim()).filter(Boolean))];
-  for (const table of unique) {
-    markTabPagesDirtyForRemoteSync(table);
-    // 课表走专用接口，由任务页 REST 刷新覆盖；不走通用 List
-    if (REST_SKIP_TABLES.has(table)) continue;
-    if (!isApiReadableTable(table)) continue;
-    try {
-      await fetchApiTableAll(table, { forceRefresh: true });
-    } catch (e) {
-      console.warn(`[sync-pull] 刷新表 ${table} 失败`, e);
-    }
-  }
-  if (unique.includes('app_settings')) {
-    try {
-      const { reloadDayBoundaryFromStore } = await import('@/lib/tasks-logical-day');
-      await reloadDayBoundaryFromStore();
-    } catch (e) {
-      console.warn('[sync-pull] 重载日界失败', e);
-    }
-  }
-}
-
-/**
- * 按游标追赶 Change Log；有脏表则灌入本地并通知页面 REST 刷新。
- * 并发调用合并为同一次 inflight。
- */
-export async function pullAndApplySyncChanges(opts?: {
-  signal?: AbortSignal;
-}): Promise<SyncPullResult> {
+export async function pullAndApplySyncChanges(opts?: { signal?: AbortSignal }): Promise<SyncPullResult> {
   if (opts?.signal?.aborted) {
     return { applied: false, needFullSync: false, dirtyTables: [], cursor: await getSyncChangeCursor() };
   }
-
   const token = await getApiAuthToken();
   if (!token) {
     return { applied: false, needFullSync: false, dirtyTables: [], cursor: await getSyncChangeCursor() };
   }
-
   if (pullInFlight) {
     pullQueued = true;
     return pullInFlight;
   }
-
   pullInFlight = (async (): Promise<SyncPullResult> => {
     let cursor = await getSyncChangeCursor();
     const allDirty = new Set<string>();
-    const allEvents: SyncChangeEvent[] = [];
     let needFullSync = false;
     let pages = 0;
-
     try {
       while (pages < MAX_PULL_PAGES) {
         pages += 1;
@@ -169,49 +107,50 @@ export async function pullAndApplySyncChanges(opts?: {
         const page = await fetchChangesPage(cursor);
         if (page.needFullSync) {
           needFullSync = true;
-          markAllTabPagesNeedRemoteSync();
-          // 全量兜底后对齐到服务端游标，避免反复 needFullSync
-          await setSyncChangeCursor(page.cursor);
-          cursor = page.cursor;
+          // Phase 3: needFullSync �� bootstrap ?�?���?�?� cursor����? /sync/full��
+          void import('@/lib/sync-bootstrap').then((m) => m.handleNeedFullSync().catch(() => undefined));
           break;
         }
+        const folded = foldPage(page.events ?? []);
+        for (const ev of folded) {
+          try {
+            const local = await readLocalRowState(ev.table, ev.pk);
+            const d = decide(local, {
+              id: ev.id, table: ev.table, pk: ev.pk, op: ev.op,
+              serverRev: ev.serverRev, mutationId: ev.mutationId, row: ev.row,
+            });
+            await applyOneEvent(ev.table, ev.pk, {
+              id: ev.id, table: ev.table, pk: ev.pk, op: ev.op,
+              serverRev: ev.serverRev, mutationId: ev.mutationId, row: ev.row,
+            }, d);
+            allDirty.add(ev.table);
+          } catch (e) {
+            console.warn(`[sync-pull] apply?? ${ev.table}:${ev.pk}`, e);
+          }
+        }
         for (const t of page.dirtyTables ?? []) allDirty.add(t);
-        for (const ev of page.events ?? []) allEvents.push(ev);
         if (page.cursor > cursor) {
           cursor = page.cursor;
           await setSyncChangeCursor(cursor);
         }
         if (!page.hasMore) break;
       }
-
       const dirtyTables = [...allDirty].sort();
-      if (allEvents.length > 0) {
-        await applySyncDeleteEvents(allEvents);
+      if (dirtyTables.length > 0 && !needFullSync) {
+        try {
+          const { reloadDayBoundaryFromStore } = await import('@/lib/tasks-logical-day');
+          if (dirtyTables.includes('app_settings')) await reloadDayBoundaryFromStore();
+        } catch (e) {
+          console.warn('[sync-pull] ??????', e);
+        }
       }
-      if (dirtyTables.length > 0) {
-        await refreshDirtyTables(dirtyTables);
-      }
-      if (dirtyTables.length > 0 || needFullSync) {
-        emitDirty(dirtyTables, needFullSync);
-      }
-
-      return {
-        applied: dirtyTables.length > 0 || needFullSync,
-        needFullSync,
-        dirtyTables,
-        cursor,
-      };
+      if (dirtyTables.length > 0 || needFullSync) emitDirty(dirtyTables, needFullSync);
+      return { applied: dirtyTables.length > 0 || needFullSync, needFullSync, dirtyTables, cursor };
     } catch (e) {
-      console.warn('[sync-pull] pull 失败', e);
-      return {
-        applied: false,
-        needFullSync: false,
-        dirtyTables: [],
-        cursor,
-      };
+      console.warn('[sync-pull] pull ??', e);
+      return { applied: false, needFullSync: false, dirtyTables: [], cursor };
     }
   })();
-
   try {
     return await pullInFlight;
   } finally {
@@ -223,47 +162,8 @@ export async function pullAndApplySyncChanges(opts?: {
   }
 }
 
-function schedulePullFromSse(payload?: SyncSseChangesPayload): void {
-  if (payload?.dirtyTables?.length) {
-    emitDirty(payload.dirtyTables, false);
-  }
-  if (sseDebounceTimer != null) clearTimeout(sseDebounceTimer);
-  sseDebounceTimer = setTimeout(() => {
-    sseDebounceTimer = null;
-    void pullAndApplySyncChanges();
-  }, SSE_PULL_DEBOUNCE_MS);
-}
-
-/**
- * 启动多端同步：SSE 实时信号 + 60s 轮询兜底。
- * 重连成功后立即 pull 一次，补齐断线窗口。
- */
-export function startSyncPullPolling(intervalMs = SYNC_PULL_POLL_INTERVAL_MS): void {
-  stopSyncPullPolling();
-  void pullAndApplySyncChanges();
-  pollTimer = setInterval(() => {
-    void pullAndApplySyncChanges();
-  }, intervalMs);
-
-  startSyncSse({
-    onChanges: (payload) => schedulePullFromSse(payload),
-    onConnected: () => {
-      void pullAndApplySyncChanges();
-    },
-  });
-}
-
-export function stopSyncPullPolling(): void {
-  if (pollTimer != null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-  if (sseDebounceTimer != null) {
-    clearTimeout(sseDebounceTimer);
-    sseDebounceTimer = null;
-  }
-  pullQueued = false;
-  stopSyncSse();
+export async function pullChanges(opts?: { signal?: AbortSignal }): Promise<SyncPullResult> {
+  return pullAndApplySyncChanges(opts);
 }
 
 export { clearSyncChangeCursor };

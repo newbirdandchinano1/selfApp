@@ -131,12 +131,15 @@ async function pushFinanceChangesToApi(opts?: {
   wrapLocalSavedSyncError?: boolean;
 }): Promise<void> {
   const run = async () => {
-    const { flushApiDirtyTablesNow, markApiTableDirty } = await import('@/lib/api-incremental-sync');
+    const { markApiTableDirty } = await import('@/lib/api-incremental-sync');
     markApiTableDirty('finance_accounts');
     markApiTableDirty('finance_transactions');
     markApiTableDirty('finance_scheduled_expenses');
-    await flushApiDirtyTablesNow({
+    const { requestPush } = await import('@/lib/sync-manager');
+    await requestPush({
+      awaitSync: true,
       rethrow: true,
+      quiet: true,
       onlyTables: [...FINANCE_SYNC_TABLES],
     });
   };

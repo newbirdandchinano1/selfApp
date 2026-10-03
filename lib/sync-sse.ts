@@ -8,6 +8,7 @@ export type SyncSseChangesPayload = {
 };
 
 type SyncSseHandlers = {
+  /** payload 仅作提示；禁止用它推进 cursor 或写库 */
   onChanges: (payload: SyncSseChangesPayload) => void;
   onConnected?: () => void;
   onDisconnected?: () => void;
@@ -64,6 +65,7 @@ function dispatchParsed(event: string, data: string): void {
       return;
     }
     if (event === 'changes' || parsed.type === 'changes') {
+      // 正确性只走 pullChanges；此处不转发 cursor / dirtyTables 作权威。
       handlers.onChanges({
         type: 'changes',
         cursor: Number(parsed.cursor) || 0,

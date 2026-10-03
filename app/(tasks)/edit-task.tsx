@@ -17,7 +17,7 @@ import {
   type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
 import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
-import { pushLocalChangesToApi } from '@/lib/api-write-sync';
+import { requestPush } from '@/lib/sync-manager';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
@@ -624,7 +624,7 @@ export default function EditTaskScreen() {
 
     try {
       await updateTask(taskId, { parent_task_id: nextParentId });
-      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      await requestPush({ awaitSync: true, rethrow: true });
 
       if (nextParentId) {
         const parent = await getTaskById(nextParentId);
@@ -1003,7 +1003,7 @@ export default function EditTaskScreen() {
       if (!nextInheritsSchedule) {
         await tightenDescendantTasksOf(taskId, tightenFrame);
       }
-      await pushLocalChangesToApi({ awaitSync: true, rethrow: true });
+      await requestPush({ awaitSync: true, rethrow: true });
 
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,

@@ -49,10 +49,7 @@ function markAllTabPagesSyncedWithApi(): void {
 }
 
 /**
- * 首启引导：清空本地业务数据并标记完成（不再阻塞全表 REST）。
- * 已有本地数据的升级用户仅标记完成，各 Tab 视为已同步。
- * 具体数据由各页面首次访问时按需从服务器拉取并覆盖本地。
- */
+ * 首启引导：清空本地业务数据并标记完成（不再阻塞全�?REST）�? * 已有本地数据的升级用户仅标记完成，各 Tab 视为已同步�? * 具体数据由各页面首次访问时按需从服务器拉取并覆盖本地�? */
 export async function runInitialRestSyncIfNeeded(opts?: {
   signal?: AbortSignal;
   onProgress?: (progress: InitialSyncProgress) => void;
@@ -82,11 +79,13 @@ export async function runInitialRestSyncIfNeeded(opts?: {
   report({ phase: 'clearing', tableIndex: 0, tableCount: 0 });
   await yieldToUi();
 
+  // Phase 3: ��ֹ���ð�� Full Sync���� 2.6 �Ķ�բ��
   try {
-    await clearLocalUserDataTables();
-    await markBootstrapCompleted();
+    const { runBootstrapGate } = await import('@/lib/sync-bootstrap');
+    const ok = await runBootstrapGate();
+    if (ok) { await markBootstrapCompleted(); }
     report({ phase: 'done', tableIndex: 0, tableCount: 0 });
-    return { ran: true, ok: true };
+    return { ran: true, ok };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn('[api-initial-sync] 首启清库失败', e);

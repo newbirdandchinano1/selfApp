@@ -128,8 +128,8 @@ export async function clearApiAuthToken(): Promise<void> {
     /* ignore */
   }
   try {
-    const { stopSyncPullPolling } = await import('@/lib/sync-pull');
-    stopSyncPullPolling();
+    const { SyncManager } = await import('@/lib/sync-manager');
+    SyncManager.stop();
   } catch {
     /* ignore */
   }

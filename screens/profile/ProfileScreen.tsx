@@ -11,6 +11,8 @@ import {
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { useLocalQuery } from '@/hooks/use-local-query';
+import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import {
   loadProfileHubStats,
@@ -33,6 +35,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/profile';
+const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 const MIN_TOUCH = getMinTouchTarget(Platform.OS);
 const EMPTY = '—';
 
@@ -266,8 +269,13 @@ export default function ProfileScreen() {
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
-  usePageFocusReload(PAGE_API_KEY, (forceApi) => {
-    void reloadPageRef.current?.(forceApi).catch((e) => {
+  usePageFocusReload(PAGE_API_KEY, () => {
+    void reloadPageRef.current?.(false).catch((e) => {
+      if (__DEV__) console.warn('[profile] reload failed', e);
+    });
+  }, { observeLocal: false });
+  useLocalQuery(LOCAL_TABLES, () => {
+    void reloadPageRef.current?.(false).catch((e) => {
       if (__DEV__) console.warn('[profile] reload failed', e);
     });
   });

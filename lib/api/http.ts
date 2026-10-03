@@ -55,12 +55,13 @@ export class ApiRequestError extends Error {
   readonly apiCode: number;
   readonly retryable: boolean;
   readonly retryAfterSec?: number;
+  readonly data: unknown;
 
   constructor(
     message: string,
     httpStatus: number,
     apiCode: number,
-    opts?: { retryable?: boolean; retryAfterSec?: number },
+    opts?: { retryable?: boolean; retryAfterSec?: number; data?: unknown },
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -68,6 +69,7 @@ export class ApiRequestError extends Error {
     this.apiCode = apiCode;
     this.retryable = opts?.retryable ?? false;
     this.retryAfterSec = opts?.retryAfterSec;
+    this.data = opts?.data ?? null;
   }
 }
 
@@ -93,10 +95,16 @@ export function isApiErrorRetryable(err: unknown): boolean {
 
 /** upsert 流程中 POST 409 / 唯一约束冲突，上层会改走 PUT，不应弹全局错误 */
 export function isDuplicateRecordApiError(err: unknown): boolean {
-  return (
-    err instanceof ApiRequestError &&
-    (err.httpStatus === 409 || /已存在|duplicate|冲突|unique/i.test(err.message))
-  );
+  if (!(err instanceof ApiRequestError)) return false;
+  if (err.httpStatus === 409) {
+    const data = err.data;
+    if (data && typeof data === 'object' && (data as { conflict?: boolean }).conflict === true) {
+      return false;
+    }
+    if (/tombstone|expected_rev|版本冲突|已删除（tombstone）/.test(err.message)) return false;
+    return true;
+  }
+  return /已存在|duplicate|唯一字段冲突/.test(err.message);
 }
 
 function serializeUnknownError(err: unknown): string {
@@ -351,7 +359,7 @@ export async function apiRequest<T = unknown>(
         envelope.message || `请求失败：HTTP ${res.status}`,
         res.status,
         envelope.code,
-        { retryable, retryAfterSec },
+        { retryable, retryAfterSec, data: envelope.data },
       );
     }
 

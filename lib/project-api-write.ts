@@ -22,6 +22,8 @@ export async function persistProjectPatchToApi(
   if (isLocalFirstReads()) {
     await updateProject(projectId, patch as UpdateProjectInput);
     invalidateInflightApiTableFetch('projects');
+    const { markCloudSqliteTableDirty } = await import('@/lib/cloud-sql-dirty-track');
+    markCloudSqliteTableDirty('projects');
     return;
   }
 

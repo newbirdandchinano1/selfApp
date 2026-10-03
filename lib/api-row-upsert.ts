@@ -16,6 +16,12 @@ import {
     sortProjectCategoriesForApiUpload,
 } from '@/lib/cloud-sql-sync';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import {
+  attachPushOccFields,
+  isSyncOccConflictApiError,
+  occPayloadOf,
+  parseMutationId,
+} from '@/lib/sync-write-meta';
 
 /**
  * 积分钱包为单例行，余额权威在 POST /points/adjust。
@@ -209,6 +215,51 @@ export class ApiRowUploadSkippedError extends Error {
   }
 }
 
+async function stampLastPushedMutation(
+  table: string,
+  pkCol: string,
+  pk: string,
+  mutationId: string | null,
+): Promise<void> {
+  if (!mutationId) return;
+  const { getDatabase } = await import('@/lib/database');
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  const db = await getDatabase();
+  if (!db) return;
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `UPDATE \`${table}\` SET last_pushed_mutation_id = ? WHERE \`${pkCol}\` = ?`,
+      [mutationId, pk],
+    );
+  } catch {
+    /* 列尚未迁移时忽略 */
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+async function applyPushOccConflict(table: string, pk: string, err: unknown): Promise<boolean> {
+  if (!isSyncOccConflictApiError(err)) return false;
+  const payload = occPayloadOf(err);
+  const { applyOneEvent, decide, readLocalRowState } = await import('@/lib/sync-apply');
+  const event = {
+    id: 0,
+    table,
+    pk,
+    op: (payload?.kind === 'tombstone' ? 'delete' : 'upsert') as 'upsert' | 'delete',
+    serverRev: payload?.serverRev ?? null,
+    mutationId: payload?.mutationId ?? null,
+    row: payload?.row ?? null,
+  };
+  const local = await readLocalRowState(table, pk);
+  const decision = decide(local, event);
+  await applyOneEvent(table, pk, event, decision);
+  return true;
+}
+
 function isRecoverableParentReferenceError(err: unknown): boolean {
   return isForeignKeyConstraintError(err) || isMissingParentRecordApiError(err);
 }
@@ -293,22 +344,33 @@ export async function upsertRowToApi(
     pkColsByTable?: Map<string, string[]>;
     fkRefsByTable?: Map<string, Awaited<ReturnType<typeof readLocalForeignKeyRefs>>>;
   },
-): Promise<'created' | 'updated' | 'deleted'> {
+): Promise<'created' | 'updated' | 'deleted' | 'occ'> {
   let body = row;
   if (opts?.uploadedPkByTable && opts.fkRefs) {
     body = sanitizeRowForeignKeysForApiUpload(table, row, opts.uploadedPkByTable, opts.fkRefs);
   }
   const pk = rowPrimaryKeyValue(body, pkCols);
   body = ensureFinanceAccountIdOnUploadBody(table, body, pk);
+  const pkCol = pkCols[0] ?? 'id';
+  const mutationId = parseMutationId(body.mutation_id ?? body.mutationId);
+  const occBody = attachPushOccFields(body);
+  if (pk && mutationId) {
+    await stampLastPushedMutation(table, pkCol, pk, mutationId);
+  }
 
   if (body.sync_status === 'pending_delete') {
     if (!pk) {
       throw new ApiRowUploadSkippedError(table, null, '待删除行缺少主键');
     }
     try {
-      await apiDeleteRecord(table, pk, { signal: opts?.signal });
+      await apiDeleteRecord(table, pk, {
+        signal: opts?.signal,
+        mutationId,
+        expectedRev: occBody.expected_rev as number,
+      });
       return 'deleted';
     } catch (e) {
+      if (await applyPushOccConflict(table, pk, e)) return 'occ';
       if (e instanceof ApiRequestError && e.httpStatus === 404) {
         return 'deleted';
       }
@@ -323,17 +385,40 @@ export async function upsertRowToApi(
     }
   }
 
-  const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated'> => {
+  const runUpsert = async (payload: Record<string, unknown>): Promise<'created' | 'updated' | 'occ'> => {
+    const send = attachPushOccFields(payload);
+    const status = String(payload.sync_status ?? body.sync_status ?? '');
     if (table === 'habit_check_ins') {
-      return upsertHabitCheckInRowToApi(payload, pk, opts?.signal);
+      return upsertHabitCheckInRowToApi(send, pk, opts?.signal, status);
     }
     if (table === 'points_wallet') {
       return upsertPointsWalletRowToApi(payload, pk, opts?.signal);
     }
+    const doUpdate = async (): Promise<'updated' | 'occ'> => {
+      if (!pk) throw new ApiRowUploadSkippedError(table, null, '待更新行缺少主键');
+      try {
+        await apiUpdateRecord(table, pk, send, { signal: opts?.signal });
+        return 'updated';
+      } catch (updateErr) {
+        if (await applyPushOccConflict(table, pk, updateErr)) return 'occ';
+        if (isGenericWriteForbiddenClientError(updateErr)) {
+          throw new ApiRowUploadSkippedError(
+            table,
+            pk,
+            updateErr instanceof Error ? updateErr.message : '高危表禁止通用写',
+          );
+        }
+        throw updateErr;
+      }
+    };
+    if (status === 'pending_update') {
+      return doUpdate();
+    }
     try {
-      await apiCreateRecord(table, payload, { signal: opts?.signal });
+      await apiCreateRecord(table, send, { signal: opts?.signal });
       return 'created';
     } catch (e) {
+      if (await applyPushOccConflict(table, pk ?? '', e)) return 'occ';
       if (isGenericWriteForbiddenClientError(e)) {
         throw new ApiRowUploadSkippedError(
           table,
@@ -342,20 +427,7 @@ export async function upsertRowToApi(
         );
       }
       if (isDuplicateRecordApiError(e)) {
-        if (!pk) throw e;
-        try {
-          await apiUpdateRecord(table, pk, payload, { signal: opts?.signal });
-          return 'updated';
-        } catch (updateErr) {
-          if (isGenericWriteForbiddenClientError(updateErr)) {
-            throw new ApiRowUploadSkippedError(
-              table,
-              pk,
-              updateErr instanceof Error ? updateErr.message : '高危表禁止通用写',
-            );
-          }
-          throw updateErr;
-        }
+        return doUpdate();
       }
       throw e;
     }

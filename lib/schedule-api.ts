@@ -1,14 +1,9 @@
 import { apiRequest } from '@/lib/api-client';
 import {
-  dequeueFrogSchedulePlacement,
   enqueueFrogScheduleAxis,
   enqueueFrogSchedulePlacementDelete,
   enqueueFrogSchedulePlacementUpsert,
 } from '@/lib/schedule-api-outbox';
-import {
-  markPlacementDeletedRemote,
-  markPlacementSynced,
-} from '@/lib/repositories/schedule/schedule-store';
 import type { ScheduleAxisSettings, SchedulePlacementRow, ScheduleSubjectKind } from '@/lib/schedule/types';
 
 export type FrogScheduleWeekPayload = {
@@ -83,54 +78,32 @@ export async function pushFrogSchedulePlacement(body: {
   });
 }
 
-/** 本地优先：失败入出站队列，不阻塞 UI */
+/** 本地优先：入出站队列，由 SyncManager 单一队列上传（失败保持 outbox） */
 export async function apiSaveFrogScheduleAxis(
   axis: ScheduleAxisSettings,
-  signal?: AbortSignal,
+  _signal?: AbortSignal,
 ): Promise<void> {
-  try {
-    await pushFrogScheduleAxis(axis, signal);
-  } catch (err) {
-    if (__DEV__) console.warn('[frog-schedule] axis push failed → outbox', err);
-    try {
-      await enqueueFrogScheduleAxis(axis);
-    } catch (enqueueErr) {
-      if (__DEV__) console.warn('[frog-schedule] axis outbox enqueue failed', enqueueErr);
-    }
-  }
+  await enqueueFrogScheduleAxis(axis);
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true, quiet: true });
 }
 
-/** 本地优先：失败入出站队列，不阻塞 UI；成功则回写 sync_status */
+/** 本地优先：入出站队列，由 SyncManager 单一队列上传；成功则回写 sync_status */
 export async function apiPostFrogSchedulePlacement(body: {
   action: 'upsert' | 'delete';
   placement?: SchedulePlacementRow;
   id?: string;
   signal?: AbortSignal;
 }): Promise<void> {
-  try {
-    await pushFrogSchedulePlacement(body);
-    if (body.action === 'delete') {
-      const id = body.id ?? body.placement?.id;
-      if (id) {
-        await markPlacementDeletedRemote(id);
-        await dequeueFrogSchedulePlacement(id);
-      }
-    } else if (body.placement?.id) {
-      await markPlacementSynced(body.placement.id);
-      await dequeueFrogSchedulePlacement(body.placement.id);
-    }
-  } catch (err) {
-    if (__DEV__) console.warn('[frog-schedule] placement push failed → outbox', body.action, err);
-    try {
-      if (body.action === 'delete' && body.id) {
-        await enqueueFrogSchedulePlacementDelete(body.id);
-      } else if (body.action === 'upsert' && body.placement) {
-        await enqueueFrogSchedulePlacementUpsert(body.placement);
-      }
-    } catch (enqueueErr) {
-      if (__DEV__) console.warn('[frog-schedule] placement outbox enqueue failed', enqueueErr);
-    }
+  if (body.action === 'delete' && body.id) {
+    await enqueueFrogSchedulePlacementDelete(body.id);
+  } else if (body.action === 'upsert' && body.placement) {
+    await enqueueFrogSchedulePlacementUpsert(body.placement);
+  } else {
+    return;
   }
+  const { requestPush } = await import('@/lib/sync-manager');
+  await requestPush({ awaitSync: true, quiet: true });
 }
 
 export async function apiCopyFrogScheduleWeek(body: {
