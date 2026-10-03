@@ -33,8 +33,9 @@ import {
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import {
-  formatReviewDayFactsInsertText,
+  builtinDailyReviewFieldPatch,
   loadReviewDayFacts,
+  reviewDayFactsIsEmpty,
   type ReviewDayFacts,
 } from '@/lib/review-day-facts';
 import { Spacing } from '@/constants/design-tokens';
@@ -53,8 +54,7 @@ import {
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
-import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
-import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
+import { ensureBuiltinDailyReviewModules, listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -133,6 +133,7 @@ export function DailyReviewGridView({
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        await ensureBuiltinDailyReviewModules();
         if (shouldFetchReviewFromApi()) {
           await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd, offlineFallback: true });
         }
@@ -268,20 +269,18 @@ export function DailyReviewGridView({
 
   const onInsertFacts = useCallback(() => {
     if (!canEdit || !facts) return;
-    const insert = formatReviewDayFactsInsertText(facts);
-    if (!insert) {
-      Alert.alert('暂无内容', '今天还没有可写入的事实。');
+    if (reviewDayFactsIsEmpty(facts)) {
+      Alert.alert('暂无内容', '今天还没有可写入的健康、任务或财务数据。');
       return;
     }
-    const firstCol = dailyTemplate[0]?.columns[0]?.id ?? Object.keys(fields)[0];
-    if (!firstCol) {
-      Alert.alert('无法写入', '请先配置日复盘栏目。');
+    const patch = builtinDailyReviewFieldPatch(facts);
+    const missing = Object.keys(patch).filter(id => !dailyTemplate.some(d => d.columns.some(c => c.id === id)));
+    if (missing.length === 3) {
+      Alert.alert('无法写入', '请先同步日复盘内置栏目（健康 / 任务 / 财务）。');
       return;
     }
-    const existing = reviewContentToPlainDisplay(fields[firstCol] ?? '').trim();
-    const next = existing ? `${existing}\n\n${insert}` : insert;
-    setFields(prev => ({ ...prev, [firstCol]: next }));
-  }, [canEdit, dailyTemplate, facts, fields]);
+    setFields(prev => ({ ...prev, ...patch }));
+  }, [canEdit, dailyTemplate, facts]);
 
   const runAi = useCallback(async () => {
     if (!canEdit) {

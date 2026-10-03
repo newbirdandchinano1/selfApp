@@ -8,10 +8,16 @@ import {
   createReviewDimensionId,
   deleteReviewColumn,
   deleteReviewDimension,
+  ensureBuiltinDailyReviewModules,
   listReviewTemplate,
   updateReviewColumn,
   updateReviewDimension,
 } from '@/lib/repositories/insights/review-template';
+import {
+  BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START,
+  isBuiltinDailyReviewColumnId,
+  isBuiltinDailyReviewDimensionId,
+} from '@/lib/repositories/insights/review-template-defaults';
 import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/repositories/insights/review-template.types';
 import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -98,6 +104,9 @@ export default function ReviewTemplateSettingsScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
+        if (scope === 'daily') {
+          await ensureBuiltinDailyReviewModules();
+        }
         if (shouldFetchReviewFromApi()) {
           await fetchReviewCatalog({ scope, offlineFallback: true });
         }
@@ -150,6 +159,10 @@ export default function ReviewTemplateSettingsScreen() {
   };
 
   const onDeleteDimension = (dim: ReviewDimensionTemplate) => {
+    if (isBuiltinDailyReviewDimensionId(dim.id)) {
+      Alert.alert('无法删除', '健康、任务、财务为内置分类，不能删除。');
+      return;
+    }
     Alert.alert('删除维度', `确定删除「${dim.title}」及其下全部栏目？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -171,6 +184,10 @@ export default function ReviewTemplateSettingsScreen() {
   };
 
   const onDeleteColumn = (colTitle: string, columnId: string) => {
+    if (isBuiltinDailyReviewColumnId(columnId)) {
+      Alert.alert('无法删除', '内置栏目不能删除。');
+      return;
+    }
     Alert.alert('删除栏目', `确定删除「${colTitle}」？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -203,12 +220,13 @@ export default function ReviewTemplateSettingsScreen() {
         if (editor.dimensionId) {
           await updateReviewDimension(editor.dimensionId, { title });
         } else {
-          const maxSort = template.reduce((m, d) => Math.max(m, d.sortOrder), 0);
+          const floor = scope === 'daily' ? BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START : 0;
+          const maxSort = template.reduce((m, d) => Math.max(m, d.sortOrder), floor);
           await createReviewDimension({
             id: createReviewDimensionId(),
             scope,
             title,
-            sort_order: maxSort + 10,
+            sort_order: Math.max(maxSort, floor) + 10,
           });
         }
       } else if (editor.dimensionId) {
@@ -304,11 +322,14 @@ export default function ReviewTemplateSettingsScreen() {
               { paddingBottom: Spacing['6xl'] + insets.bottom },
             ]}>
             <Text style={[styles.hint, { color: colors.textMuted }]}>
-              管理{scopeLabel}的维度与栏目。修改后填写页会即时生效；已保存的历史内容仍按栏目 ID 对应，删除栏目后其旧内容不再显示。
+              {scope === 'daily'
+                ? '日复盘前三项为内置分类（健康 / 任务 / 财务），其后可添加自定义模块。内置项不可删除。'
+                : `管理${scopeLabel}的维度与栏目。修改后填写页会即时生效；已保存的历史内容仍按栏目 ID 对应，删除栏目后其旧内容不再显示。`}
             </Text>
 
             {template.map((dim, dimIdx) => {
               const open = expandedDimId === dim.id;
+              const builtinDim = isBuiltinDailyReviewDimensionId(dim.id);
               return (
                 <AppCard key={dim.id} padded={false} style={[shadows.card, styles.dimCard]}>
                   <Pressable
@@ -317,6 +338,7 @@ export default function ReviewTemplateSettingsScreen() {
                     <Text style={[styles.dimIndex, { color: colors.textMuted }]}>{dimIdx + 1}</Text>
                     <Text style={[styles.dimTitle, { color: colors.text }]} numberOfLines={2}>
                       {dim.title}
+                      {builtinDim ? ' · 内置' : ''}
                     </Text>
                     <Text style={[styles.colCount, { color: colors.textMuted }]}>{dim.columns.length} 个栏目</Text>
                     <MaterialIcons name={open ? 'expand-less' : 'expand-more'} size={24} color={colors.primary} />
@@ -324,18 +346,22 @@ export default function ReviewTemplateSettingsScreen() {
                   {open ? (
                     <View style={[styles.dimBody, { borderTopColor: colors.outline }]}>
                       <View style={styles.dimActions}>
-                        <Pressable onPress={() => openEditDimension(dim)} style={styles.iconBtn}>
-                          <MaterialIcons name="edit" size={20} color={colors.primary} />
-                          <Text style={[styles.iconBtnText, { color: colors.primary }]}>改维度</Text>
-                        </Pressable>
+                        {builtinDim ? null : (
+                          <Pressable onPress={() => openEditDimension(dim)} style={styles.iconBtn}>
+                            <MaterialIcons name="edit" size={20} color={colors.primary} />
+                            <Text style={[styles.iconBtnText, { color: colors.primary }]}>改维度</Text>
+                          </Pressable>
+                        )}
                         <Pressable onPress={() => openAddColumn(dim.id)} style={styles.iconBtn}>
                           <MaterialIcons name="add" size={20} color={colors.primary} />
                           <Text style={[styles.iconBtnText, { color: colors.primary }]}>加栏目</Text>
                         </Pressable>
-                        <Pressable onPress={() => onDeleteDimension(dim)} style={styles.iconBtn}>
-                          <MaterialIcons name="delete-outline" size={20} color={colors.danger} />
-                          <Text style={[styles.iconBtnText, { color: colors.danger }]}>删维度</Text>
-                        </Pressable>
+                        {builtinDim ? null : (
+                          <Pressable onPress={() => onDeleteDimension(dim)} style={styles.iconBtn}>
+                            <MaterialIcons name="delete-outline" size={20} color={colors.danger} />
+                            <Text style={[styles.iconBtnText, { color: colors.danger }]}>删维度</Text>
+                          </Pressable>
+                        )}
                       </View>
                       {dim.columns.length === 0 ? (
                         <Text style={[styles.emptyCol, { color: colors.textMuted }]}>暂无栏目，请添加</Text>
@@ -350,12 +376,16 @@ export default function ReviewTemplateSettingsScreen() {
                                 </Text>
                               ) : null}
                             </View>
-                            <Pressable onPress={() => openEditColumn(dim.id, col)} hitSlop={8}>
-                              <MaterialIcons name="edit" size={20} color={colors.primary} />
-                            </Pressable>
-                            <Pressable onPress={() => onDeleteColumn(col.title, col.id)} hitSlop={8} style={{ marginLeft: 8 }}>
-                              <MaterialIcons name="delete-outline" size={20} color={colors.danger} />
-                            </Pressable>
+                            {isBuiltinDailyReviewColumnId(col.id) ? null : (
+                              <>
+                                <Pressable onPress={() => openEditColumn(dim.id, col)} hitSlop={8}>
+                                  <MaterialIcons name="edit" size={20} color={colors.primary} />
+                                </Pressable>
+                                <Pressable onPress={() => onDeleteColumn(col.title, col.id)} hitSlop={8} style={{ marginLeft: 8 }}>
+                                  <MaterialIcons name="delete-outline" size={20} color={colors.danger} />
+                                </Pressable>
+                              </>
+                            )}
                           </View>
                         ))
                       )}

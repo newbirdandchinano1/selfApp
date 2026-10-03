@@ -5,7 +5,7 @@ import {
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
-import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import { ensureBuiltinDailyReviewModules, listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
@@ -140,6 +140,7 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
     });
   }
 
+  await ensureBuiltinDailyReviewModules();
   const dailyTpl = await listReviewTemplate('daily');
   const dColIds = collectColumnIds(dailyTpl);
 

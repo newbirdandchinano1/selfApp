@@ -2,7 +2,13 @@ import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
-import { REVIEW_TEMPLATE_DEFAULTS } from './review-template-defaults';
+import {
+  BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START,
+  isBuiltinDailyReviewColumnId,
+  isBuiltinDailyReviewDimensionId,
+  pinDailyReviewDimensions,
+  REVIEW_TEMPLATE_DEFAULTS,
+} from './review-template-defaults';
 import type {
   CreateReviewColumnInput,
   CreateReviewDimensionInput,
@@ -65,7 +71,9 @@ export async function countReviewDimensions(scope: ReviewTemplateScope): Promise
 }
 
 export async function listReviewDimensions(scope: ReviewTemplateScope): Promise<ReviewDimensionRow[]> {
-  return sortBySortOrderAsc(await readReviewDimensionsLocalVisible(scope));
+  const rows = sortBySortOrderAsc(await readReviewDimensionsLocalVisible(scope));
+  if (scope !== 'daily') return rows;
+  return pinDailyReviewDimensions(rows, d => d.sort_order ?? 0);
 }
 
 export async function listReviewColumnsForDimension(dimensionId: string): Promise<ReviewColumnRow[]> {
@@ -145,6 +153,9 @@ export async function updateReviewDimension(id: string, input: UpdateReviewDimen
 }
 
 export async function deleteReviewDimension(id: string): Promise<void> {
+  if (isBuiltinDailyReviewDimensionId(id)) {
+    throw new Error('内置维度不可删除');
+  }
   await ensureLocalRowForWrite('review_dimensions', id);
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
@@ -207,6 +218,9 @@ export async function updateReviewColumn(id: string, input: UpdateReviewColumnIn
 }
 
 export async function deleteReviewColumn(id: string): Promise<void> {
+  if (isBuiltinDailyReviewColumnId(id)) {
+    throw new Error('内置栏目不可删除');
+  }
   await ensureLocalRowForWrite('review_columns', id);
   const db = await getDatabase();
   if (!db) throw new Error('database not available');
@@ -254,15 +268,25 @@ async function ensureDefaultReviewDimension(
     });
     return;
   }
+  const title = dim.title.trim();
+  const sortOrder = dim.sort_order ?? 1000;
+  const needsRestore = existing.sync_status === 'pending_delete';
+  const changed =
+    existing.scope !== scope || existing.title !== title || existing.sort_order !== sortOrder;
+  if (!needsRestore && !changed) return;
   await db.runAsync(
     `UPDATE review_dimensions SET
        scope = ?,
        title = ?,
        sort_order = ?,
        updated_at = datetime('now'),
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       sync_status = CASE
+         WHEN sync_status = 'pending_delete' THEN 'pending_update'
+         WHEN sync_status = 'synced' THEN 'pending_update'
+         ELSE sync_status
+       END
      WHERE id = ?`,
-    [scope, dim.title.trim(), dim.sort_order ?? 1000, dim.id],
+    [scope, title, sortOrder, dim.id],
   );
 }
 
@@ -283,6 +307,16 @@ async function ensureDefaultReviewColumn(
     });
     return;
   }
+  const title = col.title.trim();
+  const placeholder = col.placeholder ?? '';
+  const sortOrder = col.sort_order ?? 1000;
+  const needsRestore = existing.sync_status === 'pending_delete';
+  const changed =
+    existing.dimension_id !== dim.id ||
+    existing.title !== title ||
+    (existing.placeholder ?? '') !== placeholder ||
+    existing.sort_order !== sortOrder;
+  if (!needsRestore && !changed) return;
   await db.runAsync(
     `UPDATE review_columns SET
        dimension_id = ?,
@@ -290,9 +324,13 @@ async function ensureDefaultReviewColumn(
        placeholder = ?,
        sort_order = ?,
        updated_at = datetime('now'),
-       sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       sync_status = CASE
+         WHEN sync_status = 'pending_delete' THEN 'pending_update'
+         WHEN sync_status = 'synced' THEN 'pending_update'
+         ELSE sync_status
+       END
      WHERE id = ?`,
-    [dim.id, col.title.trim(), col.placeholder ?? '', col.sort_order ?? 1000, col.id],
+    [dim.id, title, placeholder, sortOrder, col.id],
   );
 }
 
@@ -343,4 +381,31 @@ export async function migrateDailyTemplateToMinimalIfNeeded(): Promise<void> {
   }
 
   await setAppSetting(AppSettingKey.reviewMinimalDailyTemplateV1, '1');
+}
+
+/**
+ * 确保日复盘始终有健康 / 任务 / 财务三个内置模块；自定义维度排在其后。
+ * 已有「今天做了啥」等自定义维度会保留，仅调整排序。
+ */
+export async function ensureBuiltinDailyReviewModules(): Promise<void> {
+  const defs = REVIEW_TEMPLATE_DEFAULTS.daily;
+  for (const dim of defs) {
+    await ensureDefaultReviewDimension('daily', dim);
+    for (const col of dim.columns) {
+      await ensureDefaultReviewColumn(dim, col);
+    }
+  }
+
+  const dims = await listReviewDimensions('daily');
+  let nextSort = BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START;
+  for (const dim of dims) {
+    if (isBuiltinDailyReviewDimensionId(dim.id)) continue;
+    if (dim.sort_order < BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START) {
+      await updateReviewDimension(dim.id, { sort_order: nextSort });
+      nextSort += 10;
+    }
+  }
+
+  const { AppSettingKey, setAppSetting } = await import('@/lib/app-settings-store');
+  await setAppSetting(AppSettingKey.reviewBuiltinDailyModulesV1, '1');
 }

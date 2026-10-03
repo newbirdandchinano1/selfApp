@@ -1,31 +1,97 @@
 import type { ReviewTemplateScope } from './review-template.types';
 
+/** 日复盘内置模块（健康 / 任务 / 财务），稳定 ID，供一键写入与跨端同步 */
+export const BUILTIN_DAILY_REVIEW_DIMENSION_IDS = {
+  health: 'rd_daily_health',
+  tasks: 'rd_daily_tasks',
+  finance: 'rd_daily_finance',
+} as const;
+
+export const BUILTIN_DAILY_REVIEW_COLUMN_IDS = {
+  health: 'rc_daily_health',
+  tasks: 'rc_daily_tasks',
+  finance: 'rc_daily_finance',
+} as const;
+
+export const BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START = 100;
+
+const BUILTIN_DAILY_DIMENSION_ID_SET = new Set<string>(Object.values(BUILTIN_DAILY_REVIEW_DIMENSION_IDS));
+const BUILTIN_DAILY_COLUMN_ID_SET = new Set<string>(Object.values(BUILTIN_DAILY_REVIEW_COLUMN_IDS));
+
+export function isBuiltinDailyReviewDimensionId(id: string | null | undefined): boolean {
+  return !!id && BUILTIN_DAILY_DIMENSION_ID_SET.has(id);
+}
+
+export function isBuiltinDailyReviewColumnId(id: string | null | undefined): boolean {
+  return !!id && BUILTIN_DAILY_COLUMN_ID_SET.has(id);
+}
+
+/** 置顶顺序：健康 → 任务 → 财务，其后才是自定义 */
+export const BUILTIN_DAILY_REVIEW_PIN_ORDER = [
+  BUILTIN_DAILY_REVIEW_DIMENSION_IDS.health,
+  BUILTIN_DAILY_REVIEW_DIMENSION_IDS.tasks,
+  BUILTIN_DAILY_REVIEW_DIMENSION_IDS.finance,
+] as const;
+
+export function builtinDailyReviewPinIndex(id: string): number {
+  return (BUILTIN_DAILY_REVIEW_PIN_ORDER as readonly string[]).indexOf(id);
+}
+
+export function pinDailyReviewDimensions<T extends { id: string }>(
+  dims: T[],
+  sortKey: (d: T) => number,
+): T[] {
+  return [...dims].sort((a, b) => {
+    const ai = builtinDailyReviewPinIndex(a.id);
+    const bi = builtinDailyReviewPinIndex(b.id);
+    const aPin = ai >= 0;
+    const bPin = bi >= 0;
+    if (aPin && bPin) return ai - bi;
+    if (aPin) return -1;
+    if (bPin) return 1;
+    return sortKey(a) - sortKey(b);
+  });
+}
+
 /** 内置维度/栏目稳定 ID，便于从旧版固定字段迁移 */
 export const REVIEW_TEMPLATE_DEFAULTS = {
-  /** 极简日复盘：默认两问，降低冷启动；更多栏目可在模板设置中自行添加 */
+  /** 日复盘：健康 / 任务 / 财务内置模块在前，其后可自行添加自定义维度 */
   daily: [
     {
-      id: 'rd_daily_what',
-      title: '今天做了啥',
+      id: BUILTIN_DAILY_REVIEW_DIMENSION_IDS.health,
+      title: '健康',
       sort_order: 10,
       columns: [
         {
-          id: 'rc_daily_what',
-          title: '今日记录',
-          placeholder: '今天发生了什么？完成了哪些事？',
+          id: BUILTIN_DAILY_REVIEW_COLUMN_IDS.health,
+          title: '今日健康',
+          placeholder: '可一键写入今日摄入、体重等健康数据，也可自己补充。',
           sort_order: 10,
         },
       ],
     },
     {
-      id: 'rd_daily_progress',
-      title: '有啥进步',
+      id: BUILTIN_DAILY_REVIEW_DIMENSION_IDS.tasks,
+      title: '任务',
       sort_order: 20,
       columns: [
         {
-          id: 'rc_daily_progress',
-          title: '今日进步',
-          placeholder: '比昨天好一点的地方？学到了什么？',
+          id: BUILTIN_DAILY_REVIEW_COLUMN_IDS.tasks,
+          title: '今日任务',
+          placeholder: '可一键写入今日青蛙、待办与习惯打卡，也可自己补充。',
+          sort_order: 10,
+        },
+      ],
+    },
+    {
+      id: BUILTIN_DAILY_REVIEW_DIMENSION_IDS.finance,
+      title: '财务',
+      sort_order: 30,
+      columns: [
+        {
+          id: BUILTIN_DAILY_REVIEW_COLUMN_IDS.finance,
+          title: '今日财务',
+          placeholder: '可一键写入今日收支流水，也可自己补充。',
           sort_order: 10,
         },
       ],
