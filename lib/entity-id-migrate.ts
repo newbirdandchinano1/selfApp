@@ -114,8 +114,18 @@ export async function applyEntityIdRemapToLocalDatabase(remap: Map<string, strin
   beginCloudSqliteDirtyIgnoreBatch();
   try {
     await db.execAsync('PRAGMA foreign_keys = OFF');
+    await db.execAsync(`
+      DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task;
+      DROP TRIGGER IF EXISTS trg_project_categories_au_to_task;
+    `);
     await applyRemapToSqliteDb(db, remap);
   } finally {
+    try {
+      const { ensureProjectToTaskCategoryMirrorTriggers } = await import('@/lib/database');
+      await ensureProjectToTaskCategoryMirrorTriggers(db);
+    } catch {
+      /* ignore */
+    }
     try {
       await db.execAsync('PRAGMA foreign_keys = ON');
     } catch {
@@ -136,10 +146,36 @@ async function applyRemapToSqliteDb(db: SQLite.SQLiteDatabase, remap: Map<string
     for (const col of cols) {
       if (col === 'id' || col.endsWith('_id') || col.endsWith('Id')) {
         for (const [oldId, newId] of remap) {
-          await db.runAsync(
-            `UPDATE ${safe} SET ${quoteIdent(col)} = ? WHERE ${quoteIdent(col)} = ?`,
-            [newId, oldId],
-          );
+          if (!oldId || oldId === newId) continue;
+          if (col === 'id') {
+            const source = await db.getFirstAsync<{ id: string }>(
+              `SELECT id FROM ${safe} WHERE ${quoteIdent(col)} = ? LIMIT 1`,
+              [oldId],
+            );
+            if (!source) continue;
+            const target = await db.getFirstAsync<{ id: string }>(
+              `SELECT id FROM ${safe} WHERE ${quoteIdent(col)} = ? LIMIT 1`,
+              [newId],
+            );
+            if (target) {
+              // 镜像触发器可能已写入 newId（如 project_categories → task_categories），再 UPDATE 主键会 UNIQUE 失败
+              await db.runAsync(`DELETE FROM ${safe} WHERE ${quoteIdent(col)} = ?`, [oldId]);
+              continue;
+            }
+          }
+          try {
+            await db.runAsync(
+              `UPDATE ${safe} SET ${quoteIdent(col)} = ? WHERE ${quoteIdent(col)} = ?`,
+              [newId, oldId],
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (col === 'id' && /UNIQUE constraint failed/i.test(msg)) {
+              await db.runAsync(`DELETE FROM ${safe} WHERE ${quoteIdent(col)} = ?`, [oldId]);
+              continue;
+            }
+            throw e;
+          }
         }
       }
     }

@@ -25,19 +25,27 @@ export async function ensureTaskCategoryMirrorLocally(categoryId: string): Promi
   if (!db) return false;
 
   const now = new Date().toISOString();
+  const name =
+    typeof projectCat.name === 'string' && projectCat.name.trim() ? projectCat.name : '未命名分类';
+  const sortOrder = typeof projectCat.sort_order === 'number' ? projectCat.sort_order : 1000;
+  const createdAt = typeof projectCat.created_at === 'string' ? projectCat.created_at : now;
+  const updatedAt = typeof projectCat.updated_at === 'string' ? projectCat.updated_at : now;
+  const syncStatus = typeof projectCat.sync_status === 'string' ? projectCat.sync_status : 'synced';
+  const extraData = projectCat.extra_data ?? null;
+
   await db.runAsync(
-    `INSERT OR REPLACE INTO task_categories (
+    `UPDATE task_categories
+        SET name = ?, sort_order = ?, created_at = ?, updated_at = ?, sync_status = ?, extra_data = ?
+      WHERE id = ?`,
+    [name, sortOrder, createdAt, updatedAt, syncStatus, extraData, cid],
+  );
+  await db.runAsync(
+    `INSERT INTO task_categories (
       id, name, sort_order, created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      cid,
-      typeof projectCat.name === 'string' && projectCat.name.trim() ? projectCat.name : '未命名分类',
-      typeof projectCat.sort_order === 'number' ? projectCat.sort_order : 1000,
-      typeof projectCat.created_at === 'string' ? projectCat.created_at : now,
-      typeof projectCat.updated_at === 'string' ? projectCat.updated_at : now,
-      typeof projectCat.sync_status === 'string' ? projectCat.sync_status : 'synced',
-      projectCat.extra_data ?? null,
-    ],
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM task_categories WHERE id = ?)`,
+    [cid, name, sortOrder, createdAt, updatedAt, syncStatus, extraData, cid],
   );
 
   return (await readLocalRowForWrite('task_categories', cid)) != null;

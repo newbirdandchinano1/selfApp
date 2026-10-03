@@ -27,18 +27,13 @@ export function parseExpectedRev(raw: unknown): number {
 /** 上传 body：带 mutation_id + expected_rev；去掉仅本地列 */
 export function attachPushOccFields(row: Record<string, unknown>): Record<string, unknown> {
   const out = { ...row };
-  const mutationId = parseMutationId(out.mutation_id ?? out.mutationId);
+  const mutationId = parseMutationId(out.mutation_id ?? out.mutationId) ?? newMutationId();
   const expectedRev = parseExpectedRev(out.expected_rev ?? out.expectedRev ?? out.server_rev);
   delete out.last_pushed_mutation_id;
   delete out.server_rev;
   delete out.serverRev;
-  if (mutationId) {
-    out.mutation_id = mutationId;
-    out.mutationId = mutationId;
-  } else {
-    delete out.mutation_id;
-    delete out.mutationId;
-  }
+  out.mutation_id = mutationId;
+  out.mutationId = mutationId;
   out.expected_rev = expectedRev;
   out.expectedRev = expectedRev;
   return out;

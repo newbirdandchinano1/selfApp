@@ -80,7 +80,22 @@ function foldPage(events: SyncChangeEvent[]): SyncChangeEvent[] {
     if (!isApiReadableTable(table)) continue;
     m.set(`${table}::${pk}`, ev);
   }
-  return [...m.values()].sort((a, b) => a.id - b.id);
+  // ????????task_execution_events ???? tasks/projects?
+  // ???????????? FOREIGN KEY constraint failed
+  const PARENT_FIRST = new Map<string, number>([
+    ['project_categories', 0],
+    ['task_categories', 1],
+    ['projects', 2],
+    ['tasks', 3],
+    ['habits', 4],
+    ['tags', 5],
+  ]);
+  return [...m.values()].sort((a, b) => {
+    const oa = PARENT_FIRST.get(a.table) ?? 10;
+    const ob = PARENT_FIRST.get(b.table) ?? 10;
+    if (oa !== ob) return oa - ob;
+    return a.id - b.id;
+  });
 }
 
 export async function pullAndApplySyncChanges(opts?: { signal?: AbortSignal }): Promise<SyncPullResult> {

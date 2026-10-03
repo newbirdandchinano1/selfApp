@@ -32,6 +32,68 @@ async function ensureColumn(db: SQLite.SQLiteDatabase, table: string, column: st
 }
 
 /**
+ * 项目分类镜像到 task_categories（tasks.category_id 外键）。
+ * 触发器内禁止 INSERT OR REPLACE / ON CONFLICT UPSERT：Expo SQLite 在嵌套语句里仍会报
+ * UNIQUE constraint failed: task_categories.id。改为先 UPDATE，没有行再 INSERT。
+ */
+export async function ensureProjectToTaskCategoryMirrorTriggers(
+  db: SQLite.SQLiteDatabase,
+): Promise<void> {
+  await db.execAsync(`
+    DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task;
+    DROP TRIGGER IF EXISTS trg_project_categories_au_to_task;
+
+    CREATE TRIGGER trg_project_categories_ai_to_task
+    AFTER INSERT ON project_categories
+    BEGIN
+      UPDATE task_categories
+        SET name = NEW.name,
+            sort_order = NEW.sort_order,
+            created_at = NEW.created_at,
+            updated_at = NEW.updated_at,
+            sync_status = NEW.sync_status,
+            extra_data = NEW.extra_data
+        WHERE id = NEW.id;
+      INSERT INTO task_categories (
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
+      )
+      SELECT NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
+      WHERE NOT EXISTS (SELECT 1 FROM task_categories WHERE id = NEW.id);
+    END;
+
+    CREATE TRIGGER trg_project_categories_au_to_task
+    AFTER UPDATE ON project_categories
+    BEGIN
+      UPDATE task_categories
+        SET name = NEW.name,
+            sort_order = NEW.sort_order,
+            created_at = NEW.created_at,
+            updated_at = NEW.updated_at,
+            sync_status = NEW.sync_status,
+            extra_data = NEW.extra_data
+        WHERE id = NEW.id;
+      UPDATE task_categories
+        SET id = NEW.id,
+            name = NEW.name,
+            sort_order = NEW.sort_order,
+            created_at = NEW.created_at,
+            updated_at = NEW.updated_at,
+            sync_status = NEW.sync_status,
+            extra_data = NEW.extra_data
+        WHERE id = OLD.id
+          AND OLD.id != NEW.id
+          AND NOT EXISTS (SELECT 1 FROM task_categories WHERE id = NEW.id);
+      DELETE FROM task_categories WHERE id = OLD.id AND OLD.id != NEW.id;
+      INSERT INTO task_categories (
+        id, name, sort_order, created_at, updated_at, sync_status, extra_data
+      )
+      SELECT NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
+      WHERE NOT EXISTS (SELECT 1 FROM task_categories WHERE id = NEW.id);
+    END;
+  `);
+}
+
+/**
  * 云恢复或历史数据漂移后，清理无法满足外键的孤儿行/字段。
  * 调用方应已 `PRAGMA foreign_keys = OFF`。
  */
@@ -619,29 +681,7 @@ async function migrateDropDeletedAtAndVersionColumns(db: SQLite.SQLiteDatabase):
     }
 
     await db.execAsync('DROP INDEX IF EXISTS idx_habit_check_ins_deleted_at');
-    await db.execAsync('DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task');
-    await db.execAsync('DROP TRIGGER IF EXISTS trg_project_categories_au_to_task');
-    await db.execAsync(`
-      CREATE TRIGGER IF NOT EXISTS trg_project_categories_ai_to_task
-      AFTER INSERT ON project_categories
-      BEGIN
-        INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, sync_status, extra_data
-        ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
-        );
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS trg_project_categories_au_to_task
-      AFTER UPDATE ON project_categories
-      BEGIN
-        INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, sync_status, extra_data
-        ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
-        );
-      END;
-    `);
+    await ensureProjectToTaskCategoryMirrorTriggers(db);
 
     await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
       'drop_deleted_at_version_v31',
@@ -1375,35 +1415,30 @@ export async function initDatabase() {
   // to satisfy the existing tasks(category_id) foreign key on older DBs.
   try {
     await db.execAsync(`
-      INSERT OR REPLACE INTO task_categories (
+      INSERT INTO task_categories (
         id, name, sort_order, created_at, updated_at, sync_status, extra_data
       )
       SELECT
         id, name, sort_order, created_at, updated_at, sync_status, extra_data
-      FROM project_categories;
-
-      CREATE TRIGGER IF NOT EXISTS trg_project_categories_ai_to_task
-      AFTER INSERT ON project_categories
-      BEGIN
-        INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, sync_status, extra_data
-        ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
-        );
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS trg_project_categories_au_to_task
-      AFTER UPDATE ON project_categories
-      BEGIN
-        INSERT OR REPLACE INTO task_categories (
-          id, name, sort_order, created_at, updated_at, sync_status, extra_data
-        ) VALUES (
-          NEW.id, NEW.name, NEW.sort_order, NEW.created_at, NEW.updated_at, NEW.sync_status, NEW.extra_data
-        );
-      END;
+      FROM project_categories
+      WHERE NOT EXISTS (SELECT 1 FROM task_categories WHERE task_categories.id = project_categories.id);
+      UPDATE task_categories
+         SET name = (SELECT name FROM project_categories WHERE project_categories.id = task_categories.id),
+             sort_order = (SELECT sort_order FROM project_categories WHERE project_categories.id = task_categories.id),
+             created_at = (SELECT created_at FROM project_categories WHERE project_categories.id = task_categories.id),
+             updated_at = (SELECT updated_at FROM project_categories WHERE project_categories.id = task_categories.id),
+             sync_status = (SELECT sync_status FROM project_categories WHERE project_categories.id = task_categories.id),
+             extra_data = (SELECT extra_data FROM project_categories WHERE project_categories.id = task_categories.id)
+       WHERE id IN (SELECT id FROM project_categories);
     `);
   } catch (e) {
     console.warn('project_categories → task_categories 镜像同步失败（云恢复后偶发外键冲突时可忽略）', e);
+  }
+  // 必须在吞掉镜像失败之后仍重建触发器，否则设备上会一直留着会 UNIQUE 崩的旧触发器
+  try {
+    await ensureProjectToTaskCategoryMirrorTriggers(db);
+  } catch (e) {
+    console.warn('重建 project_categories → task_categories 触发器失败', e);
   }
 
   // Create indexes after ensureColumn migrations (old DBs might miss columns)

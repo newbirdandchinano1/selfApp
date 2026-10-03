@@ -95,7 +95,7 @@ async function applySnapshotTable(table: string, rows: Record<string, unknown>[]
     await deleteSyncedAbsent(table, new Set());
     return;
   }
-  const db = getDatabase();
+  const db = await getDatabase();
   let pkCol = 'id';
   try {
     const info = await db.getAllAsync<{ name: string; pk: number }>(`PRAGMA table_info(\`${table}\`)`);
@@ -131,7 +131,7 @@ async function applySnapshotTable(table: string, rows: Record<string, unknown>[]
 }
 
 async function deleteSyncedAbsent(table: string, present: Set<string>, pkCol = 'id'): Promise<void> {
-  const db = getDatabase();
+  const db = await getDatabase();
   try {
     const locals = await db.getAllAsync<{ pk: string }>(
       `SELECT \`${pkCol}\` AS pk FROM \`${table}\` WHERE sync_status = 'synced'`,

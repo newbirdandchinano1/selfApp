@@ -396,7 +396,11 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
 
   // 关键路径若碰上正在推送，不可直接 return（否则 awaitSync 会误判成功且未推打卡）
   if (apiPushInFlight) {
-    if (!mustRun) return;
+    if (!mustRun) {
+      // 后台 debounce 推送撞上 inflight 时必须再排一次，否则新增行会卡在 pending_create
+      scheduleUnifiedPush();
+      return;
+    }
     const maxWaitMs = 30000;
     const start = Date.now();
     while (apiPushInFlight) {
@@ -445,11 +449,16 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
       }
       return pushApiDirtyTablesIfNeeded(opts);
     }
+    scheduleUnifiedPush();
     return;
   }
 
   apiPushInFlight = true;
   try {
+    // Fast Refresh 不会重跑 initDatabase；推送前必须换掉会 UNIQUE 崩的旧镜像触发器
+    const { ensureProjectToTaskCategoryMirrorTriggers } = await import('@/lib/database');
+    await ensureProjectToTaskCategoryMirrorTriggers(db);
+
     const { insertOrder, rowsByTable } = await collectPendingDataForApiPush(dirtyList);
     // onlyTables 时禁止把未请求的脏表（如 points_wallet）捎带进同一次推送
     const allowed =

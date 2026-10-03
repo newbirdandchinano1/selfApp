@@ -128,7 +128,8 @@ async function stampPendingMutationId(
   params: unknown[],
   result: unknown,
 ): Promise<void> {
-  if (ignoreMutationDepth > 0) return;
+  // 忽略脏标只跳过 requestPush，不能跳过 mutation_id：否则会沿用他端/上次写入的 id，
+  // 桌面端会把 APP 改名当成「本机回声」丢掉。
   if (/\blast_pushed_mutation_id\b/i.test(source)) return;
   if (/\bmutation_id\b/i.test(source)) return;
   if (

@@ -38,7 +38,7 @@ async function resolvePkCol(db: any, table: string): Promise<string> {
 }
 
 export async function readLocalRowState(table: string, pk: string): Promise<LocalRowState> {
-  const db = getDatabase();
+  const db = await getDatabase();
   const pkCol = await resolvePkCol(db, table);
   try {
     const cols = await getCols(db, table);
@@ -67,7 +67,7 @@ export async function readLocalRowState(table: string, pk: string): Promise<Loca
 }
 
 export async function applyOneEvent(table: string, pk: string, event: PullEvent, decision: ApplyDecision): Promise<void> {
-  const db = getDatabase();
+  const db = await getDatabase();
   const pkCol = await resolvePkCol(db, table);
   const cols = await getCols(db, table);
   const hasRev = cols.has('server_rev');
@@ -110,8 +110,31 @@ export async function applyOneEvent(table: string, pk: string, event: PullEvent,
 }
 
 async function upsertRowFromServer(db: any, table: string, pkCol: string, cols: Set<string>, row: Record<string, unknown>, rev: number): Promise<void> {
-  const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id');
+  // 服务端新增列（如 tasks.frog_assigned_on）老端本地表尚无该列时必须过滤，否则 prepareAsync 报 no such column
+  const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id' && cols.has(k));
   if (!keys.includes(pkCol)) return;
+  // 父行尚未落库时将可空外键置空（task_execution_events.task_id 等为 SET NULL 语义），避免 FOREIGN KEY constraint failed；
+  // 父行到达后的后续事件会把真实引用带回来
+  const FK_PARENTS: Array<[string, string]> = [
+    ['task_id', 'tasks'],
+    ['project_id', 'projects'],
+    ['habit_id', 'habits'],
+    ['tag_id', 'tags'],
+    ['account_id', 'finance_accounts'],
+    ['parent_task_id', 'tasks'],
+  ];
+  for (const [fkCol, parentTable] of FK_PARENTS) {
+    if (!keys.includes(fkCol)) continue;
+    const fkVal = (row as any)[fkCol];
+    if (fkVal == null || fkVal === '') continue;
+    try {
+      const parentCols = await getCols(db, parentTable);
+      if (parentCols.size === 0) continue;
+      const parentPk = await resolvePkCol(db, parentTable);
+      const hit = await db.getFirstAsync(`SELECT \`${parentPk}\` FROM \`${parentTable}\` WHERE \`${parentPk}\` = ? LIMIT 1`, [fkVal]);
+      if (!hit) (row as any)[fkCol] = null;
+    } catch {}
+  }
   const placeholders = keys.map(() => '?').join(',');
   const vals = keys.map((k) => (row as any)[k] ?? null);
   const updates = keys.filter((k) => k !== pkCol).map((k) => `\`${k}\`=excluded.\`${k}\``).join(',');
