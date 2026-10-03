@@ -245,3 +245,11 @@ export async function saveDayBoundaryPages(pages: readonly DayBoundaryPageId[]):
   await setAppSetting(AppSettingKey.dayBoundaryPages, next);
   notifyDayBoundaryListeners();
 }
+
+/** 远端同步灌入 app_settings 后：丢弃内存缓存并从本地 store 重读 */
+export async function reloadDayBoundaryFromStore(): Promise<void> {
+  cachedConfiguredBoundary = null;
+  cachedPages = null;
+  await Promise.all([loadConfiguredDayBoundary(), loadDayBoundaryPages()]);
+  notifyDayBoundaryListeners();
+}

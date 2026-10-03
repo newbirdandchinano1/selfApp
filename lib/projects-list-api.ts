@@ -41,6 +41,8 @@ export type ProjectsListData = {
 export type ProjectsListFetchOpts = Omit<ProjectsListQueryParams, 'page' | 'limit'> & {
   forceRefresh?: boolean;
   forceLocal?: boolean;
+  /** 多端 dirty / 下拉：强制打网，忽略 wrapLoad localOnly */
+  forceApi?: boolean;
   offlineFallback?: boolean;
   /** 与任务页「隐藏已完成任务」开关联动；优先于 includeCompleted / includeCancelled */
   hideCompletedProjectTasks?: boolean;

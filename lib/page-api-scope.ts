@@ -20,7 +20,7 @@ export type TabPageKey = (typeof TAB_PAGE_KEYS)[keyof typeof TAB_PAGE_KEYS];
  * 任务 / 财务 / 复盘 / 我的 REST 走专用 page API，禁止由本映射触发通用 List。
  */
 export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
-  app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
+  app_settings: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks, TAB_PAGE_KEYS.finance, TAB_PAGE_KEYS.review],
   health_records: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],
   health_daily_targets: [TAB_PAGE_KEYS.health],
   users: [TAB_PAGE_KEYS.health, TAB_PAGE_KEYS.profile],

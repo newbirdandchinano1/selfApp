@@ -39,9 +39,11 @@ import {
   hasLocalScheduleAxisSetting,
   insertPlacement,
   listOrphanedPlacements,
+  listPendingSchedulePlacements,
   listPlacementsForEditableWeeks,
   listPlacementsForWeek,
   listSubjectPlacementsOnDay,
+  markPlacementDeletedRemote,
   saveScheduleAxisSettingsLocal,
   softDeletePlacement,
   softDeletePlacementsForWeek,
@@ -50,7 +52,11 @@ import {
   upsertWeekAxisSnapshot,
 } from '@/lib/repositories/schedule/schedule-store';
 import { apiGetFrogScheduleWeek, apiPostFrogSchedulePlacement, apiSaveFrogScheduleAxis } from '@/lib/schedule-api';
-import { flushFrogScheduleApiOutbox } from '@/lib/schedule-api-outbox';
+import {
+  enqueueFrogSchedulePlacementDelete,
+  enqueueFrogSchedulePlacementUpsert,
+  flushFrogScheduleApiOutbox,
+} from '@/lib/schedule-api-outbox';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { clampSlotHours } from '@/lib/schedule/axis';
 
@@ -104,21 +110,10 @@ export async function loadWeekSchedule(
     fromSnapshot,
   };
 
-  // 后台刷出站队列；空周则尝试从远端灌入轴+占用
-  void flushFrogScheduleApiOutbox().catch((err) => {
-    if (__DEV__) console.warn('[frog-schedule] outbox flush failed', err);
+  // 后台：先推本地 pending / 出站队列，再合并远端（避免「APP 有、桌面无」）
+  void syncWeekScheduleWithRemote(weekStartYmd, opts?.hydrateRemote !== false).catch((err) => {
+    if (__DEV__) console.warn('[frog-schedule] week sync failed', weekStartYmd, err);
   });
-
-  if (opts?.hydrateRemote !== false && placements.length === 0) {
-    void hydrateWeekFromRemote(weekStartYmd).then((n) => {
-      if (n > 0) notifyFrogScheduleChanged();
-    });
-  } else if (opts?.hydrateRemote !== false) {
-    // 本地已有占用时仍尝试灌入「从未设置过」的全局轴（换机空设置）
-    void hydrateAxisFromRemoteIfUnset(weekStartYmd).then((applied) => {
-      if (applied) notifyFrogScheduleChanged();
-    });
-  }
 
   return view;
 }
@@ -201,6 +196,31 @@ async function hydrateAxisFromRemoteIfUnset(weekStartYmd: string): Promise<boole
   }
 }
 
+/**
+ * 将本地尚未上云的占用推到 frog-schedule REST（含 DB pending + AsyncStorage 出站队列）。
+ * 解决：入格后进程被杀 / 推送失败未入队 → 桌面端永远看不到。
+ */
+async function pushPendingLocalPlacements(): Promise<number> {
+  const pending = await listPendingSchedulePlacements();
+  let pushed = 0;
+  for (const p of pending) {
+    if (p.syncStatus === 'pending_delete') {
+      await enqueueFrogSchedulePlacementDelete(p.id);
+    } else {
+      await enqueueFrogSchedulePlacementUpsert(p);
+    }
+    pushed += 1;
+  }
+  const flushed = await flushFrogScheduleApiOutbox();
+  return Math.max(pushed, flushed);
+}
+
+/**
+ * 合并远端占用到本地：
+ * - 本地 pending_* 行不被远端覆盖（先推后合）
+ * - 远端有、本地无（或已 synced）→ upsert
+ * - 本地已有占用时也会执行（旧逻辑仅空周 hydrate，导致双向长期漂移）
+ */
 async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
   try {
     const remote = await apiGetFrogScheduleWeek(weekStartYmd);
@@ -210,10 +230,30 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
     if (await applyRemoteAxisIfUnset(remote.axis)) changed += 1;
 
     const local = await listPlacementsForWeek(weekStartYmd);
-    if (local.length > 0) return changed;
+    const localById = new Map(local.map((p) => [p.id, p]));
+    // 含 pending_delete：避免刚删又被远端灌回
+    const pendingAll = await listPendingSchedulePlacements();
+    const pendingIds = new Set(pendingAll.map((p) => p.id));
+    const remoteIds = new Set<string>();
 
     for (const p of remote.placements ?? []) {
-      if (p.orphaned || p.startSlotIndex == null || !p.id) continue;
+      if (!p.id) continue;
+      remoteIds.add(p.id);
+      if (pendingIds.has(p.id)) continue;
+      const existing = localById.get(p.id);
+      if (
+        existing &&
+        existing.weekStartYmd === p.weekStartYmd &&
+        existing.weekday === p.weekday &&
+        existing.startSlotIndex === p.startSlotIndex &&
+        existing.spanSlots === p.spanSlots &&
+        existing.subjectKind === p.subjectKind &&
+        existing.subjectId === p.subjectId &&
+        existing.orphaned === (p.orphaned ? 1 : 0) &&
+        existing.syncStatus === 'synced'
+      ) {
+        continue;
+      }
       await upsertPlacementFromRemote({
         id: p.id,
         weekStartYmd: p.weekStartYmd,
@@ -226,14 +266,46 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
       });
       changed += 1;
     }
+
+    // 远端已无、本地仍 synced 的占用 → 清理（桌面端删除后 APP 应对齐）
+    for (const localRow of local) {
+      if (pendingIds.has(localRow.id)) continue;
+      if (localRow.syncStatus !== 'synced') continue;
+      if (remoteIds.has(localRow.id)) continue;
+      await markPlacementDeletedRemote(localRow.id);
+      changed += 1;
+    }
+
     if (__DEV__ && changed > 0) {
-      console.log('[frog-schedule] hydrated from remote', weekStartYmd, 'changes', changed);
+      console.log('[frog-schedule] merged from remote', weekStartYmd, 'changes', changed);
     }
     return changed;
   } catch (err) {
     if (__DEV__) console.warn('[frog-schedule] week hydrate failed', weekStartYmd, err);
     return 0;
   }
+}
+
+async function syncWeekScheduleWithRemote(
+  weekStartYmd: string,
+  hydrateRemote: boolean,
+): Promise<void> {
+  try {
+    await pushPendingLocalPlacements();
+  } catch (err) {
+    if (__DEV__) console.warn('[frog-schedule] pending push failed', err);
+  }
+
+  if (!hydrateRemote) return;
+
+  const merged = await hydrateWeekFromRemote(weekStartYmd);
+  if (merged > 0) {
+    notifyFrogScheduleChanged();
+    return;
+  }
+  // 无占用合并时仍尝试灌入从未设置过的全局轴
+  const applied = await hydrateAxisFromRemoteIfUnset(weekStartYmd);
+  if (applied) notifyFrogScheduleChanged();
 }
 
 async function unassignSubjectDay(
@@ -347,6 +419,8 @@ export async function placeFrogOnSchedule(params: {
     subjectId: params.subjectId,
   };
   const row = await insertPlacement(input);
+  // 立刻持久化出站项：即使后续指派/推送中断，加载日程时仍会补推
+  await enqueueFrogSchedulePlacementUpsert(row);
   notifyFrogScheduleChanged();
 
   try {
@@ -357,6 +431,7 @@ export async function placeFrogOnSchedule(params: {
     });
   } catch (err) {
     await softDeletePlacement(row.id);
+    await enqueueFrogSchedulePlacementDelete(row.id);
     notifyFrogScheduleChanged();
     throw err;
   }
@@ -447,6 +522,7 @@ export async function rematerializeOrphanedPlacement(params: {
   }
 
   const row = (await getPlacementById(placement.id))!;
+  await enqueueFrogSchedulePlacementUpsert(row);
   notifyFrogScheduleChanged();
   void apiPostFrogSchedulePlacement({ action: 'upsert', placement: row }).catch(() => undefined);
   return row;
@@ -466,6 +542,8 @@ export async function removePlacementSegment(
   }
 
   await softDeletePlacement(placementId);
+  // pending_create 会被硬删；其余走 pending_delete。出站队列兜底推送删除。
+  await enqueueFrogSchedulePlacementDelete(placementId);
   void apiPostFrogSchedulePlacement({ action: 'delete', id: placementId }).catch(() => undefined);
 
   const remain = await countSubjectPlacementsOnDay(
@@ -502,6 +580,7 @@ export async function cancelAssignForPlacementDay(
   );
   for (const p of all) {
     await softDeletePlacement(p.id);
+    await enqueueFrogSchedulePlacementDelete(p.id);
     void apiPostFrogSchedulePlacement({ action: 'delete', id: p.id }).catch(() => undefined);
   }
   await unassignSubjectDay(placement.subjectKind, placement.subjectId, assignYmd);

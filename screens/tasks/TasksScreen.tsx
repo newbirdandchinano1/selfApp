@@ -2860,11 +2860,9 @@ export default function TasksScreen() {
   }, [categoryModalVisible, loadProjectCategories]);
 
   const reload = React.useCallback(async (forceApi = false) => {
-    // forceApi 由 wrapLoad 写入 page read opts（决定是否 localOnly）；此处只在清库后全量 forceRefresh
-    void forceApi;
+    // forceApi：多端 dirty / 下拉刷新时必须打网；清库后才全量 forceRefresh（避免写后回首页全表翻页卡死）
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
-    // 清库后才全量 forceRefresh；focus/下拉的 forceApi 只走增量（updatedSince），避免写后回首页全表翻页卡死
     const forceFullRefresh = consumeForceFullApiRefreshAfterLocalClear();
     const localTaskOpts = { forceLocal: true as const };
     const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
@@ -2894,10 +2892,13 @@ export default function TasksScreen() {
       fetchTasksPageData({
         boundary: dayBoundary,
         offlineFallback: true,
+        // 显式透传：不单靠 wrapLoad 的 activePageReadStack（SSE 早发 dirty 时更稳）
+        forceApi: forceApi || undefined,
         forceRefresh: forceFullRefresh,
       }),
       fetchProjectsListForTab(projectTab, {
         hideCompletedProjectTasks: effectiveHideCompleted,
+        forceApi: forceApi || undefined,
         forceRefresh: forceFullRefresh,
         offlineFallback: true,
       }).catch((err) => {

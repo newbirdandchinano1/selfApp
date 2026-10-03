@@ -1,6 +1,7 @@
 import { isApiReadableTable } from '@/lib/api-allowed-tables';
 import { REST_SKIP_TABLES } from '@/lib/api-incremental-sync';
 import { fetchApiTableAll } from '@/lib/api-read';
+import { applyApiRecordMissingToLocal } from '@/lib/api-read-local-sync';
 import { apiRequest } from '@/lib/api/http';
 import { getApiAuthToken } from '@/lib/api-config';
 import {
@@ -86,6 +87,30 @@ async function fetchChangesPage(since: number): Promise<SyncChangesPayload> {
   );
 }
 
+/**
+ * 将 Change Log 中的 delete 事件落到本地库：增量拉取（updatedSince）查不到已删行，
+ * tasks 等表走增量同步时必须靠这里删本地旧行，否则他端删除后本机仍展示。
+ * 同一游标区间内同一主键可能有多次事件，按事件顺序只保留最后一次 op（后写的 delete 能覆盖先写的 upsert，反之亦然）。
+ */
+async function applySyncDeleteEvents(events: SyncChangeEvent[]): Promise<void> {
+  const lastOpByKey = new Map<string, SyncChangeEvent>();
+  for (const ev of events) {
+    const table = ev.table?.trim();
+    const pk = ev.pk?.trim();
+    if (!table || !pk) continue;
+    if (!isApiReadableTable(table)) continue;
+    lastOpByKey.set(`${table}::${pk}`, ev);
+  }
+  for (const ev of lastOpByKey.values()) {
+    if (ev.op !== 'delete') continue;
+    try {
+      await applyApiRecordMissingToLocal(ev.table, ev.pk);
+    } catch (e) {
+      console.warn(`[sync-pull] 删除本地行失败 ${ev.table}:${ev.pk}`, e);
+    }
+  }
+}
+
 async function refreshDirtyTables(tables: string[]): Promise<void> {
   const unique = [...new Set(tables.map((t) => t.trim()).filter(Boolean))];
   for (const table of unique) {
@@ -97,6 +122,14 @@ async function refreshDirtyTables(tables: string[]): Promise<void> {
       await fetchApiTableAll(table, { forceRefresh: true });
     } catch (e) {
       console.warn(`[sync-pull] 刷新表 ${table} 失败`, e);
+    }
+  }
+  if (unique.includes('app_settings')) {
+    try {
+      const { reloadDayBoundaryFromStore } = await import('@/lib/tasks-logical-day');
+      await reloadDayBoundaryFromStore();
+    } catch (e) {
+      console.warn('[sync-pull] 重载日界失败', e);
     }
   }
 }
@@ -125,6 +158,7 @@ export async function pullAndApplySyncChanges(opts?: {
   pullInFlight = (async (): Promise<SyncPullResult> => {
     let cursor = await getSyncChangeCursor();
     const allDirty = new Set<string>();
+    const allEvents: SyncChangeEvent[] = [];
     let needFullSync = false;
     let pages = 0;
 
@@ -142,6 +176,7 @@ export async function pullAndApplySyncChanges(opts?: {
           break;
         }
         for (const t of page.dirtyTables ?? []) allDirty.add(t);
+        for (const ev of page.events ?? []) allEvents.push(ev);
         if (page.cursor > cursor) {
           cursor = page.cursor;
           await setSyncChangeCursor(cursor);
@@ -150,6 +185,9 @@ export async function pullAndApplySyncChanges(opts?: {
       }
 
       const dirtyTables = [...allDirty].sort();
+      if (allEvents.length > 0) {
+        await applySyncDeleteEvents(allEvents);
+      }
       if (dirtyTables.length > 0) {
         await refreshDirtyTables(dirtyTables);
       }

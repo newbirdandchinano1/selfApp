@@ -768,27 +768,33 @@ async function pullTasksView(opts: {
 
 
 
-  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
-
-    try {
-
-      const result = await pullTasksViewFromApi({
-
-        taskView: opts.taskView,
-
-        boundary,
-
-        logicalToday,
-
-        weekStart,
-
-        weekEnd,
-
-        projectIds: opts.projectIds,
-
-        signal: opts.signal,
-
-      });
+  if (
+	    !shouldSkipPageNetwork({
+	      forceLocal: opts?.forceLocal,
+	      forceApi: opts?.forceApi,
+	      forceRefresh: opts?.forceRefresh,
+	    })
+	  ) {
+	
+	    try {
+	
+	      const result = await pullTasksViewFromApi({
+	
+	        taskView: opts.taskView,
+	
+	        boundary,
+	
+	        logicalToday,
+	
+	        weekStart,
+	
+	        weekEnd,
+	
+	        projectIds: opts.projectIds,
+	
+	        signal: opts.signal,
+	
+	      });
 
       return finalizeTasksViewFromApi(
 
@@ -1176,6 +1182,9 @@ export async function fetchTasksPageData(opts?: {
 
   forceLocal?: boolean;
 
+  /** 多端 dirty / 下拉：强制走 page API，忽略 wrapLoad localOnly */
+  forceApi?: boolean;
+
   forceRefresh?: boolean;
 
   signal?: AbortSignal;
@@ -1186,7 +1195,13 @@ export async function fetchTasksPageData(opts?: {
 
 
 
-  if (!shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
+  if (
+    !shouldSkipPageNetwork({
+      forceLocal: opts?.forceLocal,
+      forceApi: opts?.forceApi,
+      forceRefresh: opts?.forceRefresh,
+    })
+  ) {
 
     try {
 

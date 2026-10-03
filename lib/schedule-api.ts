@@ -1,9 +1,14 @@
 import { apiRequest } from '@/lib/api-client';
 import {
+  dequeueFrogSchedulePlacement,
   enqueueFrogScheduleAxis,
   enqueueFrogSchedulePlacementDelete,
   enqueueFrogSchedulePlacementUpsert,
 } from '@/lib/schedule-api-outbox';
+import {
+  markPlacementDeletedRemote,
+  markPlacementSynced,
+} from '@/lib/repositories/schedule/schedule-store';
 import type { ScheduleAxisSettings, SchedulePlacementRow, ScheduleSubjectKind } from '@/lib/schedule/types';
 
 export type FrogScheduleWeekPayload = {
@@ -95,7 +100,7 @@ export async function apiSaveFrogScheduleAxis(
   }
 }
 
-/** 本地优先：失败入出站队列，不阻塞 UI */
+/** 本地优先：失败入出站队列，不阻塞 UI；成功则回写 sync_status */
 export async function apiPostFrogSchedulePlacement(body: {
   action: 'upsert' | 'delete';
   placement?: SchedulePlacementRow;
@@ -104,6 +109,16 @@ export async function apiPostFrogSchedulePlacement(body: {
 }): Promise<void> {
   try {
     await pushFrogSchedulePlacement(body);
+    if (body.action === 'delete') {
+      const id = body.id ?? body.placement?.id;
+      if (id) {
+        await markPlacementDeletedRemote(id);
+        await dequeueFrogSchedulePlacement(id);
+      }
+    } else if (body.placement?.id) {
+      await markPlacementSynced(body.placement.id);
+      await dequeueFrogSchedulePlacement(body.placement.id);
+    }
   } catch (err) {
     if (__DEV__) console.warn('[frog-schedule] placement push failed → outbox', body.action, err);
     try {

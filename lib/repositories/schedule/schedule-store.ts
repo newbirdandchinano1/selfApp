@@ -260,7 +260,7 @@ export async function upsertPlacementFromRemote(input: {
   id: string;
   weekStartYmd: string;
   weekday: number;
-  startSlotIndex: number;
+  startSlotIndex: number | null;
   spanSlots: number;
   subjectKind: ScheduleSubjectKind;
   subjectId: string;
@@ -269,7 +269,7 @@ export async function upsertPlacementFromRemote(input: {
   const db = await getDatabase();
   const now = sqlNow();
   const spanSlots = Math.max(1, input.spanSlots);
-  const orphaned = input.orphaned ? 1 : 0;
+  const orphaned = input.orphaned || input.startSlotIndex == null ? 1 : 0;
   beginCloudSqliteDirtyIgnoreBatch();
   try {
     await db.runAsync(
@@ -286,7 +286,11 @@ export async function upsertPlacementFromRemote(input: {
         subject_id = excluded.subject_id,
         orphaned = excluded.orphaned,
         updated_at = excluded.updated_at,
-        sync_status = 'synced'`,
+        sync_status = CASE
+          WHEN schedule_placements.sync_status IN ('pending_create', 'pending_update', 'pending_delete')
+            THEN schedule_placements.sync_status
+          ELSE 'synced'
+        END`,
       [
         input.id,
         input.weekStartYmd,
@@ -376,6 +380,43 @@ export async function softDeletePlacement(id: string): Promise<void> {
     );
   }
   markScheduleDirty();
+}
+
+/** 推送成功后标记为已同步（upsert） */
+export async function markPlacementSynced(id: string): Promise<void> {
+  const db = await getDatabase();
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `UPDATE schedule_placements SET sync_status = 'synced', updated_at = ?
+       WHERE id = ? AND sync_status IN ('pending_create', 'pending_update')`,
+      [sqlNow(), id],
+    );
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+/** 远端删除确认后清理本地 pending_delete / 残留行 */
+export async function markPlacementDeletedRemote(id: string): Promise<void> {
+  const db = await getDatabase();
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync('DELETE FROM schedule_placements WHERE id = ?', [id]);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+/** 尚未成功推到 frog-schedule REST 的占用（含待删） */
+export async function listPendingSchedulePlacements(): Promise<SchedulePlacementRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<PlacementDbRow>(
+    `SELECT * FROM schedule_placements
+     WHERE sync_status IN ('pending_create', 'pending_update', 'pending_delete')
+     ORDER BY updated_at ASC`,
+  );
+  return rows.map(mapPlacement);
 }
 
 export async function softDeletePlacementsForWeek(weekStartYmd: string): Promise<number> {

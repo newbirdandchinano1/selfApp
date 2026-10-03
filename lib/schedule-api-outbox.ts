@@ -126,6 +126,17 @@ export async function enqueueFrogSchedulePlacementDelete(placementId: string): P
   }
 }
 
+/** 直连推送成功后移除对应出站项，避免下次加载重复 upsert/delete */
+export async function dequeueFrogSchedulePlacement(placementId: string): Promise<void> {
+  const items = await readOutbox();
+  const next = items.filter((i) => {
+    if (i.kind === 'axis') return true;
+    const id = i.kind === 'placement_delete' ? i.placementId : i.placement.id;
+    return id !== placementId;
+  });
+  if (next.length !== items.length) await writeOutbox(next);
+}
+
 export async function peekFrogScheduleOutboxCount(): Promise<number> {
   return (await readOutbox()).length;
 }
@@ -141,6 +152,10 @@ export async function flushFrogScheduleApiOutbox(): Promise<number> {
     if (items.length === 0) return 0;
 
     const { pushFrogScheduleAxis, pushFrogSchedulePlacement } = await import('@/lib/schedule-api');
+    const {
+      markPlacementDeletedRemote,
+      markPlacementSynced,
+    } = await import('@/lib/repositories/schedule/schedule-store');
     const remaining: FrogScheduleOutboxItem[] = [];
     let ok = 0;
 
@@ -153,11 +168,13 @@ export async function flushFrogScheduleApiOutbox(): Promise<number> {
             action: 'upsert',
             placement: item.placement,
           });
+          await markPlacementSynced(item.placement.id);
         } else {
           await pushFrogSchedulePlacement({
             action: 'delete',
             id: item.placementId,
           });
+          await markPlacementDeletedRemote(item.placementId);
         }
         ok += 1;
       } catch (err) {
