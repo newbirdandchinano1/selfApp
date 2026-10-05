@@ -12,11 +12,29 @@ function buildApiUploadBodies(table: string, row: Record<string, unknown>): Reco
   ];
 }
 
-function isEntityTooLargeError(err: unknown): boolean {
-  return (
-    err instanceof ApiRequestError &&
-    (err.httpStatus === 413 || /entity too large/i.test(err.message))
-  );
+function isPayloadTooLargeError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/entity too large|data too long|ER_DATA_TOO_LONG/i.test(msg)) return true;
+  return err instanceof ApiRequestError && err.httpStatus === 413;
+}
+
+async function writeWithPayloadRetry<T>(
+  table: string,
+  row: Record<string, unknown>,
+  write: (body: Record<string, unknown>) => Promise<T>,
+): Promise<T> {
+  const bodies = buildApiUploadBodies(table, row);
+  let lastError: unknown;
+  for (let i = 0; i < bodies.length; i++) {
+    try {
+      return await write(bodies[i]);
+    } catch (e) {
+      lastError = e;
+      if (i < bodies.length - 1 && isPayloadTooLargeError(e)) continue;
+      throw e;
+    }
+  }
+  throw lastError;
 }
 
 export async function apiCreateRecord<T = unknown>(
@@ -33,11 +51,11 @@ export async function apiCreateRecord<T = unknown>(
 
   if (isAppDomainCrudTable(table)) {
     try {
-      const body = { ...row };
-      delete body.sync_status;
-      return await appDomainCreateRecord<T>(table, body, {
-        signal: opts?.signal,
-      });
+      return await writeWithPayloadRetry(table, row, (body) =>
+        appDomainCreateRecord<T>(table, body, {
+          signal: opts?.signal,
+        }),
+      );
     } catch (e) {
       if (!(e instanceof AppDomainFallbackError)) throw e;
       if (isApiGenericWriteForbidden(table)) {
@@ -52,22 +70,13 @@ export async function apiCreateRecord<T = unknown>(
     );
   }
 
-  const bodies = buildApiUploadBodies(table, row);
-  let lastError: unknown;
-  for (let i = 0; i < bodies.length; i++) {
-    try {
-      return await apiRequest<T>(`/api/app/data/${encodeURIComponent(table)}`, {
-        method: 'POST',
-        body: bodies[i],
-        signal: opts?.signal,
-      });
-    } catch (e) {
-      lastError = e;
-      if (i < bodies.length - 1 && isEntityTooLargeError(e)) continue;
-      throw e;
-    }
-  }
-  throw lastError;
+  return writeWithPayloadRetry(table, row, (body) =>
+    apiRequest<T>(`/api/app/data/${encodeURIComponent(table)}`, {
+      method: 'POST',
+      body,
+      signal: opts?.signal,
+    }),
+  );
 }
 
 export async function apiUpdateRecord<T = unknown>(
@@ -85,12 +94,12 @@ export async function apiUpdateRecord<T = unknown>(
 
   if (isAppDomainCrudTable(table)) {
     try {
-      const body = { ...row };
-      delete body.sync_status;
-      return await appDomainUpdateRecord<T>(table, id, body, {
-        signal: opts?.signal,
-        method: 'PUT',
-      });
+      return await writeWithPayloadRetry(table, row, (body) =>
+        appDomainUpdateRecord<T>(table, id, body, {
+          signal: opts?.signal,
+          method: 'PUT',
+        }),
+      );
     } catch (e) {
       if (!(e instanceof AppDomainFallbackError)) throw e;
       if (isApiGenericWriteForbidden(table)) {
@@ -103,25 +112,16 @@ export async function apiUpdateRecord<T = unknown>(
     throw new Error(`表「${table}」禁止通过通用 CRUD 写入，请使用专用业务接口`);
   }
 
-  const bodies = buildApiUploadBodies(table, row);
-  let lastError: unknown;
-  for (let i = 0; i < bodies.length; i++) {
-    try {
-      return await apiRequest<T>(
-        `/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
-        {
-          method: 'PUT',
-          body: bodies[i],
-          signal: opts?.signal,
-        },
-      );
-    } catch (e) {
-      lastError = e;
-      if (i < bodies.length - 1 && isEntityTooLargeError(e)) continue;
-      throw e;
-    }
-  }
-  throw lastError;
+  return writeWithPayloadRetry(table, row, (body) =>
+    apiRequest<T>(
+      `/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body,
+        signal: opts?.signal,
+      },
+    ),
+  );
 }
 
 export async function apiPatchRecord<T = unknown>(
@@ -139,12 +139,12 @@ export async function apiPatchRecord<T = unknown>(
 
   if (isAppDomainCrudTable(table)) {
     try {
-      const body = { ...row };
-      delete body.sync_status;
-      return await appDomainUpdateRecord<T>(table, id, body, {
-        signal: opts?.signal,
-        method: 'PATCH',
-      });
+      return await writeWithPayloadRetry(table, row, (body) =>
+        appDomainUpdateRecord<T>(table, id, body, {
+          signal: opts?.signal,
+          method: 'PATCH',
+        }),
+      );
     } catch (e) {
       if (!(e instanceof AppDomainFallbackError)) throw e;
       if (isApiGenericWriteForbidden(table)) {
@@ -157,11 +157,13 @@ export async function apiPatchRecord<T = unknown>(
     throw new Error(`表「${table}」禁止通过通用 CRUD 写入，请使用专用业务接口`);
   }
 
-  return apiRequest<T>(`/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: prepareRowBodyForApi(table, row),
-    signal: opts?.signal,
-  });
+  return writeWithPayloadRetry(table, row, (body) =>
+    apiRequest<T>(`/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body,
+      signal: opts?.signal,
+    }),
+  );
 }
 
 export async function apiDeleteRecord(

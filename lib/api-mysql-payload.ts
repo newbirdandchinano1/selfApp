@@ -223,6 +223,10 @@ function slimDeepForApiUpload(
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'attachments') {
+        out[key] = null;
+        continue;
+      }
       if (ultra && ULTRA_DROP_COLUMNS.has(key)) {
         out[key] = null;
         continue;
