@@ -736,6 +736,18 @@ export async function appWishBoardListRedeemed(opts?: {
   return Array.isArray(data?.items) ? data.items : [];
 }
 
+export async function appWishBoardDeleteItem(
+  id: string,
+  opts?: { signal?: AbortSignal },
+): Promise<{ deleted?: boolean; id?: string }> {
+  const wishId = String(id ?? '').trim();
+  if (!wishId) throw new Error('缺少心愿 id');
+  return apiRequest(`${APP_API_PREFIX}/wish-board/items/${encodeURIComponent(wishId)}`, {
+    method: 'DELETE',
+    signal: opts?.signal,
+  });
+}
+
 export async function appWishBoardDeleteRedeemed(opts?: {
   id?: string;
   signal?: AbortSignal;

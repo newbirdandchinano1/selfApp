@@ -400,6 +400,24 @@ export async function upsertRowToApi(
         await apiUpdateRecord(table, pk, send, { signal: opts?.signal });
         return 'updated';
       } catch (updateErr) {
+        if (isSyncOccConflictApiError(updateErr)) {
+          const conflict = occPayloadOf(updateErr);
+          const serverRev = conflict?.serverRev;
+          if (typeof serverRev === 'number' && Number.isFinite(serverRev)) {
+            try {
+              const retryBody = attachPushOccFields({
+                ...send,
+                expected_rev: serverRev,
+                expectedRev: serverRev,
+              });
+              await apiUpdateRecord(table, pk, retryBody, { signal: opts?.signal });
+              return 'updated';
+            } catch (retryErr) {
+              if (await applyPushOccConflict(table, pk, retryErr)) return 'occ';
+              throw retryErr;
+            }
+          }
+        }
         if (await applyPushOccConflict(table, pk, updateErr)) return 'occ';
         if (isGenericWriteForbiddenClientError(updateErr)) {
           throw new ApiRowUploadSkippedError(

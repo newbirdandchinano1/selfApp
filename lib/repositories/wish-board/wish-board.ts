@@ -350,15 +350,23 @@ export async function updateWishBoardItem(id: string, input: UpdateWishBoardItem
 }
 
 export async function deleteWishBoardItem(id: string): Promise<void> {
-  await ensureLocalRowForWrite('wish_board_items', id);
+  const wishId = id.trim();
+  if (!wishId) throw new Error('缺少心愿 id');
+  await ensureLocalRowForWrite('wish_board_items', wishId);
+
+  const { appWishBoardDeleteItem } = await import('@/lib/api-app-domain');
+  await appWishBoardDeleteItem(wishId);
+
   const db = await getDatabase();
-  await db.runAsync(
-    `UPDATE wish_board_items SET
-      sync_status = 'pending_delete',
-      updated_at = datetime('now')
-     WHERE id = ?`,
-    [id],
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
   );
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(`DELETE FROM wish_board_items WHERE id = ?`, [wishId]);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
 }
 
 /**

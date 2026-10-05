@@ -697,6 +697,9 @@ export default function EditTaskScreen() {
       setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
+      // 任务主体已加载完成，附属数据不应阻塞编辑操作。
+      setLoading(false);
+
       if (!task.parent_task_id) {
         setTagsLoading(true);
         try {
@@ -828,7 +831,8 @@ export default function EditTaskScreen() {
       setInheritsProjectSchedule(nextInheritsSchedule);
       setInheritsProjectTags(nextInheritsTags);
 
-      await reload();
+      // 子任务列表属于附属数据，失败或变慢不能阻塞主表单。
+      void reload();
     } catch (error) {
       console.warn('加载任务详情失败', error);
       Alert.alert('加载失败', '无法读取任务详情，请稍后重试。');
