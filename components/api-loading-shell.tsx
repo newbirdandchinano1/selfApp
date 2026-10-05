@@ -142,8 +142,8 @@ function ApiLoadingOverlay() {
     </View>
   );
 
-  if (suppressForSkeletonTab) {
-    if (!visible || error || timedOut) return null;
+  if (suppressForSkeletonTab && !error && !timedOut) {
+    if (!visible) return null;
     return (
       <View style={styles.barOnlyRoot} pointerEvents="none">
         {progressBar}

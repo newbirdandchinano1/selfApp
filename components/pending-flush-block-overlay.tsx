@@ -21,7 +21,7 @@ export function PendingFlushBlockOverlay({
         { paddingTop: Math.max(insets.top, 24), paddingBottom: Math.max(insets.bottom, 24) },
       ]}
     >
-      <Text style={styles.errorText}>{message}</Text>
+          <Text style={styles.errorText}>{message}</Text>
       <View style={styles.errorActions}>
         <Pressable
           disabled={retrying}
@@ -53,6 +53,7 @@ const styles = StyleSheet.create({
     color: '#131b2e',
     textAlign: 'center',
     opacity: 0.85,
+    lineHeight: 22,
   },
   errorActions: {
     flexDirection: 'row',

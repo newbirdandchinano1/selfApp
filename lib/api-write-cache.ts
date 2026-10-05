@@ -1,6 +1,6 @@
 /**
- * 阶段 3：服务器成功后再写 SQLite 缓存。
- * 失败不落 pending、不依赖 requestPush 补传。
+ * 阶段 3：服务器成功后再�?SQLite 缓存�?
+ * 失败不落 pending、不依赖 requestPush 补传�?
  */
 import { getApiTablePrimaryKey } from '@/lib/api-allowed-tables';
 import {
@@ -17,7 +17,7 @@ import {
   endCloudSqliteDirtyIgnoreBatch} from '@/lib/cloud-sql-dirty-track';
 import { getDatabase } from '@/lib/database';
 
-function stripLocalOnlyFields(row: Record<string, unknown>): Record<string, unknown> {
+function stripCacheMetadataFields(row: Record<string, unknown>): Record<string, unknown> {
   const body = { ...row };
   delete body.sync_status;
   return body;
@@ -36,13 +36,13 @@ export async function cacheServerRowLocally(
   invalidateInflightApiTableFetch(table);
 }
 
-/** POST 创建成功后写缓存；失败不改本地 */
+/** POST 创建成功后写缓存；失败不改本�?*/
 export async function createViaApiThenCache(
   table: string,
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal; cacheRow?: Record<string, unknown> }): Promise<Record<string, unknown>> {
   await ensureApiLoggedIn();
-  const body = stripLocalOnlyFields(row);
+  const body = stripCacheMetadataFields(row);
   const created = await apiCreateRecord<Record<string, unknown>>(table, body, {
     signal: opts?.signal});
   const cacheRow =
@@ -60,7 +60,7 @@ export async function updateViaApiThenCache(
   row: Record<string, unknown>,
   opts?: { signal?: AbortSignal; cacheRow?: Record<string, unknown> }): Promise<Record<string, unknown>> {
   await ensureApiLoggedIn();
-  const body = stripLocalOnlyFields(row);
+  const body = stripCacheMetadataFields(row);
   const updated = await apiUpdateRecord<Record<string, unknown>>(table, id, body, {
     signal: opts?.signal});
   const cacheRow =
@@ -78,7 +78,7 @@ export async function patchViaApiThenCache(
   patch: Record<string, unknown>,
   opts?: { signal?: AbortSignal; cacheRow?: Record<string, unknown> }): Promise<Record<string, unknown>> {
   await ensureApiLoggedIn();
-  const body = stripLocalOnlyFields(patch);
+  const body = stripCacheMetadataFields(patch);
   const updated = await apiPatchRecord<Record<string, unknown>>(table, id, body, {
     signal: opts?.signal});
   const cacheRow =

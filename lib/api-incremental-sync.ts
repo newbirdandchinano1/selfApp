@@ -36,6 +36,7 @@ import {
   type LocalTableUploadBundle,
 } from '@/lib/cloud-sql-sync';
 import { isSilentCloudRestoreInFlight } from '@/lib/cloud-sync-flags';
+import { extraDataNeedsSlimForMysql, slimExtraDataFieldForMysql } from '@/lib/api-mysql-payload';
 import { getDatabase } from '@/lib/database';
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
@@ -379,6 +380,67 @@ export async function countPendingApiSyncRowsByTable(): Promise<Record<string, n
   return out;
 }
 
+function isPayloadTooLargeUploadError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/entity too large|data too long|ER_DATA_TOO_LONG|payload too large/i.test(msg)) return true;
+  return err instanceof ApiRequestError && err.httpStatus === 413;
+}
+
+async function persistSlimmedExtraData(
+  table: string,
+  pkCol: string,
+  pk: string,
+  extraData: string | null,
+): Promise<void> {
+  const db = await getDatabase();
+  if (!db) return;
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.runAsync(
+      `UPDATE ${quoteIdent(table)} SET extra_data = ? WHERE ${quoteIdent(pkCol)} = ?`,
+      [extraData, pk],
+    );
+  } catch (e) {
+    if (__DEV__) console.warn('[api incremental] 回写瘦身 extra_data 失败', table, e);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
+/**
+ * 把 pending 行里超大 extra_data（截图 base64 等）就地瘦身，避免 HTTP 413 / MySQL TEXT 写爆。
+ * 返回改写行数。
+ */
+export async function slimPendingExtraDataInSqlite(): Promise<number> {
+  const db = await getDatabase();
+  if (!db) return 0;
+  const tables = (await listLocalUserTablesForApiUpload()).filter(t => isPendingFlushTrackedTable(t));
+  let changed = 0;
+  for (const table of tables) {
+    if (!(await tableHasSyncStatusColumn(table))) continue;
+    const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${quoteIdent(table)})`);
+    if (!cols.some(c => c.name === 'extra_data')) continue;
+    const pkCols = await readTablePrimaryKeyColumns(db, table);
+    const pkCol = pkCols[0] ?? 'id';
+    const rows = await db.getAllAsync<Record<string, unknown>>(
+      `SELECT ${quoteIdent(pkCol)} AS pk, extra_data FROM ${quoteIdent(table)} WHERE sync_status != 'synced'`,
+    );
+    for (const row of rows ?? []) {
+      const pk = row.pk == null || row.pk === '' ? '' : String(row.pk);
+      if (!pk) continue;
+      if (!extraDataNeedsSlimForMysql(row.extra_data)) continue;
+      const slimmed = slimExtraDataFieldForMysql(row.extra_data);
+      const before =
+        typeof row.extra_data === 'string' ? row.extra_data : JSON.stringify(row.extra_data ?? '');
+      const after = slimmed ?? '';
+      if (after === before) continue;
+      await persistSlimmedExtraData(table, pkCol, pk, slimmed);
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 async function listPendingApiSyncTableNames(): Promise<string[]> {
   const db = await getDatabase();
   if (!db) return [];
@@ -509,7 +571,7 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
       if (opts?.rethrow) {
         const pending = await listPendingApiSyncTableNames();
         if (pending.length > 0) {
-          throw new Error('有未同步到服务器的本地修改，请保持网络后重试');
+          throw new Error(`有未同步到服务器的本地修改（${pending.join('、')}），请保持网络后重试`);
         }
       }
       return;
@@ -533,6 +595,9 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
       fkRefsByTable.set(table, await readLocalForeignKeyRefs(table));
       uploadedPkByTable.set(table, new Set<string>());
     }
+
+    const leftoverReasons: string[] = [];
+    let uploadedCount = 0;
 
     for (const table of effectiveOrder) {
       const rawRows = rowsByTable.get(table) ?? [];
@@ -607,9 +672,9 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
       }
 
       for (const row of rows) {
+        let uploadRow = row;
         try {
           // habit_check_ins：上传前重读本地，避免 flush 开始时快照仍是 count=1，而连点后已到更高次数
-          let uploadRow = row;
           if (table === 'habit_check_ins') {
             const pkNow = rowPrimaryKeyValue(row, pkCols);
             if (pkNow) {
@@ -626,6 +691,14 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
               }
             }
           }
+          if (extraDataNeedsSlimForMysql(uploadRow.extra_data)) {
+            const slimmed = slimExtraDataFieldForMysql(uploadRow.extra_data);
+            const pkNow = rowPrimaryKeyValue(uploadRow, pkCols);
+            if (pkNow) {
+              await persistSlimmedExtraData(table, pkCols[0] ?? 'id', pkNow, slimmed);
+            }
+            uploadRow = { ...uploadRow, extra_data: slimmed };
+          }
           const action = await upsertRowToApi(table, uploadRow, pkCols, {
             uploadedPkByTable,
             fkRefs: fkRefsByTable.get(table) ?? [],
@@ -634,16 +707,46 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
             fkRefsByTable,
           });
           uploadedRows.push(uploadRow);
+          uploadedCount += 1;
           const pk = rowPrimaryKeyValue(uploadRow, pkCols);
           if (pk) uploadedPks.add(pk);
           if (__DEV__) console.log(`[api incremental] ${table} ${action}`, pk);
         } catch (e) {
+          if (isPayloadTooLargeUploadError(e)) {
+            const pkNow = rowPrimaryKeyValue(uploadRow, pkCols);
+            const slimmed = slimExtraDataFieldForMysql(uploadRow.extra_data);
+            if (pkNow) {
+              await persistSlimmedExtraData(table, pkCols[0] ?? 'id', pkNow, slimmed);
+            }
+            uploadRow = { ...uploadRow, extra_data: slimmed };
+            try {
+              const action = await upsertRowToApi(table, uploadRow, pkCols, {
+                uploadedPkByTable,
+                fkRefs: fkRefsByTable.get(table) ?? [],
+                rowsByTable,
+                pkColsByTable,
+                fkRefsByTable,
+              });
+              uploadedRows.push(uploadRow);
+              uploadedCount += 1;
+              if (pkNow) uploadedPks.add(pkNow);
+              if (__DEV__) console.log(`[api incremental] ${table} ${action} (slim-retry)`, pkNow);
+              continue;
+            } catch (retryErr) {
+              leftoverReasons.push(
+                `${table}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+              );
+              throw retryErr;
+            }
+          }
           if (e instanceof ApiRowUploadSkippedError) {
             if (__DEV__) console.warn('[api incremental] 跳过', table, e.message);
             // 高危表禁写 / 专用接口未覆盖：本地标 synced，避免脏表无限重试拖垮同步
             if (isApiGenericWriteForbidden(table) || /禁止通用|App domain fallback|专用接口未覆盖/i.test(e.message)) {
               uploadedRows.push(uploadRow);
+              continue;
             }
+            leftoverReasons.push(`${table}: ${e.message}`);
             continue;
           }
           // 后端 403 禁写：隔离该行并标 synced
@@ -658,6 +761,7 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
           }
           // OCC：单行隔离，不打断同批其它 pending（1-A 任务冲刷不得被习惯 409 拖死）
           if (isSyncOccConflictApiError(e)) {
+            leftoverReasons.push(`${table}: ${e instanceof Error ? e.message : '版本冲突'}`);
             if (__DEV__) console.warn('[api incremental] OCC 已隔离', table, e.message);
             continue;
           }
@@ -677,10 +781,12 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
             (e.httpStatus === 404 || e.httpStatus === 500) &&
             /表\s+\S+\s+不存在/.test(e.message)
           ) {
+            leftoverReasons.push(`${table}: ${e.message}`);
             if (__DEV__) console.warn('[api incremental] 远端缺表已隔离', table, e.message);
             clearApiDirtyTables([table]);
             break;
           }
+          leftoverReasons.push(`${table}: ${e instanceof Error ? e.message : String(e)}`);
           throw e;
         }
       }
@@ -692,6 +798,9 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
     await setLastApiIncrementalSyncAtIso(new Date().toISOString());
     const { resetPushBackoff } = await import('@/lib/sync-manager');
     resetPushBackoff();
+    if (opts?.rethrow && uploadedCount === 0 && leftoverReasons.length > 0) {
+      throw new Error(leftoverReasons.slice(0, 4).join('\n'));
+    }
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);
     if (opts?.rethrow) throw e;

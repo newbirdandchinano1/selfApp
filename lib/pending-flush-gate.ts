@@ -72,6 +72,10 @@ export function subscribePendingFlushBlock(listener: BlockListener): () => void 
   };
 }
 
+export function formatPendingFlushError(err: unknown): string {
+  return formatFlushBlockMessage(err);
+}
+
 export function isPendingFlushBlocked(): boolean {
   return blockedFromFailedFlush;
 }
@@ -111,11 +115,14 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
 
     try {
       const { getDatabase } = await import('@/lib/database');
-      const { markAllPendingTablesDirty } = await import('@/lib/api-incremental-sync');
+      const { markAllPendingTablesDirty, slimPendingExtraDataInSqlite } = await import(
+        '@/lib/api-incremental-sync'
+      );
       const { requestPush } = await import('@/lib/sync-manager');
       if (!(await getDatabase())) {
         throw new Error('本地数据库未就绪，请稍后重试');
       }
+      await slimPendingExtraDataInSqlite();
       await markAllPendingTablesDirty();
       await requestPush({ awaitSync: true, rethrow: true, quiet: true });
 
@@ -125,7 +132,12 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
       // 可上传 pending 数量没有下降：飞行模式/请求被吞掉时不得当成功进首页（1-B）
       // 有网时若部分上传成功（after < before），即使 OCC 残留也不按断网拦住
       if (after.total > 0 && after.total >= before.total) {
-        const error = PENDING_FLUSH_BLOCK_MESSAGE;
+        const leftover = Object.entries(after.tableCounts)
+          .map(([table, n]) => `${table}×${n}`)
+          .join('、');
+        const error = leftover
+          ? `${PENDING_FLUSH_BLOCK_MESSAGE}\n仍待上传：${leftover}`
+          : PENDING_FLUSH_BLOCK_MESSAGE;
         if (__DEV__) {
           console.warn('[pending-flush] 冲刷后可上传 pending 未减少，阻断进入', after.tableCounts);
         }

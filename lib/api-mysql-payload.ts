@@ -288,3 +288,28 @@ export function slimRecordForMysqlApi(
   }
   return minimal;
 }
+
+const OVERSIZED_JSON_HINT_RE = /data:[^;]+;base64,|"attachments"|file:\/\/|content:\/\//;
+
+/** extra_data 含截图 base64 / 过长 JSON 时需要先瘦身再上传 */
+export function extraDataNeedsSlimForMysql(raw: unknown): boolean {
+  if (raw == null || raw === '') return false;
+  const text = typeof raw === 'string' ? raw : (() => {
+    try {
+      return JSON.stringify(raw);
+    } catch {
+      return '';
+    }
+  })();
+  if (!text) return false;
+  if (text.length >= API_UPLOAD_MAX_JSON_FIELD_CHARS) return true;
+  return OVERSIZED_JSON_HINT_RE.test(text);
+}
+
+export function slimExtraDataFieldForMysql(raw: unknown): string | null {
+  if (raw == null || raw === '') return null;
+  const slimmed = slimRecordForMysqlApi({ extra_data: raw });
+  const value = slimmed.extra_data;
+  if (value == null || value === '') return null;
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}

@@ -1,7 +1,6 @@
 import { ApiRequestError } from '@/lib/api-client';
 import { getApiLoadingError, reportApiLoadingError } from '@/lib/api-loading-tracker';
 import { syncPageScopeFromApi } from '@/lib/api-page-sync';
-import { isSkeletonLoadingTabPageKey } from '@/lib/page-api-health-ui';
 import { collectAncestorPageKeys } from '@/lib/page-api-ancestry';
 import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 import {
@@ -194,8 +193,7 @@ export function markTabPagesDirtyForTable(table: string): void {
 }
 
 export type PageApiReadOpts = {
-  cacheOnly?: boolean;
-  serverFallback?: boolean;
+  forceRefresh?: boolean;
 };
 
 /**
@@ -215,9 +213,9 @@ export function shouldReadPageFromServer(input: {
   return true;
 }
 
-/** wrapLoad 默认 cacheOnly；forceRefresh 仅留给显式逃生（用户下拉应走 SyncManager.pull） */
-export function resolvePageApiReadOpts(pageKey: string, _forceRefresh?: boolean): { cacheOnly: boolean; serverFallback: boolean } {
-  return { cacheOnly: false, serverFallback: false };
+/** wrapLoad 一律打网；forceRefresh 仅表示忽略 inflight 重新请求 */
+export function resolvePageApiReadOpts(_pageKey: string, _forceRefresh?: boolean): { forceRefresh: boolean } {
+  return { forceRefresh: Boolean(_forceRefresh) };
 }
 
 const activePageReadStack: PageApiReadOpts[] = [];
@@ -240,7 +238,7 @@ export function resolveReadCacheOnly(): boolean {
   return false;
 }
 
-/** 页面级读库上下文禁止离线回退时，覆盖仓库层显式 serverFallback: true */
+/** 历史兼容：仓库层不再做离线回退，恒为不回退 */
 export function resolveReadServerFallback(): boolean {
   return false;
 }
@@ -248,8 +246,8 @@ export function resolveReadServerFallback(): boolean {
 export async function runPageLoadBody(
   pageKey: string,
   fn: () => Promise<boolean | void | Record<string, unknown>>,
-  readOpts: { cacheOnly: boolean; serverFallback: boolean },
-  forceRefresh: boolean,
+  readOpts: { forceRefresh?: boolean },
+  _forceRefresh: boolean,
 ): Promise<{ ok: boolean | void | Record<string, unknown>; restFailed: boolean }> {
   const invokeLoadFn = async (): Promise<boolean | void | Record<string, unknown>> => {
     try {
@@ -264,37 +262,20 @@ export async function runPageLoadBody(
 
   beginPageApiRead(readOpts);
   try {
-    let ok: boolean | void;
     const scopeTables = listPageScopeTables(pageKey);
-
-    if (!readOpts.cacheOnly && scopeTables.length > 0 && true) {
+    if (scopeTables.length > 0) {
       const sync = await syncPageScopeFromApi(pageKey);
       if (!sync.ok) {
         markPageLoadRestFailed();
-        if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
+        if (!getApiLoadingError()) {
           reportApiLoadingError(
             new ApiRequestError(sync.error ?? '页面数据加载失败', 0, -1, { retryable: true }),
           );
         }
-        // 后端不可用时回退读本地缓存，避免骨架屏/启动态长时间阻塞
-        beginPageApiRead({ cacheOnly: true, serverFallback: true });
-        try {
-          ok = await invokeLoadFn();
-        } finally {
-          endPageApiRead();
-        }
-      } else {
-        beginPageApiRead({ cacheOnly: true, serverFallback: true });
-        try {
-          ok = await invokeLoadFn();
-        } finally {
-          endPageApiRead();
-        }
+        return { ok: false, restFailed: true };
       }
-    } else {
-      ok = await invokeLoadFn();
     }
-
+    const ok = await invokeLoadFn();
     const restFailed = consumePageLoadRestFailed();
     return { ok, restFailed };
   } finally {
@@ -304,12 +285,12 @@ export async function runPageLoadBody(
 
 export function finalizePageLoadSession(
   pageKey: string,
-  readOpts: { cacheOnly: boolean },
+  _readOpts: { forceRefresh?: boolean },
   ok: boolean | void,
   restFailed: boolean,
 ): void {
   if (ok === false) {
-    if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
+    if (!getApiLoadingError()) {
       reportApiLoadingError(
         new ApiRequestError('页面数据加载失败', 0, -1, { retryable: true }),
       );
@@ -319,44 +300,35 @@ export function finalizePageLoadSession(
   }
 
   if (restFailed) {
-    if (!getApiLoadingError() && !isSkeletonLoadingTabPageKey(pageKey)) {
+    if (!getApiLoadingError()) {
       reportApiLoadingError(
         new ApiRequestError('无法连接服务器，请检查网络后重试', 0, -1, { retryable: true }),
       );
     }
-    markPageLoadedInSession(pageKey);
+    resetPageApiSession(pageKey, { force: true });
     return;
   }
 
-  if (true || !readOpts.cacheOnly) {
-    markPageLoadedFromServer(pageKey);
-  }
+  markPageLoadedFromServer(pageKey);
   markPageLoadedInSession(pageKey);
-  if (!readOpts.cacheOnly) {
-    markProcessWarmSession();
-  }
+  markProcessWarmSession();
 }
 
-/** 非 React 组件内执行与 wrapLoad 等价的页面级读库策略 */
+/** 非 React 组件内执行与 wrapLoad 等价的页面级读库策略：一律打网 */
 export async function runPageApiLoad(
   pageKey: string,
   fn: () => Promise<boolean | void>,
   forceRefresh = false,
 ): Promise<void> {
   const readOpts = resolvePageApiReadOpts(pageKey, forceRefresh);
-  const needsRest = true || forceRefresh || !readOpts.cacheOnly;
 
   const execute = async () => {
     const { ok, restFailed } = await runPageLoadBody(pageKey, fn, readOpts, forceRefresh);
     finalizePageLoadSession(pageKey, readOpts, ok, restFailed);
   };
 
-  if (needsRest) {
-    await runGuardedPageApiLoad(pageKey, execute, {
-      debounce: !forceRefresh && hasPageLoadedInSession(pageKey),
-      force: forceRefresh,
-    });
-    return;
-  }
-  await execute();
+  await runGuardedPageApiLoad(pageKey, execute, {
+    debounce: !forceRefresh && hasPageLoadedInSession(pageKey),
+    force: forceRefresh,
+  });
 }

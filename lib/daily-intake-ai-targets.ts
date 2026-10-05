@@ -78,10 +78,10 @@ function buildSevenDayDigest(records: HealthRecordRow[], endYmd: string): string
   if (Number.isNaN(end.getTime())) {
     for (const [d, v] of [...byDate.entries()].sort()) {
       lines.push(
-        `${d}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，热量 ${Math.round(v.k)} kcal`,
+        `${d}：水�?${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳�?${Math.round(v.c)} g，热�?${Math.round(v.k)} kcal`,
       );
     }
-    return lines.length ? lines.join('\n') : '（近7日无摄入记录）';
+    return lines.length ? lines.join('\n') : '（近7日无摄入记录�?;
   }
   for (let i = 6; i >= 0; i -= 1) {
     const d = new Date(end);
@@ -92,7 +92,7 @@ function buildSevenDayDigest(records: HealthRecordRow[], endYmd: string): string
     const ymd = `${y}-${m}-${day}`;
     const v = byDate.get(ymd) ?? { h: 0, p: 0, c: 0, k: 0 };
     lines.push(
-      `${ymd}：水分 ${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳水 ${Math.round(v.c)} g，热量 ${Math.round(v.k)} kcal`,
+      `${ymd}：水�?${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳�?${Math.round(v.c)} g，热�?${Math.round(v.k)} kcal`,
     );
   }
   return lines.join('\n');
@@ -118,18 +118,18 @@ function buildContextBlock(params: {
   const weekdayLabel = getChineseWeekdayLabelFromYmd(todayYmd);
   const scheduleLine =
     daySchedule === 'sedentary'
-      ? '【今日日程】静坐习惯，无周训练/休息日划分。'
-      : `【今日日程】${weekdayLabel ?? todayYmd} 为${getUserDayScheduleLabelZh(daySchedule)}。周计划：${formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与热量以支持训练；休息日温和降低训练日定量（尤其碳水与热量），仍保证基础营养。`;
+      ? '【今日日程】静坐习惯，无周训练/休息日划分�?
+      : `【今日日程�?{weekdayLabel ?? todayYmd} �?{getUserDayScheduleLabelZh(daySchedule)}。周计划�?{formatUserWorkoutWeekPlanZh(user)}。请按今日类型调整四项摄入目标：健身日适度提高蛋白质、碳水、水分与热量以支持训练；休息日温和降低训练日定量（尤其碳水与热量），仍保证基础营养。`;
   const dietaryLine = formatDietaryPrefsForAi(dietary);
 
   return [
-    `【今日日期】${todayYmd}`,
-    `【用户档案】称呼：${user.name ?? '用户'}；性别：${user.gender}；生日：${user.birthday ?? '未填'}；年龄(档案)：${age}；身高 cm：${h}；体重 kg：${w}；生活方式：${user.lifestyle}；目标：${user.goal}`,
+    `【今日日期�?{todayYmd}`,
+    `【用户档案】称呼：${user.name ?? '用户'}；性别�?{user.gender}；生日：${user.birthday ?? '未填'}；年�?档案)�?{age}；身�?cm�?{h}；体�?kg�?{w}；生活方式：${user.lifestyle}；目标：${user.goal}`,
     scheduleLine,
     dietaryLine
-      ? `【饮食偏好与禁忌】${dietaryLine}。请在建议中严格避开过敏与忌口项，并尊重素食等标签。`
+      ? `【饮食偏好与禁忌�?{dietaryLine}。请在建议中严格避开过敏与忌口项，并尊重素食等标签。`
       : null,
-    `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水分 ${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳水 ${heuristic.Carbohydrate_g} g；热量 ${heuristic.Calories_kcal} kcal`,
+    `【本地公式参考目标（已按今日${getUserDayScheduleLabelZh(daySchedule)}微调，供你对齐数量级）】水�?${heuristic.Water_ml} ml；蛋白质 ${heuristic.Protein_g} g；碳�?${heuristic.Carbohydrate_g} g；热�?${heuristic.Calories_kcal} kcal`,
     `【近7日（含今日）每日摄入合计】`,
     buildSevenDayDigest(records, todayYmd),
   ]
@@ -172,7 +172,7 @@ async function writeCache(row: DailyAiIntakeTargetsRow): Promise<void> {
   await setAppSetting(AppSettingKey.dailyIntakeAiTargets, row);
 }
 
-/** 个人资料变更后调用，使下次进入首页重新请求 AI */
+/** 个人资料变更后调用，使下次进入首页重新请�?AI */
 export async function invalidateDailyIntakeAiTargetsCache(): Promise<void> {
   await removeAppSetting(AppSettingKey.dailyIntakeAiTargets);
 }
@@ -184,15 +184,15 @@ export type EnsureDailyAiIntakeTargetsResult =
   | { status: 'failed'; error: string };
 
 /**
- * 每个自然日、每位用户档案指纹最多请求一次模型；成功则写入 app_settings。
+ * 每个自然日、每位用户档案指纹最多请求一次模型；成功则写�?app_settings�?
  */
 export async function ensureDailyAiIntakeTargetsForToday(params: {
   user: UserRow;
   todayYmd: string;
-  /** 首页已在同一次 wrapLoad 内同步 health_records 后传 true，避免重复 REST */
-  healthRecordsLocalOnly?: boolean;
+  /** 首页已在同一�?wrapLoad 内同�?health_records 后传 true，避免重�?REST */
+  healthRecordsSkipFetch?: boolean;
 }): Promise<EnsureDailyAiIntakeTargetsResult> {
-  const { user, todayYmd, healthRecordsLocalOnly } = params;
+  const { user, todayYmd, healthRecordsSkipFetch } = params;
   const dietary = await loadDietaryPrefs();
   const fingerprint = buildProfileFingerprint(user, todayYmd, dietary);
   const cached = await readCache();
@@ -211,7 +211,7 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
   }
 
   const records = await getHealthRecordsLast7Days(user.id, todayYmd, {
-    cacheOnly: healthRecordsLocalOnly,
+    forceRefresh: true,
   });
   const context = buildContextBlock({ user, todayYmd, records, dietary });
   const ai = await estimateDailyIntakeTargetsFromContext({ apiKey, contextBlock: context });

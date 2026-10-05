@@ -1,6 +1,6 @@
 /**
- * 复盘页专用 REST：灌入本地 SQLite 后供仓库只读。
- * 失败时只回退本地，禁止降级 `/api/data/*` 全表 List。
+ * 复盘页专�?REST：灌入本�?SQLite 后供仓库只读�?
+ * 失败时只回退本地，禁止降�?`/api/data/*` 全表 List�?
  */
 import {
   apiGetReviewCatalog,
@@ -51,7 +51,6 @@ export type ReviewCatalogData = {
 export async function fetchReviewCatalog(opts?: {
   scope?: 'daily' | 'weekly' | 'monthly' | 'all';
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewCatalogData> {
   return fetchPage<
     { dimensions?: unknown; columns?: unknown },
@@ -60,7 +59,6 @@ export async function fetchReviewCatalog(opts?: {
     domain: 'review',
     op: 'catalog',
     opts,
-    respectLocalOnly: false,
     fetch: (signal) => apiGetReviewCatalog({ scope: opts?.scope, signal }),
     apply: async (payload) => {
       const { dimensions, columns } = await syncCatalogParts(payload);
@@ -86,7 +84,6 @@ export async function fetchReviewHome(opts: {
   weekStart?: string;
   monthStart?: string;
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewHomeData> {
   return fetchPage<
     {
@@ -101,7 +98,6 @@ export async function fetchReviewHome(opts: {
     domain: 'review',
     op: 'home',
     opts,
-    respectLocalOnly: false,
     fetch: (signal) =>
       apiGetReviewHome({
         logicalToday: opts.logicalToday,
@@ -175,8 +171,8 @@ export type ReviewMonthlyData = {
 };
 
 /**
- * 日 / 周 / 月 journal 同构拉取：按 scope 选表与 REST，灌入本地后返回。
- * 日刊要求 start+end；周/月可用 weekStart / monthStart 或 start/end。
+ * �?/ �?/ �?journal 同构拉取：按 scope 选表�?REST，灌入本地后返回�?
+ * 日刊要求 start+end；周/月可�?weekStart / monthStart �?start/end�?
  */
 export async function fetchReviewJournal(opts: {
   scope: ReviewJournalScope;
@@ -185,7 +181,6 @@ export async function fetchReviewJournal(opts: {
   weekStart?: string;
   monthStart?: string;
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewJournalData> {
   const { scope } = opts;
   const table = REVIEW_JOURNAL_SCOPE[scope].table;
@@ -194,11 +189,10 @@ export async function fetchReviewJournal(opts: {
     domain: 'review',
     op: scope,
     opts,
-    respectLocalOnly: false,
     fetch: async (signal) => {
       if (scope === 'daily') {
         if (!opts.start || !opts.end) {
-          throw new Error('fetchReviewJournal(daily) 需要 start 与 end');
+          throw new Error('fetchReviewJournal(daily) 需�?start �?end');
         }
         return apiGetReviewDaily({ start: opts.start, end: opts.end, signal });
       }
@@ -230,7 +224,6 @@ export async function fetchReviewDaily(opts: {
   start: string;
   end: string;
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewDailyData> {
   const result = await fetchReviewJournal({ scope: 'daily', ...opts });
   return { journals: result.journals as DailyReviewJournalRow[], fromApi: result.fromApi };
@@ -241,7 +234,6 @@ export async function fetchReviewWeekly(opts: {
   start?: string;
   end?: string;
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewWeeklyData> {
   const result = await fetchReviewJournal({ scope: 'weekly', ...opts });
   return { journals: result.journals as WeeklyReviewJournalRow[], fromApi: result.fromApi };
@@ -252,7 +244,6 @@ export async function fetchReviewMonthly(opts: {
   start?: string;
   end?: string;
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewMonthlyData> {
   const result = await fetchReviewJournal({ scope: 'monthly', ...opts });
   return { journals: result.journals as MonthlyReviewJournalRow[], fromApi: result.fromApi };
@@ -283,7 +274,6 @@ export async function fetchReviewWeekMetrics(opts: {
   end: string;
   rangeKind?: 'rolling-7' | 'calendar-week';
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<ReviewWeekMetricsPayload & { fromApi: boolean }> {
   type WeekMetricsResult = ReviewWeekMetricsPayload & { fromApi: boolean };
   const rangeKind = opts.rangeKind ?? 'rolling-7';
@@ -291,7 +281,6 @@ export async function fetchReviewWeekMetrics(opts: {
     domain: 'review',
     op: 'week-metrics',
     opts,
-    respectLocalOnly: false,
     fetch: (signal) =>
       apiGetReviewWeekMetrics({
         start: opts.start,

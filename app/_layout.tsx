@@ -35,6 +35,7 @@ import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
 import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api-incremental-sync';
 import {
+  formatPendingFlushError,
   runStartupPendingFlush,
   subscribePendingFlushBlock,
 } from '@/lib/pending-flush-gate';
@@ -195,7 +196,7 @@ function RootLayoutInner() {
     } catch (e) {
       console.warn('[bootstrap] pending 冲刷异常', e);
       setFlushReady(false);
-      setFlushError('有未同步到服务器的本地修改，请保持网络后重试');
+      setFlushError(formatPendingFlushError(e));
       return false;
     } finally {
       setFlushStatus(null);

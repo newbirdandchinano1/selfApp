@@ -1,6 +1,6 @@
 /**
- * 我的 Tab / 画像子页专用 REST：灌入本地 SQLite 后供仓库只读。
- * 失败时只回退本地，禁止降级 `/api/data/*` 全表 List。
+ * 我的 Tab / 画像子页专用 REST：灌入本�?SQLite 后供仓库只读�?
+ * 失败时只回退本地，禁止降�?`/api/data/*` 全表 List�?
  */
 import {
   apiGetProfileMemoList,
@@ -19,18 +19,17 @@ export function shouldFetchProfileFromApi(): boolean {
   return shouldFetchPageFromApi();
 }
 
-/** 备忘录列表子页（含 tags / tag_links 全量拼盘） */
+/** 备忘录列表子页（�?tags / tag_links 全量拼盘�?*/
 export async function fetchProfileMemoList(opts?: {
   signal?: AbortSignal;
-  serverFallback?: boolean;
+ 
   forceRefresh?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',
     op: 'memo-list',
     opts,
-    // 子页无 PAGE_SCOPE 时 wrapLoad 常为 cacheOnly；标签/备忘管理页需软同步覆盖本地
-    respectLocalOnly: false,
+    // 子页�?PAGE_SCOPE �?wrapLoad 常为 cacheOnly；标�?备忘管理页需软同步覆盖本�?
     fetch: (signal) => apiGetProfileMemoList({ signal }),
     apply: async (payload) => {
       await Promise.all([
@@ -38,7 +37,7 @@ export async function fetchProfileMemoList(opts?: {
         upsertPageRows('tags', asRecordArray(payload.tags), { reconcileSnapshot: true }),
         upsertPageRows('tag_links', asRecordArray(payload.tagLinks), { reconcileSnapshot: true }),
       ]);
-      // 服务端历史缺 domain / 被默认成 task 时，按关联把仅备忘录标签纠正为 memo
+      // 服务端历史缺 domain / 被默认成 task 时，按关联把仅备忘录标签纠正�?memo
       const { repairTagDomainsFromLinks } = await import('@/lib/repositories/tags/tag');
       await repairTagDomainsFromLinks();
       return { fromApi: true };
@@ -46,10 +45,9 @@ export async function fetchProfileMemoList(opts?: {
   });
 }
 
-/** 心愿板子页 */
+/** 心愿板子�?*/
 export async function fetchProfileWishBoard(opts?: {
   signal?: AbortSignal;
-  serverFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',
