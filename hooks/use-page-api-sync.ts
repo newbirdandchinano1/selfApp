@@ -12,7 +12,6 @@ import {
   hasPageLoadedFromServer,
   markPageLoadedFromServer,
   notifyPageDataChanged,
-  notifyPageDataChanged,
   resetPageApiSession,
   resolvePageApiReadOpts,
   runPageLoadBody,
