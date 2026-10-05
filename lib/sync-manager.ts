@@ -69,15 +69,6 @@ async function runFlush(opts?: RequestPushOpts): Promise<void> {
         rethrow: opts?.rethrow ?? false,
         onlyTables: opts?.onlyTables,
       });
-      const scoped = (opts?.onlyTables?.length ?? 0) > 0;
-      if (!scoped) {
-        const { flushFrogScheduleApiOutbox, peekFrogScheduleOutboxCount } = await import(
-          '@/lib/schedule-write-direct'
-        );
-        await flushFrogScheduleApiOutbox();
-        const remaining = await peekFrogScheduleOutboxCount();
-        if (remaining > 0) requestRetryAfterFailure();
-      }
     });
   };
 

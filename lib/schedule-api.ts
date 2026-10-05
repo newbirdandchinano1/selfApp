@@ -1,9 +1,4 @@
 import { apiRequest } from '@/lib/api-client';
-import {
-  enqueueFrogScheduleAxis,
-  enqueueFrogSchedulePlacementDelete,
-  enqueueFrogSchedulePlacementUpsert,
-} from '@/lib/schedule-write-direct';
 import type { ScheduleAxisSettings, SchedulePlacementRow, ScheduleSubjectKind } from '@/lib/schedule/types';
 
 export type FrogScheduleWeekPayload = {
@@ -78,17 +73,15 @@ export async function pushFrogSchedulePlacement(body: {
   });
 }
 
-/** 本地优先：入出站队列，由 SyncManager 单一队列上传（失败保持 outbox） */
+/** 直连服务器保存轴设置；失败抛错，不入出站队列 */
 export async function apiSaveFrogScheduleAxis(
   axis: ScheduleAxisSettings,
-  _signal?: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<void> {
-  await enqueueFrogScheduleAxis(axis);
-  const { requestPush } = await import('@/lib/sync-manager');
-  await requestPush({ awaitSync: true, quiet: true });
+  await pushFrogScheduleAxis(axis, signal);
 }
 
-/** 本地优先：入出站队列，由 SyncManager 单一队列上传；成功则回写 sync_status */
+/** 直连服务器 upsert/delete 占用；失败抛错，不入出站队列 */
 export async function apiPostFrogSchedulePlacement(body: {
   action: 'upsert' | 'delete';
   placement?: SchedulePlacementRow;
@@ -96,14 +89,16 @@ export async function apiPostFrogSchedulePlacement(body: {
   signal?: AbortSignal;
 }): Promise<void> {
   if (body.action === 'delete' && body.id) {
-    await enqueueFrogSchedulePlacementDelete(body.id);
-  } else if (body.action === 'upsert' && body.placement) {
-    await enqueueFrogSchedulePlacementUpsert(body.placement);
-  } else {
+    await pushFrogSchedulePlacement({ action: 'delete', id: body.id, signal: body.signal });
     return;
   }
-  const { requestPush } = await import('@/lib/sync-manager');
-  await requestPush({ awaitSync: true, quiet: true });
+  if (body.action === 'upsert' && body.placement) {
+    await pushFrogSchedulePlacement({
+      action: 'upsert',
+      placement: body.placement,
+      signal: body.signal,
+    });
+  }
 }
 
 export async function apiCopyFrogScheduleWeek(body: {

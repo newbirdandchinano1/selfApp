@@ -44,11 +44,12 @@ import {
   upsertPlacementFromRemote,
   upsertWeekAxisSnapshot,
 } from '@/lib/repositories/schedule/schedule-store';
-import { apiGetFrogScheduleWeek, apiPostFrogSchedulePlacement, apiSaveFrogScheduleAxis } from '@/lib/schedule-api';
 import {
-  enqueueFrogSchedulePlacementDelete,
-  enqueueFrogSchedulePlacementUpsert,
-} from '@/lib/schedule-write-direct';
+  apiGetFrogScheduleWeek,
+  apiPostFrogSchedulePlacement,
+  apiSaveFrogScheduleAxis,
+  pushFrogSchedulePlacement,
+} from '@/lib/schedule-api';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { clampSlotHours } from '@/lib/schedule/axis';
 
@@ -189,22 +190,19 @@ async function hydrateAxisFromRemoteIfUnset(weekStartYmd: string): Promise<boole
 }
 
 /**
- * 将本地尚未上云的占用推到 frog-schedule REST（含 DB pending + AsyncStorage 出站队列）。
- * 解决：入格后进程被杀 / 推送失败未入队 → 桌面端永远看不到。
+ * 将本地尚未上云的占用直连推到 frog-schedule REST。
  */
 async function pushPendingLocalPlacements(): Promise<number> {
   const pending = await listPendingSchedulePlacements();
   let pushed = 0;
   for (const p of pending) {
     if (p.syncStatus === 'pending_delete') {
-      await enqueueFrogSchedulePlacementDelete(p.id);
+      await pushFrogSchedulePlacement({ action: 'delete', id: p.id });
     } else {
-      await enqueueFrogSchedulePlacementUpsert(p);
+      await pushFrogSchedulePlacement({ action: 'upsert', placement: p });
     }
     pushed += 1;
   }
-  const { requestPush } = await import('@/lib/sync-manager');
-  await requestPush({ awaitSync: true, quiet: true });
   return pushed;
 }
 
@@ -386,8 +384,6 @@ export async function placeFrogOnSchedule(params: {
     subjectId: params.subjectId,
   };
   const row = await insertPlacement(input);
-  // 立刻持久化出站项：即使后续指派/推送中断，加载日程时仍会补推
-  await enqueueFrogSchedulePlacementUpsert(row);
   notifyFrogScheduleChanged();
 
   try {
@@ -398,16 +394,11 @@ export async function placeFrogOnSchedule(params: {
     });
   } catch (err) {
     await softDeletePlacement(row.id);
-    await enqueueFrogSchedulePlacementDelete(row.id);
     notifyFrogScheduleChanged();
     throw err;
   }
 
-  try {
-    await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
-  } catch {
-    // 已入出站队列，加载日程时补推
-  }
+  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
   notifyFrogScheduleChanged();
   return row;
 }
@@ -494,12 +485,7 @@ export async function rematerializeOrphanedPlacement(params: {
   }
 
   const row = (await getPlacementById(placement.id))!;
-  await enqueueFrogSchedulePlacementUpsert(row);
-  try {
-    await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
-  } catch {
-    /* 已入出站队列 */
-  }
+  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
   notifyFrogScheduleChanged();
   return row;
 }
@@ -518,9 +504,7 @@ export async function removePlacementSegment(
   }
 
   await softDeletePlacement(placementId);
-  // pending_create 会被硬删；其余走 pending_delete。出站队列兜底推送删除。
-  await enqueueFrogSchedulePlacementDelete(placementId);
-  void apiPostFrogSchedulePlacement({ action: 'delete', id: placementId }).catch(() => undefined);
+  await apiPostFrogSchedulePlacement({ action: 'delete', id: placementId });
 
   const remain = await countSubjectPlacementsOnDay(
     placement.weekStartYmd,
@@ -556,8 +540,7 @@ export async function cancelAssignForPlacementDay(
   );
   for (const p of all) {
     await softDeletePlacement(p.id);
-    await enqueueFrogSchedulePlacementDelete(p.id);
-    void apiPostFrogSchedulePlacement({ action: 'delete', id: p.id }).catch(() => undefined);
+    await apiPostFrogSchedulePlacement({ action: 'delete', id: p.id });
   }
   await unassignSubjectDay(placement.subjectKind, placement.subjectId, assignYmd);
   notifyFrogScheduleChanged();
