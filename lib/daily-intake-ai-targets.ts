@@ -81,7 +81,7 @@ function buildSevenDayDigest(records: HealthRecordRow[], endYmd: string): string
         `${d}：水�?${Math.round(v.h)} ml，蛋白质 ${Math.round(v.p)} g，碳�?${Math.round(v.c)} g，热�?${Math.round(v.k)} kcal`,
       );
     }
-    return lines.length ? lines.join('\n') : '（近7日无摄入记录�?;
+    return lines.length ? lines.join('\n') : '?7??????';
   }
   for (let i = 6; i >= 0; i -= 1) {
     const d = new Date(end);

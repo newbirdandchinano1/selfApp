@@ -122,7 +122,7 @@ export async function pullAndApplySyncChanges(opts?: { signal?: AbortSignal }): 
         const page = await fetchChangesPage(cursor);
         if (page.needFullSync) {
           needFullSync = true;
-          // Phase 3: needFullSync  bootstrap ???? cursor? /sync/full
+          // Phase 3: needFullSync ï¿½ï¿½ bootstrap ?ï¿½?ï¿½ï¿½ï¿½?ï¿½?ï¿½ cursorï¿½ï¿½ï¿½ï¿½? /sync/fullï¿½ï¿½
           void import('@/lib/sync-bootstrap').then((m) => m.handleNeedFullSync().catch(() => undefined));
           break;
         }

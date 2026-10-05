@@ -4,7 +4,7 @@
  * 不再调用 AI（曾误复用 finance/txn-comment，启动重同步会轰炸后端）。
  */
 
-import { AppSettingKey, getAppSetting } from '@/lib/app-settings-store';
+import { AppSettingKey, getAppSettingFromCache } from '@/lib/app-settings-store';
 
 const TITLE_MAX = 28;
 const BODY_MAX = 80;
@@ -35,7 +35,7 @@ function normalizeCopy(title: string, body: string): NotificationAiCopy {
 }
 
 async function readCache(): Promise<CacheStore> {
-  const raw = await getAppSetting<unknown>(AppSettingKey.notificationAiCopyCache);
+  const raw = await getAppSettingFromCache<unknown>(AppSettingKey.notificationAiCopyCache);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { entries: [] };
   const entries = (raw as { entries?: unknown }).entries;
   if (!Array.isArray(entries)) return { entries: [] };

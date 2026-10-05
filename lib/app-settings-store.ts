@@ -130,22 +130,31 @@ export async function migrateAppSettingsFromAsyncStorageIfNeeded(): Promise<void
   ]);
 }
 
-export async function getAppSettingRaw(key: string): Promise<string | null> {
+async function readAppSettingRawFromCache(key: string): Promise<string | null> {
   await migrateAppSettingsFromAsyncStorageIfNeeded();
   const db = await getDatabase();
   const localRow = await db.getFirstAsync<{ value_json: string; sync_status: string }>(
     'SELECT value_json, sync_status FROM app_settings WHERE key = ? LIMIT 1',
     [key],
   );
-  if (localRow) {
-    if (localRow.sync_status === 'pending_delete') return null;
-    if (localRow.value_json != null && localRow.value_json !== '') {
-      return localRow.value_json;
-    }
-  }
+  if (!localRow || localRow.sync_status === 'pending_delete') return null;
+  return localRow.value_json != null && localRow.value_json !== '' ? localRow.value_json : null;
+}
+
+export async function getAppSettingRaw(key: string): Promise<string | null> {
+  const cachedRaw = await readAppSettingRawFromCache(key);
+  if (cachedRaw != null) return cachedRaw;
+
   const row = await readApiRecord<{ value_json: string }>('app_settings', key, { serverFallback: true });
   if (!row?.value_json) return null;
   return row.value_json;
+}
+
+/** 读取本地设置缓存；适用于不应因缓存未命中而访问服务器的可选数据。 */
+export async function getAppSettingFromCache<T>(key: string): Promise<T | null> {
+  const raw = await readAppSettingRawFromCache(key);
+  if (raw == null) return null;
+  return parseStoredValue(raw) as T;
 }
 
 export async function getAppSetting<T>(key: string): Promise<T | null> {

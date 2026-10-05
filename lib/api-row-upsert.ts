@@ -827,6 +827,7 @@ export async function upsertHabitsReferencedByCheckIns(
   uploadedPkByTable.set('habits', uploadedHabits);
 
   for (const hid of habitIds) {
+    if (uploadedHabits.has(hid)) continue;
     const habitRow = habitRows.find(h => String(h.id) === hid);
     if (!habitRow) continue;
     try {
