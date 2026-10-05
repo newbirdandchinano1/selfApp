@@ -584,7 +584,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   modalRoot: { flex: 1, justifyContent: 'center', padding: 24 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject },
+  modalBackdrop: { ...StyleSheet.absoluteFill },
   modalCard: {
     borderRadius: 22,
     padding: 22,

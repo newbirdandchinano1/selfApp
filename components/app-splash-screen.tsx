@@ -26,6 +26,10 @@ export type AppSplashScreenProps = {
   dbError?: string | null;
   /** 首启全量同步进度（可选） */
   syncProgress?: InitialSyncProgress | null;
+  /** 覆盖 syncProgress 的状态文案（如 pending 冲刷） */
+  statusText?: string | null;
+  /** 冲刷/初始化重试进行中 */
+  retrying?: boolean;
   onRetry?: () => void;
 };
 
@@ -44,6 +48,8 @@ export function AppSplashScreen({
   onFinish,
   dbError,
   syncProgress,
+  statusText,
+  retrying,
   onRetry,
 }: AppSplashScreenProps) {
   const insets = useSafeAreaInsets();
@@ -116,7 +122,7 @@ export function AppSplashScreen({
 
   if (!visible) return null;
 
-  const syncStatusText = formatSyncProgress(syncProgress);
+  const syncStatusText = statusText?.trim() || formatSyncProgress(syncProgress);
 
   return (
     <Animated.View style={[styles.root, { opacity: shellOpacity }]}>
@@ -152,17 +158,27 @@ export function AppSplashScreen({
       </Animated.View>
 
       {dbError ? (
-        <View style={[styles.errorOverlay, { paddingBottom: Math.max(insets.bottom, 24) }]}>
+        <View
+          style={[
+            styles.errorOverlay,
+            {
+              paddingTop: Math.max(insets.top, 24),
+              paddingBottom: Math.max(insets.bottom, 24),
+            },
+          ]}
+        >
           <Text style={styles.errorText}>{dbError}</Text>
+          {statusText ? <Text style={styles.retryHint}>{statusText}</Text> : null}
           <View style={styles.errorActions}>
             <Pressable
+              disabled={retrying}
               onPress={onRetry}
               style={({ pressed }) => [
                 styles.errorButton,
-                { opacity: pressed ? 0.82 : 1 },
+                { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
               ]}
             >
-              <Text style={styles.errorButtonText}>重试</Text>
+              <Text style={styles.errorButtonText}>{retrying ? '正在重试…' : '重试'}</Text>
             </Pressable>
           </View>
         </View>
@@ -173,7 +189,7 @@ export function AppSplashScreen({
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: '#ffffff',
     zIndex: 9999,
   },
@@ -207,7 +223,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(255,255,255,0.92)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -219,6 +235,14 @@ const styles = StyleSheet.create({
     color: '#131b2e',
     textAlign: 'center',
     opacity: 0.85,
+  },
+  retryHint: {
+    marginTop: 8,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#131b2e',
+    textAlign: 'center',
+    opacity: 0.55,
   },
   errorActions: {
     flexDirection: 'row',

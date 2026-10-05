@@ -772,7 +772,6 @@ async function pullTasksView(opts: {
 	    !shouldSkipPageNetwork({
 	      forceLocal: opts?.forceLocal,
 	      forceRefresh: opts?.forceRefresh,
-	      forceRefresh: opts?.forceRefresh,
 	    })
 	  ) {
 	
@@ -1185,7 +1184,6 @@ export async function fetchTasksPageData(opts?: {
   /** 多端 dirty / 下拉：强制走 page API，忽略 wrapLoad cacheOnly */
   forceRefresh?: boolean;
 
-  forceRefresh?: boolean;
 
   signal?: AbortSignal;
 
@@ -1198,7 +1196,6 @@ export async function fetchTasksPageData(opts?: {
   if (
     !shouldSkipPageNetwork({
       forceLocal: opts?.forceLocal,
-      forceRefresh: opts?.forceRefresh,
       forceRefresh: opts?.forceRefresh,
     })
   ) {

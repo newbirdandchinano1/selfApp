@@ -515,7 +515,7 @@ export function ReviewSettingsScreen() {
 
       <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
         <View style={[styles.modalRoot, { backgroundColor: colors.overlay }]}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setPickerOpen(false)} accessibilityLabel="关闭" />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPickerOpen(false)} accessibilityLabel="关闭" />
           <View
             style={[
               styles.modalSheet,
@@ -632,7 +632,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   reminderTimeModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   reminderTimePickerCard: {
     borderRadius: Radius['2xl'],

@@ -377,7 +377,7 @@ function TrendChartPanel({
             height={CHART_H}
             viewBox={`0 0 ${CHART_W} ${CHART_H}`}
             preserveAspectRatio="none"
-            style={StyleSheet.absoluteFillObject}
+            style={StyleSheet.absoluteFill}
           >
             {trendChartGeometry ? (
               <>
@@ -979,7 +979,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   chartNodes: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   chartNodeHit: {
     position: 'absolute',

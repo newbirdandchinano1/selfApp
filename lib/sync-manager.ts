@@ -118,7 +118,7 @@ export function startSyncPushScheduler(): void {
     } catch (e) {
       if (__DEV__) console.warn('[sync-manager] 启动扫描 pending 失败', e);
     }
-    void requestPush();
+    await requestPush({ awaitSync: true, quiet: true });
   })();
 }
 

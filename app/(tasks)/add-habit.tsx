@@ -2313,7 +2313,7 @@ const styles = StyleSheet.create({
   },
   iconModalRoot: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['4xl'] },
   iconModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   iconModalCard: {
     borderRadius: Radius['2xl'],

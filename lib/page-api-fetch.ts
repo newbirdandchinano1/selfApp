@@ -11,7 +11,6 @@ export type PageFetchOpts = {
   serverFallback?: boolean;
   /** 强制打网（忽略 wrapLoad 的 cacheOnly） */
   forceRefresh?: boolean;
-  forceRefresh?: boolean;
 };
 
 export type PageFetchResult = { fromApi: boolean };
@@ -28,9 +27,8 @@ export function shouldFetchPageFromApi(): boolean {
 export function shouldSkipPageNetwork(opts?: {
   forceLocal?: boolean;
   forceRefresh?: boolean;
-  forceRefresh?: boolean;
 }): boolean {
-  if (opts?.forceRefresh || opts?.forceRefresh) return false;
+  if (opts?.forceRefresh) return false;
   if (opts?.forceLocal) return true;
   return !shouldFetchPageFromApi();
 }

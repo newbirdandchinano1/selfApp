@@ -1057,7 +1057,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   bottomFade: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     opacity: 0.94,
   },
   editBtn: {

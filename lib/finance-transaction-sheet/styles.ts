@@ -16,7 +16,7 @@ export const financeTransactionSheetStyles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.25)',
   },
   sheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 0,
   },
   sheetContainer: {
@@ -442,7 +442,7 @@ export const financeTransactionSheetStyles = StyleSheet.create({
     padding: 18,
   },
   pickerModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   pickerModalCard: {
     width: '100%',

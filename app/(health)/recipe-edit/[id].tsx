@@ -533,7 +533,7 @@ const styles = StyleSheet.create({
   },
   previewImage: { width: '100%', aspectRatio: 1 },
   heroOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
     padding: 12,

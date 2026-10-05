@@ -321,7 +321,7 @@ const styles = StyleSheet.create({
   countText: { fontSize: 15, fontWeight: '700' },
 
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(15,23,42,0.35)',
   },
   modalCard: {

@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
 import { isApiGenericWriteForbidden } from '@/lib/api-allowed-tables';
 import { ApiRequestError, ensureApiLoggedIn } from '@/lib/api-client';
+import { isSyncOccConflictApiError } from '@/lib/sync-write-meta';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
   ApiRowUploadSkippedError,
@@ -71,6 +72,11 @@ function shouldSkipGenericRestUpload(table: string): boolean {
     return true;
   }
   return false;
+}
+
+/** 启动闸门只统计真正会走推送的表，避免冲不掉的历史行冒充「没网」。 */
+function isPendingFlushTrackedTable(table: string): boolean {
+  return !shouldSkipGenericRestUpload(table) || APP_DOMAIN_GENERIC_WRITE_FORBIDDEN.has(table);
 }
 
 const API_DIRTY_STATE_KEY = 'selfapp:api-dirty-tables-v1';
@@ -244,19 +250,6 @@ async function markLocalRowsSynced(
         );
         continue;
       }
-      // tasks/projects：extra_data 若已比上传快照新（如刚 frog-assign），勿标 synced，否则下行会用旧 extra 把指派打回
-      if ((table === 'tasks' || table === 'projects') && Object.prototype.hasOwnProperty.call(row, 'extra_data')) {
-        const uploadedExtra = row.extra_data == null ? '' : String(row.extra_data);
-        await db.runAsync(
-          `UPDATE ${quoteIdent(table)}
-              SET sync_status = 'synced'
-            WHERE ${quoteIdent(pkCol)} = ?
-              AND sync_status IN ('pending_create', 'pending_update')
-              AND IFNULL(extra_data, '') = ?`,
-          [pk, uploadedExtra],
-        );
-        continue;
-      }
       await db.runAsync(
         `UPDATE ${quoteIdent(table)} SET sync_status = 'synced' WHERE ${quoteIdent(pkCol)} = ?`,
         [pk],
@@ -369,10 +362,27 @@ export async function markPendingTablesDirty(tables: Iterable<string>): Promise<
   }
 }
 
+/** 开发日志 / 启动闸门：各表 pending 行数（仅 >0） */
+export async function countPendingApiSyncRowsByTable(): Promise<Record<string, number>> {
+  const db = await getDatabase();
+  if (!db) return {};
+  const tables = (await listLocalUserTablesForApiUpload()).filter(t => isPendingFlushTrackedTable(t));
+  const out: Record<string, number> = {};
+  for (const table of tables) {
+    if (!(await tableHasSyncStatusColumn(table))) continue;
+    const row = await db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ${quoteIdent(table)} WHERE sync_status != 'synced'`,
+    );
+    const n = Number(row?.n ?? 0);
+    if (n > 0) out[table] = n;
+  }
+  return out;
+}
+
 async function listPendingApiSyncTableNames(): Promise<string[]> {
   const db = await getDatabase();
   if (!db) return [];
-  const tables = (await listLocalUserTablesForApiUpload()).filter(t => !REST_SKIP_TABLES.has(t));
+  const tables = (await listLocalUserTablesForApiUpload()).filter(t => isPendingFlushTrackedTable(t));
   const out: string[] = [];
   for (const table of tables) {
     if (!(await tableHasSyncStatusColumn(table))) continue;
@@ -414,16 +424,30 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
   }
 
   if (isSilentCloudRestoreInFlight()) {
+    if (opts?.rethrow) {
+      throw new Error('正在恢复本地数据，请稍后重试同步');
+    }
     scheduleUnifiedPush();
     return;
   }
 
   const dirtyList =
     only.length > 0 ? only : peekApiDirtyTables().filter(t => !REST_SKIP_TABLES.has(t));
-  if (dirtyList.length === 0) return;
+  if (dirtyList.length === 0) {
+    if (opts?.rethrow) {
+      const pending = await listPendingApiSyncTableNames();
+      if (pending.length > 0) {
+        throw new Error('有未同步到服务器的本地修改，请保持网络后重试');
+      }
+    }
+    return;
+  }
 
   const db = await getDatabase();
-  if (!db) return;
+  if (!db) {
+    if (opts?.rethrow) throw new Error('本地数据库未就绪，请稍后重试');
+    return;
+  }
 
   try {
     await ensureApiLoggedIn();
@@ -482,6 +506,12 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
 
     if (effectiveOrder.length === 0) {
       await clearApiDirtyTablesWithoutPending(dirtyList);
+      if (opts?.rethrow) {
+        const pending = await listPendingApiSyncTableNames();
+        if (pending.length > 0) {
+          throw new Error('有未同步到服务器的本地修改，请保持网络后重试');
+        }
+      }
       return;
     }
 
@@ -624,6 +654,11 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
           ) {
             if (__DEV__) console.warn('[api incremental] 通用写已禁用，跳过', table, e.message);
             uploadedRows.push(uploadRow);
+            continue;
+          }
+          // OCC：单行隔离，不打断同批其它 pending（1-A 任务冲刷不得被习惯 409 拖死）
+          if (isSyncOccConflictApiError(e)) {
+            if (__DEV__) console.warn('[api incremental] OCC 已隔离', table, e.message);
             continue;
           }
           // 积分钱包 OCC 不得中断同批其它表（打卡/流水）

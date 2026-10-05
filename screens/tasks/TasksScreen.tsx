@@ -2897,13 +2897,11 @@ export default function TasksScreen() {
         boundary: dayBoundary,
         serverFallback: true,
         // 显式透传：不单靠 wrapLoad 的 activePageReadStack（SSE 早发 dirty 时更稳）
-        forceRefresh: forceRefresh || undefined,
-        forceRefresh: forceFullRefresh,
+        forceRefresh: forceRefresh || forceFullRefresh || undefined,
       }),
       fetchProjectsListForTab(projectTab, {
         hideCompletedProjectTasks: effectiveHideCompleted,
-        forceRefresh: forceRefresh || undefined,
-        forceRefresh: forceFullRefresh,
+        forceRefresh: forceRefresh || forceFullRefresh || undefined,
         serverFallback: true,
       }).catch((err) => {
         console.warn('加载项目列表 API 失败，回退本地组树', err);

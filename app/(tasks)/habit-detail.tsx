@@ -1524,7 +1524,7 @@ const styles = StyleSheet.create({
   muted: { color: TEXT_MUTED, fontSize: 14 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
   },
   pickerCard: {

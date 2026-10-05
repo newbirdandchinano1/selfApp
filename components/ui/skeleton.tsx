@@ -57,7 +57,7 @@ export function Skeleton({ width = '100%', height = 14, borderRadius = 8, style 
       ]}
     >
       <Animated.View
-        style={[StyleSheet.absoluteFillObject, { backgroundColor: highlightColor, opacity: overlayOpacity }]}
+        style={[StyleSheet.absoluteFill, { backgroundColor: highlightColor, opacity: overlayOpacity }]}
       />
     </View>
   );

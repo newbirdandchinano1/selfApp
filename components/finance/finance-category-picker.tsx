@@ -191,7 +191,7 @@ export function FinanceCategoryPicker({
 
       <Modal visible={addModalVisible} transparent animationType="fade" onRequestClose={onCloseAddModal}>
         <View style={modalStyles.backdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={onCloseAddModal} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={onCloseAddModal} />
           <View style={[modalStyles.card, { backgroundColor: surface }]}>
             <Text style={[modalStyles.title, { color: text }]}>添加{typeLabel}分类</Text>
             <Text style={[modalStyles.hint, { color: subtle }]}>例如：宠物、学习、兼职</Text>

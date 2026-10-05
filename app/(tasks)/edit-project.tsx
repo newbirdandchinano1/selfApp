@@ -1706,7 +1706,7 @@ const styles = StyleSheet.create({
   toastWrap: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   savingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 300,
     alignItems: 'center',
     justifyContent: 'center',

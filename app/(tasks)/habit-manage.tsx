@@ -694,7 +694,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalRoot: { ...StyleSheet.absoluteFillObject },
+  modalRoot: { ...StyleSheet.absoluteFill },
   menuSheet: {
     position: 'absolute',
     left: Spacing['5xl'],

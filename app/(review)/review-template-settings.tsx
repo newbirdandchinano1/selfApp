@@ -413,7 +413,7 @@ export default function ReviewTemplateSettingsScreen() {
           style={[styles.modalRoot, { backgroundColor: colors.overlay }]}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={0}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setEditor(null)} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setEditor(null)} />
           <View
             style={[
               styles.modalSheet,

@@ -24,7 +24,6 @@ export async function fetchProfileMemoList(opts?: {
   signal?: AbortSignal;
   serverFallback?: boolean;
   forceRefresh?: boolean;
-  forceRefresh?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',

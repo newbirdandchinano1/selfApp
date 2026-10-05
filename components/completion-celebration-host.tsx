@@ -260,7 +260,7 @@ export function CompletionCelebrationHost() {
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 400,
     elevation: 400,
     backgroundColor: 'transparent',

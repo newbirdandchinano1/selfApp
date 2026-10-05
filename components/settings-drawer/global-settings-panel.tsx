@@ -905,7 +905,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   modalRoot: { flex: 1, justifyContent: 'center', padding: 24 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)' },
+  modalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.45)' },
   modalCard: { borderRadius: 16, padding: 20, marginHorizontal: 8, zIndex: 1 },
   modalActions: {
     flexDirection: 'row',

@@ -1105,7 +1105,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing['6xl'],
   },
   birthdayModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   birthdayModalCard: {
     width: '100%',

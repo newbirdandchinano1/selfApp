@@ -1009,7 +1009,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   balanceModalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   balanceModalCenter: {
     flex: 1,

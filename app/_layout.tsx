@@ -2,12 +2,13 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from "expo-router/react-naviga
 import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { InteractionManager, Platform, AppState, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { AppSplashScreen } from '@/components/app-splash-screen';
+import { PendingFlushBlockOverlay } from '@/components/pending-flush-block-overlay';
 import { ApiLoadingShell } from '@/components/api-loading-shell';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
@@ -33,6 +34,10 @@ import { initDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
 import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api-incremental-sync';
+import {
+  runStartupPendingFlush,
+  subscribePendingFlushBlock,
+} from '@/lib/pending-flush-gate';
 import { startCloudPeriodicAlignScheduler } from '@/lib/cloud-sync-scheduler';
 import { loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { loadPersistedIntakeAssistantSelections } from '@/lib/intake-assistant-selection';
@@ -132,8 +137,17 @@ function RootLayoutInner() {
   const [showMainApp, setShowMainApp] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<InitialSyncProgress | null>(null);
+  const [flushStatus, setFlushStatus] = useState<string | null>(null);
+  const [flushError, setFlushError] = useState<string | null>(null);
+  const [flushReady, setFlushReady] = useState(false);
+  const [flushRetrying, setFlushRetrying] = useState(false);
+  const deferredStartedRef = useRef(false);
+  const hasBeenBlockedRef = useRef(false);
 
-  const runDeferredBootstrap = () => {
+  /** pending 冲刷成功后才启动 SyncManager，避免 Pull 抢在上传前覆盖缓存。 */
+  const runDeferredBootstrapOnce = () => {
+    if (deferredStartedRef.current) return;
+    deferredStartedRef.current = true;
     InteractionManager.runAfterInteractions(() => {
       void (async () => {
         try {
@@ -145,7 +159,6 @@ function RootLayoutInner() {
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
-            // Phase 6：poll + SSE 由 Manager 收口，页面不再自己 pull
             void import('@/lib/sync-manager').then((m) => m.SyncManager.start());
             if (isExpoSandboxNotificationDisabled()) {
               await clearExpoSandboxNotifications();
@@ -162,8 +175,36 @@ function RootLayoutInner() {
     });
   };
 
+  const runPendingFlushGate = async (): Promise<boolean> => {
+    setFlushStatus('正在同步未上传的本地修改…');
+    setFlushError(null);
+    try {
+      const result = await runStartupPendingFlush();
+      if (!result.ok) {
+        setFlushReady(false);
+        setFlushError(result.error ?? '有未同步到服务器的本地修改，请保持网络后重试');
+        if (__DEV__) {
+          console.warn('[bootstrap] pending 冲刷未完成', result.inventoryAfter);
+        }
+        return false;
+      }
+      setFlushError(null);
+      setFlushReady(true);
+      runDeferredBootstrapOnce();
+      return true;
+    } catch (e) {
+      console.warn('[bootstrap] pending 冲刷异常', e);
+      setFlushReady(false);
+      setFlushError('有未同步到服务器的本地修改，请保持网络后重试');
+      return false;
+    } finally {
+      setFlushStatus(null);
+    }
+  };
+
   const handleDbRetry = async () => {
     setDbError(null);
+    setFlushError(null);
     try {
       await initDatabase();
       await hydratePageApiSession();
@@ -171,7 +212,7 @@ function RootLayoutInner() {
       await hydrateApiDirtyFromStorage();
       await markAllPendingTablesDirty();
       setIsDbReady(true);
-      runDeferredBootstrap();
+      await runPendingFlushGate();
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       console.warn('数据库初始化失败', detail, e);
@@ -180,6 +221,16 @@ function RootLayoutInner() {
           ? `数据库初始化失败，请重试。\n${detail}`
           : '数据库初始化失败，请重试。',
       );
+    }
+  };
+
+  const handleFlushRetry = async () => {
+    if (flushRetrying) return;
+    setFlushRetrying(true);
+    try {
+      await runPendingFlushGate();
+    } finally {
+      setFlushRetrying(false);
     }
   };
 
@@ -221,16 +272,15 @@ function RootLayoutInner() {
           setDbError(null);
           setIsDbReady(true);
         }
-        runDeferredBootstrap();
-        void markAllPendingTablesDirty();
+        await runPendingFlushGate();
       } catch (e) {
         if (e instanceof Error && e.message === 'BOOTSTRAP_TIMEOUT') {
-          console.warn('启动初始化超时，仍进入应用');
+          console.warn('启动初始化超时，仍继续冲刷 pending');
           if (mounted) {
             setSyncProgress(null);
             setIsDbReady(true);
           }
-          runDeferredBootstrap();
+          await runPendingFlushGate();
           return;
         }
 
@@ -251,6 +301,22 @@ function RootLayoutInner() {
     return () => {
       mounted = false;
     };
+  }, []);
+
+  useEffect(() => {
+    return subscribePendingFlushBlock((blocked, message) => {
+      if (blocked) {
+        hasBeenBlockedRef.current = true;
+        setFlushReady(false);
+        setFlushError(message);
+        return;
+      }
+      if (!hasBeenBlockedRef.current) return;
+      hasBeenBlockedRef.current = false;
+      setFlushError(null);
+      setFlushReady(true);
+      runDeferredBootstrapOnce();
+    });
   }, []);
 
   useEffect(() => {
@@ -348,16 +414,31 @@ function RootLayoutInner() {
             </AppErrorBoundary>
             <PointsEarnedToastHost />
             <CompletionCelebrationHost />
+            {flushError ? (
+              <PendingFlushBlockOverlay
+                message={flushError}
+                retrying={flushRetrying}
+                onRetry={() => {
+                  void handleFlushRetry();
+                }}
+              />
+            ) : null}
           </View>
         ) : null}
         {!showMainApp ? (
           <AppSplashScreen
-            exitReady={isDbReady && !dbError}
+            exitReady={isDbReady && flushReady && !dbError && !flushError}
             onFinish={() => setShowMainApp(true)}
-            dbError={dbError}
+            dbError={dbError ?? flushError}
             syncProgress={syncProgress}
+            statusText={flushStatus}
+            retrying={flushRetrying}
             onRetry={() => {
-              void handleDbRetry();
+              if (dbError) {
+                void handleDbRetry();
+                return;
+              }
+              void handleFlushRetry();
             }}
           />
         ) : null}

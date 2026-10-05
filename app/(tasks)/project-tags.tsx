@@ -429,7 +429,7 @@ const styles = StyleSheet.create({
   itemAction: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   modalRoot: { flex: 1, justifyContent: 'center', padding: 24 },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(15,23,42,0.45)',
   },
   editorCard: {

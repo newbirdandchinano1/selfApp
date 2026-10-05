@@ -217,6 +217,8 @@ export async function apiLogin(opts?: {
     }
 
     await setApiAuthToken(token);
+    const { schedulePendingFlushAfterLogin } = await import('@/lib/pending-flush-gate');
+    schedulePendingFlushAfterLogin();
     return token;
   };
 

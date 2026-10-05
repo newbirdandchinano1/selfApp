@@ -684,7 +684,7 @@ export function RecordIntakeSheet({
 
 const styles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: 'flex-end' },
-  backdropPressable: { ...StyleSheet.absoluteFillObject },
+  backdropPressable: { ...StyleSheet.absoluteFill },
   backdrop: { flex: 1 },
   sheet: {
     width: '100%',
@@ -737,7 +737,7 @@ const styles = StyleSheet.create({
   photoPreviewPlaceholder: { alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16 },
   photoPreviewHint: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
   photoAnalyzingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(15,23,42,0.45)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -758,7 +758,7 @@ const styles = StyleSheet.create({
   textareaWrap: { borderRadius: 18, padding: 16, minHeight: 160, position: 'relative' },
   textarea: { fontSize: 16, lineHeight: 22, paddingRight: 34, minHeight: 128 },
   aiTextareaOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 18,
     backgroundColor: 'rgba(15,23,42,0.2)',
     alignItems: 'center',
