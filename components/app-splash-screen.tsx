@@ -14,7 +14,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InitialSyncProgress } from '@/lib/api-initial-sync';
 
 const MIN_SPLASH_MS = 1400;
-const FADE_IN_MS = 720;
 const FADE_OUT_MS = 420;
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -36,12 +35,15 @@ export type AppSplashScreenProps = {
 function formatSyncProgress(progress: InitialSyncProgress | null | undefined): string | null {
   if (!progress) return null;
   if (progress.phase === 'preparing') return '正在准备…';
+  if (progress.phase === 'warming') return '正在加载数据…';
   if (progress.phase === 'clearing') return '正在初始化本地数据…';
   return null;
 }
 
 /**
- * 全屏开屏：原生 Splash 与 JS 层使用同一张图，淡入缩放后等待初始化完成再淡出。
+ * 全屏开屏：原生 Splash 与 JS 层同一张图。
+ * 打包后原生层会盖住 JS，必须在 JS 开屏 layout 后立刻 hideAsync，
+ * 否则标题、同步文案和重试按钮都看不见。
  */
 export function AppSplashScreen({
   exitReady,
@@ -57,45 +59,36 @@ export function AppSplashScreen({
   const mountTimeRef = useRef(Date.now());
   const hasFinishedRef = useRef(false);
 
-  const imageOpacity = useRef(new Animated.Value(0)).current;
-  const imageScale = useRef(new Animated.Value(0.93)).current;
+  const nativeHiddenRef = useRef(false);
   const shellOpacity = useRef(new Animated.Value(1)).current;
   const titleOpacity = useRef(new Animated.Value(0)).current;
   const titleTranslateY = useRef(new Animated.Value(10)).current;
 
+  const hideNativeSplash = () => {
+    if (nativeHiddenRef.current) return;
+    nativeHiddenRef.current = true;
+    void SplashScreen.hideAsync().catch(() => {});
+  };
+
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(imageOpacity, {
-        toValue: 1,
-        duration: FADE_IN_MS,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.spring(imageScale, {
-        toValue: 1,
-        friction: 8,
-        tension: 70,
-        useNativeDriver: true,
-      }),
-      Animated.sequence([
-        Animated.delay(260),
-        Animated.parallel([
-          Animated.timing(titleOpacity, {
-            toValue: 1,
-            duration: 520,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.timing(titleTranslateY, {
-            toValue: 0,
-            duration: 520,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-        ]),
+    Animated.sequence([
+      Animated.delay(260),
+      Animated.parallel([
+        Animated.timing(titleOpacity, {
+          toValue: 1,
+          duration: 520,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(titleTranslateY, {
+          toValue: 0,
+          duration: 520,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
       ]),
     ]).start();
-  }, [imageOpacity, imageScale, titleOpacity, titleTranslateY]);
+  }, [titleOpacity, titleTranslateY]);
 
   useEffect(() => {
     if (!exitReady || hasFinishedRef.current) return;
@@ -111,7 +104,7 @@ export function AppSplashScreen({
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }).start(() => {
-        void SplashScreen.hideAsync().catch(() => {});
+        hideNativeSplash();
         setVisible(false);
         onFinish();
       });
@@ -125,23 +118,18 @@ export function AppSplashScreen({
   const syncStatusText = statusText?.trim() || formatSyncProgress(syncProgress);
 
   return (
-    <Animated.View style={[styles.root, { opacity: shellOpacity }]}>
-      <Animated.View
-        style={[
-          styles.imageWrap,
-          {
-            opacity: imageOpacity,
-            transform: [{ scale: imageScale }],
-          },
-        ]}
-      >
+    <Animated.View
+      style={[styles.root, { opacity: shellOpacity }]}
+      onLayout={hideNativeSplash}
+    >
+      <View style={styles.imageWrap}>
         <Image
           source={require('../assets/images/start.png')}
           style={styles.image}
           contentFit="cover"
           transition={0}
         />
-      </Animated.View>
+      </View>
 
       <Animated.View
         style={[
