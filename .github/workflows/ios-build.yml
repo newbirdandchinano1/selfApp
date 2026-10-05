@@ -14,7 +14,9 @@ env:
 
 jobs:
   build:
-    runs-on: macos-15
+    # 保留原来的成功环境
+    # 当前你的 macos-latest 实际使用 Xcode 26.6
+    runs-on: macos-latest
 
     steps:
       # ============================================================
@@ -34,58 +36,102 @@ jobs:
           cache-dependency-path: package-lock.json
 
       # ============================================================
-      # 3. Verify Environment
+      # 3. Detect / Verify Build Environment
       # ============================================================
+      #
+      # 把 Xcode 版本写入仓库工作区，
+      # 后面的 cache key 会把 Xcode 版本计算进去。
+      #
+      # 这样以后 GitHub 把 macos-latest 的 Xcode 从 26.6
+      # 升级到其他版本时，不会错误复用旧 DerivedData。
+      #
       - name: 3. Verify Environment
+        shell: bash
         run: |
-          echo "===== Node ====="
+          set -e
+
+          echo "========================================"
+          echo "Node"
+          echo "========================================"
           node -v
 
-          echo "===== npm ====="
+          echo "========================================"
+          echo "npm"
+          echo "========================================"
           npm -v
 
-          echo "===== CocoaPods ====="
+          echo "========================================"
+          echo "CocoaPods"
+          echo "========================================"
           pod --version
 
-          echo "===== Ruby ====="
+          echo "========================================"
+          echo "Ruby"
+          echo "========================================"
           ruby --version
 
-          echo "===== Xcode ====="
+          echo "========================================"
+          echo "Xcode"
+          echo "========================================"
           xcodebuild -version
 
-          echo "===== macOS ====="
+          echo "========================================"
+          echo "macOS"
+          echo "========================================"
           sw_vers
 
-          echo "===== Architecture ====="
+          echo "========================================"
+          echo "Architecture"
+          echo "========================================"
           uname -m
+
+          echo "========================================"
+          echo "Save Xcode version for cache key"
+          echo "========================================"
+
+          xcodebuild -version > .xcode-version-ci
+
+          cat .xcode-version-ci
 
       # ============================================================
       # 4. Cache CocoaPods
       # ============================================================
       - name: 4. Cache CocoaPods
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/Library/Caches/CocoaPods
             ~/.cocoapods
-          key: ${{ runner.os }}-cocoapods-${{ hashFiles('package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('.xcode-version-ci', 'package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
           restore-keys: |
             ${{ runner.os }}-cocoapods-
 
       # ============================================================
       # 5. Cache Xcode DerivedData
       # ============================================================
+      #
+      # 这是最关键的构建缓存。
+      #
+      # 不再执行 xcodebuild clean，
+      # 从而让 Xcode 使用恢复出来的 DerivedData。
+      #
       - name: 5. Cache Xcode DerivedData
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-xcode16.4-${{ hashFiles('package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
+          key: ${{ runner.os }}-xcode-${{ hashFiles('.xcode-version-ci', 'package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
           restore-keys: |
-            ${{ runner.os }}-xcode16.4-
+            ${{ runner.os }}-xcode-
 
       # ============================================================
-      # 6. Install Dependencies
+      # 6. Install JavaScript Dependencies
       # ============================================================
+      #
+      # npm ci：
+      # - 严格使用 package-lock.json
+      # - 更适合 CI
+      # - 配合 setup-node 的 npm cache
+      #
       - name: 6. Install Dependencies
         run: |
           npm ci --prefer-offline --no-audit --no-fund
@@ -93,6 +139,14 @@ jobs:
       # ============================================================
       # 7. Expo Prebuild
       # ============================================================
+      #
+      # --clean：
+      # 每次从干净状态重新生成 ios/
+      #
+      # --no-install：
+      # npm ci 已经完成依赖安装，
+      # 不让 Expo 再重复执行 npm install。
+      #
       - name: 7. Expo Prebuild
         run: |
           npx expo prebuild \
@@ -101,17 +155,32 @@ jobs:
             --no-install
 
       # ============================================================
-      # 8. Install Pods
+      # 8. Install CocoaPods Dependencies
       # ============================================================
       - name: 8. Install Pods
         working-directory: ios
+        shell: bash
         run: |
+          set -e
+
           echo "Installing CocoaPods dependencies..."
-          pod install --verbose
+
+          pod install
 
       # ============================================================
       # 9. Build Xcode Project
       # ============================================================
+      #
+      # 关键优化：
+      #
+      # 原来：
+      #   clean build
+      #
+      # 现在：
+      #   build
+      #
+      # 不再主动删除 DerivedData。
+      #
       - name: 9. Build Xcode Project
         working-directory: ios
         shell: bash
@@ -119,7 +188,7 @@ jobs:
           set -e
 
           echo "========================================"
-          echo "Finding Xcode workspace..."
+          echo "Find Xcode Workspace"
           echo "========================================"
 
           WORKSPACE=$(find . \
@@ -136,7 +205,7 @@ jobs:
           echo "Workspace: $WORKSPACE"
 
           echo "========================================"
-          echo "Finding Xcode project..."
+          echo "Find Xcode Project"
           echo "========================================"
 
           XCODEPROJ=$(find . \
@@ -156,7 +225,7 @@ jobs:
           echo "Scheme: $SCHEME"
 
           echo "========================================"
-          echo "Build start"
+          echo "Xcode Build Start"
           echo "========================================"
 
           START_TIME=$(date +%s)
@@ -171,17 +240,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            -showBuildTimingSummary \
             -parallelizeTargets \
+            -showBuildTimingSummary \
             build
 
           END_TIME=$(date +%s)
 
-          echo "========================================"
-          echo "Build finished"
-          echo "========================================"
+          BUILD_TIME=$((END_TIME - START_TIME))
 
-          echo "Xcode build time: $((END_TIME - START_TIME)) seconds"
+          echo "========================================"
+          echo "Xcode Build Finished"
+          echo "========================================"
+          echo "Build time: ${BUILD_TIME} seconds"
+          echo "Build time: $((BUILD_TIME / 60))m $((BUILD_TIME % 60))s"
 
       # ============================================================
       # 10. Locate APP
@@ -191,6 +262,8 @@ jobs:
         shell: bash
         run: |
           set -e
+
+          echo "Searching for Release APP..."
 
           APP_PATH=$(find \
             ~/Library/Developer/Xcode/DerivedData \
@@ -204,7 +277,8 @@ jobs:
             exit 1
           fi
 
-          echo "APP_PATH=$APP_PATH"
+          echo "Found APP:"
+          echo "$APP_PATH"
 
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
@@ -221,7 +295,7 @@ jobs:
 
           APP_PATH="${{ steps.locate_app.outputs.app_path }}"
 
-          echo "Copying:"
+          echo "Copy APP:"
           echo "$APP_PATH"
 
           cp -R "$APP_PATH" Payload/
@@ -236,11 +310,14 @@ jobs:
             Payload \
             MyApp.ipa
 
-          echo "IPA created:"
+          echo "========================================"
+          echo "IPA Created"
+          echo "========================================"
+
           ls -lh MyApp.ipa
 
       # ============================================================
-      # 12. Upload Artifact
+      # 12. Upload IPA
       # ============================================================
       - name: 12. Upload
         uses: actions/upload-artifact@v7
