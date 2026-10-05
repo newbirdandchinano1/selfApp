@@ -133,6 +133,12 @@ export async function clearApiAuthToken(): Promise<void> {
   } catch {
     /* ignore */
   }
+  try {
+    const { discardLocalBusinessCacheOnLogout } = await import('@/lib/api-local-clear');
+    await discardLocalBusinessCacheOnLogout();
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function hasCustomApiCredentials(): Promise<boolean> {

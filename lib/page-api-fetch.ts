@@ -1,5 +1,5 @@
 /**
- * 领域 page-api 的统一拉取模板：localOnly 跳过 / REST / 灌本地 / 离线回退。
+ * 领域 page-api 的统一拉取模板：cacheOnly 跳过 / REST / 灌本地 / 离线回退。
  * 各域 *-page-api 只负责 DTO 映射与表字段，不再复制 try/catch 脚手架。
  */
 import { withApiTableSyncLock } from '@/lib/api-read';
@@ -8,29 +8,29 @@ import { getActivePageApiReadOpts } from '@/lib/page-api-session';
 
 export type PageFetchOpts = {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
-  /** 强制打网（忽略 wrapLoad 的 localOnly） */
-  forceApi?: boolean;
+  serverFallback?: boolean;
+  /** 强制打网（忽略 wrapLoad 的 cacheOnly） */
+  forceRefresh?: boolean;
   forceRefresh?: boolean;
 };
 
 export type PageFetchResult = { fromApi: boolean };
 
-/** wrapLoad 上下文为 localOnly 时跳过 REST，只读本地 */
+/** wrapLoad 上下文为 cacheOnly 时跳过 REST，只读本地 */
 export function shouldFetchPageFromApi(): boolean {
-  return getActivePageApiReadOpts()?.localOnly !== true;
+  return getActivePageApiReadOpts()?.cacheOnly !== true;
 }
 
 /**
- * 领域 page-api 是否跳过网络：forceApi/forceRefresh 强制打网；
- * forceLocal 或 wrapLoad 的 localOnly 则跳过。
+ * 领域 page-api 是否跳过网络：forceRefresh/forceRefresh 强制打网；
+ * forceLocal 或 wrapLoad 的 cacheOnly 则跳过。
  */
 export function shouldSkipPageNetwork(opts?: {
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
   forceRefresh?: boolean;
 }): boolean {
-  if (opts?.forceApi || opts?.forceRefresh) return false;
+  if (opts?.forceRefresh || opts?.forceRefresh) return false;
   if (opts?.forceLocal) return true;
   return !shouldFetchPageFromApi();
 }
@@ -60,7 +60,7 @@ export type FetchPageParams<TPayload, TResult extends PageFetchResult> = {
   /** 操作名，如 memo-list / catalog */
   op: string;
   opts?: PageFetchOpts;
-  /** 为 false 时即使 localOnly 也强制拉 REST（少数强制刷新场景） */
+  /** 为 false 时即使 cacheOnly 也强制拉 REST（少数强制刷新场景） */
   respectLocalOnly?: boolean;
   fetch: (signal?: AbortSignal) => Promise<TPayload>;
   apply: (payload: TPayload) => Promise<TResult> | TResult;
@@ -69,13 +69,13 @@ export type FetchPageParams<TPayload, TResult extends PageFetchResult> = {
 };
 
 /**
- * 统一 page 拉取：可选跳过 localOnly → REST → apply 灌库 → 失败时 offlineFallback。
+ * 统一 page 拉取：可选跳过 cacheOnly → REST → apply 灌库 → 失败时 serverFallback。
  */
 export async function fetchPage<TPayload, TResult extends PageFetchResult>(
   params: FetchPageParams<TPayload, TResult>,
 ): Promise<TResult> {
   const respectLocalOnly = params.respectLocalOnly !== false;
-  const forceNetwork = Boolean(params.opts?.forceApi || params.opts?.forceRefresh);
+  const forceNetwork = Boolean(params.opts?.forceRefresh || params.opts?.forceRefresh);
   if (respectLocalOnly && !forceNetwork && !shouldFetchPageFromApi()) {
     return (params.fallback ? await params.fallback() : ({ fromApi: false } as TResult));
   }
@@ -84,7 +84,7 @@ export async function fetchPage<TPayload, TResult extends PageFetchResult>(
     const payload = await params.fetch(params.opts?.signal);
     return await params.apply(payload);
   } catch (e) {
-    if (params.opts?.offlineFallback === false) throw e;
+    if (params.opts?.serverFallback === false) throw e;
     console.warn(`[${params.domain}-page-api] ${params.op} 失败，回退本地`, e);
     return params.fallback ? await params.fallback() : ({ fromApi: false } as TResult);
   }

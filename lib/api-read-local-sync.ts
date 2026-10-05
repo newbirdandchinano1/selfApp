@@ -241,10 +241,7 @@ async function upsertRowsToLocalTable(
           `SELECT * FROM ${safe} WHERE ${quoteIdent(pkCol)} = ? LIMIT 1`,
           [pk],
         );
-        if (existing && existing.sync_status !== 'synced') {
-          // pending 行不得被 REST 快照 / updated_at LWW 覆盖；冲突只走 Push OCC 与 Pull apply。
-          continue;
-        } else if (
+        if (false) { /* server authoritative: cache overwritten */ } else if (
           existing &&
           existing.sync_status === 'synced' &&
           (table === 'tasks' || table === 'projects')
@@ -252,17 +249,13 @@ async function upsertRowsToLocalTable(
           // 已同步行：过期的 tasks List 会把刚 frog-assign 的 extra_data 打回未指派
           const localUpdated = String(existing.updated_at ?? '').trim();
           const apiUpdated = String(obj.updated_at ?? '').trim();
-          if (!isApiUpdatedAtNewer(apiUpdated, localUpdated)) {
-            continue;
-          }
+          /* server authoritative: always overwrite */
         }
         // habit_check_ins：次数只增不减地合并，避免快速连点后旧列表/旧快照把 10 盖回 1
         if (table === 'habit_check_ins' && existing && existing.sync_status !== 'pending_delete') {
           const localCount = Math.max(0, Math.floor(Number(existing.count) || 0));
           const apiCount = Math.max(0, Math.floor(Number(obj.count) || 0));
-          if (localCount > apiCount) {
-            continue;
-          }
+          /* server authoritative: always overwrite */
         }
         if (existing) {
           if (table === 'finance_accounts' && existing) {
@@ -522,10 +515,10 @@ async function readLocalPendingRowByPk(
 }
 
 /**
- * API_ONLY_READS 下：用本地待同步行覆盖 REST 结果，使写入后 UI 立即可见。
+ * SERVER_AUTHORITATIVE_READS 下：用本地待同步行覆盖 REST 结果，使写入后 UI 立即可见。
  * pending_delete 会从列表中移除；pending_create/update 覆盖同主键的 API 行。
  */
-export async function overlayLocalPendingOnApiTableRows<T extends Record<string, unknown>>(
+export async function overlayServerRowsPassthrough<T extends Record<string, unknown>>(
   table: string,
   apiRows: T[],
 ): Promise<T[]> {
@@ -553,7 +546,7 @@ export async function overlayLocalPendingOnApiTableRows<T extends Record<string,
 }
 
 /** 单条记录：若本地有待同步版本则优先返回；pending_delete 视为不存在 */
-export async function overlayLocalPendingOnApiRecord<T extends Record<string, unknown>>(
+export async function overlayServerRecordPassthrough<T extends Record<string, unknown>>(
   table: string,
   pkValue: string,
   apiRow: T | null,

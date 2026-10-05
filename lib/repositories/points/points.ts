@@ -20,7 +20,7 @@ function pointsAuditNowIso(): string {
 }
 
 export async function getPointsBalance(opts?: PageApiReadOpts): Promise<number> {
-  if (!opts?.localOnly) {
+  if (!opts?.cacheOnly) {
     try {
       const { appPointsGetBalance } = await import('@/lib/api-app-domain');
       const balance = await appPointsGetBalance();
@@ -50,7 +50,7 @@ export async function getPointsBalance(opts?: PageApiReadOpts): Promise<number> 
   }
 
   const row = await readApiRecord<PointsWalletRow>('points_wallet', POINTS_WALLET_ID, {
-    offlineFallback: true,
+    serverFallback: true,
     ...opts,
   });
   if (!row) {

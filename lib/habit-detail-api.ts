@@ -121,7 +121,7 @@ export async function ensureHabitDetailRowFromApi(
     try {
       await fetchTasksHabitsGrid({
         boundary: opts?.boundary,
-        offlineFallback: true,
+        serverFallback: true,
         signal: opts?.signal,
       });
     } catch (e) {

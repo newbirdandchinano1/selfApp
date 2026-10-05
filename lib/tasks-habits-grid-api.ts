@@ -313,7 +313,7 @@ function resolveHabitContextBucket(
 }
 
 /**
- * localOnly / 接口失败时从 SQLite 拼网格。
+ * cacheOnly / 接口失败时从 SQLite 拼网格。
  * 次数与完成态由 TasksScreen 的 overlayHabitSectionsWithLocalCheckIns 再覆盖。
  */
 async function readHabitsGridFromLocal(logicalToday: string): Promise<TasksHabitsGridData> {
@@ -392,7 +392,7 @@ async function readHabitsGridFromLocal(logicalToday: string): Promise<TasksHabit
 /** 习惯网格：`GET /api/pages/tasks/habits-grid` */
 export async function fetchTasksHabitsGrid(opts?: {
   boundary?: TasksDayBoundary;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
   signal?: AbortSignal;
 }): Promise<TasksHabitsGridData> {
@@ -403,7 +403,7 @@ export async function fetchTasksHabitsGrid(opts?: {
     try {
       return await pullHabitsGridFromApi({ boundary, logicalToday, signal: opts?.signal });
     } catch (e) {
-      if (!opts?.offlineFallback) throw e;
+      if (!opts?.serverFallback) throw e;
       console.warn('[tasks-habits-grid-api] 接口失败，回退本地 SQLite', e);
     }
   }

@@ -154,7 +154,7 @@ export default function EditFinanceTransactionScreen() {
     try {
       const [txn, catalog] = await Promise.all([
         getFinanceTransactionById(id),
-        fetchFinanceCatalog({ offlineFallback: true }),
+        fetchFinanceCatalog({ serverFallback: true }),
       ]);
       const accRows = catalog.accounts;
       setAccounts(accRows);

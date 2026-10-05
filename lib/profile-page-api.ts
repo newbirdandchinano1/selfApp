@@ -22,15 +22,15 @@ export function shouldFetchProfileFromApi(): boolean {
 /** 备忘录列表子页（含 tags / tag_links 全量拼盘） */
 export async function fetchProfileMemoList(opts?: {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
-  forceApi?: boolean;
+  serverFallback?: boolean;
+  forceRefresh?: boolean;
   forceRefresh?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',
     op: 'memo-list',
     opts,
-    // 子页无 PAGE_SCOPE 时 wrapLoad 常为 localOnly；标签/备忘管理页需软同步覆盖本地
+    // 子页无 PAGE_SCOPE 时 wrapLoad 常为 cacheOnly；标签/备忘管理页需软同步覆盖本地
     respectLocalOnly: false,
     fetch: (signal) => apiGetProfileMemoList({ signal }),
     apply: async (payload) => {
@@ -50,7 +50,7 @@ export async function fetchProfileMemoList(opts?: {
 /** 心愿板子页 */
 export async function fetchProfileWishBoard(opts?: {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',
@@ -71,7 +71,7 @@ export async function fetchProfileWishBoard(opts?: {
 /** 我的菜谱子页 */
 export async function fetchProfileRecipes(opts?: {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<{ fromApi: boolean }> {
   return fetchPage({
     domain: 'profile',

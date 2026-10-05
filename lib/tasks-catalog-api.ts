@@ -305,7 +305,7 @@ async function pullTasksCatalogFromApiWithRetry(opts?: {
  * 成功时写入本地库；增量同步后返回本地合并结果。
  */
 export async function fetchTasksCatalog(opts?: {
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
   forceRefresh?: boolean;
   signal?: AbortSignal;
@@ -317,7 +317,7 @@ export async function fetchTasksCatalog(opts?: {
         signal: opts?.signal,
       });
     } catch (e) {
-      if (!opts?.offlineFallback) throw e;
+      if (!opts?.serverFallback) throw e;
       console.warn('[tasks-catalog-api] 接口失败，回退本地 SQLite', e);
     }
   }

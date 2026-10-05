@@ -296,7 +296,7 @@ export default function TasksOverviewScreen() {
         logicalToday: logicalTodayYmd,
         heatmapStart: startYmd,
         heatmapEnd: endYmd,
-        offlineFallback: true as const,
+        serverFallback: true as const,
         ...overrides,
       };
     },
@@ -403,7 +403,7 @@ export default function TasksOverviewScreen() {
   ]);
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         setEventsLoading(true);
         try {
@@ -418,7 +418,7 @@ export default function TasksOverviewScreen() {
         } finally {
           setEventsLoading(false);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [heatLayout.weeks, loadHomeScreen, wrapLoad],
   );

@@ -8,7 +8,7 @@ import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { requestPush } from '@/lib/sync-manager';
 import { formatWriteError } from '@/lib/format-write-error';
-import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
+import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import {
   countIncompleteDescendantTasks,
@@ -438,10 +438,10 @@ export default function TaskDetailScreen() {
   }, [router, taskId]);
 
   const reloadTaskDetail = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         await loadTaskDetail();
-      }, forceApi);
+      }, forceRefresh);
     },
     [loadTaskDetail, wrapLoad],
   );
@@ -516,7 +516,7 @@ export default function TaskDetailScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
-                notifyAncestorPagesLocalReload(PAGE_API_KEY);
+                notifyPageDataChanged(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
@@ -540,7 +540,7 @@ export default function TaskDetailScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
-                notifyAncestorPagesLocalReload(PAGE_API_KEY);
+                notifyPageDataChanged(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);

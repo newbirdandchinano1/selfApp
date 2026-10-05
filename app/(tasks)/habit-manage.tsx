@@ -79,7 +79,7 @@ export default function HabitManageScreen() {
 
   const [restartingId, setRestartingId] = React.useState<string | null>(null);
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
     try {
       await syncBreakHabitCompletions();
@@ -145,7 +145,7 @@ export default function HabitManageScreen() {
       setHabitData([]);
       setContextTabs([]);
     }
-    }, forceApi);
+    }, forceRefresh);
   }, [wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);

@@ -63,23 +63,23 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
 }
 
 export async function getHealthRecordById(id: string) {
-  return readApiRecord<HealthRecordRow>('health_records', id, { offlineFallback: true });
+  return readApiRecord<HealthRecordRow>('health_records', id, { serverFallback: true });
 }
 
 export async function getHealthRecordsByUserId(userId: string) {
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const rows = await readApiTable<HealthRecordRow>('health_records', { serverFallback: true });
   return sortByUpdatedDesc(rows.filter(r => healthRecordBelongsToUser(r, userId)));
 }
 
 export async function getHealthRecordsLast7Days(
   userId: string,
   endDate: string = new Date().toISOString().slice(0, 10),
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ) {
   const startDate = addDaysToYmd(endDate, -6);
   const rows = await readApiTable<HealthRecordRow>('health_records', {
-    offlineFallback: true,
-    localOnly: opts?.localOnly,
+    serverFallback: true,
+    cacheOnly: opts?.cacheOnly,
   });
   return rows
     .filter(r => healthRecordBelongsToUser(r, userId) && isYmdInRange(healthRecordYmd(r), startDate, endDate))
@@ -91,14 +91,14 @@ export async function getHealthRecordsLast7Days(
 }
 
 export async function getLatestHealthRecordForUserOnDate(userId: string, recordDateYmd: string) {
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const rows = await readApiTable<HealthRecordRow>('health_records', { serverFallback: true });
   const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
   return [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0] ?? null;
 }
 
 export async function getHealthRecordsForUserOnDate(userId: string, recordDateYmd: string) {
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const rows = await readApiTable<HealthRecordRow>('health_records', { serverFallback: true });
   return rows
     .filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd)
     .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at) * -1);
@@ -107,11 +107,11 @@ export async function getHealthRecordsForUserOnDate(userId: string, recordDateYm
 export async function getHealthDayMetricsForUser(
   userId: string,
   recordDateYmd: string,
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ): Promise<{ totals: HealthIntakeDayTotals; latest: HealthRecordRow } | null> {
   const rows = await readApiTable<HealthRecordRow>('health_records', {
-    offlineFallback: true,
-    localOnly: opts?.localOnly,
+    serverFallback: true,
+    cacheOnly: opts?.cacheOnly,
   });
   const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
@@ -137,7 +137,7 @@ export async function getHealthIntakeTotalsForUserOnDate(
   userId: string,
   recordDateYmd: string
 ): Promise<HealthIntakeDayTotals | null> {
-  const rows = await readApiTable<HealthRecordRow>('health_records', { offlineFallback: true });
+  const rows = await readApiTable<HealthRecordRow>('health_records', { serverFallback: true });
   const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
   return sumHealthIntakeDayTotals(dayRows);
@@ -155,15 +155,15 @@ export async function fetchUserHomeHealthSlice(
   userId: string,
   weekAnchorEndYmd: string,
   selectedYmd: string,
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ): Promise<HomeHealthSlice> {
   const prevEndYmd = addDaysToYmd(weekAnchorEndYmd, -7);
   const weekStart = addDaysToYmd(weekAnchorEndYmd, -6);
   const prevWeekStart = addDaysToYmd(prevEndYmd, -6);
 
   const allRows = await readApiTable<HealthRecordRow>('health_records', {
-    offlineFallback: true,
-    localOnly: opts?.localOnly,
+    serverFallback: true,
+    cacheOnly: opts?.cacheOnly,
   });
   const userRows = allRows.filter(r => healthRecordBelongsToUser(r, userId));
 
@@ -192,15 +192,15 @@ export async function fetchUserHomeHealthSlice(
 export async function buildUserHealthCalendarSnapshot(
   userId: string,
   today: Date,
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ): Promise<{
   records: HealthRecordRow[];
   completionMap: Map<string, 'full' | 'partial'>;
   startDate: Date;
 }> {
   const allRows = await readApiTable<HealthRecordRow>('health_records', {
-    offlineFallback: true,
-    localOnly: opts?.localOnly,
+    serverFallback: true,
+    cacheOnly: opts?.cacheOnly,
   });
   const records = sortByUpdatedDesc(allRows.filter(r => healthRecordBelongsToUser(r, userId)));
   const completionMap = new Map<string, 'full' | 'partial'>();

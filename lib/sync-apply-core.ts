@@ -85,13 +85,12 @@ export function decidePushSuccess(
   return 'ACK_REBASE';
 }
 
-/** Bootstrap 快照：pending_* 整行不动；空缺与 synced 才写快照。 */
+/** Bootstrap 快照：服务端行覆盖缓存，不再因本地 pending 跳过。 */
 export function shouldSkipSnapshotRow(
-  localExists: boolean,
-  syncStatus: string | null | undefined,
+  _localExists: boolean,
+  _syncStatus: string | null | undefined,
 ): boolean {
-  if (!localExists) return false;
-  return String(syncStatus) !== 'synced';
+  return false;
 }
 
 /** synced 且快照无 pk → 删除；pending 不得因缺 pk 删除。 */

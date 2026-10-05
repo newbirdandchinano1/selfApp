@@ -1803,6 +1803,8 @@ export default function TasksScreen() {
   const reduceMotion = useReducedMotion();
   const { width: windowWidth } = useWindowDimensions();
   const habitGridColumns = habitGridColumnsForWidth(windowWidth);
+  /** 桌面端（web 宽屏）：两栏布局——左列日程表，右列 Tab 窗格（小习惯/待办/项目） */
+  const isWideTwoPane = Platform.OS === 'web' && windowWidth >= 1100;
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
   /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动 */
@@ -2426,7 +2428,7 @@ export default function TasksScreen() {
 
       const standalone = await fetchStandaloneTodos({
         boundary: dayBoundary,
-        offlineFallback: true,
+        serverFallback: true,
         forceLocal: opts?.forceLocal,
         forceRefresh: opts?.forceRefresh,
       });
@@ -2441,7 +2443,7 @@ export default function TasksScreen() {
   const loadHabits = React.useCallback(async () => {
     const generation = ++habitLoadGenerationRef.current;
     try {
-      const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, offlineFallback: true });
+      const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, serverFallback: true });
       // 节流 + 延后：避免回前台 reload 时与积分发奖抢主线程/SQLite
       scheduleSyncBreakHabitCompletions();
       scheduleSyncBuildHabitCompletions();
@@ -2659,7 +2661,7 @@ export default function TasksScreen() {
         const result = await fetchProjectsListForTab(tab, {
           hideCompletedProjectTasks: opts?.hideCompletedProjectTasks ?? hideCompletedProjectTasks,
           forceRefresh: opts?.forceRefresh,
-          offlineFallback: true,
+          serverFallback: true,
         });
         if (shouldApply()) {
           if (opts?.replaceMap) {
@@ -2861,8 +2863,8 @@ export default function TasksScreen() {
     loadProjectCategories();
   }, [categoryModalVisible, loadProjectCategories]);
 
-  const reload = React.useCallback(async (forceApi = false) => {
-    // forceApi：多端 dirty / 下拉刷新时必须打网；清库后才全量 forceRefresh（避免写后回首页全表翻页卡死）
+  const reload = React.useCallback(async (forceRefresh = false) => {
+    // forceRefresh：多端 dirty / 下拉刷新时必须打网；清库后才全量 forceRefresh（避免写后回首页全表翻页卡死）
     const generation = ++reloadGenerationRef.current;
     const isStale = () => generation !== reloadGenerationRef.current;
     const forceFullRefresh = consumeForceFullApiRefreshAfterLocalClear();
@@ -2882,7 +2884,7 @@ export default function TasksScreen() {
 
     const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
     const habitsPromise = loadHabits();
-    const pointsPromise = getPointsBalance({ offlineFallback: true })
+    const pointsPromise = getPointsBalance({ serverFallback: true })
       .then((balance) => {
         if (!isStale()) setPointsBalance(balance);
       })
@@ -2893,16 +2895,16 @@ export default function TasksScreen() {
     const [pageData, projectsListResult] = await Promise.all([
       fetchTasksPageData({
         boundary: dayBoundary,
-        offlineFallback: true,
+        serverFallback: true,
         // 显式透传：不单靠 wrapLoad 的 activePageReadStack（SSE 早发 dirty 时更稳）
-        forceApi: forceApi || undefined,
+        forceRefresh: forceRefresh || undefined,
         forceRefresh: forceFullRefresh,
       }),
       fetchProjectsListForTab(projectTab, {
         hideCompletedProjectTasks: effectiveHideCompleted,
-        forceApi: forceApi || undefined,
+        forceRefresh: forceRefresh || undefined,
         forceRefresh: forceFullRefresh,
-        offlineFallback: true,
+        serverFallback: true,
       }).catch((err) => {
         console.warn('加载项目列表 API 失败，回退本地组树', err);
         return null;
@@ -3032,11 +3034,11 @@ export default function TasksScreen() {
     saveExpandedProjectState,
   ]);
 
-  const reloadPage = React.useCallback(async (forceApi = false) => {
+  const reloadPage = React.useCallback(async (forceRefresh = false) => {
     try {
       await wrapLoad(async () => {
-        await reload(forceApi);
-      }, forceApi);
+        await reload(forceRefresh);
+      }, forceRefresh);
       setInitialTasksLoadPending(false);
       setCompletionHeatmapReloadToken((n) => n + 1);
     } catch {
@@ -4556,7 +4558,7 @@ export default function TasksScreen() {
           if (skipApi) return;
           const result = await fetchProjectsListForProject(projectId, {
             hideCompletedProjectTasks,
-            offlineFallback: true,
+            serverFallback: true,
           });
           const fromApi = result.projectTaskTreeMap[projectId];
           if (fromApi) {
@@ -5517,6 +5519,78 @@ export default function TasksScreen() {
     );
   };
 
+  /** 两栏布局共用的左列：日程表 + 完成热力图（宽屏放左列，窄屏留在列表头部） */
+  const schedulePane = (
+    <>
+      <WeeklyFrogSchedule
+        logicalTodayYmd={logicalTodayYmd}
+        sectionCardStyle={sectionCardStyle}
+        lockedProjectIds={lockedProjectIds}
+        subjects={scheduleSubjects}
+        pendingPlace={pendingSchedulePlace}
+        onClearPendingPlace={() => setPendingSchedulePlace(null)}
+        onChanged={onScheduleChanged}
+        onOpenSubject={(kind, id) => {
+          if (kind === 'project') openProject(id);
+          else openTask(id);
+        }}
+        onToggleDone={({ id, assignYmd }) => {
+          toggleFrogDone(id, assignYmd);
+          notifyFrogScheduleChanged();
+        }}
+        onHabitCheckIn={(habitId) => {
+          const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+          if (!item) return;
+          // 带子习惯：打开清单；日程刷新由打卡副作用统一触发
+          if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+            openSubHabitModal(item);
+            return;
+          }
+          void handleHabitIncrement(item);
+        }}
+        onHabitUndo={(habitId) => {
+          const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+          if (!item) return;
+          if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+            openSubHabitModal(item);
+            return;
+          }
+          void handleHabitUndoOnce(item);
+        }}
+      />
+
+      <View style={stackedSectionStyle}>
+        <View style={styles.heatmapFixedHead}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>
+            完成热力图
+          </Text>
+          <View style={styles.frogHeatmapLegend}>
+            <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>少</Text>
+            <View style={styles.frogHeatmapLegendSwatches}>
+              {taskUi.heatmapLevels.map((bg, i) => (
+                <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
+              ))}
+            </View>
+            <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>多</Text>
+          </View>
+        </View>
+        <TaskCompletionHeatmap
+          logicalTodayYmd={logicalTodayYmd}
+          dayBoundary={dayBoundary}
+          textMain={colors.text}
+          textMuted={outline}
+          accentColor={primary}
+          todoAccentColor={secondary}
+          innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+          innerBorderColor={colors.outlineStrong}
+          isDark={isDark}
+          reloadToken={completionHeatmapReloadToken}
+          projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+        />
+      </View>
+    </>
+  );
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -5626,8 +5700,17 @@ export default function TasksScreen() {
                 flex: 1,
                 opacity: pageFadeAnim,
                 transform: [{ translateY: pageTranslateAnim }],
+                flexDirection: isWideTwoPane ? 'row' : 'column',
               }}
             >
+      {isWideTwoPane ? (
+      <ScrollView
+        style={styles.wideLeftPane}
+        contentContainerStyle={styles.wideLeftPaneContent}
+        showsVerticalScrollIndicator={false}>
+        {schedulePane}
+      </ScrollView>
+      ) : null}
       <FlatList<ProjectListFlatItem>
         ref={mainScrollRef}
         data={secondaryPane === 'projects' ? projectListFlatItems : ([] as ProjectListFlatItem[])}
@@ -5674,6 +5757,8 @@ export default function TasksScreen() {
           orphanCompletionLogs,
         }}
         ListHeaderComponent={
+          <>
+          {isWideTwoPane ? null : (
           <>
           <WeeklyFrogSchedule
             logicalTodayYmd={logicalTodayYmd}
@@ -5741,6 +5826,8 @@ export default function TasksScreen() {
               projects={projects.map((p) => ({ id: p.id, name: p.name }))}
             />
           </View>
+          </>
+          )}
 
           <View style={stackedSectionStyle}>
             <View
@@ -8494,6 +8581,14 @@ const styles = StyleSheet.create({
   secondaryTabLabel: { ...Typography.caption, fontWeight: '800' },
   secondaryTabMeta: { fontSize: 10, fontWeight: '600' },
   secondaryPaneBody: { marginTop: Spacing.xl, gap: Spacing.md },
+  /** 桌面端两栏：左列日程表固定宽度独立滚动，右列 Tab 窗格自适应 */
+  wideLeftPane: { width: 400, flexGrow: 0, flexShrink: 0 },
+  wideLeftPaneContent: {
+    gap: Spacing.xl,
+    paddingTop: Spacing.xl,
+    paddingRight: Spacing.xl,
+    paddingBottom: 48,
+  },
   habitsBodyQuiet: { gap: Spacing.xl, marginTop: Spacing.md },
   completionHeatmapDetailSectionLabel: { fontSize: 12, fontWeight: '800', marginBottom: 4, letterSpacing: 0.2 },
   frogHeatmapHeading: {

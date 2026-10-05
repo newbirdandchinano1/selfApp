@@ -269,15 +269,15 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       await wrapLoad(async () => {
         if (shouldFetchReviewFromApi()) {
           if (scope === 'daily') {
-            await fetchReviewJournal({ scope: 'daily', start: periodYmd, end: periodYmd, offlineFallback: true });
+            await fetchReviewJournal({ scope: 'daily', start: periodYmd, end: periodYmd, serverFallback: true });
           } else {
             await Promise.all([
-              fetchReviewCatalog({ scope, offlineFallback: true }),
+              fetchReviewCatalog({ scope, serverFallback: true }),
               fetchReviewJournal({
                 scope,
                 weekStart: scope === 'weekly' ? periodYmd : undefined,
                 monthStart: scope === 'monthly' ? periodYmd : undefined,
-                offlineFallback: true,
+                serverFallback: true,
               }),
             ]);
           }

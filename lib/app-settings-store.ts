@@ -143,7 +143,7 @@ export async function getAppSettingRaw(key: string): Promise<string | null> {
       return localRow.value_json;
     }
   }
-  const row = await readApiRecord<{ value_json: string }>('app_settings', key, { offlineFallback: true });
+  const row = await readApiRecord<{ value_json: string }>('app_settings', key, { serverFallback: true });
   if (!row?.value_json) return null;
   return row.value_json;
 }

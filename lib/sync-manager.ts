@@ -1,7 +1,8 @@
 /**
- * 同步调度门面。
- * Phase 4：唯一 Push 定时器。Phase 5：启动 / 回前台 Pull 各一次（页面不再 pull）。
- * Phase 6：进程内一个 poll、一个 SSE；二者只调 pullChanges()。
+ * 缓存灌入与失效门面（服务器权威，SQLite 仅在线缓存，无 TTL）。
+ * 预热：登录/启动 bootstrapIfNeeded；失败不得标 bootstrap_done。
+ * 失效：SSE / 回前台 / 轮询 pullChanges、用户下拉 refreshFromUser、本机写成功后 UPSERT。
+ * 丢弃：登出清 token 时 discard 本地业务表。
  */
 import { AppState, type AppStateStatus } from 'react-native';
 
@@ -71,11 +72,11 @@ async function runFlush(opts?: RequestPushOpts): Promise<void> {
       const scoped = (opts?.onlyTables?.length ?? 0) > 0;
       if (!scoped) {
         const { flushFrogScheduleApiOutbox, peekFrogScheduleOutboxCount } = await import(
-          '@/lib/schedule-api-outbox'
+          '@/lib/schedule-write-direct'
         );
         await flushFrogScheduleApiOutbox();
         const remaining = await peekFrogScheduleOutboxCount();
-        if (remaining > 0) requestPushAfterFailure();
+        if (remaining > 0) requestRetryAfterFailure();
       }
     });
   };
@@ -91,8 +92,7 @@ async function runFlush(opts?: RequestPushOpts): Promise<void> {
 }
 
 /**
- * 唯一 Push 入口：合并原 50ms coalesce + 300ms debounce。
- * 本地先成功；后台上传；失败保持 pending / 课表 outbox。
+ * 遗留 pending 冲刷入口（业务写不再依赖）。合并 debounce 后 flush。
  */
 export async function requestPush(opts?: RequestPushOpts): Promise<void> {
   if (opts?.awaitSync) {
@@ -107,7 +107,7 @@ export async function requestPush(opts?: RequestPushOpts): Promise<void> {
 }
 
 /** 推送失败后的退避重试，仍走同一队列（不另开 timer 体系） */
-export function requestPushAfterFailure(): void {
+export function requestRetryAfterFailure(): void {
   pushBackoffMs = Math.min(Math.max(PUSH_COALESCE_MS, pushBackoffMs * 2), MAX_PUSH_BACKOFF_MS);
   armPushTimer(pushBackoffMs);
 }
@@ -222,7 +222,7 @@ export function stopSyncRuntime(): void {
 
 export const SyncManager = {
   requestPush,
-  requestPushAfterFailure,
+  requestRetryAfterFailure,
   start: startSyncRuntime,
   stop: stopSyncRuntime,
   startSyncPushScheduler,

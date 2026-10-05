@@ -10,7 +10,7 @@ import { getDatabase } from '../../database.native';
 export type TaskExecutionEventAction = 'completed' | 'reopened';
 
 /** 热力图聚合只读本地，避免 REST 全量拉取 reconcile 覆盖刚写入的事件 */
-const HEATMAP_EVENT_READ_OPTS = { offlineFallback: true, localOnly: true as const };
+const HEATMAP_EVENT_READ_OPTS = { serverFallback: true, cacheOnly: true as const };
 
 type TaskRowLite = {
   id: string;

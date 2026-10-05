@@ -32,9 +32,9 @@ type LocalAggregateBase = {
 
 type CalendarFetchOpts = {
   dayBoundary: TasksDayBoundary;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
 };
 
 export type TasksCalendarMonthPayload = {
@@ -54,7 +54,7 @@ function isCalendarEndpointMissing(e: unknown): boolean {
 }
 
 function shouldSkipNetwork(opts: CalendarFetchOpts): boolean {
-  return !opts.forceApi && (Boolean(opts.forceLocal) || Boolean(getActivePageApiReadOpts()?.localOnly));
+  return !opts.forceRefresh && (Boolean(opts.forceLocal) || Boolean(getActivePageApiReadOpts()?.cacheOnly));
 }
 
 /** 下拉刷新或强制 API 时清掉本地全表缓存，避免脏数据 */
@@ -150,15 +150,15 @@ async function enrichCalendarSummaries(
 function summariesInflightKey(params: {
   startYmd: string;
   endYmd: string;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
   forceLocal?: boolean;
 }): string {
   const skip = shouldSkipNetwork({
     dayBoundary: { hour: 0, minute: 0 },
-    forceApi: params.forceApi,
+    forceRefresh: params.forceRefresh,
     forceLocal: params.forceLocal,
   });
-  return `${params.startYmd}:${params.endYmd}:${params.forceApi ? 1 : 0}:${skip ? 1 : 0}`;
+  return `${params.startYmd}:${params.endYmd}:${params.forceRefresh ? 1 : 0}:${skip ? 1 : 0}`;
 }
 
 const summariesInflight = new Map<string, Promise<Map<string, TasksCalendarDaySummary>>>();
@@ -179,9 +179,9 @@ export async function fetchTasksCalendarSummaries(params: {
   startYmd: string;
   endYmd: string;
   dayBoundary: TasksDayBoundary;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
 }): Promise<Map<string, TasksCalendarDaySummary>> {
   const key = summariesInflightKey(params);
   const existing = summariesInflight.get(key);
@@ -200,19 +200,19 @@ async function fetchTasksCalendarSummariesUncoalesced(params: {
   startYmd: string;
   endYmd: string;
   dayBoundary: TasksDayBoundary;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
 }): Promise<Map<string, TasksCalendarDaySummary>> {
   const {
     startYmd,
     endYmd,
     dayBoundary,
-    offlineFallback = true,
+    serverFallback = true,
     forceLocal = false,
-    forceApi = false,
+    forceRefresh = false,
   } = params;
-  const skipNetwork = shouldSkipNetwork({ dayBoundary, offlineFallback, forceLocal, forceApi });
+  const skipNetwork = shouldSkipNetwork({ dayBoundary, serverFallback, forceLocal, forceRefresh });
 
   if (!skipNetwork) {
     try {
@@ -236,7 +236,7 @@ async function fetchTasksCalendarSummariesUncoalesced(params: {
       });
       return map;
     } catch (e) {
-      if (!offlineFallback) throw e;
+      if (!serverFallback) throw e;
       console.warn('[tasks-calendar] 聚合接口失败，回退本地聚合', e);
     }
   }
@@ -249,7 +249,7 @@ export async function fetchTasksCalendarMonth(params: {
   startYmd: string;
   endYmd: string;
 } & CalendarFetchOpts): Promise<TasksCalendarMonthPayload> {
-  const { startYmd, endYmd, dayBoundary, offlineFallback = true, forceApi = false } = params;
+  const { startYmd, endYmd, dayBoundary, serverFallback = true, forceRefresh = false } = params;
   const skipNetwork = shouldSkipNetwork(params);
 
   if (!skipNetwork && calendarSplitSupport !== 'unsupported') {
@@ -265,7 +265,7 @@ export async function fetchTasksCalendarMonth(params: {
     } catch (e) {
       if (isCalendarEndpointMissing(e)) {
         calendarSplitSupport = 'unsupported';
-      } else if (!offlineFallback) {
+      } else if (!serverFallback) {
         throw e;
       } else {
         console.warn('[tasks-calendar] grid 接口失败，回退整月聚合', e);
@@ -277,9 +277,9 @@ export async function fetchTasksCalendarMonth(params: {
     startYmd,
     endYmd,
     dayBoundary,
-    offlineFallback,
+    serverFallback,
     forceLocal: params.forceLocal,
-    forceApi,
+    forceRefresh,
   });
   return monthPayloadFromSummaries(summaries, dayBoundary);
 }
@@ -290,7 +290,7 @@ export async function fetchTasksCalendarDay(params: {
   startYmd?: string;
   endYmd?: string;
 } & CalendarFetchOpts): Promise<TasksCalendarDaySummary | null> {
-  const { ymd, dayBoundary, offlineFallback = true, forceApi = false } = params;
+  const { ymd, dayBoundary, serverFallback = true, forceRefresh = false } = params;
   const skipNetwork = shouldSkipNetwork(params);
 
   if (!skipNetwork && calendarSplitSupport !== 'unsupported') {
@@ -305,7 +305,7 @@ export async function fetchTasksCalendarDay(params: {
     } catch (e) {
       if (isCalendarEndpointMissing(e)) {
         calendarSplitSupport = 'unsupported';
-      } else if (!offlineFallback) {
+      } else if (!serverFallback) {
         throw e;
       } else {
         console.warn('[tasks-calendar] day 接口失败，回退整月聚合', e);
@@ -319,9 +319,9 @@ export async function fetchTasksCalendarDay(params: {
     startYmd,
     endYmd,
     dayBoundary,
-    offlineFallback,
+    serverFallback,
     forceLocal: params.forceLocal,
-    forceApi,
+    forceRefresh,
   });
   return summaries.get(ymd) ?? null;
 }

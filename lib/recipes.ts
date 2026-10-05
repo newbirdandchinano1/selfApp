@@ -200,8 +200,8 @@ function markRecipesDirty(): void {
 
 async function loadStoreFromApi(): Promise<RecipeStore> {
   const [categoryRows, recipeRows] = await Promise.all([
-    readApiTable<CategoryRow>('recipe_categories', { offlineFallback: true }),
-    readApiTable<RecipeRow>('recipe_items', { offlineFallback: true }),
+    readApiTable<CategoryRow>('recipe_categories', { serverFallback: true }),
+    readApiTable<RecipeRow>('recipe_items', { serverFallback: true }),
   ]);
   return {
     version: 2,
@@ -441,23 +441,23 @@ export async function replaceRecipesFromCloudRestore(payload: RecipeStore | Reci
 }
 
 export async function listRecipeCategories(): Promise<RecipeCategory[]> {
-  const rows = await readApiTable<CategoryRow>('recipe_categories', { offlineFallback: true });
+  const rows = await readApiTable<CategoryRow>('recipe_categories', { serverFallback: true });
   return sortByNameAsc(rows).map(rowToCategory);
 }
 
 export async function listRecipes(categoryId?: string): Promise<RecipeItem[]> {
-  const rows = await readApiTable<RecipeRow>('recipe_items', { offlineFallback: true });
+  const rows = await readApiTable<RecipeRow>('recipe_items', { serverFallback: true });
   const filtered = categoryId ? rows.filter(r => r.category_id === categoryId) : rows;
   return sortByUpdatedDesc(filtered).map(rowToRecipe);
 }
 
 export async function getRecipeCategory(id: string): Promise<RecipeCategory | null> {
-  const row = await readApiRecord<CategoryRow>('recipe_categories', id, { offlineFallback: true });
+  const row = await readApiRecord<CategoryRow>('recipe_categories', id, { serverFallback: true });
   return row ? rowToCategory(row) : null;
 }
 
 export async function getRecipe(id: string): Promise<RecipeItem | null> {
-  const row = await readApiRecord<RecipeRow>('recipe_items', id, { offlineFallback: true });
+  const row = await readApiRecord<RecipeRow>('recipe_items', id, { serverFallback: true });
   return row ? rowToRecipe(row) : null;
 }
 

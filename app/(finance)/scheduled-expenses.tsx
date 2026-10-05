@@ -48,7 +48,7 @@ export default function ScheduledExpensesScreen() {
     setLoading(true);
     await wrapLoad(async () => {
       try {
-        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+        const catalog = await fetchFinanceCatalog({ serverFallback: true });
         const rows = await loadScheduledFinanceExpenses();
         setItems(rows);
         setAccounts(catalog.accounts);

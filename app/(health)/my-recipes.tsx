@@ -56,13 +56,13 @@ export default function MyRecipesScreen() {
   const [categorySaving, setCategorySaving] = useState(false);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       try {
         await wrapLoad(async () => {
-          await fetchProfileRecipes({ offlineFallback: true });
+          await fetchProfileRecipes({ serverFallback: true });
           const s = await loadRecipeStore();
           setStore(s);
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         Alert.alert('加载失败', '请稍后重试');
         setStore({ version: 2, categories: [], recipes: [] });

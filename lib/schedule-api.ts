@@ -3,7 +3,7 @@ import {
   enqueueFrogScheduleAxis,
   enqueueFrogSchedulePlacementDelete,
   enqueueFrogSchedulePlacementUpsert,
-} from '@/lib/schedule-api-outbox';
+} from '@/lib/schedule-write-direct';
 import type { ScheduleAxisSettings, SchedulePlacementRow, ScheduleSubjectKind } from '@/lib/schedule/types';
 
 export type FrogScheduleWeekPayload = {

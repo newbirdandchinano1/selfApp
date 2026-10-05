@@ -136,7 +136,7 @@ export default function AddProjectScreen() {
     }, []),
   );
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
       try {
         const rows = await getProjectCategories();
@@ -164,7 +164,7 @@ export default function AddProjectScreen() {
       } finally {
         setTagsLoading(false);
       }
-    }, forceApi);
+    }, forceRefresh);
   }, [wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);

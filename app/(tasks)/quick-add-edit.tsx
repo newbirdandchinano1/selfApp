@@ -13,7 +13,7 @@ import {
 } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
+import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -58,7 +58,7 @@ export default function QuickAddEditScreen() {
   const [allItems, setAllItems] = React.useState<QuickAddItem[]>([]);
   const [itemsLoading, setItemsLoading] = React.useState(true);
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     setItemsLoading(true);
     try {
       await wrapLoad(async () => {
@@ -79,7 +79,7 @@ export default function QuickAddEditScreen() {
         } catch (e) {
           console.warn('加载快捷卡片失败', e);
         }
-      }, forceApi);
+      }, forceRefresh);
     } finally {
       setItemsLoading(false);
     }
@@ -163,7 +163,7 @@ export default function QuickAddEditScreen() {
     }
     try {
       await saveSelectedQuickAddKeys(homeItems.map((item) => item.key));
-      notifyAncestorPagesLocalReload(PAGE_API_KEY);
+      notifyPageDataChanged(PAGE_API_KEY);
       router.back();
     } catch {
       Alert.alert('保存失败', '请稍后重试。');

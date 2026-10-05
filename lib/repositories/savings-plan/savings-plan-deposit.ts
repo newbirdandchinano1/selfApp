@@ -44,8 +44,8 @@ export async function createSavingsPlanDeposit(input: CreateSavingsPlanDepositIn
 /** 未删除计划下的存入总额（用于顶部「已存款」） */
 export async function getTotalDepositsForActivePlans() {
   const [plans, deposits] = await Promise.all([
-    readApiTable<{ id: string }>('savings_plans', { offlineFallback: true }),
-    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', { offlineFallback: true }),
+    readApiTable<{ id: string }>('savings_plans', { serverFallback: true }),
+    readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', { serverFallback: true }),
   ]);
   const planIds = new Set(plans.map(p => p.id));
   return deposits
@@ -55,7 +55,7 @@ export async function getTotalDepositsForActivePlans() {
 
 /** 各未删除计划的存入合计（计划无记录时为 0，由调用方补全） */
 export async function getDepositSumsByActivePlanId(opts?: PageApiReadOpts) {
-  const readOpts = { offlineFallback: true as const, localOnly: opts?.localOnly };
+  const readOpts = { serverFallback: true as const, cacheOnly: opts?.cacheOnly };
   const [plans, deposits] = await Promise.all([
     readApiTable<{ id: string }>('savings_plans', readOpts),
     readApiTable<{ savings_plan_id: string; amount: number }>('savings_plan_deposits', readOpts),

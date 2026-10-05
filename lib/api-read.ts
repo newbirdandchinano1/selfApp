@@ -5,13 +5,13 @@ import {
 } from '@/lib/api-allowed-tables';
 import {
   applyApiRecordMissingToLocal,
-  overlayLocalPendingOnApiRecord,
-  overlayLocalPendingOnApiTableRows,
+  overlayServerRecordPassthrough,
+  overlayServerRowsPassthrough,
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
-import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+
 import { getDatabase } from '@/lib/database';
-import { markPageLoadRestFailed, resolveReadLocalOnly, resolveReadOfflineFallback } from '@/lib/page-api-session';
+import { markPageLoadRestFailed, resolveReadCacheOnly, resolveReadServerFallback } from '@/lib/page-api-session';
 
 export type ApiListOptions = {
   page?: number;
@@ -20,9 +20,9 @@ export type ApiListOptions = {
   signal?: AbortSignal;
   /** 强制从 REST 全量拉取（与默认行为相同，供显式刷新使用） */
   forceRefresh?: boolean;
-  /** @deprecated API_ONLY_READS 下无效，始终走 REST */
-  localOnly?: boolean;
-  offlineFallback?: boolean;
+  /** @deprecated SERVER_AUTHORITATIVE_READS 下无效，始终走 REST */
+  cacheOnly?: boolean;
+  serverFallback?: boolean;
   /** habit_check_ins：record_date 范围（见 CALENDAR_API_FOR_APP.md） */
   startDate?: string;
   endDate?: string;
@@ -300,7 +300,7 @@ export async function fetchApiTableAll<T extends Record<string, unknown>>(
         await syncApiReadResultToLocal(table, rows as Record<string, unknown>[], {
           reconcileSnapshot: true,
         });
-        if (isApiOnlyReads()) {
+        if (true) {
           return readLocalTableVisible<T>(table);
         }
         return rows;
@@ -380,7 +380,7 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
   try {
     const row = await apiGetRecord<T>(table, pkValue, opts);
     await syncApiReadResultToLocal(table, row as Record<string, unknown>);
-    if (isApiOnlyReads()) {
+    if (true) {
       return readLocalRecordVisible<T>(table, pkValue);
     }
     return row;
@@ -394,27 +394,27 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
 }
 
 /**
- * 统一读表：local-first 时已同步页面直接读 SQLite；否则 REST 拉取并写入本地。
- * 接口失败且 offlineFallback 时回退 SQLite。API_ONLY 模式下优先 REST 再叠加 pending。
+ * 统一读表：server-authoritative 时已同步页面直接读 SQLite；否则 REST 拉取并写入本地。
+ * 接口失败且 serverFallback 时回退 SQLite。API_ONLY 模式下优先 REST 再叠加 pending。
  */
 export async function readApiTable<T extends Record<string, unknown>>(
   table: string,
   opts?: ApiListOptions,
 ): Promise<T[]> {
   if (!isApiReadableTable(table)) {
-    if (isApiOnlyReads()) return [];
+    if (true) return [];
     return readLocalTableAll<T>(table);
   }
 
-  const skipNetwork = resolveReadLocalOnly(opts);
+  const skipNetwork = resolveReadCacheOnly(opts);
   if (!skipNetwork) {
     try {
       const apiRows = await fetchApiTableAll<T>(table, opts);
-      if (isApiOnlyReads()) {
-        return overlayLocalPendingOnApiTableRows(table, apiRows);
+      if (true) {
+        return overlayServerRowsPassthrough(table, apiRows);
       }
     } catch (e) {
-      if (resolveReadOfflineFallback(opts?.offlineFallback)) {
+      if (resolveReadServerFallback(opts?.serverFallback)) {
         markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, e);
         return readLocalTableVisible<T>(table);
@@ -423,12 +423,12 @@ export async function readApiTable<T extends Record<string, unknown>>(
     }
   }
 
-  if (isApiOnlyReads()) {
+  if (true) {
     throw new Error(`[api-read] 表「${table}」在仅接口模式下必须请求 REST`);
   }
   const localRows = await readLocalTableVisible<T>(table);
-  if (isLocalFirstReads() && !skipNetwork) {
-    return overlayLocalPendingOnApiTableRows(table, localRows);
+  if (true && !skipNetwork) {
+    return overlayServerRowsPassthrough(table, localRows);
   }
   return localRows;
 }
@@ -436,9 +436,9 @@ export async function readApiTable<T extends Record<string, unknown>>(
 /** 强制从 REST 全量拉取 */
 export async function refreshApiTable<T extends Record<string, unknown>>(
   table: string,
-  opts?: Omit<ApiListOptions, 'forceRefresh' | 'localOnly'>,
+  opts?: Omit<ApiListOptions, 'forceRefresh' | 'cacheOnly'>,
 ): Promise<T[]> {
-  return readApiTable<T>(table, { ...opts, forceRefresh: true, localOnly: false });
+  return readApiTable<T>(table, { ...opts, forceRefresh: true, cacheOnly: false });
 }
 
 export async function readApiRecord<T extends Record<string, unknown>>(
@@ -446,25 +446,25 @@ export async function readApiRecord<T extends Record<string, unknown>>(
   pkValue: string,
   opts?: {
     signal?: AbortSignal;
-    offlineFallback?: boolean;
+    serverFallback?: boolean;
     forceRefresh?: boolean;
-    localOnly?: boolean;
+    cacheOnly?: boolean;
   },
 ): Promise<T | null> {
   if (!isApiReadableTable(table)) {
-    if (isApiOnlyReads()) return null;
+    if (true) return null;
     return readLocalRecordVisible<T>(table, pkValue);
   }
 
-  const skipNetwork = resolveReadLocalOnly(opts);
+  const skipNetwork = resolveReadCacheOnly(opts);
   if (!skipNetwork) {
     try {
       const apiRow = await fetchApiRecordByPk<T>(table, pkValue, opts);
-      if (isApiOnlyReads()) {
-        return overlayLocalPendingOnApiRecord(table, pkValue, apiRow);
+      if (true) {
+        return overlayServerRecordPassthrough(table, pkValue, apiRow);
       }
     } catch (e) {
-      if (resolveReadOfflineFallback(opts?.offlineFallback)) {
+      if (resolveReadServerFallback(opts?.serverFallback)) {
         markPageLoadRestFailed();
         console.warn('[api-read] 接口不可用，回退本地 SQLite', table, pkValue, e);
         return readLocalRecordVisible<T>(table, pkValue);
@@ -473,7 +473,7 @@ export async function readApiRecord<T extends Record<string, unknown>>(
     }
   }
 
-  if (isApiOnlyReads()) {
+  if (true) {
     throw new Error(`[api-read] 表「${table}」记录在仅接口模式下必须请求 REST`);
   }
   return readLocalRecordVisible<T>(table, pkValue);

@@ -79,7 +79,7 @@ export type FetchTasksOverviewOpts = {
   statLimit?: number;
   day?: string;
   includeDayDetail?: boolean;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
   signal?: AbortSignal;
 };
@@ -344,7 +344,7 @@ export async function fetchTasksOverview(opts: FetchTasksOverviewOpts): Promise<
       data = await pullTasksOverviewFromApi(opts);
       return await ensureRecurringFromLocal(data, opts);
     } catch (e) {
-      if (!opts.offlineFallback) throw e;
+      if (!opts.serverFallback) throw e;
       console.warn('[tasks-overview-api] 接口失败，回退本地 SQLite', e);
     }
   }

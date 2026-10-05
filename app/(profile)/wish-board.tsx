@@ -100,11 +100,11 @@ export default function WishBoardScreen() {
   }, [items, eligibilityById]);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setLoadError(null);
       try {
         await wrapLoad(async () => {
-          await fetchProfileWishBoard({ offlineFallback: true });
+          await fetchProfileWishBoard({ serverFallback: true });
           const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks, nextNetWorth] =
             await Promise.all([
               getPointsBalance(),
@@ -120,7 +120,7 @@ export default function WishBoardScreen() {
           setProjects(nextProjects);
           setTasks(nextTasks);
           setCurrentNetWorth(nextNetWorth);
-        }, forceApi);
+        }, forceRefresh);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : '加载失败');
       } finally {

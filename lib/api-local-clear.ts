@@ -8,7 +8,7 @@ import {
 } from '@/lib/cloud-sql-dirty-track';
 import {
   clearPageSyncMeta,
-  PREFER_LOCAL_READS_META_KEY,
+  REST_INITIAL_SYNC_META_KEY,
   writeAppMeta,
 } from '@/lib/api-local-bootstrap';
 import { getDatabase } from '@/lib/database';
@@ -81,7 +81,9 @@ async function resetLocalReadCachesAfterClear(): Promise<void> {
   const { clearTasksTableSyncCache } = await import('@/lib/tasks-table-sync');
   await clearTasksTableSyncCache();
 
-  await writeAppMeta(PREFER_LOCAL_READS_META_KEY, '0');
+  const { resetBootstrapCache } = await import('@/lib/sync-bootstrap');
+  await resetBootstrapCache();
+  await writeAppMeta(REST_INITIAL_SYNC_META_KEY, '');
 
   markProcessColdStart();
   markForceFullApiRefreshAfterLocalClear();
@@ -118,5 +120,17 @@ export async function resetLocalDatabaseForDebug(): Promise<void> {
   }
 
   await resetLocalReadCachesAfterClear();
-  await writeAppMeta(PREFER_LOCAL_READS_META_KEY, '0');
+}
+
+/**
+ * 登出：丢弃可丢弃的业务缓存（与清库对齐，不含仅本地表如 app_meta）。
+ */
+export async function discardLocalBusinessCacheOnLogout(): Promise<void> {
+  if (Platform.OS === 'web') {
+    markProcessColdStart();
+    resetPageApiSession(undefined, { force: true });
+    return;
+  }
+  await clearLocalUserDataTables();
+  await resetLocalReadCachesAfterClear();
 }

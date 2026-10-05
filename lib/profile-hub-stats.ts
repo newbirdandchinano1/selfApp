@@ -163,7 +163,7 @@ export async function loadProfileHubStats(
 
   const [wishItems, weekPoints, weightLogs, dailyReviews, weeklyJournal, habitMeta, tasksDone] =
     await Promise.all([
-      listWishBoardItems({ localOnly: true }).catch(() => []),
+      listWishBoardItems({ cacheOnly: true }).catch(() => []),
       loadWeekPoints(startYmd, endYmd),
       listWeightLogsLastNDays(30, todayYmd).catch(() => []),
       listDailyReviewsBetween(startYmd, elapsedEnd).catch(() => []),

@@ -149,7 +149,7 @@ export default function AccountDetailScreen() {
       const { account: target, transactions: txRows } = await fetchFinanceAccountDetail({
         accountId: routeAccountId,
         accountName: routeAccountName,
-        offlineFallback: true,
+        serverFallback: true,
       });
       if (seq !== loadAccountDetailSeqRef.current) return;
       setAccount(target);
@@ -168,10 +168,10 @@ export default function AccountDetailScreen() {
   }, [routeAccountId, routeAccountName]);
 
   const reloadAccountDetail = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
-        await loadAccountDetail(forceApi);
-      }, forceApi);
+        await loadAccountDetail(forceRefresh);
+      }, forceRefresh);
     },
     [loadAccountDetail, wrapLoad],
   );
@@ -205,7 +205,7 @@ export default function AccountDetailScreen() {
         const local = await loadFinanceAccountDetail({
           accountId: routeAccountId || targetId,
           accountName: routeAccountName,
-          localOnly: true,
+          cacheOnly: true,
         });
         if (local.account) {
           setAccount(local.account);

@@ -446,7 +446,7 @@ export default function HabitDetailScreen() {
   }, [habitId, logicalTodayYmd, loadHabitOverview]);
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         if (!habitId) {
           applyHabitOverviewState(null, {});
@@ -454,16 +454,16 @@ export default function HabitDetailScreen() {
           return;
         }
         // 仅无本地缓存时亮骨架；有数据则保持现有 UI，后台软同步
-        if (forceApi || !habitRef.current) setLoading(true);
+        if (forceRefresh || !habitRef.current) setLoading(true);
         try {
-          await loadHabitOverview({ awaitRemote: forceApi });
+          await loadHabitOverview({ awaitRemote: forceRefresh });
         } catch (e) {
           console.warn('加载习惯详情失败', e);
           applyHabitOverviewState(null, {});
         } finally {
           setLoading(false);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [applyHabitOverviewState, habitId, loadHabitOverview, wrapLoad],
   );

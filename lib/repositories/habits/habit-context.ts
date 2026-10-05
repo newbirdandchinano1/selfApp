@@ -9,7 +9,7 @@ async function pushHabitContextChangesToApi(): Promise<void> {
 }
 
 export async function getHabitContexts() {
-  const rows = await readApiTable<HabitContextRow>('habit_contexts', { offlineFallback: true });
+  const rows = await readApiTable<HabitContextRow>('habit_contexts', { serverFallback: true });
   return sortBySortOrderAsc(rows);
 }
 

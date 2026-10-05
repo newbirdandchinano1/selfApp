@@ -19,7 +19,7 @@ import {
 import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
 import { requestPush } from '@/lib/sync-manager';
 import { formatWriteError } from '@/lib/format-write-error';
-import { notifyAncestorPagesLocalReload } from '@/lib/page-api-session';
+import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import {
   consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerInitPayload, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
@@ -488,14 +488,14 @@ export default function EditTaskScreen() {
     return !formSnapshotsEqual(loadedFormSnapshot, current);
   }, [acceptanceCriteria, autoPlaceIntoSchedule, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     if (!taskId) return;
     try {
       await wrapLoad(async () => {
         const nodes = await getChildTasksByParentTaskId(taskId);
         const rows = nodes.map((n) => n as unknown as TaskRow);
         setSubtasks(rows.map(mapTaskRowToSubtask));
-      }, forceApi);
+      }, forceRefresh);
     } catch (error) {
       console.warn('加载子任务失败', error);
       setSubtasks([]);
@@ -643,7 +643,7 @@ export default function EditTaskScreen() {
       }
 
       setTaskSnapshot((prev) => (prev ? { ...prev, parent_task_id: nextParentId } : prev));
-      notifyAncestorPagesLocalReload(PAGE_API_KEY);
+      notifyPageDataChanged(PAGE_API_KEY);
       Alert.alert('已更新', nextParentId ? '父任务已关联。' : '已移除父任务。');
     } catch (error) {
       console.warn('关联父任务失败', error);
@@ -1153,7 +1153,7 @@ export default function EditTaskScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
-                notifyAncestorPagesLocalReload(PAGE_API_KEY);
+                notifyPageDataChanged(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
@@ -1177,7 +1177,7 @@ export default function EditTaskScreen() {
                 setSkipRemoveGuard(true);
                 setSaving(true);
                 await deleteTask(taskId);
-                notifyAncestorPagesLocalReload(PAGE_API_KEY);
+                notifyPageDataChanged(PAGE_API_KEY);
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);

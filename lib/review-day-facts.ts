@@ -142,8 +142,8 @@ export async function loadReviewDayFacts(ymd: string): Promise<ReviewDayFacts> {
     })(),
     getHealthRecordsForUserOnDate(userId, day).catch(() => []),
     listWeightLogsBetween(day, day).catch(() => []),
-    getFinanceTransactionsByYmd(day, { localOnly: true }).catch(() => []),
-    getFinanceFlowCategories({ localOnly: true }).catch(() => []),
+    getFinanceTransactionsByYmd(day, { cacheOnly: true }).catch(() => []),
+    getFinanceFlowCategories({ cacheOnly: true }).catch(() => []),
   ]);
 
   const health = emptyHealth();

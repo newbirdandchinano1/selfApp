@@ -136,7 +136,7 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
       dailyEnd: rolling.endYmd,
       weekStart: rolling.startYmd,
       monthStart,
-      offlineFallback: true,
+      serverFallback: true,
     });
   }
 

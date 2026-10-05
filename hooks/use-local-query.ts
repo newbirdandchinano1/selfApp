@@ -5,7 +5,7 @@ import { subscribeLocalDataChanged } from '@/lib/sync-pull';
 const LOCAL_RELOAD_DEBOUNCE_MS = 280;
 
 /**
- * 订阅 SQLite 相关表变更后重跑 loader。不 pull、不 forceApi。
+ * 订阅 SQLite 相关表变更后重跑 loader。不 pull、不 forceRefresh。
  */
 export function useLocalQuery(
   tables: readonly string[],

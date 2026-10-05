@@ -194,7 +194,7 @@ export async function syncHealthIntakeReminderNotifications(): Promise<void> {
   const now = new Date();
   const logicalYmd = getLogicalLocalYmd(now, boundary);
 
-  const metrics = await getHealthDayMetricsForUser(user.id, logicalYmd, { localOnly: true }).catch(
+  const metrics = await getHealthDayMetricsForUser(user.id, logicalYmd, { cacheOnly: true }).catch(
     () => null,
   );
   const totals: HealthIntakeDayTotals = metrics?.totals ?? {
@@ -249,7 +249,7 @@ export async function shouldSuppressHealthIntakeReminderNotification(): Promise<
     if (!user?.id) return true;
     const boundary = await resolveDayBoundaryForPage('health');
     const logicalYmd = getLogicalLocalYmd(new Date(), boundary);
-    const metrics = await getHealthDayMetricsForUser(user.id, logicalYmd, { localOnly: true });
+    const metrics = await getHealthDayMetricsForUser(user.id, logicalYmd, { cacheOnly: true });
     const totals = metrics?.totals ?? {
       hydration: 0,
       protein: 0,

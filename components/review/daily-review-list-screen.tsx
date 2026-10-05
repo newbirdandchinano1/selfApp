@@ -43,7 +43,7 @@ export function DailyReviewListScreen() {
   const allDailyCols = useMemo(() => dailyTemplate.flatMap(d => d.columns), [dailyTemplate]);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setLoading(true);
       try {
         await wrapLoad(async () => {
@@ -53,7 +53,7 @@ export function DailyReviewListScreen() {
           setDailyPeriodLabel(snapshot.dailyPeriodLabel);
           setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
           setConfiguredDow(snapshot.configuredDow);
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         setDailyEntries([]);
       } finally {

@@ -1,9 +1,7 @@
-
 import { mergePreservedForeignKeysIntoPatch } from '@/lib/api-fk-preserve';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { readLocalRowForWrite } from '@/lib/api-local-row';
-import { updateTask } from '@/lib/repositories/tasks/task';
-import type { UpdateTaskInput } from '@/lib/repositories/tasks/task.types';
+import { patchViaApiThenCache } from '@/lib/api-write-cache';
 import { ensureTaskCategoryMirrorLocally } from '@/lib/repositories/tasks/task-category-mirror';
 
 export type TaskApiPatch = {
@@ -85,9 +83,9 @@ async function ensureProjectRefsFromTaskSnapshot(
     nonEmptyId(taskRowSnapshot?.project_id) || nonEmptyId(parentRow?.project_id);
   if (!projectId) return;
   try {
-    const { ensureLocalRowPresent, readLocalRowForWrite } = await import('@/lib/api-local-row');
+    const { ensureLocalRowPresent, readLocalRowForWrite: readRow } = await import('@/lib/api-local-row');
     await ensureLocalRowPresent('projects', projectId);
-    const project = await readLocalRowForWrite<Record<string, unknown>>('projects', projectId);
+    const project = await readRow<Record<string, unknown>>('projects', projectId);
     const categoryId =
       typeof project?.category_id === 'string' ? project.category_id.trim() : '';
     if (!categoryId) return;
@@ -98,7 +96,7 @@ async function ensureProjectRefsFromTaskSnapshot(
   }
 }
 
-/** server-authoritative：先写本地 SQLite（即时 UI），再由脏表队列推送后端 */
+/** 阶段 3：PATCH 服务器成功后再写缓存；失败不改本地、不留 pending */
 export async function persistTaskPatchToApi(
   taskId: string,
   patch: TaskApiPatch,
@@ -118,30 +116,23 @@ export async function persistTaskPatchToApi(
   await ensureTaskCategoryMirrorFromSnapshot(merged);
   await ensureProjectRefsFromTaskSnapshot(merged, parentRow);
 
-  if (true) {
-    await updateTask(taskId, merged as UpdateTaskInput);
-    invalidateInflightApiTableFetch('tasks');
-    const { markCloudSqliteTableDirty } = await import('@/lib/cloud-sql-dirty-track');
-    markCloudSqliteTableDirty('tasks');
-    return;
-  }
+  const snapshotRow = taskRowSnapshot
+    ? (() => {
+        const { children: _children, ...rest } = taskRowSnapshot as Record<string, unknown> & {
+          children?: unknown;
+        };
+        return rest;
+      })()
+    : null;
 
-  const { apiPatchRecord, ensureApiLoggedIn } = await import('@/lib/api-client');
-  const { fetchApiRecordByPk } = await import('@/lib/api-read');
-  const { syncApiReadResultToLocal } = await import('@/lib/api-read-local-sync');
-
-  await ensureApiLoggedIn();
-  await apiPatchRecord('tasks', taskId, merged);
+  await patchViaApiThenCache('tasks', taskId, merged, {
+    cacheRow: {
+      ...(local ?? {}),
+      ...(snapshotRow ?? {}),
+      id: taskId,
+      ...merged,
+      sync_status: 'synced',
+    },
+  });
   invalidateInflightApiTableFetch('tasks');
-
-  try {
-    await fetchApiRecordByPk('tasks', taskId);
-  } catch (e) {
-    if (__DEV__) console.warn('[task-api-write] 拉取服务端任务同步本地失败，尝试快照', e);
-    if (taskRowSnapshot) {
-      const { children: _children, ...snapshotRow } = taskRowSnapshot;
-      const row = { ...snapshotRow, id: taskId, ...merged };
-      await syncApiReadResultToLocal('tasks', row);
-    }
-  }
 }

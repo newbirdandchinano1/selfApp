@@ -100,7 +100,7 @@ export default function ReviewTemplateSettingsScreen() {
     };
   }, [editor]);
 
-  const reload = useCallback(async (forceApi = false) => {
+  const reload = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     try {
       await wrapLoad(async () => {
@@ -108,7 +108,7 @@ export default function ReviewTemplateSettingsScreen() {
           await ensureBuiltinDailyReviewModules();
         }
         if (shouldFetchReviewFromApi()) {
-          await fetchReviewCatalog({ scope, offlineFallback: true });
+          await fetchReviewCatalog({ scope, serverFallback: true });
         }
         const rows = await listReviewTemplate(scope);
         setTemplate(rows);
@@ -116,7 +116,7 @@ export default function ReviewTemplateSettingsScreen() {
           if (prev && rows.some(d => d.id === prev)) return prev;
           return rows.length > 0 ? rows[0].id : null;
         });
-      }, forceApi);
+      }, forceRefresh);
     } catch {
       Alert.alert('加载失败', '请稍后重试');
     } finally {

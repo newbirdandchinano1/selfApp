@@ -150,11 +150,11 @@ export default function MemoListScreen() {
   }, []);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setError(null);
       try {
         await wrapLoad(async () => {
-          await fetchProfileMemoList({ offlineFallback: true });
+          await fetchProfileMemoList({ serverFallback: true });
           const [memos, tags] = await Promise.all([listMemos(), getMemoTags()]);
           setItems(memos);
           setAllTags(tags);
@@ -163,7 +163,7 @@ export default function MemoListScreen() {
             memos.map(m => m.id),
           );
           setTagsByMemoId(map);
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         setError('加载失败，请重试');
         setItems([]);

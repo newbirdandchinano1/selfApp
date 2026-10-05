@@ -211,7 +211,7 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
   }
 
   const records = await getHealthRecordsLast7Days(user.id, todayYmd, {
-    localOnly: healthRecordsLocalOnly,
+    cacheOnly: healthRecordsLocalOnly,
   });
   const context = buildContextBlock({ user, todayYmd, records, dietary });
   const ai = await estimateDailyIntakeTargetsFromContext({ apiKey, contextBlock: context });

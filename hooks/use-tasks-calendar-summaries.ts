@@ -29,7 +29,7 @@ export function useTasksCalendarSummaries(params: {
   todayMonthStart: Date;
   selectedYmd: string;
   boundary: TasksDayBoundary;
-  wrapLoad: (fn: () => Promise<boolean | void>, forceApi?: boolean) => Promise<void>;
+  wrapLoad: (fn: () => Promise<boolean | void>, forceRefresh?: boolean) => Promise<void>;
 }) {
   const { pageKey, monthOffset, todayMonthStart, selectedYmd, boundary, wrapLoad } = params;
 
@@ -93,15 +93,15 @@ export function useTasksCalendarSummaries(params: {
   }, []);
 
   const ensureRangeLoaded = React.useCallback(
-    async (startYmd: string, endYmd: string, opts?: { forceApi?: boolean; viaWrapLoad?: boolean }) => {
+    async (startYmd: string, endYmd: string, opts?: { forceRefresh?: boolean; viaWrapLoad?: boolean }) => {
       const rangeKey = calendarRangeKey(startYmd, endYmd);
-      if (!opts?.forceApi && monthCacheRef.current.has(rangeKey)) {
+      if (!opts?.forceRefresh && monthCacheRef.current.has(rangeKey)) {
         applyMonthFromCache(rangeKey);
         return;
       }
 
       const existing = rangeInflightRef.current.get(rangeKey);
-      if (existing && !opts?.forceApi) {
+      if (existing && !opts?.forceRefresh) {
         await existing;
         return;
       }
@@ -116,8 +116,8 @@ export function useTasksCalendarSummaries(params: {
               startYmd,
               endYmd,
               dayBoundary: boundaryRef.current,
-              offlineFallback: true,
-              forceApi: opts?.forceApi,
+              serverFallback: true,
+              forceRefresh: opts?.forceRefresh,
             });
             monthCacheRef.current.set(rangeKey, payload);
             if (payload.summaries) rememberDaysFromSummaries(payload.summaries);
@@ -134,7 +134,7 @@ export function useTasksCalendarSummaries(params: {
           if (opts?.viaWrapLoad) {
             await wrapLoad(async () => {
               await loadBody();
-            }, opts?.forceApi);
+            }, opts?.forceRefresh);
           } else {
             await loadBody();
           }
@@ -162,12 +162,12 @@ export function useTasksCalendarSummaries(params: {
   );
 
   const ensureDayLoaded = React.useCallback(
-    async (ymd: string, opts?: { forceApi?: boolean; viaWrapLoad?: boolean }) => {
+    async (ymd: string, opts?: { forceRefresh?: boolean; viaWrapLoad?: boolean }) => {
       if (!ymd) return;
-      if (!opts?.forceApi && applySelectedFromCache(ymd)) return;
+      if (!opts?.forceRefresh && applySelectedFromCache(ymd)) return;
 
       const existing = dayInflightRef.current.get(ymd);
-      if (existing && !opts?.forceApi) {
+      if (existing && !opts?.forceRefresh) {
         await existing;
         return;
       }
@@ -181,8 +181,8 @@ export function useTasksCalendarSummaries(params: {
               startYmd: detailStartYmd,
               endYmd: detailEndYmd,
               dayBoundary: boundaryRef.current,
-              offlineFallback: true,
-              forceApi: opts?.forceApi,
+              serverFallback: true,
+              forceRefresh: opts?.forceRefresh,
             });
             const next = summary ?? emptyCalendarDay(ymd);
             dayCacheRef.current.set(ymd, next);
@@ -196,7 +196,7 @@ export function useTasksCalendarSummaries(params: {
           if (opts?.viaWrapLoad) {
             await wrapLoad(async () => {
               await loadBody();
-            }, opts?.forceApi);
+            }, opts?.forceRefresh);
           } else {
             await loadBody();
           }
@@ -222,7 +222,7 @@ export function useTasksCalendarSummaries(params: {
   );
 
   const prefetchVisibleMonths = React.useCallback(
-    (opts?: { forceApi?: boolean; viaWrapLoad?: boolean }) => {
+    (opts?: { forceRefresh?: boolean; viaWrapLoad?: boolean }) => {
       for (const off of PREFETCH_OFFSETS) {
         const bounds = monthGridBounds(addMonths(todayMonthStart, monthOffset + off));
         void ensureRangeLoaded(bounds.gridStartYmd, bounds.gridEndYmd, opts);
@@ -232,14 +232,14 @@ export function useTasksCalendarSummaries(params: {
   );
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
-      if (reloadInflightRef.current && !forceApi) {
+    async (forceRefresh = false) => {
+      if (reloadInflightRef.current && !forceRefresh) {
         return reloadInflightRef.current;
       }
 
       const run = (async () => {
         detailRangeKeyRef.current = detailRangeKey;
-        if (forceApi) {
+        if (forceRefresh) {
           invalidateTasksCalendarLocalBaseCache();
           resetTasksCalendarApiCapabilities();
           monthCacheRef.current.clear();
@@ -251,9 +251,9 @@ export function useTasksCalendarSummaries(params: {
           return;
         }
         try {
-          await ensureRangeLoaded(detailStartYmd, detailEndYmd, { forceApi, viaWrapLoad: true });
-          await ensureDayLoaded(selectedYmdRef.current, { forceApi, viaWrapLoad: false });
-          if (forceApi) prefetchVisibleMonths();
+          await ensureRangeLoaded(detailStartYmd, detailEndYmd, { forceRefresh, viaWrapLoad: true });
+          await ensureDayLoaded(selectedYmdRef.current, { forceRefresh, viaWrapLoad: false });
+          if (forceRefresh) prefetchVisibleMonths();
         } catch (e) {
           console.warn('加载任务日历失败', e);
           if (!monthCacheRef.current.has(detailRangeKey)) {

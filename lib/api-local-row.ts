@@ -36,7 +36,7 @@ export async function readLocalRowForWrite<T extends Record<string, unknown>>(
 
 /**
  * 写入/更新/删除前确保本地有对应行。
- * API_ONLY_READS 下 UI 数据来自 REST，本地 SQLite 可能尚无该行；
+ * SERVER_AUTHORITATIVE_READS 下 UI 数据来自 REST，本地 SQLite 可能尚无该行；
  * 此时从 REST 拉取、修正外键并写入本地，供后续 UPDATE/INSERT/DELETE 使用。
  */
 export async function ensureLocalRowForWrite<T extends Record<string, unknown>>(

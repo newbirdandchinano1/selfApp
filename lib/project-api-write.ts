@@ -1,4 +1,4 @@
-import { isLocalFirstReads } from '@/lib/api-data-mode';
+
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import { updateProject } from '@/lib/repositories/projects/project';
 import type { UpdateProjectInput } from '@/lib/repositories/projects/project.types';
@@ -13,13 +13,13 @@ export type ProjectApiPatch = {
   priority?: number;
 };
 
-/** local-first：先写本地 SQLite，再由脏表队列推送；否则 PATCH 后拉回 */
+/** server-authoritative：先写本地 SQLite，再由脏表队列推送；否则 PATCH 后拉回 */
 export async function persistProjectPatchToApi(
   projectId: string,
   patch: ProjectApiPatch,
   projectRowSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
-  if (isLocalFirstReads()) {
+  if (true) {
     await updateProject(projectId, patch as UpdateProjectInput);
     invalidateInflightApiTableFetch('projects');
     const { markCloudSqliteTableDirty } = await import('@/lib/cloud-sql-dirty-track');

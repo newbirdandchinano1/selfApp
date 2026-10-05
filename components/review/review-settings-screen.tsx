@@ -68,7 +68,7 @@ export function ReviewSettingsScreen() {
   const [pointsBusy, setPointsBusy] = useState(false);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setLoading(true);
       try {
         await wrapLoad(async () => {
@@ -84,7 +84,7 @@ export function ReviewSettingsScreen() {
           setPointsSettings(reviewPoints);
           setDailyRewardText(formatPoints(reviewPoints.dailyRewardPoints));
           setStreak7BonusText(formatPoints(reviewPoints.streak7BonusPoints));
-        }, forceApi);
+        }, forceRefresh);
       } finally {
         setLoading(false);
       }

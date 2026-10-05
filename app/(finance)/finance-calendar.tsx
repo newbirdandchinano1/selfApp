@@ -212,7 +212,7 @@ const FinanceMonthPage = React.memo(function FinanceMonthPage(props: {
         const { days: rows } = await fetchFinanceDailySummaries({
           start: formatYmd(gridStart),
           end: formatYmd(gridEnd),
-          offlineFallback: true,
+          serverFallback: true,
         });
         if (cancelled) return;
 
@@ -370,7 +370,7 @@ export default function FinanceCalendarScreen() {
       const { transactions: rows } = await fetchFinanceTransactionsRange({
         start: ymd,
         end: ymd,
-        offlineFallback: true,
+        serverFallback: true,
       });
       const ui = rows.map((row) => txnToUi(row));
       setActiveTxns(ui);

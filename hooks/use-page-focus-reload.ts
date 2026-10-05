@@ -17,11 +17,11 @@ export type UsePageFocusReloadOpts = {
 
 /**
  * 页面 UI 重载：挂载 / 聚焦时读 SQLite。
- * 禁止 pull / forceApi；启动与回前台由 SyncManager 做一次。
+ * 禁止 pull / forceRefresh；启动与回前台由 SyncManager 做一次。
  */
 export function usePageFocusReload(
   pageKey: string,
-  reload: (forceApi?: boolean) => void | Promise<void>,
+  reload: (forceRefresh?: boolean) => void | Promise<void>,
   opts?: UsePageFocusReloadOpts,
 ) {
   const reloadRef = useRef(reload);

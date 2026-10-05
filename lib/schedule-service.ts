@@ -48,7 +48,7 @@ import { apiGetFrogScheduleWeek, apiPostFrogSchedulePlacement, apiSaveFrogSchedu
 import {
   enqueueFrogSchedulePlacementDelete,
   enqueueFrogSchedulePlacementUpsert,
-} from '@/lib/schedule-api-outbox';
+} from '@/lib/schedule-write-direct';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { clampSlotHours } from '@/lib/schedule/axis';
 

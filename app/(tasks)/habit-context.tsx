@@ -35,7 +35,7 @@ export default function HabitContextScreen() {
   const [addVisible, setAddVisible] = React.useState(false);
   const [newContextName, setNewContextName] = React.useState('');
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
     try {
       const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
@@ -61,7 +61,7 @@ export default function HabitContextScreen() {
       console.warn('加载习惯情境失败', err);
       setContextData((prev) => prev);
     }
-    }, forceApi);
+    }, forceRefresh);
   }, [wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);

@@ -1,7 +1,7 @@
 import { getDatabase } from '@/lib/database';
 
 export const REST_INITIAL_SYNC_META_KEY = 'rest_initial_sync_completed_v1';
-export const PREFER_LOCAL_READS_META_KEY = 'prefer_local_reads_v1';
+export const PREFER_SERVER_READS_META_KEY = 'prefer_local_reads_v1';
 export const PAGE_SYNC_META_KEY = 'page_api_synced_keys_v1';
 
 function quoteIdent(name: string): string {

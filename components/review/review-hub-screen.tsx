@@ -117,7 +117,7 @@ export function ReviewHubScreen() {
   }, [todayYmd]);
 
   const reloadSnapshot = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         const snapshot = await loadReviewPeriodSnapshot(todayYmd);
         setWeekRangeLabel(snapshot.weekRangeLabel);
@@ -131,14 +131,14 @@ export function ReviewHubScreen() {
           setScope('weekly');
           setAutoSwitchedWeekly(true);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [autoSwitchedWeekly, todayYmd, wrapLoad],
   );
 
   const reload = useCallback(
-    async (forceApi = false) => {
-      await reloadSnapshot(forceApi);
+    async (forceRefresh = false) => {
+      await reloadSnapshot(forceRefresh);
       if (scopeRef.current === 'weekly') {
         await weeklyReloadRef.current?.();
       } else if (scopeRef.current === 'monthly') {

@@ -156,7 +156,7 @@ export default function IntakeRecordDetailScreen() {
   const [deleting, setDeleting] = React.useState(false);
   const [imageLoadError, setImageLoadError] = React.useState(false);
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     if (!recordId?.trim()) {
       setRow(null);
       setForbidden(false);
@@ -183,7 +183,7 @@ export default function IntakeRecordDetailScreen() {
         setRow(rec);
         setFocusMetric(resolveFocusMetric(rec, parseMetricParam(metricParam)));
         setImageLoadError(false);
-      }, forceApi);
+      }, forceRefresh);
     } catch {
       setRow(null);
       setForbidden(false);

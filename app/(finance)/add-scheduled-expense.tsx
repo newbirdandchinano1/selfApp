@@ -141,7 +141,7 @@ export default function AddScheduledExpenseScreen() {
   React.useEffect(() => {
     void wrapLoad(async () => {
       try {
-        const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+        const catalog = await fetchFinanceCatalog({ serverFallback: true });
         const accts = catalog.accounts;
         setAccounts(accts);
         if (!isEditMode && accts.length > 0) {

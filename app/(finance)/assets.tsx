@@ -118,12 +118,12 @@ export default function AssetsScreen() {
   const contentRevealDoneRef = React.useRef(false);
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         try {
           const [catalog, txns] = await Promise.all([
-            fetchFinanceCatalog({ offlineFallback: true }),
-            getFinanceTransactions({ localOnly: !forceApi }),
+            fetchFinanceCatalog({ serverFallback: true }),
+            getFinanceTransactions({ cacheOnly: !forceRefresh }),
           ]);
           setAccounts(catalog.accounts);
           setAccountTypes(catalog.accountTypes);
@@ -136,7 +136,7 @@ export default function AssetsScreen() {
         } finally {
           setInitialLoadPending(false);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [wrapLoad],
   );

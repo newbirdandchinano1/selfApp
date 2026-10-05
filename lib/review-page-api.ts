@@ -51,7 +51,7 @@ export type ReviewCatalogData = {
 export async function fetchReviewCatalog(opts?: {
   scope?: 'daily' | 'weekly' | 'monthly' | 'all';
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewCatalogData> {
   return fetchPage<
     { dimensions?: unknown; columns?: unknown },
@@ -86,7 +86,7 @@ export async function fetchReviewHome(opts: {
   weekStart?: string;
   monthStart?: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewHomeData> {
   return fetchPage<
     {
@@ -185,7 +185,7 @@ export async function fetchReviewJournal(opts: {
   weekStart?: string;
   monthStart?: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewJournalData> {
   const { scope } = opts;
   const table = REVIEW_JOURNAL_SCOPE[scope].table;
@@ -230,7 +230,7 @@ export async function fetchReviewDaily(opts: {
   start: string;
   end: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewDailyData> {
   const result = await fetchReviewJournal({ scope: 'daily', ...opts });
   return { journals: result.journals as DailyReviewJournalRow[], fromApi: result.fromApi };
@@ -241,7 +241,7 @@ export async function fetchReviewWeekly(opts: {
   start?: string;
   end?: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewWeeklyData> {
   const result = await fetchReviewJournal({ scope: 'weekly', ...opts });
   return { journals: result.journals as WeeklyReviewJournalRow[], fromApi: result.fromApi };
@@ -252,7 +252,7 @@ export async function fetchReviewMonthly(opts: {
   start?: string;
   end?: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewMonthlyData> {
   const result = await fetchReviewJournal({ scope: 'monthly', ...opts });
   return { journals: result.journals as MonthlyReviewJournalRow[], fromApi: result.fromApi };
@@ -283,7 +283,7 @@ export async function fetchReviewWeekMetrics(opts: {
   end: string;
   rangeKind?: 'rolling-7' | 'calendar-week';
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<ReviewWeekMetricsPayload & { fromApi: boolean }> {
   type WeekMetricsResult = ReviewWeekMetricsPayload & { fromApi: boolean };
   const rangeKind = opts.rangeKind ?? 'rolling-7';

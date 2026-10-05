@@ -161,7 +161,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const reloadPageRef = useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
+  const reloadPageRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
   const { colors, isDark } = useAppTheme();
   const taskUi = getTaskUiColors(isDark);
   const [user, setUser] = useState<UserRow | null>(null);
@@ -247,11 +247,11 @@ export default function ProfileScreen() {
   }, []);
 
   const reloadPage = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       try {
         await wrapLoad(async () => {
           await Promise.all([loadUser(), loadPoints()]);
-        }, forceApi);
+        }, forceRefresh);
         const [currentUser, balance] = await Promise.all([
           getDefaultUser().catch(() => null),
           getPointsBalance().catch(() => pointsBalance),

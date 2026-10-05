@@ -39,7 +39,7 @@ export type InsertProjectCompletionLogInput = {
   source?: ProjectCompletionLogSource;
 };
 
-const LOG_READ_OPTS = { offlineFallback: true, localOnly: true as const };
+const LOG_READ_OPTS = { serverFallback: true, cacheOnly: true as const };
 const NOTE_MAX_LEN = 500;
 
 function truncateNote(note: string | null | undefined): string | null {

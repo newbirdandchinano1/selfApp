@@ -142,7 +142,7 @@ export function WeeklyReviewFormScreen({
   }, []);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setLoading(true);
       try {
         await wrapLoad(async () => {
@@ -201,7 +201,7 @@ export function WeeklyReviewFormScreen({
             setAdjustSavings(false);
             setAdjustPlans(false);
           }
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         setMetrics(null);
       } finally {

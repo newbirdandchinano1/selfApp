@@ -4,7 +4,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { getResolvedGlobalIntakeTargets } from '@/lib/global-intake-targets';
 import { addDays as addDaysCore, formatYmd } from '@/lib/date';
 import { TAB_PAGE_KEYS } from '@/lib/page-api-scope';
-import { hasPageSyncedWithApi } from '@/lib/page-api-session';
+import { hasPageLoadedFromServer } from '@/lib/page-api-session';
 import { buildUserHealthCalendarSnapshot } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
@@ -516,7 +516,7 @@ export function HealthIntakeTrendSection({
 
       const { records, completionMap, startDate } = await buildUserHealthCalendarSnapshot(user.id, today, {
         // 首页已同步后只读本地；否则允许 REST 拉取（避免切 Tab 早于同步完成时图表空白）
-        localOnly: hasPageSyncedWithApi(TAB_PAGE_KEYS.health),
+        cacheOnly: hasPageLoadedFromServer(TAB_PAGE_KEYS.health),
       });
       setDayMetricsMap(buildDayMetricsMap(records, completionMap));
       setHistoryStartDate(startDate);

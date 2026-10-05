@@ -135,7 +135,7 @@ export function DailyReviewGridView({
       await wrapLoad(async () => {
         await ensureBuiltinDailyReviewModules();
         if (shouldFetchReviewFromApi()) {
-          await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd, offlineFallback: true });
+          await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd, serverFallback: true });
         }
         const streakStart = shiftYmd(todayYmd, -45);
         const [snapshot, dailyRows, reminderSettings, dayFacts, streakRows, dailyTpl] = await Promise.all([

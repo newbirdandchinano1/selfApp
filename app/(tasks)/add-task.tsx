@@ -399,7 +399,7 @@ export default function AddTaskScreen() {
   }, [applySchedule, clearSchedule, setDeadlineText, setReminderText, setRepeatText]);
 
   const reloadAddTaskData = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         if (isStandalone) {
           setTagsLoading(true);
@@ -444,7 +444,7 @@ export default function AddTaskScreen() {
           setProjectName(null);
           setProjectPriority(0);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [applyLoadedStandaloneTask, editTaskId, isEditStandalone, isStandalone, quickProjectId, router, wrapLoad],
   );

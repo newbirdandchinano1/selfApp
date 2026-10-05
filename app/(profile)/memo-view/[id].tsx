@@ -51,7 +51,7 @@ export default function MemoViewScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       if (!id) {
         setLoading(false);
         return;
@@ -67,7 +67,7 @@ export default function MemoViewScreen() {
           }
           setRow(item);
           setTags(await getTagsByEntity('memo', id));
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         setError('加载失败，请重试');
         setRow(null);

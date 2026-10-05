@@ -94,7 +94,7 @@ function assertWishBoardPayload(input: CreateWishBoardItemInput | UpdateWishBoar
 }
 export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBoardItemRow[]> {
   const rows = await readApiTable<WishBoardItemRow>('wish_board_items', {
-    offlineFallback: true,
+    serverFallback: true,
     ...opts,
   });
   return rows
@@ -112,7 +112,7 @@ export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBo
  * 兑换记录列表：优先 `GET /api/app/wish-board/redeemed`；失败再回退本地流水。
  */
 export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<WishRedeemRecord[]> {
-  if (!opts?.localOnly) {
+  if (!opts?.cacheOnly) {
     try {
       const { appWishBoardListRedeemed } = await import('@/lib/api-app-domain');
       const items = await appWishBoardListRedeemed();
@@ -144,11 +144,11 @@ export async function listWishRedeemRecords(opts?: PageApiReadOpts): Promise<Wis
 
   const [ledgers, items] = await Promise.all([
     readApiTable<PointsLedgerRow>('points_ledger', {
-      offlineFallback: true,
+      serverFallback: true,
       ...opts,
     }),
     readApiTable<WishBoardItemRow>('wish_board_items', {
-      offlineFallback: true,
+      serverFallback: true,
       ...opts,
     }),
   ]);
@@ -248,7 +248,7 @@ export async function deleteWishRedeemRecord(record: WishRedeemRecord): Promise<
 }
 
 export async function getWishBoardItemById(id: string): Promise<WishBoardItemRow | null> {
-  const row = await readApiRecord<WishBoardItemRow>('wish_board_items', id, { offlineFallback: true });
+  const row = await readApiRecord<WishBoardItemRow>('wish_board_items', id, { serverFallback: true });
   return row ? mapWishBoardRow(row) : null;
 }
 

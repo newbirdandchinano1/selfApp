@@ -48,7 +48,7 @@ async function getFinanceAccountById(id: string) {
   // 写入前确保本地有行：API 能读到但 SQLite 尚未灌库时，先 seed，避免后续流水同步找不到账户
   const ensured = await ensureLocalRowForWrite<FinanceAccountRow>('finance_accounts', pk);
   if (ensured) return ensured;
-  return readApiRecord<FinanceAccountRow>('finance_accounts', pk, { offlineFallback: true });
+  return readApiRecord<FinanceAccountRow>('finance_accounts', pk, { serverFallback: true });
 }
 
 /**
@@ -57,7 +57,7 @@ async function getFinanceAccountById(id: string) {
  */
 async function ensureFinanceTablesSyncedFromApi(_opts?: {
   forceRefresh?: boolean;
-  localOnly?: boolean;
+  cacheOnly?: boolean;
 }): Promise<void> {
   /* no-op：专用 page API 负责 REST → 本地 */
 }
@@ -353,7 +353,7 @@ export async function validateFinanceTransactionBeforeSave(input: {
 }
 
 async function countFinanceAccountLedgerTransactions(accountId: string): Promise<number> {
-  await ensureFinanceTablesSyncedFromApi({ localOnly: true });
+  await ensureFinanceTablesSyncedFromApi({ cacheOnly: true });
   const transactions = await readFinanceTransactionsLocalVisible();
   return countLedgerTransactionsFromList(accountId, transactions);
 }
@@ -370,7 +370,7 @@ export async function resolveFinanceAccountLedgerBalance(accountId: string): Pro
 export async function getFinanceAccountLedgerBalance(accountId: string): Promise<number> {
   const remembered = getRememberedFinanceAccountBalance(accountId);
   if (remembered != null) return remembered;
-  await ensureFinanceTablesSyncedFromApi({ localOnly: true });
+  await ensureFinanceTablesSyncedFromApi({ cacheOnly: true });
   const transactions = await readFinanceTransactionsLocalVisible();
   return computeLedgerBalanceFromTransactions(accountId, transactions);
 }
@@ -436,7 +436,7 @@ async function loadFinanceAccounts(): Promise<FinanceAccountRow[]> {
 
 async function loadFinanceTransactionsForActiveAccounts(_opts?: {
   forceRefresh?: boolean;
-  localOnly?: boolean;
+  cacheOnly?: boolean;
 }): Promise<FinanceTransactionRow[]> {
   await ensureFinanceTablesSyncedFromApi(_opts);
   const [accounts, transactions] = await Promise.all([
@@ -451,8 +451,8 @@ export async function getFinanceAccounts() {
   return loadFinanceAccounts();
 }
 
-export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolean }) {
-  await ensureFinanceTablesSyncedFromApi({ localOnly: true });
+export async function getFinanceAccountsWithBalance(_opts?: { cacheOnly?: boolean }) {
+  await ensureFinanceTablesSyncedFromApi({ cacheOnly: true });
   const [accounts, transactions] = await Promise.all([
     readFinanceAccountsLocalVisible(),
     readFinanceTransactionsLocalVisible(),
@@ -556,7 +556,7 @@ export async function getFinanceAccountsWithBalance(_opts?: { localOnly?: boolea
   return result;
 }
 
-export async function getFinanceAccountTypes(_opts?: { localOnly?: boolean }) {
+export async function getFinanceAccountTypes(_opts?: { cacheOnly?: boolean }) {
   const db = await getDatabase();
   if (!db) return [];
   const rows = await db.getAllAsync<FinanceAccountTypeRow>(
@@ -680,7 +680,7 @@ export async function createFinanceFlowCategory(input: CreateFinanceFlowCategory
   );
 }
 
-export async function getFinanceFlowCategories(_opts?: { localOnly?: boolean }) {
+export async function getFinanceFlowCategories(_opts?: { cacheOnly?: boolean }) {
   const db = await getDatabase();
   if (!db) return [];
   const rows = await db.getAllAsync<FinanceFlowCategoryRow>(
@@ -1182,15 +1182,15 @@ export async function getFinanceTransactionById(id: string) {
     );
     if (local) return local;
   }
-  return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { offlineFallback: true });
+  return readApiRecord<FinanceTransactionRow>('finance_transactions', id, { serverFallback: true });
 }
 
-export async function getFinanceTransactions(opts?: { forceRefresh?: boolean; localOnly?: boolean }) {
+export async function getFinanceTransactions(opts?: { forceRefresh?: boolean; cacheOnly?: boolean }) {
   return loadFinanceTransactionsForActiveAccounts(opts);
 }
 
 export async function getFinanceTransactionsByAccountId(accountId: string) {
-  const rows = await loadFinanceTransactionsForActiveAccounts({ localOnly: true });
+  const rows = await loadFinanceTransactionsForActiveAccounts({ cacheOnly: true });
   return rows.filter(t => t.account_id === accountId);
 }
 
@@ -1199,9 +1199,9 @@ export async function loadFinanceAccountDetail(input: {
   accountId?: string;
   accountName?: string;
   forceRefresh?: boolean;
-  localOnly?: boolean;
+  cacheOnly?: boolean;
 }): Promise<{ account: FinanceAccountBalanceRow | null; transactions: FinanceTransactionRow[] }> {
-  await ensureFinanceTablesSyncedFromApi({ forceRefresh: input.forceRefresh, localOnly: true });
+  await ensureFinanceTablesSyncedFromApi({ forceRefresh: input.forceRefresh, cacheOnly: true });
 
   const accounts = await readFinanceAccountsLocalVisible();
   const allTransactions = await readFinanceTransactionsLocalVisible();
@@ -1247,18 +1247,18 @@ export async function loadFinanceAccountDetail(input: {
   return { account, transactions };
 }
 
-export async function getFinanceTransactionsByYmd(ymd: string, opts?: { localOnly?: boolean }) {
-  const rows = await loadFinanceTransactionsForActiveAccounts({ localOnly: opts?.localOnly ?? true });
+export async function getFinanceTransactionsByYmd(ymd: string, opts?: { cacheOnly?: boolean }) {
+  const rows = await loadFinanceTransactionsForActiveAccounts({ cacheOnly: opts?.cacheOnly ?? true });
   return rows.filter(t => ymdFromDatetime(t.happened_at) === ymd);
 }
 
 export async function getFinanceDailySummariesByDateRange(
   startYmd: string,
   endYmd: string,
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ) {
   const { aggregateTransactions } = await import('@/lib/finance-aggregate');
-  const rows = await loadFinanceTransactionsForActiveAccounts({ localOnly: opts?.localOnly ?? true });
+  const rows = await loadFinanceTransactionsForActiveAccounts({ cacheOnly: opts?.cacheOnly ?? true });
   return aggregateTransactions(rows, { start: startYmd, end: endYmd }).days;
 }
 

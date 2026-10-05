@@ -41,9 +41,9 @@ export type ProjectsListData = {
 export type ProjectsListFetchOpts = Omit<ProjectsListQueryParams, 'page' | 'limit'> & {
   forceRefresh?: boolean;
   forceLocal?: boolean;
-  /** 多端 dirty / 下拉：强制打网，忽略 wrapLoad localOnly */
-  forceApi?: boolean;
-  offlineFallback?: boolean;
+  /** 多端 dirty / 下拉：强制打网，忽略 wrapLoad cacheOnly */
+  forceRefresh?: boolean;
+  serverFallback?: boolean;
   /** 与任务页「隐藏已完成任务」开关联动；优先于 includeCompleted / includeCancelled */
   hideCompletedProjectTasks?: boolean;
 };
@@ -579,7 +579,7 @@ export async function fetchProjectsListForTab(
       projects,
     };
   } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
+    if (opts?.serverFallback === false) throw e;
     console.warn('[projects-list-api] 接口失败，回退本地', e);
     const localProjects = filterProjectsForTab(projectTab, await getProjects());
     const projectTaskTreeMap = await getProjectTaskTreeMap(localProjects.map((p) => p.id));

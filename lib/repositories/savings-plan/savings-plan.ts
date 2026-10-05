@@ -57,11 +57,11 @@ export async function createSavingsPlan(input: CreateSavingsPlanInput) {
 }
 
 export async function getSavingsPlanById(id: string) {
-  return readApiRecord<SavingsPlanRow>('savings_plans', id, { offlineFallback: true });
+  return readApiRecord<SavingsPlanRow>('savings_plans', id, { serverFallback: true });
 }
 
 export async function getSavingsPlans() {
-  const rows = await readApiTable<SavingsPlanRow>('savings_plans', { offlineFallback: true });
+  const rows = await readApiTable<SavingsPlanRow>('savings_plans', { serverFallback: true });
   return sortByUpdatedDesc(rows);
 }
 

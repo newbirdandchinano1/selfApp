@@ -129,16 +129,16 @@ export function CashFlowFinanceInsightsProvider({
   const reloadFinanceData = useCallback(async () => {
     setBootReady(false);
     try {
-      const insights = await fetchFinanceInsights({ months: 6, offlineFallback: true });
+      const insights = await fetchFinanceInsights({ months: 6, serverFallback: true });
       const end = new Date();
       const start = new Date(end.getFullYear(), end.getMonth() - 6, 1);
       const [txnResult, catalog] = await Promise.all([
         fetchFinanceTransactionsRange({
           start: formatYmd(start),
           end: formatYmd(end),
-          offlineFallback: true,
+          serverFallback: true,
         }),
-        fetchFinanceCatalog({ offlineFallback: true }),
+        fetchFinanceCatalog({ serverFallback: true }),
       ]);
       const transactions = txnResult.transactions;
       const categories = catalog.categories;

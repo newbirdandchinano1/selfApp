@@ -79,7 +79,7 @@ async function ensureLocalDefaultUserSeed(): Promise<UserRow> {
 export async function getDefaultUser() {
   let row: UserRow | null = null;
   try {
-    row = await readApiRecord<UserRow>('users', 'default', { offlineFallback: true });
+    row = await readApiRecord<UserRow>('users', 'default', { serverFallback: true });
   } catch (e) {
     if (__DEV__) console.warn('[user] REST 读取 default 用户失败，回退本地', e);
   }
@@ -88,7 +88,7 @@ export async function getDefaultUser() {
   }
   if (!row) {
     try {
-      const rows = await readApiTable<UserRow>('users', { offlineFallback: true });
+      const rows = await readApiTable<UserRow>('users', { serverFallback: true });
       row = rows.find((u) => u.id === 'default') ?? null;
     } catch {
       // ignore

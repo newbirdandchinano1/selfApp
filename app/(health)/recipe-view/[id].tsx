@@ -101,7 +101,7 @@ export default function RecipeViewScreen() {
   }, [contentOpacity, contentY, heroOpacity, heroScale, reduceMotion]);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       if (!id) {
         setLoading(false);
         return;
@@ -117,7 +117,7 @@ export default function RecipeViewScreen() {
           const cat = await getRecipeCategory(item.category_id);
           setCategoryName(cat?.name ?? '');
           setRow(item);
-        }, forceApi);
+        }, forceRefresh);
       } catch {
         setError('加载失败，请重试');
         setRow(null);

@@ -99,8 +99,8 @@ export function MonthlyReviewGridView({
       await wrapLoad(async () => {
         if (shouldFetchReviewFromApi()) {
           await Promise.all([
-            fetchReviewCatalog({ scope: 'monthly', offlineFallback: true }),
-            fetchReviewJournal({ scope: 'monthly', monthStart: monthStartYmd, offlineFallback: true }),
+            fetchReviewCatalog({ scope: 'monthly', serverFallback: true }),
+            fetchReviewJournal({ scope: 'monthly', monthStart: monthStartYmd, serverFallback: true }),
           ]);
         }
         const [tpl, row] = await Promise.all([

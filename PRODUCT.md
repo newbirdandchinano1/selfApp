@@ -21,7 +21,7 @@ ios
 ## Operating Context
 
 - Expo Router + React Native；以 iOS 习惯为主（亦有 Android 构建，但设计语言优先 iOS）。
-- 本地 SQLite 为主，配合云同步；离线回退本地。
+- 服务器权威、SQLite 仅为在线缓存（无 TTL、无离线业务）：预热=登录/启动 bootstrap 快照灌缓存（失败不得标就绪）；失效=SSE/Pull/回前台/下拉/本机写成功后更新对应行；丢弃=登出清本地；权威始终是下一次成功网络读。断网读/写一律失败可重试，不做本地 pending 持久化。
 - Tab 信息架构：健康 / 任务 / 财务 / 复盘 / 我的。
 - 「我的」页 redesign 必须保留：积分、编辑资料、现有菜单入口与导航；旧 UI 仅作反例，不作为视觉权威。
 

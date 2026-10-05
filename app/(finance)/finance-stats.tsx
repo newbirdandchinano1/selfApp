@@ -218,7 +218,7 @@ export default function FinanceStatsScreen() {
   const statsGranularity = activeTab === '年' ? 'month' : ('day' as const);
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         try {
           const data = await fetchFinanceStats({
@@ -230,14 +230,14 @@ export default function FinanceStatsScreen() {
             rankLimit: 5,
             recentDaysLimit: 6,
             excludeCorrections: true,
-            offlineFallback: true,
+            serverFallback: true,
           });
           setStats(data);
         } catch (error) {
           console.warn('Failed to load finance stats:', error);
           setStats(null);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [range.endYmd, range.startYmd, statsGranularity, wrapLoad],
   );

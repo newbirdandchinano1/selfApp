@@ -100,7 +100,7 @@ export default function ReviewCalendarScreen() {
   const cellSize = Math.floor((windowWidth - gridPadding - GRID_GAP * 6) / 7);
 
   const reload = useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       setLoading(true);
       try {
         await wrapLoad(async () => {
@@ -115,8 +115,8 @@ export default function ReviewCalendarScreen() {
 
           if (shouldFetchReviewFromApi()) {
             await Promise.all([
-              fetchReviewCatalog({ scope: 'daily', offlineFallback: true }),
-              fetchReviewJournal({ scope: 'daily', start, end, offlineFallback: true }),
+              fetchReviewCatalog({ scope: 'daily', serverFallback: true }),
+              fetchReviewJournal({ scope: 'daily', start, end, serverFallback: true }),
             ]);
           }
 
@@ -138,7 +138,7 @@ export default function ReviewCalendarScreen() {
           setConfiguredDow(dow);
           setFilledSet(nextFilled);
           setFieldsByYmd(nextFields);
-        }, forceApi);
+        }, forceRefresh);
       } finally {
         setLoading(false);
       }

@@ -171,7 +171,7 @@ async function clearApiDirtyTablesWithoutPending(tables: Iterable<string>): Prom
       toClear.push(table);
       continue;
     }
-    const pending = await readPendingRowsForTable(table);
+    const pending = await readUnsyncedRowsForTable(table);
     if (pending.length === 0) toClear.push(table);
   }
   if (toClear.length > 0) clearApiDirtyTables(toClear);
@@ -184,7 +184,7 @@ async function tableHasSyncStatusColumn(table: string): Promise<boolean> {
   return cols.some(c => c.name === 'sync_status');
 }
 
-async function readPendingRowsForTable(table: string): Promise<Record<string, unknown>[]> {
+async function readUnsyncedRowsForTable(table: string): Promise<Record<string, unknown>[]> {
   const db = await getDatabase();
   if (!db) return [];
   const safe = quoteIdent(table);
@@ -277,7 +277,7 @@ async function collectPendingDataForApiPush(seedTables: string[]): Promise<Local
   const db = await getDatabase();
 
   for (const table of filtered) {
-    const pending = await readPendingRowsForTable(table);
+    const pending = await readUnsyncedRowsForTable(table);
     if (pending.length > 0) rowsByTable.set(table, pending);
   }
 
@@ -330,7 +330,7 @@ function scheduleUnifiedPush(): void {
 }
 
 function scheduleUnifiedPushAfterFailure(): void {
-  void import('@/lib/sync-manager').then(m => m.requestPushAfterFailure());
+  void import('@/lib/sync-manager').then(m => m.requestRetryAfterFailure());
 }
 
 /** 由 SyncManager 调用的脏表 flush 实现；业务代码请走 requestPush */

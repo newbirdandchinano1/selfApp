@@ -341,7 +341,7 @@ export default function AddHabitScreen() {
     [],
   );
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
     try {
       const rows = await getHabitContexts();
@@ -367,7 +367,7 @@ export default function AddHabitScreen() {
     } finally {
       setTagsLoading(false);
     }
-    }, forceApi);
+    }, forceRefresh);
   }, [isEditMode, wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);

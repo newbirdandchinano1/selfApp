@@ -6,7 +6,7 @@
 import { asRecordArray, shouldSkipPageNetwork, upsertPageRows } from '@/lib/page-api-fetch';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import {
-  overlayLocalPendingOnApiTableRows,
+  overlayServerRowsPassthrough,
   syncApiReadResultToLocal,
 } from '@/lib/api-read-local-sync';
 import { ymdFromDatetime } from '@/lib/api-read-helpers';
@@ -107,7 +107,7 @@ async function syncAccountsWithBalance(raw: unknown): Promise<FinanceAccountBala
     }),
   );
   const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
-  const localAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
+  const localAccounts = await getFinanceAccountsWithBalance({ cacheOnly: true });
   rememberFinanceAccountBalances(localAccounts);
   return localAccounts;
 }
@@ -148,22 +148,22 @@ export type FinanceCatalogData = {
 
 export async function fetchFinanceCatalog(opts?: {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
 }): Promise<FinanceCatalogData> {
   const readLocal = async (): Promise<FinanceCatalogData> => {
     const { getFinanceAccountsWithBalance, getFinanceAccountTypes, getFinanceFlowCategories } =
       await import('@/lib/repositories/finance/finance');
     const [accounts, accountTypes, categories] = await Promise.all([
-      getFinanceAccountsWithBalance({ localOnly: true }),
-      getFinanceAccountTypes({ localOnly: true }),
-      getFinanceFlowCategories({ localOnly: true }),
+      getFinanceAccountsWithBalance({ cacheOnly: true }),
+      getFinanceAccountTypes({ cacheOnly: true }),
+      getFinanceFlowCategories({ cacheOnly: true }),
     ]);
     return { accounts, accountTypes, categories, fromApi: false };
   };
 
-  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceApi: opts?.forceApi })) {
+  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
     return readLocal();
   }
 
@@ -177,7 +177,7 @@ export async function fetchFinanceCatalog(opts?: {
     await syncScheduledExpenses(payload.scheduledExpenses);
     return { accounts, accountTypes, categories, fromApi: true };
   } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
+    if (opts?.serverFallback === false) throw e;
     console.warn('[finance-page-api] catalog 失败，回退本地', e);
     return readLocal();
   }
@@ -201,17 +201,17 @@ export async function fetchFinanceHome(opts?: {
   daysBack?: number;
   budgetRefreshDay?: number;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
   forceLocal?: boolean;
-  forceApi?: boolean;
+  forceRefresh?: boolean;
 }): Promise<FinanceHomeData> {
   const readLocal = async (): Promise<FinanceHomeData> => {
     const { getFinanceAccountsWithBalance, getFinanceFlowCategories, getFinanceTransactions } =
       await import('@/lib/repositories/finance/finance');
     const [accounts, categories, transactions] = await Promise.all([
-      getFinanceAccountsWithBalance({ localOnly: true }),
-      getFinanceFlowCategories({ localOnly: true }),
-      getFinanceTransactions({ localOnly: true }),
+      getFinanceAccountsWithBalance({ cacheOnly: true }),
+      getFinanceFlowCategories({ cacheOnly: true }),
+      getFinanceTransactions({ cacheOnly: true }),
     ]);
     return {
       accounts,
@@ -224,7 +224,7 @@ export async function fetchFinanceHome(opts?: {
     };
   };
 
-  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceApi: opts?.forceApi })) {
+  if (shouldSkipPageNetwork({ forceLocal: opts?.forceLocal, forceRefresh: opts?.forceRefresh })) {
     return readLocal();
   }
 
@@ -248,7 +248,7 @@ export async function fetchFinanceHome(opts?: {
       rememberFinanceNetWorth(payload.netWorth);
     }
     // 叠本地 pending，避免慢 home 响应盖掉刚记账、尚未推上云的流水
-    const withPending = (await overlayLocalPendingOnApiTableRows(
+    const withPending = (await overlayServerRowsPassthrough(
       'finance_transactions',
       apiTransactions as Record<string, unknown>[],
     )) as FinanceTransactionRow[];
@@ -262,7 +262,7 @@ export async function fetchFinanceHome(opts?: {
       fromApi: true,
     };
   } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
+    if (opts?.serverFallback === false) throw e;
     markPageLoadRestFailed();
     console.warn('[finance-page-api] home 失败，回退本地', e);
     return readLocal();
@@ -302,7 +302,7 @@ export async function fetchFinanceRecentDays(opts: {
   dayBoundaryHour?: number;
   dayBoundaryMinute?: number;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceRecentDaysData> {
   try {
     const payload: FinanceRecentDaysPayload = await apiGetFinanceRecentDays({
@@ -319,7 +319,7 @@ export async function fetchFinanceRecentDays(opts: {
       fromApi: true,
     };
   } catch (e) {
-    if (opts.offlineFallback === false) throw e;
+    if (opts.serverFallback === false) throw e;
     console.warn('[finance-page-api] recent-days 失败', e);
     return { transactions: [], historyHasMore: false, fromApi: false };
   }
@@ -336,7 +336,7 @@ export async function fetchFinanceTransactionsRange(opts: {
   accountId?: string;
   excludeCorrections?: boolean;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceTransactionsRangeData> {
   try {
     const pageLimit = 200;
@@ -363,10 +363,10 @@ export async function fetchFinanceTransactionsRange(opts: {
     await upsertFinanceRows('finance_transactions', all as Record<string, unknown>[]);
     return { transactions: all, fromApi: true };
   } catch (e) {
-    if (opts.offlineFallback === false) throw e;
+    if (opts.serverFallback === false) throw e;
     console.warn('[finance-page-api] transactions 区间失败，回退本地', e);
     const { getFinanceTransactions } = await import('@/lib/repositories/finance/finance');
-    let rows = await getFinanceTransactions({ localOnly: true });
+    let rows = await getFinanceTransactions({ cacheOnly: true });
     if (opts.accountId) {
       rows = rows.filter((t) => t.account_id === opts.accountId);
     }
@@ -432,7 +432,7 @@ export async function fetchFinanceDailySummaries(opts: {
   start: string;
   end: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceDailySummariesData> {
   let apiDays: FinanceDailySummaryRow[] | null = null;
   try {
@@ -446,11 +446,11 @@ export async function fetchFinanceDailySummaries(opts: {
       return { days: apiDays, fromApi: true };
     }
   } catch (e) {
-    if (opts.offlineFallback === false) throw e;
+    if (opts.serverFallback === false) throw e;
     console.warn('[finance-page-api] daily-summaries 失败，回退流水聚合', e);
   }
 
-  if (opts.offlineFallback === false) {
+  if (opts.serverFallback === false) {
     return { days: apiDays ?? [], fromApi: true };
   }
 
@@ -459,7 +459,7 @@ export async function fetchFinanceDailySummaries(opts: {
       start: opts.start,
       end: opts.end,
       signal: opts.signal,
-      offlineFallback: true,
+      serverFallback: true,
     });
     const fromTxns = aggregateTransactions(transactions, {
       start: opts.start,
@@ -476,7 +476,7 @@ export async function fetchFinanceDailySummaries(opts: {
   }
 
   const { getFinanceDailySummariesByDateRange } = await import('@/lib/repositories/finance/finance');
-  const localDays = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { localOnly: true });
+  const localDays = await getFinanceDailySummariesByDateRange(opts.start, opts.end, { cacheOnly: true });
   if (dailySummariesHaveFlow(localDays)) {
     console.warn('[finance-page-api] daily-summaries 改用本地 SQLite 聚合');
     return { days: localDays, fromApi: false };
@@ -495,7 +495,7 @@ export async function fetchFinanceAccountDetail(opts: {
   accountId?: string;
   accountName?: string;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceAccountDetailData> {
   try {
     const payload: FinanceAccountDetailPayload = await apiGetFinanceAccountDetail({
@@ -513,7 +513,7 @@ export async function fetchFinanceAccountDetail(opts: {
     const local = await loadFinanceAccountDetail({
       accountId: opts.accountId,
       accountName: opts.accountName,
-      localOnly: true,
+      cacheOnly: true,
     });
     account = local.account;
     return {
@@ -522,13 +522,13 @@ export async function fetchFinanceAccountDetail(opts: {
       fromApi: true,
     };
   } catch (e) {
-    if (opts.offlineFallback === false) throw e;
+    if (opts.serverFallback === false) throw e;
     console.warn('[finance-page-api] account-detail 失败，回退本地', e);
     const { loadFinanceAccountDetail } = await import('@/lib/repositories/finance/finance');
     const local = await loadFinanceAccountDetail({
       accountId: opts.accountId,
       accountName: opts.accountName,
-      localOnly: true,
+      cacheOnly: true,
     });
     return { ...local, fromApi: false };
   }
@@ -544,7 +544,7 @@ export type FinanceCashFlowData = {
 
 export async function fetchFinanceCashFlow(opts?: {
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceCashFlowData> {
   try {
     const payload: FinanceCashFlowPayload = await apiGetFinanceCashFlow({ signal: opts?.signal });
@@ -562,7 +562,7 @@ export async function fetchFinanceCashFlow(opts?: {
     ]);
     return { profile, incomes, holdings, expenseLines, fromApi: true };
   } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
+    if (opts?.serverFallback === false) throw e;
     console.warn('[finance-page-api] cash-flow 失败，回退本地', e);
     return {
       profile: null,
@@ -579,7 +579,7 @@ export type FinanceInsightsData = FinanceInsightsPayload & { fromApi: boolean };
 export async function fetchFinanceInsights(opts?: {
   months?: number;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceInsightsData | null> {
   try {
     const payload = await apiGetFinanceInsights({
@@ -591,7 +591,7 @@ export async function fetchFinanceInsights(opts?: {
     }
     return { ...payload, fromApi: true };
   } catch (e) {
-    if (opts?.offlineFallback === false) throw e;
+    if (opts?.serverFallback === false) throw e;
     console.warn('[finance-page-api] insights 失败', e);
     return null;
   }
@@ -623,8 +623,8 @@ async function buildFinanceStatsLocally(opts: {
   const days = Math.max(1, dayList.length);
 
   const [allTxns, categories] = await Promise.all([
-    getFinanceTransactions({ localOnly: true }),
-    getFinanceFlowCategories({ localOnly: true }),
+    getFinanceTransactions({ cacheOnly: true }),
+    getFinanceFlowCategories({ cacheOnly: true }),
   ]);
   const categoryById = new Map(categories.map((c) => [c.id, c]));
   const categoryByName = new Map(categories.map((c) => [c.name, c]));
@@ -840,7 +840,7 @@ export async function fetchFinanceStats(opts: {
   recentDaysLimit?: number;
   excludeCorrections?: boolean;
   signal?: AbortSignal;
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 }): Promise<FinanceStatsData> {
   /** 仅补空结构，不做本地重算 */
   const asStatsData = (payload: FinanceStatsPayload, fromApi: boolean): FinanceStatsData => ({
@@ -895,7 +895,7 @@ export async function fetchFinanceStats(opts: {
           end: opts.end,
           excludeCorrections: false,
           signal: opts.signal,
-          offlineFallback: true,
+          serverFallback: true,
         });
         const local = await buildFinanceStatsLocally({
           start: opts.start,
@@ -915,7 +915,7 @@ export async function fetchFinanceStats(opts: {
 
     return normalized;
   } catch (e) {
-    if (opts.offlineFallback === false) throw e;
+    if (opts.serverFallback === false) throw e;
     console.warn('[finance-page-api] stats 失败，回退本地聚合', e);
     const local = await buildFinanceStatsLocally({
       start: opts.start,

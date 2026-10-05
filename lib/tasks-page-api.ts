@@ -29,7 +29,7 @@ import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
 
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 
-import { overlayLocalPendingOnApiTableRows } from '@/lib/api-read-local-sync';
+import { overlayServerRowsPassthrough } from '@/lib/api-read-local-sync';
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
@@ -592,7 +592,7 @@ async function resolveStandaloneTodosList(
 
     const fromApi = apiTasks.filter((t) => isStandaloneTodoTask(t));
 
-    const withPending = (await overlayLocalPendingOnApiTableRows(
+    const withPending = (await overlayServerRowsPassthrough(
 
       'tasks',
 
@@ -653,13 +653,13 @@ async function finalizeTasksViewFromApi(
 
   localReadOpts: ReadTasksViewFromLocalOpts,
 
-  offlineFallback?: boolean,
+  serverFallback?: boolean,
 
 ): Promise<TasksViewData> {
 
   const viewData = buildTasksViewData(ctx, apiResult.meta, apiResult.tasks, taskView);
 
-  if (offlineFallback !== false && taskView === 'standaloneTodos') {
+  if (serverFallback !== false && taskView === 'standaloneTodos') {
 
     const tasks = await resolveStandaloneTodosList(
 
@@ -752,7 +752,7 @@ async function pullTasksView(opts: {
 
   projects?: ProjectRow[];
 
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 
   forceLocal?: boolean;
 
@@ -771,7 +771,7 @@ async function pullTasksView(opts: {
   if (
 	    !shouldSkipPageNetwork({
 	      forceLocal: opts?.forceLocal,
-	      forceApi: opts?.forceApi,
+	      forceRefresh: opts?.forceRefresh,
 	      forceRefresh: opts?.forceRefresh,
 	    })
 	  ) {
@@ -820,13 +820,13 @@ async function pullTasksView(opts: {
 
         },
 
-        opts.offlineFallback,
+        opts.serverFallback,
 
       );
 
     } catch (e) {
 
-      if (!opts?.offlineFallback) throw e;
+      if (!opts?.serverFallback) throw e;
 
       console.warn(`[tasks-page-api] ${opts.taskView} 接口失败，回退本地 SQLite`, e);
 
@@ -874,7 +874,7 @@ export async function fetchStandaloneTodos(opts?: {
 
   boundary?: TasksDayBoundary;
 
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 
   forceLocal?: boolean;
 
@@ -900,7 +900,7 @@ export async function fetchMatrixWeekTasks(opts?: {
 
   projects?: ProjectRow[];
 
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 
   forceLocal?: boolean;
 
@@ -965,7 +965,7 @@ async function pullTasksPageFromApi(opts: {
 
 
 
-  const catalogPromise = fetchTasksCatalog({ forceRefresh, signal, offlineFallback: false });
+  const catalogPromise = fetchTasksCatalog({ forceRefresh, signal, serverFallback: false });
 
   const standalonePromise = pullTasksViewFromApi({
 
@@ -1178,12 +1178,12 @@ export async function fetchTasksPageData(opts?: {
 
   matrixProjectIds?: string;
 
-  offlineFallback?: boolean;
+  serverFallback?: boolean;
 
   forceLocal?: boolean;
 
-  /** 多端 dirty / 下拉：强制走 page API，忽略 wrapLoad localOnly */
-  forceApi?: boolean;
+  /** 多端 dirty / 下拉：强制走 page API，忽略 wrapLoad cacheOnly */
+  forceRefresh?: boolean;
 
   forceRefresh?: boolean;
 
@@ -1198,7 +1198,7 @@ export async function fetchTasksPageData(opts?: {
   if (
     !shouldSkipPageNetwork({
       forceLocal: opts?.forceLocal,
-      forceApi: opts?.forceApi,
+      forceRefresh: opts?.forceRefresh,
       forceRefresh: opts?.forceRefresh,
     })
   ) {
@@ -1251,7 +1251,7 @@ export async function fetchTasksPageData(opts?: {
 
     } catch (e) {
 
-      if (!opts?.offlineFallback) throw e;
+      if (!opts?.serverFallback) throw e;
 
       console.warn('[tasks-page-api] 任务页接口失败，回退本地 SQLite', e);
 

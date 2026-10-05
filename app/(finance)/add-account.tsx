@@ -153,10 +153,10 @@ export default function AddAccountScreen() {
   );
 
   const reloadCustomTypes = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         try {
-          const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+          const catalog = await fetchFinanceCatalog({ serverFallback: true });
           const rows = catalog.accountTypes;
           setCustomTypeOptions(
             rows.map((row) => ({
@@ -168,18 +168,18 @@ export default function AddAccountScreen() {
           console.warn('Failed to load custom account types:', e);
           setCustomTypeOptions(getCustomAccountTypeOptions());
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [wrapLoad],
   );
 
   const reload = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       if (isEditMode && editAccountId) {
         setEditSheetReady(false);
         await wrapLoad(async () => {
           try {
-            const catalog = await fetchFinanceCatalog({ offlineFallback: true });
+            const catalog = await fetchFinanceCatalog({ serverFallback: true });
             let row: FinanceAccountBalanceRow | null | undefined = catalog.accounts.find(
               (r) => r.id === editAccountId,
             );
@@ -187,7 +187,7 @@ export default function AddAccountScreen() {
             if (!row) {
               const local = await loadFinanceAccountDetail({
                 accountId: editAccountId,
-                localOnly: true,
+                cacheOnly: true,
               });
               row = local.account;
             }
@@ -234,7 +234,7 @@ export default function AddAccountScreen() {
             console.warn('Failed to load account for edit:', e);
             Alert.alert('加载失败', '请稍后重试。', [{ text: '确定', onPress: () => router.back() }]);
           }
-        }, forceApi);
+        }, forceRefresh);
         return;
       }
 
@@ -243,7 +243,7 @@ export default function AddAccountScreen() {
       const draft = getCustomAccountTypeDraft();
       setCustomTypeName(draft.name);
       setCustomIsLiability(draft.isLiability);
-      await reloadCustomTypes(forceApi);
+      await reloadCustomTypes(forceRefresh);
     },
     [editAccountId, isEditMode, reloadCustomTypes, router, wrapLoad],
   );

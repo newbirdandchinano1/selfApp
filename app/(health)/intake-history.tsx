@@ -257,7 +257,7 @@ export default function IntakeHistoryScreen() {
   const [filter, setFilter] = React.useState<FilterKey>('all');
   const [lines, setLines] = React.useState<IntakeHistoryLine[]>([]);
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
       const [user, catalog] = await Promise.all([getDefaultUser(), loadAllQuickAddItems()]);
       if (!user?.id) {
@@ -266,7 +266,7 @@ export default function IntakeHistoryScreen() {
       }
       const records = await getHealthRecordsForUserOnDate(user.id, selectedDateYmd);
       setLines(buildHistoryLines(records, catalog));
-    }, forceApi);
+    }, forceRefresh);
   }, [selectedDateYmd, wrapLoad]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);

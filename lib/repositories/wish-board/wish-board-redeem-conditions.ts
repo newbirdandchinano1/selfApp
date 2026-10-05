@@ -284,7 +284,7 @@ export function evaluateWishBoardRedeemEligibilitySync(
 /** 与资产页「当前净资产」同一公式：总资产 − 总负债 */
 export async function loadWishBoardCurrentNetWorth(): Promise<number> {
   const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
-  const accounts = await getFinanceAccountsWithBalance({ localOnly: true });
+  const accounts = await getFinanceAccountsWithBalance({ cacheOnly: true });
   return computeNetWorthTotal(accounts);
 }
 

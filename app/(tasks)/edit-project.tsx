@@ -567,7 +567,7 @@ export default function EditProjectScreen() {
   }, [projectId, router]);
 
   const reloadProjectPage = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         await loadProject();
         try {
@@ -596,7 +596,7 @@ export default function EditProjectScreen() {
         } finally {
           setTagsLoading(false);
         }
-      }, forceApi);
+      }, forceRefresh);
     },
     [loadProject, wrapLoad],
   );

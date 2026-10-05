@@ -3,15 +3,15 @@ import { useFocusEffect } from "expo-router/react-navigation";
 
 import { useRegisterApiLoadingRetry } from '@/hooks/use-register-api-loading-retry';
 import { usePullToRefresh, type UsePullToRefreshResult } from '@/hooks/use-pull-to-refresh';
-import { isApiOnlyReads, isLocalFirstReads } from '@/lib/api-data-mode';
+
 import { clearActivePageApiKey, setActivePageApiKey } from '@/lib/page-api-active';
 import {
   clearPageLoadedInSession,
   finalizePageLoadSession,
   hasPageLoadedInSession,
-  hasPageSyncedWithApi,
-  markPageSyncedWithApi,
-  notifyAncestorPagesLocalReload,
+  hasPageLoadedFromServer,
+  markPageLoadedFromServer,
+  notifyPageDataChanged,
   notifyPageDataChanged,
   resetPageApiSession,
   resolvePageApiReadOpts,
@@ -22,7 +22,7 @@ import { runGuardedPageApiLoad } from '@/lib/page-api-load-guard';
 export type PageWrapLoadResult = {
   ok: boolean;
   restFailed: boolean;
-  localOnly: boolean;
+  cacheOnly: boolean;
   fnResult: boolean | void | Record<string, unknown>;
 };
 
@@ -31,7 +31,7 @@ export type PageWrapLoadResult = {
  * 是否与服务器对齐由 cursor + bootstrap_done + 行字段决定，不由本 hook。
  */
 export function usePageApiSync(pageKey: string) {
-  const [synced, setSynced] = useState(() => hasPageSyncedWithApi(pageKey));
+  const [synced, setSynced] = useState(() => hasPageLoadedFromServer(pageKey));
 
   useFocusEffect(
     useCallback(() => {
@@ -41,33 +41,33 @@ export function usePageApiSync(pageKey: string) {
   );
 
   const getReadOpts = useCallback(
-    (forceApi?: boolean) => resolvePageApiReadOpts(pageKey, forceApi),
+    (forceRefresh?: boolean) => resolvePageApiReadOpts(pageKey, forceRefresh),
     [pageKey],
   );
 
   const wrapLoad = useCallback(
-    async (fn: () => Promise<boolean | void | Record<string, unknown>>, forceApi = false): Promise<PageWrapLoadResult> => {
-      const readOpts = resolvePageApiReadOpts(pageKey, forceApi);
-      const needsRest = isApiOnlyReads() || forceApi || !readOpts.localOnly;
+    async (fn: () => Promise<boolean | void | Record<string, unknown>>, forceRefresh = false): Promise<PageWrapLoadResult> => {
+      const readOpts = resolvePageApiReadOpts(pageKey, forceRefresh);
+      const needsRest = true || forceRefresh || !readOpts.cacheOnly;
 
       const execute = async (): Promise<PageWrapLoadResult> => {
-        const { ok, restFailed } = await runPageLoadBody(pageKey, fn, readOpts, forceApi);
+        const { ok, restFailed } = await runPageLoadBody(pageKey, fn, readOpts, forceRefresh);
         finalizePageLoadSession(pageKey, readOpts, ok, restFailed);
-        if (ok !== false && !restFailed && (isApiOnlyReads() || !readOpts.localOnly)) {
+        if (ok !== false && !restFailed && (true || !readOpts.cacheOnly)) {
           setSynced(true);
         }
         return {
           ok: ok !== false,
           restFailed,
-          localOnly: readOpts.localOnly,
+          cacheOnly: readOpts.cacheOnly,
           fnResult: ok === false ? false : ok,
         };
       };
 
       if (needsRest) {
         return runGuardedPageApiLoad(pageKey, execute, {
-          debounce: !forceApi && hasPageLoadedInSession(pageKey),
-          force: forceApi,
+          debounce: !forceRefresh && hasPageLoadedInSession(pageKey),
+          force: forceRefresh,
         }) as Promise<PageWrapLoadResult>;
       }
       return execute();
@@ -76,7 +76,7 @@ export function usePageApiSync(pageKey: string) {
   );
 
   const markSynced = useCallback(() => {
-    markPageSyncedWithApi(pageKey);
+    markPageLoadedFromServer(pageKey);
     setSynced(true);
   }, [pageKey]);
 
@@ -88,23 +88,23 @@ export function usePageApiSync(pageKey: string) {
   const readOpts = resolvePageApiReadOpts(pageKey);
 
   return {
-    localOnly: readOpts.localOnly,
+    cacheOnly: readOpts.cacheOnly,
     getReadOpts,
     wrapLoad,
     markSynced,
     resetSync,
-    /** 手动通知祖先页面：local-first 下重读本地库，否则从服务端全量重拉 */
+    /** 手动通知祖先页面：server-authoritative 下重读本地库，否则从服务端全量重拉 */
     notifyAncestorsDataChanged: () =>
-      isLocalFirstReads() ? notifyAncestorPagesLocalReload(pageKey) : notifyPageDataChanged(pageKey),
+      true ? notifyPageDataChanged(pageKey) : notifyPageDataChanged(pageKey),
   };
 }
 
 /**
- * 下拉刷新：SyncManager pull / bootstrap 后重读 SQLite（不 forceApi 打 page REST）。
+ * 下拉刷新：SyncManager pull / bootstrap 后重读 SQLite（不 forceRefresh 打 page REST）。
  */
 export function usePagePullRefresh(
   pageKey: string,
-  reload: (forceApi?: boolean) => Promise<void>,
+  reload: (forceRefresh?: boolean) => Promise<void>,
 ): UsePullToRefreshResult {
   useRegisterApiLoadingRetry(reload);
 

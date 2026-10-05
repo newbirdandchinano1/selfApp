@@ -112,7 +112,7 @@ export async function loadCashFlowState(): Promise<CashFlowState> {
   // 优先专用口灌库；失败只读本地，禁止 /api/data 全表 List
   try {
     const { fetchFinanceCashFlow } = await import('@/lib/finance-page-api');
-    const remote = await fetchFinanceCashFlow({ offlineFallback: false });
+    const remote = await fetchFinanceCashFlow({ serverFallback: false });
     if (remote.fromApi) {
       /* rows already upserted */
     }

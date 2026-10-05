@@ -1,7 +1,7 @@
 import { apiRequest } from '@/lib/api/http';
 import { readAppMeta, writeAppMeta } from '@/lib/api-local-bootstrap';
 import { getDatabase } from '@/lib/database.native';
-import { allowAlignCursor, allowBootstrapDone, shouldSkipSnapshotRow } from '@/lib/sync-apply-core';
+import { allowAlignCursor, allowBootstrapDone } from '@/lib/sync-apply-core';
 import { setSyncChangeCursor } from '@/lib/sync-cursor';
 
 export const BOOTSTRAP_DONE_KEY = 'sync_bootstrap_done_v1';
@@ -31,6 +31,14 @@ export function isBootstrapDoneCached(): boolean {
 
 export async function hydrateBootstrapDoneCache(): Promise<void> {
   await isBootstrapDone();
+}
+
+/** 登出 / 清库：丢弃 bootstrap 就绪标记，下次有网必须重新灌缓存。 */
+export async function resetBootstrapCache(): Promise<void> {
+  cachedBootstrapDone = false;
+  await writeAppMeta(BOOTSTRAP_DONE_KEY, '');
+  await writeAppMeta(BOOTSTRAP_PHASE_KEY, 'idle');
+  await writeAppMeta(BOOTSTRAP_CURSOR0_KEY, '');
 }
 async function setPhase(p: BootstrapPhase): Promise<void> {
   await writeAppMeta(BOOTSTRAP_PHASE_KEY, p);
@@ -109,11 +117,6 @@ async function applySnapshotTable(table: string, rows: Record<string, unknown>[]
   for (const row of rows) {
     const pk = String((row as Record<string, unknown>)[pkCol] ?? (row as Record<string, unknown>).id ?? '');
     if (!pk) continue;
-    const local = await db.getFirstAsync<{ sync_status: string }>(
-      `SELECT sync_status FROM \`${table}\` WHERE \`${pkCol}\` = ? LIMIT 1`, [pk],
-    );
-    // 快照只保护 pending，不做 A/B/C：pending 整行不动
-    if (shouldSkipSnapshotRow(!!local, local?.sync_status)) continue;
     const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id');
     if (!keys.includes(pkCol)) continue;
     const placeholders = keys.map(() => '?').join(',');
@@ -134,7 +137,7 @@ async function deleteSyncedAbsent(table: string, present: Set<string>, pkCol = '
   const db = await getDatabase();
   try {
     const locals = await db.getAllAsync<{ pk: string }>(
-      `SELECT \`${pkCol}\` AS pk FROM \`${table}\` WHERE sync_status = 'synced'`,
+      `SELECT \`${pkCol}\` AS pk FROM \`${table}\``,
     );
     for (const r of locals ?? []) {
       if (!present.has(String(r.pk))) {

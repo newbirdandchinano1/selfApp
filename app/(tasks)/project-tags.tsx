@@ -5,7 +5,7 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
-import { hasPageSyncedWithApi } from '@/lib/page-api-session';
+import { hasPageLoadedFromServer } from '@/lib/page-api-session';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import {
   createMemoTag,
@@ -87,13 +87,13 @@ export default function ProjectTagsScreen() {
     : '已贴到项目、习惯、待办上的关联会一并移除。';
 
   const load = React.useCallback(
-    async (forceApi = false) => {
-      // 子页无 PAGE_SCOPE：未同步过时必须 forceApi，否则 resolvePageApiReadOpts 会永远 localOnly
-      const hitApi = forceApi || !hasPageSyncedWithApi(PAGE_API_KEY);
+    async (forceRefresh = false) => {
+      // 子页无 PAGE_SCOPE：未同步过时必须 forceRefresh，否则 resolvePageApiReadOpts 会永远 cacheOnly
+      const hitApi = forceRefresh || !hasPageLoadedFromServer(PAGE_API_KEY);
       try {
         await wrapLoad(async () => {
           // tags / tag_links 由 profile/memo-list 拼盘灌入并 reconcile 覆盖本地
-          await fetchProfileMemoList({ offlineFallback: true, forceApi: hitApi });
+          await fetchProfileMemoList({ serverFallback: true, forceRefresh: hitApi });
           setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
         }, hitApi);
       } catch (err) {

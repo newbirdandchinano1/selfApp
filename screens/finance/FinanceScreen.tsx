@@ -706,8 +706,8 @@ export default function FinanceScreen() {
   const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {
     try {
       const [rows, categories] = await Promise.all([
-        getFinanceTransactions({ forceRefresh, localOnly: true }),
-        getFinanceFlowCategories({ localOnly: true }),
+        getFinanceTransactions({ forceRefresh, cacheOnly: true }),
+        getFinanceFlowCategories({ cacheOnly: true }),
       ]);
       flowCategoryNamesRef.current = Object.fromEntries(categories.map((c) => [c.id, c.name]));
       financeTransactionsRef.current = rows;
@@ -721,10 +721,10 @@ export default function FinanceScreen() {
   }, []);
 
   const reloadFinanceTransactions = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
-        await loadFinanceTransactions(forceApi);
-      }, forceApi);
+        await loadFinanceTransactions(forceRefresh);
+      }, forceRefresh);
     },
     [loadFinanceTransactions, wrapLoad],
   );
@@ -742,10 +742,10 @@ export default function FinanceScreen() {
   }, []);
 
   const reloadFinanceAccounts = React.useCallback(
-    async (forceApi = false) => {
+    async (forceRefresh = false) => {
       await wrapLoad(async () => {
         await loadFinanceAccounts();
-      }, forceApi);
+      }, forceRefresh);
     },
     [loadFinanceAccounts, wrapLoad],
   );
@@ -1011,7 +1011,7 @@ export default function FinanceScreen() {
           // 未勾选财务日界时为 0:00；勾选后与侧边栏日界一致
           dayBoundaryHour: financeDayBoundary.hour,
           dayBoundaryMinute: financeDayBoundary.minute,
-          offlineFallback: true,
+          serverFallback: true,
         });
         if (more.transactions.length > 0) {
           const byId = new Map(financeTransactionsRef.current.map((t) => [t.id, t]));
@@ -2228,7 +2228,7 @@ export default function FinanceScreen() {
     [getDefaultSheetAccountIdForTab, resetSheetForm],
   );
 
-  const reload = React.useCallback(async (forceApi = false) => {
+  const reload = React.useCallback(async (forceRefresh = false) => {
     const generation = ++financeReloadGenerationRef.current;
     const isStale = () => generation !== financeReloadGenerationRef.current;
 
@@ -2244,7 +2244,7 @@ export default function FinanceScreen() {
         if (isStale()) return;
 
         // 未同步或强制刷新：走 home；已有列表时本地重读（含刚记账的 pending）
-        if (forceApi || !financeTransactionsRef.current.length) {
+        if (forceRefresh || !financeTransactionsRef.current.length) {
           const home = await fetchFinanceHome({
             logicalToday: calendarTodayYmd,
             dayBoundaryHour: financeDayBoundary.hour,
@@ -2252,8 +2252,8 @@ export default function FinanceScreen() {
             historyDays: INITIAL_HISTORY_DAY_SLICES,
             daysBack: 90,
             budgetRefreshDay: rd,
-            offlineFallback: true,
-            forceApi,
+            serverFallback: true,
+            forceRefresh,
           });
           if (isStale()) return;
           flowCategoryNamesRef.current = Object.fromEntries(
@@ -2263,7 +2263,7 @@ export default function FinanceScreen() {
           setFinanceTransactions(home.transactions);
           setServerMonthly(home.fromApi && home.monthly ? home.monthly : null);
           // 首页账户一律再走本地规范化（负债类型/余额），避免直接使用 API 原始行漏计总负债
-          const normalizedAccounts = await getFinanceAccountsWithBalance({ localOnly: true });
+          const normalizedAccounts = await getFinanceAccountsWithBalance({ cacheOnly: true });
           if (isStale()) return;
           financeAccountsRef.current = normalizedAccounts;
           setFinanceAccounts(normalizedAccounts);
@@ -2286,7 +2286,7 @@ export default function FinanceScreen() {
         console.warn('Finance tab refresh failed:', e);
         throw e;
       }
-    }, forceApi);
+    }, forceRefresh);
   }, [
     calendarTodayYmd,
     financeDayBoundary.hour,
@@ -2296,9 +2296,9 @@ export default function FinanceScreen() {
     wrapLoad,
   ]);
 
-  const reloadPage = React.useCallback(async (forceApi = false) => {
+  const reloadPage = React.useCallback(async (forceRefresh = false) => {
     try {
-      const result = await reload(forceApi);
+      const result = await reload(forceRefresh);
       if (!result.ok || result.restFailed) {
         setInitialFinanceLoadPending(false);
         return;

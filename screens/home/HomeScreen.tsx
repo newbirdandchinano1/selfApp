@@ -414,7 +414,7 @@ async function loadHomeHealthSliceForUser(
   userId: string,
   weekAnchor: Date,
   selected: Date,
-  opts?: { localOnly?: boolean },
+  opts?: { cacheOnly?: boolean },
 ) {
   return fetchUserHomeHealthSlice(
     userId,
@@ -748,7 +748,7 @@ export default function HealthScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
-  const reloadPageRef = React.useRef<((forceApi?: boolean) => Promise<void>) | null>(null);
+  const reloadPageRef = React.useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
   const weekAnchorYmdRef = React.useRef(formatLocalYmd(weekAnchorDate));
   const emptyLocalEscalatedRef = React.useRef(false);
   const [pageLoadError, setPageLoadError] = React.useState<string | null>(null);
@@ -817,7 +817,7 @@ export default function HealthScreen() {
   );
   const intakeParseLocked = pendingIntake != null;
 
-  const reload = React.useCallback(async (forceApi = false): Promise<false | HomeHealthReloadResult> => {
+  const reload = React.useCallback(async (forceRefresh = false): Promise<false | HomeHealthReloadResult> => {
     const currentUser = await getDefaultUser();
     if (!currentUser?.id) {
       setDailyAiTargets(null);
@@ -845,7 +845,7 @@ export default function HealthScreen() {
     }
 
     // 下拉刷新只同步摄入/快捷卡片；AI 日目标仅在进入页面时更新，避免刷新 spinner 长时间卡住
-    if (!forceApi) {
+    if (!forceRefresh) {
       setDailyAiLoading(true);
       try {
         const r = await ensureDailyAiIntakeTargetsForToday({
@@ -874,10 +874,10 @@ export default function HealthScreen() {
     return { sliceEmpty };
   }, [calendarTodayYmd, selectedDate, weekAnchorDate]);
 
-  const reloadPage = React.useCallback(async (forceApi = false) => {
-    if (forceApi) setPageLoadRetrying(true);
+  const reloadPage = React.useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) setPageLoadRetrying(true);
     try {
-      const result = await wrapLoad(async () => reload(forceApi), forceApi);
+      const result = await wrapLoad(async () => reload(forceRefresh), forceRefresh);
       const fnResult = result.fnResult as false | HomeHealthReloadResult | undefined;
 
       if (!result.ok || fnResult === false) {
@@ -894,7 +894,7 @@ export default function HealthScreen() {
       setInitialHealthLoadPending(false);
 
       // 本地空库：走 SyncManager bootstrap/pull，禁止页面 REST 冒充同步
-      if (!forceApi && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
+      if (!forceRefresh && !result.restFailed && fnResult?.sliceEmpty && !emptyLocalEscalatedRef.current) {
         emptyLocalEscalatedRef.current = true;
         clearPageLoadedInSession(PAGE_API_KEY);
         const { refreshFromUser } = await import('@/lib/sync-manager');
@@ -902,7 +902,7 @@ export default function HealthScreen() {
         await reloadPage(false);
       }
     } finally {
-      if (forceApi) setPageLoadRetrying(false);
+      if (forceRefresh) setPageLoadRetrying(false);
     }
   }, [reload, wrapLoad]);
   reloadPageRef.current = reloadPage;
