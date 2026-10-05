@@ -7,7 +7,6 @@ on:
 
   workflow_dispatch:
 
-# CI 环境
 env:
   CI: true
   EXPO_NO_GIT_STATUS: 1
@@ -15,7 +14,6 @@ env:
 
 jobs:
   build:
-    # 固定 macOS 15，避免 macos-latest 将来升级导致 Xcode 环境变化
     runs-on: macos-15
 
     steps:
@@ -26,7 +24,7 @@ jobs:
         uses: actions/checkout@v7
 
       # ============================================================
-      # 2. Node
+      # 2. Setup Node
       # ============================================================
       - name: 2. Setup Node
         uses: actions/setup-node@v7
@@ -36,7 +34,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       # ============================================================
-      # 3. 环境检查
+      # 3. Verify Environment
       # ============================================================
       - name: 3. Verify Environment
         run: |
@@ -62,60 +60,32 @@ jobs:
           uname -m
 
       # ============================================================
-      # 4. 缓存 CocoaPods
+      # 4. Cache CocoaPods
       # ============================================================
-      #
-      # prebuild 会重新生成 ios/
-      # 所以这里不要缓存 ios/Pods，
-      # 而是缓存 CocoaPods 自己的下载缓存。
-      #
       - name: 4. Cache CocoaPods
         uses: actions/cache@v5
         with:
           path: |
             ~/Library/Caches/CocoaPods
             ~/.cocoapods
-          key: ${{ runner.os }}-cocoapods-${{ hashFiles(
-            'package-lock.json',
-            'app.json',
-            'app.config.js',
-            'app.config.ts'
-          ) }}
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
           restore-keys: |
             ${{ runner.os }}-cocoapods-
 
       # ============================================================
-      # 5. 缓存 Xcode DerivedData
+      # 5. Cache Xcode DerivedData
       # ============================================================
-      #
-      # 这是最重要的缓存之一。
-      #
-      # 注意：
-      # DerivedData 不放到 ios/ 下面，
-      # 因为后面的 expo prebuild --clean 会删除整个 ios/。
-      #
       - name: 5. Cache Xcode DerivedData
         uses: actions/cache@v5
         with:
           path: ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-xcode16.4-${{ hashFiles(
-            'package-lock.json',
-            'app.json',
-            'app.config.js',
-            'app.config.ts'
-          ) }}
+          key: ${{ runner.os }}-xcode16.4-${{ hashFiles('package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
           restore-keys: |
             ${{ runner.os }}-xcode16.4-
 
       # ============================================================
-      # 6. 安装 JS 依赖
+      # 6. Install Dependencies
       # ============================================================
-      #
-      # npm ci：
-      # 1. 完全遵循 package-lock.json
-      # 2. 比 npm install 更适合 CI
-      # 3. 配合 setup-node npm cache
-      #
       - name: 6. Install Dependencies
         run: |
           npm ci --prefer-offline --no-audit --no-fund
@@ -123,13 +93,6 @@ jobs:
       # ============================================================
       # 7. Expo Prebuild
       # ============================================================
-      #
-      # --clean：
-      # 确保 native 项目重新生成，避免旧 native 文件污染构建。
-      #
-      # --no-install：
-      # npm ci 已经安装过依赖，不让 Expo 再重复安装。
-      #
       - name: 7. Expo Prebuild
         run: |
           npx expo prebuild \
@@ -138,31 +101,17 @@ jobs:
             --no-install
 
       # ============================================================
-      # 8. CocoaPods
+      # 8. Install Pods
       # ============================================================
       - name: 8. Install Pods
         working-directory: ios
         run: |
           echo "Installing CocoaPods dependencies..."
-
-          pod install \
-            --verbose
+          pod install --verbose
 
       # ============================================================
-      # 9. Xcode Build
+      # 9. Build Xcode Project
       # ============================================================
-      #
-      # 关键：
-      #
-      # 原来：
-      #   xcodebuild ... clean build
-      #
-      # 现在：
-      #   xcodebuild ... build
-      #
-      # 不再主动删除 DerivedData。
-      # 这样才能真正利用上面的缓存。
-      #
       - name: 9. Build Xcode Project
         working-directory: ios
         shell: bash
@@ -235,7 +184,7 @@ jobs:
           echo "Xcode build time: $((END_TIME - START_TIME)) seconds"
 
       # ============================================================
-      # 10. 查找 APP
+      # 10. Locate APP
       # ============================================================
       - name: 10. Locate APP
         id: locate_app
@@ -257,7 +206,6 @@ jobs:
 
           echo "APP_PATH=$APP_PATH"
 
-          # 输出给后面的步骤使用
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
       # ============================================================
@@ -280,7 +228,6 @@ jobs:
 
           echo "Creating IPA..."
 
-          # IPA 本质上就是一个包含 Payload/*.app 的 zip 包
           /usr/bin/ditto \
             -c \
             -k \
@@ -296,7 +243,7 @@ jobs:
       # 12. Upload Artifact
       # ============================================================
       - name: 12. Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: MyUnsignedIPA
           path: MyApp.ipa
