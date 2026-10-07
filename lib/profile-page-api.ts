@@ -1,12 +1,13 @@
 /**
- * 我的 Tab / 画像子页专用 REST：灌入本�?SQLite 后供仓库只读�?
- * 失败时只回退本地，禁止降�?`/api/data/*` 全表 List�?
+ * 我的 Tab / 画像子页专用 REST：灌入本地 SQLite 后供仓库只读。
+ * 失败时只回退本地；心愿/备忘/菜谱走专用 page API，道路首版用通用表 REST。
  */
 import {
   apiGetProfileMemoList,
   apiGetProfileRecipes,
   apiGetProfileWishBoard,
 } from '@/lib/api-client';
+import { readApiTable } from '@/lib/api-read';
 import {
   asRecordArray,
   fetchPage,
@@ -83,4 +84,19 @@ export async function fetchProfileRecipes(opts?: {
       return { fromApi: true };
     },
   });
+}
+
+/**
+ * 我的道路：首版用通用表 REST 灌缓存（无专用 page API）。
+ * 供 tabs/profile 与道路子页进入时调用。
+ */
+export async function fetchProfileLifeRoad(opts?: {
+  serverFallback?: boolean;
+}): Promise<{ fromApi: boolean }> {
+  const serverFallback = opts?.serverFallback ?? true;
+  await Promise.all([
+    readApiTable('life_directions', { serverFallback }),
+    readApiTable('life_bets', { serverFallback }),
+  ]);
+  return { fromApi: true };
 }

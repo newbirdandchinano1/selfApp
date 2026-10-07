@@ -17,15 +17,23 @@ export async function createProject(input: CreateProjectInput) {
   if (categoryId) {
     await ensureLocalRowPresent('project_categories', categoryId);
   }
+  let lifeBetId = input.life_bet_id ?? null;
+  if (lifeBetId) {
+    const betReady = await ensureLocalRowPresent('life_bets', lifeBetId);
+    if (!betReady) {
+      throw new Error('所选道路赌注尚未同步，请稍后重试或清空归属');
+    }
+  }
   const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
   await db.runAsync(
     `INSERT INTO projects (
-      id, category_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
+      id, category_id, life_bet_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
     [
       input.id,
       categoryId,
+      lifeBetId,
       input.name,
       input.status ?? 'active',
       input.priority ?? 0,
@@ -106,6 +114,14 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       nextCategoryId = current.category_id;
     }
   }
+  let nextLifeBetId =
+    input.life_bet_id !== undefined ? input.life_bet_id : (current.life_bet_id ?? null);
+  if (input.life_bet_id !== undefined && nextLifeBetId) {
+    const betReady = await ensureLocalRowPresent('life_bets', nextLifeBetId);
+    if (!betReady) {
+      throw new Error('所选道路赌注尚未同步，请稍后重试或清空归属');
+    }
+  }
   const wasStrictInbox = current.category_id === INBOX_PROJECT_CATEGORY_ID;
   const willStrictInbox = nextCategoryId === INBOX_PROJECT_CATEGORY_ID;
 
@@ -121,11 +137,12 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
 
   const result = await db.runAsync(
     `UPDATE projects
-     SET category_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
+     SET category_id = ?, life_bet_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       nextCategoryId,
+      nextLifeBetId,
       input.name ?? current.name,
       input.status ?? current.status,
       input.priority !== undefined ? input.priority : (current.priority ?? 0),

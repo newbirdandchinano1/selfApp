@@ -63,6 +63,7 @@ const SNAPSHOT_TABLES = [
   'cash_flow_profile', 'cash_flow_incomes', 'cash_flow_holdings',
   'cash_flow_expense_lines', 'savings_plans', 'savings_plan_deposits',
   'points_wallet', 'points_ledger', 'wish_board_items',
+  'life_directions', 'life_bets',
   'memos', 'memo_dimensions', 'tags', 'tag_links',
   'recipe_categories', 'recipe_items',
   'health_records', 'health_daily_targets',

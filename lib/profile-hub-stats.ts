@@ -7,10 +7,15 @@ import {
 import { getDatabase } from '@/lib/database';
 import { isYmdInRange } from '@/lib/date';
 import { ymdFromAuditDatetime } from '@/lib/api-mysql-datetime';
+import { getLifeBetDerivedStats } from '@/lib/life-road/life-road-derived';
+import { currentCalendarYear } from '@/lib/life-road/life-road-limits';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import { listWeightLogsLastNDays } from '@/lib/repositories/health/weight-log';
+import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
+import { getLifeDirectionLocal } from '@/lib/repositories/life-road/life-direction';
+import type { LifeBetHorizon, LifeBetStatus } from '@/lib/life-road/life-road-limits';
 import { listWishBoardItems } from '@/lib/repositories/wish-board/wish-board';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { roundPoints } from '@/lib/reward-points';
@@ -58,6 +63,29 @@ export type ProfileArchiveSummary = {
   dietaryEmpty: boolean;
 };
 
+/** 我的页道路卡片：单条赌注摘要（含派生，失败时 count 为 null） */
+export type ProfileRoadBetSummary = {
+  id: string;
+  title: string;
+  status: LifeBetStatus;
+  horizon: LifeBetHorizon;
+  year: number | null;
+  activeProjectCount: number | null;
+  latestCompletedName: string | null;
+  isEmptyWindow: boolean;
+};
+
+export type ProfileRoadHub = {
+  direction: string | null;
+  yearTheme: string | null;
+  /** 今年桶：默认不含放弃；最多 5 条在路上/暂搁/已抵达 */
+  yearBets: ProfileRoadBetSummary[];
+  /** 两三年/更远（不含放弃），有则卡片出「更远」段 */
+  fartherBets: ProfileRoadBetSummary[];
+  /** 读缓存失败时非空；UI 显示错误+重试，不编造清单 */
+  error: string | null;
+};
+
 export type ProfileHubStats = {
   completeness: ProfileCompletenessItem[];
   missingCount: number;
@@ -66,7 +94,70 @@ export type ProfileHubStats = {
   weightTrend: ProfileWeightTrend;
   archive: ProfileArchiveSummary;
   dietary: DietaryPrefs;
+  road: ProfileRoadHub;
 };
+
+const EMPTY_ROAD: ProfileRoadHub = {
+  direction: null,
+  yearTheme: null,
+  yearBets: [],
+  fartherBets: [],
+  error: null,
+};
+
+/** 从本地缓存组装道路 hub；失败不抛，写入 error */
+async function loadRoadHub(): Promise<ProfileRoadHub> {
+  try {
+    const [direction, bets] = await Promise.all([
+      getLifeDirectionLocal(),
+      getLifeBetsLocal(),
+    ]);
+    const calendarYear = currentCalendarYear();
+    const yearCandidates = bets.filter((b) => {
+      if (b.horizon !== 'year') return false;
+      if (b.status === 'dropped') return false;
+      if (b.year == null) return true;
+      return b.year === calendarYear;
+    });
+    const yearBetsRaw = yearCandidates.slice(0, 5);
+    const fartherRaw = bets.filter(
+      (b) => (b.horizon === 'multi' || b.horizon === 'farther') && b.status !== 'dropped',
+    );
+
+    const toSummary = async (b: (typeof bets)[number]): Promise<ProfileRoadBetSummary> => {
+      const derived = await getLifeBetDerivedStats(b.id, b.status);
+      return {
+        id: b.id,
+        title: b.title,
+        status: b.status,
+        horizon: b.horizon,
+        year: b.year,
+        activeProjectCount: derived.activeProjectCount,
+        latestCompletedName: derived.latestCompletedName,
+        isEmptyWindow: derived.isEmptyWindow,
+      };
+    };
+
+    const [yearBets, fartherBets] = await Promise.all([
+      Promise.all(yearBetsRaw.map(toSummary)),
+      Promise.all(fartherRaw.map(toSummary)),
+    ]);
+
+    return {
+      direction: direction?.body?.trim() || null,
+      yearTheme: direction?.year_theme?.trim() || null,
+      yearBets,
+      fartherBets,
+      error: null,
+    };
+  } catch (e) {
+    if (__DEV__) console.warn('[profile-hub] road load failed', e);
+    return {
+      ...EMPTY_ROAD,
+      error: e instanceof Error ? e.message : '道路加载失败',
+    };
+  }
+}
 
 function pad2(n: number) {
   return String(n).padStart(2, '0');
@@ -161,9 +252,9 @@ export async function loadProfileHubStats(
   const dietary = await loadDietaryPrefs();
   const dietaryEmpty = isDietaryPrefsEmpty(dietary);
 
-  const [wishItems, weekPoints, weightLogs, dailyReviews, weeklyJournal, habitMeta, tasksDone] =
+  const [wishItems, weekPoints, weightLogs, dailyReviews, weeklyJournal, habitMeta, tasksDone, road] =
     await Promise.all([
-      listWishBoardItems({ cacheOnly: true }).catch(() => []),
+      listWishBoardItems().catch(() => []),
       loadWeekPoints(startYmd, endYmd),
       listWeightLogsLastNDays(30, todayYmd).catch(() => []),
       listDailyReviewsBetween(startYmd, elapsedEnd).catch(() => []),
@@ -197,6 +288,7 @@ export async function loadProfileHubStats(
           return day != null && isYmdInRange(day, startYmd, elapsedEnd);
         }).length;
       })(),
+      loadRoadHub(),
     ]);
 
   const activeWishes = (wishItems ?? []).filter((w) => w.status === 'active');
@@ -262,5 +354,6 @@ export async function loadProfileHubStats(
       dietaryEmpty,
     },
     dietary,
+    road,
   };
 }

@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 56;
+export const DB_VERSION = 57;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -108,6 +108,78 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
   await db.execAsync('DROP TABLE IF EXISTS persona_portrait_cache');
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'drop_persona_portrait_cache_v33',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/**
+ * v57：我的道路 — life_directions / life_bets + projects.life_bet_id。
+ * OCC 列随建表带上（sync_revision_cols_v56 不会对后续新表重跑）。
+ */
+async function migrateEnsureLifeRoadTables(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['life_road_tables_v57'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS life_directions (
+      id TEXT PRIMARY KEY NOT NULL,
+      body TEXT NOT NULL,
+      year_theme TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS life_bets (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      horizon TEXT NOT NULL CHECK (horizon IN ('year', 'multi', 'farther')),
+      year INTEGER,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'on_track' CHECK (status IN ('on_track', 'paused', 'arrived', 'dropped')),
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_life_directions_updated_at ON life_directions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_horizon_year_sort ON life_bets(horizon, year, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_status ON life_bets(status);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_updated_at ON life_bets(updated_at);
+  `);
+
+  await ensureColumn(db, 'projects', 'life_bet_id', 'TEXT');
+  await ensureColumn(db, 'life_directions', 'year_theme', 'TEXT');
+  await ensureColumn(db, 'life_directions', 'server_rev', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(db, 'life_directions', 'mutation_id', 'TEXT');
+  await ensureColumn(db, 'life_directions', 'last_pushed_mutation_id', 'TEXT');
+  await ensureColumn(db, 'life_bets', 'server_rev', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(db, 'life_bets', 'mutation_id', 'TEXT');
+  await ensureColumn(db, 'life_bets', 'last_pushed_mutation_id', 'TEXT');
+
+  try {
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_projects_life_bet_id ON projects(life_bet_id);
+    `);
+  } catch (e) {
+    console.warn('idx_projects_life_bet_id ensure failed', e);
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'life_road_tables_v57',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -728,6 +800,7 @@ export async function initDatabase() {
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY NOT NULL,
       category_id TEXT,
+      life_bet_id TEXT,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       priority INTEGER NOT NULL DEFAULT 0,
@@ -1090,6 +1163,36 @@ export async function initDatabase() {
       extra_data TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS life_directions (
+      id TEXT PRIMARY KEY NOT NULL,
+      body TEXT NOT NULL,
+      year_theme TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS life_bets (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      horizon TEXT NOT NULL CHECK (horizon IN ('year', 'multi', 'farther')),
+      year INTEGER,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'on_track' CHECK (status IN ('on_track', 'paused', 'arrived', 'dropped')),
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS points_ledger (
       id TEXT PRIMARY KEY NOT NULL,
       delta REAL NOT NULL,
@@ -1279,6 +1382,7 @@ export async function initDatabase() {
   await ensureColumn(db, 'project_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'task_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'projects', 'category_id', 'TEXT');
+  await ensureColumn(db, 'projects', 'life_bet_id', 'TEXT');
   await ensureColumn(db, 'projects', 'priority', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'projects', 'note', 'TEXT');
   await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
@@ -1502,6 +1606,12 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_wish_board_items_updated_at ON wish_board_items(updated_at);
     CREATE INDEX IF NOT EXISTS idx_wish_board_items_sort_order ON wish_board_items(sort_order);
 
+    CREATE INDEX IF NOT EXISTS idx_life_directions_updated_at ON life_directions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_horizon_year_sort ON life_bets(horizon, year, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_status ON life_bets(status);
+    CREATE INDEX IF NOT EXISTS idx_life_bets_updated_at ON life_bets(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_projects_life_bet_id ON projects(life_bet_id);
+
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_updated_at ON review_dimensions(updated_at);
@@ -1718,6 +1828,7 @@ export async function initDatabase() {
   await migrateTagDomainSplitRepair(db);
   await migrateDropLegacyAccountsLedger(db);
   await migrateEnsureSyncRevisionColumns(db);
+  await migrateEnsureLifeRoadTables(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
@@ -1780,6 +1891,8 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS earned_rewards;
     DROP TABLE IF EXISTS points_ledger;
     DROP TABLE IF EXISTS wish_board_items;
+    DROP TABLE IF EXISTS life_bets;
+    DROP TABLE IF EXISTS life_directions;
     DROP TABLE IF EXISTS points_wallet;
     DROP TABLE IF EXISTS wish_items;
     DROP TABLE IF EXISTS review_columns;

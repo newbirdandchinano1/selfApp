@@ -14,6 +14,7 @@ import {
   useComposerSchedule,
   validateRequiredTitle,
 } from '@/components/entity-form';
+import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -22,6 +23,8 @@ import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { normalizeRouteParam } from '@/lib/schedule-picker-bridge';
+import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
+import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import {
   mergePrerequisiteIdsIntoExtraData,
@@ -101,6 +104,9 @@ export default function AddProjectScreen() {
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
+  const [selectedLifeBetId, setSelectedLifeBetId] = React.useState<string | null>(null);
+  const [lifeBets, setLifeBets] = React.useState<LifeBetRow[]>([]);
+  const [lifeBetsLoading, setLifeBetsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const appliedRouteCategoryRef = React.useRef(false);
@@ -163,6 +169,15 @@ export default function AddProjectScreen() {
         setAllTags([]);
       } finally {
         setTagsLoading(false);
+      }
+      setLifeBetsLoading(true);
+      try {
+        setLifeBets(await getLifeBetsLocal());
+      } catch (error) {
+        console.warn('加载道路赌注失败', error);
+        setLifeBets([]);
+      } finally {
+        setLifeBetsLoading(false);
       }
     }, forceRefresh);
   }, [wrapLoad]);
@@ -232,6 +247,7 @@ export default function AddProjectScreen() {
         id: projectId,
         name: trimmedTitle,
         category_id: selectedCategoryId,
+        life_bet_id: selectedLifeBetId,
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
         due_date: dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText)),
@@ -270,6 +286,7 @@ export default function AddProjectScreen() {
     router,
     scheduleMeta,
     selectedCategoryId,
+    selectedLifeBetId,
     selectedTagIds,
     title,
   ]);
@@ -356,6 +373,23 @@ export default function AddProjectScreen() {
             allProjects={allProjects}
             loading={projectsLoading}
             onChange={setPrerequisiteProjectIds}
+            textColor={colors.text}
+            outline={colors.textSecondary}
+            placeholderColor={colors.textMuted}
+            primary={colors.primary}
+            surfaceLow={colors.input}
+            surfaceLowest={colors.surfaceSubtle}
+            isDark={isDark}
+          />
+        </View>
+
+        <View style={styles.fieldBlock}>
+          <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>属于哪条道路</Text>
+          <LifeBetPickerField
+            selectedId={selectedLifeBetId}
+            allBets={lifeBets}
+            loading={lifeBetsLoading}
+            onChange={setSelectedLifeBetId}
             textColor={colors.text}
             outline={colors.textSecondary}
             placeholderColor={colors.textMuted}

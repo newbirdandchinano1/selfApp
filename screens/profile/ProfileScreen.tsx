@@ -1,3 +1,4 @@
+import { ProfileRoadCard } from '@/components/profile/ProfileRoadCard';
 import { AppIcon, type AppIconName } from '@/components/ui/app-icon';
 import { AppText } from '@/components/ui/app-text';
 import {
@@ -18,6 +19,7 @@ import {
   loadProfileHubStats,
   type ProfileHubStats,
 } from '@/lib/profile-hub-stats';
+import { fetchProfileLifeRoad } from '@/lib/profile-page-api';
 import { getPointsBalance } from '@/lib/repositories/points/points';
 import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
@@ -250,7 +252,13 @@ export default function ProfileScreen() {
     async (forceRefresh = false) => {
       try {
         await wrapLoad(async () => {
-          await Promise.all([loadUser(), loadPoints()]);
+          await Promise.all([
+            loadUser(),
+            loadPoints(),
+            fetchProfileLifeRoad({ serverFallback: true }).catch((e) => {
+              if (__DEV__) console.warn('[profile] life-road fetch failed', e);
+            }),
+          ]);
         }, forceRefresh);
         const [currentUser, balance] = await Promise.all([
           getDefaultUser().catch(() => null),
@@ -306,7 +314,13 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     void (async () => {
-      await Promise.all([loadUser(), loadPoints()]);
+      await Promise.all([
+        loadUser(),
+        loadPoints(),
+        fetchProfileLifeRoad({ serverFallback: true }).catch((e) => {
+          if (__DEV__) console.warn('[profile] life-road fetch failed', e);
+        }),
+      ]);
       const [currentUser, balance] = await Promise.all([
         getDefaultUser().catch(() => null),
         getPointsBalance().catch(() => 0),
@@ -322,6 +336,10 @@ export default function ProfileScreen() {
     else router.push('/edit-profile');
   };
   const openWishBoard = () => router.push('/wish-board');
+  const openLifeRoad = () => router.push('/life-road');
+  const retryHub = () => {
+    void reloadPage(true);
+  };
 
   const stats = [
     { key: 'height', label: '身高', value: heightText, unit: heightText === EMPTY ? '' : 'cm' },
@@ -480,6 +498,13 @@ export default function ProfileScreen() {
             <AppIcon name="chevron-right" size={20} color={taskUi.pointsAccent} />
           </View>
         </Pressable>
+
+        <ProfileRoadCard
+          road={hub?.road}
+          onOpen={openLifeRoad}
+          onRetry={retryHub}
+          onWriteDirection={openLifeRoad}
+        />
 
         <View
           style={[

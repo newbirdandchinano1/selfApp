@@ -43,6 +43,8 @@ export const API_ALLOWED_TABLES = new Set([
   'points_wallet',
   'points_ledger',
   'wish_board_items',
+  'life_directions',
+  'life_bets',
   'tags',
   'tag_links',
   'health_daily_targets',

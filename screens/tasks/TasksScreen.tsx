@@ -170,6 +170,7 @@ import {
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
 import {
   insertFrogCompletionEvent,
   isFrogSubjectDeleted,
@@ -1955,6 +1956,10 @@ export default function TasksScreen() {
   const [projectTagsByProjectId, setProjectTagsByProjectId] = React.useState<
     Map<string, ProjectTagRow[]>
   >(() => new Map());
+  /** life_bets.id → 标题；任务列表归属 caption 本地 JOIN */
+  const [lifeBetTitleById, setLifeBetTitleById] = React.useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [habitTagsByHabitId, setHabitTagsByHabitId] = React.useState<Map<string, TagRow[]>>(
     () => new Map(),
   );
@@ -2314,9 +2319,24 @@ export default function TasksScreen() {
     }
   }, []);
 
+  /** 道路标题缓存：life_bets 变更经 TABLE_TAB_DIRTY_MAP 触发本页 reload 后重读 */
+  const refreshLifeBetTitles = React.useCallback(async () => {
+    try {
+      const bets = await getLifeBetsLocal();
+      setLifeBetTitleById(new Map(bets.map((b) => [b.id, b.title])));
+    } catch (err) {
+      console.warn('加载道路标题失败', err);
+      setLifeBetTitleById(new Map());
+    }
+  }, []);
+
   React.useEffect(() => {
     void refreshProjectTags(projects);
   }, [projects, refreshProjectTags]);
+
+  React.useEffect(() => {
+    void refreshLifeBetTitles();
+  }, [projects, refreshLifeBetTitles]);
 
   const refreshHabitTags = React.useCallback(async () => {
     const ids = habitSections.flatMap((s) => s.items.map((h) => h.id));
@@ -7283,6 +7303,8 @@ export default function TasksScreen() {
                   const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
                   const projectTags = projectTagsByProjectId.get(project.id) ?? [];
+                  const lifeBetId = project.life_bet_id?.trim() || '';
+                  const lifeBetTitle = lifeBetId ? lifeBetTitleById.get(lifeBetId)?.trim() || '' : '';
                   const isLongTermProject = getIsLongTermProject(project.extra_data);
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
@@ -7849,6 +7871,23 @@ export default function TasksScreen() {
                                 </View>
                               ) : null}
                             </View>
+                            {lifeBetTitle ? (
+                              <Pressable
+                                onPress={(e) => {
+                                  e.stopPropagation?.();
+                                  router.push('/life-road');
+                                }}
+                                hitSlop={6}
+                                accessibilityRole="button"
+                                accessibilityLabel={`道路 ${lifeBetTitle}`}
+                                style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
+                                <Text
+                                  style={[styles.projectLifeBetCaption, { color: outline }]}
+                                  numberOfLines={1}>
+                                  {lifeBetTitle}
+                                </Text>
+                              </Pressable>
+                            ) : null}
                             <View style={styles.projectSubRow}>
                               <View
                                 style={[
@@ -9188,6 +9227,14 @@ const styles = StyleSheet.create({
   },
   projectSub: { fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
   projectSubStrong: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
+  /** 道路归属 caption：无归属时不渲染，不占位 */
+  projectLifeBetCaption: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 2,
+    marginBottom: 2,
+    maxWidth: '100%',
+  },
   projectFlag: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   projectFlagText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   projectProgressRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, marginBottom: 6 },

@@ -20,8 +20,11 @@ import {
 } from '@/lib/schedule-picker-bridge';
 import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
 import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
+import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
 import {
   ComposerPriorityMatrix,
   taskPriorityKeyToNumber,
@@ -395,6 +398,9 @@ export default function EditProjectScreen() {
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
+  const [selectedLifeBetId, setSelectedLifeBetId] = React.useState<string | null>(null);
+  const [lifeBets, setLifeBets] = React.useState<LifeBetRow[]>([]);
+  const [lifeBetsLoading, setLifeBetsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
@@ -545,6 +551,7 @@ export default function EditProjectScreen() {
         setSelectedTagIds([]);
       }
       setIsLongTermProject(getIsLongTermProject(project.extra_data));
+      setSelectedLifeBetId(project.life_bet_id?.trim() ? project.life_bet_id : null);
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
@@ -595,6 +602,15 @@ export default function EditProjectScreen() {
           setAllTags([]);
         } finally {
           setTagsLoading(false);
+        }
+        setLifeBetsLoading(true);
+        try {
+          setLifeBets(await getLifeBetsLocal());
+        } catch (error) {
+          console.warn('加载道路赌注失败', error);
+          setLifeBets([]);
+        } finally {
+          setLifeBetsLoading(false);
         }
       }, forceRefresh);
     },
@@ -824,6 +840,7 @@ export default function EditProjectScreen() {
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
+        life_bet_id: selectedLifeBetId,
         name: trimmedTitle,
         priority: taskPriorityKeyToNumber(priority),
         note: notes.trim() || null,
@@ -979,6 +996,7 @@ export default function EditProjectScreen() {
     router,
     saving,
     scheduleMeta,
+    selectedLifeBetId,
     selectedTagIds,
     subtasks,
     title,
@@ -1294,6 +1312,24 @@ export default function EditProjectScreen() {
               />
             </View>
 
+            <View style={styles.fieldBlock}>
+              <Text style={[styles.fieldLabel, { color: outline }]}>属于哪条道路</Text>
+              <LifeBetPickerField
+                selectedId={selectedLifeBetId}
+                allBets={lifeBets}
+                loading={lifeBetsLoading || loading}
+                disabled={loading || saving}
+                onChange={setSelectedLifeBetId}
+                textColor={theme.text}
+                outline={outline}
+                placeholderColor={outlineVariant}
+                primary={primary}
+                surfaceLow={surfaceLow}
+                surfaceLowest={surfaceLowest}
+                isDark={isDark}
+              />
+            </View>
+
             <EntityFormScheduleField
               deadlineText={deadlineText}
               reminderText={reminderText}
@@ -1374,7 +1410,7 @@ export default function EditProjectScreen() {
               <View style={styles.longTermTextWrap}>
                 <Text style={[styles.longTermTitle, { color: theme.text }]}>长期项目</Text>
                 <Text style={[styles.longTermHint, { color: outline }]}>
-                  删除后在同步或恢复功能前无法找回，确认删除吗？
+                  完成时可只结束当天青蛙，不勾完成项目
                 </Text>
               </View>
               <MaterialIcons

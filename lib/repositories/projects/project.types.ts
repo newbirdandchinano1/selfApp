@@ -8,6 +8,8 @@ export type ProjectPriority = 0 | 1 | 2 | 3 | 4;
 export type ProjectRow = {
   id: string;
   category_id: string | null;
+  /** 归属道路赌注 life_bets.id；可空，禁止放进 extra_data */
+  life_bet_id?: string | null;
   name: string;
   status: ProjectStatus;
   /** 艾森豪威尔优先级，与 tasks.priority 同口径 */
@@ -26,6 +28,7 @@ export type CreateProjectInput = {
   id: string;
   name: string;
   category_id?: string | null;
+  life_bet_id?: string | null;
   status?: ProjectStatus;
   priority?: ProjectPriority;
   note?: string | null;
@@ -34,7 +37,10 @@ export type CreateProjectInput = {
 };
 
 export type UpdateProjectInput = Partial<
-  Pick<ProjectRow, 'category_id' | 'name' | 'status' | 'priority' | 'note' | 'due_date' | 'extra_data'>
+  Pick<
+    ProjectRow,
+    'category_id' | 'life_bet_id' | 'name' | 'status' | 'priority' | 'note' | 'due_date' | 'extra_data'
+  >
 >;
 
 export type ProjectCategoryRow = {
