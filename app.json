@@ -9,11 +9,13 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "requireFullScreen": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
       "infoPlist": {
         "CFBundleDisplayName": "小郑的自我修养",
         "CFBundleName": "小郑的自我修养",
         "ITSAppUsesNonExemptEncryption": false,
+        "UIRequiresFullScreen": true,
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         }

@@ -60,9 +60,14 @@ import {
   acknowledgeStrongReminder,
   stripReminderAccessorySuffix,
 } from '@/lib/notification-strong-reminder';
+import { hideNativeSplashWithRetry } from '@/lib/splash-hide';
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
 const BOOTSTRAP_MAX_MS = 15_000;
+/** pending 冲刷硬超时：避免 requestPush 挂死导致开屏永不放行 */
+const PENDING_FLUSH_MAX_MS = 20_000;
+/** 整段启动兜底：仍无结果则展示可重试错误，避免哑卡开屏 */
+const STARTUP_WATCHDOG_MS = 45_000;
 
 if (Platform.OS !== 'web') {
   Notifications.setNotificationHandler({
@@ -144,6 +149,8 @@ function RootLayoutInner() {
   const [flushRetrying, setFlushRetrying] = useState(false);
   const deferredStartedRef = useRef(false);
   const hasBeenBlockedRef = useRef(false);
+  const flushReadyRef = useRef(false);
+  const blockingErrorRef = useRef(false);
 
   /** pending 冲刷成功后才启动 SyncManager，避免 Pull 抢在上传前覆盖缓存。 */
   const runDeferredBootstrapOnce = () => {
@@ -179,10 +186,21 @@ function RootLayoutInner() {
   const runPendingFlushGate = async (): Promise<boolean> => {
     setFlushStatus('正在同步未上传的本地修改…');
     setFlushError(null);
+    blockingErrorRef.current = false;
     try {
-      const result = await runStartupPendingFlush();
+      const result = await Promise.race([
+        runStartupPendingFlush(),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () => reject(new Error('同步超时，请检查网络后重试')),
+            PENDING_FLUSH_MAX_MS,
+          );
+        }),
+      ]);
       if (!result.ok) {
+        flushReadyRef.current = false;
         setFlushReady(false);
+        blockingErrorRef.current = true;
         setFlushError(result.error ?? '有未同步到服务器的本地修改，请保持网络后重试');
         if (__DEV__) {
           console.warn('[bootstrap] pending 冲刷未完成', result.inventoryAfter);
@@ -190,12 +208,16 @@ function RootLayoutInner() {
         return false;
       }
       setFlushError(null);
+      blockingErrorRef.current = false;
+      flushReadyRef.current = true;
       setFlushReady(true);
       runDeferredBootstrapOnce();
       return true;
     } catch (e) {
       console.warn('[bootstrap] pending 冲刷异常', e);
+      flushReadyRef.current = false;
       setFlushReady(false);
+      blockingErrorRef.current = true;
       setFlushError(formatPendingFlushError(e));
       return false;
     } finally {
@@ -206,6 +228,7 @@ function RootLayoutInner() {
   const handleDbRetry = async () => {
     setDbError(null);
     setFlushError(null);
+    blockingErrorRef.current = false;
     try {
       await initDatabase();
       await hydratePageApiSession();
@@ -217,6 +240,7 @@ function RootLayoutInner() {
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       console.warn('数据库初始化失败', detail, e);
+      blockingErrorRef.current = true;
       setDbError(
         __DEV__ && detail.trim()
           ? `数据库初始化失败，请重试。\n${detail}`
@@ -288,6 +312,7 @@ function RootLayoutInner() {
         const detail = e instanceof Error ? e.message : String(e);
         console.warn('数据库初始化失败', detail, e);
         if (mounted) {
+          blockingErrorRef.current = true;
           setDbError(
             __DEV__ && detail.trim()
               ? `数据库初始化失败，请重试。\n${detail}`
@@ -308,13 +333,17 @@ function RootLayoutInner() {
     return subscribePendingFlushBlock((blocked, message) => {
       if (blocked) {
         hasBeenBlockedRef.current = true;
+        flushReadyRef.current = false;
+        blockingErrorRef.current = true;
         setFlushReady(false);
         setFlushError(message);
         return;
       }
       if (!hasBeenBlockedRef.current) return;
       hasBeenBlockedRef.current = false;
+      blockingErrorRef.current = false;
       setFlushError(null);
+      flushReadyRef.current = true;
       setFlushReady(true);
       runDeferredBootstrapOnce();
     });
@@ -328,6 +357,18 @@ function RootLayoutInner() {
       void resyncAppNotificationsAfterPreferenceChange();
     });
     return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (flushReadyRef.current || blockingErrorRef.current) return;
+      setIsDbReady(true);
+      flushReadyRef.current = false;
+      setFlushReady(false);
+      blockingErrorRef.current = true;
+      setFlushError('启动超时，请检查网络后重试');
+    }, STARTUP_WATCHDOG_MS);
+    return () => clearTimeout(timer);
   }, []);
 
   return (
@@ -453,13 +494,24 @@ function RootLayoutInner() {
 }
 
 export default function RootLayout() {
+  useEffect(() => {
+    // 尽早揭开原生 Splash；iPad 生产包常需多次 hideAsync 才真正消失
+    void hideNativeSplashWithRetry();
+    const t = setTimeout(() => {
+      void hideNativeSplashWithRetry();
+    }, 600);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <ThemePreferenceProvider>
-        <DayBoundaryProvider>
-          <RootLayoutInner />
-        </DayBoundaryProvider>
-      </ThemePreferenceProvider>
+      <AppErrorBoundary>
+        <ThemePreferenceProvider>
+          <DayBoundaryProvider>
+            <RootLayoutInner />
+          </DayBoundaryProvider>
+        </ThemePreferenceProvider>
+      </AppErrorBoundary>
     </GestureHandlerRootView>
   );
 }

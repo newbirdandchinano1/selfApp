@@ -12,9 +12,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { InitialSyncProgress } from '@/lib/api-initial-sync';
+import { hideNativeSplashWithRetry } from '@/lib/splash-hide';
 
 const MIN_SPLASH_MS = 1400;
 const FADE_OUT_MS = 420;
+/** 原生 Splash 兜底隐藏：避免 onLayout 未触发时一直盖住 JS 文案/重试 */
+const NATIVE_SPLASH_FALLBACK_HIDE_MS = 800;
 
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -42,7 +45,7 @@ function formatSyncProgress(progress: InitialSyncProgress | null | undefined): s
 
 /**
  * 全屏开屏：原生 Splash 与 JS 层同一张图。
- * 打包后原生层会盖住 JS，必须在 JS 开屏 layout 后立刻 hideAsync，
+ * 打包后原生层会盖住 JS，必须尽快 hideAsync，
  * 否则标题、同步文案和重试按钮都看不见。
  */
 export function AppSplashScreen({
@@ -61,34 +64,20 @@ export function AppSplashScreen({
 
   const nativeHiddenRef = useRef(false);
   const shellOpacity = useRef(new Animated.Value(1)).current;
-  const titleOpacity = useRef(new Animated.Value(0)).current;
-  const titleTranslateY = useRef(new Animated.Value(10)).current;
+  const titleOpacity = useRef(new Animated.Value(1)).current;
+  const titleTranslateY = useRef(new Animated.Value(0)).current;
 
   const hideNativeSplash = () => {
-    if (nativeHiddenRef.current) return;
+    // 允许多次触发：iPad 生产包上单次 hideAsync 常无效，需重试
+    void hideNativeSplashWithRetry();
     nativeHiddenRef.current = true;
-    void SplashScreen.hideAsync().catch(() => {});
   };
 
   useEffect(() => {
-    Animated.sequence([
-      Animated.delay(260),
-      Animated.parallel([
-        Animated.timing(titleOpacity, {
-          toValue: 1,
-          duration: 520,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(titleTranslateY, {
-          toValue: 0,
-          duration: 520,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-    ]).start();
-  }, [titleOpacity, titleTranslateY]);
+    hideNativeSplash();
+    const fallback = setTimeout(hideNativeSplash, NATIVE_SPLASH_FALLBACK_HIDE_MS);
+    return () => clearTimeout(fallback);
+  }, []);
 
   useEffect(() => {
     if (!exitReady || hasFinishedRef.current) return;
@@ -115,7 +104,8 @@ export function AppSplashScreen({
 
   if (!visible) return null;
 
-  const syncStatusText = statusText?.trim() || formatSyncProgress(syncProgress);
+  const syncStatusText =
+    statusText?.trim() || formatSyncProgress(syncProgress) || (dbError ? null : '正在启动…');
 
   return (
     <Animated.View
@@ -177,7 +167,7 @@ export function AppSplashScreen({
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: '#ffffff',
     zIndex: 9999,
   },
@@ -211,7 +201,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(255,255,255,0.92)',
     alignItems: 'center',
     justifyContent: 'center',
