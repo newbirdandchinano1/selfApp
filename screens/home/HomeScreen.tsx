@@ -780,6 +780,29 @@ export default function HealthScreen() {
     }, [])
   );
 
+  /** 从编辑页返回时务必重读快捷卡片（不依赖整页 wrapLoad / 会话标记） */
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        try {
+          const [selectedItems, catalog] = await Promise.all([
+            loadSelectedQuickAddItems(),
+            loadAllQuickAddItems(),
+          ]);
+          if (cancelled) return;
+          setQuickAddItems(selectedItems);
+          setQuickAddCatalog(catalog);
+        } catch (e) {
+          console.warn('聚焦时加载快捷卡片失败', e);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
@@ -2187,60 +2210,80 @@ export default function HealthScreen() {
             点卡片一键加量；右下角 + 可手动 / AI / 拍照
           </Text>
 
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            nestedScrollEnabled
-            directionalLockEnabled
-            contentContainerStyle={styles.quickAddScrollContent}
-            style={styles.quickAddScroll}
-          >
-            {quickAddItems.map((item, index) => {
-              const cardAnim = quickAddCardAnimsRef.current[index] ?? quickAddCardAnimsRef.current[quickAddCardAnimsRef.current.length - 1];
-              const itemOpacity = cardAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, 1],
-              });
-              const itemTranslateY = cardAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [18, 0],
-              });
+          {quickAddItems.length === 0 ? (
+            <Pressable
+              onPress={() => router.push('/quick-add-edit')}
+              style={({ pressed }) => [
+                styles.quickAddEmptyBox,
+                {
+                  backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                  borderColor: colors.outline,
+                  opacity: pressed ? 0.88 : 1,
+                },
+              ]}
+            >
+              <MaterialIcons name="add-circle-outline" size={22} color={colors.primary} />
+              <Text style={[styles.quickAddEmptyTitle, { color: colors.text }]}>暂无快捷卡片</Text>
+              <Text style={[styles.quickAddEmptyText, { color: colors.textSecondary }]}>
+                点此编辑添加，或用右下角 + 手动 / AI / 拍照记录
+              </Text>
+            </Pressable>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              nestedScrollEnabled
+              directionalLockEnabled
+              contentContainerStyle={styles.quickAddScrollContent}
+              style={styles.quickAddScroll}
+            >
+              {quickAddItems.map((item, index) => {
+                const cardAnim = quickAddCardAnimsRef.current[index] ?? quickAddCardAnimsRef.current[quickAddCardAnimsRef.current.length - 1];
+                const itemOpacity = cardAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 1],
+                });
+                const itemTranslateY = cardAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [18, 0],
+                });
 
-              return (
-                <Animated.View
-                  key={item.key}
-                  style={{
-                    opacity: itemOpacity,
-                    transform: [{ translateY: itemTranslateY }],
-                  }}
-                >
-                  <TouchableOpacity
-                    style={[
-                      styles.quickAddCard,
-                      {
-                        backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
-                        borderColor: colors.outline,
-                        width: cardWidth,
-                        opacity: intakeParseLocked ? 0.45 : 1,
-                      },
-                    ]}
-                    activeOpacity={0.82}
-                    onPress={() => {
-                      if (intakeParseLocked) {
-                        Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
-                        return;
-                      }
-                      void persistQuickAddIntake(item);
+                return (
+                  <Animated.View
+                    key={item.key}
+                    style={{
+                      opacity: itemOpacity,
+                      transform: [{ translateY: itemTranslateY }],
                     }}
                   >
-                    <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={colors.textSecondary} style={styles.quickAddIcon} />
-                    <Text style={[styles.quickAddLabel, { color: colors.textSecondary }]}>{item.label}</Text>
-                    <Text style={[styles.quickAddValue, { color: colors.text }]}>{formatQuickAddAmount(item)}</Text>
-                  </TouchableOpacity>
-                </Animated.View>
-              );
-            })}
-          </ScrollView>
+                    <TouchableOpacity
+                      style={[
+                        styles.quickAddCard,
+                        {
+                          backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
+                          borderColor: colors.outline,
+                          width: cardWidth,
+                          opacity: intakeParseLocked ? 0.45 : 1,
+                        },
+                      ]}
+                      activeOpacity={0.82}
+                      onPress={() => {
+                        if (intakeParseLocked) {
+                          Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+                          return;
+                        }
+                        void persistQuickAddIntake(item);
+                      }}
+                    >
+                      <MaterialIcons name={item.icon as keyof typeof MaterialIcons.glyphMap} size={30} color={colors.textSecondary} style={styles.quickAddIcon} />
+                      <Text style={[styles.quickAddLabel, { color: colors.textSecondary }]}>{item.label}</Text>
+                      <Text style={[styles.quickAddValue, { color: colors.text }]}>{formatQuickAddAmount(item)}</Text>
+                    </TouchableOpacity>
+                  </Animated.View>
+                );
+              })}
+            </ScrollView>
+          )}
 
         </View>
         </View>
@@ -3365,6 +3408,25 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: Spacing.md,
     lineHeight: 17,
+  },
+  quickAddEmptyBox: {
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    gap: 6,
+  },
+  quickAddEmptyTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  quickAddEmptyText: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   assistantFooter: {
     flexDirection: 'row',

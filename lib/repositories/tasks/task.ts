@@ -427,6 +427,19 @@ export async function getTaskById(id: string) {
   return row ?? null;
 }
 
+/** 按 id 批量读任务（去重）；用于日程提醒等避免 N+1 */
+export async function getTasksByIds(ids: string[]): Promise<TaskRow[]> {
+  const unique = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const db = await getDatabase();
+  const placeholders = unique.map(() => '?').join(',');
+  const rows = await db.getAllAsync<TaskRow>(
+    `SELECT * FROM tasks WHERE id IN (${placeholders}) AND sync_status != 'pending_delete'`,
+    unique,
+  );
+  return rows ?? [];
+}
+
 export async function getTasks(opts?: { forceRefresh?: boolean }) {
   const rows = await loadAllTasks(opts);
   return sortByUpdatedDesc(rows);

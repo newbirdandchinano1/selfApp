@@ -1,11 +1,10 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
-  deleteCustomQuickAddItem,
+  deleteQuickAddItem,
   getDefaultQuickAddItems,
   getQuickAddMetricAmount,
   getQuickAddMetricTypes,
-  isBuiltInQuickAddItem,
   loadAllQuickAddItems,
   loadSelectedQuickAddItems,
   saveSelectedQuickAddKeys,
@@ -37,6 +36,13 @@ function getMetricLabels(item: QuickAddCardItem): string[] {
 
 const PAGE_API_KEY = 'quick-add-edit';
 
+function toIconItems(items: QuickAddCardItem[]): QuickAddItem[] {
+  return items.map((item) => ({
+    ...item,
+    icon: item.icon as keyof typeof MaterialIcons.glyphMap,
+  }));
+}
+
 export default function QuickAddEditScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
@@ -49,41 +55,34 @@ export default function QuickAddEditScreen() {
   const surfaceHigh = isDark ? 'rgba(51,65,85,0.9)' : '#e2e7ff';
   const surfaceLowest = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
   const outline = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.35)';
-  const [homeItems, setHomeItems] = React.useState<QuickAddItem[]>(() =>
-    getDefaultQuickAddItems().map((item) => ({
-      ...item,
-      icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-    }))
-  );
+  const [homeItems, setHomeItems] = React.useState<QuickAddItem[]>(() => toIconItems(getDefaultQuickAddItems()));
   const [allItems, setAllItems] = React.useState<QuickAddItem[]>([]);
   const [itemsLoading, setItemsLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
 
-  const reload = React.useCallback(async (forceRefresh = false) => {
-    setItemsLoading(true);
-    try {
-      await wrapLoad(async () => {
-        try {
-          const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-          setHomeItems(
-            selected.map((item) => ({
-              ...item,
-              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-            }))
-          );
-          setAllItems(
-            all.map((item) => ({
-              ...item,
-              icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-            }))
-          );
-        } catch (e) {
-          console.warn('加载快捷卡片失败', e);
-        }
-      }, forceRefresh);
-    } finally {
-      setItemsLoading(false);
-    }
-  }, [wrapLoad]);
+  const applyLoaded = React.useCallback((selected: QuickAddCardItem[], all: QuickAddCardItem[]) => {
+    setHomeItems(toIconItems(selected));
+    setAllItems(toIconItems(all));
+  }, []);
+
+  const reload = React.useCallback(
+    async (forceRefresh = false) => {
+      setItemsLoading(true);
+      try {
+        await wrapLoad(async () => {
+          try {
+            const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
+            applyLoaded(selected, all);
+          } catch (e) {
+            console.warn('加载快捷卡片失败', e);
+          }
+        }, forceRefresh);
+      } finally {
+        setItemsLoading(false);
+      }
+    },
+    [applyLoaded, wrapLoad]
+  );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -95,10 +94,7 @@ export default function QuickAddEditScreen() {
 
   const availableItems = React.useMemo(() => {
     const selectedKeys = new Set(homeItems.map((item) => item.key));
-    return allItems.filter((item) => !selectedKeys.has(item.key)).map((item) => ({
-      ...item,
-      icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-    }));
+    return allItems.filter((item) => !selectedKeys.has(item.key));
   }, [allItems, homeItems]);
 
   const onRemove = React.useCallback((key: string) => {
@@ -107,27 +103,12 @@ export default function QuickAddEditScreen() {
 
   const reloadItems = React.useCallback(async () => {
     const [selected, all] = await Promise.all([loadSelectedQuickAddItems(), loadAllQuickAddItems()]);
-    setHomeItems(
-      selected.map((item) => ({
-        ...item,
-        icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-      }))
-    );
-    setAllItems(
-      all.map((item) => ({
-        ...item,
-        icon: item.icon as keyof typeof MaterialIcons.glyphMap,
-      }))
-    );
-  }, []);
+    applyLoaded(selected, all);
+  }, [applyLoaded]);
 
   const onLongPressDelete = React.useCallback(
     (item: QuickAddItem) => {
-      if (isBuiltInQuickAddItem(item.key)) {
-        Alert.alert('系统项目不可删除', '内置快捷项目不支持删除。');
-        return;
-      }
-      Alert.alert('删除项目', `确定删除「${item.label}」吗？`, [
+      Alert.alert('删除项目', `确定删除「${item.label}」吗？删除后可在「添加项目」中重新创建。`, [
         { text: '取消', style: 'cancel' },
         {
           text: '删除',
@@ -135,8 +116,9 @@ export default function QuickAddEditScreen() {
           onPress: () => {
             void (async () => {
               try {
-                await deleteCustomQuickAddItem(item.key);
+                await deleteQuickAddItem(item.key);
                 await reloadItems();
+                notifyPageDataChanged(PAGE_API_KEY);
               } catch {
                 Alert.alert('删除失败', '请稍后重试。');
               }
@@ -156,19 +138,20 @@ export default function QuickAddEditScreen() {
   }, []);
 
   const onSave = React.useCallback(async () => {
-    if (itemsLoading) return;
-    if (homeItems.length === 0) {
-      Alert.alert('请至少保留1个', '至少保留一个快捷卡片，方便快速记录。');
-      return;
-    }
+    if (itemsLoading || saving) return;
+    setSaving(true);
     try {
       await saveSelectedQuickAddKeys(homeItems.map((item) => item.key));
       notifyPageDataChanged(PAGE_API_KEY);
       router.back();
     } catch {
       Alert.alert('保存失败', '请稍后重试。');
+    } finally {
+      setSaving(false);
     }
-  }, [homeItems, itemsLoading, router]);
+  }, [homeItems, itemsLoading, router, saving]);
+
+  const saveDisabled = itemsLoading || saving;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
@@ -179,44 +162,56 @@ export default function QuickAddEditScreen() {
         <Text style={[styles.headerTitle, { color: theme.text }]}>编辑快捷卡片</Text>
         <Pressable
           onPress={() => void onSave()}
-          disabled={itemsLoading}
-          style={({ pressed }) => [styles.saveBtn, (pressed || itemsLoading) && { opacity: 0.75 }]}
+          disabled={saveDisabled}
+          style={({ pressed }) => [styles.saveBtn, (pressed || saveDisabled) && { opacity: 0.75 }]}
         >
-          <Text style={[styles.saveText, { color: itemsLoading ? theme.textSecondary : theme.primary }]}>
-            {itemsLoading ? '加载中' : '保存'}
+          <Text style={[styles.saveText, { color: saveDisabled ? theme.textSecondary : theme.primary }]}>
+            {itemsLoading ? '加载中' : saving ? '保存中' : '保存'}
           </Text>
         </Pressable>
       </View>
 
-      <ScrollView refreshControl={refreshControl} contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        refreshControl={refreshControl}
+        contentContainerStyle={[styles.content, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: theme.text }]}>首页展示</Text>
           <View style={styles.cardList}>
-            {homeItems.map((item) => (
-              <Pressable
-                key={item.key}
-                onLongPress={() => onLongPressDelete(item)}
-                delayLongPress={280}
-                style={[styles.cardRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
-              >
-                <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
-                  <MaterialIcons name={item.icon} size={28} color={theme.primary} />
-                </View>
-                <View style={styles.cardBody}>
-                  <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <View style={styles.metricTagWrap}>
-                    {getMetricLabels(item).map((label) => (
-                      <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
-                        <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
-                      </View>
-                    ))}
+            {homeItems.length === 0 ? (
+              <View style={[styles.emptyBox, { backgroundColor: surfaceLowest, borderColor: outline }]}>
+                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                  首页快速添加栏为空。可从下方添加，或保存后保持空栏。
+                </Text>
+              </View>
+            ) : (
+              homeItems.map((item) => (
+                <Pressable
+                  key={item.key}
+                  onLongPress={() => onLongPressDelete(item)}
+                  delayLongPress={280}
+                  style={[styles.cardRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
+                >
+                  <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
+                    <MaterialIcons name={item.icon} size={28} color={theme.primary} />
                   </View>
-                </View>
-                <Pressable onPress={() => onRemove(item.key)} style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.8 }]}>
-                  <MaterialIcons name="remove" size={18} color="#ba1a1a" />
+                  <View style={styles.cardBody}>
+                    <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
+                    <View style={styles.metricTagWrap}>
+                      {getMetricLabels(item).map((label) => (
+                        <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
+                          <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                  <Pressable onPress={() => onRemove(item.key)} style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="remove" size={18} color="#ba1a1a" />
+                  </Pressable>
                 </Pressable>
-              </Pressable>
-            ))}
+              ))
+            )}
           </View>
         </View>
 
@@ -230,32 +225,40 @@ export default function QuickAddEditScreen() {
           </View>
 
           <View style={styles.cardList}>
-            {availableItems.map((item) => (
-              <Pressable
-                key={item.key}
-                onLongPress={() => onLongPressDelete(item)}
-                delayLongPress={280}
-                style={[styles.cardRow, styles.availableRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
-              >
-                <View style={[styles.availableAccent, { backgroundColor: `${theme.primary}33` }]} />
-                <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
-                  <MaterialIcons name={item.icon} size={28} color={theme.text} />
-                </View>
-                <View style={styles.cardBody}>
-                  <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
-                  <View style={styles.metricTagWrap}>
-                    {getMetricLabels(item).map((label) => (
-                      <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
-                        <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
-                      </View>
-                    ))}
+            {availableItems.length === 0 ? (
+              <View style={[styles.emptyBox, { backgroundColor: surfaceLowest, borderColor: outline }]}>
+                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                  暂无可添加项目。点右上角「添加项目」创建新卡片。
+                </Text>
+              </View>
+            ) : (
+              availableItems.map((item) => (
+                <Pressable
+                  key={item.key}
+                  onLongPress={() => onLongPressDelete(item)}
+                  delayLongPress={280}
+                  style={[styles.cardRow, styles.availableRow, { backgroundColor: surfaceLowest, borderColor: outline }]}
+                >
+                  <View style={[styles.availableAccent, { backgroundColor: `${theme.primary}33` }]} />
+                  <View style={[styles.iconWrap, { backgroundColor: surfaceHigh }]}>
+                    <MaterialIcons name={item.icon} size={28} color={theme.text} />
                   </View>
-                </View>
-                <Pressable onPress={() => onAdd(item)} style={({ pressed }) => [styles.addBtn, { backgroundColor: `${theme.primary}14` }, pressed && { opacity: 0.8 }]}>
-                  <MaterialIcons name="add" size={22} color={theme.primary} />
+                  <View style={styles.cardBody}>
+                    <Text style={[styles.cardTitle, { color: theme.text }]}>{item.label}</Text>
+                    <View style={styles.metricTagWrap}>
+                      {getMetricLabels(item).map((label) => (
+                        <View key={label} style={[styles.metricTag, { backgroundColor: `${theme.primary}14` }]}>
+                          <Text style={[styles.metricTagText, { color: theme.primary }]}>{label}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                  <Pressable onPress={() => onAdd(item)} style={({ pressed }) => [styles.addBtn, { backgroundColor: `${theme.primary}14` }, pressed && { opacity: 0.8 }]}>
+                    <MaterialIcons name="add" size={22} color={theme.primary} />
+                  </Pressable>
                 </Pressable>
-              </Pressable>
-            ))}
+              ))
+            )}
           </View>
         </View>
       </ScrollView>
@@ -295,6 +298,19 @@ const styles = StyleSheet.create({
   addProjectBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   addProjectText: { fontSize: 13, fontWeight: '800' },
   cardList: { gap: 12 },
+  emptyBox: {
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 13,
+    fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
   cardRow: {
     flexDirection: 'row',
     alignItems: 'center',

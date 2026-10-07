@@ -61,15 +61,14 @@ import {
     resolvePeriodBudgetSurplus,
     type MonthBudgetSetting,
 } from '@/lib/finance-monthly-budget';
+import { loadFinanceSavingsGoal } from '@/lib/finance-savings-goal';
 import {
-    loadFinanceSavingsGoal,
-    financeSavingsGoalParseIsoDate,
-} from '@/lib/finance-savings-goal';
-import {
+    collectPaidScheduledExpenseSlots,
     loadScheduledFinanceExpenses,
     sumScheduledExpensesInRange,
     type ScheduledFinanceExpense,
 } from '@/lib/finance-scheduled-expense';
+import { computeScheduledWithholdingRemaining } from '@/lib/finance-scheduled-withholding';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
 import {
     consumeFinanceSheetLaunchIntent,
@@ -1406,19 +1405,40 @@ export default function FinanceScreen() {
     [budgetPeriodTransactions]
   );
 
-  /** 本预算周期定时支出预扣合计（接替原「每月固定支出」）。 */
+  /** 本预算周期定时支出预扣合计（整周期，用于预算总额扣减；与 exclude_from_budget 配套）。 */
   const scheduledBudgetDeduction = React.useMemo(
     () => sumScheduledExpensesInRange(scheduledExpenses, budgetPeriodStart, budgetPeriodEndExclusive),
     [scheduledExpenses, budgetPeriodStart, budgetPeriodEndExclusive],
   );
 
-  /** 到预期存款目标日（含）仍预计发生的定时支出，抬高每日需存。 */
-  const scheduledDrainUntilSavingsTarget = React.useMemo(() => {
-    if (!savingsGoalTargetDate) return 0;
-    const target = financeSavingsGoalParseIsoDate(savingsGoalTargetDate);
-    const endExclusive = new Date(target.getFullYear(), target.getMonth(), target.getDate() + 1);
-    return sumScheduledExpensesInRange(scheduledExpenses, today, endExclusive);
-  }, [scheduledExpenses, savingsGoalTargetDate, today]);
+  const paidScheduledExpenseSlots = React.useMemo(
+    () => collectPaidScheduledExpenseSlots(financeTransactions),
+    [financeTransactions],
+  );
+
+  /**
+   * 定时预扣展示 / 预期存款抬高：共用同一口径（见 computeScheduledWithholdingRemaining）。
+   * 预算总额仍用整周期 `scheduledBudgetDeduction`。
+   */
+  const scheduledWithholdingRemaining = React.useMemo(
+    () =>
+      computeScheduledWithholdingRemaining({
+        items: scheduledExpenses,
+        today,
+        budgetPeriodEndExclusive,
+        savingsGoalTargetDate,
+        now: new Date(),
+        paidSlots: paidScheduledExpenseSlots,
+      }),
+    [
+      scheduledExpenses,
+      today,
+      budgetPeriodEndExclusive,
+      savingsGoalTargetDate,
+      paidScheduledExpenseSlots,
+      financeTransactions,
+    ],
+  );
 
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
@@ -2328,6 +2348,8 @@ export default function FinanceScreen() {
   useFocusEffect(
     React.useCallback(() => {
       scheduleRunScheduledFinanceExpenses('finance-tab-focus');
+      // 从「定时支出」返回时重读，避免预扣栏仍用旧列表
+      void loadScheduledFinanceExpenses().then(setScheduledExpenses);
 
       let cancelled = false;
       void (async () => {
@@ -3226,8 +3248,11 @@ export default function FinanceScreen() {
                     secondary={secondary}
                     outlineVariant={outlineVariant}
                     tertiary={tertiary}
-                    scheduledDrainUntilTarget={scheduledDrainUntilSavingsTarget}
-                    scheduledBudgetDeduction={scheduledBudgetDeduction}
+                    scheduledDrainUntilTarget={scheduledWithholdingRemaining}
+                    scheduledBudgetDeduction={scheduledWithholdingRemaining}
+                    logicalTodayYmd={calendarTodayYmd}
+                    dayBoundaryHour={financeDayBoundary.hour}
+                    dayBoundaryMinute={financeDayBoundary.minute}
                     onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
                   />
 

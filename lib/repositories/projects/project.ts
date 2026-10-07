@@ -61,6 +61,19 @@ export async function getProjectById(id: string) {
   return row ?? null;
 }
 
+/** 按 id 批量读项目（去重）；用于日程提醒等避免 N+1 */
+export async function getProjectsByIds(ids: string[]): Promise<ProjectRow[]> {
+  const unique = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const db = await getDatabase();
+  const placeholders = unique.map(() => '?').join(',');
+  const rows = await db.getAllAsync<ProjectRow>(
+    `SELECT * FROM projects WHERE id IN (${placeholders}) AND sync_status != 'pending_delete'`,
+    unique,
+  );
+  return rows ?? [];
+}
+
 /** 项目列表：仅读本地 SQLite（后端拉取逻辑待重写） */
 export async function getProjects() {
   const rows = await readLocalProjectsVisible();

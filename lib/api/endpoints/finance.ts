@@ -338,4 +338,45 @@ export async function apiGetFinanceStats(params: {
   });
 }
 
+/** GET /api/app/pages/finance/predicted-savings — 预测存款 */
+export type FinancePredictedSavingsPayload = {
+  targetDate: string;
+  daysLeft: number;
+  overdue?: boolean;
+  lookbackDays: number;
+  lookbackStart: string;
+  lookbackEnd: string;
+  lookbackIncome: number;
+  lookbackExpense: number;
+  /** 纯利润 = 收入 − 支出 */
+  lookbackNetProfit: number;
+  avgDailyProfit: number;
+  /** 日均纯利润 × 到目标日天数 */
+  predictedDeposit: number;
+  currentNetWorth: number;
+  predictedNetWorth: number;
+  meta?: FinancePageMeta & { logicalToday?: string };
+};
+
+export async function apiGetFinancePredictedSavings(params: {
+  targetDate: string;
+  logicalToday?: string;
+  lookbackDays?: number;
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  signal?: AbortSignal;
+}): Promise<FinancePredictedSavingsPayload> {
+  const qs = buildQuery({
+    targetDate: params.targetDate,
+    logicalToday: params.logicalToday,
+    lookbackDays: params.lookbackDays,
+    dayBoundaryHour: params.dayBoundaryHour,
+    dayBoundaryMinute: params.dayBoundaryMinute,
+  });
+  return apiRequest<FinancePredictedSavingsPayload>(`/api/app/pages/finance/predicted-savings${qs}`, {
+    method: 'GET',
+    signal: params.signal,
+  });
+}
+
 // ---------------------------------------------------------------------------

@@ -1013,7 +1013,7 @@ export default function HabitDetailScreen() {
           {focusYmd === logicalTodayYmd && !buildSucceeded ? (
             <Text style={styles.makeUpSub}>
               {habitKind === 'break'
-                ? '今日须在任务页确认戒除状态；也可在下方撤销一次。'
+                ? '今日在任务页确认戒除或记录破戒；再次点击继续记破戒。撤销破戒请点下方「今日撤销一次」。'
                 : '今日可在下方撤销一次；任务页也可点击图标角标数字（或完成勾）撤销。'}
             </Text>
           ) : null}

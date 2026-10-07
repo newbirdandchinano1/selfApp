@@ -3,7 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setLastApiIncrementalSyncAtIso } from '@/lib/api-backup-meta';
 import { isApiGenericWriteForbidden } from '@/lib/api-allowed-tables';
 import { ApiRequestError, ensureApiLoggedIn } from '@/lib/api-client';
-import { isSyncOccConflictApiError } from '@/lib/sync-write-meta';
+import {
+  isNonRetryableDomainPushReject,
+  isSyncOccConflictApiError,
+} from '@/lib/sync-write-meta';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
 import {
   ApiRowUploadSkippedError,
@@ -386,6 +389,73 @@ function isPayloadTooLargeUploadError(err: unknown): boolean {
   return err instanceof ApiRequestError && err.httpStatus === 413;
 }
 
+/**
+ * 域校验拒绝后：优先用通用 GET 拉服务端行覆盖本地；失败或不存在则删除本地 pending，
+ * 避免同一非法写无限重试。读路径仍允许 /api/app/data（仅写禁）。
+ */
+async function rebaseOrDiscardAfterDomainReject(
+  table: string,
+  pkCols: string[],
+  row: Record<string, unknown>,
+): Promise<'rebased' | 'discarded'> {
+  const pk = rowPrimaryKeyValue(row, pkCols);
+  const pkCol = pkCols[0] ?? 'id';
+  if (!pk) return 'discarded';
+
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    try {
+      const { apiRequest } = await import('@/lib/api/http');
+      const serverRow = await apiRequest<Record<string, unknown>>(
+        `/api/app/data/${encodeURIComponent(table)}/${encodeURIComponent(pk)}`,
+        { method: 'GET', skipGlobalLoading: true, perAttemptTimeoutMs: 8_000 },
+      );
+      if (serverRow && typeof serverRow === 'object') {
+        const { applyOneEvent } = await import('@/lib/sync-apply');
+        const rev =
+          Number(
+            (serverRow as { server_rev?: unknown; serverRev?: unknown }).server_rev ??
+              (serverRow as { serverRev?: unknown }).serverRev ??
+              0,
+          ) || 0;
+        await applyOneEvent(
+          table,
+          pk,
+          {
+            id: 0,
+            table,
+            pk,
+            op: 'upsert',
+            serverRev: rev,
+            mutationId: null,
+            row: serverRow,
+          },
+          'APPLY_SERVER',
+        );
+        return 'rebased';
+      }
+    } catch (fetchErr) {
+      if (__DEV__) {
+        const notFound =
+          fetchErr instanceof ApiRequestError &&
+          (fetchErr.httpStatus === 404 || /记录不存在|不存在/.test(fetchErr.message));
+        if (!notFound) {
+          console.warn('[api incremental] 域拒绝后拉服务端失败，丢弃本地 pending', table, pk, fetchErr);
+        }
+      }
+    }
+
+    const db = await getDatabase();
+    if (db) {
+      await db.runAsync(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(pkCol)} = ?`, [pk]);
+    }
+    invalidateInflightApiTableFetch(table);
+    return 'discarded';
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+}
+
 async function persistSlimmedExtraData(
   table: string,
   pkCol: string,
@@ -733,6 +803,23 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
               if (__DEV__) console.log(`[api incremental] ${table} ${action} (slim-retry)`, pkNow);
               continue;
             } catch (retryErr) {
+              if (isNonRetryableDomainPushReject(retryErr)) {
+                const pkNow2 = rowPrimaryKeyValue(uploadRow, pkCols);
+                const outcome = await rebaseOrDiscardAfterDomainReject(table, pkCols, uploadRow);
+                leftoverReasons.push(
+                  `${table}${pkNow2 ? `:${pkNow2}` : ''}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+                );
+                if (__DEV__) {
+                  console.warn(
+                    '[api incremental] 域校验拒绝已隔离',
+                    table,
+                    pkNow2,
+                    outcome,
+                    retryErr instanceof Error ? retryErr.message : retryErr,
+                  );
+                }
+                continue;
+              }
               leftoverReasons.push(
                 `${table}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
               );
@@ -757,6 +844,24 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
           ) {
             if (__DEV__) console.warn('[api incremental] 通用写已禁用，跳过', table, e.message);
             uploadedRows.push(uploadRow);
+            continue;
+          }
+          // 域校验 400（余额符号等）：单行隔离 + 以服务端为准 rebase/丢弃，禁止无限退避重试
+          if (isNonRetryableDomainPushReject(e)) {
+            const pkNow = rowPrimaryKeyValue(uploadRow, pkCols);
+            const outcome = await rebaseOrDiscardAfterDomainReject(table, pkCols, uploadRow);
+            leftoverReasons.push(
+              `${table}${pkNow ? `:${pkNow}` : ''}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+            if (__DEV__) {
+              console.warn(
+                '[api incremental] 域校验拒绝已隔离',
+                table,
+                pkNow,
+                outcome,
+                e instanceof Error ? e.message : e,
+              );
+            }
             continue;
           }
           // OCC：单行隔离，不打断同批其它 pending（1-A 任务冲刷不得被习惯 409 拖死）

@@ -11,6 +11,8 @@ export const AppSettingKey = {
   tasksMainListView: '@tasks_main_list_view_v1',
   quickAddSelected: '@quick_add_cards_v1',
   quickAddCustomItems: '@quick_add_custom_items_v1',
+  /** 用户主动删除的内置快捷卡片 key 列表 */
+  quickAddHiddenBuiltIn: '@quick_add_hidden_builtin_v1',
   wishCustomCategories: '@wish_custom_categories_v1',
   wishDefaultCategoryPriorities: '@wish_default_category_priorities_v1',
   wishDefaultCategoryNames: '@wish_default_category_names_v1',

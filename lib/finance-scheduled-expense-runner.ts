@@ -2,23 +2,23 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   addDaysToYmd,
   buildScheduledExpenseSlotKey,
+  collectPaidScheduledExpenseSlots,
   compareYmd,
-  isLegacyScheduledExpenseSlotKey,
+  isScheduledExpenseSlotPaid,
   isScheduledFinanceExpenseActive,
   isScheduledFinanceExpenseDueOnDay,
-  legacyScheduledExpenseSlotKey,
   loadScheduledFinanceExpenses,
+  registerScheduledExpenseSlotKeys,
   scheduledExpenseHappenedAtIso,
   type ScheduledFinanceExpense,
   ymdFromIso,
 } from '@/lib/finance-scheduled-expense';
+import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import {
   budgetExtraPatchForTransaction,
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_AUTO,
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_ID,
   FINANCE_TXN_EXTRA_SCHEDULED_EXPENSE_SLOT,
-  getScheduledExpenseIdFromTxnExtra,
-  getScheduledExpenseSlotFromTxnExtra,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import {
   createFinanceTransaction,
@@ -26,56 +26,12 @@ import {
   getFinanceAccountsWithBalance,
   validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
-import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 
 const BACKFILL_DAYS = 14;
 
 let runnerChain: Promise<void> = Promise.resolve();
-
-function registerExistingScheduledSlot(slots: Set<string>, slot: string, expenseId: string | null): void {
-  slots.add(slot);
-  if (isLegacyScheduledExpenseSlotKey(slot)) {
-    if (expenseId) {
-      const [ymd, slotIndexRaw] = slot.split(':');
-      const slotIndex = Number.parseInt(slotIndexRaw ?? '', 10);
-      if (ymd && Number.isFinite(slotIndex)) {
-        slots.add(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex));
-      }
-    }
-    return;
-  }
-  const parts = slot.split(':');
-  if (parts.length >= 3) {
-    const slotIndex = Number.parseInt(parts[parts.length - 1] ?? '', 10);
-    const ymd = parts[parts.length - 2];
-    if (ymd && Number.isFinite(slotIndex)) {
-      slots.add(legacyScheduledExpenseSlotKey(ymd, slotIndex));
-    }
-  }
-}
-
-function buildExistingScheduledSlots(transactions: FinanceTransactionRow[]): Set<string> {
-  const slots = new Set<string>();
-  for (const txn of transactions) {
-    const slot = getScheduledExpenseSlotFromTxnExtra(txn.extra_data);
-    if (!slot) continue;
-    registerExistingScheduledSlot(slots, slot, getScheduledExpenseIdFromTxnExtra(txn.extra_data));
-  }
-  return slots;
-}
-
-function isScheduledSlotTaken(
-  existingSlots: Set<string>,
-  expenseId: string,
-  ymd: string,
-  slotIndex: number,
-): boolean {
-  return (
-    existingSlots.has(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex)) ||
-    existingSlots.has(legacyScheduledExpenseSlotKey(ymd, slotIndex))
-  );
-}
 
 function resolveCatchUpStartYmd(item: ScheduledFinanceExpense, todayYmd: string): string {
   const createdYmd = ymdFromIso(item.createdAt);
@@ -86,7 +42,9 @@ function resolveCatchUpStartYmd(item: ScheduledFinanceExpense, todayYmd: string)
 
 function isScheduledTimeReached(ymd: string, hour: number, minute: number, now: Date): boolean {
   const happenedAt = scheduledExpenseHappenedAtIso(ymd, hour, minute, 0);
-  return now.getTime() >= new Date(happenedAt).getTime();
+  const happenedMs = parseStoredDatetime(happenedAt).getTime();
+  if (!Number.isFinite(happenedMs)) return true;
+  return now.getTime() >= happenedMs;
 }
 
 async function createScheduledExpenseTransaction(input: {
@@ -158,7 +116,7 @@ export async function runScheduledFinanceExpenses(opts?: {
 
   const { getFinanceTransactions } = await import('@/lib/repositories/finance/finance');
   const transactions = await getFinanceTransactions();
-  const existingSlots = buildExistingScheduledSlots(transactions);
+  const existingSlots = collectPaidScheduledExpenseSlots(transactions);
   const accountById = new Map(accounts.map((a) => [a.id, a]));
 
   let createdCount = 0;
@@ -180,10 +138,10 @@ export async function runScheduledFinanceExpenses(opts?: {
         const isToday = cursor === todayYmd;
         if (!isToday || isScheduledTimeReached(cursor, item.hour, item.minute, now)) {
           for (let slot = 0; slot < item.timesPerDay; slot += 1) {
-            if (isScheduledSlotTaken(existingSlots, item.id, cursor, slot)) continue;
+            if (isScheduledExpenseSlotPaid(existingSlots, item.id, cursor, slot)) continue;
             const ok = await createScheduledExpenseTransaction({ item, account, ymd: cursor, slotIndex: slot });
             if (ok) {
-              registerExistingScheduledSlot(
+              registerScheduledExpenseSlotKeys(
                 existingSlots,
                 buildScheduledExpenseSlotKey(item.id, cursor, slot),
                 item.id,

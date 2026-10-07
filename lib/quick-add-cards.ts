@@ -1,4 +1,5 @@
 import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
+import { notifyLocalDataChanged } from '@/lib/sync-pull';
 
 export type QuickAddVolumeUnit = 'ml' | 'g' | 'kcal';
 export type QuickAddMetricType = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
@@ -18,7 +19,17 @@ export type QuickAddCardItem = {
 };
 
 export const ALL_QUICK_ADD_ITEMS: QuickAddCardItem[] = [
-  { key: 'water', label: '水', displayAmount: 250, displayUnit: 'ml', hydrationMl: 250, icon: 'local-drink' },
+  {
+    key: 'water',
+    label: '水',
+    displayAmount: 250,
+    displayUnit: 'ml',
+    hydrationMl: 250,
+    metricType: 'hydration',
+    metricTypes: ['hydration'],
+    metricAmounts: { hydration: 250 },
+    icon: 'local-drink',
+  },
 ];
 
 const DEFAULT_HOME_KEYS = ['water'];
@@ -37,18 +48,22 @@ function normalizeKeys(keys: string[], itemMap: Map<string, QuickAddCardItem>): 
   return uniqueValidKeys;
 }
 
+function defaultKeysForCatalog(itemMap: Map<string, QuickAddCardItem>): string[] {
+  return normalizeKeys(DEFAULT_HOME_KEYS, itemMap);
+}
+
+/** 未写入过设置时用默认；显式空数组 `[]` 表示用户清空，允许空栏。 */
 function parseStoredKeys(raw: string | null, itemMap: Map<string, QuickAddCardItem>): string[] {
-  if (!raw) return DEFAULT_HOME_KEYS;
+  if (raw == null) return defaultKeysForCatalog(itemMap);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return DEFAULT_HOME_KEYS;
+    return defaultKeysForCatalog(itemMap);
   }
-  if (!Array.isArray(parsed)) return DEFAULT_HOME_KEYS;
+  if (!Array.isArray(parsed)) return defaultKeysForCatalog(itemMap);
   const keys = parsed.filter((v): v is string => typeof v === 'string');
-  const normalized = normalizeKeys(keys, itemMap);
-  return normalized.length > 0 ? normalized : DEFAULT_HOME_KEYS;
+  return normalizeKeys(keys, itemMap);
 }
 
 function keysToItems(keys: string[], itemMap: Map<string, QuickAddCardItem>): QuickAddCardItem[] {
@@ -112,6 +127,31 @@ function sanitizeCustomItem(raw: unknown): QuickAddCardItem | null {
   };
 }
 
+async function loadHiddenBuiltInKeys(): Promise<string[]> {
+  const stored = await getAppSettingRaw(AppSettingKey.quickAddHiddenBuiltIn);
+  if (!stored) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const builtin = new Set(ALL_QUICK_ADD_ITEMS.map((item) => item.key));
+  const keys: string[] = [];
+  for (const value of parsed) {
+    if (typeof value !== 'string') continue;
+    const key = value.trim();
+    if (!key || !builtin.has(key) || keys.includes(key)) continue;
+    keys.push(key);
+  }
+  return keys;
+}
+
+async function saveHiddenBuiltInKeys(keys: string[]): Promise<void> {
+  await setAppSetting(AppSettingKey.quickAddHiddenBuiltIn, keys);
+}
+
 export async function loadCustomQuickAddItems(): Promise<QuickAddCardItem[]> {
   const stored = await getAppSettingRaw(AppSettingKey.quickAddCustomItems);
   if (!stored) return [];
@@ -135,9 +175,15 @@ async function saveCustomQuickAddItems(items: QuickAddCardItem[]): Promise<void>
   await setAppSetting(AppSettingKey.quickAddCustomItems, items);
 }
 
+function notifyQuickAddUiChanged(): void {
+  notifyLocalDataChanged(['app_settings']);
+}
+
 export async function loadAllQuickAddItems(): Promise<QuickAddCardItem[]> {
-  const custom = await loadCustomQuickAddItems();
-  return [...ALL_QUICK_ADD_ITEMS, ...custom];
+  const [custom, hidden] = await Promise.all([loadCustomQuickAddItems(), loadHiddenBuiltInKeys()]);
+  const hiddenSet = new Set(hidden);
+  const builtIn = ALL_QUICK_ADD_ITEMS.filter((item) => !hiddenSet.has(item.key));
+  return [...builtIn, ...custom];
 }
 
 export function formatQuickAddAmount(item: QuickAddCardItem): string {
@@ -164,6 +210,7 @@ export async function saveSelectedQuickAddKeys(keys: string[]): Promise<void> {
   const itemMap = createQuickAddItemMap(allItems);
   const normalized = normalizeKeys(keys, itemMap);
   await setAppSetting(AppSettingKey.quickAddSelected, normalized);
+  notifyQuickAddUiChanged();
 }
 
 export async function addCustomQuickAddItem(input: {
@@ -227,6 +274,7 @@ export async function addCustomQuickAddItem(input: {
   };
   const customItems = await loadCustomQuickAddItems();
   await saveCustomQuickAddItems([...customItems, item]);
+  notifyQuickAddUiChanged();
   return item;
 }
 
@@ -253,15 +301,36 @@ export function isBuiltInQuickAddItem(key: string): boolean {
   return ALL_QUICK_ADD_ITEMS.some((item) => item.key === key);
 }
 
-export async function deleteCustomQuickAddItem(key: string): Promise<void> {
-  const customItems = await loadCustomQuickAddItems();
-  const nextCustomItems = customItems.filter((item) => item.key !== key);
-  if (nextCustomItems.length === customItems.length) return;
-  await saveCustomQuickAddItems(nextCustomItems);
-
-  const allItems = [...ALL_QUICK_ADD_ITEMS, ...nextCustomItems];
+async function removeKeyFromSelected(key: string): Promise<void> {
+  const allItems = await loadAllQuickAddItems();
   const itemMap = createQuickAddItemMap(allItems);
   const stored = await getAppSettingRaw(AppSettingKey.quickAddSelected);
-  const normalized = normalizeKeys(parseStoredKeys(stored, itemMap), itemMap);
-  await setAppSetting(AppSettingKey.quickAddSelected, normalized);
+  const nextKeys = parseStoredKeys(stored, itemMap).filter((k) => k !== key);
+  await setAppSetting(AppSettingKey.quickAddSelected, normalizeKeys(nextKeys, itemMap));
+}
+
+/** 删除快捷卡片（自定义从目录移除；内置记入隐藏列表）。后端无额外限制。 */
+export async function deleteQuickAddItem(key: string): Promise<void> {
+  const trimmed = key.trim();
+  if (!trimmed) return;
+
+  if (isBuiltInQuickAddItem(trimmed)) {
+    const hidden = await loadHiddenBuiltInKeys();
+    if (!hidden.includes(trimmed)) {
+      await saveHiddenBuiltInKeys([...hidden, trimmed]);
+    }
+  } else {
+    const customItems = await loadCustomQuickAddItems();
+    const nextCustomItems = customItems.filter((item) => item.key !== trimmed);
+    if (nextCustomItems.length === customItems.length) return;
+    await saveCustomQuickAddItems(nextCustomItems);
+  }
+
+  await removeKeyFromSelected(trimmed);
+  notifyQuickAddUiChanged();
+}
+
+/** @deprecated 使用 deleteQuickAddItem；保留别名避免旧引用报错 */
+export async function deleteCustomQuickAddItem(key: string): Promise<void> {
+  await deleteQuickAddItem(key);
 }

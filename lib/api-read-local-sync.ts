@@ -241,7 +241,19 @@ async function upsertRowsToLocalTable(
           `SELECT * FROM ${safe} WHERE ${quoteIdent(pkCol)} = ? LIMIT 1`,
           [pk],
         );
-        if (false) { /* server authoritative: cache overwritten */ } else if (
+        // 本地未推送变更不可被 REST 读路径盖掉：否则搁置/完成等会「有时生效有时被打回」，
+        // 且 pending 被写成 synced 后既丢本地态，也永远不会再上传。
+        // UI 侧仍靠 overlayServerRowsPassthrough 把 pending 叠到 API 列表上。
+        const existingSync = String(existing?.sync_status ?? 'synced');
+        if (
+          existing &&
+          (existingSync === 'pending_create' ||
+            existingSync === 'pending_update' ||
+            existingSync === 'pending_delete')
+        ) {
+          continue;
+        }
+        if (
           existing &&
           existing.sync_status === 'synced' &&
           (table === 'tasks' || table === 'projects')
@@ -249,13 +261,17 @@ async function upsertRowsToLocalTable(
           // 已同步行：过期的 tasks List 会把刚 frog-assign 的 extra_data 打回未指派
           const localUpdated = String(existing.updated_at ?? '').trim();
           const apiUpdated = String(obj.updated_at ?? '').trim();
-          /* server authoritative: always overwrite */
+          if (localUpdated && !isApiUpdatedAtNewer(apiUpdated, localUpdated)) {
+            continue;
+          }
         }
         // habit_check_ins：次数只增不减地合并，避免快速连点后旧列表/旧快照把 10 盖回 1
         if (table === 'habit_check_ins' && existing && existing.sync_status !== 'pending_delete') {
           const localCount = Math.max(0, Math.floor(Number(existing.count) || 0));
           const apiCount = Math.max(0, Math.floor(Number(obj.count) || 0));
-          /* server authoritative: always overwrite */
+          if (localCount > apiCount) {
+            obj.count = localCount;
+          }
         }
         if (existing) {
           if (table === 'finance_accounts' && existing) {

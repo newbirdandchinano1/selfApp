@@ -1,4 +1,5 @@
 import { Radius, Spacing } from '@/constants/design-tokens';
+import { apiGetFinancePredictedSavings } from '@/lib/api/endpoints/finance';
 import {
   clearFinanceSavingsGoal,
   computeFinanceSavingsGoalProgress,
@@ -74,8 +75,12 @@ export type FinanceSavingsGoalBlockProps = {
   tertiary: string;
   /** 到目标日预计定时支出合计，抬高每日需存 */
   scheduledDrainUntilTarget?: number;
-  /** 本周期定时支出预扣合计（展示用） */
+  /** 本周期定时支出预扣合计（展示用：仅未支付且未过点） */
   scheduledBudgetDeduction?: number;
+  /** 逻辑今日 YYYY-MM-DD，供预测存款接口 */
+  logicalTodayYmd?: string;
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
   onGoalChange?: (goal: FinanceSavingsGoal | null) => void;
 };
 
@@ -98,6 +103,9 @@ export function FinanceSavingsGoalBlock({
   tertiary,
   scheduledDrainUntilTarget = 0,
   scheduledBudgetDeduction = 0,
+  logicalTodayYmd,
+  dayBoundaryHour,
+  dayBoundaryMinute,
   onGoalChange,
 }: FinanceSavingsGoalBlockProps) {
   const insets = useSafeAreaInsets();
@@ -109,6 +117,8 @@ export function FinanceSavingsGoalBlock({
   const [showDatePicker, setShowDatePicker] = React.useState(false);
   const [calendarMonth, setCalendarMonth] = React.useState(() => startOfMonth(defaultFinanceSavingsGoalDate(today)));
   const [saving, setSaving] = React.useState(false);
+  const [predictedDeposit, setPredictedDeposit] = React.useState<number | null>(null);
+  const [predictedLoading, setPredictedLoading] = React.useState(false);
 
   const reloadGoal = React.useCallback(async () => {
     const next = await loadFinanceSavingsGoal();
@@ -127,6 +137,36 @@ export function FinanceSavingsGoalBlock({
         : null,
     [goal, currentNetWorth, today, scheduledDrainUntilTarget],
   );
+
+  React.useEffect(() => {
+    if (!goal?.targetDate) {
+      setPredictedDeposit(null);
+      setPredictedLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    setPredictedLoading(true);
+    void apiGetFinancePredictedSavings({
+      targetDate: goal.targetDate,
+      logicalToday: logicalTodayYmd,
+      dayBoundaryHour,
+      dayBoundaryMinute,
+      signal: ac.signal,
+    })
+      .then((payload) => {
+        if (ac.signal.aborted) return;
+        const value = Number(payload.predictedDeposit);
+        setPredictedDeposit(Number.isFinite(value) ? value : null);
+      })
+      .catch(() => {
+        if (ac.signal.aborted) return;
+        setPredictedDeposit(null);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setPredictedLoading(false);
+      });
+    return () => ac.abort();
+  }, [goal?.targetDate, logicalTodayYmd, dayBoundaryHour, dayBoundaryMinute]);
 
   const openSheet = React.useCallback(() => {
     const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
@@ -293,7 +333,11 @@ export function FinanceSavingsGoalBlock({
               : hiddenAmountText}
           </Text>
           <Text style={[styles.mergedHint, { color: subtle }]} numberOfLines={1}>
-            {hasScheduledHint ? '已从本周期预算扣除' : '在「定时支出」中设置'}
+            {hasScheduledHint
+              ? scheduledBudgetDeduction > 0
+                ? '未支付且未过点'
+                : '已全部发生或支付'
+              : '在「定时支出」中设置'}
           </Text>
         </View>
 
@@ -368,6 +412,41 @@ export function FinanceSavingsGoalBlock({
           )}
         </Pressable>
       </View>
+
+      {goal ? (
+        <View
+          style={[
+            styles.predictedRow,
+            {
+              backgroundColor: rowBg,
+              borderColor: outlineVariant,
+            },
+          ]}>
+          <View style={styles.predictedLabelCol}>
+            <Text style={[styles.mergedKicker, { color: subtle }]}>预测存款</Text>
+            <Text style={[styles.mergedHint, { color: subtle }]} numberOfLines={1}>
+              近30日日均盈余 × 剩余天数
+            </Text>
+          </View>
+          <Text
+            style={[
+              styles.mergedValue,
+              {
+                color:
+                  predictedDeposit != null && predictedDeposit < 0 ? dangerColor : text,
+              },
+            ]}
+            numberOfLines={1}>
+            {!showAmounts
+              ? hiddenAmountText
+              : predictedLoading
+                ? '…'
+                : predictedDeposit != null
+                  ? formatCurrency(predictedDeposit)
+                  : '—'}
+          </Text>
+        </View>
+      ) : null}
 
       <Modal visible={sheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
         <KeyboardAvoidingView
@@ -589,6 +668,22 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
+  },
+  predictedRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  predictedLabelCol: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
   },
   mergedBudgetCol: {
     flex: 1,

@@ -4,13 +4,14 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
-import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
+import { syncScheduleSlotRemindersForHabit } from '@/lib/schedule-slot-reminder-notifications';
 import {
   describeHabitScheduleSlotMapping,
   isHabitSchedulePlaceableCycle,
 } from '@/lib/schedule/habit-virtual-placement';
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
+import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
@@ -915,32 +916,50 @@ export default function AddHabitScreen() {
       return;
     }
 
-    try {
-      const { permissionDenied } = await syncHabitReminderNotification({
-        habitId: savedHabitId,
-        enabled: reminderEnabled,
-        hour: reminderTime.getHours(),
-        minute: reminderTime.getMinutes(),
-        title: name,
-      });
-      try {
-        await syncScheduleSlotReminderNotifications();
-      } catch (e) {
-        console.warn('同步日程格提醒失败', e);
-      }
-      if (reminderEnabled && permissionDenied) {
-        Alert.alert(
-          '提示',
-          '已保存习惯，但系统未授予通知权限，日程提醒将无法送达。可在系统设置中为本应用开启通知。'
-        );
-      }
-    } catch (reminderErr) {
-      console.warn('习惯提醒同步失败', reminderErr);
-    }
-
     notifyAncestorsDataChanged();
     setSaving(false);
     router.back();
+
+    // 本地已落库并返回；提醒重排走后台，避免「保存中…」被 OS 通知 API / 全量重登记拖死
+    const reminderHabitId = savedHabitId;
+    const reminderTitle = name;
+    const reminderOn = reminderEnabled;
+    const reminderHour = reminderTime.getHours();
+    const reminderMinute = reminderTime.getMinutes();
+    const reminderExtraData = extraData;
+    void (async () => {
+      try {
+        // 保存页已有 extraData；打卡图读一次后复用，避免单习惯提醒与入格提醒各查一遍
+        const checkIns = await getCheckInsMapByHabitId(reminderHabitId);
+        const { permissionDenied: habitPermDenied } = await syncHabitReminderNotification({
+          habitId: reminderHabitId,
+          enabled: reminderOn,
+          hour: reminderHour,
+          minute: reminderMinute,
+          title: reminderTitle,
+          extraData: reminderExtraData,
+          checkIns,
+        });
+        let schedulePermDenied = false;
+        try {
+          // 只重排当前习惯的虚拟入格提醒，避免全量推倒任务/其它习惯
+          const scheduleResult = await syncScheduleSlotRemindersForHabit(reminderHabitId, {
+            checkIns,
+          });
+          schedulePermDenied = scheduleResult.permissionDenied;
+        } catch (e) {
+          console.warn('同步日程格提醒失败', e);
+        }
+        if (reminderOn && (habitPermDenied || schedulePermDenied)) {
+          Alert.alert(
+            '提示',
+            '已保存习惯，但系统未授予通知权限，日程提醒将无法送达。可在系统设置中为本应用开启通知。'
+          );
+        }
+      } catch (reminderErr) {
+        console.warn('习惯提醒同步失败', reminderErr);
+      }
+    })();
   }, [
     activeMonthlyFilter,
     activeTab,

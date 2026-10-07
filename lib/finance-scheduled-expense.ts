@@ -1,6 +1,6 @@
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { AppSettingKey, getAppSetting, removeAppSetting, setAppSetting } from '@/lib/app-settings-store';
-import { formatWallClockDatetimeLocal, ymdFromDatetime } from '@/lib/api-mysql-datetime';
+import { formatWallClockDatetimeLocal, parseStoredDatetime, ymdFromDatetime } from '@/lib/api-mysql-datetime';
 import { addDaysToYmd as addDaysToYmdCore, compareYmd, formatYmd } from '@/lib/date';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
@@ -507,15 +507,93 @@ export function dateToFinanceYmd(d: Date): string {
   return formatYmd(d);
 }
 
+/** 将槽位键及其新旧格式别名写入集合（与自动记账去重一致）。 */
+export function registerScheduledExpenseSlotKeys(
+  slots: Set<string>,
+  slot: string,
+  expenseId: string | null,
+): void {
+  slots.add(slot);
+  if (isLegacyScheduledExpenseSlotKey(slot)) {
+    if (expenseId) {
+      const [ymd, slotIndexRaw] = slot.split(':');
+      const slotIndex = Number.parseInt(slotIndexRaw ?? '', 10);
+      if (ymd && Number.isFinite(slotIndex)) {
+        slots.add(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex));
+      }
+    }
+    return;
+  }
+  const parts = slot.split(':');
+  if (parts.length >= 3) {
+    const slotIndex = Number.parseInt(parts[parts.length - 1] ?? '', 10);
+    const ymd = parts[parts.length - 2];
+    if (ymd && Number.isFinite(slotIndex)) {
+      slots.add(legacyScheduledExpenseSlotKey(ymd, slotIndex));
+    }
+  }
+}
+
+/** 从流水 extra_data 收集已支付的定时支出槽位。 */
+export function collectPaidScheduledExpenseSlots(
+  transactions: Array<{ extra_data?: string | null }>,
+): Set<string> {
+  const slots = new Set<string>();
+  for (const txn of transactions) {
+    const extra = txn.extra_data ?? null;
+    if (!extra) continue;
+    let slot: string | null = null;
+    let expenseId: string | null = null;
+    try {
+      const raw = JSON.parse(extra) as unknown;
+      if (!raw || typeof raw !== 'object') continue;
+      const o = raw as Record<string, unknown>;
+      const slotRaw = o.scheduled_expense_slot;
+      const idRaw = o.scheduled_expense_id;
+      slot = typeof slotRaw === 'string' && slotRaw.trim() ? slotRaw.trim() : null;
+      expenseId = typeof idRaw === 'string' && idRaw.trim() ? idRaw.trim() : null;
+    } catch {
+      continue;
+    }
+    if (!slot) continue;
+    registerScheduledExpenseSlotKeys(slots, slot, expenseId);
+  }
+  return slots;
+}
+
+export function isScheduledExpenseSlotPaid(
+  paidSlots: Set<string>,
+  expenseId: string,
+  ymd: string,
+  slotIndex: number,
+): boolean {
+  return (
+    paidSlots.has(buildScheduledExpenseSlotKey(expenseId, ymd, slotIndex)) ||
+    paidSlots.has(legacyScheduledExpenseSlotKey(ymd, slotIndex))
+  );
+}
+
+export type EstimateScheduledExpenseInRangeOpts = {
+  onlyIncludeInBudget?: boolean;
+  /**
+   * 当前时刻。传入后排除计划发生时间已过的槽位
+   * （已过点的定时支出不再计入「定时预扣」展示与预期存款抬高）。
+   */
+  now?: Date;
+  /** 已支付槽位；命中则不再计入。 */
+  paidSlots?: Set<string>;
+};
+
 /**
  * 区间 [startInclusive, endExclusive) 内，单条定时支出预计发生金额。
  * `onlyIncludeInBudget !== false` 时仅统计「计入预算预扣」的启用项。
+ * 传入 `now` / `paidSlots` 时按槽位排除已过点或已支付金额。
  */
 export function estimateScheduledExpenseAmountInRange(
   item: ScheduledFinanceExpense,
   startInclusive: Date,
   endExclusive: Date,
-  opts?: { onlyIncludeInBudget?: boolean },
+  opts?: EstimateScheduledExpenseInRangeOpts,
 ): number {
   if (!item.enabled) return 0;
   if (opts?.onlyIncludeInBudget !== false && !item.includeInBudget) return 0;
@@ -523,11 +601,37 @@ export function estimateScheduledExpenseAmountInRange(
   const endYmd = dateToFinanceYmd(endExclusive);
   if (compareYmd(startYmd, endYmd) >= 0) return 0;
 
+  const filterRemaining = opts?.now != null || opts?.paidSlots != null;
+  const now = opts?.now ?? null;
+  const nowYmd = now ? dateToFinanceYmd(now) : null;
+  const nowMs = now ? now.getTime() : null;
+  const times = Math.max(1, Math.floor(item.timesPerDay) || 1);
+
   let total = 0;
   let cursor: string | null = startYmd;
   while (cursor && compareYmd(cursor, endYmd) < 0) {
     if (isScheduledFinanceExpenseDueOnDay(item, cursor)) {
-      total += item.amount * item.timesPerDay;
+      if (!filterRemaining) {
+        total += item.amount * times;
+      } else {
+        for (let slot = 0; slot < times; slot += 1) {
+          if (opts?.paidSlots && isScheduledExpenseSlotPaid(opts.paidSlots, item.id, cursor, slot)) {
+            continue;
+          }
+          if (nowYmd != null && nowMs != null) {
+            // 过去日整段排除；今日按墙上时钟比时刻；未来日一律计入。
+            // 勿用 new Date('YYYY-MM-DD HH:mm:ss')（Hermes 常解析失败/错时区）。
+            const dayCmp = compareYmd(cursor, nowYmd);
+            if (dayCmp < 0) continue;
+            if (dayCmp === 0) {
+              const happenedAt = scheduledExpenseHappenedAtIso(cursor, item.hour, item.minute, slot);
+              const happenedMs = parseStoredDatetime(happenedAt).getTime();
+              if (Number.isFinite(happenedMs) && nowMs >= happenedMs) continue;
+            }
+          }
+          total += item.amount;
+        }
+      }
     }
     const next = addDaysToYmd(cursor, 1);
     if (!next || next === cursor) break;
@@ -541,7 +645,7 @@ export function sumScheduledExpensesInRange(
   items: ScheduledFinanceExpense[],
   startInclusive: Date,
   endExclusive: Date,
-  opts?: { onlyIncludeInBudget?: boolean },
+  opts?: EstimateScheduledExpenseInRangeOpts,
 ): number {
   return items.reduce(
     (sum, item) => sum + estimateScheduledExpenseAmountInRange(item, startInclusive, endExclusive, opts),

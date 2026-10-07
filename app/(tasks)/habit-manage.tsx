@@ -2,11 +2,13 @@ import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui/screen-hea
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { sortHabitGridSectionsByTagWeight } from '@/lib/habit-grid-sort';
 import { getHabitCheckInListStats } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import { getTagsByEntityIds } from '@/lib/repositories/tags/tag';
 import {
   isBreakHabitSucceeded,
   parseBreakHabitCycle,
@@ -125,18 +127,52 @@ export default function HabitManageScreen() {
         .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
       const allContexts = [...orderedContexts, ...legacyContexts];
 
-      const groups: HabitGroup[] = allContexts
+      const habitIds = rows.map((r) => r.id);
+      const tagsByHabitId = await getTagsByEntityIds('habit', habitIds).catch(
+        () => new Map<string, { weight?: number | null }[]>(),
+      );
+      const weightByHabitId = new Map<string, number>();
+      for (const [id, tags] of tagsByHabitId) {
+        weightByHabitId.set(
+          id,
+          tags.reduce((m, t) => Math.max(m, typeof t.weight === 'number' ? t.weight : 0), 0),
+        );
+      }
+      const contextSortOrderById = new Map<string, number>();
+      const contextIdByName = new Map<string, string>();
+      for (const r of contextRows) {
+        contextSortOrderById.set(r.id, Number(r.sort_order ?? 1000));
+        contextIdByName.set(r.name, r.id);
+      }
+
+      const rawSections = allContexts
         .filter((ctx) => (byCtx.get(ctx) ?? []).length > 0)
         .map((ctx) => ({
-          category: ctx,
+          id: contextIdByName.get(ctx) ?? ctx,
+          title: ctx,
           items: byCtx.get(ctx) ?? [],
         }));
+      const sortedSections = sortHabitGridSectionsByTagWeight(
+        rawSections,
+        weightByHabitId,
+        contextSortOrderById,
+      );
 
-      const tabs: ContextTab[] = allContexts.map((ctx) => ({
-        id: ctx,
-        name: ctx,
-        count: (byCtx.get(ctx) ?? []).length,
+      const groups: HabitGroup[] = sortedSections.map((sec) => ({
+        category: sec.title,
+        items: sec.items,
       }));
+
+      const tabs: ContextTab[] = sortedSections.map((sec) => ({
+        id: sec.title,
+        name: sec.title,
+        count: sec.items.length,
+      }));
+      // 无习惯的情境仍出现在筛选 Tab（保持可管理入口）
+      for (const ctx of allContexts) {
+        if (tabs.some((t) => t.id === ctx)) continue;
+        tabs.push({ id: ctx, name: ctx, count: 0 });
+      }
 
       setHabitData(groups);
       setContextTabs(tabs);

@@ -50,7 +50,7 @@ export function subscribeSyncDirty(listener: DirtyListener): () => void {
   };
 }
 
-/** apply ???? UI ?????? cursor????? */
+/** apply 后通知 UI 重读本地；cursor 无关 */
 export const subscribeLocalDataChanged = subscribeSyncDirty;
 
 function emitDirty(tables: string[], needFullSync = false): void {
@@ -62,6 +62,13 @@ function emitDirty(tables: string[], needFullSync = false): void {
       console.warn('[sync-pull] dirty listener error', e);
     }
   }
+}
+
+/** 本地写入后通知订阅方重读 SQLite（不触发 pull） */
+export function notifyLocalDataChanged(tables: string[]): void {
+  const cleaned = tables.map((t) => t.trim()).filter(Boolean);
+  if (cleaned.length === 0) return;
+  emitDirty(cleaned, false);
 }
 
 async function fetchChangesPage(since: number): Promise<SyncChangesPayload> {

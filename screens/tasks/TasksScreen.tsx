@@ -101,6 +101,7 @@ import {
   countTaskHabitPeriodCompletions,
   getTaskHabitTasksViewState,
   hasLocalCheckInsInTaskPeriod,
+  parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import {
   breakSlipBadgeColor,
@@ -232,6 +233,10 @@ import {
   computeMonthlyAverageMap,
   heatmapLevelFromMonthlyAverage,
 } from '@/lib/tasks-global-heatmap';
+import {
+  maxTagWeight,
+  sortHabitGridSectionsByTagWeight,
+} from '@/lib/habit-grid-sort';
 import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
 import {
   getLogicalLocalYmd,
@@ -794,11 +799,37 @@ function overlayHabitSectionsWithLocalCheckIns(
   }));
 }
 
+/** 完成任务重复周期 → 卡片徽章短标签 */
+function taskPeriodShortLabel(extraData: string | null): string {
+  const period = parseTaskRepeatPeriod(extraData);
+  if (period === '每日') return '今日';
+  if (period === '每周') return '本周';
+  if (period === '每月') return '本月';
+  return '本年';
+}
+
 /** 任务页小习惯卡片是否已达今日完成态（完成后点击为撤销） */
 function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: string): boolean {
-  if (item.kind === 'task') return item.taskShowPeriodCheck;
-  if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+  const hasSubs = Boolean(item.hasSubHabits || hasActiveSubHabits(item.extraData));
+  // 子项模式：与桌面/后端一致，须先于 task 周期判断
+  if (hasSubs) {
+    if (item.kind === 'break') {
+      return Boolean(item.displayCompleted) || Boolean(item.hasTodayRecord);
+    }
+    const total = item.subHabits?.length ?? 0;
+    if (total > 0) {
+      return (item.subHabitCompletedCount ?? 0) >= total || Boolean(item.displayCompleted);
+    }
     return Boolean(item.displayCompleted);
+  }
+  if (item.kind === 'task') {
+    const hasPeriodGoal =
+      typeof item.periodGoal === 'number' && Number.isFinite(item.periodGoal) && item.periodGoal > 0;
+    if (!hasPeriodGoal) {
+      const goal = item.dailyGoal != null && item.dailyGoal > 0 ? item.dailyGoal : 1;
+      return Math.max(0, Math.floor(item.todayCount ?? 0)) >= goal;
+    }
+    return item.taskShowPeriodCheck || Boolean(item.displayCompleted);
   }
   // 养成：未达日目标前不当作完成，避免误走「再点撤销」
   if (
@@ -2251,6 +2282,7 @@ export default function TasksScreen() {
   const projectTaskRefilledRef = React.useRef(new Set<string>());
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
   const [activatingShelvedTodoId, setActivatingShelvedTodoId] = React.useState<string | null>(null);
+  const [shelvingTodoId, setShelvingTodoId] = React.useState<string | null>(null);
   /** 长按项目/任务后，在日程表点格入格 */
   const [pendingSchedulePlace, setPendingSchedulePlace] = React.useState<SchedulePendingPlace | null>(
     null,
@@ -3822,7 +3854,7 @@ export default function TasksScreen() {
 
   const activateShelvedTodo = React.useCallback(
     async (taskId: string) => {
-      if (activatingShelvedTodoId || upgradingStandaloneTodoId) return;
+      if (activatingShelvedTodoId || shelvingTodoId || upgradingStandaloneTodoId) return;
       const current = findVisibleTask(taskId);
       if (!current || !isTaskShelvedStatus(current.status)) return;
 
@@ -3847,7 +3879,15 @@ export default function TasksScreen() {
         setActivatingShelvedTodoId(null);
       }
     },
-    [activatingShelvedTodoId, findVisibleTask, loadTasks, markPageDirty, patchVisibleTask, upgradingStandaloneTodoId]
+    [
+      activatingShelvedTodoId,
+      findVisibleTask,
+      loadTasks,
+      markPageDirty,
+      patchVisibleTask,
+      shelvingTodoId,
+      upgradingStandaloneTodoId,
+    ]
   );
 
   const confirmActivateShelvedTodo = React.useCallback(
@@ -3865,6 +3905,58 @@ export default function TasksScreen() {
       );
     },
     [activateShelvedTodo]
+  );
+
+  const shelveStandaloneTodo = React.useCallback(
+    async (taskId: string) => {
+      if (shelvingTodoId || activatingShelvedTodoId || upgradingStandaloneTodoId) return;
+      const current = findVisibleTask(taskId);
+      if (!current || isTaskShelvedStatus(current.status) || isTaskTerminalStatus(current.status)) {
+        return;
+      }
+
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      markPageDirty();
+      setShelvingTodoId(taskId);
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      patchVisibleTask(taskId, { status: 'shelved', completed_at: null });
+
+      try {
+        await updateTask(taskId, { status: 'shelved', completed_at: null });
+      } catch (err) {
+        console.warn('搁置待办失败', err);
+        Alert.alert('搁置失败', '请稍后重试。');
+        await loadTasks({ forceLocal: true });
+      } finally {
+        setShelvingTodoId(null);
+      }
+    },
+    [
+      activatingShelvedTodoId,
+      findVisibleTask,
+      loadTasks,
+      markPageDirty,
+      patchVisibleTask,
+      shelvingTodoId,
+      upgradingStandaloneTodoId,
+    ]
+  );
+
+  const confirmShelveStandaloneTodo = React.useCallback(
+    (taskId: string, titleLabel: string) => {
+      Alert.alert(
+        '搁置待办',
+        `确定将「${titleLabel}」暂时搁置吗？搁置后不能勾选完成，可随时再激活。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '搁置',
+            onPress: () => void shelveStandaloneTodo(taskId),
+          },
+        ]
+      );
+    },
+    [shelveStandaloneTodo]
   );
 
   const toggleTaskDone = React.useCallback(
@@ -4702,7 +4794,8 @@ export default function TasksScreen() {
 
   const handleHabitIncrement = React.useCallback(
     async (item: HabitGridItem) => {
-      if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
+      // 戒除：已有当日记录仍可继续记破戒并扣分；养成/任务完成后不再递增
+      if (item.kind !== 'break' && isHabitGridItemCompletedToday(item, logicalTodayYmd)) return;
       if (!consumeHabitCardPressDebounce(item.id)) return;
       if (habitCheckInLockRef.current.has(item.id)) return;
       habitCheckInLockRef.current.add(item.id);
@@ -4710,6 +4803,9 @@ export default function TasksScreen() {
       habitLoadGenerationRef.current += 1;
       markPageDirty();
       const wasTaskPeriodMet = item.kind === 'task' ? Boolean(item.taskShowPeriodCheck) : false;
+      /** 从「保持戒除」再记破戒时需扣回未破戒加分 */
+      const breakFromClean =
+        item.kind === 'break' && Boolean(item.hasTodayRecord) && item.todayCount <= 0;
       const optimistic = optimisticHabitCountDelta(item, 1);
       if (optimistic) {
         patchHabitTodayCount(item.id, optimistic.nextCount, optimistic.periodDelta, {
@@ -4743,7 +4839,7 @@ export default function TasksScreen() {
         restoreHabitGridItem(item);
         return;
       } finally {
-        // 先解锁，避免积分/刷新期间挡住「再点撤销」
+        // 先解锁，避免积分/刷新期间挡住后续点击
         habitCheckInLockRef.current.delete(item.id);
       }
       // 养成：当日目标刚达成才发奖；任务：周期目标刚达成时发整包；戒除：超每日目标后每次破戒才扣分，达成连续目标由 tryMark 发奖
@@ -4758,6 +4854,13 @@ export default function TasksScreen() {
       } else if (increased && item.kind === 'task') {
         await syncTaskHabitPeriodPointsWithToast(item, wasTaskPeriodMet, logicalTodayYmd);
       } else if (increased && item.kind === 'break') {
+        if (breakFromClean) {
+          try {
+            await applyBreakHabitReward(item.id, 'clean', 'undo', { forceUndo: true });
+          } catch (e) {
+            if (__DEV__) console.warn('[habit-break-clean-undo-on-slip]', e);
+          }
+        }
         try {
           await syncBreakHabitPenaltyPointsReward({
             habitId: item.id,
@@ -5124,10 +5227,15 @@ export default function TasksScreen() {
 
   const handleHabitIconPress = React.useCallback(
     (item: HabitGridItem) => {
-      // 已完成：再点一次撤销；带子习惯则打开清单取消勾选。长按仍可进详情
+      // 已完成：养成/任务再点撤销；戒除已破戒再点继续记破戒（撤销请到习惯详情）。带子习惯则打开清单
       if (isHabitGridItemCompletedToday(item, logicalTodayYmd)) {
         if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
           openSubHabitModal(item);
+          return;
+        }
+        if (item.kind === 'break') {
+          // 已破戒：继续记破戒；保持戒除：列表不再撤销（详情里撤销）
+          if (item.todayCount > 0) void handleHabitIncrement(item);
           return;
         }
         void handleHabitUndoOnce(item);
@@ -5207,6 +5315,20 @@ export default function TasksScreen() {
     () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
     [colors.outline],
   );
+
+  /**
+   * 情境：仅累加未完成习惯的标签权重总和；
+   * 情境内：未完成按权重降序，已完成沉底且不参与权重排序。
+   */
+  const displayHabitSections = React.useMemo(() => {
+    const weightByHabitId = new Map<string, number>();
+    for (const [id, tags] of habitTagsByHabitId) {
+      weightByHabitId.set(id, maxTagWeight(tags));
+    }
+    return sortHabitGridSectionsByTagWeight(habitSections, weightByHabitId, undefined, {
+      isCompleted: (it) => isHabitGridItemCompletedToday(it, logicalTodayYmd),
+    });
+  }, [habitSections, habitTagsByHabitId, logicalTodayYmd]);
 
   const habitsCollapseSummary = React.useMemo(() => {
     let total = 0;
@@ -5975,7 +6097,7 @@ export default function TasksScreen() {
                   </Text>
                 </ScalePressable>
               </View>
-              {habitSections.map((section) => {
+              {displayHabitSections.map((section) => {
                 const isOpen = expandedHabitSections[section.id] ?? true;
                 const visibleHabitItems = section.items.filter(
                   (it) => !isHabitHiddenByCalendarCycleOnTasks(it.extraData, habitScheduleAnchorDate)
@@ -6026,7 +6148,12 @@ export default function TasksScreen() {
                             return { item, scheduleAllowsToday, isBreak, isTask, goalMet };
                           })
                           .sort((a, b) => {
+                            // 展示层再按「今日完成」沉底（含戒除日程等与 displayCompleted 略异的情况）
                             if (a.goalMet !== b.goalMet) return a.goalMet ? 1 : -1;
+                            if (a.goalMet && b.goalMet) return 0;
+                            const wa = maxTagWeight(habitTagsByHabitId.get(a.item.id));
+                            const wb = maxTagWeight(habitTagsByHabitId.get(b.item.id));
+                            if (wa !== wb) return wb - wa;
                             return 0;
                           })
                           .map(({ item, scheduleAllowsToday, isBreak, isTask, goalMet }) => {
@@ -6049,12 +6176,30 @@ export default function TasksScreen() {
                             item.todayCount > 0 &&
                             (breakUi === 'slipping' || breakUi === 'failed');
                           const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
-                          const progressCurrent = isTask ? taskPeriodProgress : item.todayCount;
-                          const progressTotal = isTask
-                            ? item.periodGoal
-                            : item.dailyGoal != null && item.dailyGoal > 0
-                              ? item.dailyGoal
-                              : null;
+                          const hasSubs = Boolean(
+                            item.hasSubHabits || hasActiveSubHabits(item.extraData),
+                          );
+                          const subTotal = item.subHabits?.length ?? 0;
+                          const subDone = Math.max(0, Math.floor(item.subHabitCompletedCount ?? 0));
+                          const hasPeriodGoal =
+                            typeof item.periodGoal === 'number' &&
+                            Number.isFinite(item.periodGoal) &&
+                            item.periodGoal > 0;
+                          // 有子任务时主槽绑子进度；否则 task 用周期、其余用日目标
+                          let progressCurrent: number;
+                          let progressTotal: number | null;
+                          if (hasSubs && subTotal > 0) {
+                            progressCurrent = subDone;
+                            progressTotal = subTotal;
+                          } else if (isTask) {
+                            progressCurrent = taskPeriodProgress;
+                            progressTotal = hasPeriodGoal ? item.periodGoal : null;
+                          } else {
+                            progressCurrent = item.todayCount;
+                            progressTotal =
+                              item.dailyGoal != null && item.dailyGoal > 0 ? item.dailyGoal : null;
+                          }
+                          const showPeriodBadge = hasSubs && subTotal > 0 && isTask && hasPeriodGoal;
                           const taskCompletionCount = isTask
                             ? Math.max(0, Math.floor(item.taskCompletionCount ?? 0))
                             : 0;
@@ -6089,9 +6234,15 @@ export default function TasksScreen() {
                                   ? '，今日不可打卡'
                                   : breakChallengeDone
                                     ? '，挑战已完成'
-                                    : goalMet
-                                      ? '，今日已完成'
-                                      : '，点击打卡'
+                                    : isBreak && brokeToday
+                                      ? '，点击继续记录破戒'
+                                      : isBreak && goalMet
+                                        ? '，今日已保持戒除，撤销请到习惯详情'
+                                      : goalMet
+                                        ? '，今日已完成'
+                                        : isBreak
+                                          ? '，点击确认戒除状态'
+                                          : '，点击打卡'
                               }`}
                               onPress={() => {
                                 if (breakChallengeDone) {
@@ -6101,9 +6252,13 @@ export default function TasksScreen() {
                                 }
                                 if (!scheduleAllowsToday) return;
                                 if (goalMet) {
-                                  // 已完成：子习惯进弹窗反勾；普通习惯直接撤销（不走打卡防抖）
+                                  // 已完成：子习惯进弹窗；戒除已破戒再点继续破戒；养成/任务直接撤销
                                   if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
                                     openSubHabitModal(item);
+                                    return;
+                                  }
+                                  if (isBreak) {
+                                    if (item.todayCount > 0) void handleHabitIncrement(item);
                                     return;
                                   }
                                   void handleHabitUndoOnce(item);
@@ -6274,6 +6429,22 @@ export default function TasksScreen() {
                                           { color: taskUi.dangerSlipText },
                                         ]}>
                                         破戒 {Math.floor(item.todayCount)}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                  {showPeriodBadge ? (
+                                    <View
+                                      style={[
+                                        styles.habitTaskCompletionBadge,
+                                        {
+                                          backgroundColor: isDark ? `${kindTone}28` : `${kindTone}14`,
+                                          borderColor: isDark ? `${kindTone}55` : `${kindTone}40`,
+                                        },
+                                      ]}
+                                      accessibilityLabel={`${taskPeriodShortLabel(item.extraData)}进度 ${Math.max(0, Math.floor(taskPeriodProgress))}/${item.periodGoal}`}>
+                                      <Text style={[styles.habitTaskCompletionBadgeText, { color: kindTone }]}>
+                                        {taskPeriodShortLabel(item.extraData)}{' '}
+                                        {Math.max(0, Math.floor(taskPeriodProgress))}/{item.periodGoal}
                                       </Text>
                                     </View>
                                   ) : null}
@@ -6564,7 +6735,11 @@ export default function TasksScreen() {
                       : getTaskPriorityCheckColor(effectivePriority, isDark);
                     const isUpgrading = upgradingStandaloneTodoId === t.id;
                     const isActivating = activatingShelvedTodoId === t.id;
-                    const swipeBusy = !!upgradingStandaloneTodoId || !!activatingShelvedTodoId;
+                    const isShelving = shelvingTodoId === t.id;
+                    const swipeBusy =
+                      !!upgradingStandaloneTodoId ||
+                      !!activatingShelvedTodoId ||
+                      !!shelvingTodoId;
                     return (
                       <View key={t.id} style={styles.standaloneTodoSwipeWrap}>
                         <Swipeable
@@ -6598,27 +6773,52 @@ export default function TasksScreen() {
                                   </Text>
                                 </Pressable>
                               ) : (
-                                <Pressable
-                                  onPress={() => void handleUpgradeStandaloneTodo(t.id)}
-                                  disabled={swipeBusy}
-                                  style={({ pressed }) => [
-                                    styles.standaloneSwipeUpgrade,
-                                    {
-                                      backgroundColor: secondary,
-                                      opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
-                                    },
-                                  ]}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`将 ${t.title} 升级为项目`}>
-                                  {isUpgrading ? (
-                                    <ActivityIndicator color={taskUi.onAccent} size="small" />
-                                  ) : (
-                                    <MaterialIcons name="upgrade" size={22} color={taskUi.onAccent} />
-                                  )}
-                                  <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
-                                    升级
-                                  </Text>
-                                </Pressable>
+                                <>
+                                  {!isDone ? (
+                                    <Pressable
+                                      onPress={() => confirmShelveStandaloneTodo(t.id, t.title)}
+                                      disabled={swipeBusy}
+                                      style={({ pressed }) => [
+                                        styles.standaloneSwipeUpgrade,
+                                        {
+                                          backgroundColor: outline,
+                                          opacity: isShelving ? 0.55 : pressed ? 0.9 : 1,
+                                        },
+                                      ]}
+                                      accessibilityRole="button"
+                                      accessibilityLabel={`搁置 ${t.title}`}>
+                                      {isShelving ? (
+                                        <ActivityIndicator color={taskUi.onAccent} size="small" />
+                                      ) : (
+                                        <MaterialIcons name="inventory-2" size={20} color={taskUi.onAccent} />
+                                      )}
+                                      <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                        搁置
+                                      </Text>
+                                    </Pressable>
+                                  ) : null}
+                                  <Pressable
+                                    onPress={() => void handleUpgradeStandaloneTodo(t.id)}
+                                    disabled={swipeBusy}
+                                    style={({ pressed }) => [
+                                      styles.standaloneSwipeUpgrade,
+                                      {
+                                        backgroundColor: secondary,
+                                        opacity: isUpgrading ? 0.55 : pressed ? 0.9 : 1,
+                                      },
+                                    ]}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`将 ${t.title} 升级为项目`}>
+                                    {isUpgrading ? (
+                                      <ActivityIndicator color={taskUi.onAccent} size="small" />
+                                    ) : (
+                                      <MaterialIcons name="upgrade" size={22} color={taskUi.onAccent} />
+                                    )}
+                                    <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                      升级
+                                    </Text>
+                                  </Pressable>
+                                </>
                               )}
                               <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}

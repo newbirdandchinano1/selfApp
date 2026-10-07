@@ -68,3 +68,24 @@ export function occPayloadOf(err: unknown): SyncOccPayload | null {
   if (data && typeof data === 'object') return data as SyncOccPayload;
   return null;
 }
+
+/**
+ * 服务端明确拒绝的业务校验（再推也不会成功）。
+ * 用于推送闸门单行隔离，避免余额符号等 400 拖垮整批并无限退避重试。
+ */
+export function isNonRetryableDomainPushReject(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const httpStatus = (err as { httpStatus?: number }).httpStatus;
+  const message = err instanceof Error ? err.message : String(err);
+  if (httpStatus === 400 || httpStatus === 422) {
+    // 401/网络类不应走此分支；400 业务校验默认不可靠重试
+    if ((err as { retryable?: boolean }).retryable === true) return false;
+    return true;
+  }
+  // 未带 httpStatus 的包装错误：匹配常见财务/账本不变量文案
+  return (
+    /余额不能为|负债类账户|资产类账户金额|负债类账户金额|amount 必须|账户不存在|流水分类不存在|transaction_type 仅支持/.test(
+      message,
+    )
+  );
+}

@@ -15,7 +15,8 @@
     "test:sync-phase8-apply": "node --experimental-strip-types scripts/test-sync-phase8-apply.ts",
     "test:sync-phase8-invariants": "node scripts/test-sync-phase8-invariants.mjs",
     "test:sync-phase8": "npm run test:sync-phase8-apply && npm run test:sync-phase8-invariants && npm run test:sync-phase5-ui",
-    "test:finance-balance-correction": "node scripts/test-finance-balance-correction.mjs"
+    "test:finance-balance-correction": "node scripts/test-finance-balance-correction.mjs",
+    "test:finance-scheduled-withholding": "node scripts/test-finance-scheduled-withholding.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
