@@ -38,6 +38,7 @@ import {
   updateWeeklyReviewAdjustFlags,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { isDailyReviewSkippedOnWeeklyReviewDay } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -252,7 +253,7 @@ export function WeeklyReviewFormScreen({
       return true;
     } catch (e) {
       console.warn('weekly review save', e);
-      Alert.alert('保存失败', '请稍后再试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
       return false;
     } finally {
       setSaving(false);
@@ -265,7 +266,7 @@ export function WeeklyReviewFormScreen({
       return;
     }
     const ok = await persistDraft();
-    if (ok) Alert.alert('已保存', '复盘草稿已写入本地。');
+    if (ok) toast.success('已保存');
   }, [canEdit, periodStartYmd, persistDraft]);
 
   const onGenerateAi = useCallback(async () => {
@@ -297,7 +298,7 @@ export function WeeklyReviewFormScreen({
       setAiCoaching(coaching);
     } catch (e) {
       console.warn('weekly review ai', e);
-      Alert.alert('生成失败', '请检查网络；未配置当前所选引擎的 API 密钥时将使用本地规则生成。');
+      toast.error(toUserMessage(e, '生成失败，请检查网络后重试'));
     } finally {
       setAiBusy(false);
     }
@@ -324,9 +325,9 @@ export function WeeklyReviewFormScreen({
         adjust_savings: adjustSavings,
         adjust_plans: adjustPlans,
       });
-      Alert.alert('已记录', '已保存你的调整意向，可随时回来修改。');
-    } catch {
-      Alert.alert('保存失败', '请稍后再试');
+      toast.success('已记录');
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     }
   }, [canEdit, periodStartYmd, adjustTasks, adjustSavings, adjustPlans]);
 

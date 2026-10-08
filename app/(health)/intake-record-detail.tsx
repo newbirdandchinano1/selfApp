@@ -6,6 +6,7 @@ import { formatYmdCN } from '@/lib/date';
 import { createQuickAddItemMap, loadAllQuickAddItems, type QuickAddCardItem } from '@/lib/quick-add-cards';
 import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -228,9 +229,10 @@ export default function IntakeRecordDetailScreen() {
           setDeleting(true);
           try {
             await deleteHealthRecord(recordId.trim());
+            toast.success('已删除');
             router.back();
-          } catch {
-            Alert.alert('删除失败', '请稍后重试');
+          } catch (e) {
+            toast.error(toUserMessage(e, '删除失败，请稍后重试'));
           } finally {
             setDeleting(false);
           }

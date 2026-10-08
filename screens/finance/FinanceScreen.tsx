@@ -34,6 +34,7 @@ import {
     runInAutoLedgerSession,
 } from '@/lib/auto-ledger-session';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
@@ -790,9 +791,10 @@ export default function FinanceScreen() {
             try {
               await deleteFinanceTransaction(txnId);
               await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
+              toast.success('已删除');
             } catch (error) {
               console.warn('Failed to delete finance transaction:', error);
-              Alert.alert('删除失败', '请稍后重试。');
+              toast.error(toUserMessage(error, '删除失败，请稍后重试。'));
             }
           },
         },
@@ -1892,7 +1894,7 @@ export default function FinanceScreen() {
         if (handoff) {
           void notifyAutoLedgerFailure(msg);
         } else {
-          Alert.alert('无法自动记账', msg);
+          toast.error(msg);
         }
         return;
       }
@@ -1902,7 +1904,7 @@ export default function FinanceScreen() {
         if (handoff) {
           void notifyAutoLedgerFailure(msg);
         } else {
-          Alert.alert('无法自动记账', msg);
+          toast.error(msg);
         }
         return;
       }
@@ -1948,7 +1950,7 @@ export default function FinanceScreen() {
                 if (handoff) {
                   void notifyAutoLedgerHint(AUTO_LEDGER_NOT_BILL_MESSAGE);
                 } else {
-                  Alert.alert('提示', AUTO_LEDGER_NOT_BILL_MESSAGE);
+                  toast.info(AUTO_LEDGER_NOT_BILL_MESSAGE);
                 }
                 return;
               }
@@ -1975,7 +1977,7 @@ export default function FinanceScreen() {
               if (handoff) {
                 void notifyAutoLedgerFailure(msg);
               } else {
-                Alert.alert('无法自动记账', msg);
+                toast.error(msg);
               }
               return;
             }
@@ -2008,7 +2010,7 @@ export default function FinanceScreen() {
               if (handoff) {
                 void notifyAutoLedgerFailure(boundsErr);
               } else {
-                Alert.alert('无法记账', boundsErr);
+                toast.warn(boundsErr);
               }
               return;
             }
@@ -2064,7 +2066,7 @@ export default function FinanceScreen() {
         if (handoff) {
           void notifyAutoLedgerFailure(failMsg);
         } else {
-          Alert.alert('自动记账失败', failMsg);
+          toast.error(toUserMessage(lastError, '已自动重试多次仍未成功，请检查网络或截图后重试。'));
         }
       } finally {
         cancelledAutoLedgerIdsRef.current.delete(pendingId);
@@ -2219,7 +2221,7 @@ export default function FinanceScreen() {
         return;
       }
       if (!list.length) {
-        Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+        toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
         return;
       }
       if (intent.kind === 'manual') {
@@ -2237,7 +2239,7 @@ export default function FinanceScreen() {
         toAccountId: intent.toAccountId,
       });
       if (!resolved) {
-        Alert.alert('无法转账', '至少需要两个账户才能进行转账或还款。');
+        toast.warn('至少需要两个账户才能进行转账或还款。');
         return;
       }
       resetSheetForm('transfer');
@@ -2421,13 +2423,13 @@ export default function FinanceScreen() {
     const normalized = budgetBaseDraft.trim().replace(/,/g, '');
     const n = parseFloat(normalized);
     if (!Number.isFinite(n) || n < 0) {
-      Alert.alert('金额无效', '请输入大于等于 0 的月预算基数。');
+      toast.warn('请输入大于等于 0 的月预算基数。');
       return;
     }
     const surplusNormalized = periodSurplusDraft.trim().replace(/,/g, '');
     const surplusN = parseFloat(surplusNormalized);
     if (!Number.isFinite(surplusN)) {
-      Alert.alert('金额无效', '请输入有效的本周期预算结余。');
+      toast.warn('请输入有效的本周期预算结余。');
       return;
     }
     const previewGross = modalIncludeLast ? n + lastMonthRemaining : n;
@@ -2480,8 +2482,7 @@ export default function FinanceScreen() {
     (accountId: string) => {
       if (accountPickerTarget === 'transferFrom') {
         if (accountId === transferToAccountId) {
-          Alert.alert(
-            '不能同一账户转账',
+          toast.warn(
             financeAccounts.length < 2
               ? '请先添加至少两个资产账户后再进行转账。'
               : '转出账户与入账账户不能相同，请选择其他账户。',
@@ -2491,8 +2492,7 @@ export default function FinanceScreen() {
         setTransferFromAccountId(accountId);
       } else if (accountPickerTarget === 'transferTo') {
         if (accountId === transferFromAccountId) {
-          Alert.alert(
-            '不能同一账户转账',
+          toast.warn(
             financeAccounts.length < 2
               ? '请先添加至少两个资产账户后再进行转账。'
               : '转出账户与入账账户不能相同，请选择其他账户。',
@@ -2583,12 +2583,12 @@ export default function FinanceScreen() {
 
   const handleSentenceLedgerPreview = React.useCallback(async () => {
     if (!selectedAccount) {
-      Alert.alert('请选择账户', '需要选择一个可用账户后再做识别预览。');
+      toast.warn('需要选择一个可用账户后再做识别预览。');
       return;
     }
     const line = sheetSentence.trim();
     if (!line) {
-      Alert.alert('请输入内容', '用一句话描述这笔账。');
+      toast.warn('用一句话描述这笔账。');
       return;
     }
     setIsSentencePreviewBusy(true);
@@ -2625,15 +2625,15 @@ export default function FinanceScreen() {
     financeReloadGenerationRef.current += 1;
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
-        Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
+        toast.warn('需要选择扣款账户与入账账户。');
         return;
       }
       if (transferFromAccount.id === transferToAccount.id) {
-        Alert.alert('账户相同', '扣款与入账账户不能是同一个。');
+        toast.warn('扣款与入账账户不能是同一个。');
         return;
       }
       if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-        Alert.alert('请输入金额', '转账金额需要大于 0。');
+        toast.warn('转账金额需要大于 0。');
         return;
       }
       const feeAbs =
@@ -2643,11 +2643,11 @@ export default function FinanceScreen() {
             ? transferFeeNumber
             : 0;
       if (transferFeeAmount.trim() !== '' && (!Number.isFinite(transferFeeNumber) || transferFeeNumber < 0)) {
-        Alert.alert('手续费无效', '手续费需为大于等于 0 的数字，留空表示无手续费。');
+        toast.warn('手续费需为大于等于 0 的数字，留空表示无手续费。');
         return;
       }
       if (feeAbs >= amountNumber) {
-        Alert.alert('手续费过高', '手续费必须小于转账金额（从转账金额中扣除）。');
+        toast.warn('手续费必须小于转账金额（从转账金额中扣除）。');
         return;
       }
       const ts = Date.now();
@@ -2701,7 +2701,7 @@ export default function FinanceScreen() {
         });
       }
       if (errFrom || errTo || errFee) {
-        Alert.alert('无法转账', errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
+        toast.warn(errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
         return;
       }
 
@@ -2723,12 +2723,10 @@ export default function FinanceScreen() {
         setIsSheetVisible(false);
         resetSheetForm('sentence');
         notifyFinanceSheetSaved();
+        toast.success('已记账');
       } catch (error) {
         console.warn('Failed to create transfer transactions:', error);
-        Alert.alert(
-          '保存失败',
-          error instanceof Error && error.message.trim() ? error.message : '转账记录保存失败，请稍后重试。',
-        );
+        toast.error(toUserMessage(error, '转账记录保存失败，请稍后重试。'));
       } finally {
         setIsSavingTransaction(false);
       }
@@ -2736,14 +2734,14 @@ export default function FinanceScreen() {
     }
 
     if (!selectedAccount) {
-      Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+      toast.warn('需要选择一个可用账户后才能记账。');
       return;
     }
 
     if (activeSheetTab === 'sentence') {
       const line = sheetSentence.trim();
       if (!line) {
-        Alert.alert('请输入内容', '用一句话描述这笔账，需包含金额。');
+        toast.warn('用一句话描述这笔账，需包含金额。');
         return;
       }
 
@@ -2755,7 +2753,7 @@ export default function FinanceScreen() {
       try {
         const resolved = await resolveFinanceSentenceLine(line);
         if (!resolved.ok) {
-          Alert.alert('无法识别', resolved.error);
+          toast.warn(resolved.error);
           return;
         }
         const parsed = resolved.parsed;
@@ -2769,7 +2767,7 @@ export default function FinanceScreen() {
             ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, lastUsedAccountId)
             : null;
         if (!account) {
-          Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+          toast.warn('需要选择一个可用账户后才能记账。');
           return;
         }
 
@@ -2791,7 +2789,7 @@ export default function FinanceScreen() {
           uiLedgerBalance: account.balance,
         });
         if (boundsErr) {
-          Alert.alert('无法记账', boundsErr);
+          toast.warn(boundsErr);
           return;
         }
 
@@ -2823,12 +2821,10 @@ export default function FinanceScreen() {
         setIsSheetVisible(false);
         resetSheetForm('sentence');
         notifyFinanceSheetSaved();
+        toast.success('已记账');
       } catch (error) {
         console.warn('Sentence ledger pipeline failed:', error);
-        Alert.alert(
-          '保存失败',
-          error instanceof Error && error.message.trim() ? error.message : '一句话记账处理失败，请稍后重试。',
-        );
+        toast.error(toUserMessage(error, '一句话记账处理失败，请稍后重试。'));
       } finally {
         setIsParsingSentence(false);
       }
@@ -2836,7 +2832,7 @@ export default function FinanceScreen() {
     }
 
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      Alert.alert('请输入金额', '记账金额需要大于 0。');
+      toast.warn('记账金额需要大于 0。');
       return;
     }
     const transactionType = activeSheetTab;
@@ -2854,7 +2850,7 @@ export default function FinanceScreen() {
       uiLedgerBalance: selectedAccount.balance,
     });
     if (manualBoundsErr) {
-      Alert.alert('无法记账', manualBoundsErr);
+      toast.warn(manualBoundsErr);
       return;
     }
     const fallbackName = transactionType === 'income' ? '收入' : '支出';
@@ -2885,12 +2881,10 @@ export default function FinanceScreen() {
       setIsSheetVisible(false);
       resetSheetForm('sentence');
       notifyFinanceSheetSaved();
+      toast.success('已记账');
     } catch (error) {
       console.warn('Failed to create finance transaction:', error);
-      Alert.alert(
-        '保存失败',
-        error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。',
-      );
+      toast.error(toUserMessage(error, '手动记账保存失败，请稍后重试。'));
     } finally {
       setIsSavingTransaction(false);
     }
@@ -2921,7 +2915,7 @@ export default function FinanceScreen() {
 
   const handleOpenComposer = React.useCallback((): boolean => {
     if (!hasAccounts) {
-      Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+      toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
       return false;
     }
     // 仅在弹窗未打开时重置表单；避免用户已输入金额/备注后点图片又被清空
@@ -2942,7 +2936,7 @@ export default function FinanceScreen() {
 
       const accounts = financeAccountsRef.current;
       if (!accounts.length) {
-        Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+        toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
         return;
       }
 
@@ -2959,14 +2953,14 @@ export default function FinanceScreen() {
         if (source === 'library') {
           const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
           if (!permission.granted) {
-            Alert.alert('权限不足', '需要相册权限才能选择图片。');
+            toast.warn('需要相册权限才能选择图片。');
             return;
           }
           result = await ImagePicker.launchImageLibraryAsync(pickerOptions);
         } else {
           const permission = await ImagePicker.requestCameraPermissionsAsync();
           if (!permission.granted) {
-            Alert.alert('权限不足', '需要相机权限才能拍摄图片。');
+            toast.warn('需要相机权限才能拍摄图片。');
             return;
           }
           result = await ImagePicker.launchCameraAsync(pickerOptions);
@@ -2977,7 +2971,7 @@ export default function FinanceScreen() {
         const asset = result.assets[0];
         const b64 = asset?.base64;
         if (!b64) {
-          Alert.alert('无法读取图片', '未能获取图片数据，请换一张图片重试。');
+          toast.error('未能获取图片数据，请换一张图片重试。');
           return;
         }
 
@@ -2993,7 +2987,7 @@ export default function FinanceScreen() {
         );
       } catch (error) {
         console.warn('Failed to pick image for auto ledger:', error);
-        Alert.alert('选择图片失败', '请稍后重试。');
+        toast.error('选择图片失败，请稍后重试。');
       } finally {
         setIsPickingImage(false);
         setAutoLedgerToastVisible(false);

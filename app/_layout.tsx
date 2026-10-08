@@ -14,6 +14,7 @@ import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
 import { CompletionCelebrationHost } from '@/components/completion-celebration-host';
+import { AppToastHost } from '@/components/app-toast-host';
 import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
 import { FinanceTransactionSheet } from '@/components/finance/finance-transaction-sheet';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
@@ -457,6 +458,7 @@ function RootLayoutInner() {
           </Stack>
             </ApiLoadingShell>
             </AppErrorBoundary>
+            <AppToastHost />
             <PointsEarnedToastHost />
             <CompletionCelebrationHost />
             {flushError ? (

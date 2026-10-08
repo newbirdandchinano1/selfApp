@@ -1,3 +1,4 @@
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { formatMinutesAsHm, formatMinuteRangeLabel, snapToHourMinutes } from '@/lib/schedule/axis';
@@ -115,7 +116,7 @@ export function FrogScheduleSettingsCard({
 
   const addBreak = () => {
     if (breaks.length >= SCHEDULE_BREAKS_MAX) {
-      Alert.alert('已达上限', `最多添加 ${SCHEDULE_BREAKS_MAX} 个断开时段。`);
+      toast.warn(`最多添加 ${SCHEDULE_BREAKS_MAX} 个断开时段。`);
       return;
     }
     const noon = 12 * 60;
@@ -151,7 +152,7 @@ export function FrogScheduleSettingsCard({
                 .map((c) => c.reason)
                 .join('\n')}`
             : '';
-        Alert.alert('无法保存', `${result.error}${detail}`);
+        toast.error(`${result.error}${detail}`.trim());
         return;
       }
       setOrphanedCount(result.orphanedCount);
@@ -159,16 +160,13 @@ export function FrogScheduleSettingsCard({
       setEndMinutes(result.axis.endMinutes);
       setSlotHours(result.axis.slotHours);
       setBreaks(result.axis.breaks ?? []);
-      const remapHint =
-        result.remappedCount > 0 ? `\n已重映射 ${result.remappedCount} 条占用。` : '';
+      const remapHint = result.remappedCount > 0 ? `，已重映射 ${result.remappedCount} 条` : '';
       const orphanHint =
-        result.orphanedCount > 0
-          ? `\n有 ${result.orphanedCount} 条无法落入新格（含落入断开时段），已标为「未入格」。`
-          : '';
-      Alert.alert('已保存', `日程表时间轴已更新。${remapHint}${orphanHint}`);
+        result.orphanedCount > 0 ? `，${result.orphanedCount} 条未入格` : '';
+      toast.success(`日程表时间轴已更新${remapHint}${orphanHint}`);
       await reload();
     } catch (err) {
-      Alert.alert('保存失败', err instanceof Error ? err.message : '请稍后重试');
+      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

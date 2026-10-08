@@ -20,6 +20,7 @@ import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession } from '@/lib/page-api-session';
 
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
@@ -1196,8 +1197,9 @@ export default function HealthScreen() {
       });
       setMetricPointsSettings(next);
       setPointsSettingsOpen(false);
-    } catch {
-      Alert.alert('保存失败', '积分设置未能写入，请稍后重试。');
+      toast.success('已保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, '积分设置未能写入，请稍后重试。'));
     }
   }, [draftPointsEnabled, draftThresholdText, draftRewardPointsText]);
 
@@ -1244,7 +1246,7 @@ export default function HealthScreen() {
   const persistManualIntakeDelta = React.useCallback(
     async (type: 'hydration' | 'protein' | 'carbohydrate' | 'calories', amount: number, quickAddKey?: string) => {
       if (pendingIntake) {
-        Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+        toast.info('当前有一条摄入正在解析，解析完成后再添加。');
         return;
       }
       if (!user?.id || !Number.isFinite(amount) || amount <= 0) return;
@@ -1268,8 +1270,8 @@ export default function HealthScreen() {
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
         playIntakeFeedbackAnimation();
-      } catch {
-        /* 忽略写入失败 */
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后重试。'));
       }
     },
     [user?.id, selectedDate, weekAnchorDate, intakeTargetsSnapshot, playIntakeFeedbackAnimation, pendingIntake, markPageDirty]
@@ -1396,8 +1398,9 @@ export default function HealthScreen() {
         setSelectedDayIntakeTotals(dayTotals);
         setSelectedDayRecords(dayRecords);
         playIntakeFeedbackAnimation();
-      } catch {
-        /* 忽略删除失败 */
+        toast.success('已删除');
+      } catch (e) {
+        toast.error(toUserMessage(e, '删除失败，请稍后重试。'));
       }
     },
     [user?.id, selectedDate, weekAnchorDate, playIntakeFeedbackAnimation, markPageDirty]
@@ -1428,11 +1431,11 @@ export default function HealthScreen() {
         return;
       }
       if (!user?.id) {
-        Alert.alert('无法记录', '请先完成用户资料后再试。');
+        toast.warn('请先完成用户资料后再试。');
         return;
       }
       if (pendingIntake) {
-        Alert.alert('请稍候', '当前有一条摄入正在解析，请等待完成后再试。');
+        toast.info('当前有一条摄入正在解析，请等待完成后再试。');
         return;
       }
       setSheetOpen(false);
@@ -1443,7 +1446,7 @@ export default function HealthScreen() {
         if (payload.parsed) {
           const finalized = finalizeFoodTextIntakeForRecord(text, payload.parsed);
           if (!finalized.ok) {
-            Alert.alert('无法记录', finalized.error);
+            toast.warn(finalized.error);
             return;
           }
           const d = finalized.data;
@@ -1451,7 +1454,7 @@ export default function HealthScreen() {
             displayTitle: text,
             aiComment: d.ai_evaluation?.trim(),
           });
-          if (!ok) Alert.alert('保存失败', '请稍后重试。');
+          if (!ok) toast.error('保存失败，请稍后重试。');
           return;
         }
         setPendingIntake({ id: pendingId, kind: 'ai', label: text });
@@ -1459,7 +1462,7 @@ export default function HealthScreen() {
           try {
             const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text });
             if (!r.ok) {
-              Alert.alert('无法记录', r.error);
+              toast.warn(r.error);
               return;
             }
             const d = r.data;
@@ -1467,9 +1470,9 @@ export default function HealthScreen() {
               displayTitle: text,
               aiComment: d.ai_evaluation?.trim(),
             });
-            if (!ok) Alert.alert('保存失败', '请稍后重试。');
+            if (!ok) toast.error('保存失败，请稍后重试。');
           } catch (e) {
-            Alert.alert('解析失败', e instanceof Error ? e.message : String(e));
+            toast.error(toUserMessage(e, '解析失败，请稍后重试。'));
           } finally {
             setPendingIntake(null);
           }
@@ -1492,7 +1495,7 @@ export default function HealthScreen() {
               ...(photoNote ? { supplementText: photoNote } : {}),
             });
             if (!r.ok) {
-              Alert.alert('识别失败', r.error);
+              toast.error(r.error);
               return;
             }
             const d = r.data;
@@ -1502,7 +1505,7 @@ export default function HealthScreen() {
                 d.is_food !== 1
                   ? `无法按食物记录（代码 ${d.non_food_code}），请换一张清晰的食物照片。`
                   : '估算营养均为 0，请换一张更清晰的食物照片。';
-              Alert.alert('无法记录', hint);
+              toast.warn(hint);
               return;
             }
             const foodName = d.food_name?.trim() ?? '';
@@ -1512,9 +1515,9 @@ export default function HealthScreen() {
               displayTitle: clampIntakeDisplayTitle(displayTitleRaw) ?? undefined,
               aiComment: d.ai_evaluation?.trim(),
             });
-            if (!ok) Alert.alert('保存失败', '请稍后重试。');
+            if (!ok) toast.error('保存失败，请稍后重试。');
           } catch (e) {
-            Alert.alert('识别失败', e instanceof Error ? e.message : String(e));
+            toast.error(toUserMessage(e, '识别失败，请稍后重试。'));
           } finally {
             setPendingIntake(null);
           }
@@ -2269,7 +2272,7 @@ export default function HealthScreen() {
                       activeOpacity={0.82}
                       onPress={() => {
                         if (intakeParseLocked) {
-                          Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+                          toast.info('当前有一条摄入正在解析，解析完成后再添加。');
                           return;
                         }
                         void persistQuickAddIntake(item);
@@ -2713,7 +2716,7 @@ export default function HealthScreen() {
           accessibilityLabel="记录新摄入"
           onPress={() => {
             if (intakeParseLocked) {
-              Alert.alert('请稍候', '当前有一条摄入正在解析，解析完成后再添加。');
+              toast.info('当前有一条摄入正在解析，解析完成后再添加。');
               return;
             }
             setSheetOpen(true);

@@ -30,6 +30,7 @@ import {
   getMonthlyReviewJournalByMonth,
   upsertMonthlyReviewJournal,
 } from '@/lib/repositories/insights/monthly-review-journal';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
@@ -155,6 +156,7 @@ export function MonthlyReviewGridView({
       lastPersistedBodyRef.current = body;
     } catch (e) {
       console.warn('monthly review save', e);
+      toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }
@@ -211,7 +213,7 @@ export function MonthlyReviewGridView({
       lastPersistedBodyRef.current = body;
     } catch (e) {
       console.warn('monthly ai analysis', e);
-      Alert.alert('分析失败', '请稍后重试。');
+      toast.error(toUserMessage(e, '分析失败，请稍后重试'));
     } finally {
       setAiBusy(false);
     }

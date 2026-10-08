@@ -7,6 +7,7 @@ import { formatYmd, parseYmd } from '@/lib/date';
 import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { requestPush } from '@/lib/sync-manager';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
@@ -473,7 +474,7 @@ export default function TaskDetailScreen() {
       return true;
     } catch (error) {
       console.warn('保存任务详情失败', error);
-      Alert.alert('保存失败', '未能保存任务设置，请稍后重试。');
+      toast.error(formatWriteError(error, '未能保存任务设置，请稍后重试。'));
       return false;
     } finally {
       setSaving(false);
@@ -517,10 +518,11 @@ export default function TaskDetailScreen() {
                 setSaving(true);
                 await deleteTask(taskId);
                 notifyPageDataChanged(PAGE_API_KEY);
+                toast.success('已删除');
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
-                Alert.alert('删除失败', formatWriteError(error, '任务删除失败，请稍后重试。'));
+                toast.error(formatWriteError(error, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }
@@ -541,10 +543,11 @@ export default function TaskDetailScreen() {
                 setSaving(true);
                 await deleteTask(taskId);
                 notifyPageDataChanged(PAGE_API_KEY);
+                toast.success('已删除');
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);
-                Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
+                toast.error(formatWriteError(err, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }

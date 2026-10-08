@@ -31,6 +31,7 @@ import {
   type ReviewFieldModel,
   type TextSelection,
 } from '@/lib/review-journal-format';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import {
   getMonthlyReviewJournalByMonth,
@@ -398,6 +399,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
           flashSaved();
         } catch (e) {
           console.warn('weekly review dimension save', e);
+          toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
         } finally {
           setSaving(false);
         }
@@ -420,6 +422,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
         flashSaved();
       } catch (e) {
         console.warn(`${scope} review dimension save`, e);
+        toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
       } finally {
         setSaving(false);
       }
@@ -465,7 +468,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       flashSaved();
     } catch (e) {
       console.warn('monthly review dimension ai analysis', e);
-      Alert.alert('分析失败', '请稍后重试。');
+      toast.error(toUserMessage(e, '分析失败，请稍后重试'));
     } finally {
       setAiBusy(false);
     }

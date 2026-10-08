@@ -17,6 +17,7 @@ import {
   type MemoFormatAction,
   type TextSelection,
 } from '@/lib/memo-format';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   createMemo,
   getMemo,
@@ -31,7 +32,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -147,7 +147,7 @@ export default function MemoEditScreen() {
     const t = title.trim();
     const body = memoBodyFromEditModel(bodyModel).trim();
     if (!t && !bodyModel.plain.trim()) {
-      Alert.alert('无法保存', '请填写标题或正文');
+      toast.warn('请填写标题或正文');
       return;
     }
     setSaving(true);
@@ -168,14 +168,15 @@ export default function MemoEditScreen() {
           is_pinned: pinned,
         });
         if (!ok) {
-          Alert.alert('保存失败', '该备忘可能已删除');
+          toast.error('该备忘可能已删除');
           setSaving(false);
           return;
         }
       }
+      toast.success('已保存');
       router.back();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

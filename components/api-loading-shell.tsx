@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const BAR_SEGMENT_WIDTH = Math.round(SCREEN_WIDTH * 0.42);
-const LOADING_TIMEOUT_MS = 30000;
+const LOADING_TIMEOUT_MS = 10000;
 
 type ApiLoadingShellProps = {
   children: React.ReactNode;
@@ -212,7 +212,7 @@ function ApiLoadingOverlay() {
         >
           <Text style={[styles.timeoutTitle, { color: textColor }]}>加载超时</Text>
           <Text style={[styles.timeoutHint, { color: isDark ? '#94a3b8' : '#64748b' }]}>
-            数据加载超过 30 秒，请检查网络后重试
+            数据加载超过 10 秒，请检查网络后重试
           </Text>
           <Pressable
             onPress={() => void retry()}

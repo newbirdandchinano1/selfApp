@@ -1,3 +1,4 @@
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
@@ -172,7 +173,7 @@ export default function NotificationCenterScreen() {
         await applySettings(next);
       } catch (e) {
         console.warn('切换通知总开关失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
         setBusy(false);
       }
     },
@@ -188,7 +189,7 @@ export default function NotificationCenterScreen() {
         await applySettings(next);
       } catch (e) {
         console.warn('切换通知频道失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
         setBusy(false);
       }
     },
@@ -203,7 +204,7 @@ export default function NotificationCenterScreen() {
         await applySettings(next);
       } catch (e) {
         console.warn('保存健康提醒偏好失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
         setBusy(false);
       }
     },
@@ -220,7 +221,7 @@ export default function NotificationCenterScreen() {
         await applySettings(next);
       } catch (e) {
         console.warn('保存日程表提醒偏好失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
         setBusy(false);
       }
     },
@@ -238,7 +239,7 @@ export default function NotificationCenterScreen() {
         await resyncAppNotificationsAfterPreferenceChange();
       } catch (e) {
         console.warn('保存复盘提醒失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
       } finally {
         setBusy(false);
       }
@@ -291,7 +292,7 @@ export default function NotificationCenterScreen() {
         await resyncAppNotificationsAfterPreferenceChange();
       } catch (e) {
         console.warn('保存习惯提醒失败', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
       } finally {
         setBusy(false);
       }

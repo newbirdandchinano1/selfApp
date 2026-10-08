@@ -19,6 +19,7 @@ import {
   isBuiltinDailyReviewDimensionId,
 } from '@/lib/repositories/insights/review-template-defaults';
 import type { ReviewDimensionTemplate, ReviewTemplateScope } from '@/lib/repositories/insights/review-template.types';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -174,8 +175,9 @@ export default function ReviewTemplateSettingsScreen() {
               await deleteReviewDimension(dim.id);
               if (expandedDimId === dim.id) setExpandedDimId(null);
               await reload();
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
+              toast.success('已删除');
+            } catch (e) {
+              toast.error(toUserMessage(e, '删除失败，请稍后重试'));
             }
           })();
         },
@@ -198,8 +200,9 @@ export default function ReviewTemplateSettingsScreen() {
             try {
               await deleteReviewColumn(columnId);
               await reload();
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
+              toast.success('已删除');
+            } catch (e) {
+              toast.error(toUserMessage(e, '删除失败，请稍后重试'));
             }
           })();
         },
@@ -249,8 +252,9 @@ export default function ReviewTemplateSettingsScreen() {
       }
       setEditor(null);
       await reload();
-    } catch {
-      Alert.alert('保存失败', '请稍后重试');
+      toast.success('已保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

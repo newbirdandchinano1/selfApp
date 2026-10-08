@@ -26,6 +26,7 @@ import {
   parseTaskHabitExpectedGoal,
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from "expo-router/react-navigation";
 import { useRouter } from 'expo-router';
@@ -238,9 +239,10 @@ export default function HabitManageScreen() {
               try {
                 await restartBreakHabit(item.id);
                 await reload();
+                toast.success('已重启');
               } catch (err) {
                 console.warn('重启戒除习惯失败', err);
-                Alert.alert('操作失败', '重启未保存，请稍后重试。');
+                toast.error(toUserMessage(err, '重启未保存，请稍后重试'));
               } finally {
                 setRestartingId(null);
               }
@@ -265,8 +267,10 @@ export default function HabitManageScreen() {
               void cancelScheduledHabitReminder(item.id);
               notifyAncestorsDataChanged();
               await reload();
+              toast.success('已删除');
             } catch (err) {
               console.warn('删除习惯失败', err);
+              toast.error(toUserMessage(err, '删除失败，请稍后重试'));
             }
           })();
         },

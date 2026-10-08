@@ -17,6 +17,7 @@ import {
   Spacing,
 } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   getLifeBetDerivedStats,
@@ -219,7 +220,7 @@ export default function LifeRoadScreen() {
 
   const onSaveDirection = useCallback(async () => {
     if (!bodyDraft.trim()) {
-      Alert.alert('请填写总方向');
+      toast.warn('请填写总方向');
       return;
     }
     setSavingDirection(true);
@@ -232,9 +233,10 @@ export default function LifeRoadScreen() {
       setDirection(row);
       setEditingDirection(false);
       notifyAncestorsDataChanged();
+      toast.success('已保存');
       await reload();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请检查网络后重试');
+      toast.error(toUserMessage(e, '保存失败，请检查网络后重试'));
     } finally {
       setSavingDirection(false);
     }
@@ -252,9 +254,10 @@ export default function LifeRoadScreen() {
               try {
                 await deleteLifeBet(bet.id);
                 notifyAncestorsDataChanged();
+                toast.success('已删除');
                 await reload();
               } catch (e) {
-                Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
               }
             })();
           },

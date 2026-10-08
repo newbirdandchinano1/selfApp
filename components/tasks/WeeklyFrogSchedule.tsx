@@ -1,5 +1,6 @@
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getIsLongTermFrog, isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
@@ -714,7 +715,7 @@ export function WeeklyFrogSchedule({
       } catch (err) {
         if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
-        if (!opts?.silent) Alert.alert('加载失败', '无法加载日程表');
+        if (!opts?.silent) toast.error(toUserMessage(err, '无法加载日程表'));
       } finally {
         if (!opts?.silent && generation === reloadGenerationRef.current) {
           setLoading(false);
@@ -954,8 +955,9 @@ export function WeeklyFrogSchedule({
       );
       setSlotNotes(next);
       setSlotNoteEditor(null);
+      toast.success('已保存');
     } catch (err) {
-      Alert.alert('保存失败', err instanceof Error ? err.message : '请稍后重试');
+      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
     } finally {
       setSlotNoteSaving(false);
     }
@@ -968,8 +970,9 @@ export function WeeklyFrogSchedule({
       const next = await saveScheduleSlotNote(slotNoteEditor.startMinutes, '');
       setSlotNotes(next);
       setSlotNoteEditor(null);
+      toast.success('已清除');
     } catch (err) {
-      Alert.alert('清除失败', err instanceof Error ? err.message : '请稍后重试');
+      toast.error(toUserMessage(err, '清除失败，请稍后重试'));
     } finally {
       setSlotNoteSaving(false);
     }
@@ -1212,9 +1215,8 @@ export function WeeklyFrogSchedule({
                 .map((s) => s.reason)
                 .join('；')}${result.skipped.length > 5 ? '…' : ''}`
             : '';
-        Alert.alert(
-          '复制完成',
-          `成功 ${result.copied} 条${result.overwritten ? `（已覆盖 ${result.overwritten}）` : ''}${skipMsg}`,
+        toast.success(
+          `已复制 ${result.copied} 条${result.overwritten ? `（覆盖 ${result.overwritten}）` : ''}${skipMsg ? '，部分跳过' : ''}`,
         );
         await reload(loadDayYmds, { silent: true });
         onChanged?.();
@@ -1226,7 +1228,7 @@ export function WeeklyFrogSchedule({
           ]);
           return;
         }
-        Alert.alert('复制失败', err instanceof Error ? err.message : '请稍后重试');
+        toast.error(toUserMessage(err, '复制失败，请稍后重试'));
       }
     };
     void run(false);
@@ -2466,10 +2468,7 @@ export function WeeklyFrogSchedule({
                                               action: 'unassign',
                                             });
                                           } catch (err) {
-                                            Alert.alert(
-                                              '取消失败',
-                                              err instanceof Error ? err.message : '请稍后重试',
-                                            );
+                                            toast.error(toUserMessage(err, '取消失败，请稍后重试'));
                                           }
                                         })();
                                       },
@@ -2676,7 +2675,7 @@ export function WeeklyFrogSchedule({
               await reload(loadDayYmds, { silent: true });
               onChanged?.();
             } catch (err) {
-              Alert.alert('移除失败', err instanceof Error ? err.message : '请稍后重试');
+              toast.error(toUserMessage(err, '移除失败，请稍后重试'));
             }
           })();
         }}
@@ -2698,7 +2697,7 @@ export function WeeklyFrogSchedule({
                 action: 'unassign',
               });
             } catch (err) {
-              Alert.alert('取消失败', err instanceof Error ? err.message : '请稍后重试');
+              toast.error(toUserMessage(err, '取消失败，请稍后重试'));
             }
           })();
         }}

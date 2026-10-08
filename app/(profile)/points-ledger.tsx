@@ -10,6 +10,7 @@ import {
   formatHealthMetricLedgerRefTitle,
   formatPointsLedgerReasonLabel,
 } from '@/lib/points-ledger-reason-label';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { deletePointsLedgerRecord } from '@/lib/repositories/points/points';
 import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -129,8 +130,9 @@ export default function PointsLedgerScreen() {
                 setBalance(result.balance);
                 setItems(prev => prev.filter(row => row.id !== item.id));
                 setTotal(prev => Math.max(0, prev - 1));
+                toast.success('已删除');
               } catch (e) {
-                Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
               } finally {
                 setDeletingId(null);
               }

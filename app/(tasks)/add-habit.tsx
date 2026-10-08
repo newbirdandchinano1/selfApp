@@ -12,6 +12,7 @@ import {
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
@@ -706,7 +707,7 @@ export default function AddHabitScreen() {
     if (saving || deleting) return;
     const name = habitName.trim();
     if (!name) {
-      Alert.alert('提示', '请先输入习惯名称');
+      toast.warn('请先输入习惯名称');
       return;
     }
 
@@ -910,14 +911,14 @@ export default function AddHabitScreen() {
         console.warn('习惯保存后同步到服务器失败', syncErr);
       }
     } catch (err) {
-      const msg = err instanceof Error && err.message.trim() ? err.message : '保存失败，请稍后重试';
-      Alert.alert('保存失败', msg);
+      toast.error(formatWriteError(err, '保存失败，请稍后重试'));
       setSaving(false);
       return;
     }
 
     notifyAncestorsDataChanged();
     setSaving(false);
+    toast.success(isEditMode ? '已保存' : '已创建');
     router.back();
 
     // 本地已落库并返回；提醒重排走后台，避免「保存中…」被 OS 通知 API / 全量重登记拖死
@@ -1032,10 +1033,11 @@ export default function AddHabitScreen() {
             try {
               await deleteHabit(habitId);
               void cancelScheduledHabitReminder(habitId);
+              toast.success('已删除');
               leaveAfterDelete();
             } catch (err) {
               console.warn('删除习惯失败', err);
-              Alert.alert('删除失败', formatWriteError(err, '习惯删除失败，请稍后重试。'));
+              toast.error(formatWriteError(err, '习惯删除失败，请稍后重试。'));
             } finally {
               setDeleting(false);
             }

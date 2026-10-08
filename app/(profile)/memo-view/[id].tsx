@@ -4,6 +4,7 @@ import { AppIconButton } from '@/components/ui';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { memoHasAiReview } from '@/lib/memo-format';
 import {
   getMemo,
@@ -17,7 +18,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 function normalizeId(raw: string | string[] | undefined): string {
@@ -98,12 +99,12 @@ export default function MemoViewScreen() {
       const next = !row.is_pinned;
       const updated = await setMemoPinned(row.id, next);
       if (!updated) {
-        Alert.alert('操作失败', '该备忘可能已删除');
+        toast.error('该备忘可能已删除');
         return;
       }
       setRow({ ...row, is_pinned: next || undefined });
-    } catch {
-      Alert.alert('操作失败', '请稍后重试');
+    } catch (e) {
+      toast.error(toUserMessage(e, '操作失败，请稍后重试'));
     } finally {
       setPinning(false);
     }

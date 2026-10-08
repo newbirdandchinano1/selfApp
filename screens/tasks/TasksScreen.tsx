@@ -41,7 +41,7 @@ import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { formatWriteError } from '@/lib/format-write-error';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   getFrogAssignedDates,
   getFrogAssignedOn,
@@ -2015,9 +2015,7 @@ export default function TasksScreen() {
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
   const [mutationOverlayLabel, setMutationOverlayLabel] = React.useState<string | null>(null);
-  const [operationToast, setOperationToast] = React.useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const mutationInFlightRef = React.useRef(false);
-  const operationToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const postMutationSyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const heatmapReloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const habitsReloadTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2050,15 +2048,6 @@ export default function TasksScreen() {
     });
   }, []);
 
-  const showOperationToast = React.useCallback((kind: 'success' | 'error', message: string) => {
-    if (operationToastTimerRef.current) clearTimeout(operationToastTimerRef.current);
-    setOperationToast({ kind, message });
-    operationToastTimerRef.current = setTimeout(() => {
-      setOperationToast(null);
-      operationToastTimerRef.current = null;
-    }, 1800);
-  }, []);
-
   const runExclusiveMutation = React.useCallback(
     async <T,>(label: string, action: () => Promise<T>, successMessage?: string): Promise<T | undefined> => {
       if (mutationInFlightRef.current) return undefined;
@@ -2066,22 +2055,21 @@ export default function TasksScreen() {
       setMutationOverlayLabel(label);
       try {
         const result = await action();
-        if (successMessage) showOperationToast('success', successMessage);
+        if (successMessage) toast.success(successMessage);
         return result;
       } catch (err) {
-        showOperationToast('error', '操作失败，请稍后重试。');
+        toast.error(toUserMessage(err, '操作失败，请稍后重试'));
         throw err;
       } finally {
         mutationInFlightRef.current = false;
         setMutationOverlayLabel(null);
       }
     },
-    [showOperationToast]
+    []
   );
 
   React.useEffect(() => {
     return () => {
-      if (operationToastTimerRef.current) clearTimeout(operationToastTimerRef.current);
       if (postMutationSyncTimerRef.current) clearTimeout(postMutationSyncTimerRef.current);
       if (heatmapReloadTimerRef.current) clearTimeout(heatmapReloadTimerRef.current);
       if (habitsReloadTimerRef.current) clearTimeout(habitsReloadTimerRef.current);
@@ -3279,14 +3267,11 @@ export default function TasksScreen() {
     });
   };
 
-  const beginSchedulePlace = React.useCallback(
-    (subject: SchedulePendingPlace) => {
-      setPendingSchedulePlace(subject);
-      mainScrollRef.current?.scrollToOffset({ offset: 0, animated: true });
-      showOperationToast('success', '请在上方日程表点选格子');
-    },
-    [showOperationToast],
-  );
+  const beginSchedulePlace = React.useCallback((subject: SchedulePendingPlace) => {
+    setPendingSchedulePlace(subject);
+    mainScrollRef.current?.scrollToOffset({ offset: 0, animated: true });
+    toast.info('请在上方日程表点选格子');
+  }, []);
 
   const beginSchedulePlaceForTask = React.useCallback(
     (task: TaskRow, projectName?: string | null) => {
@@ -3565,7 +3550,6 @@ export default function TasksScreen() {
       }, '已收入收集箱归档');
     } catch (err) {
       console.warn('收纳项目失败', err);
-      Alert.alert('操作失败', '未能将项目移至收集箱，请稍后重试。');
     }
   }, [
     grantProjectPointsWithToast,
@@ -3700,7 +3684,6 @@ export default function TasksScreen() {
         }, '已收入收集箱归档');
       } catch (err) {
         console.warn('完成项目失败', err);
-        Alert.alert('操作失败', '未能完成项目，请稍后重试。');
         await loadProjects();
       }
     },
@@ -3748,7 +3731,6 @@ export default function TasksScreen() {
         }, '项目已恢复');
       } catch (err) {
         console.warn('恢复项目失败', err);
-        Alert.alert('操作失败', '未能恢复项目，请稍后重试。');
         await loadProjects();
       }
     },
@@ -3852,7 +3834,6 @@ export default function TasksScreen() {
                 }, '已删除，履历已保留');
               } catch (err) {
                 console.warn('删除收集箱项目失败', err);
-                Alert.alert('删除失败', formatWriteError(err, '项目删除失败，请稍后重试。'));
                 await loadProjects();
               }
             },
@@ -4287,7 +4268,7 @@ export default function TasksScreen() {
         });
       } catch (err) {
         console.warn('完成青蛙会话失败', err);
-        Alert.alert('操作失败', '未能完成青蛙，请稍后重试。');
+        toast.error(toUserMessage(err, '未能完成青蛙，请稍后重试'));
         await loadTasks({ forceLocal: true });
         if (isProjectFrog) await loadProjects();
         await loadProjectTasks(projects);
@@ -4374,7 +4355,7 @@ export default function TasksScreen() {
         });
       } catch (err) {
         console.warn('恢复青蛙会话失败', err);
-        Alert.alert('操作失败', '未能恢复青蛙，请稍后重试。');
+        toast.error(toUserMessage(err, '未能恢复青蛙，请稍后重试'));
         await loadTasks({ forceLocal: true });
         if (isProjectFrog) await loadProjects();
         await loadProjectTasks(projects);
@@ -4543,7 +4524,6 @@ export default function TasksScreen() {
       }, '待办已保存');
     } catch (err) {
       console.warn('创建无项目待办失败', err);
-      Alert.alert('保存失败', formatWriteError(err, '待办未能写入，请稍后重试。'));
       await loadTasks({ forceLocal: true });
     } finally {
       setQuickTodoSaving(false);
@@ -4585,11 +4565,10 @@ export default function TasksScreen() {
           Alert.alert('无法升级', result.message);
           return;
         }
-        showOperationToast('success', '待办已升级为项目');
-        Alert.alert('已升级为项目', `「${result.projectName}」已创建，原待办成为项目下的主任务。`);
+        toast.success(`「${result.projectName}」已升级为项目`);
       } catch (err) {
         console.warn('待办升级为项目失败', err);
-        Alert.alert('升级失败', '请稍后重试。');
+        toast.error(toUserMessage(err, '升级失败，请稍后重试'));
         await loadTasks({ forceLocal: true });
       } finally {
         setUpgradingStandaloneTodoId(null);
@@ -4601,8 +4580,8 @@ export default function TasksScreen() {
       loadTasks,
       markPageDirty,
       saveExpandedProjectState,
-      showOperationToast,
       upgradingStandaloneTodoId,
+      runExclusiveMutation,
     ]
   );
 
@@ -4625,7 +4604,6 @@ export default function TasksScreen() {
               }, '待办已删除');
             } catch (err) {
               console.warn('删除待办失败', err);
-              Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
               await loadTasks({ forceLocal: true });
             }
           },
@@ -5489,7 +5467,6 @@ export default function TasksScreen() {
       }, categoryEditorTitle.includes('新建') ? '分类已新建' : '分类已修改');
     } catch (err) {
       console.warn('保存分类失败', err);
-      Alert.alert('保存失败', formatWriteError(err, '分类保存失败，请稍后重试。'));
     }
   }, [
     activeCategoryId,
@@ -5543,7 +5520,6 @@ export default function TasksScreen() {
             }, '分类已删除');
           } catch (err) {
             console.warn('删除分类失败', err);
-            Alert.alert('删除失败', formatWriteError(err, '分类删除失败，请稍后重试。'));
           }
         },
       },
@@ -8352,23 +8328,6 @@ export default function TasksScreen() {
           ) : null}
       </View>
 
-      {operationToast && (
-        <View pointerEvents="none" style={styles.operationToastWrap}>
-          <View
-            style={[
-              styles.operationToast,
-              { backgroundColor: operationToast.kind === 'success' ? `${success}f2` : `${error}f2` },
-            ]}>
-            <MaterialIcons
-              name={operationToast.kind === 'success' ? 'check-circle' : 'error'}
-              size={18}
-              color={taskUi.onAccent}
-            />
-            <Text style={styles.operationToastText}>{operationToast.message}</Text>
-          </View>
-        </View>
-      )}
-
       <Modal transparent visible={mutationOverlayLabel != null} animationType="fade" statusBarTranslucent>
         <View style={[styles.mutationOverlay, { backgroundColor: colors.overlay }]}>
           <View style={[styles.mutationOverlayCard, { backgroundColor: modalCardBg }]}>
@@ -8620,30 +8579,6 @@ export default function TasksScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  operationToastWrap: {
-    position: 'absolute',
-    top: 72,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    zIndex: 40,
-    paddingHorizontal: Spacing.xl,
-  },
-  operationToast: {
-    minHeight: 42,
-    maxWidth: '92%',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.pill,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  operationToastText: {
-    color: TaskUiColors.light.onAccent,
-    fontSize: 14,
-    fontWeight: '800',
-  },
   mutationOverlay: {
     flex: 1,
     alignItems: 'center',

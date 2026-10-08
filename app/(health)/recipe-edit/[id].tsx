@@ -23,6 +23,7 @@ import {
   type RecipeCategory,
   type RecipeIngredient,
 } from '@/lib/recipes';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -208,14 +209,15 @@ export default function RecipeEditScreen() {
         }
         const ok = await updateRecipe(id, patch);
         if (!ok) {
-          Alert.alert('保存失败', '该菜谱可能已删除');
+          toast.error('保存失败，该菜谱可能已删除');
           setSaving(false);
           return;
         }
       }
+      toast.success('已保存');
       router.back();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

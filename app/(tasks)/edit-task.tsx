@@ -18,6 +18,7 @@ import {
 } from '@/lib/schedule-inherit';
 import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
 import { requestPush } from '@/lib/sync-manager';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
@@ -555,7 +556,7 @@ export default function EditTaskScreen() {
 
     const parentTask = taskSnapshotRef.current;
     if (!parentTask) {
-      Alert.alert('添加失败', '父任务尚未加载完成，请稍后重试。');
+      toast.error('父任务尚未加载完成，请稍后重试。');
       return;
     }
 
@@ -589,12 +590,11 @@ export default function EditTaskScreen() {
           schedule: subtaskSchedule,
         }),
       });
-      Alert.alert('已添加', '子任务已创建。');
+      toast.success('子任务已创建');
       await reload();
     } catch (error) {
       console.warn('创建子任务失败', error);
-      const message = formatWriteError(error, '子任务创建失败，请稍后重试。');
-      Alert.alert('添加失败', message);
+      toast.error(formatWriteError(error, '子任务创建失败，请稍后重试。'));
     } finally {
       if (creatingSubtaskIdRef.current === payload.task.id) {
         creatingSubtaskIdRef.current = null;
@@ -610,7 +610,7 @@ export default function EditTaskScreen() {
 
     const childTask = taskSnapshotRef.current;
     if (!childTask) {
-      Alert.alert('关联失败', '当前任务尚未加载完成，请稍后重试。');
+      toast.error('当前任务尚未加载完成，请稍后重试。');
       return;
     }
 
@@ -644,10 +644,10 @@ export default function EditTaskScreen() {
 
       setTaskSnapshot((prev) => (prev ? { ...prev, parent_task_id: nextParentId } : prev));
       notifyPageDataChanged(PAGE_API_KEY);
-      Alert.alert('已更新', nextParentId ? '父任务已关联。' : '已移除父任务。');
+      toast.success(nextParentId ? '父任务已关联' : '已移除父任务');
     } catch (error) {
       console.warn('关联父任务失败', error);
-      Alert.alert('关联失败', formatWriteError(error, '父任务关联失败，请稍后重试。'));
+      toast.error(formatWriteError(error, '父任务关联失败，请稍后重试。'));
     }
   }, [pickParentTaskSource, projectDateLimit, taskId]);
 
@@ -1049,8 +1049,8 @@ export default function EditTaskScreen() {
       const detail = formatWriteError(error, '任务保存失败，请稍后重试。');
       const syncHint = /同步|服务器|网络|登录/i.test(detail)
         ? detail
-        : `${detail}\n\n若仅本机已保存，请检查网络与服务器登录状态后重试。`;
-      Alert.alert('保存失败', syncHint);
+        : `${detail} 若仅本机已保存，请检查网络与登录状态后重试。`;
+      toast.error(syncHint);
       return false;
     } finally {
       setSaving(false);
@@ -1082,6 +1082,7 @@ export default function EditTaskScreen() {
     void (async () => {
       const ok = await persistTask();
       if (!ok) return;
+      toast.success('已保存');
       performLeave();
     })();
   }, [loading, performLeave, persistTask, saving]);
@@ -1158,10 +1159,11 @@ export default function EditTaskScreen() {
                 setSaving(true);
                 await deleteTask(taskId);
                 notifyPageDataChanged(PAGE_API_KEY);
+                toast.success('已删除');
                 navigateAfterDeleteTask();
               } catch (error) {
                 console.warn('删除任务失败', error);
-                Alert.alert('删除失败', formatWriteError(error, '任务删除失败，请稍后重试。'));
+                toast.error(formatWriteError(error, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }
@@ -1182,10 +1184,11 @@ export default function EditTaskScreen() {
                 setSaving(true);
                 await deleteTask(taskId);
                 notifyPageDataChanged(PAGE_API_KEY);
+                toast.success('已删除');
                 navigateAfterDeleteTask();
               } catch (err) {
                 console.warn('删除任务失败', err);
-                Alert.alert('删除失败', formatWriteError(err, '任务删除失败，请稍后重试。'));
+                toast.error(formatWriteError(err, '任务删除失败，请稍后重试。'));
               } finally {
                 setSaving(false);
               }

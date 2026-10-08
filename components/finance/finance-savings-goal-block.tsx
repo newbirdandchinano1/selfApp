@@ -1,4 +1,5 @@
 import { Radius, Spacing } from '@/constants/design-tokens';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { apiGetFinancePredictedSavings } from '@/lib/api/endpoints/finance';
 import {
   clearFinanceSavingsGoal,
@@ -229,28 +230,22 @@ export function FinanceSavingsGoalBlock({
     const normalized = amountDraft.trim().replace(/,/g, '');
     const amount = parseFloat(normalized);
     if (!Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('金额无效', '请输入有效的目标存款金额。');
+      toast.warn('请输入有效的目标存款金额。');
       return;
     }
     if (amount > FINANCE_SAVINGS_GOAL_MAX_AMOUNT) {
-      Alert.alert(
-        '金额过大',
-        `目标金额不得超过 ${FINANCE_SAVINGS_GOAL_MAX_AMOUNT.toLocaleString('zh-CN')}。`,
-      );
+      toast.warn(`目标金额不得超过 ${FINANCE_SAVINGS_GOAL_MAX_AMOUNT.toLocaleString('zh-CN')}。`);
       return;
     }
     if (amount <= currentNetWorth) {
-      Alert.alert(
-        '目标过低',
-        `目标存款须大于当前净资产（${formatCurrency(currentNetWorth)}）。`,
-      );
+      toast.warn(`目标存款须大于当前净资产（${formatCurrency(currentNetWorth)}）。`);
       return;
     }
 
     const tomorrowStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
     const pickStart = new Date(dateDraft.getFullYear(), dateDraft.getMonth(), dateDraft.getDate());
     if (pickStart.getTime() < tomorrowStart.getTime()) {
-      Alert.alert('日期无效', '目标日期最早只能选明天。');
+      toast.warn('目标日期最早只能选明天。');
       return;
     }
 
@@ -263,9 +258,10 @@ export function FinanceSavingsGoalBlock({
       await persistFinanceSavingsGoal(next);
       setGoal(next);
       onGoalChange?.(next);
+      toast.success('已保存');
       closeSheet();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试。');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试。'));
     } finally {
       setSaving(false);
     }
@@ -283,9 +279,10 @@ export function FinanceSavingsGoalBlock({
               await clearFinanceSavingsGoal();
               setGoal(null);
               onGoalChange?.(null);
+              toast.success('已清除');
               closeSheet();
-            } catch {
-              Alert.alert('清除失败', '请稍后重试。');
+            } catch (e) {
+              toast.error(toUserMessage(e, '清除失败，请稍后重试。'));
             }
           })();
         },

@@ -1,3 +1,4 @@
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
@@ -109,7 +110,7 @@ export default function NotificationCenterScheduledScreen() {
                 setScheduled(nextScheduled);
               } catch (e) {
                 console.warn('关闭预约通知失败', e);
-                Alert.alert('操作失败', '请稍后再试');
+                toast.error(toUserMessage(e, '操作失败，请稍后再试'));
               } finally {
                 setBusy(false);
               }
@@ -133,7 +134,7 @@ export default function NotificationCenterScheduledScreen() {
         setScheduled(nextScheduled);
       } catch (e) {
         console.warn('恢复通知失败', e);
-        Alert.alert('恢复失败', '请稍后再试');
+        toast.error(toUserMessage(e, '恢复失败，请稍后再试'));
       } finally {
         setBusy(false);
       }

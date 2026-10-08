@@ -16,6 +16,7 @@ import {
   isExpenseIncludedInBudget,
   isIncomeIncludedInBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { notifyFinanceSheetSaved } from '@/lib/finance-transaction-sheet/controller';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
@@ -236,12 +237,12 @@ export default function EditFinanceTransactionScreen() {
   const onSave = React.useCallback(async () => {
     if (saving) return;
     if (!row || !selectedAccount) {
-      Alert.alert('无法保存', '缺少交易或账户信息。');
+      toast.warn('缺少交易或账户信息。');
       return;
     }
     const absAmount = parseFloat(amountDraft.trim().replace(/,/g, ''));
     if (!Number.isFinite(absAmount) || absAmount <= 0) {
-      Alert.alert('金额无效', '请输入大于 0 的金额。');
+      toast.warn('请输入大于 0 的金额。');
       return;
     }
     const title =
@@ -282,10 +283,11 @@ export default function EditFinanceTransactionScreen() {
           categoryLabel: selectedCategory?.label ?? '未分类',
         });
       }
+      toast.success('已保存');
       router.back();
     } catch (e) {
       console.warn('Failed to update finance transaction:', e);
-      Alert.alert('保存失败', '请检查金额与账户类型后重试。');
+      toast.error(toUserMessage(e, '请检查金额与账户类型后重试。'));
     } finally {
       setSaving(false);
     }
@@ -302,10 +304,11 @@ export default function EditFinanceTransactionScreen() {
           try {
             setDeleting(true);
             await deleteFinanceTransaction(row.id);
+            toast.success('已删除');
             router.back();
           } catch (e) {
             console.warn('Failed to delete finance transaction:', e);
-            Alert.alert('删除失败', '请稍后重试。');
+            toast.error(toUserMessage(e, '删除失败，请稍后重试。'));
           } finally {
             setDeleting(false);
           }
@@ -418,7 +421,7 @@ export default function EditFinanceTransactionScreen() {
                   const signedAmount = selectedAccount.sign_rule > 0 ? Math.abs(Number(amountDraft)) : -Math.abs(Number(amountDraft));
                   const absAmount = Math.abs(Number(amountDraft));
                   if (!Number.isFinite(absAmount) || absAmount <= 0) {
-                    Alert.alert('金额无效', '请输入大于 0 的金额。');
+                    toast.warn('请输入大于 0 的金额。');
                     return;
                   }
                   const title = nameDraft.trim() || (tab === 'income' ? '收入' : tab === 'expense' ? '支出' : '转账');

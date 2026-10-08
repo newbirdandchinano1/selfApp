@@ -26,6 +26,7 @@ import {
   parseWeeklyReviewFields,
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
@@ -187,6 +188,7 @@ export function WeeklyReviewGridView({
       });
     } catch (e) {
       console.warn('weekly review save', e);
+      toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }
@@ -244,7 +246,7 @@ export function WeeklyReviewGridView({
       setAiCoaching(text);
     } catch (e) {
       console.warn('weekly ai analysis', e);
-      Alert.alert('分析失败', '请稍后重试。');
+      toast.error(toUserMessage(e, '分析失败，请稍后重试'));
     } finally {
       setAiBusy(false);
     }

@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { createHabitContext, deleteHabitContexts, getHabitContexts, updateHabitContextsSortOrder } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -127,8 +128,10 @@ export default function HabitContextScreen() {
               setSelectedIds(new Set());
               setEditMode(false);
               await reload();
+              toast.success('已删除');
             } catch (err) {
               console.warn('删除情境失败', err);
+              toast.error(toUserMessage(err, '删除失败，请稍后重试'));
             }
           })();
         },
@@ -150,8 +153,10 @@ export default function HabitContextScreen() {
         await createHabitContext(name);
         setAddVisible(false);
         await reload();
+        toast.success('已添加');
       } catch (err) {
-        Alert.alert('添加失败', err instanceof Error ? err.message : '添加情境失败');
+        console.warn('添加情境失败', err);
+        toast.error(toUserMessage(err, '添加情境失败'));
       }
     })();
   }, [reload, newContextName]);

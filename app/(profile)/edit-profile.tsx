@@ -2,6 +2,7 @@ import { AppCard, AppIcon, AppText, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { invalidateDailyIntakeAiTargetsCache } from '@/lib/daily-intake-ai-targets';
 import { formatYmd, parseYmd } from '@/lib/date';
 import {
@@ -413,10 +414,10 @@ export default function EditProfileScreen() {
       await saveDietaryPrefs(snap.dietary);
       await invalidateDailyIntakeAiTargetsCache();
       setLoadedSnapshot(snap);
+      toast.success('已保存');
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : '请稍后重试';
-      Alert.alert('保存失败', message);
+      toast.error(toUserMessage(error, '保存失败，请稍后重试'));
       return false;
     } finally {
       setSaving(false);

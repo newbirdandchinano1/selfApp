@@ -1,5 +1,6 @@
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast } from '@/lib/app-feedback';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
 import { addDays } from '@/lib/date';
 import {
@@ -321,9 +322,6 @@ export default function SchedulePickerScreen() {
     return initial;
   });
   const [timePickerVisible, setTimePickerVisible] = React.useState(false);
-  const [toastVisible, setToastVisible] = React.useState(false);
-  const [toastMessage, setToastMessage] = React.useState('');
-  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [yearlyDatePickerVisible, setYearlyDatePickerVisible] = React.useState(false);
   const yearlyPickerOpenTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [settingPickerType, setSettingPickerType] = React.useState<SettingPickerType>(null);
@@ -615,8 +613,6 @@ export default function SchedulePickerScreen() {
     setMonthlyDays([1]);
     setYearlyDate(new Date(todayStart));
     setYearlyDatePickerVisible(false);
-    setToastVisible(false);
-    setToastMessage('');
     setTimeDraft(defaultStart);
     setTimePickerTarget('start');
   };
@@ -629,16 +625,7 @@ export default function SchedulePickerScreen() {
   };
 
   const showToast = React.useCallback((message: string) => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    }
-    setToastMessage(message);
-    setToastVisible(true);
-    toastTimerRef.current = setTimeout(() => {
-      setToastVisible(false);
-      toastTimerRef.current = null;
-    }, 2500);
+    toast.warn(message);
   }, []);
 
   const buildReturnPayload = React.useCallback((): SchedulePickerResult => {
@@ -1477,16 +1464,6 @@ export default function SchedulePickerScreen() {
           </View>
         </View>
       </Modal>
-      <Modal visible={toastVisible} transparent animationType="fade" onRequestClose={() => setToastVisible(false)}>
-        <View pointerEvents="box-none" style={styles.toastOverlay}>
-          <View style={styles.toastHost}>
-            <View style={[styles.toastWrap, { backgroundColor: colors.accentCard }]}>
-              <Text style={[styles.toastText, { color: colors.onAccent }]}>{toastMessage}</Text>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       <Modal
         visible={settingPickerType !== null}
         transparent
@@ -1720,10 +1697,6 @@ const styles = StyleSheet.create({
   clearText: { fontSize: 16, fontWeight: '600' },
   pickerBackdrop: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['6xl'] },
   pickerCard: { borderRadius: Radius.xl, padding: Spacing['3xl'], gap: Spacing.xl, ...Shadows.sheet },
-  toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 120 },
-  toastHost: { width: '100%', alignItems: 'center' },
-  toastWrap: { borderRadius: Radius.pill, paddingHorizontal: Spacing['2xl'], paddingVertical: Spacing.md, maxWidth: '92%', ...Shadows.card },
-  toastText: { fontSize: 13, fontWeight: '600', textAlign: 'center' },
   pickerTitle: { ...Typography.title, textAlign: 'center' },
   pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.lg },
   pickerBtn: { borderRadius: Radius.sm, paddingHorizontal: Spacing['3xl'], paddingVertical: Spacing.lg, minWidth: 72, alignItems: 'center' },

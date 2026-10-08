@@ -1,4 +1,5 @@
 import { AppInput } from '@/components/ui/app-input';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { Colors } from '@/constants/theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
@@ -178,14 +179,14 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       if (cloudTokenDraft.length === 0) {
         await clearCloudUserToken();
         setCloudTokenConfigured(true);
-        Alert.alert('已恢复默认', '将使用应用内置云端访问密钥。');
+        toast.success('已恢复默认密钥');
         return;
       }
       await setCloudUserToken(cloudTokenDraft);
       setCloudTokenConfigured(true);
-      Alert.alert('已保存', '自定义密钥已写入本机，重启应用后仍有效。');
+      toast.success('自定义密钥已保存');
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : String(e));
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setCloudTokenSaving(false);
     }
@@ -405,8 +406,9 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     try {
       await persistDayBoundary(draftBoundary);
       setDayBoundaryPickerVisible(false);
-    } catch {
-      Alert.alert('保存失败', '未能保存日界设置，请稍后重试。');
+      toast.success('已保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, '未能保存日界设置，请稍后重试。'));
     }
   }, [draftBoundary, persistDayBoundary]);
 
@@ -415,8 +417,8 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
       const next = enabled
         ? [...new Set([...dayBoundaryPages, page])]
         : dayBoundaryPages.filter((p) => p !== page);
-      void persistDayBoundaryPages(next).catch(() => {
-        Alert.alert('保存失败', '未能更新日界作用页面，请稍后重试。');
+      void persistDayBoundaryPages(next).catch((e) => {
+        toast.error(toUserMessage(e, '未能更新日界作用页面，请稍后重试。'));
       });
     },
     [dayBoundaryPages, persistDayBoundaryPages],

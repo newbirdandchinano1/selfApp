@@ -2,6 +2,7 @@ import { AppButton, AppInput, ScreenHeader, Skeleton } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
 import {
   FINANCE_ACCOUNT_ICON_OPTIONS,
@@ -270,7 +271,7 @@ export default function AddAccountScreen() {
   const onSaveCustomType = React.useCallback(async () => {
     const nextName = modalTypeName.trim();
     if (!nextName) {
-      Alert.alert('请输入类型名称', '类型名称不能为空。');
+      toast.warn('请输入类型名称');
       return;
     }
     setModalSaving(true);
@@ -287,9 +288,10 @@ export default function AddAccountScreen() {
       setCustomIsLiability(modalIsLiability);
       setCustomTypeModalOpen(false);
       await reloadCustomTypes();
+      toast.success('已保存');
     } catch (e) {
       console.warn('保存自定义类型失败:', e);
-      Alert.alert('保存失败', '自定义类型保存失败，请稍后重试。');
+      toast.error(toUserMessage(e, '自定义类型保存失败，请稍后重试'));
     } finally {
       setModalSaving(false);
     }
@@ -299,7 +301,7 @@ export default function AddAccountScreen() {
     Keyboard.dismiss();
     const name = accountName.trim();
     if (!name) {
-      Alert.alert('请输入账户名称', '账户名称不能为空。');
+      toast.warn('请输入账户名称');
       return;
     }
 
@@ -308,7 +310,7 @@ export default function AddAccountScreen() {
       const normalizedBalanceText = balance.trim().replace(/[^\d.-]/g, '');
       const balanceNum = normalizedBalanceText ? Number(normalizedBalanceText) : 0;
       if (!Number.isFinite(balanceNum)) {
-        Alert.alert('余额无效', '请输入正确的数字金额。');
+        toast.warn('请输入正确的数字金额');
         return;
       }
       const meta = editLedgerMetaRef.current;
@@ -340,9 +342,10 @@ export default function AddAccountScreen() {
           accountType: meta.account_type,
           currentLedgerBalance: meta.ledger_balance,
         });
+        toast.success('已保存');
         router.back();
       } catch (e) {
-        Alert.alert('保存失败', e instanceof Error && e.message.trim() ? e.message : '请稍后重试。');
+        toast.error(toUserMessage(e, '保存失败，请稍后重试'));
       } finally {
         setSaving(false);
       }
@@ -355,7 +358,7 @@ export default function AddAccountScreen() {
 
     const customType = customTypeName.trim();
     if (accountType === 'custom' && !customType) {
-      Alert.alert('请输入类型名称', '自定义类型名称不能为空。');
+      toast.warn('请输入自定义类型名称');
       return;
     }
 
@@ -363,7 +366,7 @@ export default function AddAccountScreen() {
     const rawBalance = normalizedBalanceText ? Number(normalizedBalanceText) : 0;
     const absInitial = Number.isFinite(rawBalance) ? Math.abs(rawBalance) : NaN;
     if (!Number.isFinite(absInitial)) {
-      Alert.alert('余额无效', '请输入正确的数字金额。');
+      toast.warn('请输入正确的数字金额');
       return;
     }
 
@@ -402,9 +405,10 @@ export default function AddAccountScreen() {
         });
       }
 
+      toast.success('已保存');
       router.back();
-    } catch {
-      Alert.alert('保存失败', '请稍后重试。');
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }
@@ -610,7 +614,7 @@ export default function AddAccountScreen() {
                           try {
                             const hasRelatedAccounts = await hasAccountsForCustomType(t.name);
                             if (hasRelatedAccounts) {
-                              Alert.alert('无法删除', `“${t.name}”下已有账户，请先删除或转移账户后再试。`);
+                              toast.warn(`“${t.name}”下已有账户，请先删除或转移账户后再试`);
                               return;
                             }
 
@@ -629,16 +633,17 @@ export default function AddAccountScreen() {
                                       setCustomTypeName('');
                                       setCustomIsLiability(false);
                                     }
+                                    toast.success('已删除');
                                   } catch (e) {
                                     console.warn('删除自定义类型失败:', e);
-                                    Alert.alert('删除失败', '请稍后重试。');
+                                    toast.error(toUserMessage(e, '删除失败，请稍后重试'));
                                   }
                                 },
                               },
                             ]);
                           } catch (e) {
                             console.warn('校验自定义类型是否可删除失败:', e);
-                            Alert.alert('操作失败', '请稍后重试。');
+                            toast.error(toUserMessage(e, '操作失败，请稍后重试'));
                           }
                         })();
                       },

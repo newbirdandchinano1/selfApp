@@ -10,7 +10,7 @@ import {
 } from '@/lib/api-loading-tracker';
 
 const DEFAULT_MIN_VISIBLE_MS = 480;
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 10000;
 
 function getLoadingSnapshot(): boolean {
   return isApiLoadingActive();

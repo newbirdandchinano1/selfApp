@@ -1,4 +1,5 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -75,7 +76,7 @@ export default function ScheduledExpensesScreen() {
       setItems((prev) => prev.map((row) => (row.id === item.id ? { ...row, enabled } : row)));
       if (enabled) scheduleRunScheduledFinanceExpenses('toggle-on');
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     }
   }, []);
 
@@ -90,8 +91,9 @@ export default function ScheduledExpensesScreen() {
             try {
               await deleteScheduledFinanceExpense(item.id);
               setItems((prev) => prev.filter((row) => row.id !== item.id));
+              toast.success('已删除');
             } catch (e) {
-              Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+              toast.error(toUserMessage(e, '删除失败，请稍后重试'));
             }
           })();
         },

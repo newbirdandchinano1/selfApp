@@ -31,6 +31,7 @@ import {
   resetPointsBalance,
 } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardItemRow, WishRedeemRecord } from '@/lib/repositories/wish-board/wish-board.types';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -160,8 +161,9 @@ export default function WishBoardScreen() {
                 setBalance(result.balance);
                 notifyAncestorsDataChanged();
                 await reload();
+                toast.success('积分已清零');
               } catch (e) {
-                Alert.alert('重置失败', e instanceof Error ? e.message : '请稍后重试');
+                toast.error(toUserMessage(e, '重置失败，请稍后重试'));
               } finally {
                 setResetting(false);
               }
@@ -182,9 +184,11 @@ export default function WishBoardScreen() {
           currentNetWorth,
         });
       if (!eligibility.ok) {
-        Alert.alert(
-          !eligibility.pointsOk ? '积分不足' : '兑换条件未满足',
-          eligibility.message ?? `暂时无法兑换「${item.title}」。`,
+        toast.warn(
+          eligibility.message ??
+            (!eligibility.pointsOk
+              ? '积分不足'
+              : `暂时无法兑换「${item.title}」。`),
         );
         return;
       }
@@ -210,8 +214,9 @@ export default function WishBoardScreen() {
                   setBalance(result.balance);
                   notifyAncestorsDataChanged();
                   await reload();
+                  toast.success('兑换成功');
                 } catch (e) {
-                  Alert.alert('兑换失败', e instanceof Error ? e.message : '请稍后重试');
+                  toast.error(toUserMessage(e, '兑换失败，请稍后重试'));
                 }
               })();
             },
@@ -234,8 +239,9 @@ export default function WishBoardScreen() {
               try {
                 await deleteWishBoardItem(item.id);
                 await reload();
+                toast.success('已删除');
               } catch (e) {
-                Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
               }
             })();
           },
@@ -257,8 +263,9 @@ export default function WishBoardScreen() {
               try {
                 await deleteWishRedeemRecord(record);
                 await reload();
+                toast.success('已删除');
               } catch (e) {
-                Alert.alert('删除失败', e instanceof Error ? e.message : '请稍后重试');
+                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
               }
             })();
           },

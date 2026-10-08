@@ -53,6 +53,7 @@ import {
   type ReviewFieldValues,
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import { ensureBuiltinDailyReviewModules, listReviewTemplate } from '@/lib/repositories/insights/review-template';
 import { useFocusEffect } from 'expo-router/react-navigation';
@@ -224,6 +225,7 @@ export function DailyReviewGridView({
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
     } catch (e) {
       console.warn('daily review save', e);
+      toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }
@@ -310,7 +312,7 @@ export function DailyReviewGridView({
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
     } catch (e) {
       console.warn('daily ai analysis', e);
-      Alert.alert('分析失败', '请稍后重试。');
+      toast.error(toUserMessage(e, '分析失败，请稍后重试'));
     } finally {
       setAiBusy(false);
     }

@@ -28,6 +28,7 @@ import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -273,7 +274,7 @@ export default function MemoListScreen() {
     setAiModalLoading(true);
     try {
       const res = await runAiForMemo(aiModalItem);
-      if (!res.ok) Alert.alert('生成失败', res.error);
+      if (!res.ok) toast.error(res.error);
     } finally {
       setAiModalLoading(false);
     }
@@ -284,12 +285,12 @@ export default function MemoListScreen() {
     try {
       const updated = await setMemoPinned(row.id, next);
       if (!updated) {
-        Alert.alert('操作失败', '该备忘可能已删除');
+        toast.error('该备忘可能已删除');
         return;
       }
       setItems(prev => prev.map(m => (m.id === row.id ? { ...m, is_pinned: next || undefined } : m)));
-    } catch {
-      Alert.alert('操作失败', '请稍后重试');
+    } catch (e) {
+      toast.error(toUserMessage(e, '操作失败，请稍后重试'));
     }
   }, []);
 
@@ -305,8 +306,8 @@ export default function MemoListScreen() {
           { text: '知道了', style: 'cancel' },
           { text: '查看待办', onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }) },
         ]);
-      } catch {
-        Alert.alert('转换失败', '请稍后重试');
+      } catch (e) {
+        toast.error(toUserMessage(e, '转换失败，请稍后重试'));
       } finally {
         setConvertingMemoId(prev => (prev === row.id ? null : prev));
       }
@@ -331,9 +332,9 @@ export default function MemoListScreen() {
         ]);
       } catch (e) {
         if (e instanceof Error && e.message === 'duplicate_name') {
-          Alert.alert('转换失败', '已有同名项目，请修改备忘标题后再转换。');
+          toast.warn('已有同名项目，请修改备忘标题后再转换。');
         } else {
-          Alert.alert('转换失败', '请稍后重试');
+          toast.error(toUserMessage(e, '转换失败，请稍后重试'));
         }
       } finally {
         setConvertingMemoId(prev => (prev === row.id ? null : prev));
@@ -355,8 +356,9 @@ export default function MemoListScreen() {
               await deleteMemo(row.id);
               setItems(prev => prev.filter(i => i.id !== row.id));
               setAiModalId(prevId => (prevId === row.id ? null : prevId));
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
+              toast.success('已删除');
+            } catch (e) {
+              toast.error(toUserMessage(e, '删除失败，请稍后重试'));
             }
           })();
         },

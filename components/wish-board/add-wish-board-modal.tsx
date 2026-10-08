@@ -16,13 +16,13 @@ import {
   loadWishBoardCurrentNetWorth,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
 import { assertNonNegativeCostPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -101,11 +101,11 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     try {
       cost = assertNonNegativeCostPoints(costText);
     } catch (e) {
-      Alert.alert(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
+      toast.warn(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
       return;
     }
     if (!title.trim()) {
-      Alert.alert('请填写心愿名称');
+      toast.warn('请填写心愿名称');
       return;
     }
     setSaving(true);
@@ -120,8 +120,9 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
       });
       onClose();
       onCreated?.();
+      toast.success('已添加');
     } catch (e) {
-      Alert.alert('添加失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '添加失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

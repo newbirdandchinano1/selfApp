@@ -9,6 +9,7 @@ import {
   Spacing,
 } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   LIFE_BET_HORIZON_LABELS,
@@ -92,22 +93,21 @@ export default function EditLifeBetScreen() {
 
   const onSave = async () => {
     if (!title.trim()) {
-      Alert.alert('请填写标题');
+      toast.warn('请填写标题');
       return;
     }
     let year: number | null = null;
     if (yearRequired) {
       const n = Number(yearText.trim());
       if (!Number.isInteger(n) || n < 1970 || n > 2100) {
-        Alert.alert('请填写有效的公历年');
+        toast.warn('请填写有效的公历年');
         return;
       }
       year = n;
       if ((status === 'on_track' || status === 'paused') && isNew) {
         const count = await countActiveYearBetsLocal(year);
         if (count >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
-          Alert.alert(
-            '今年已满',
+          toast.warn(
             `今年进行中的道路赌注最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条（在路上/暂搁）。`,
           );
           return;
@@ -138,9 +138,10 @@ export default function EditLifeBetScreen() {
         });
       }
       notifyAncestorsDataChanged();
+      toast.success('已保存');
       router.back();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请检查网络后重试');
+      toast.error(toUserMessage(e, '保存失败，请检查网络后重试'));
     } finally {
       setSaving(false);
     }

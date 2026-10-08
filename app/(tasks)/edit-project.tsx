@@ -33,6 +33,7 @@ import {
 } from '@/components/composer';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getDatabase } from '@/lib/database.native';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import {
   getIsLongTermProject,
@@ -406,9 +407,6 @@ export default function EditProjectScreen() {
   const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
-  const [toastVisible, setToastVisible] = React.useState(false);
-  const [toastMessage, setToastMessage] = React.useState('');
-  const toastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource =
@@ -421,28 +419,6 @@ export default function EditProjectScreen() {
   const subtaskCardBg = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
   const subtaskCardBorder = isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.55)';
   const subtaskIndicatorBg = isDark ? 'rgba(30,41,59,0.72)' : 'rgba(226,232,240,0.85)';
-
-  const showToast = React.useCallback((message: string) => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    }
-    setToastMessage(message);
-    setToastVisible(true);
-    toastTimerRef.current = setTimeout(() => {
-      setToastVisible(false);
-      toastTimerRef.current = null;
-    }, 2200);
-  }, []);
-
-  React.useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-        toastTimerRef.current = null;
-      }
-    };
-  }, []);
 
   const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -506,14 +482,14 @@ export default function EditProjectScreen() {
       }
       setSubtasks((prev) => [...prev, { ...task, children: [] }]);
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
-      showToast('已加入项目');
+      toast.success('已加入项目');
       return true;
     } catch (error) {
       console.warn('添加任务写入失败', error);
-      Alert.alert('任务保存失败', formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
+      toast.error(formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
       return true;
     }
-  }, [addTaskSource, priority, projectId, showToast]);
+  }, [addTaskSource, priority, projectId]);
 
   const loadProject = React.useCallback(async () => {
     if (!projectId) {
@@ -932,8 +908,8 @@ export default function EditProjectScreen() {
       } catch {
         /* 无活动事务时 ROLLBACK 可能失败，忽略 */
       }
-      console.warn('删除项目失败', error);
-      Alert.alert('保存失败', formatWriteError(error));
+      console.warn('保存项目失败', error);
+      toast.error(formatWriteError(error, '保存失败，请稍后重试'));
       setSaving(false);
     } finally {
       endCloudSqliteDirtyIgnoreBatch();
@@ -957,10 +933,10 @@ export default function EditProjectScreen() {
         onlyTables: projectSyncTables,
       });
       notifyAncestorsDataChanged();
+      toast.success('已保存');
     } catch (syncErr) {
       console.warn('项目保存后同步到服务器失败', syncErr);
-      Alert.alert(
-        '同步失败',
+      toast.error(
         formatWriteError(syncErr, '已保存到本机，但未能写入服务器。请检查网络后重试或下拉刷新。'),
       );
     }
@@ -1022,10 +998,11 @@ export default function EditProjectScreen() {
         } catch (syncErr) {
           console.warn('项目删除后同步到服务器失败', syncErr);
         }
+        toast.success('已删除');
         router.back();
       } catch (error) {
         console.warn('删除项目失败', error);
-        Alert.alert('删除失败', formatWriteError(error, '项目删除失败，请稍后重试。'));
+        toast.error(formatWriteError(error, '项目删除失败，请稍后重试。'));
       } finally {
         setSaving(false);
       }
@@ -1511,18 +1488,6 @@ export default function EditProjectScreen() {
         </Pressable>
       </Modal>
 
-      <Modal visible={toastVisible} transparent animationType="fade" onRequestClose={() => setToastVisible(false)}>
-        <View
-          pointerEvents="box-none"
-          style={[styles.toastOverlay, { paddingBottom: Math.max(insets.bottom, 14) + 100 }]}>
-          <View style={styles.toastHost}>
-            <View style={[styles.toastWrap, { backgroundColor: isDark ? 'rgba(15,23,42,0.96)' : 'rgba(17,24,39,0.96)' }]}>
-              <Text style={styles.toastText}>{toastMessage}</Text>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
       {saving ? (
         <View style={[styles.savingOverlay, { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.72)' }]} pointerEvents="auto">
           <ActivityIndicator size="large" color={primary} />
@@ -1737,10 +1702,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   modalItemText: { fontSize: 14, fontWeight: '600' },
-  toastOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
-  toastHost: { width: '100%', alignItems: 'center' },
-  toastWrap: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, maxWidth: '92%' },
-  toastText: { color: '#fff', fontSize: 13, fontWeight: '600', textAlign: 'center' },
   savingOverlay: {
     ...StyleSheet.absoluteFill,
     zIndex: 300,

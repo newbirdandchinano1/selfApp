@@ -1,5 +1,6 @@
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
+import { toast } from '@/lib/app-feedback';
 import {
   loadCashFlowState,
   newCashFlowHoldingId,
@@ -125,15 +126,12 @@ function formatMoney(value: number) {
 
 const CASH_FLOW_AI_CACHE_KEY = 'cash_flow_dashboard_ai_v2';
 
-type ToastState = { message: string; type: 'success' | 'warning' } | null;
-
 type CashFlowContextValue = {
   state: CashFlowState;
   setState: React.Dispatch<React.SetStateAction<CashFlowState>>;
   hydrated: boolean;
   metrics: Metrics;
   showToast: (message: string, type?: 'success' | 'warning') => void;
-  toast: ToastState;
 };
 
 const CashFlowContext = React.createContext<CashFlowContextValue | null>(null);
@@ -148,7 +146,6 @@ export function CashFlowProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<CashFlowState>(CASH_FLOW_EMPTY_STATE);
   const [hydrated, setHydrated] = useState(false);
   const skipNextPersist = useRef(true);
-  const [toast, setToast] = useState<ToastState>(null);
 
   const metrics = useMemo(() => calculateCashFlowMetrics(state), [state]);
 
@@ -183,18 +180,13 @@ export function CashFlowProvider({ children }: { children: React.ReactNode }) {
   }, [state, hydrated]);
 
   const showToast = useCallback((message: string, type: 'success' | 'warning' = 'success') => {
-    setToast({ message, type });
+    if (type === 'warning') toast.warn(message);
+    else toast.success(message);
   }, []);
 
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 2500);
-    return () => clearTimeout(t);
-  }, [toast]);
-
   const value = useMemo<CashFlowContextValue>(
-    () => ({ state, setState, hydrated, metrics, showToast, toast }),
-    [state, hydrated, metrics, showToast, toast]
+    () => ({ state, setState, hydrated, metrics, showToast }),
+    [state, hydrated, metrics, showToast]
   );
 
   return <CashFlowContext.Provider value={value}>{children}</CashFlowContext.Provider>;
@@ -202,7 +194,7 @@ export function CashFlowProvider({ children }: { children: React.ReactNode }) {
 
 export function CashFlowShell({ route }: { route: ActiveTab }) {
   const router = useRouter();
-  const { state, setState, hydrated, metrics, showToast, toast } = useCashFlowContext();
+  const { state, setState, hydrated, metrics, showToast } = useCashFlowContext();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
 
@@ -271,26 +263,6 @@ export function CashFlowShell({ route }: { route: ActiveTab }) {
           </View>
         )}
       </View>
-
-      {toast ? (
-        <View
-          style={[
-            styles.toast,
-            { top: insets.top + 8 },
-            toast.type === 'success'
-              ? { backgroundColor: colors.secondary }
-              : toast.type === 'warning'
-                ? { backgroundColor: colors.tertiary }
-                : { backgroundColor: colors.primary },
-          ]}>
-          <MaterialIcons
-            name={toast.type === 'success' ? 'check-circle' : 'warning'}
-            size={20}
-            color="#fff"
-          />
-          <Text style={styles.toastText}>{toast.message}</Text>
-        </View>
-      ) : null}
 
       {!hydrated ? (
         <View style={[styles.cashFlowLoading, { paddingBottom: 28 + insets.bottom }]}>
@@ -1929,23 +1901,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: { fontSize: 17, fontWeight: '900', letterSpacing: 0.5 },
-  toast: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    zIndex: 100,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  toastText: { flex: 1, color: '#fff', fontSize: 14, fontWeight: '600' },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 16, paddingTop: 16 },
   aiAdviceCard: {

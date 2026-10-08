@@ -19,6 +19,7 @@ import {
   saveReviewPointsSettings,
   type ReviewPointsSettings,
 } from '@/lib/review-points-settings';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatPoints, normalizeRewardPoints } from '@/lib/reward-points';
 import { setWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
@@ -124,7 +125,7 @@ export function ReviewSettingsScreen() {
         }
       } catch (e) {
         console.warn('daily review reminder', e);
-        Alert.alert('保存失败', '请稍后再试');
+        toast.error(toUserMessage(e, '保存失败，请稍后重试'));
       } finally {
         setDailyReminderBusy(false);
       }
@@ -141,7 +142,7 @@ export function ReviewSettingsScreen() {
       setStreak7BonusText(formatPoints(saved.streak7BonusPoints));
     } catch (e) {
       console.warn('review points settings', e);
-      Alert.alert('保存失败', '请稍后再试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setPointsBusy(false);
     }
@@ -209,13 +210,10 @@ export function ReviewSettingsScreen() {
         await setWeeklyReviewConfiguredWeekday(d);
         setConfiguredDow(d);
         setPickerOpen(false);
-        Alert.alert(
-          '已保存',
-          `已设定每周「${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}」为复盘日。统计区间为该日当天向前连续 7 个自然日（含当天）。`,
-        );
+        toast.success('复盘日已设定');
         void reload();
-      } catch {
-        Alert.alert('失败', '请稍后再试');
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后重试'));
       }
     },
     [reload],

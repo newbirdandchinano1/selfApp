@@ -12,6 +12,7 @@ import {
   parseWishBoardRedeemConditions,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   getWishBoardItemById,
   updateWishBoardItem,
@@ -19,7 +20,7 @@ import {
 import { assertNonNegativeCostPoints, formatPoints } from '@/lib/reward-points';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 export default function EditWishBoardItemScreen() {
   const router = useRouter();
@@ -56,7 +57,8 @@ export default function EditWishBoardItemScreen() {
         setTasks(nextTasks);
         setCurrentNetWorth(nextNetWorth);
         if (!row) {
-          Alert.alert('未找到心愿', undefined, [{ text: '好', onPress: () => router.back() }]);
+          toast.error('未找到心愿');
+          router.back();
           return;
         }
         setTitle(row.title);
@@ -78,18 +80,18 @@ export default function EditWishBoardItemScreen() {
 
   const onSave = async () => {
     if (redeemed) {
-      Alert.alert('已兑换的心愿不可编辑');
+      toast.warn('已兑换的心愿不可编辑');
       return;
     }
     let cost: number;
     try {
       cost = assertNonNegativeCostPoints(costText);
     } catch (e) {
-      Alert.alert(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
+      toast.warn(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
       return;
     }
     if (!title.trim()) {
-      Alert.alert('请填写心愿名称');
+      toast.warn('请填写心愿名称');
       return;
     }
     setSaving(true);
@@ -100,9 +102,10 @@ export default function EditWishBoardItemScreen() {
         description: description.trim() || null,
         redeem_conditions: redeemConditions,
       });
+      toast.success('已保存');
       router.back();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

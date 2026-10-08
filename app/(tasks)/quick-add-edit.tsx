@@ -12,6 +12,7 @@ import {
 } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
@@ -119,8 +120,9 @@ export default function QuickAddEditScreen() {
                 await deleteQuickAddItem(item.key);
                 await reloadItems();
                 notifyPageDataChanged(PAGE_API_KEY);
-              } catch {
-                Alert.alert('删除失败', '请稍后重试。');
+                toast.success('已删除');
+              } catch (e) {
+                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
               }
             })();
           },
@@ -143,9 +145,10 @@ export default function QuickAddEditScreen() {
     try {
       await saveSelectedQuickAddKeys(homeItems.map((item) => item.key));
       notifyPageDataChanged(PAGE_API_KEY);
+      toast.success('已保存');
       router.back();
-    } catch {
-      Alert.alert('保存失败', '请稍后重试。');
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

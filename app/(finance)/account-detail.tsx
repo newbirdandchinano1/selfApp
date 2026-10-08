@@ -2,6 +2,7 @@ import { CrudDetailScreen } from '@/components/crud';
 import { AppButton, AppCard, AppIconButton, AppInput } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
 import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-transaction-sheet/controller';
@@ -214,7 +215,7 @@ export default function AccountDetailScreen() {
       } catch (error) {
         console.warn('Failed to update exclude_from_total_assets:', error);
         setAccount((prev) => (prev ? { ...prev, extra_data: prevExtra } : prev));
-        Alert.alert('保存失败', '请稍后重试。');
+        toast.error(toUserMessage(error, '保存失败，请稍后重试'));
       } finally {
         setSavingExcludeFromTotal(false);
       }
@@ -244,7 +245,7 @@ export default function AccountDetailScreen() {
 
   const openBalanceEditor = React.useCallback(() => {
     if (!account) {
-      Alert.alert('无法编辑', '未找到账户信息。');
+      toast.warn('未找到账户信息');
       return;
     }
     setBalanceDraft(
@@ -258,7 +259,7 @@ export default function AccountDetailScreen() {
     const normalized = balanceDraft.trim().replace(/[^\d.-]/g, '');
     const n = normalized ? Number(normalized) : 0;
     if (!Number.isFinite(n)) {
-      Alert.alert('金额无效', '请输入正确的数字。');
+      toast.warn('请输入正确的数字');
       return;
     }
     const targetLedger = financeTargetLedgerFromUserBalanceInput({
@@ -277,8 +278,9 @@ export default function AccountDetailScreen() {
       });
       setBalanceModalOpen(false);
       await reloadAccountDetail();
+      toast.success('已保存');
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error && e.message.trim() ? e.message : '请稍后重试。');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSavingBalance(false);
     }
@@ -286,7 +288,7 @@ export default function AccountDetailScreen() {
 
   const onPressEditAccountMeta = React.useCallback(() => {
     if (!resolvedAccountId) {
-      Alert.alert('无法编辑', '未找到账户信息。');
+      toast.warn('未找到账户信息');
       return;
     }
     router.push({ pathname: '/add-account', params: { editAccountId: resolvedAccountId } });
@@ -294,7 +296,7 @@ export default function AccountDetailScreen() {
 
   const onPressBookkeeping = React.useCallback(() => {
     if (!resolvedAccountId) {
-      Alert.alert('无法记账', '未找到账户信息。');
+      toast.warn('未找到账户信息');
       return;
     }
     openFinanceSheet({ kind: 'manual', tab: 'sentence', accountId: resolvedAccountId });
@@ -302,7 +304,7 @@ export default function AccountDetailScreen() {
 
   const onPressTransfer = React.useCallback(() => {
     if (!resolvedAccountId) {
-      Alert.alert(isLiabilityAccount ? '无法还款' : '无法转账', '未找到账户信息。');
+      toast.warn(isLiabilityAccount ? '未找到账户信息，无法还款' : '未找到账户信息，无法转账');
       return;
     }
     if (isLiabilityAccount || accountSignRule !== 1) {
@@ -325,7 +327,7 @@ export default function AccountDetailScreen() {
     if (deleting) return;
     const targetId = account?.id ?? routeAccountId;
     if (!targetId) {
-      Alert.alert('无法删除', '未找到账户信息。');
+      toast.warn('未找到账户信息');
       return;
     }
     const targetName = (account?.name ?? routeAccountName) || '该账户';
@@ -339,10 +341,11 @@ export default function AccountDetailScreen() {
             setDeleting(true);
             await deleteFinanceAccount(targetId);
             await clearFinanceLastUsedAccountIfDeleted(targetId);
+            toast.success('已删除');
             router.back();
           } catch (error) {
             console.warn('Failed to delete finance account:', error);
-            Alert.alert('删除失败', '请稍后重试。');
+            toast.error(toUserMessage(error, '删除失败，请稍后重试'));
           } finally {
             setDeleting(false);
           }

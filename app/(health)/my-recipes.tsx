@@ -14,6 +14,7 @@ import {
   type RecipeItem,
   type RecipeStore,
 } from '@/lib/recipes';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatRecipeRelativeTime, getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
@@ -132,8 +133,9 @@ export default function MyRecipesScreen() {
       }
       closeCategoryModal();
       await reload();
+      toast.success('已保存');
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setCategorySaving(false);
     }
@@ -157,8 +159,9 @@ export default function MyRecipesScreen() {
                 try {
                   await deleteRecipeCategory(cat.id);
                   await reload();
-                } catch {
-                  Alert.alert('删除失败', '请稍后重试');
+                  toast.success('已删除');
+                } catch (e) {
+                  toast.error(toUserMessage(e, '删除失败，请稍后重试'));
                 }
               })();
             },
@@ -195,8 +198,9 @@ export default function MyRecipesScreen() {
                 if (!prev) return prev;
                 return { ...prev, recipes: prev.recipes.filter(i => i.id !== row.id) };
               });
-            } catch {
-              Alert.alert('删除失败', '请稍后重试');
+              toast.success('已删除');
+            } catch (e) {
+              toast.error(toUserMessage(e, '删除失败，请稍后重试'));
             }
           })();
         },

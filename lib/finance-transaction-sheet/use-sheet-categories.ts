@@ -12,6 +12,7 @@ import {
   type FinanceSheetTransactionType,
 } from '@/lib/repositories/finance/finance-sheet-category';
 import { deleteFinanceFlowCategory } from '@/lib/repositories/finance/finance';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import type { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Alert } from 'react-native';
@@ -90,7 +91,7 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
     async (onCreated?: (key: string) => void) => {
       const name = newCategoryName.trim();
       if (!name) {
-        Alert.alert('请输入分类名称', '分类名称不能为空。');
+        toast.warn('分类名称不能为空。');
         return;
       }
       setIsSavingCategory(true);
@@ -100,9 +101,10 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
         setAddModalVisible(false);
         setNewCategoryName('');
         setNewCategoryIcon(DEFAULT_FINANCE_SHEET_CATEGORY_ICON);
+        toast.success('已添加');
         onCreated?.(id);
       } catch (err) {
-        Alert.alert('添加失败', err instanceof Error ? err.message : '添加分类失败');
+        toast.error(toUserMessage(err, '添加分类失败'));
       } finally {
         setIsSavingCategory(false);
       }
@@ -123,8 +125,9 @@ export function useFinanceSheetCategories(colors: FinanceSheetCategoryColors) {
               try {
                 await deleteFinanceFlowCategory(item.key);
                 await reloadCustomCategories();
+                toast.success('已删除');
               } catch (err) {
-                Alert.alert('删除失败', err instanceof Error ? err.message : '删除分类失败');
+                toast.error(toUserMessage(err, '删除分类失败'));
               }
             })();
           },

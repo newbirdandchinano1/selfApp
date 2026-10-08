@@ -1,4 +1,5 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -16,7 +17,6 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -150,7 +150,8 @@ export default function AddScheduledExpenseScreen() {
         if (isEditMode) {
           const row = await getScheduledFinanceExpenseById(editId);
           if (!row) {
-            Alert.alert('未找到', '该定时支出可能已被删除。', [{ text: '返回', onPress: () => router.back() }]);
+            toast.error('该定时支出可能已被删除。');
+            router.back();
             return;
           }
           setName(row.name);
@@ -199,24 +200,24 @@ export default function AddScheduledExpenseScreen() {
   const handleSave = React.useCallback(async () => {
     const title = name.trim();
     if (!title) {
-      Alert.alert('请填写名称', '例如：地铁通勤、Netflix 订阅、房租');
+      toast.warn('请填写名称，例如：地铁通勤、Netflix 订阅、房租');
       return;
     }
     const amount = parseFloat(amountText.trim().replace(/,/g, ''));
     if (!Number.isFinite(amount) || amount <= 0) {
-      Alert.alert('金额无效', '请输入大于 0 的金额。');
+      toast.warn('请输入大于 0 的金额。');
       return;
     }
     if (!accountId) {
-      Alert.alert('请选择账户', '需要指定用哪张卡/账户支付。');
+      toast.warn('需要指定用哪张卡/账户支付。');
       return;
     }
     if (repeatOption === 'weekly' && weeklyDays.length === 0) {
-      Alert.alert('请选择星期', '每周模式下至少选择一天。');
+      toast.warn('每周模式下至少选择一天。');
       return;
     }
     if (repeatOption === 'monthly' && monthlyDays.length === 0) {
-      Alert.alert('请选择日期', '每月模式下至少选择一天。');
+      toast.warn('每月模式下至少选择一天。');
       return;
     }
 
@@ -237,9 +238,10 @@ export default function AddScheduledExpenseScreen() {
         enabled,
       });
       scheduleRunScheduledFinanceExpenses('save');
+      toast.success('已保存');
       router.back();
     } catch (e) {
-      Alert.alert('保存失败', e instanceof Error ? e.message : '请稍后重试');
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

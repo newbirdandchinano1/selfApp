@@ -18,6 +18,7 @@ import {
     slimRecordForMysqlApi,
 } from '@/lib/api-mysql-payload';
 import { enqueueApiRequest } from '@/lib/api-request-queue';
+import { toUserMessage } from '@/lib/app-feedback/to-user-message';
 import { fetchWithTimeoutAndRetry, isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 export function prepareRowBodyForApi(
@@ -79,11 +80,7 @@ export function isApiResponseSuccess(httpStatus: number, apiCode: number): boole
 }
 
 export function formatApiErrorMessage(err: unknown): string {
-  if (err instanceof ApiRequestError || err instanceof ApiUnauthorizedError) {
-    return err.message;
-  }
-  if (err instanceof Error) return err.message;
-  return String(err);
+  return toUserMessage(err, '操作失败，请稍后重试');
 }
 
 export function isApiErrorRetryable(err: unknown): boolean {

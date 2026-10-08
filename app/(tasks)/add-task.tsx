@@ -18,6 +18,7 @@ import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
@@ -552,10 +553,11 @@ export default function AddTaskScreen() {
           console.warn('待办保存后标记同步失败', syncErr);
         }
         notifyAncestorsDataChanged();
+        toast.success(editTaskId ? '已保存' : '已创建');
         router.back();
       } catch (error) {
         console.warn('保存待办失败', error);
-        Alert.alert('保存失败', formatWriteError(error, '请稍后重试。'));
+        toast.error(formatWriteError(error, '请稍后重试。'));
       } finally {
         setIsSubmitting(false);
       }
@@ -611,10 +613,11 @@ export default function AddTaskScreen() {
           console.warn('任务保存后标记同步失败', syncErr);
         }
         notifyAncestorsDataChanged();
+        toast.success('已创建');
         router.back();
       } catch (error) {
         console.warn('创建任务失败', error);
-        Alert.alert('保存失败', formatWriteError(error, '任务未能写入，请稍后重试。'));
+        toast.error(formatWriteError(error, '任务未能写入，请稍后重试。'));
       } finally {
         setIsSubmitting(false);
       }
@@ -672,7 +675,7 @@ export default function AddTaskScreen() {
             router.back();
           } catch (error) {
             console.warn('删除待办失败', error);
-            Alert.alert('删除失败', formatWriteError(error, '待办删除失败，请稍后重试。'));
+            toast.error(formatWriteError(error, '待办删除失败，请稍后重试。'));
           } finally {
             setIsSubmitting(false);
           }

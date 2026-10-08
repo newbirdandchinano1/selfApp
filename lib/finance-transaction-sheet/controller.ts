@@ -38,9 +38,10 @@ import {
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
+import { Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 /** 打开记账弹窗的启动意图（手动/转账/自动记账深链） */
@@ -373,7 +374,7 @@ export function useFinanceTransactionSheetController({
         return;
       }
       if (!list.length) {
-        Alert.alert('请先添加账户', '当前还没有可用账户，请先前往资产页添加账户后再记账。');
+        toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
         return;
       }
       if (intent.kind === 'manual') {
@@ -390,7 +391,7 @@ export function useFinanceTransactionSheetController({
         toAccountId: intent.toAccountId,
       });
       if (!resolved) {
-        Alert.alert('无法转账', '至少需要两个账户才能进行转账或还款。');
+        toast.warn('至少需要两个账户才能进行转账或还款。');
         return;
       }
       resetSheetForm('transfer');
@@ -523,13 +524,13 @@ export function useFinanceTransactionSheetController({
     (accountId: string) => {
       if (accountPickerTarget === 'transferFrom') {
         if (accountId === transferToAccountId) {
-          Alert.alert('不能同一账户转账', '转出账户与入账账户不能相同，请选择其他账户。');
+          toast.warn('转出账户与入账账户不能相同，请选择其他账户。');
           return;
         }
         setTransferFromAccountId(accountId);
       } else if (accountPickerTarget === 'transferTo') {
         if (accountId === transferFromAccountId) {
-          Alert.alert('不能同一账户转账', '转出账户与入账账户不能相同，请选择其他账户。');
+          toast.warn('转出账户与入账账户不能相同，请选择其他账户。');
           return;
         }
         setTransferToAccountId(accountId);
@@ -619,16 +620,17 @@ export function useFinanceTransactionSheetController({
     onClose();
     onSaved?.();
     notifyFinanceSheetSaved();
+    toast.success('已记账');
   }, [onClose, onSaved, resetSheetForm]);
 
   const handleSentenceLedgerPreview = React.useCallback(async () => {
     if (!selectedAccount) {
-      Alert.alert('请选择账户', '需要选择一个可用账户后再做识别预览。');
+      toast.warn('需要选择一个可用账户后再做识别预览。');
       return;
     }
     const line = sheetSentence.trim();
     if (!line) {
-      Alert.alert('请输入内容', '用一句话描述这笔账。');
+      toast.warn('用一句话描述这笔账。');
       return;
     }
     setIsSentencePreviewBusy(true);
@@ -662,15 +664,15 @@ export function useFinanceTransactionSheetController({
     if (isSavingTransaction || isParsingSentence) return;
     if (activeSheetTab === 'transfer') {
       if (!transferFromAccount || !transferToAccount) {
-        Alert.alert('请选择账户', '需要选择扣款账户与入账账户。');
+        toast.warn('需要选择扣款账户与入账账户。');
         return;
       }
       if (transferFromAccount.id === transferToAccount.id) {
-        Alert.alert('账户相同', '扣款与入账账户不能是同一个。');
+        toast.warn('扣款与入账账户不能是同一个。');
         return;
       }
       if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-        Alert.alert('请输入金额', '转账金额需要大于 0。');
+        toast.warn('转账金额需要大于 0。');
         return;
       }
       const feeAbs =
@@ -680,11 +682,11 @@ export function useFinanceTransactionSheetController({
             ? transferFeeNumber
             : 0;
       if (transferFeeAmount.trim() !== '' && (!Number.isFinite(transferFeeNumber) || transferFeeNumber < 0)) {
-        Alert.alert('手续费无效', '手续费需为大于等于 0 的数字，留空表示无手续费。');
+        toast.warn('手续费需为大于等于 0 的数字，留空表示无手续费。');
         return;
       }
       if (feeAbs >= amountNumber) {
-        Alert.alert('手续费过高', '手续费必须小于转账金额（从转账金额中扣除）。');
+        toast.warn('手续费必须小于转账金额（从转账金额中扣除）。');
         return;
       }
       const ts = Date.now();
@@ -733,7 +735,7 @@ export function useFinanceTransactionSheetController({
         });
       }
       if (errFrom || errTo || errFee) {
-        Alert.alert('无法转账', errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
+        toast.warn(errFrom ?? errTo ?? errFee ?? '转出或转入后账户余额不符合类型约束。');
         return;
       }
       try {
@@ -753,7 +755,7 @@ export function useFinanceTransactionSheetController({
         });
         finishSaved();
       } catch (error) {
-        Alert.alert('保存失败', error instanceof Error && error.message.trim() ? error.message : '转账记录保存失败，请稍后重试。');
+        toast.error(toUserMessage(error, '转账记录保存失败，请稍后重试。'));
       } finally {
         setIsSavingTransaction(false);
       }
@@ -761,14 +763,14 @@ export function useFinanceTransactionSheetController({
     }
 
     if (!selectedAccount) {
-      Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+      toast.warn('需要选择一个可用账户后才能记账。');
       return;
     }
 
     if (activeSheetTab === 'sentence') {
       const line = sheetSentence.trim();
       if (!line) {
-        Alert.alert('请输入内容', '用一句话描述这笔账，需包含金额。');
+        toast.warn('用一句话描述这笔账，需包含金额。');
         return;
       }
       const happenedAtIso = formatFinanceHappenedAt(selectedHappenedAt);
@@ -779,7 +781,7 @@ export function useFinanceTransactionSheetController({
       try {
         const resolved = await resolveFinanceSentenceLine(line);
         if (!resolved.ok) {
-          Alert.alert('无法识别', resolved.error);
+          toast.warn(resolved.error);
           return;
         }
         const parsed = resolved.parsed;
@@ -793,7 +795,7 @@ export function useFinanceTransactionSheetController({
             ? pickAccountForAutoLedger(financeAccountsRef.current, parsed, lastUsedAccountId)
             : null;
         if (!account) {
-          Alert.alert('请选择账户', '需要选择一个可用账户后才能记账。');
+          toast.warn('需要选择一个可用账户后才能记账。');
           return;
         }
         const cat = pickSheetCategoryForParsed(parsed.transaction_type, parsed.category_label, expenseCategories, incomeCategories);
@@ -809,7 +811,7 @@ export function useFinanceTransactionSheetController({
           uiLedgerBalance: account.balance,
         });
         if (boundsErr) {
-          Alert.alert('无法记账', boundsErr);
+          toast.warn(boundsErr);
           return;
         }
         await createFinanceTransaction(
@@ -837,7 +839,7 @@ export function useFinanceTransactionSheetController({
         );
         finishSaved();
       } catch (error) {
-        Alert.alert('保存失败', error instanceof Error && error.message.trim() ? error.message : '一句话记账处理失败，请稍后重试。');
+        toast.error(toUserMessage(error, '一句话记账处理失败，请稍后重试。'));
       } finally {
         setIsParsingSentence(false);
       }
@@ -845,7 +847,7 @@ export function useFinanceTransactionSheetController({
     }
 
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-      Alert.alert('请输入金额', '记账金额需要大于 0。');
+      toast.warn('记账金额需要大于 0。');
       return;
     }
     const transactionType = activeSheetTab;
@@ -863,7 +865,7 @@ export function useFinanceTransactionSheetController({
       uiLedgerBalance: selectedAccount.balance,
     });
     if (manualBoundsErr) {
-      Alert.alert('无法记账', manualBoundsErr);
+      toast.warn(manualBoundsErr);
       return;
     }
     const title = sheetNote.trim() || selectedCategory?.label || (transactionType === 'income' ? '收入' : '支出');
@@ -890,7 +892,7 @@ export function useFinanceTransactionSheetController({
       );
       finishSaved();
     } catch (error) {
-      Alert.alert('保存失败', error instanceof Error && error.message.trim() ? error.message : '手动记账保存失败，请稍后重试。');
+      toast.error(toUserMessage(error, '手动记账保存失败，请稍后重试。'));
     } finally {
       setIsSavingTransaction(false);
     }

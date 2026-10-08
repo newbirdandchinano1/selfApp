@@ -2,6 +2,7 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { toast } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
@@ -141,19 +142,19 @@ export default function ProjectTagsScreen() {
   const saveTag = async () => {
     const trimmed = name.trim();
     if (!trimmed) {
-      Alert.alert('无法保存', '请输入标签名称。');
+      toast.warn('请输入标签名称');
       return;
     }
     const weight = Number.parseInt(weightText.trim() || '0', 10);
     if (!Number.isFinite(weight)) {
-      Alert.alert('无法保存', '权重请输入整数。');
+      toast.warn('权重请输入整数');
       return;
     }
     const dup = isMemoDomain
       ? await isMemoTagNameDuplicate(trimmed, editingId ?? undefined)
       : await isProjectTagNameDuplicate(trimmed, editingId ?? undefined);
     if (dup) {
-      Alert.alert('无法保存', '同域内标签名称不能重复。');
+      toast.warn('同域内标签名称不能重复');
       return;
     }
 
@@ -186,6 +187,7 @@ export default function ProjectTagsScreen() {
       }
       setEditorVisible(false);
       await load();
+      toast.success('已保存');
       try {
         const tagSyncTables = ['tags', 'tag_links'];
         await markPendingTablesDirty(tagSyncTables);
@@ -199,7 +201,7 @@ export default function ProjectTagsScreen() {
       }
     } catch (err) {
       console.warn('保存标签失败', err);
-      Alert.alert('保存失败', formatWriteError(err, '标签保存失败，请稍后重试。'));
+      toast.error(formatWriteError(err, '标签保存失败，请稍后重试。'));
     } finally {
       setSaving(false);
     }
@@ -215,6 +217,7 @@ export default function ProjectTagsScreen() {
           try {
             await deleteProjectTag(tag.id);
             await load();
+            toast.success('已删除');
             try {
               const tagSyncTables = ['tags', 'tag_links'];
               await markPendingTablesDirty(tagSyncTables);
@@ -228,7 +231,7 @@ export default function ProjectTagsScreen() {
             }
           } catch (err) {
             console.warn('删除标签失败', err);
-            Alert.alert('删除失败', formatWriteError(err, '标签删除失败，请稍后重试。'));
+            toast.error(formatWriteError(err, '标签删除失败，请稍后重试。'));
           }
         },
       },

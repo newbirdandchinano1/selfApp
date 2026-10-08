@@ -1,6 +1,7 @@
 import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { addCustomQuickAddItem, type QuickAddMetricType, type QuickAddVolumeUnit } from '@/lib/quick-add-cards';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -132,9 +133,10 @@ export default function AddItemScreen() {
         metricAmounts: selectedMetricAmounts,
         icon: selectedIcon,
       });
+      toast.success('已保存');
       router.back();
-    } catch {
-      Alert.alert('保存失败', '请稍后重试。');
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
     } finally {
       setSaving(false);
     }

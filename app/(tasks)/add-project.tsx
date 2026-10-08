@@ -21,6 +21,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
+import { toast } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
@@ -46,7 +47,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { useFocusEffect } from "expo-router/react-navigation";
 import {
-  Alert,
   Pressable,
   StyleSheet,
   Text,
@@ -216,20 +216,20 @@ export default function AddProjectScreen() {
   const createProjectRecord = React.useCallback(async () => {
     const titleCheck = validateRequiredTitle(title, { emptyMessage: '请输入项目名称后再创建。' });
     if (!titleCheck.ok) {
-      Alert.alert('无法创建项目', titleCheck.message);
+      toast.warn(titleCheck.message);
       return;
     }
     const trimmedTitle = titleCheck.title;
     const hasDuplicateName = await isProjectNameDuplicate(trimmedTitle);
     if (hasDuplicateName) {
-      Alert.alert('无法创建项目', '项目名称不能重复，请更换后重试。');
+      toast.warn('项目名称不能重复，请更换后重试');
       return;
     }
     if (creating) return;
 
     const prereqValidation = validatePrerequisiteSelection(null, prerequisiteProjectIds, allProjects);
     if (!prereqValidation.ok) {
-      Alert.alert('无法创建项目', prereqValidation.message);
+      toast.warn(prereqValidation.message);
       return;
     }
 
@@ -266,10 +266,11 @@ export default function AddProjectScreen() {
         console.warn('项目创建后同步到服务器失败', syncErr);
       }
       notifyAncestorsDataChanged();
+      toast.success('已创建');
       router.back();
     } catch (error) {
       console.warn('创建项目失败', error);
-      Alert.alert('创建失败', '项目保存失败，请稍后重试。');
+      toast.error('项目保存失败，请稍后重试');
     } finally {
       setCreating(false);
     }

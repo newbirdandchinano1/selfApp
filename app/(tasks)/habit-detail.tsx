@@ -1,3 +1,4 @@
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import {
   decrementHabitCheckInForDay,
@@ -740,10 +741,10 @@ export default function HabitDetailScreen() {
         }
       }
       await reload(true);
+      toast.success('已补卡');
     } catch (e) {
       console.warn('习惯补卡失败', e);
-      const msg = e instanceof Error && e.message.trim() ? e.message : '补卡未保存，请稍后重试。';
-      Alert.alert('操作失败', msg);
+      toast.error(toUserMessage(e, '补卡未保存，请稍后重试。'));
     } finally {
       setMakeUpSaving(false);
     }
@@ -858,10 +859,10 @@ export default function HabitDetailScreen() {
         void resyncHabitReminderForHabitId(habit.id);
       }
       await reload(true);
+      toast.success('已撤销');
     } catch (e) {
       console.warn('撤销打卡失败', e);
-      const msg = e instanceof Error && e.message.trim() ? e.message : '未能撤销，请稍后重试。';
-      Alert.alert('操作失败', msg);
+      toast.error(toUserMessage(e, '未能撤销，请稍后重试。'));
     } finally {
       setCancelMakeUpSaving(false);
     }
