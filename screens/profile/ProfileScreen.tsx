@@ -52,7 +52,8 @@ type ProfileMenuItem = {
     | '/project-completion-logs'
     | '/memo-list'
     | '/my-recipes'
-    | '/notification-center';
+    | '/notification-center'
+    | '/blog';
   accent: string;
   wash: string;
 };
@@ -99,6 +100,13 @@ const PROFILE_MENU_BASE: Omit<ProfileMenuItem, 'accent' | 'wash'>[] = [
     subtitle: '收藏与自建菜谱',
     icon: 'restaurant-menu',
     href: '/my-recipes',
+  },
+  {
+    key: 'blog',
+    title: '博客',
+    subtitle: '站内阅读 www.jaxz.xyz',
+    icon: 'menu-book',
+    href: '/blog',
   },
 ];
 
@@ -185,41 +193,45 @@ export default function ProfileScreen() {
     : EMPTY;
   const bodyIncomplete = heightText === EMPTY || weightText === EMPTY || ageText === EMPTY;
 
-  const menuItems: ProfileMenuItem[] = useMemo(
-    () => [
-      {
-        ...PROFILE_MENU_BASE[0],
+  const menuItems: ProfileMenuItem[] = useMemo(() => {
+    const toneByKey: Record<string, { accent: string; wash: string }> = {
+      'notification-center': {
         accent: isDark ? '#38bdf8' : '#0284c7',
         wash: isDark ? 'rgba(56,189,248,0.16)' : 'rgba(2,132,199,0.1)',
       },
-      {
-        ...PROFILE_MENU_BASE[1],
+      'wish-board': {
         accent: taskUi.pointsAccent,
         wash: taskUi.pointsChipBg,
       },
-      {
-        ...PROFILE_MENU_BASE[2],
+      'points-ledger': {
         accent: colors.primary,
         wash: taskUi.primaryWash,
       },
-      {
-        ...PROFILE_MENU_BASE[3],
+      'project-completion-logs': {
         accent: isDark ? '#38bdf8' : '#0284c7',
         wash: isDark ? 'rgba(56,189,248,0.16)' : 'rgba(2,132,199,0.1)',
       },
-      {
-        ...PROFILE_MENU_BASE[4],
+      'memo-list': {
         accent: isDark ? '#a78bfa' : '#7c3aed',
         wash: isDark ? 'rgba(167,139,250,0.16)' : 'rgba(124,58,237,0.1)',
       },
-      {
-        ...PROFILE_MENU_BASE[5],
+      'my-recipes': {
         accent: isDark ? '#34d399' : colors.secondary,
         wash: taskUi.successWash,
       },
-    ],
-    [colors.primary, colors.secondary, isDark, taskUi],
-  );
+      blog: {
+        accent: isDark ? '#f59e0b' : '#d97706',
+        wash: isDark ? 'rgba(245,158,11,0.16)' : 'rgba(217,119,6,0.1)',
+      },
+    };
+    return PROFILE_MENU_BASE.map((item) => ({
+      ...item,
+      ...(toneByKey[item.key] ?? {
+        accent: colors.primary,
+        wash: taskUi.primaryWash,
+      }),
+    }));
+  }, [colors.primary, colors.secondary, isDark, taskUi]);
 
   const loadUser = useCallback(async () => {
     try {

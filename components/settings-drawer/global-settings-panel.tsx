@@ -531,6 +531,24 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
             </View>
           </Pressable>
 
+          <Pressable
+            onPress={() => {
+              closeSettingsDrawer();
+              router.push('/blog');
+            }}
+            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
+            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
+              <MaterialIcons name="menu-book" size={26} color={isDark ? '#34d399' : '#047857'} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowTitle, { color: text }]}>博客</Text>
+                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
+                  站内阅读 www.jaxz.xyz，打不开时可用浏览器打开
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={outline} />
+            </View>
+          </Pressable>
+
         </View>
 
         <View style={styles.section}>
