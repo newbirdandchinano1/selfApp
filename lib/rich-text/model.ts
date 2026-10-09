@@ -12,7 +12,7 @@ export function normalizeRichTextModel(model: RichTextModel): RichTextModel {
 }
 
 export function styleSignature(style: RichCharStyle): string {
-  return `${style.bold ? 'b' : ''}|${style.size ?? ''}`;
+  return `${style.bold ? 'b' : ''}|${style.italic ? 'i' : ''}|${style.strike ? 's' : ''}|${style.size ?? ''}`;
 }
 
 export function textDiff(
@@ -79,10 +79,14 @@ export function toggleStyleOnRange(
   for (let i = start; i < end; i++) {
     const cur = { ...(next[i] ?? {}) };
     if (active) {
-      if (patch.bold) delete cur.bold;
-      if (patch.size !== undefined) delete cur.size;
+      if ('bold' in patch) delete cur.bold;
+      if ('italic' in patch) delete cur.italic;
+      if ('strike' in patch) delete cur.strike;
+      if ('size' in patch) delete cur.size;
     } else {
       if (patch.bold) cur.bold = true;
+      if (patch.italic) cur.italic = true;
+      if (patch.strike) cur.strike = true;
       if (patch.size !== undefined) cur.size = patch.size;
     }
     next[i] = cur;

@@ -199,6 +199,8 @@
 |---|---|---|---|---|
 | **备忘 AI 评价与建议** | `analyzeMemoReviewFromText` | `lib/memo-ai-background.ts`（新建后后台）、`app/memo-list.tsx`（手动重试） | 新建自动 + 列表手动 | `memos.ai_evaluation` / `ai_suggestions` |
 
+**入参**：`memo_context_text` 为标题 + **纯文本正文**（客户端 `plainTextFromBody` / 服务端 `buildMemoContextText` → `plainTextFromMemoBody`）。禁止把 `selfapp-richdoc` JSON 结构喂给模型。
+
 **响应**：`{ "evaluation": "300～400字", "suggestions": "250～400字" }`
 
 ---

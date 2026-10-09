@@ -1,6 +1,9 @@
 import { CrudEditScreen } from '@/components/crud';
 import { MemoFormatToolbar } from '@/components/memo/memo-format-toolbar';
-import { MemoRichBodyInput } from '@/components/memo/memo-rich-body-input';
+import {
+  MemoRichBodyInput,
+  type MemoRichBodyInputHandle,
+} from '@/components/memo/memo-rich-body-input';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { AppIconButton } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
@@ -8,20 +11,23 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import {
-  applyMemoFormatToModel,
   emptyMemoEditModel,
-  memoBodyFromEditModel,
-  parseMemoBodyToEditModel,
-  updateMemoEditModelPlain,
   type MemoEditModel,
   type MemoFormatAction,
-  type TextSelection,
 } from '@/lib/memo-format';
+import {
+  editModelToRichDoc,
+  MEMO_BODY_MAX_BYTES,
+  parseMemoBody,
+  richDocToEditModel,
+  serializeEditModelToBody,
+  serializeRichDoc,
+} from '@/lib/memo-richdoc';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   createMemo,
   getMemo,
-  MEMO_BODY_MAX,
+  memoBodyByteLength,
   MEMO_TITLE_MAX,
   updateMemo,
 } from '@/lib/memos';
@@ -29,9 +35,11 @@ import { getTagIdsByEntity, getMemoTags } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -48,8 +56,29 @@ function normalizeId(raw: string | string[] | undefined): string {
   return '';
 }
 
-function clampPlain(plain: string): string {
-  return plain.length > MEMO_BODY_MAX ? plain.slice(0, MEMO_BODY_MAX) : plain;
+function promptImageUri(): Promise<string | null> {
+  return new Promise(resolve => {
+    if (Platform.OS === 'ios') {
+      Alert.prompt(
+        '图片链接',
+        '仅 URI，禁止 base64',
+        [
+          { text: '取消', style: 'cancel', onPress: () => resolve(null) },
+          {
+            text: '插入',
+            onPress: (v?: string) => resolve((v ?? '').trim() || null),
+          },
+        ],
+        'plain-text',
+        'https://',
+      );
+      return;
+    }
+    Alert.alert('插入图片', '将插入图片链接占位，请在正文中改成真实 URI', [
+      { text: '取消', style: 'cancel', onPress: () => resolve(null) },
+      { text: '插入', onPress: () => resolve('https://') },
+    ]);
+  });
 }
 
 export default function MemoEditScreen() {
@@ -71,10 +100,9 @@ export default function MemoEditScreen() {
 
   const bodyMinHeight = useMemo(() => Math.max(360, Math.round(windowHeight * 0.42)), [windowHeight]);
 
+  const editorRef = useRef<MemoRichBodyInputHandle>(null);
   const [title, setTitle] = useState('');
   const [bodyModel, setBodyModel] = useState<MemoEditModel>(emptyMemoEditModel);
-  const [bodySelection, setBodySelection] = useState<TextSelection>({ start: 0, end: 0 });
-  const [controlledSelection, setControlledSelection] = useState<TextSelection | undefined>(undefined);
   const [allTags, setAllTags] = useState<TagRow[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [tagsLoading, setTagsLoading] = useState(true);
@@ -82,6 +110,12 @@ export default function MemoEditScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const bodyBytes = useMemo(
+    () => memoBodyByteLength(serializeRichDoc(editModelToRichDoc(bodyModel))),
+    [bodyModel],
+  );
+  const overLimit = bodyBytes > MEMO_BODY_MAX_BYTES;
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -105,12 +139,11 @@ export default function MemoEditScreen() {
         return;
       }
       setTitle(row.title);
-      setBodyModel(parseMemoBodyToEditModel(row.body));
+      setBodyModel(richDocToEditModel(parseMemoBody(row.body)) as MemoEditModel);
       setPinned(Boolean(row.is_pinned));
       const selected = await getTagIdsByEntity('memo', id);
-      const memoTagIdSet = new Set(tags.map((t) => t.id));
-      // 只保留备忘录域标签，跨域历史关联不进入选择态
-      setSelectedTagIds(selected.filter((sid) => memoTagIdSet.has(sid)));
+      const memoTagIdSet = new Set(tags.map(t => t.id));
+      setSelectedTagIds(selected.filter(sid => memoTagIdSet.has(sid)));
     } catch {
       setError('加载失败，请重试');
     } finally {
@@ -127,27 +160,32 @@ export default function MemoEditScreen() {
     }, [reload]),
   );
 
-  const onFormatAction = useCallback(
-    (action: MemoFormatAction) => {
-      const result = applyMemoFormatToModel(bodyModel, bodySelection, action);
-      setBodyModel(result.model);
-      setBodySelection(result.selection);
-      setControlledSelection(result.selection);
-    },
-    [bodyModel, bodySelection],
-  );
+  const onFormatAction = useCallback(async (action: MemoFormatAction) => {
+    let extras: { imageUri?: string } | undefined;
+    if (action === 'image') {
+      const uri = await promptImageUri();
+      if (!uri) return;
+      extras = { imageUri: uri };
+    }
+    // 格式在 WebView 内应用（缓存选区 + execCommand / 模型重刷），避免点工具栏丢选区
+    editorRef.current?.applyFormat(action, extras);
+  }, []);
 
-  const onBodyPlainChange = useCallback((plain: string) => {
-    setControlledSelection(undefined);
-    const nextPlain = clampPlain(plain);
-    setBodyModel(prev => updateMemoEditModelPlain(prev, nextPlain));
+  const onBodyModelChange = useCallback((next: MemoEditModel) => {
+    setBodyModel(next);
   }, []);
 
   const onSave = useCallback(async () => {
     const t = title.trim();
-    const body = memoBodyFromEditModel(bodyModel).trim();
     if (!t && !bodyModel.plain.trim()) {
       toast.warn('请填写标题或正文');
+      return;
+    }
+    let body: string;
+    try {
+      body = serializeEditModelToBody(bodyModel);
+    } catch (e) {
+      toast.error(toUserMessage(e, '正文过大或格式无效'));
       return;
     }
     setSaving(true);
@@ -201,11 +239,11 @@ export default function MemoEditScreen() {
             color={pinned ? colors.tertiary : muted}
             accessibilityLabel={pinned ? '取消置顶' : '置顶'}
           />
-          <Pressable style={styles.saveBtn} onPress={() => void onSave()} disabled={saving || loading}>
+          <Pressable style={styles.saveBtn} onPress={() => void onSave()} disabled={saving || loading || overLimit}>
             {saving ? (
               <ActivityIndicator size="small" color={primary} />
             ) : (
-              <Text style={[styles.saveText, { color: primary }]}>保存</Text>
+              <Text style={[styles.saveText, { color: overLimit ? muted : primary }]}>保存</Text>
             )}
           </Pressable>
         </View>
@@ -217,7 +255,7 @@ export default function MemoEditScreen() {
       style={{ backgroundColor: paper }}>
       <ScrollView
         refreshControl={refreshControl}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
         contentContainerStyle={[
           styles.scrollInner,
           { paddingBottom: Math.max(insets.bottom, 20) + 24 },
@@ -249,32 +287,33 @@ export default function MemoEditScreen() {
         />
 
         <MemoFormatToolbar
-          onAction={onFormatAction}
+          onAction={a => void onFormatAction(a)}
           primary={primary}
           borderColor={line}
           backgroundColor={toolbarBg}
         />
-        <Text style={[styles.formatHint, { color: muted }]}>
-          选中文字后点工具栏设置格式；保存后查看页一致
+        <Text style={[styles.formatHint, { color: overLimit ? colors.danger : muted }]}>
+          {overLimit
+            ? `内容过大（${Math.ceil(bodyBytes / 1024)}KB / ${MEMO_BODY_MAX_BYTES / 1024}KB），请删减`
+            : `选中文字设行内格式；约 ${Math.ceil(bodyBytes / 1024)}KB / ${MEMO_BODY_MAX_BYTES / 1024}KB`}
         </Text>
         <MemoRichBodyInput
+          ref={editorRef}
           model={bodyModel}
-          onChangePlain={onBodyPlainChange}
-          onSelectionChange={sel => {
-            setBodySelection(sel);
-            if (controlledSelection != null) setControlledSelection(undefined);
-          }}
-          controlledSelection={controlledSelection}
+          onChangeModel={onBodyModelChange}
+          onSelectionChange={() => {}}
+          onNeedSelection={() => toast.warn('请先选中文字再设置格式')}
           placeholder="写下想法…"
           textColor={ink}
           placeholderColor={muted}
           caretColor={primary}
+          backgroundColor={inputBg}
+          minHeight={bodyMinHeight}
           containerStyle={[
             styles.bodyInputWrap,
             {
               borderColor: line,
               backgroundColor: inputBg,
-              minHeight: bodyMinHeight,
             },
           ]}
         />

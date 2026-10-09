@@ -32,6 +32,8 @@ function defaultMergeStyles(stack: RichCharStyle[]): RichCharStyle {
   const out: RichCharStyle = {};
   for (const s of stack) {
     if (s.bold) out.bold = true;
+    if (s.italic) out.italic = true;
+    if (s.strike) out.strike = true;
     if (s.size !== undefined) out.size = s.size;
   }
   return out;

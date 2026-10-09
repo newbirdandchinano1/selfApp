@@ -3,6 +3,8 @@ export type TextSelection = { start: number; end: number };
 /** size 为不透明 token，由 Markup Profile 解释（如 'small' | 'large' | 15 | 17 …） */
 export type RichCharStyle = {
   bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
   size?: string | number;
 };
 

@@ -643,7 +643,7 @@ const { analysis } = await apiRequest<{ analysis: string }>(
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `memo_context_text` | string | 是 | 备忘元信息 + 标题 + 正文格式化文本 |
+| `memo_context_text` | string | 是 | 备忘元信息 + 标题 + **纯文本正文**（`plainTextFromBody` / 服务端 `plainTextFromMemoBody`；禁止把 RichDoc JSON 结构键名喂给模型） |
 
 **成功 `data`：**
 

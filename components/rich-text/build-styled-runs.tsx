@@ -43,6 +43,7 @@ export function buildStyledRunNodes(
             fontSize,
             lineHeight,
             fontWeight: theme.resolveFontWeight?.(style) ?? '500',
+            fontStyle: style.italic ? 'italic' : 'normal',
             color: theme.textColor,
             textDecorationLine: theme.resolveTextDecorationLine?.(style),
             opacity: theme.resolveOpacity?.(style),

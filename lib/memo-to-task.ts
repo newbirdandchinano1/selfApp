@@ -1,4 +1,5 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import { plainTextFromBody } from '@/lib/memo-richdoc';
 import { deleteMemo, memoListPreviewTitle, type MemoItem } from '@/lib/memos';
 import { createTask } from '@/lib/repositories/tasks/task';
 
@@ -23,7 +24,7 @@ export function buildTodoTitleFromMemo(row: MemoItem): string {
 export function buildTodoNoteFromMemo(row: MemoItem): string | null {
   const chunks: string[] = [];
   const title = row.title.trim();
-  const body = row.body.trim();
+  const body = plainTextFromBody(row.body).trim();
 
   if (body) {
     if (!title) {

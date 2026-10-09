@@ -1,4 +1,10 @@
-import { parseMemoBodyBlocks, type BlockLine, type InlineSegment } from '@/lib/memo-format';
+import {
+  parseMemoBody,
+  type RichBlock,
+  type RichMark,
+  type RichTextRun,
+} from '@/lib/memo-richdoc';
+import { Image } from 'expo-image';
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
@@ -12,95 +18,166 @@ type Props = {
 
 const INDENT_UNIT = 16;
 
-function segmentFontSize(seg: InlineSegment, baseSize: number): number {
-  if (seg.size === 'small') return Math.max(12, baseSize - 3);
-  if (seg.size === 'large') return baseSize + 4;
-  return baseSize;
+function runStyle(marks: RichMark[], baseWeight: '400' | '600' | '700' | '800') {
+  return {
+    fontWeight: (marks.includes('bold') ? '800' : baseWeight) as '400' | '600' | '700' | '800',
+    fontStyle: (marks.includes('italic') ? 'italic' : 'normal') as 'italic' | 'normal',
+    textDecorationLine: (marks.includes('strike') ? 'line-through' : 'none') as
+      | 'line-through'
+      | 'none',
+  };
 }
 
-function InlineText({
-  segments,
+function InlineRuns({
+  runs,
   color,
   baseSize,
   baseWeight,
 }: {
-  segments: InlineSegment[];
+  runs: RichTextRun[];
   color: string;
   baseSize: number;
   baseWeight: '400' | '600' | '700' | '800';
 }) {
   return (
     <Text style={{ fontSize: baseSize, lineHeight: baseSize * 1.5, color }}>
-      {segments.map((seg, idx) => {
-        const size = segmentFontSize(seg, baseSize);
-        return (
-          <Text
-            key={`${idx}-${seg.text.slice(0, 8)}`}
-            style={{
-              fontSize: size,
-              lineHeight: size * 1.5,
-              fontWeight: seg.bold ? '800' : baseWeight,
-              fontStyle: seg.italic ? 'italic' : 'normal',
-              textDecorationLine: seg.strike ? 'line-through' : 'none',
-            }}
-          >
-            {seg.text}
-          </Text>
-        );
-      })}
+      {runs.map((r, idx) => (
+        <Text
+          key={`${idx}-${r.text.slice(0, 8)}`}
+          style={{
+            fontSize: baseSize,
+            lineHeight: baseSize * 1.5,
+            ...runStyle(r.marks, baseWeight),
+          }}
+        >
+          {r.text}
+        </Text>
+      ))}
     </Text>
   );
 }
 
-function BlockContent({
+function isEmptyParagraph(b: RichBlock): boolean {
+  return b.type === 'paragraph' && b.runs.every((r) => !r.text);
+}
+
+function BlockView({
   block,
   color,
   mutedColor,
   quoteBg,
 }: {
-  block: Exclude<BlockLine, { kind: 'empty' }>;
+  block: RichBlock;
   color: string;
   mutedColor: string;
   quoteBg: string;
 }) {
-  const indentStyle = block.indent > 0 ? { paddingLeft: block.indent * INDENT_UNIT } : null;
+  if (isEmptyParagraph(block)) {
+    return <View style={styles.gap} />;
+  }
 
-  if (block.kind === 'heading') {
-    const size = block.level === 1 ? 22 : block.level === 2 ? 19 : 17;
-    return (
-      <View style={indentStyle}>
-        <InlineText segments={block.segments} color={color} baseSize={size} baseWeight="800" />
-      </View>
-    );
-  }
-  if (block.kind === 'bullet') {
-    return (
-      <View style={[styles.bulletRow, indentStyle]}>
-        <Text style={[styles.bulletDot, { color: mutedColor }]}>•</Text>
-        <View style={styles.bulletText}>
-          <InlineText segments={block.segments} color={color} baseSize={16} baseWeight="600" />
+  switch (block.type) {
+    case 'heading': {
+      const size = block.level === 1 ? 22 : block.level === 2 ? 19 : 17;
+      return (
+        <InlineRuns runs={block.runs} color={color} baseSize={size} baseWeight="800" />
+      );
+    }
+    case 'bullet_list':
+      return (
+        <View style={styles.listCol}>
+          {block.items.map((it, i) => (
+            <View
+              key={`bu-${i}`}
+              style={[styles.bulletRow, it.indent > 0 ? { paddingLeft: it.indent * INDENT_UNIT } : null]}
+            >
+              <Text style={[styles.bulletDot, { color: mutedColor }]}>•</Text>
+              <View style={styles.bulletText}>
+                <InlineRuns runs={it.runs} color={color} baseSize={16} baseWeight="600" />
+              </View>
+            </View>
+          ))}
         </View>
-      </View>
-    );
+      );
+    case 'ordered_list':
+      return (
+        <View style={styles.listCol}>
+          {block.items.map((it, i) => (
+            <View
+              key={`ol-${i}`}
+              style={[styles.bulletRow, it.indent > 0 ? { paddingLeft: it.indent * INDENT_UNIT } : null]}
+            >
+              <Text style={[styles.orderNum, { color: mutedColor }]}>{i + 1}.</Text>
+              <View style={styles.bulletText}>
+                <InlineRuns runs={it.runs} color={color} baseSize={16} baseWeight="600" />
+              </View>
+            </View>
+          ))}
+        </View>
+      );
+    case 'todo':
+      return (
+        <View
+          style={[
+            styles.bulletRow,
+            block.indent > 0 ? { paddingLeft: block.indent * INDENT_UNIT } : null,
+          ]}
+        >
+          <Text style={[styles.todoMark, { color: mutedColor }]}>
+            {block.checked ? '☑' : '☐'}
+          </Text>
+          <View style={styles.bulletText}>
+            <InlineRuns
+              runs={block.runs}
+              color={color}
+              baseSize={16}
+              baseWeight="600"
+            />
+          </View>
+        </View>
+      );
+    case 'quote':
+      return (
+        <View
+          style={[styles.quoteBox, { backgroundColor: quoteBg, borderLeftColor: mutedColor }]}
+        >
+          <InlineRuns runs={block.runs} color={color} baseSize={15} baseWeight="600" />
+        </View>
+      );
+    case 'code':
+      return (
+        <View style={[styles.codeBox, { backgroundColor: quoteBg, borderColor: mutedColor }]}>
+          <Text style={[styles.codeText, { color }]}>{block.text || ' '}</Text>
+        </View>
+      );
+    case 'divider':
+      return <View style={[styles.divider, { backgroundColor: mutedColor }]} />;
+    case 'image':
+      return (
+        <View style={styles.imageWrap}>
+          <Image
+            source={{ uri: block.uri }}
+            style={[
+              styles.image,
+              block.width > 0 && block.height > 0
+                ? { aspectRatio: block.width / block.height }
+                : null,
+            ]}
+            contentFit="contain"
+          />
+        </View>
+      );
+    case 'paragraph':
+    default:
+      return (
+        <InlineRuns
+          runs={'runs' in block ? block.runs : [{ text: '', marks: [] }]}
+          color={color}
+          baseSize={16}
+          baseWeight="600"
+        />
+      );
   }
-  if (block.kind === 'quote') {
-    return (
-      <View
-        style={[
-          styles.quoteBox,
-          indentStyle,
-          { backgroundColor: quoteBg, borderLeftColor: mutedColor },
-        ]}
-      >
-        <InlineText segments={block.segments} color={color} baseSize={15} baseWeight="600" />
-      </View>
-    );
-  }
-  return (
-    <View style={indentStyle}>
-      <InlineText segments={block.segments} color={color} baseSize={16} baseWeight="600" />
-    </View>
-  );
 }
 
 export function MemoFormattedBody({
@@ -110,7 +187,7 @@ export function MemoFormattedBody({
   quoteBg,
   emptyLabel = '（无正文）',
 }: Props) {
-  const blocks = useMemo(() => parseMemoBodyBlocks(body), [body]);
+  const blocks = useMemo(() => parseMemoBody(body).doc.blocks, [body]);
   const trimmed = body.trim();
 
   if (!trimmed) {
@@ -119,16 +196,16 @@ export function MemoFormattedBody({
 
   return (
     <View style={styles.root}>
-      {blocks.map((block, index) => {
-        if (block.kind === 'empty') {
-          return <View key={`gap-${index}`} style={styles.gap} />;
-        }
-        return (
-          <View key={`b-${index}`} style={styles.block}>
-            <BlockContent block={block} color={color} mutedColor={mutedColor} quoteBg={quoteBg} />
-          </View>
-        );
-      })}
+      {blocks.map((block, index) => (
+        <View key={`b-${index}`} style={styles.block}>
+          <BlockView
+            block={block}
+            color={color}
+            mutedColor={mutedColor}
+            quoteBg={quoteBg}
+          />
+        </View>
+      ))}
     </View>
   );
 }
@@ -138,8 +215,11 @@ const styles = StyleSheet.create({
   block: { marginBottom: 6 },
   gap: { height: 8 },
   empty: { fontSize: 15, fontWeight: '600', fontStyle: 'italic' },
+  listCol: { gap: 4 },
   bulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   bulletDot: { fontSize: 18, lineHeight: 24, marginTop: 1 },
+  orderNum: { fontSize: 15, lineHeight: 24, fontWeight: '700', minWidth: 22 },
+  todoMark: { fontSize: 16, lineHeight: 24, marginTop: 1 },
   bulletText: { flex: 1 },
   quoteBox: {
     borderLeftWidth: 3,
@@ -147,4 +227,19 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
+  codeBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  codeText: {
+    fontFamily: 'monospace',
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  divider: { height: StyleSheet.hairlineWidth, marginVertical: 8, opacity: 0.45 },
+  imageWrap: { borderRadius: 10, overflow: 'hidden' },
+  image: { width: '100%', aspectRatio: 16 / 9, maxHeight: 320 },
 });

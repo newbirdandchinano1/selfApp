@@ -1,3 +1,9 @@
+/**
+ * 备忘录编辑模型 + 工具栏动作。
+ *
+ * 存储权威为 `memo-richdoc`（RichDoc JSON）。本文件仍服务编辑器 plain/styles；
+ * 下列 markup 解析/写出为 **legacy-only**，禁止对新保存路径或库内 `body` 直接调用。
+ */
 import type { MarkupProfile, MarkupTagMatch, RichCharStyle, RichTextModel, TextSelection } from './rich-text/index';
 import {
   emptyRichTextModel,
@@ -13,13 +19,27 @@ export type { TextSelection };
 
 export type MemoFormatAction =
   | 'bold'
-  | 'size-small'
-  | 'size-large'
+  | 'italic'
+  | 'strike'
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'bullet'
+  | 'ordered'
+  | 'todo'
+  | 'quote'
+  | 'code'
+  | 'divider'
+  | 'image'
   | 'indent-in'
-  | 'indent-out';
+  | 'indent-out'
+  | 'size-small'
+  | 'size-large';
 
 export type CharStyle = {
   bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
   size?: 'small' | 'large';
 };
 
@@ -38,6 +58,7 @@ function asRichModel(model: MemoEditModel): RichTextModel {
   return model as RichTextModel;
 }
 
+/** @deprecated legacy-only：旧 `**`/`[小]` markup 画像；新读写请用 memo-richdoc */
 export const MEMO_MARKUP_PROFILE: MarkupProfile = {
   matchTagAt(body, i, stack): MarkupTagMatch | null {
     if (body.startsWith('[小]', i)) {
@@ -58,26 +79,14 @@ export const MEMO_MARKUP_PROFILE: MarkupProfile = {
       return { kind: 'push', style: { bold: true }, length: 2 };
     }
     if (body.startsWith('~~', i)) {
-      const close = body.indexOf('~~', i + 2);
-      if (close !== -1) {
-        return {
-          kind: 'skipSpan',
-          contentStart: i + 2,
-          contentEnd: close,
-          totalLength: close + 2 - i,
-        };
-      }
+      const hasStrike = stack.some(s => !!s.strike);
+      if (hasStrike) return { kind: 'pop', pred: s => !!s.strike, length: 2 };
+      return { kind: 'push', style: { strike: true }, length: 2 };
     }
     if (body[i] === '*' && body[i + 1] !== '*') {
-      const close = body.indexOf('*', i + 1);
-      if (close !== -1) {
-        return {
-          kind: 'skipSpan',
-          contentStart: i + 1,
-          contentEnd: close,
-          totalLength: close + 1 - i,
-        };
-      }
+      const hasItalic = stack.some(s => !!s.italic);
+      if (hasItalic) return { kind: 'pop', pred: s => !!s.italic, length: 1 };
+      return { kind: 'push', style: { italic: true }, length: 1 };
     }
     return null;
   },
@@ -85,8 +94,20 @@ export const MEMO_MARKUP_PROFILE: MarkupProfile = {
     let chunk = text;
     if (style.size === 'small') chunk = `[小]${chunk}[/小]`;
     if (style.size === 'large') chunk = `[大]${chunk}[/大]`;
+    if (style.strike) chunk = `~~${chunk}~~`;
+    if (style.italic) chunk = `*${chunk}*`;
     if (style.bold) chunk = `**${chunk}**`;
     return chunk;
+  },
+  mergeStyles(stack) {
+    const out: RichCharStyle = {};
+    for (const s of stack) {
+      if (s.bold) out.bold = true;
+      if (s.italic) out.italic = true;
+      if (s.strike) out.strike = true;
+      if (s.size !== undefined) out.size = s.size;
+    }
+    return out;
   },
 };
 
@@ -98,12 +119,17 @@ export function normalizeMemoEditModel(model: MemoEditModel): MemoEditModel {
   return asMemoModel(normalizeRichTextModel(asRichModel(model)));
 }
 
-/** 将存储的正文（含标记）解析为编辑用纯文本 + 样式 */
+/**
+ * @deprecated legacy-only。禁止对库内 body 调用（RichDoc JSON 会被当 markup 拆烂）。
+ * 加载：`parseMemoBody` → `richDocToEditModel`；保存：`serializeEditModelToBody`。
+ */
 export function parseMemoBodyToEditModel(body: string): MemoEditModel {
   return asMemoModel(parseMarkupToModel(body, MEMO_MARKUP_PROFILE));
 }
 
-/** 编辑模型序列化回存储格式（兼容查看页解析） */
+/**
+ * @deprecated legacy-only。写出旧 `**`/`[小]` markup；新保存禁止走此路径。
+ */
 export function serializeMemoEditModel(model: MemoEditModel): string {
   return serializeModelToMarkup(asRichModel(model), MEMO_MARKUP_PROFILE);
 }
@@ -188,13 +214,203 @@ function adjustModelIndent(
   };
 }
 
+type LinePrefixKind =
+  | 'none'
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'bullet'
+  | 'ordered'
+  | 'todo'
+  | 'quote';
+
+function parseLinePrefix(line: string): {
+  indent: string;
+  kind: LinePrefixKind;
+  prefix: string;
+  content: string;
+} {
+  const indentMatch = line.match(/^(\s*)/);
+  const indent = indentMatch?.[1] ?? '';
+  const rest = line.slice(indent.length);
+  let m: RegExpMatchArray | null;
+  if ((m = rest.match(/^(#{1,3})\s+/))) {
+    const level = m[1]!.length;
+    const kind = (level === 1 ? 'heading-1' : level === 2 ? 'heading-2' : 'heading-3') as LinePrefixKind;
+    return { indent, kind, prefix: m[0]!, content: rest.slice(m[0]!.length) };
+  }
+  if ((m = rest.match(/^[-*]\s+\[[ xX]\]\s+/))) {
+    return { indent, kind: 'todo', prefix: m[0]!, content: rest.slice(m[0]!.length) };
+  }
+  if ((m = rest.match(/^[-*]\s+/))) {
+    return { indent, kind: 'bullet', prefix: m[0]!, content: rest.slice(m[0]!.length) };
+  }
+  if ((m = rest.match(/^\d+[.)]\s+/))) {
+    return { indent, kind: 'ordered', prefix: m[0]!, content: rest.slice(m[0]!.length) };
+  }
+  if ((m = rest.match(/^>\s?/))) {
+    return { indent, kind: 'quote', prefix: m[0]!, content: rest.slice(m[0]!.length) };
+  }
+  return { indent, kind: 'none', prefix: '', content: rest };
+}
+
+function prefixForKind(kind: LinePrefixKind): string {
+  switch (kind) {
+    case 'heading-1':
+      return '# ';
+    case 'heading-2':
+      return '## ';
+    case 'heading-3':
+      return '### ';
+    case 'bullet':
+      return '- ';
+    case 'ordered':
+      return '1. ';
+    case 'todo':
+      return '- [ ] ';
+    case 'quote':
+      return '> ';
+    default:
+      return '';
+  }
+}
+
+function replaceLineRange(
+  model: MemoEditModel,
+  lineStart: number,
+  lineEnd: number,
+  nextLine: string,
+): MemoEditModel {
+  const prefixStyles = model.styles.slice(0, lineStart);
+  const suffixStyles = model.styles.slice(lineEnd);
+  const midStyles: CharStyle[] = Array.from({ length: nextLine.length }, (_, i) => {
+    const oldIdx = lineStart + Math.min(i, Math.max(0, lineEnd - lineStart - 1));
+    return { ...(model.styles[oldIdx] ?? {}) };
+  });
+  return normalizeMemoEditModel({
+    plain: `${model.plain.slice(0, lineStart)}${nextLine}${model.plain.slice(lineEnd)}`,
+    styles: [...prefixStyles, ...midStyles, ...suffixStyles],
+  });
+}
+
+function applyBlockPrefixToSelection(
+  model: MemoEditModel,
+  selection: TextSelection,
+  kind: LinePrefixKind,
+): { model: MemoEditModel; selection: TextSelection } {
+  const { start, end } = lineRangeForSelection(model.plain, selection);
+  const block = model.plain.slice(start, end);
+  const lines = block.split('\n');
+  let cursor = start;
+  let nextPlain = model.plain.slice(0, start);
+  const nextStyles: CharStyle[] = model.styles.slice(0, start);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const parsed = parseLinePrefix(line);
+    const toggledOff = parsed.kind === kind;
+    const newPrefix = toggledOff ? '' : prefixForKind(kind);
+    const nextLine = `${parsed.indent}${newPrefix}${parsed.content}`;
+    for (let c = 0; c < nextLine.length; c++) {
+      const src = cursor + Math.min(c, Math.max(0, line.length - 1));
+      nextStyles.push({ ...(model.styles[src] ?? {}) });
+    }
+    nextPlain += nextLine;
+    cursor += line.length;
+    if (i < lines.length - 1) {
+      nextPlain += '\n';
+      nextStyles.push({ ...(model.styles[cursor] ?? {}) });
+      cursor += 1;
+    }
+  }
+
+  nextPlain += model.plain.slice(end);
+  nextStyles.push(...model.styles.slice(end));
+  const normalized = normalizeMemoEditModel({ plain: nextPlain, styles: nextStyles });
+  return {
+    model: normalized,
+    selection: { start, end: start + (normalized.plain.length - (model.plain.length - (end - start))) },
+  };
+}
+
+function insertAtSelection(
+  model: MemoEditModel,
+  selection: TextSelection,
+  text: string,
+): { model: MemoEditModel; selection: TextSelection } {
+  const a = Math.min(selection.start, selection.end);
+  const b = Math.max(selection.start, selection.end);
+  const insertStyles: CharStyle[] = Array.from({ length: text.length }, () => ({}));
+  const next = normalizeMemoEditModel({
+    plain: `${model.plain.slice(0, a)}${text}${model.plain.slice(b)}`,
+    styles: [...model.styles.slice(0, a), ...insertStyles, ...model.styles.slice(b)],
+  });
+  const pos = a + text.length;
+  return { model: next, selection: { start: pos, end: pos } };
+}
+
+function wrapCodeFence(
+  model: MemoEditModel,
+  selection: TextSelection,
+): { model: MemoEditModel; selection: TextSelection } {
+  const { start, end } = lineRangeForSelection(model.plain, selection);
+  const block = model.plain.slice(start, end);
+  if (block.startsWith('```') && block.endsWith('```')) {
+    const inner = block.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '');
+    return {
+      model: replaceLineRange(model, start, end, inner),
+      selection: { start, end: start + inner.length },
+    };
+  }
+  const wrapped = `\`\`\`\n${block}\n\`\`\``;
+  return {
+    model: replaceLineRange(model, start, end, wrapped),
+    selection: { start, end: start + wrapped.length },
+  };
+}
+
 export function applyMemoFormatToModel(
   model: MemoEditModel,
   selection: TextSelection,
   action: MemoFormatAction,
+  extras?: { imageUri?: string },
 ): { model: MemoEditModel; selection: TextSelection } {
   if (action === 'indent-in' || action === 'indent-out') {
     return adjustModelIndent(model, selection, action === 'indent-in' ? 1 : -1);
+  }
+
+  if (
+    action === 'heading-1' ||
+    action === 'heading-2' ||
+    action === 'heading-3' ||
+    action === 'bullet' ||
+    action === 'ordered' ||
+    action === 'todo' ||
+    action === 'quote'
+  ) {
+    return applyBlockPrefixToSelection(model, selection, action);
+  }
+
+  if (action === 'code') {
+    return wrapCodeFence(model, selection);
+  }
+
+  if (action === 'divider') {
+    const at = Math.max(selection.start, selection.end);
+    const needsNlBefore = at > 0 && model.plain[at - 1] !== '\n';
+    const needsNlAfter = at < model.plain.length && model.plain[at] !== '\n';
+    const text = `${needsNlBefore ? '\n' : ''}---${needsNlAfter ? '\n' : ''}`;
+    return insertAtSelection(model, { start: at, end: at }, text);
+  }
+
+  if (action === 'image') {
+    const uri = (extras?.imageUri ?? '').trim();
+    if (!uri || /^data:/i.test(uri)) return { model, selection };
+    const at = Math.max(selection.start, selection.end);
+    const needsNlBefore = at > 0 && model.plain[at - 1] !== '\n';
+    const needsNlAfter = at < model.plain.length && model.plain[at] !== '\n';
+    const text = `${needsNlBefore ? '\n' : ''}![img](${uri})${needsNlAfter ? '\n' : ''}`;
+    return insertAtSelection(model, { start: at, end: at }, text);
   }
 
   const { start, end } = selection;
@@ -203,6 +419,10 @@ export function applyMemoFormatToModel(
   let nextStyles: RichCharStyle[] = model.styles;
   if (action === 'bold') {
     nextStyles = toggleStyleOnRange(nextStyles, start, end, { bold: true }, s => Boolean(s.bold));
+  } else if (action === 'italic') {
+    nextStyles = toggleStyleOnRange(nextStyles, start, end, { italic: true }, s => Boolean(s.italic));
+  } else if (action === 'strike') {
+    nextStyles = toggleStyleOnRange(nextStyles, start, end, { strike: true }, s => Boolean(s.strike));
   } else if (action === 'size-small') {
     nextStyles = toggleStyleOnRange(
       nextStyles,
@@ -355,11 +575,14 @@ function parseBlockLine(raw: string): BlockLine {
   return { kind: 'paragraph', indent, segments: parseInline(rest) };
 }
 
+/**
+ * @deprecated legacy-only。旧查看侧 markdown regex；已被 MemoFormattedBody + memo-richdoc/legacy 取代。
+ */
 export function parseMemoBodyBlocks(body: string): BlockLine[] {
   return body.split('\n').map(parseBlockLine);
 }
 
-/** 由编辑模型生成查看/存储用正文 */
+/** @deprecated legacy-only。别名 serializeMemoEditModel；勿用于落库。 */
 export function memoBodyFromEditModel(model: MemoEditModel): string {
   return serializeMemoEditModel(model);
 }

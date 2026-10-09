@@ -6,10 +6,30 @@ import {
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { getDatabase } from '@/lib/database';
 import { makeTimestampEntityId } from '@/lib/entity-id';
+import {
+  assertMemoBodyOrThrow,
+  byteLengthUtf8,
+  MEMO_BODY_MAX_BYTES as RICHDOC_BODY_MAX_BYTES,
+  plainTextFromBody,
+} from '@/lib/memo-richdoc';
 import type * as SQLite from 'expo-sqlite';
 
 export const MEMO_TITLE_MAX = 120;
+/**
+ * @deprecated Phase 6：已废除字符截断。请用 `MEMO_BODY_MAX_BYTES` + `assertMemoBodyOrThrow`。
+ * 保留导出仅防旧引用编译；禁止 `slice(0, MEMO_BODY_MAX)`。
+ */
 export const MEMO_BODY_MAX = 8000;
+/** RichDoc 字节上限（512KB）。禁止 slice 静默截断，超限抛错。 */
+export const MEMO_BODY_MAX_BYTES = RICHDOC_BODY_MAX_BYTES;
+
+export function memoBodyByteLength(s: string): number {
+  return byteLengthUtf8(s ?? '');
+}
+
+export function assertMemoBodySizeOrThrow(body: string): void {
+  assertMemoBodyOrThrow(body);
+}
 
 export type MemoItem = {
   id: string;
@@ -59,8 +79,10 @@ function clampTitle(t: string): string {
   return t.length > MEMO_TITLE_MAX ? t.slice(0, MEMO_TITLE_MAX) : t;
 }
 
+/** 保存护栏：字节上限 + RichDoc 形态校验；禁止静默截断 */
 function clampBody(t: string): string {
-  return t.length > MEMO_BODY_MAX ? t.slice(0, MEMO_BODY_MAX) : t;
+  assertMemoBodyOrThrow(t);
+  return t;
 }
 
 function clampTagName(t: string): string {
@@ -513,19 +535,20 @@ export function sortMemos(items: MemoItem[], mode: MemoSortMode = 'updated'): Me
 export function memoMatchesSearch(item: MemoItem, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return item.title.toLowerCase().includes(q) || item.body.toLowerCase().includes(q);
+  const body = plainTextFromBody(item.body);
+  return item.title.toLowerCase().includes(q) || body.toLowerCase().includes(q);
 }
 
 export function memoListPreviewTitle(row: MemoItem): string {
   const t = row.title.trim();
   if (t) return t;
-  const first = row.body.trim().split(/\n/)[0]?.trim() ?? '';
+  const first = plainTextFromBody(row.body).trim().split(/\n/)[0]?.trim() ?? '';
   if (first) return first.length > 48 ? `${first.slice(0, 48)}…` : first;
   return '无标题';
 }
 
 export function memoListPreviewBody(row: MemoItem): string {
-  const b = row.body.trim();
+  const b = plainTextFromBody(row.body).trim();
   if (!b) return '（无正文）';
   const one = b.split(/\n/)[0]!.trim();
   return one.length > 80 ? `${one.slice(0, 80)}…` : one;
@@ -533,10 +556,10 @@ export function memoListPreviewBody(row: MemoItem): string {
 
 export function memoContextForAiReview(row: MemoItem): string {
   const title = row.title.trim();
-  const body = row.body.trim();
+  const body = plainTextFromBody(row.body).trim();
   if (!title && !body) return '';
   const parts: string[] = [];
-  const bodyLines = body ? body.split(/\n/).filter(l => l.trim().length > 0).length : 0;
+  const bodyLines = body ? body.split(/\n/).filter((l) => l.trim().length > 0).length : 0;
   const updatedLabel = row.updated_at
     ? new Date(row.updated_at).toLocaleString('zh-CN', {
         year: 'numeric',
