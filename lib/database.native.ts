@@ -531,25 +531,61 @@ async function migratePointsAllowDecimalAndSignedBalance(db: SQLite.SQLiteDataba
 
 /** 复盘模板 scope 支持 monthly；旧 CHECK 仅 daily/weekly */
 async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): Promise<void> {
+  const metaKey = 'review_dimensions_allow_monthly_v37';
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
-    ['review_dimensions_allow_monthly_v37'],
+    [metaKey],
   );
   if (done) return;
 
-  const table = await db.getFirstAsync<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='review_dimensions'",
+  const markDone = async () => {
+    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [metaKey, '1']);
+    await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+  };
+
+  const table = await db.getFirstAsync<{ name: string; sql: string | null }>(
+    "SELECT name, sql FROM sqlite_master WHERE type='table' AND name='review_dimensions'",
   );
   if (!table) {
-    await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-      'review_dimensions_allow_monthly_v37',
-      '1',
-    ]);
+    // 可能上次中断只留下 *_new：收尾成正式表
+    const orphanNew = await db.getFirstAsync<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='review_dimensions_new'",
+    );
+    if (orphanNew) {
+      await db.execAsync(`
+        ALTER TABLE review_dimensions_new RENAME TO review_dimensions;
+        CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
+        CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
+        CREATE INDEX IF NOT EXISTS idx_review_dimensions_updated_at ON review_dimensions(updated_at);
+      `);
+    }
+    await markDone();
     return;
   }
 
+  // 建表脚本已含 monthly，或旧库已迁完：无需再 rebuild
+  if (/monthly/i.test(String(table.sql ?? ''))) {
+    await db.execAsync('DROP TABLE IF EXISTS review_dimensions_new');
+    await markDone();
+    return;
+  }
+
+  const colNames = (
+    await db.getAllAsync<{ name: string }>(`PRAGMA table_info(review_dimensions)`)
+  ).map(c => c.name);
+  const has = (name: string) => colNames.includes(name);
+  const pick = (name: string, fallbackSql: string) => (has(name) ? name : fallbackSql);
+
+  // 保留已存在的 OCC 列，避免 rebuild 后丢 server_rev
+  const hasServerRev = has('server_rev');
+  const hasMutationId = has('mutation_id');
+  const hasLastPushed = has('last_pushed_mutation_id');
+
   await db.execAsync('PRAGMA foreign_keys = OFF');
   try {
+    // 上次 exec 中断时常见残留，不先丢掉会报 already exists
+    await db.execAsync('DROP TABLE IF EXISTS review_dimensions_new');
+
     await db.execAsync(`
       CREATE TABLE review_dimensions_new (
         id TEXT PRIMARY KEY NOT NULL,
@@ -560,13 +596,45 @@ async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): P
         updated_at TEXT NOT NULL,
         sync_status TEXT NOT NULL DEFAULT 'pending_create',
         extra_data TEXT
+        ${hasServerRev ? ', server_rev INTEGER NOT NULL DEFAULT 1' : ''}
+        ${hasMutationId ? ', mutation_id TEXT' : ''}
+        ${hasLastPushed ? ', last_pushed_mutation_id TEXT' : ''}
       );
+    `);
 
-      INSERT INTO review_dimensions_new (
-        id, scope, title, sort_order, created_at, updated_at, sync_status, extra_data
-      )
-      SELECT
-        id, scope, title, sort_order, created_at, updated_at, sync_status, extra_data
+    const insertCols = [
+      'id',
+      'scope',
+      'title',
+      'sort_order',
+      'created_at',
+      'updated_at',
+      'sync_status',
+      'extra_data',
+      ...(hasServerRev ? ['server_rev'] : []),
+      ...(hasMutationId ? ['mutation_id'] : []),
+      ...(hasLastPushed ? ['last_pushed_mutation_id'] : []),
+    ];
+    const selectExprs = [
+      pick('id', `lower(hex(randomblob(8)))`),
+      // 非法 scope 压成 daily，避免新 CHECK 挡死整库启动
+      has('scope')
+        ? `CASE WHEN scope IN ('daily', 'weekly', 'monthly') THEN scope ELSE 'daily' END`
+        : `'daily'`,
+      pick('title', `''`),
+      pick('sort_order', '1000'),
+      pick('created_at', `datetime('now')`),
+      pick('updated_at', `datetime('now')`),
+      pick('sync_status', `'synced'`),
+      pick('extra_data', 'NULL'),
+      ...(hasServerRev ? [pick('server_rev', '1')] : []),
+      ...(hasMutationId ? [pick('mutation_id', 'NULL')] : []),
+      ...(hasLastPushed ? [pick('last_pushed_mutation_id', 'NULL')] : []),
+    ];
+
+    await db.execAsync(`
+      INSERT INTO review_dimensions_new (${insertCols.join(', ')})
+      SELECT ${selectExprs.join(', ')}
       FROM review_dimensions;
 
       DROP TABLE review_dimensions;
@@ -576,15 +644,23 @@ async function migrateReviewDimensionsAllowMonthly(db: SQLite.SQLiteDatabase): P
       CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
       CREATE INDEX IF NOT EXISTS idx_review_dimensions_updated_at ON review_dimensions(updated_at);
     `);
+  } catch (e) {
+    console.warn('migrateReviewDimensionsAllowMonthly failed', e);
+    try {
+      await db.execAsync('DROP TABLE IF EXISTS review_dimensions_new');
+    } catch {
+      /* ignore */
+    }
+    throw e;
   } finally {
-    await db.execAsync('PRAGMA foreign_keys = ON');
+    try {
+      await db.execAsync('PRAGMA foreign_keys = ON');
+    } catch {
+      /* ignore */
+    }
   }
 
-  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
-    'review_dimensions_allow_monthly_v37',
-    '1',
-  ]);
-  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+  await markDone();
 }
 
 async function migrateProjectTagsToGlobalTags(db: SQLite.SQLiteDatabase): Promise<void> {

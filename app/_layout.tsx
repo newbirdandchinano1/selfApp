@@ -242,7 +242,7 @@ function RootLayoutInner() {
       const detail = e instanceof Error ? e.message : String(e);
       console.warn('数据库初始化失败', detail, e);
       blockingErrorRef.current = true;
-      const short = detail.trim().slice(0, 180);
+      const short = detail.trim().slice(0, 320);
       setDbError(
         short
           ? `数据库初始化失败，请重试。\n${short}`
@@ -315,7 +315,7 @@ function RootLayoutInner() {
         console.warn('数据库初始化失败', detail, e);
         if (mounted) {
           blockingErrorRef.current = true;
-          const short = detail.trim().slice(0, 180);
+          const short = detail.trim().slice(0, 320);
           setDbError(
             short
               ? `数据库初始化失败，请重试。\n${short}`
