@@ -1375,22 +1375,60 @@ export async function initDatabase() {
     );
   `);
 
+  // 必须在任何 project_categories 写入之前换掉旧镜像触发器。
+  // 旧触发器用 INSERT OR REPLACE；Expo SQLite 在嵌套语句里会 UNIQUE constraint failed，
+  // 而下方 inbox 种子的 UPDATE 会立刻打到 UPDATE 触发器，导致整段 initDatabase 失败（iPad 旧库尤甚）。
+  try {
+    await ensureProjectToTaskCategoryMirrorTriggers(db);
+  } catch (e) {
+    console.warn('启动时重建 project_categories → task_categories 触发器失败', e);
+    try {
+      await db.execAsync(`
+        DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task;
+        DROP TRIGGER IF EXISTS trg_project_categories_au_to_task;
+      `);
+    } catch {
+      /* ignore */
+    }
+  }
+
   const { migrateAppSettingsFromAsyncStorageIfNeeded } = await import('@/lib/app-settings-store');
   await migrateAppSettingsFromAsyncStorageIfNeeded();
 
   await db.runAsync('INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, ?)', ['schema_version', String(DB_VERSION)]);
-  await db.runAsync(
-    `INSERT OR IGNORE INTO project_categories (
-      id, name, created_at, updated_at, sync_status, extra_data
-    ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
-    [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
-  );
-  await db.runAsync(
-    `UPDATE project_categories
-     SET name = ?, updated_at = datetime('now')
-     WHERE id = ?`,
-    [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
-  );
+  try {
+    await db.runAsync(
+      `INSERT OR IGNORE INTO project_categories (
+        id, name, created_at, updated_at, sync_status, extra_data
+      ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
+      [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
+    );
+    await db.runAsync(
+      `UPDATE project_categories
+       SET name = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
+    );
+  } catch (e) {
+    // 仍可能撞上尚未换掉的旧触发器：先卸触发器再种子，后面镜像步骤会重建安全触发器
+    console.warn('inbox project_categories 种子失败，卸触发器后重试', e);
+    await db.execAsync(`
+      DROP TRIGGER IF EXISTS trg_project_categories_ai_to_task;
+      DROP TRIGGER IF EXISTS trg_project_categories_au_to_task;
+    `);
+    await db.runAsync(
+      `INSERT OR IGNORE INTO project_categories (
+        id, name, created_at, updated_at, sync_status, extra_data
+      ) VALUES (?, ?, datetime('now'), datetime('now'), 'synced', NULL)`,
+      [INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME]
+    );
+    await db.runAsync(
+      `UPDATE project_categories
+       SET name = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [INBOX_PROJECT_CATEGORY_NAME, INBOX_PROJECT_CATEGORY_ID]
+    );
+  }
   await db.execAsync(`
     INSERT OR IGNORE INTO finance_flow_categories (
       id, name, parent_id, sort_order, is_builtin, created_at, updated_at, sync_status, extra_data
