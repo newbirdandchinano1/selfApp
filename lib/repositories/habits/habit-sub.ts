@@ -1,8 +1,15 @@
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
-import { upsertHabitDayCount } from '@/lib/repositories/habits/habit-check-in';
+import {
+  getCheckInsMapByHabitId,
+  upsertHabitDayCount,
+} from '@/lib/repositories/habits/habit-check-in';
 import { parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  getTaskPeriodRange,
+  parseTaskRepeatPeriod,
+} from '@/lib/repositories/habits/habit-task-period';
 
 export type HabitSubItem = {
   id: string;
@@ -16,6 +23,40 @@ export type HabitSubHabitsMeta = {
   /** ymd → { subHabitId → count }；count>0：养成/任务=已完成，戒除=已破戒 */
   checkIns: Record<string, Record<string, number>>;
 };
+
+/**
+ * 完成任务且重复周期非「每日」时，子任务完成态按周期累计（本周/月/年内不清空），
+ * 与父任务「每周清空」等设定一致；养成/戒除/每日任务仍按自然日。
+ */
+function usesPeriodScopedSubCheckIns(extraData: string | null): boolean {
+  if (parseHabitKind(extraData) !== 'task') return false;
+  return parseTaskRepeatPeriod(extraData) !== '每日';
+}
+
+function getSubCheckInScopeRange(
+  extraData: string | null,
+  ymd: string,
+): { startYmd: string; endYmd: string } {
+  if (!usesPeriodScopedSubCheckIns(extraData)) {
+    return { startYmd: ymd, endYmd: ymd };
+  }
+  return getTaskPeriodRange(ymd, parseTaskRepeatPeriod(extraData));
+}
+
+function aggregateSubDayInRange(
+  checkIns: Record<string, Record<string, number>>,
+  startYmd: string,
+  endYmd: string,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [dayYmd, day] of Object.entries(checkIns)) {
+    if (dayYmd < startYmd || dayYmd > endYmd) continue;
+    for (const [subId, count] of Object.entries(day)) {
+      if (count > 0) out[subId] = Math.max(out[subId] ?? 0, count);
+    }
+  }
+  return out;
+}
 
 function parseExtraObject(extraData: string | null): Record<string, unknown> | null {
   if (!extraData) return null;
@@ -99,11 +140,11 @@ export function habitSubItemsLabel(kind: 'build' | 'break' | 'task'): {
       section: '子任务',
       singular: '子任务',
       enableTitle: '启用子任务模式',
-      enableHint: '开启后首页点击将展示子任务清单，全部完成后才计入父任务打卡',
+      enableHint: '开启后首页点击将展示子任务清单；进度按重复周期保留，全部完成后才计入父任务打卡',
       addButton: '添加子任务',
       editorTitle: (editing) => (editing ? '编辑子任务' : '添加子任务'),
       emptyHint: '尚未添加子任务。添加后，首页将改为在弹窗中逐项完成。',
-      modalHint: '点选完成子任务；全部完成后计入父任务当日打卡',
+      modalHint: '点选完成子任务；进度按重复周期保留，全部完成后计入父任务打卡',
     };
   }
   if (kind === 'break') {
@@ -139,7 +180,8 @@ export function getSubHabitDoneMapForYmd(
   ymd: string,
 ): Record<string, boolean> {
   const meta = parseHabitSubHabitsMeta(extraData);
-  const day = meta.checkIns[ymd] ?? {};
+  const { startYmd, endYmd } = getSubCheckInScopeRange(extraData, ymd);
+  const day = aggregateSubDayInRange(meta.checkIns, startYmd, endYmd);
   const out: Record<string, boolean> = {};
   for (const item of meta.items) {
     out[item.id] = (day[item.id] ?? 0) > 0;
@@ -197,24 +239,76 @@ function setSubHabitCountInExtra(
   const prev = parseExtraObject(extraData) ?? {};
   const meta = parseHabitSubHabitsMeta(extraData);
   const nextCheckIns: Record<string, Record<string, number>> = { ...meta.checkIns };
-  const day = { ...(nextCheckIns[ymd] ?? {}) };
   const nextCount = Math.max(0, Math.floor(count));
-  if (nextCount <= 0) {
-    delete day[subHabitId];
+
+  if (nextCount <= 0 && usesPeriodScopedSubCheckIns(extraData)) {
+    const { startYmd, endYmd } = getTaskPeriodRange(ymd, parseTaskRepeatPeriod(extraData));
+    for (const dayYmd of Object.keys(nextCheckIns)) {
+      if (dayYmd < startYmd || dayYmd > endYmd) continue;
+      const day = { ...(nextCheckIns[dayYmd] ?? {}) };
+      delete day[subHabitId];
+      if (Object.keys(day).length === 0) {
+        delete nextCheckIns[dayYmd];
+      } else {
+        nextCheckIns[dayYmd] = day;
+      }
+    }
   } else {
-    day[subHabitId] = nextCount;
+    const day = { ...(nextCheckIns[ymd] ?? {}) };
+    if (nextCount <= 0) {
+      delete day[subHabitId];
+    } else {
+      day[subHabitId] = nextCount;
+    }
+    if (Object.keys(day).length === 0) {
+      delete nextCheckIns[ymd];
+    } else {
+      nextCheckIns[ymd] = day;
+    }
   }
-  if (Object.keys(day).length === 0) {
-    delete nextCheckIns[ymd];
-  } else {
-    nextCheckIns[ymd] = day;
-  }
+
   return JSON.stringify({
     ...prev,
     subHabitsEnabled: meta.enabled,
     subHabits: meta.items,
     subHabitCheckIns: nextCheckIns,
   });
+}
+
+async function syncParentCheckInAfterSubToggle(params: {
+  habitId: string;
+  extraData: string;
+  ymd: string;
+  wasAllDone: boolean;
+  allDone: boolean;
+  parentCount: number;
+}): Promise<void> {
+  const periodScoped = usesPeriodScopedSubCheckIns(params.extraData);
+  if (!periodScoped) {
+    await upsertHabitDayCount(params.habitId, params.ymd, params.parentCount);
+    return;
+  }
+  if (params.allDone && !params.wasAllDone) {
+    await upsertHabitDayCount(params.habitId, params.ymd, params.parentCount);
+    return;
+  }
+  if (!params.allDone && params.wasAllDone) {
+    const { startYmd, endYmd } = getTaskPeriodRange(
+      params.ymd,
+      parseTaskRepeatPeriod(params.extraData),
+    );
+    const map = await getCheckInsMapByHabitId(params.habitId);
+    for (const [dayYmd, count] of Object.entries(map)) {
+      if (dayYmd < startYmd || dayYmd > endYmd) continue;
+      if (Math.max(0, Math.floor(Number(count) || 0)) > 0) {
+        await upsertHabitDayCount(params.habitId, dayYmd, 0);
+      }
+    }
+    return;
+  }
+  if (!params.allDone) {
+    await upsertHabitDayCount(params.habitId, params.ymd, 0);
+  }
 }
 
 /**
@@ -246,7 +340,8 @@ export async function toggleSubHabitCheckIn(params: {
   if (!meta.items.some((i) => i.id === params.subHabitId)) {
     throw new Error('子项不存在');
   }
-  const currentlyDone = (meta.checkIns[params.ymd]?.[params.subHabitId] ?? 0) > 0;
+  const wasAllDone = areAllSubHabitsCompletedForYmd(habit.extra_data, params.ymd);
+  const currentlyDone = getSubHabitDoneMapForYmd(habit.extra_data, params.ymd)[params.subHabitId] === true;
   const nextDone = params.done !== undefined ? params.done === true : !currentlyDone;
   const nextExtra = setSubHabitCountInExtra(
     habit.extra_data,
@@ -282,7 +377,14 @@ export async function toggleSubHabitCheckIn(params: {
 
   const allDone = completedCount >= total;
   const parentCount = allDone ? (dailyGoal != null && dailyGoal > 0 ? dailyGoal : 1) : 0;
-  await upsertHabitDayCount(params.habitId, params.ymd, parentCount);
+  await syncParentCheckInAfterSubToggle({
+    habitId: params.habitId,
+    extraData: nextExtra,
+    ymd: params.ymd,
+    wasAllDone,
+    allDone,
+    parentCount,
+  });
 
   return {
     extraData: nextExtra,

@@ -223,10 +223,60 @@ export function patchExtraDataOnRepeatTaskReopen(extraData: string | null): stri
   return JSON.stringify(base);
 }
 
-function patchExtraDataOnRepeatRollover(extraData: string | null, logicalYmd: string): string {
+function collectFrogAssignDatesFromExtra(extra: Record<string, unknown>): string[] {
+  const dates = new Set<string>();
+  if (Array.isArray(extra.frogAssignedDates)) {
+    for (const item of extra.frogAssignedDates) {
+      if (typeof item === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.trim())) {
+        dates.add(item.trim());
+      }
+    }
+  }
+  if (typeof extra.frogAssignedOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(extra.frogAssignedOn.trim())) {
+    dates.add(extra.frogAssignedOn.trim());
+  }
+  return [...dates].sort();
+}
+
+/**
+ * 新周期恢复时：清掉上一周期的青蛙指派与会话完成标记。
+ * 指派不跨周期继承，须在新周期重新拖入日程表。
+ */
+export function patchExtraDataOnRepeatRollover(extraData: string | null, logicalYmd: string): string {
   const base = parseExtraObject(extraData);
   delete base.repeatDoneOnYmd;
+  delete base.frogAssignedOn;
+  delete base.frogAssignedDates;
+  delete base.frogSessionCompletedOn;
   return JSON.stringify({ ...base, repeatLastRolloverYmd: logicalYmd });
+}
+
+/** 已滚动到新周期但仍残留旧指派日的脏数据（升级前遗留） */
+function patchExtraDataPruneStaleFrogAfterRollover(extraData: string | null): string | null {
+  const base = parseExtraObject(extraData);
+  const rolloverYmd =
+    typeof base.repeatLastRolloverYmd === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(base.repeatLastRolloverYmd.trim())
+      ? base.repeatLastRolloverYmd.trim()
+      : '';
+  if (!rolloverYmd) return null;
+
+  const frogDates = collectFrogAssignDatesFromExtra(base);
+  const sessionDone =
+    typeof base.frogSessionCompletedOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(base.frogSessionCompletedOn.trim())
+      ? base.frogSessionCompletedOn.trim()
+      : '';
+  const hasStaleAssign = frogDates.length > 0 && frogDates.every((d) => d < rolloverYmd);
+  const hasStaleSession = Boolean(sessionDone && sessionDone < rolloverYmd);
+  if (!hasStaleAssign && !hasStaleSession) return null;
+
+  if (hasStaleAssign) {
+    delete base.frogAssignedOn;
+    delete base.frogAssignedDates;
+  }
+  if (hasStaleSession) {
+    delete base.frogSessionCompletedOn;
+  }
+  return JSON.stringify(base);
 }
 
 function shouldRolloverRepeatingTask(
@@ -244,6 +294,12 @@ function shouldRolloverRepeatingTask(
   return true;
 }
 
+function shouldPruneStaleFrogAfterRepeatRollover(task: TaskRow): boolean {
+  if (task.status !== 'todo' && task.status !== 'doing') return false;
+  if (!parseTaskRepeatSchedule(task.extra_data)) return false;
+  return patchExtraDataPruneStaleFrogAfterRollover(task.extra_data) != null;
+}
+
 /**
  * 在重复日将上一周期已完成的待办恢复为「待办」。
  * @returns 实际更新的任务条数
@@ -255,21 +311,34 @@ export async function applyRepeatingTaskRollovers(
 ): Promise<number> {
   let changed = 0;
   for (const task of tasks) {
-    if (!shouldRolloverRepeatingTask(task, logicalTodayYmd, boundary)) continue;
-    try {
-      await updateTask(task.id, {
-        status: 'todo',
-        completed_at: null,
-        extra_data: patchExtraDataOnRepeatRollover(task.extra_data, logicalTodayYmd),
-      }, { deferSync: true });
+    if (shouldRolloverRepeatingTask(task, logicalTodayYmd, boundary)) {
       try {
-        await insertTaskExecutionEvent(task.id, 'reopened', task.title ?? null, { deferSync: true });
+        await updateTask(task.id, {
+          status: 'todo',
+          completed_at: null,
+          extra_data: patchExtraDataOnRepeatRollover(task.extra_data, logicalTodayYmd),
+        }, { deferSync: true });
+        try {
+          await insertTaskExecutionEvent(task.id, 'reopened', task.title ?? null, { deferSync: true });
+        } catch (e) {
+          console.warn('记录重复待办恢复事件失败', task.id, e);
+        }
+        changed += 1;
       } catch (e) {
-        console.warn('记录重复待办恢复事件失败', task.id, e);
+        console.warn('重复待办刷新失败', task.id, e);
       }
+      continue;
+    }
+
+    // 升级前已滚动但仍带着旧「已指派」的脏数据：打开任务页时清掉
+    if (!shouldPruneStaleFrogAfterRepeatRollover(task)) continue;
+    const pruned = patchExtraDataPruneStaleFrogAfterRollover(task.extra_data);
+    if (!pruned) continue;
+    try {
+      await updateTask(task.id, { extra_data: pruned }, { deferSync: true });
       changed += 1;
     } catch (e) {
-      console.warn('重复待办刷新失败', task.id, e);
+      console.warn('清除重复待办过期青蛙指派失败', task.id, e);
     }
   }
   return changed;
