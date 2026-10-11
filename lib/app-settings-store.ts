@@ -45,6 +45,8 @@ export const AppSettingKey = {
   reviewMinimalDailyTemplateV1: 'review_minimal_daily_template_v1',
   /** 日复盘内置健康/任务/财务模块迁移标记 */
   reviewBuiltinDailyModulesV1: 'review_builtin_daily_modules_v1',
+  /** 日/周/月六大内置模块 + 层层汇总迁移标记 */
+  reviewBuiltinCascadeModulesV1: 'review_builtin_cascade_modules_v1',
   /** 全局通知中心：总开关、频道开关、单条静音、健康/课程表偏好 */
   notificationsCenter: '@selfapp/notifications_center_v1',
   /** 通知 AI 文案缓存（identifier + fingerprint） */

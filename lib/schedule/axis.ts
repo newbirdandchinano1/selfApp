@@ -32,15 +32,85 @@ export function clampSlotHours(raw: unknown): ScheduleSlotHours {
   return DEFAULT_SCHEDULE_AXIS.slotHours;
 }
 
-/** 一天内最大结束时刻：24:00（午夜），以分钟表示 */
+/** 自然日午夜 24:00，以分钟表示 */
 export const SCHEDULE_DAY_END_MAX_MINUTES = 24 * 60;
 
-/** 对齐到整点（向下）；24:00 保持为 1440 */
-export function snapToHourMinutes(minutes: number, opts?: { allow24?: boolean }): number {
+/**
+ * 逻辑日轴最大终点：次日 23:00（日界最晚整点）= 1440 + 23*60。
+ * 日界非 0:00 时，日程终点 = 1440 + 日界整点，可越过午夜。
+ */
+export const SCHEDULE_LOGICAL_END_MAX_MINUTES = SCHEDULE_DAY_END_MAX_MINUTES + 23 * 60;
+
+/** 日界整点（向下对齐到小时）→ 逻辑日在轴上的起点分钟 */
+export function scheduleDayStartMinutesFromDayBoundary(boundary: {
+  hour: number;
+  minute: number;
+}): number {
+  return snapToHourMinutes(boundary.hour * 60 + boundary.minute, { allow24: false });
+}
+
+/**
+ * 日界 → 日程轴终点（与日界线同步）：
+ * - 日界 0:00 → 24:00（1440）
+ * - 日界 H:00 → 次日 H:00（1440 + H*60）
+ */
+export function scheduleEndMinutesFromDayBoundary(boundary: {
+  hour: number;
+  minute: number;
+}): number {
+  const boundaryMins = scheduleDayStartMinutesFromDayBoundary(boundary);
+  return boundaryMins === 0
+    ? SCHEDULE_DAY_END_MAX_MINUTES
+    : SCHEDULE_DAY_END_MAX_MINUTES + boundaryMins;
+}
+
+/**
+ * 按日界校正轴：强制终点 = 日界；起点不得早于日界，并保证至少 1 格。
+ */
+export function applyDayBoundaryToAxis(
+  axis: {
+    startMinutes: number;
+    endMinutes?: number;
+    slotHours: ScheduleSlotHours;
+    breaks?: unknown;
+  },
+  boundary: { hour: number; minute: number },
+): Omit<ScheduleAxisSettings, 'updatedAt'> {
+  const endMinutes = scheduleEndMinutesFromDayBoundary(boundary);
+  const dayStart = scheduleDayStartMinutesFromDayBoundary(boundary);
+  let startMinutes = snapToHourMinutes(axis.startMinutes, { allow24: false });
+  if (startMinutes < dayStart) startMinutes = dayStart;
+  const slotMins = Math.max(60, axis.slotHours * 60);
+  if (endMinutes - startMinutes < slotMins) {
+    startMinutes = snapToHourMinutes(Math.max(dayStart, endMinutes - slotMins), {
+      allow24: false,
+    });
+  }
+  return normalizeAxisSettings({
+    startMinutes,
+    endMinutes,
+    slotHours: axis.slotHours,
+    breaks: axis.breaks,
+  });
+}
+
+/** 对齐到整点（向下）；allow24=午夜 1440；allowOvernight=逻辑日跨午夜终点 */
+export function snapToHourMinutes(
+  minutes: number,
+  opts?: { allow24?: boolean; allowOvernight?: boolean },
+): number {
   if (!Number.isFinite(minutes)) return 0;
-  const max = opts?.allow24 ? SCHEDULE_DAY_END_MAX_MINUTES : 23 * 60;
+  const max = opts?.allowOvernight
+    ? SCHEDULE_LOGICAL_END_MAX_MINUTES
+    : opts?.allow24
+      ? SCHEDULE_DAY_END_MAX_MINUTES
+      : 23 * 60;
   const clamped = Math.min(max, Math.max(0, Math.round(minutes)));
-  if (opts?.allow24 && clamped >= SCHEDULE_DAY_END_MAX_MINUTES) {
+  if (
+    !opts?.allowOvernight &&
+    opts?.allow24 &&
+    clamped >= SCHEDULE_DAY_END_MAX_MINUTES
+  ) {
     return SCHEDULE_DAY_END_MAX_MINUTES;
   }
   return Math.floor(clamped / 60) * 60;
@@ -59,14 +129,27 @@ export function normalizeBreaks(
   dayEndMinutes: number,
 ): ScheduleBreak[] {
   if (!Array.isArray(raw)) return [];
-  const dayStart = snapToHourMinutes(dayStartMinutes, { allow24: false });
-  const dayEnd = snapToHourMinutes(dayEndMinutes, { allow24: true });
+  const overnight = dayEndMinutes > SCHEDULE_DAY_END_MAX_MINUTES;
+  const dayStart = snapToHourMinutes(dayStartMinutes, {
+    allow24: false,
+    allowOvernight: overnight,
+  });
+  const dayEnd = snapToHourMinutes(dayEndMinutes, {
+    allow24: true,
+    allowOvernight: overnight,
+  });
   const parsed: ScheduleBreak[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
     const o = item as Record<string, unknown>;
-    const start = snapToHourMinutes(Number(o.startMinutes), { allow24: false });
-    const end = snapToHourMinutes(Number(o.endMinutes), { allow24: true });
+    const start = snapToHourMinutes(Number(o.startMinutes), {
+      allow24: false,
+      allowOvernight: overnight,
+    });
+    const end = snapToHourMinutes(Number(o.endMinutes), {
+      allow24: true,
+      allowOvernight: overnight,
+    });
     if (!(end > start)) continue;
     const clippedStart = Math.max(start, dayStart);
     const clippedEnd = Math.min(end, dayEnd);
@@ -108,7 +191,10 @@ export function normalizeAxisSettings(
       ? raw.endMinutes
       : DEFAULT_SCHEDULE_AXIS.endMinutes;
   const startMinutes = snapToHourMinutes(startRaw, { allow24: false });
-  const endMinutes = snapToHourMinutes(endRaw, { allow24: true });
+  const endMinutes = snapToHourMinutes(endRaw, {
+    allow24: true,
+    allowOvernight: endRaw > SCHEDULE_DAY_END_MAX_MINUTES,
+  });
   return {
     startMinutes,
     endMinutes,
@@ -135,7 +221,7 @@ export function breaksEqual(a: ScheduleBreak[] | undefined, b: ScheduleBreak[] |
   return true;
 }
 
-/** 不允许跨日：结束必须严格晚于开始；断开后至少剩 1 个可排格 */
+/** 结束必须严格晚于开始；断开后至少剩 1 个可排格。终点可越过午夜以对齐日界。 */
 export function validateAxisRange(axis: {
   startMinutes: number;
   endMinutes: number;
@@ -143,7 +229,10 @@ export function validateAxisRange(axis: {
   breaks?: ScheduleBreak[];
 }): string | null {
   if (axis.endMinutes <= axis.startMinutes) {
-    return '日结束时间必须晚于日开始时间（不允许跨日）。';
+    return '日结束时间必须晚于日开始时间。';
+  }
+  if (axis.endMinutes > SCHEDULE_LOGICAL_END_MAX_MINUTES) {
+    return '日结束时间超出逻辑日范围。';
   }
   const slotMins = axis.slotHours * 60;
   if (axis.endMinutes - axis.startMinutes < slotMins) {
@@ -227,16 +316,30 @@ export function placementEndMinutes(
   return slotStartMinutes(axis, startSlotIndex) + span * axis.slotHours * 60;
 }
 
+/** 轴分钟 → 展示用小时（跨午夜后用 0–23；恰为午夜终点显示 24） */
+function axisHourLabel(minutes: number, asEnd: boolean): number {
+  const rounded = Math.round(minutes);
+  if (asEnd && rounded > 0 && rounded % SCHEDULE_DAY_END_MAX_MINUTES === 0) {
+    return 24;
+  }
+  return Math.floor(rounded / 60) % 24;
+}
+
 export function formatMinutesAsHm(minutes: number): string {
   const rounded = Math.round(minutes);
-  if (rounded >= SCHEDULE_DAY_END_MAX_MINUTES) return '24:00';
-  const m = ((rounded % (24 * 60)) + 24 * 60) % (24 * 60);
+  if (rounded === SCHEDULE_DAY_END_MAX_MINUTES) return '24:00';
+  if (rounded > SCHEDULE_DAY_END_MAX_MINUTES && rounded % SCHEDULE_DAY_END_MAX_MINUTES === 0) {
+    return '24:00';
+  }
+  const m =
+    ((rounded % SCHEDULE_DAY_END_MAX_MINUTES) + SCHEDULE_DAY_END_MAX_MINUTES) %
+    SCHEDULE_DAY_END_MAX_MINUTES;
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
-/** 左侧时间轴：时段区间，如 7-8、10-12（无前导零） */
+/** 左侧时间轴：时段区间，如 7-8、10-12、0-2（无前导零） */
 export function formatSlotRangeLabel(startMinutes: number, endOrSlotHours: number): string {
   // 兼容：第二个参数既可是结束分钟，也可是格宽小时（< 24 视为小时）
   const start = Math.max(0, Math.round(startMinutes));
@@ -244,17 +347,51 @@ export function formatSlotRangeLabel(startMinutes: number, endOrSlotHours: numbe
     endOrSlotHours > 0 && endOrSlotHours < 24
       ? start + Math.max(1, endOrSlotHours) * 60
       : Math.round(endOrSlotHours);
-  const startH = Math.floor(start / 60);
-  const endH = end >= SCHEDULE_DAY_END_MAX_MINUTES ? 24 : Math.floor(end / 60);
-  return `${startH}-${endH}`;
+  return `${axisHourLabel(start, false)}-${axisHourLabel(end, true)}`;
 }
 
 export function formatMinuteRangeLabel(startMinutes: number, endMinutes: number): string {
   const start = Math.max(0, Math.round(startMinutes));
   const end = Math.max(start, Math.round(endMinutes));
-  const startH = Math.floor(start / 60);
-  const endH = end >= SCHEDULE_DAY_END_MAX_MINUTES ? 24 : Math.floor(end / 60);
-  return `${startH}-${endH}`;
+  return `${axisHourLabel(start, false)}-${axisHourLabel(end, true)}`;
+}
+
+/**
+ * 墙上时钟 → 逻辑日轴分钟（可 >1440）。
+ * 仅当 wallNow 落在 logicalYmd 对应逻辑日内时有值。
+ */
+export function wallClockToAxisMinutes(
+  wallNow: Date,
+  logicalYmd: string,
+  boundary: { hour: number; minute: number },
+  getLogicalYmd: (now: Date, boundary: { hour: number; minute: number }) => string,
+  formatWallYmd: (now: Date) => string,
+): number | null {
+  if (getLogicalYmd(wallNow, boundary) !== logicalYmd) return null;
+  const wallMins =
+    wallNow.getHours() * 60 + wallNow.getMinutes() + wallNow.getSeconds() / 60;
+  const wallYmd = formatWallYmd(wallNow);
+  if (wallYmd === logicalYmd) return wallMins;
+  return wallMins + SCHEDULE_DAY_END_MAX_MINUTES;
+}
+
+/** 墙钟时分 → 轴分钟候选（同日 / 跨午夜次日晨），取落在轴内者 */
+export function clockHmToAxisMinutes(
+  axis: AxisLike,
+  hour: number,
+  minute: number,
+): number | null {
+  const h = Math.max(0, Math.min(23, Math.round(hour)));
+  const m = Math.max(0, Math.min(59, Math.round(minute)));
+  const wall = h * 60 + m;
+  const candidates = [wall];
+  if (axis.endMinutes > SCHEDULE_DAY_END_MAX_MINUTES) {
+    candidates.push(wall + SCHEDULE_DAY_END_MAX_MINUTES);
+  }
+  for (const mins of candidates) {
+    if (mins >= axis.startMinutes && mins < axis.endMinutes) return mins;
+  }
+  return null;
 }
 
 export function parseHmToMinutes(hm: string): number | null {

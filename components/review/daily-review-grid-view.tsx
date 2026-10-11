@@ -32,12 +32,7 @@ import {
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import {
-  builtinDailyReviewFieldPatch,
-  loadReviewDayFacts,
-  reviewDayFactsIsEmpty,
-  type ReviewDayFacts,
-} from '@/lib/review-day-facts';
+import { loadReviewDayFacts, type ReviewDayFacts } from '@/lib/review-day-facts';
 import { Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -76,12 +71,14 @@ export function DailyReviewGridView({
   onYmdChange,
   pageApiKey,
   refreshControl,
+  onRegisterReload,
   onSwitchToWeekly,
 }: {
   ymd: string;
   onYmdChange?: (ymd: string) => void;
   pageApiKey: string;
   refreshControl?: React.ReactElement<RefreshControlProps>;
+  onRegisterReload?: (reload: () => Promise<void>) => void;
   onSwitchToWeekly?: () => void;
 }) {
   const router = useRouter();
@@ -128,10 +125,12 @@ export function DailyReviewGridView({
     [configuredDow, reviewCycleEndYmd, streakEntries, todayYmd],
   );
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (opts?: { silent?: boolean }) => {
     if (!ymd) return;
+    const silent = opts?.silent === true;
     hydratedRef.current = false;
-    setLoading(true);
+    // 静默刷新保留 ScrollView，避免同步/聚焦重载把滚动位置弹回顶部
+    if (!silent) setLoading(true);
     try {
       await wrapLoad(async () => {
         await ensureBuiltinDailyReviewModules();
@@ -191,8 +190,14 @@ export function DailyReviewGridView({
   }, [todayYmd, wrapLoad, ymd]);
 
   useEffect(() => {
-    void reload();
+    void reload({ silent: false });
   }, [reload]);
+
+  useEffect(() => {
+    if (!onRegisterReload) return;
+    onRegisterReload(() => reload({ silent: true }));
+    return () => onRegisterReload(async () => {});
+  }, [onRegisterReload, reload]);
 
   useFocusEffect(
     useCallback(() => {
@@ -200,7 +205,7 @@ export function DailyReviewGridView({
         skipFirstFocusReloadRef.current = false;
         return;
       }
-      void reload();
+      void reload({ silent: true });
     }, [reload]),
   );
 
@@ -260,29 +265,6 @@ export function DailyReviewGridView({
     },
     [router, ymd],
   );
-
-  const onChangeField = useCallback(
-    (columnId: string, plain: string) => {
-      if (!canEdit) return;
-      setFields(prev => ({ ...prev, [columnId]: plain }));
-    },
-    [canEdit],
-  );
-
-  const onInsertFacts = useCallback(() => {
-    if (!canEdit || !facts) return;
-    if (reviewDayFactsIsEmpty(facts)) {
-      Alert.alert('暂无内容', '今天还没有可写入的健康、任务或财务数据。');
-      return;
-    }
-    const patch = builtinDailyReviewFieldPatch(facts);
-    const missing = Object.keys(patch).filter(id => !dailyTemplate.some(d => d.columns.some(c => c.id === id)));
-    if (missing.length === 3) {
-      Alert.alert('无法写入', '请先同步日复盘内置栏目（健康 / 任务 / 财务）。');
-      return;
-    }
-    setFields(prev => ({ ...prev, ...patch }));
-  }, [canEdit, dailyTemplate, facts]);
 
   const runAi = useCallback(async () => {
     if (!canEdit) {
@@ -378,9 +360,7 @@ export function DailyReviewGridView({
           />
         ) : null}
 
-        {!skipped && canEdit ? (
-          <DailyReviewFactsStrip facts={facts} canEdit={canEdit} onInsert={onInsertFacts} />
-        ) : null}
+        {!skipped ? <DailyReviewFactsStrip facts={facts} canEdit={false} /> : null}
 
         {dailyTemplate.length === 0 ? (
           <ReviewEmptyState
@@ -392,7 +372,6 @@ export function DailyReviewGridView({
             dimensions={dailyTemplate}
             fields={fields}
             canEdit={canEdit}
-            onChangeField={onChangeField}
             onOpenDimension={openDimension}
           />
         )}

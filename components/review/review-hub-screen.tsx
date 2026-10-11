@@ -105,6 +105,7 @@ export function ReviewHubScreen() {
   const [monthLabel, setMonthLabel] = useState('');
   const [autoSwitchedWeekly, setAutoSwitchedWeekly] = useState(false);
   const scopeRef = useRef(scope);
+  const dailyReloadRef = useRef<(() => Promise<void>) | null>(null);
   const weeklyReloadRef = useRef<(() => Promise<void>) | null>(null);
   const monthlyReloadRef = useRef<(() => Promise<void>) | null>(null);
 
@@ -139,7 +140,9 @@ export function ReviewHubScreen() {
   const reload = useCallback(
     async (forceRefresh = false) => {
       await reloadSnapshot(forceRefresh);
-      if (scopeRef.current === 'weekly') {
+      if (scopeRef.current === 'daily') {
+        await dailyReloadRef.current?.();
+      } else if (scopeRef.current === 'weekly') {
         await weeklyReloadRef.current?.();
       } else if (scopeRef.current === 'monthly') {
         await monthlyReloadRef.current?.();
@@ -147,6 +150,10 @@ export function ReviewHubScreen() {
     },
     [reloadSnapshot],
   );
+
+  const registerDailyReload = useCallback((fn: () => Promise<void>) => {
+    dailyReloadRef.current = fn;
+  }, []);
 
   const registerWeeklyReload = useCallback((fn: () => Promise<void>) => {
     weeklyReloadRef.current = fn;
@@ -244,6 +251,7 @@ export function ReviewHubScreen() {
               onYmdChange={setSelectedYmd}
               pageApiKey={PAGE_API_KEY}
               refreshControl={refreshControl}
+              onRegisterReload={registerDailyReload}
               onSwitchToWeekly={() => {
                 setScope('weekly');
                 setAutoSwitchedWeekly(true);

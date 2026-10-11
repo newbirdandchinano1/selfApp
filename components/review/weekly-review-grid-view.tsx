@@ -12,6 +12,7 @@ import { WeeklyReviewWeekStory } from '@/components/review/weekly-review-week-st
 import {
   isDailySkipped,
   loadReviewPeriodSnapshot,
+  rollupWeeklyFieldsFromDailyEntries,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
   type DailyEntry,
 } from '@/components/review/review-utils';
@@ -27,7 +28,10 @@ import {
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
 import { toast, toUserMessage } from '@/lib/app-feedback';
-import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import {
+  ensureBuiltinCascadeReviewModules,
+  listReviewTemplate,
+} from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
   fetchWeeklyReviewMetrics,
@@ -102,11 +106,14 @@ export function WeeklyReviewGridView({
     return set;
   }, [configuredDow, dailyEntries, reviewCycleEndYmd]);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
     hydratedRef.current = false;
-    setLoading(true);
+    // 静默刷新保留 ScrollView，避免同步/聚焦重载把滚动位置弹回顶部
+    if (!silent) setLoading(true);
     try {
       await wrapLoad(async () => {
+        await ensureBuiltinCascadeReviewModules();
         const [snapshot, weeklyTpl] = await Promise.all([
           loadReviewPeriodSnapshot(todayYmd),
           listReviewTemplate('weekly'),
@@ -132,7 +139,15 @@ export function WeeklyReviewGridView({
           getWeeklyReviewJournalByWeek(startYmd),
           fetchWeeklyReviewMetrics(rolling.end, 'rolling-7').catch(() => null),
         ]);
-        setFields(row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds));
+        const base = row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds);
+        setFields(
+          rollupWeeklyFieldsFromDailyEntries(
+            base,
+            snapshot.dailyEntries,
+            snapshot.reviewCycleEndYmd,
+            snapshot.configuredDow,
+          ),
+        );
         setAiCoaching(row?.ai_coaching ?? null);
         setMetrics(weekMetrics);
         journalMetaRef.current = {
@@ -154,12 +169,12 @@ export function WeeklyReviewGridView({
   }, [todayYmd, wrapLoad]);
 
   useEffect(() => {
-    void reload();
+    void reload({ silent: false });
   }, [reload]);
 
   useEffect(() => {
     if (!onRegisterReload) return;
-    onRegisterReload(reload);
+    onRegisterReload(() => reload({ silent: true }));
     return () => onRegisterReload(async () => {});
   }, [onRegisterReload, reload]);
 
@@ -169,7 +184,7 @@ export function WeeklyReviewGridView({
         skipFirstFocusReloadRef.current = false;
         return;
       }
-      void reload();
+      void reload({ silent: true });
     }, [reload]),
   );
 
@@ -204,14 +219,6 @@ export function WeeklyReviewGridView({
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, [canEdit, fields, persist]);
-
-  const onChangeField = useCallback(
-    (columnId: string, plain: string) => {
-      if (!canEdit) return;
-      setFields(prev => ({ ...prev, [columnId]: plain }));
-    },
-    [canEdit],
-  );
 
   const openDimension = useCallback(
     (dimensionId: string) => {
@@ -313,7 +320,6 @@ export function WeeklyReviewGridView({
             dimensions={weeklyTemplate}
             fields={fields}
             canEdit={canEdit}
-            onChangeField={onChangeField}
             onOpenDimension={openDimension}
           />
         )}

@@ -13,6 +13,7 @@ import {
   dailyEntryHasContent,
   getYesterdayYmd,
   loadReviewPeriodSnapshot,
+  rollupWeeklyFieldsFromDailyEntries,
   WEEKLY_REVIEW_WEEKDAY_LABELS,
 } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
@@ -160,19 +161,6 @@ export function WeeklyReviewFormScreen({
           setWeeklyTemplate(weeklyTpl);
           const wColIds = collectColumnIds(weeklyTpl);
 
-          if (!snapshot.canEditWeekly) {
-            setPeriodStartYmd('');
-            setMetrics(null);
-            setWeeklyFields(emptyFieldValues(wColIds));
-            setExecutionScore(0);
-            setAiCoaching(null);
-            setAdjustTasks(false);
-            setAdjustSavings(false);
-            setAdjustPlans(false);
-            return;
-          }
-
-          setPeriodStartYmd(snapshot.periodStartYmd);
           const today = new Date();
           const rolling =
             snapshot.configuredDow !== null
@@ -181,21 +169,53 @@ export function WeeklyReviewFormScreen({
           const metricsAnchor = rolling
             ? new Date(rolling.end.getFullYear(), rolling.end.getMonth(), rolling.end.getDate())
             : today;
+          const weekStart = snapshot.periodStartYmd || rolling?.startYmd || '';
 
+          if (!snapshot.canEditWeekly || !weekStart) {
+            setPeriodStartYmd('');
+            setMetrics(null);
+            const previewRow = weekStart ? await getWeeklyReviewJournalByWeek(weekStart) : null;
+            const base = previewRow
+              ? parseWeeklyReviewFields(previewRow, wColIds)
+              : emptyFieldValues(wColIds);
+            setWeeklyFields(
+              rollupWeeklyFieldsFromDailyEntries(
+                base,
+                snapshot.dailyEntries,
+                snapshot.reviewCycleEndYmd,
+                snapshot.configuredDow,
+              ),
+            );
+            setExecutionScore(0);
+            setAiCoaching(null);
+            setAdjustTasks(false);
+            setAdjustSavings(false);
+            setAdjustPlans(false);
+            return;
+          }
+
+          setPeriodStartYmd(weekStart);
           const [row, m] = await Promise.all([
-            getWeeklyReviewJournalByWeek(snapshot.periodStartYmd),
+            getWeeklyReviewJournalByWeek(weekStart),
             fetchWeeklyReviewMetrics(metricsAnchor, 'rolling-7'),
           ]);
           setMetrics(m);
+          const base = row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds);
+          setWeeklyFields(
+            rollupWeeklyFieldsFromDailyEntries(
+              base,
+              snapshot.dailyEntries,
+              snapshot.reviewCycleEndYmd,
+              snapshot.configuredDow,
+            ),
+          );
           if (row) {
-            setWeeklyFields(parseWeeklyReviewFields(row, wColIds));
             setExecutionScore(row.execution_score > 0 ? row.execution_score : 0);
             setAiCoaching(row.ai_coaching);
             setAdjustTasks(row.adjust_tasks === 1);
             setAdjustSavings(row.adjust_savings === 1);
             setAdjustPlans(row.adjust_plans === 1);
           } else {
-            setWeeklyFields(emptyFieldValues(wColIds));
             setExecutionScore(0);
             setAiCoaching(null);
             setAdjustTasks(false);

@@ -24,7 +24,7 @@ import {
   type TaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
-import { listWorkSlots, type AxisLike } from '@/lib/schedule/axis';
+import { clockHmToAxisMinutes, listWorkSlots, type AxisLike } from '@/lib/schedule/axis';
 import { isHabitVisibleOnCalendarDay } from '@/lib/tasks-calendar-data';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 
@@ -101,10 +101,8 @@ export function mapHabitTimeToWorkSlotIndex(
   hour: number,
   minute: number,
 ): number | null {
-  const h = Math.max(0, Math.min(23, Math.round(hour)));
-  const m = Math.max(0, Math.min(59, Math.round(minute)));
-  const mins = h * 60 + m;
-  if (mins < axis.startMinutes || mins >= axis.endMinutes) return null;
+  const mins = clockHmToAxisMinutes(axis, hour, minute);
+  if (mins == null) return null;
   const slots = listWorkSlots(axis);
   for (const slot of slots) {
     if (mins >= slot.startMinutes && mins < slot.endMinutes) {

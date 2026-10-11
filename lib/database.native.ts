@@ -1955,14 +1955,14 @@ export async function initDatabase() {
   }
 
   const {
-    ensureBuiltinDailyReviewModules,
+    ensureBuiltinCascadeReviewModules,
     ensureReviewTemplateDefaults,
     migrateDailyTemplateToMinimalIfNeeded,
   } = await import('@/lib/repositories/insights/review-template');
   await migrateReviewDimensionsAllowMonthly(db);
   await ensureReviewTemplateDefaults();
   await migrateDailyTemplateToMinimalIfNeeded();
-  await ensureBuiltinDailyReviewModules();
+  await ensureBuiltinCascadeReviewModules();
 
   await migrateDropDeletedAtAndVersionColumns(db);
   await migrateDropPersonaPortraitCache(db);

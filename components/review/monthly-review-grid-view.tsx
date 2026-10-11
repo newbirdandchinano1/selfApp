@@ -11,7 +11,9 @@ import {
 import {
   formatReviewMonthLabel,
   isMonthlyReviewEditable,
+  monthEndYmdFromMonthStart,
   monthStartYmdFromYmd,
+  rollupMonthlyFieldsFromWeeklyJournals,
   shiftMonthStartYmd,
 } from '@/components/review/review-utils';
 import { Layout, Spacing, Typography } from '@/constants/design-tokens';
@@ -21,6 +23,7 @@ import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import {
   collectColumnIds,
+  migrateMonthlyLegacyFields,
   parseDailyReviewJournal,
   serializeReviewBody,
   type ReviewFieldValues,
@@ -31,7 +34,10 @@ import {
   upsertMonthlyReviewJournal,
 } from '@/lib/repositories/insights/monthly-review-journal';
 import { toast, toUserMessage } from '@/lib/app-feedback';
-import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import {
+  ensureBuiltinCascadeReviewModules,
+  listReviewTemplate,
+} from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
   fetchReviewCatalog,
@@ -93,15 +99,26 @@ export function MonthlyReviewGridView({
     onMonthLabelChange?.(monthLabel);
   }, [monthLabel, onMonthLabelChange]);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
     hydratedRef.current = false;
-    setLoading(true);
+    // 静默刷新保留 ScrollView，避免同步/聚焦重载把滚动位置弹回顶部
+    if (!silent) setLoading(true);
     try {
       await wrapLoad(async () => {
+        await ensureBuiltinCascadeReviewModules();
+        const monthEnd = monthEndYmdFromMonthStart(monthStartYmd);
         if (shouldFetchReviewFromApi()) {
           await Promise.all([
             fetchReviewCatalog({ scope: 'monthly', serverFallback: true }),
+            fetchReviewCatalog({ scope: 'weekly', serverFallback: true }),
             fetchReviewJournal({ scope: 'monthly', monthStart: monthStartYmd, serverFallback: true }),
+            fetchReviewJournal({
+              scope: 'weekly',
+              start: monthStartYmd,
+              end: monthEnd,
+              serverFallback: true,
+            }),
           ]);
         }
         const [tpl, row] = await Promise.all([
@@ -111,9 +128,12 @@ export function MonthlyReviewGridView({
         setMonthlyTemplate(tpl);
         const colIds = collectColumnIds(tpl);
         const journal = parseDailyReviewJournal(row?.body ?? null, colIds);
-        setFields(journal.fields);
+        const migrated = migrateMonthlyLegacyFields(journal.fields, row?.body);
+        const fieldsWithRollup = await rollupMonthlyFieldsFromWeeklyJournals(migrated, monthStartYmd);
+        setFields(fieldsWithRollup);
         setMeta(journal.meta);
-        lastPersistedBodyRef.current = serializeReviewBody(journal.fields, journal.meta);
+        // 用汇总前正文作为基准，便于自动保存把默认汇总落库
+        lastPersistedBodyRef.current = serializeReviewBody(migrated, journal.meta);
       });
     } catch {
       setFields({});
@@ -127,12 +147,12 @@ export function MonthlyReviewGridView({
   }, [monthStartYmd, wrapLoad]);
 
   useEffect(() => {
-    void reload();
+    void reload({ silent: false });
   }, [reload]);
 
   useEffect(() => {
     if (!onRegisterReload) return;
-    onRegisterReload(reload);
+    onRegisterReload(() => reload({ silent: true }));
     return () => onRegisterReload(async () => {});
   }, [onRegisterReload, reload]);
 
@@ -142,7 +162,7 @@ export function MonthlyReviewGridView({
         skipFirstFocusReloadRef.current = false;
         return;
       }
-      void reload();
+      void reload({ silent: true });
     }, [reload]),
   );
 
@@ -178,14 +198,6 @@ export function MonthlyReviewGridView({
       router.push(`/monthly-review/${monthStartYmd}/${dimensionId}` as never);
     },
     [monthStartYmd, router],
-  );
-
-  const onChangeField = useCallback(
-    (columnId: string, plain: string) => {
-      if (!canEdit) return;
-      setFields(prev => ({ ...prev, [columnId]: plain }));
-    },
-    [canEdit],
   );
 
   const runAi = useCallback(async () => {
@@ -291,7 +303,6 @@ export function MonthlyReviewGridView({
             dimensions={monthlyTemplate}
             fields={fields}
             canEdit={canEdit}
-            onChangeField={onChangeField}
             onOpenDimension={openDimension}
           />
         )}

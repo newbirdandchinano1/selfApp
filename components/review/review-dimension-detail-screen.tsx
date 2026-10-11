@@ -10,6 +10,9 @@ import {
   formatReviewMonthLabel,
   isMonthlyReviewEditable,
   loadReviewPeriodSnapshot,
+  monthEndYmdFromMonthStart,
+  rollupMonthlyFieldsFromWeeklyJournals,
+  rollupWeeklyFieldsFromDailyEntries,
 } from '@/components/review/review-utils';
 import { ScreenHeader } from '@/components/ui';
 import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
@@ -40,6 +43,7 @@ import {
 import {
   collectColumnIds,
   emptyFieldValues,
+  migrateMonthlyLegacyFields,
   parseDailyReviewJournal,
   parseWeeklyReviewFields,
   serializeReviewBody,
@@ -312,7 +316,12 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
             getWeeklyReviewJournalByWeek(periodYmd),
           ]);
           const colIds = collectColumnIds(weeklyTpl);
-          const parsed = parseWeeklyReviewFields(row, colIds);
+          const parsed = rollupWeeklyFieldsFromDailyEntries(
+            parseWeeklyReviewFields(row, colIds),
+            snapshot.dailyEntries,
+            snapshot.reviewCycleEndYmd,
+            snapshot.configuredDow,
+          );
           const models = fieldValuesToModels(parsed);
           const weeklyMeta: WeeklyJournalMeta = {
             execution_score: row?.execution_score ?? 0,
@@ -333,13 +342,24 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
           return;
         }
 
+        const monthEnd = monthEndYmdFromMonthStart(periodYmd);
+        if (shouldFetchReviewFromApi()) {
+          await fetchReviewJournal({
+            scope: 'weekly',
+            start: periodYmd,
+            end: monthEnd,
+            serverFallback: true,
+          });
+        }
         const [tpl, row] = await Promise.all([
           listReviewTemplate('monthly'),
           getMonthlyReviewJournalByMonth(periodYmd),
         ]);
         const colIds = collectColumnIds(tpl);
         const journal = parseDailyReviewJournal(row?.body ?? null, colIds);
-        const models = fieldValuesToModels(journal.fields);
+        const migrated = migrateMonthlyLegacyFields(journal.fields, row?.body);
+        const rolled = await rollupMonthlyFieldsFromWeeklyJournals(migrated, periodYmd);
+        const models = fieldValuesToModels(rolled);
         applyLoadedState({
           tpl,
           models,

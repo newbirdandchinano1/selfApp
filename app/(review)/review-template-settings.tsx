@@ -8,6 +8,7 @@ import {
   createReviewDimensionId,
   deleteReviewColumn,
   deleteReviewDimension,
+  ensureBuiltinCascadeReviewModules,
   ensureBuiltinDailyReviewModules,
   listReviewTemplate,
   updateReviewColumn,
@@ -105,9 +106,9 @@ export default function ReviewTemplateSettingsScreen() {
     setLoading(true);
     try {
       await wrapLoad(async () => {
-        if (scope === 'daily') {
-          await ensureBuiltinDailyReviewModules();
-        }
+        await ensureBuiltinCascadeReviewModules().catch(() =>
+          scope === 'daily' ? ensureBuiltinDailyReviewModules() : Promise.resolve(),
+        );
         if (shouldFetchReviewFromApi()) {
           await fetchReviewCatalog({ scope, serverFallback: true });
         }
@@ -161,7 +162,7 @@ export default function ReviewTemplateSettingsScreen() {
 
   const onDeleteDimension = (dim: ReviewDimensionTemplate) => {
     if (isBuiltinDailyReviewDimensionId(dim.id)) {
-      Alert.alert('无法删除', '健康、任务、财务为内置分类，不能删除。');
+      Alert.alert('无法删除', '健康、任务、财务、日常、缺陷、新想法为内置分类，不能删除。');
       return;
     }
     Alert.alert('删除维度', `确定删除「${dim.title}」及其下全部栏目？`, [
@@ -223,7 +224,7 @@ export default function ReviewTemplateSettingsScreen() {
         if (editor.dimensionId) {
           await updateReviewDimension(editor.dimensionId, { title });
         } else {
-          const floor = scope === 'daily' ? BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START : 0;
+          const floor = BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START;
           const maxSort = template.reduce((m, d) => Math.max(m, d.sortOrder), floor);
           await createReviewDimension({
             id: createReviewDimensionId(),
@@ -327,8 +328,10 @@ export default function ReviewTemplateSettingsScreen() {
             ]}>
             <Text style={[styles.hint, { color: colors.textMuted }]}>
               {scope === 'daily'
-                ? '日复盘前三项为内置分类（健康 / 任务 / 财务），其后可添加自定义模块。内置项不可删除。'
-                : `管理${scopeLabel}的维度与栏目。修改后填写页会即时生效；已保存的历史内容仍按栏目 ID 对应，删除栏目后其旧内容不再显示。`}
+                ? '日复盘前六项为内置分类（健康 / 任务 / 财务 / 日常 / 缺陷 / 新想法），其后可添加自定义模块。内置项不可删除。'
+                : scope === 'weekly'
+                  ? '周复盘与日复盘模块一致；空栏默认汇总近六天日复盘，可自行补充。内置项不可删除。'
+                  : '月复盘与日复盘模块一致；空栏默认汇总本月各周复盘，可自行补充。内置项不可删除。'}
             </Text>
 
             {template.map((dim, dimIdx) => {

@@ -5,22 +5,19 @@ import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-/** 全部维度 / 栏目均为内联输入，不再使用宫格 */
+/** 总览只读预览；须进入维度详情页才能编辑 */
 export function DailyReviewInlineComposer({
   dimensions,
   fields,
   canEdit,
-  onChangeField,
   onOpenDimension,
 }: {
   dimensions: ReviewDimensionTemplate[];
   fields: Record<string, string>;
   canEdit: boolean;
-  onChangeField: (columnId: string, plain: string) => void;
-  /** 可选：打开富文本详情编辑 */
-  onOpenDimension?: (dimensionId: string) => void;
+  onOpenDimension: (dimensionId: string) => void;
 }) {
   const { colors } = useAppTheme();
 
@@ -28,56 +25,75 @@ export function DailyReviewInlineComposer({
 
   return (
     <View style={styles.stack}>
-      {dimensions.map(dim => (
-        <ReviewSectionCard key={dim.id} style={styles.card}>
-          <View style={styles.head}>
-            <Text style={[Typography.title, { color: colors.text, flex: 1 }]} maxFontSizeMultiplier={1.35}>
-              {dim.title}
-            </Text>
-            {onOpenDimension ? (
-              <Pressable
-                onPress={() => onOpenDimension(dim.id)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`${dim.title}，展开详细编辑`}
-                style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
-                <MaterialIcons name="open-in-full" size={20} color={colors.textMuted} />
-              </Pressable>
-            ) : null}
-          </View>
+      {dimensions.map(dim => {
+        const plainParts = dim.columns.map(col => ({
+          id: col.id,
+          title: col.title,
+          placeholder: col.placeholder || '写点什么…',
+          plain: reviewContentToPlainDisplay(fields[col.id] ?? '').trim(),
+        }));
+        const hasAny = plainParts.some(p => p.plain.length > 0);
+        const actionHint = canEdit ? '点击进入详情编辑' : '点击查看详情';
 
-          {dim.columns.map(col => {
-            const plain = reviewContentToPlainDisplay(fields[col.id] ?? '');
-            return (
-              <View key={col.id} style={styles.fieldBlock}>
-                {dim.columns.length > 1 ? (
-                  <Text style={[Typography.caption, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
-                    {col.title}
-                  </Text>
-                ) : null}
-                <TextInput
-                  value={plain}
-                  onChangeText={text => onChangeField(col.id, text)}
-                  editable={canEdit}
-                  multiline
-                  placeholder={col.placeholder || '写点什么…'}
-                  placeholderTextColor={colors.textMuted}
-                  style={[
-                    styles.input,
-                    {
-                      color: colors.text,
-                      backgroundColor: colors.input,
-                      borderColor: colors.outline,
-                    },
-                  ]}
-                  textAlignVertical="top"
-                  maxFontSizeMultiplier={1.35}
+        return (
+          <Pressable
+            key={dim.id}
+            onPress={() => onOpenDimension(dim.id)}
+            accessibilityRole="button"
+            accessibilityLabel={`${dim.title}，${actionHint}`}
+            style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+            <ReviewSectionCard style={styles.card}>
+              <View style={styles.head}>
+                <Text style={[Typography.title, { color: colors.text, flex: 1 }]} maxFontSizeMultiplier={1.35}>
+                  {dim.title}
+                </Text>
+                <MaterialIcons
+                  name={canEdit ? (hasAny ? 'open-in-full' : 'edit-note') : 'lock-outline'}
+                  size={20}
+                  color={colors.textMuted}
                 />
               </View>
-            );
-          })}
-        </ReviewSectionCard>
-      ))}
+
+              {plainParts.map(col => (
+                <View key={col.id} style={styles.fieldBlock}>
+                  {dim.columns.length > 1 ? (
+                    <Text style={[Typography.caption, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
+                      {col.title}
+                    </Text>
+                  ) : null}
+                  <View
+                    style={[
+                      styles.preview,
+                      {
+                        backgroundColor: colors.input,
+                        borderColor: colors.outline,
+                      },
+                    ]}>
+                    {col.plain ? (
+                      <Text
+                        style={[styles.previewText, { color: colors.text }]}
+                        numberOfLines={6}
+                        maxFontSizeMultiplier={1.35}>
+                        {col.plain}
+                      </Text>
+                    ) : (
+                      <Text
+                        style={[styles.previewText, { color: colors.textMuted }]}
+                        maxFontSizeMultiplier={1.35}>
+                        {col.placeholder}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              ))}
+
+              <Text style={[Typography.caption, { color: colors.textMuted }]} maxFontSizeMultiplier={1.35}>
+                {actionHint}
+              </Text>
+            </ReviewSectionCard>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -98,12 +114,14 @@ const styles = StyleSheet.create({
   fieldBlock: {
     gap: Spacing.sm,
   },
-  input: {
+  preview: {
     minHeight: 108,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
+  },
+  previewText: {
     fontSize: 16,
     lineHeight: 24,
   },

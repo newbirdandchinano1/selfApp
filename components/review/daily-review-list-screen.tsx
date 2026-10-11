@@ -101,7 +101,7 @@ export function DailyReviewListScreen() {
             { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
           ]}>
           <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21 }]}>
-            本周期 7 天列表。点某一天进入独立编辑页；周复盘日无需日复盘。
+            本周期 7 天列表。点某一天查看当日复盘，进入维度详情后可编辑；周复盘日无需日复盘。
           </Text>
 
           <ScrollView

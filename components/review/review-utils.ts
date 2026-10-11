@@ -1,15 +1,23 @@
 import {
+  aggregateBuiltinFieldsFromChildren,
   collectColumnIds,
   emptyFieldValues,
+  fillEmptyFieldsFromRollup,
   parseDailyReviewBody,
+  parseWeeklyReviewFields,
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
-import { ensureBuiltinDailyReviewModules, listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import { listWeeklyReviewsBetween } from '@/lib/repositories/insights/weekly-review-journal';
+import {
+  ensureBuiltinCascadeReviewModules,
+  ensureBuiltinDailyReviewModules,
+  listReviewTemplate,
+} from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
-import { addDaysToYmd, formatYmd } from '@/lib/date';
+import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
 import {
   getWeeklyReviewConfiguredWeekday,
   isDailyReviewSkippedOnWeeklyReviewDay,
@@ -45,6 +53,64 @@ export function formatReviewMonthLabel(monthStartYmd: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(monthStartYmd.trim());
   if (!m) return monthStartYmd;
   return `${m[1]}年${Number(m[2])}月`;
+}
+
+/** 自然月月末 YYYY-MM-DD */
+export function monthEndYmdFromMonthStart(monthStartYmd: string): string {
+  const start = parseYmd(monthStartYmdFromYmd(monthStartYmd));
+  if (!start) return monthStartYmd;
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
+  return formatYmd(end);
+}
+
+/** 从近六天（跳过周复盘日）日复盘汇总到周复盘空栏 */
+export function rollupWeeklyFieldsFromDailyEntries(
+  fields: ReviewFieldValues,
+  dailyEntries: DailyEntry[],
+  reviewCycleEndYmd: string,
+  configuredDow: number | null,
+): ReviewFieldValues {
+  const children = dailyEntries
+    .filter(
+      e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow),
+    )
+    .map(e => ({ label: e.label, fields: e.fields }));
+  const rollup = aggregateBuiltinFieldsFromChildren({
+    children,
+    childScope: 'daily',
+    parentScope: 'weekly',
+  });
+  return fillEmptyFieldsFromRollup(fields, rollup);
+}
+
+/** 从本月各周复盘汇总到月复盘空栏 */
+export async function rollupMonthlyFieldsFromWeeklyJournals(
+  fields: ReviewFieldValues,
+  monthStartYmd: string,
+): Promise<ReviewFieldValues> {
+  const monthEnd = monthEndYmdFromMonthStart(monthStartYmd);
+  const weeklyTpl = await listReviewTemplate('weekly');
+  const wColIds = collectColumnIds(weeklyTpl);
+  const rows = await listWeeklyReviewsBetween(monthStartYmd, monthEnd);
+  const children = rows.map(row => {
+    const start = parseYmd(row.week_start_ymd);
+    const end = start ? addDaysToYmd(row.week_start_ymd, 6) : row.week_start_ymd;
+    const startLabel = start
+      ? `${start.getMonth() + 1}月${start.getDate()}日`
+      : row.week_start_ymd;
+    const endDate = parseYmd(end);
+    const endLabel = endDate ? `${endDate.getMonth() + 1}月${endDate.getDate()}日` : end;
+    return {
+      label: `${startLabel}–${endLabel}`,
+      fields: parseWeeklyReviewFields(row, wColIds),
+    };
+  });
+  const rollup = aggregateBuiltinFieldsFromChildren({
+    children,
+    childScope: 'weekly',
+    parentScope: 'monthly',
+  });
+  return fillEmptyFieldsFromRollup(fields, rollup);
 }
 
 export function shiftMonthStartYmd(monthStartYmd: string, deltaMonths: number): string {
@@ -140,7 +206,7 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
     });
   }
 
-  await ensureBuiltinDailyReviewModules();
+  await ensureBuiltinCascadeReviewModules().catch(() => ensureBuiltinDailyReviewModules());
   const dailyTpl = await listReviewTemplate('daily');
   const dColIds = collectColumnIds(dailyTpl);
 

@@ -1,14 +1,15 @@
 import { assignFrogForDay, unassignFrogForDay } from '@/lib/frog-candidates-api';
 import {
+  applyDayBoundaryToAxis,
   axisFromSnapshot,
   breaksEqual,
   findAxisRangeConflicts,
   getSlotCount,
   maxSpanFromSlot,
-  normalizeAxisSettings,
   remapPlacementsForSlotHours,
   validateAxisRange,
 } from '@/lib/schedule/axis';
+import { getDayBoundarySync, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 import type {
   ScheduleAxisSettings,
   ScheduleBreak,
@@ -68,17 +69,14 @@ export async function resolveAxisForWeek(
 ): Promise<{ axis: Omit<ScheduleAxisSettings, 'updatedAt'>; fromSnapshot: boolean }> {
   await ensureScheduleTables();
   const globalAxis = await getScheduleAxisSettings();
+  const boundary = getDayBoundarySync();
+  const synced = applyDayBoundaryToAxis(globalAxis, boundary);
   if (isHistoricalWeek(weekStartYmd, logicalTodayYmd)) {
-    const snap = await upsertWeekAxisSnapshot(weekStartYmd, globalAxis);
+    const snap = await upsertWeekAxisSnapshot(weekStartYmd, synced);
     return { axis: axisFromSnapshot(snap), fromSnapshot: true };
   }
   return {
-    axis: {
-      startMinutes: globalAxis.startMinutes,
-      endMinutes: globalAxis.endMinutes,
-      slotHours: globalAxis.slotHours,
-      breaks: globalAxis.breaks ?? [],
-    },
+    axis: synced,
     fromSnapshot: false,
   };
 }
@@ -558,25 +556,30 @@ export async function saveScheduleAxisWithRemap(
     breaks?: ScheduleBreak[];
   },
   logicalTodayYmd: string,
+  opts?: { orphanOnRangeConflict?: boolean; dayBoundary?: TasksDayBoundary },
 ): Promise<SaveAxisResult> {
   await ensureScheduleTables();
-  const next = normalizeAxisSettings({
-    startMinutes: nextRaw.startMinutes,
-    endMinutes: nextRaw.endMinutes,
-    slotHours: nextRaw.slotHours as ScheduleAxisSettings['slotHours'],
-    breaks: nextRaw.breaks,
-  });
+  const boundary = opts?.dayBoundary ?? getDayBoundarySync();
+  const next = applyDayBoundaryToAxis(
+    {
+      startMinutes: nextRaw.startMinutes,
+      endMinutes: nextRaw.endMinutes,
+      slotHours: nextRaw.slotHours as ScheduleAxisSettings['slotHours'],
+      breaks: nextRaw.breaks,
+    },
+    boundary,
+  );
   const rangeErr = validateAxisRange(next);
   if (rangeErr) return { ok: false, error: rangeErr };
 
   const thisMonday = getWeekStartMondayYmd(logicalTodayYmd);
-  const oldAxis = await getScheduleAxisSettings();
+  const oldAxis = applyDayBoundaryToAxis(await getScheduleAxisSettings(), boundary);
   const editablePlacements = await listPlacementsForEditableWeeks(thisMonday);
 
-  // 日开始/结束变更：禁止裁切（按旧轴绝对时间对照新起止）
+  // 日开始/结束变更：默认禁止裁切；改日界同步时可 orphan
   if (next.startMinutes !== oldAxis.startMinutes || next.endMinutes !== oldAxis.endMinutes) {
     const conflicts = findAxisRangeConflicts(oldAxis, next, editablePlacements);
-    if (conflicts.length > 0) {
+    if (conflicts.length > 0 && !opts?.orphanOnRangeConflict) {
       return {
         ok: false,
         error: `新时间范围会裁掉 ${conflicts.length} 条已有占用，请先调整日程表后再改设置。`,
@@ -634,6 +637,31 @@ export async function saveScheduleAxisWithRemap(
     orphanedCount: orphanedCount || orphans.length,
     remappedCount,
   };
+}
+
+/**
+ * 日界变更后：把日程轴终点对齐到日界（可跨午夜），并尽量重映射占用。
+ */
+export async function syncScheduleAxisEndWithDayBoundary(
+  boundary: TasksDayBoundary,
+  logicalTodayYmd: string,
+): Promise<void> {
+  await ensureScheduleTables();
+  const old = await getScheduleAxisSettings();
+  const next = applyDayBoundaryToAxis(old, boundary);
+  if (next.startMinutes === old.startMinutes && next.endMinutes === old.endMinutes) {
+    return;
+  }
+  await saveScheduleAxisWithRemap(
+    {
+      startMinutes: next.startMinutes,
+      endMinutes: next.endMinutes,
+      slotHours: next.slotHours,
+      breaks: next.breaks,
+    },
+    logicalTodayYmd,
+    { orphanOnRangeConflict: true, dayBoundary: boundary },
+  );
 }
 
 export type CopyWeekResult = {

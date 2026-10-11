@@ -15,6 +15,7 @@ import {
   placementBlockHeight,
   placementEndMinutes,
   slotStartMinutes,
+  wallClockToAxisMinutes,
 } from '@/lib/schedule/axis';
 import {
   buildVirtualHabitPlacementsForDays,
@@ -38,7 +39,13 @@ import {
   weekdayFromYmd,
   ymdForWeekday,
 } from '@/lib/schedule/week';
-import { logicalYmdToLocalDate, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+import {
+  formatLocalYmdFromDate,
+  getLogicalLocalYmd,
+  logicalYmdToLocalDate,
+  loadTasksDayBoundary,
+  type TasksDayBoundary,
+} from '@/lib/tasks-logical-day';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import {
   cancelAssignForPlacementDay,
@@ -122,9 +129,12 @@ function formatRemainLabel(remainSec: number, opts?: { untilStart?: boolean }): 
   return `${prefix} ${s} 秒`;
 }
 
-function remainSecondsUntil(targetMinutes: number, wall: Date): number {
-  const nowMins = wall.getHours() * 60 + wall.getMinutes() + wall.getSeconds() / 60;
-  return Math.round((targetMinutes - nowMins) * 60);
+function remainSecondsUntil(
+  targetMinutes: number,
+  axisNowMins: number | null,
+): number {
+  if (axisNowMins == null) return 0;
+  return Math.round((targetMinutes - axisNowMins) * 60);
 }
 
 const TIME_GUTTER = 56;
@@ -477,6 +487,7 @@ export function WeeklyFrogSchedule({
   const [loading, setLoading] = React.useState(true);
   const [virtualHabits, setVirtualHabits] = React.useState<VirtualHabitPlacement[]>([]);
   const [virtualTasks, setVirtualTasks] = React.useState<VirtualTaskPlacement[]>([]);
+  const [dayBoundary, setDayBoundary] = React.useState<TasksDayBoundary>({ hour: 0, minute: 0 });
   /** 防止指派连发 notify 时旧 reload 用空打卡 Map 覆盖已完成习惯 */
   const reloadGenerationRef = React.useRef(0);
   const checkInsMapsRef = React.useRef<Map<string, Record<string, number>>>(new Map());
@@ -543,6 +554,17 @@ export function WeeklyFrogSchedule({
     const id = setInterval(() => setWallNow(new Date()), ms);
     return () => clearInterval(id);
   }, [zoomMode]);
+  const axisNowMins = React.useMemo(
+    () =>
+      wallClockToAxisMinutes(
+        wallNow,
+        logicalTodayYmd,
+        dayBoundary,
+        getLogicalLocalYmd,
+        formatLocalYmdFromDate,
+      ),
+    [wallNow, logicalTodayYmd, dayBoundary],
+  );
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [slotNotes, setSlotNotes] = React.useState<ScheduleSlotNotesMap>({});
   const [slotNoteEditor, setSlotNoteEditor] = React.useState<{
@@ -691,6 +713,7 @@ export function WeeklyFrogSchedule({
         // 过期请求直接丢弃，避免后返回的旧结果盖掉新指派/新打卡
         if (generation !== reloadGenerationRef.current) return;
         checkInsMapsRef.current = checkInsMaps;
+        setDayBoundary(boundary);
         setView(data);
         setVirtualHabits(
           buildVirtualHabitPlacementsForDays({
@@ -886,8 +909,10 @@ export function WeeklyFrogSchedule({
 
   const nowLineTop = React.useMemo(() => {
     if (!view || !layout || !dayYmds.includes(logicalTodayYmd)) return null;
-    const mins = wallNow.getHours() * 60 + wallNow.getMinutes();
-    if (mins < view.axis.startMinutes || mins > view.axis.endMinutes) return null;
+    const mins = axisNowMins;
+    if (mins == null || mins < view.axis.startMinutes || mins > view.axis.endMinutes) {
+      return null;
+    }
     let top = 0;
     for (let i = 0; i < layout.timeline.length; i++) {
       const row = layout.timeline[i]!;
@@ -902,7 +927,7 @@ export function WeeklyFrogSchedule({
       top += h;
     }
     return top;
-  }, [view, layout, dayYmds, logicalTodayYmd, wallNow]);
+  }, [view, layout, dayYmds, logicalTodayYmd, axisNowMins]);
 
   const goPeriod = (delta: number) => {
     setPeriodIndex((i) => i + delta);
@@ -1308,14 +1333,13 @@ export function WeeklyFrogSchedule({
   }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks]);
 
   const minimalFocus = React.useMemo(() => {
-    const nowMins =
-      wallNow.getHours() * 60 + wallNow.getMinutes() + wallNow.getSeconds() / 60;
+    const nowMins = axisNowMins ?? -1;
     const timeline = view ? buildScheduleTimeline(view.axis) : [];
     const workSlots = view ? listWorkSlots(view.axis) : [];
 
     /** 已超时：时段已结束且未完成（按格宽轴，而非任务自身跨度「仍在进行」） */
     const overdueItems = todayCompactItems.filter(
-      (x) => !x.done && x.endMins <= nowMins,
+      (x) => !x.done && axisNowMins != null && x.endMins <= nowMins,
     );
 
     const compactItemId = (x: TodayCompactItem) =>
@@ -1356,14 +1380,14 @@ export function WeeklyFrogSchedule({
         items: mergeFocusItems(itemsStartingInSlot(currentSlot.slotIndex)),
         rangeLabel: `${formatMinutesAsHm(currentSlot.startMinutes)}–${formatMinutesAsHm(currentSlot.endMinutes)}`,
         countdownLabel: formatRemainLabel(
-          remainSecondsUntil(currentSlot.endMinutes, wallNow),
+          remainSecondsUntil(currentSlot.endMinutes, axisNowMins),
         ),
       };
     }
 
     // 断开时段（如午休）：不可入格，展示断开本身 + 超时项 + 下一段可排指派
     const currentBreak = timeline.find(
-      (r) =>
+      (r): r is Extract<typeof r, { kind: 'break' }> =>
         r.kind === 'break' &&
         nowMins >= r.startMinutes &&
         nowMins < r.endMinutes,
@@ -1377,10 +1401,10 @@ export function WeeklyFrogSchedule({
         ),
         rangeLabel: `${formatMinutesAsHm(currentBreak.startMinutes)}–${formatMinutesAsHm(currentBreak.endMinutes)}`,
         countdownLabel: nextSlot
-          ? formatRemainLabel(remainSecondsUntil(nextSlot.startMinutes, wallNow), {
+          ? formatRemainLabel(remainSecondsUntil(nextSlot.startMinutes, axisNowMins), {
               untilStart: true,
             })
-          : formatRemainLabel(remainSecondsUntil(currentBreak.endMinutes, wallNow)),
+          : formatRemainLabel(remainSecondsUntil(currentBreak.endMinutes, axisNowMins)),
         breakLabel: currentBreak.label?.trim() || '休息',
       };
     }
@@ -1391,7 +1415,7 @@ export function WeeklyFrogSchedule({
         items: mergeFocusItems(itemsStartingInSlot(nextSlot.slotIndex)),
         rangeLabel: `${formatMinutesAsHm(nextSlot.startMinutes)}–${formatMinutesAsHm(nextSlot.endMinutes)}`,
         countdownLabel: formatRemainLabel(
-          remainSecondsUntil(nextSlot.startMinutes, wallNow),
+          remainSecondsUntil(nextSlot.startMinutes, axisNowMins),
           { untilStart: true },
         ),
       };
@@ -1419,7 +1443,7 @@ export function WeeklyFrogSchedule({
       rangeLabel: '',
       countdownLabel: '今日暂无安排',
     };
-  }, [todayCompactItems, wallNow, view]);
+  }, [todayCompactItems, axisNowMins, view]);
 
   // 非课表态强制回今天周期
   React.useEffect(() => {

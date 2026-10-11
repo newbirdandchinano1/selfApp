@@ -1,5 +1,13 @@
-import { LEGACY_WEEKLY_COLUMN_IDS } from './review-template-defaults';
-import { reviewContentToPlainPreview } from '@/lib/review-journal-format';
+import {
+  BUILTIN_REVIEW_COLUMN_IDS,
+  LEGACY_MONTHLY_COLUMN_TO_BUILTIN,
+  LEGACY_WEEKLY_COLUMN_IDS,
+  LEGACY_WEEKLY_COLUMN_TO_BUILTIN,
+  REVIEW_BUILTIN_MODULE_KEYS,
+  builtinReviewColumnId,
+  childToParentBuiltinColumnId,
+} from './review-template-defaults';
+import { reviewContentToPlainDisplay, reviewContentToPlainPreview } from '@/lib/review-journal-format';
 import type { ReviewColumnTemplate, ReviewDimensionTemplate } from './review-template.types';
 import type { WeeklyReviewJournalRow } from './weekly-review-journal.types';
 
@@ -101,6 +109,30 @@ export function parseDailyReviewBody(raw: string | null | undefined, columnIds: 
   return empty;
 }
 
+function migrateLegacyFieldsIntoBuiltin(
+  fields: ReviewFieldValues,
+  rawFields: Record<string, unknown>,
+  mapping: Record<string, string>,
+): ReviewFieldValues {
+  const out = { ...fields };
+  const initiallyFilled = new Set(
+    Object.entries(out)
+      .filter(([, v]) => (v ?? '').trim())
+      .map(([id]) => id),
+  );
+  for (const [legacyId, builtinId] of Object.entries(mapping)) {
+    if (!(builtinId in out)) continue;
+    if (initiallyFilled.has(builtinId)) continue;
+    const raw = rawFields[legacyId];
+    if (raw == null) continue;
+    const text = String(raw).trim();
+    if (!text) continue;
+    const prev = (out[builtinId] ?? '').trim();
+    out[builtinId] = prev ? `${prev}\n\n${text}` : text;
+  }
+  return out;
+}
+
 export function parseWeeklyReviewFields(
   row: WeeklyReviewJournalRow | null,
   columnIds: string[],
@@ -108,36 +140,108 @@ export function parseWeeklyReviewFields(
   const empty = emptyFieldValues(columnIds);
   if (!row) return empty;
 
+  let rawFields: Record<string, unknown> = {};
   if (row.extra_data) {
     try {
       const o = JSON.parse(row.extra_data) as Record<string, unknown>;
       if (o?.body_v === REVIEW_BODY_VERSION && o.fields && typeof o.fields === 'object') {
-        const fields = o.fields as Record<string, unknown>;
+        rawFields = o.fields as Record<string, unknown>;
         const out = { ...empty };
         for (const id of columnIds) {
-          if (fields[id] != null) out[id] = String(fields[id]);
+          if (rawFields[id] != null) out[id] = String(rawFields[id]);
         }
-        return out;
+        return migrateLegacyFieldsIntoBuiltin(out, rawFields, LEGACY_WEEKLY_COLUMN_TO_BUILTIN);
       }
     } catch {
       // fall through
     }
   }
 
-  const legacy: ReviewFieldValues = { ...empty };
-  legacy[LEGACY_WEEKLY_COLUMN_IDS.section_summary] = row.section_summary ?? '';
-  legacy[LEGACY_WEEKLY_COLUMN_IDS.section_plans] = row.section_plans ?? '';
-  legacy[LEGACY_WEEKLY_COLUMN_IDS.section_reflect] = row.section_reflect ?? '';
-  legacy[LEGACY_WEEKLY_COLUMN_IDS.section_learnings] = row.section_learnings ?? '';
-  legacy[LEGACY_WEEKLY_COLUMN_IDS.section_next_week] = row.section_next_week ?? '';
-  return legacy;
+  rawFields = {
+    [LEGACY_WEEKLY_COLUMN_IDS.section_summary]: row.section_summary ?? '',
+    [LEGACY_WEEKLY_COLUMN_IDS.section_plans]: row.section_plans ?? '',
+    [LEGACY_WEEKLY_COLUMN_IDS.section_reflect]: row.section_reflect ?? '',
+    [LEGACY_WEEKLY_COLUMN_IDS.section_learnings]: row.section_learnings ?? '',
+    [LEGACY_WEEKLY_COLUMN_IDS.section_next_week]: row.section_next_week ?? '',
+  };
+  return migrateLegacyFieldsIntoBuiltin(empty, rawFields, LEGACY_WEEKLY_COLUMN_TO_BUILTIN);
 }
 
-export function serializeWeeklyReviewExtraData(fields: ReviewFieldValues): string {
-  return JSON.stringify({ body_v: REVIEW_BODY_VERSION, fields });
+/** 解析月复盘时把旧栏目内容迁入新内置栏（仅空栏） */
+export function migrateMonthlyLegacyFields(
+  fields: ReviewFieldValues,
+  rawBody: string | null | undefined,
+): ReviewFieldValues {
+  if (!rawBody || !String(rawBody).trim()) return fields;
+  try {
+    const o = JSON.parse(String(rawBody).trim()) as Record<string, unknown>;
+    if (!o?.fields || typeof o.fields !== 'object') return fields;
+    return migrateLegacyFieldsIntoBuiltin(
+      fields,
+      o.fields as Record<string, unknown>,
+      LEGACY_MONTHLY_COLUMN_TO_BUILTIN,
+    );
+  } catch {
+    return fields;
+  }
 }
 
-/** 将动态字段写回旧版周记列（与默认栏目 ID 对齐时） */
+export type ReviewRollupChildEntry = {
+  label: string;
+  fields: ReviewFieldValues;
+};
+
+/**
+ * 将子周期（日→周 / 周→月）同名内置栏目汇总为父周期默认正文。
+ * 格式：【标签】\n正文，多天/周之间空行分隔；跳过空栏目。
+ */
+export function aggregateBuiltinFieldsFromChildren(opts: {
+  children: ReviewRollupChildEntry[];
+  childScope: 'daily' | 'weekly';
+  parentScope: 'weekly' | 'monthly';
+}): ReviewFieldValues {
+  const out: ReviewFieldValues = {};
+  for (const key of REVIEW_BUILTIN_MODULE_KEYS) {
+    out[builtinReviewColumnId(opts.parentScope, key)] = '';
+  }
+
+  for (const key of REVIEW_BUILTIN_MODULE_KEYS) {
+    const parentId = builtinReviewColumnId(opts.parentScope, key);
+    const childId = builtinReviewColumnId(opts.childScope, key);
+    const blocks: string[] = [];
+    for (const child of opts.children) {
+      const raw = (child.fields[childId] ?? '').trim();
+      if (!raw) continue;
+      const plain = reviewContentToPlainDisplay(raw).trim() || reviewContentToPlainPreview(raw).trim();
+      if (!plain) continue;
+      blocks.push(`【${child.label}】\n${plain}`);
+    }
+    out[parentId] = blocks.join('\n\n');
+  }
+  return out;
+}
+
+/** 仅用汇总填充当前为空的栏目；已有内容（含用户手写）不动 */
+export function fillEmptyFieldsFromRollup(
+  fields: ReviewFieldValues,
+  rollup: ReviewFieldValues,
+): ReviewFieldValues {
+  const out = { ...fields };
+  for (const [id, value] of Object.entries(rollup)) {
+    if (!(id in out)) out[id] = '';
+    if ((out[id] ?? '').trim()) continue;
+    const v = (value ?? '').trim();
+    if (!v) continue;
+    out[id] = value;
+  }
+  return out;
+}
+
+export function hasAnyFilledField(fields: ReviewFieldValues): boolean {
+  return Object.values(fields).some(v => (v ?? '').trim().length > 0);
+}
+
+/** 周复盘 legacy 列：尽量从新内置栏回填，便于旧端兼容 */
 export function legacyWeeklyColumnsFromFields(fields: ReviewFieldValues): {
   section_summary: string;
   section_plans: string;
@@ -145,13 +249,24 @@ export function legacyWeeklyColumnsFromFields(fields: ReviewFieldValues): {
   section_learnings: string;
   section_next_week: string;
 } {
+  const w = BUILTIN_REVIEW_COLUMN_IDS.weekly;
   return {
-    section_summary: fields[LEGACY_WEEKLY_COLUMN_IDS.section_summary] ?? '',
-    section_plans: fields[LEGACY_WEEKLY_COLUMN_IDS.section_plans] ?? '',
-    section_reflect: fields[LEGACY_WEEKLY_COLUMN_IDS.section_reflect] ?? '',
-    section_learnings: fields[LEGACY_WEEKLY_COLUMN_IDS.section_learnings] ?? '',
-    section_next_week: fields[LEGACY_WEEKLY_COLUMN_IDS.section_next_week] ?? '',
+    section_summary:
+      fields[LEGACY_WEEKLY_COLUMN_IDS.section_summary] || fields[w.routine] || '',
+    section_plans: fields[LEGACY_WEEKLY_COLUMN_IDS.section_plans] || fields[w.tasks] || '',
+    section_reflect: fields[LEGACY_WEEKLY_COLUMN_IDS.section_reflect] || fields[w.defects] || '',
+    section_learnings:
+      fields[LEGACY_WEEKLY_COLUMN_IDS.section_learnings] || fields[w.ideas] || '',
+    section_next_week:
+      fields[LEGACY_WEEKLY_COLUMN_IDS.section_next_week] || fields[w.routine] || '',
   };
+}
+
+// re-export for callers that build parent maps
+export { childToParentBuiltinColumnId };
+
+export function serializeWeeklyReviewExtraData(fields: ReviewFieldValues): string {
+  return JSON.stringify({ body_v: REVIEW_BODY_VERSION, fields });
 }
 
 export function buildDailyDigest(

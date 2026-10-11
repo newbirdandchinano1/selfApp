@@ -18,6 +18,7 @@ type DailyProps = CommonProps & {
   scope: 'daily';
   ymd: string;
   onYmdChange: (ymd: string) => void;
+  onRegisterReload?: (reload: () => Promise<void>) => void;
   onSwitchToWeekly?: () => void;
 };
 
@@ -42,6 +43,7 @@ export function ReviewJournalScreen(props: ReviewJournalScreenProps) {
         onYmdChange={props.onYmdChange}
         pageApiKey={props.pageApiKey}
         refreshControl={props.refreshControl}
+        onRegisterReload={props.onRegisterReload}
         onSwitchToWeekly={props.onSwitchToWeekly}
       />
     );

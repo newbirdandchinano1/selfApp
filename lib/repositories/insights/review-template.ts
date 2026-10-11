@@ -3,10 +3,12 @@ import { sortBySortOrderAsc } from '@/lib/api-read-helpers';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { getDatabase } from '../../database.native';
 import {
-  BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START,
-  isBuiltinDailyReviewColumnId,
-  isBuiltinDailyReviewDimensionId,
-  pinDailyReviewDimensions,
+  BUILTIN_REVIEW_CUSTOM_SORT_START,
+  isBuiltinReviewColumnId,
+  isBuiltinReviewDimensionId,
+  LEGACY_MONTHLY_DEFAULT_DIMENSION_IDS,
+  LEGACY_WEEKLY_DEFAULT_DIMENSION_IDS,
+  pinBuiltinReviewDimensions,
   REVIEW_TEMPLATE_DEFAULTS,
 } from './review-template-defaults';
 import type {
@@ -72,8 +74,7 @@ export async function countReviewDimensions(scope: ReviewTemplateScope): Promise
 
 export async function listReviewDimensions(scope: ReviewTemplateScope): Promise<ReviewDimensionRow[]> {
   const rows = sortBySortOrderAsc(await readReviewDimensionsLocalVisible(scope));
-  if (scope !== 'daily') return rows;
-  return pinDailyReviewDimensions(rows, d => d.sort_order ?? 0);
+  return pinBuiltinReviewDimensions(scope, rows, d => d.sort_order ?? 0);
 }
 
 export async function listReviewColumnsForDimension(dimensionId: string): Promise<ReviewColumnRow[]> {
@@ -153,7 +154,7 @@ export async function updateReviewDimension(id: string, input: UpdateReviewDimen
 }
 
 export async function deleteReviewDimension(id: string): Promise<void> {
-  if (isBuiltinDailyReviewDimensionId(id)) {
+  if (isBuiltinReviewDimensionId(id)) {
     throw new Error('内置维度不可删除');
   }
   await ensureLocalRowForWrite('review_dimensions', id);
@@ -218,7 +219,7 @@ export async function updateReviewColumn(id: string, input: UpdateReviewColumnIn
 }
 
 export async function deleteReviewColumn(id: string): Promise<void> {
-  if (isBuiltinDailyReviewColumnId(id)) {
+  if (isBuiltinReviewColumnId(id)) {
     throw new Error('内置栏目不可删除');
   }
   await ensureLocalRowForWrite('review_columns', id);
@@ -383,29 +384,79 @@ export async function migrateDailyTemplateToMinimalIfNeeded(): Promise<void> {
   await setAppSetting(AppSettingKey.reviewMinimalDailyTemplateV1, '1');
 }
 
+async function softDeleteLegacyDefaultDimension(id: string): Promise<void> {
+  if (isBuiltinReviewDimensionId(id)) return;
+  const db = await getDatabase();
+  if (!db) return;
+  const existing = await getReviewDimensionRowAny(id);
+  if (!existing || existing.sync_status === 'pending_delete') return;
+  await db.runAsync(
+    `UPDATE review_dimensions SET
+       updated_at = datetime('now'),
+       sync_status = 'pending_delete'
+     WHERE id = ?`,
+    [id],
+  );
+  await db.runAsync(
+    `UPDATE review_columns SET
+       updated_at = datetime('now'),
+       sync_status = 'pending_delete'
+     WHERE dimension_id = ?`,
+    [id],
+  );
+}
+
 /**
- * 确保日复盘始终有健康 / 任务 / 财务三个内置模块；自定义维度排在其后。
- * 已有「今天做了啥」等自定义维度会保留，仅调整排序。
+ * 确保指定 scope 始终有六大内置模块（健康/任务/财务/日常/缺陷/新想法）；
+ * 自定义维度排在 sort≥100 之后。
  */
-export async function ensureBuiltinDailyReviewModules(): Promise<void> {
-  const defs = REVIEW_TEMPLATE_DEFAULTS.daily;
+export async function ensureBuiltinReviewModules(scope: ReviewTemplateScope): Promise<void> {
+  const defs = REVIEW_TEMPLATE_DEFAULTS[scope];
   for (const dim of defs) {
-    await ensureDefaultReviewDimension('daily', dim);
+    await ensureDefaultReviewDimension(scope, dim);
     for (const col of dim.columns) {
       await ensureDefaultReviewColumn(dim, col);
     }
   }
 
-  const dims = await listReviewDimensions('daily');
-  let nextSort = BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START;
+  const dims = await listReviewDimensions(scope);
+  let nextSort = BUILTIN_REVIEW_CUSTOM_SORT_START;
   for (const dim of dims) {
-    if (isBuiltinDailyReviewDimensionId(dim.id)) continue;
-    if (dim.sort_order < BUILTIN_DAILY_REVIEW_CUSTOM_SORT_START) {
+    if (isBuiltinReviewDimensionId(dim.id)) continue;
+    if (dim.sort_order < BUILTIN_REVIEW_CUSTOM_SORT_START) {
       await updateReviewDimension(dim.id, { sort_order: nextSort });
       nextSort += 10;
     }
   }
+}
 
+/**
+ * 确保日复盘始终有六大内置模块；自定义维度排在其后。
+ * 已有自定义维度会保留，仅调整排序。
+ */
+export async function ensureBuiltinDailyReviewModules(): Promise<void> {
+  await ensureBuiltinReviewModules('daily');
   const { AppSettingKey, setAppSetting } = await import('@/lib/app-settings-store');
   await setAppSetting(AppSettingKey.reviewBuiltinDailyModulesV1, '1');
+}
+
+/**
+ * 日/周/月对齐六大内置模块；软删除旧版周/月默认维度（汇总本周事件等）。
+ */
+export async function ensureBuiltinCascadeReviewModules(): Promise<void> {
+  const { AppSettingKey, setAppSetting } = await import('@/lib/app-settings-store');
+
+  for (const id of LEGACY_WEEKLY_DEFAULT_DIMENSION_IDS) {
+    await softDeleteLegacyDefaultDimension(id);
+  }
+  for (const id of LEGACY_MONTHLY_DEFAULT_DIMENSION_IDS) {
+    await softDeleteLegacyDefaultDimension(id);
+  }
+
+  await ensureBuiltinReviewModules('daily');
+  await ensureBuiltinReviewModules('weekly');
+  await ensureBuiltinReviewModules('monthly');
+
+  await setAppSetting(AppSettingKey.reviewBuiltinDailyModulesV1, '1');
+  await setAppSetting(AppSettingKey.reviewBuiltinCascadeModulesV1, '1');
 }

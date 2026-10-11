@@ -14,7 +14,7 @@ export function DailyReviewFactsStrip({
 }: {
   facts: ReviewDayFacts | null;
   canEdit: boolean;
-  onInsert: () => void;
+  onInsert?: () => void;
 }) {
   const { colors } = useAppTheme();
 
@@ -42,7 +42,7 @@ export function DailyReviewFactsStrip({
             今日数据
           </Text>
         </View>
-        {canEdit ? (
+        {canEdit && onInsert ? (
           <Pressable
             onPress={onInsert}
             accessibilityRole="button"
@@ -58,7 +58,9 @@ export function DailyReviewFactsStrip({
         ) : null}
       </View>
       <Text style={[Typography.caption, { color: colors.textMuted }]} maxFontSizeMultiplier={1.35}>
-        写入健康、任务、财务三个内置栏目（覆盖这三栏，自定义模块不动）
+        {canEdit
+          ? '写入健康、任务、财务三个内置栏目（覆盖这三栏，自定义模块不动）'
+          : '进入对应栏目详情页后可编辑与写入'}
       </Text>
       <View style={styles.list}>
         {lines.map((line, idx) => (

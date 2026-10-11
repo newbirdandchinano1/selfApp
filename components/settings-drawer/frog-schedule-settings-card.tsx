@@ -1,7 +1,12 @@
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { formatMinutesAsHm, formatMinuteRangeLabel, snapToHourMinutes } from '@/lib/schedule/axis';
+import {
+  formatMinutesAsHm,
+  formatMinuteRangeLabel,
+  scheduleEndMinutesFromDayBoundary,
+  snapToHourMinutes,
+} from '@/lib/schedule/axis';
 import type { ScheduleBreak, ScheduleSlotHours } from '@/lib/schedule/types';
 import {
   SCHEDULE_BREAK_LABEL_MAX_LEN,
@@ -44,12 +49,20 @@ type PickerTarget =
   | { kind: 'breakStart'; index: number }
   | { kind: 'breakEnd'; index: number };
 
-/** 日开始：00:00–23:00；日结束：01:00–24:00（整点） */
-function hourOptionsFor(target: PickerTarget): number[] {
-  if (target === 'start' || (typeof target === 'object' && target.kind === 'breakStart')) {
+/** 日开始 / 断开起止：整点；日结束由日界锁定。跨午夜时选项可到 dayEndMinutes。 */
+function hourOptionsFor(target: PickerTarget, dayEndMinutes: number): number[] {
+  if (target === 'start') {
     return Array.from({ length: 24 }, (_, h) => h * 60);
   }
-  return Array.from({ length: 24 }, (_, i) => (i + 1) * 60);
+  if (typeof target === 'object' && target.kind === 'breakStart') {
+    const maxStart = Math.max(0, dayEndMinutes - 60);
+    const out: number[] = [];
+    for (let m = 0; m <= maxStart; m += 60) out.push(m);
+    return out;
+  }
+  const out: number[] = [];
+  for (let m = 60; m <= dayEndMinutes; m += 60) out.push(m);
+  return out;
 }
 
 export function FrogScheduleSettingsCard({
@@ -62,10 +75,10 @@ export function FrogScheduleSettingsCard({
 }: Props) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const { logicalTodayYmd } = usePageDayBoundary('tasks');
+  const { logicalTodayYmd, boundary: dayBoundary } = usePageDayBoundary('tasks');
+  const syncedEndMinutes = scheduleEndMinutesFromDayBoundary(dayBoundary);
 
   const [startMinutes, setStartMinutes] = React.useState(8 * 60);
-  const [endMinutes, setEndMinutes] = React.useState(22 * 60);
   const [slotHours, setSlotHours] = React.useState<ScheduleSlotHours>(2);
   const [breaks, setBreaks] = React.useState<ScheduleBreak[]>([]);
   const [orphanedCount, setOrphanedCount] = React.useState(0);
@@ -77,12 +90,11 @@ export function FrogScheduleSettingsCard({
   const reload = React.useCallback(async () => {
     const axis = await getScheduleAxisSettings();
     setStartMinutes(axis.startMinutes);
-    setEndMinutes(axis.endMinutes);
     setSlotHours(axis.slotHours);
     setBreaks(axis.breaks ?? []);
     setOrphanedCount(await getOrphanedPlacementCount());
     setLoaded(true);
-  }, []);
+  }, [dayBoundary]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -98,16 +110,28 @@ export function FrogScheduleSettingsCard({
     if (pickerTarget === 'start') {
       setStartMinutes(snapToHourMinutes(mins, { allow24: false }));
     } else if (pickerTarget === 'end') {
-      setEndMinutes(snapToHourMinutes(mins, { allow24: true }));
+      // 日结束与日界线同步，不可手改
     } else if (pickerTarget && typeof pickerTarget === 'object') {
       const { kind, index } = pickerTarget;
       setBreaks((prev) =>
         prev.map((b, i) => {
           if (i !== index) return b;
           if (kind === 'breakStart') {
-            return { ...b, startMinutes: snapToHourMinutes(mins, { allow24: false }) };
+            return {
+              ...b,
+              startMinutes: snapToHourMinutes(mins, {
+                allow24: false,
+                allowOvernight: syncedEndMinutes > 24 * 60,
+              }),
+            };
           }
-          return { ...b, endMinutes: snapToHourMinutes(mins, { allow24: true }) };
+          return {
+            ...b,
+            endMinutes: snapToHourMinutes(mins, {
+              allow24: true,
+              allowOvernight: syncedEndMinutes > 24 * 60,
+            }),
+          };
         }),
       );
     }
@@ -120,8 +144,8 @@ export function FrogScheduleSettingsCard({
       return;
     }
     const noon = 12 * 60;
-    const defaultStart = Math.max(startMinutes, Math.min(noon, endMinutes - 60));
-    const defaultEnd = Math.min(endMinutes, defaultStart + 2 * 60);
+    const defaultStart = Math.max(startMinutes, Math.min(noon, syncedEndMinutes - 60));
+    const defaultEnd = Math.min(syncedEndMinutes, defaultStart + 2 * 60);
     setBreaks((prev) => [
       ...prev,
       { startMinutes: defaultStart, endMinutes: defaultEnd, label: '午休' },
@@ -138,11 +162,12 @@ export function FrogScheduleSettingsCard({
       const result = await saveScheduleAxisWithRemap(
         {
           startMinutes: snapToHourMinutes(startMinutes, { allow24: false }),
-          endMinutes: snapToHourMinutes(endMinutes, { allow24: true }),
+          endMinutes: syncedEndMinutes,
           slotHours,
           breaks,
         },
         logicalTodayYmd,
+        { dayBoundary },
       );
       if (!result.ok) {
         const detail =
@@ -157,7 +182,6 @@ export function FrogScheduleSettingsCard({
       }
       setOrphanedCount(result.orphanedCount);
       setStartMinutes(result.axis.startMinutes);
-      setEndMinutes(result.axis.endMinutes);
       setSlotHours(result.axis.slotHours);
       setBreaks(result.axis.breaks ?? []);
       const remapHint = result.remappedCount > 0 ? `，已重映射 ${result.remappedCount} 条` : '';
@@ -170,11 +194,11 @@ export function FrogScheduleSettingsCard({
     } finally {
       setSaving(false);
     }
-  }, [startMinutes, endMinutes, slotHours, breaks, logicalTodayYmd, reload]);
+  }, [startMinutes, syncedEndMinutes, slotHours, breaks, logicalTodayYmd, dayBoundary, reload]);
 
   const pickerCardBg = isDark ? '#1e293b' : '#ffffff';
   const selectedMinutes = (() => {
-    if (pickerTarget === 'end') return endMinutes;
+    if (pickerTarget === 'end') return syncedEndMinutes;
     if (pickerTarget === 'start') return startMinutes;
     if (pickerTarget && typeof pickerTarget === 'object') {
       const b = breaks[pickerTarget.index];
@@ -183,7 +207,7 @@ export function FrogScheduleSettingsCard({
     }
     return null;
   })();
-  const hourChoices = pickerTarget ? hourOptionsFor(pickerTarget) : [];
+  const hourChoices = pickerTarget ? hourOptionsFor(pickerTarget, syncedEndMinutes) : [];
   const pickerTitle =
     pickerTarget === 'end'
       ? '日结束（整点）'
@@ -196,7 +220,8 @@ export function FrogScheduleSettingsCard({
   return (
     <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
       <Text style={[styles.hint, { color: outline }]}>
-        日开始 / 日结束仅可选整点。可添加断开时段（如午休），日程表中对应行呈灰色不可入格；格宽遇上断开会自动截断。落入断开的占用会标为「未入格」。
+        日开始仅可选整点。日结束与「日界线」同步（日界非 0:00
+        时会跨过午夜到次日日界）。可添加断开时段（如午休），日程表中对应行呈灰色不可入格；格宽遇上断开会自动截断。落入断开的占用会标为「未入格」。
       </Text>
 
       {!loaded ? (
@@ -219,21 +244,23 @@ export function FrogScheduleSettingsCard({
             <MaterialIcons name="chevron-right" size={20} color={outline} />
           </Pressable>
 
-          <Pressable
-            onPress={() => openPicker('end')}
-            style={({ pressed }) => [
+          <View
+            style={[
               styles.timeBtn,
               {
                 borderColor: cardBorder,
                 backgroundColor: isDark ? 'rgba(15,23,42,0.45)' : '#f8fafc',
-                opacity: pressed ? 0.88 : 1,
               },
             ]}>
             <MaterialIcons name="schedule" size={20} color={primary} />
-            <Text style={[styles.timeLabel, { color: text }]}>日结束</Text>
-            <Text style={[styles.timeValue, { color: text }]}>{formatMinutesAsHm(endMinutes)}</Text>
-            <MaterialIcons name="chevron-right" size={20} color={outline} />
-          </Pressable>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.timeLabel, { color: text, flex: 0 }]}>日结束</Text>
+              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>与日界线同步</Text>
+            </View>
+            <Text style={[styles.timeValue, { color: text }]}>
+              {formatMinutesAsHm(syncedEndMinutes)}
+            </Text>
+          </View>
 
           <Text style={[styles.sectionLabel, { color: text }]}>格宽（小时）</Text>
           <View style={styles.slotRow}>
