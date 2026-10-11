@@ -5,7 +5,7 @@
  *
  * | 语义 | 字段 / 表 | 存库形态 | 读日历日 |
  * |------|-----------|----------|----------|
- * | **墙上时钟** | `happened_at`、`completed_at`；以及 `tasks` / `task_execution_events` / `frog_completion_events` / `project_completion_logs` 的 `created_at`/`updated_at`；积分钱包 OCC 的 `updated_at` | `YYYY-MM-DD HH:mm:ss` 与手机本地时刻一致，**不做 UTC 偏移** | `ymdFromDatetime` / `ymdFromAuditDatetime` |
+ * | **墙上时钟** | `happened_at`、`completed_at`；以及 `tasks` / `task_execution_events` / `frog_completion_events` / `project_completion_logs` / `health_records` 的 `created_at`/`updated_at`；积分钱包 OCC 的 `updated_at` | `YYYY-MM-DD HH:mm:ss` 与手机本地时刻一致，**不做 UTC 偏移** | `ymdFromDatetime` / `ymdFromAuditDatetime` |
  * | **DATE 列** | 如健康 `record_date`、复盘归属日 | 纯 `YYYY-MM-DD` | 原样；日历运算用 `@/lib/date` |
  * | **UTC 瞬间** | 其余表通用 `created_at`/`updated_at` 等（上传 normalize 时） | 按 UTC 写入 DATETIME 数字 | 仅当值带 `Z`/offset 时按瞬间解析；无时区 naive 串仍按墙上时钟理解，避免东八区错一天 |
  *
@@ -28,6 +28,8 @@ const WALL_CLOCK_DATETIME_TABLES = new Set([
   'task_execution_events',
   'frog_completion_events',
   'project_completion_logs',
+  /** 与后端 `getDbNaiveDateTimeModeForTable('health_records') === 'shanghai'` 对齐 */
+  'health_records',
 ]);
 
 function looksLikeJsonString(value: string): boolean {
@@ -58,6 +60,13 @@ export function formatWallClockDatetimeLocal(date: Date): string {
 /** 解析 ISO 或 MySQL DATETIME；无时区 `YYYY-MM-DD HH:mm:ss` 按本地墙上时钟理解 */
 export function parseStoredDatetime(value: string): Date {
   const trimmed = value.trim();
+  /**
+   * 带 Z/偏移的 ISO 必须按瞬间解析。若先走 MYSQL_DATETIME_RE，会把
+   * `2026-10-10T06:00:00.000Z`（东八区 14:00）误拆成本地 06:00。
+   */
+  if (/[Zz]$/.test(trimmed) || /[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    return new Date(trimmed);
+  }
   const m = MYSQL_DATETIME_RE.exec(trimmed);
   if (m) {
     const [, y, mo, d, h, mi, se = '0'] = m;

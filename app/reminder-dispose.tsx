@@ -9,6 +9,7 @@ import {
   navigateByNotificationType,
   resyncReminderAfterAcknowledge,
 } from '@/lib/notification-navigate';
+import { markReadByDedupeKey } from '@/lib/repositories/notifications/notification-inbox';
 import {
   acknowledgeStrongReminder,
   parseStrongReminderPayload,
@@ -112,6 +113,8 @@ export default function ReminderDisposeScreen() {
           disabled={busy}
           onPress={() =>
             void run(async () => {
+              // 完成：标已读 + 清升级链 + 进业务
+              await markReadByDedupeKey(payload.baseIdentifier);
               await acknowledgeStrongReminder(payload.baseIdentifier);
               resyncReminderAfterAcknowledge(payload.data);
               close();
@@ -134,6 +137,7 @@ export default function ReminderDisposeScreen() {
           onPress={() =>
             void run(async () => {
               if (!category) return;
+              // §1.2.2 A：贪睡不标已读（若经消息 focus 已读则保持；系统通知贪睡按钮另路不经本页）
               const channelId =
                 typeof payload.data.channelId === 'string'
                   ? payload.data.channelId

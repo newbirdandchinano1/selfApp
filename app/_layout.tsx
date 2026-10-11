@@ -426,6 +426,7 @@ function RootLayoutInner() {
             <Stack.Screen name="memo-list" />
             <Stack.Screen name="memo-view/[id]" />
             <Stack.Screen name="memo-edit/[id]" />
+            <Stack.Screen name="messages" />
             <Stack.Screen name="notification-center" />
             <Stack.Screen name="notification-center-scheduled" />
             <Stack.Screen

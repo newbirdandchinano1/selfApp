@@ -57,6 +57,8 @@ export const REST_SKIP_TABLES = new Set([
   /** 课表仅视图/排课层：走 frog-schedule 专用接口，禁止通用 CRUD 推送 */
   'schedule_placements',
   'schedule_week_axis_snapshot',
+  /** 本地通知收件箱：未读仅本机，避免多端冲突 */
+  'notification_inbox',
 ]);
 
 /** 禁止通用写、但可由 api-app-domain 专用接口上传的表（仍进脏表推送） */

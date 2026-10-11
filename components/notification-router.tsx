@@ -1,17 +1,16 @@
 /**
- * 统一通知路由：按 `data.type` 分发点击跳转与送达后重算。
- * 强提醒：默认进全屏处置页；完成/贪睡走 Action；未到最终升级波次不重排下一天。
+ * 统一通知路由：送达写入收件箱；点击先消息页再业务；强提醒处置 / 完成 / 贪睡。
  */
 
 import type { NotificationCategoryId } from '@/lib/notification-catalog';
 import {
-  navigateByNotificationType,
-  resyncReminderAfterAcknowledge,
-} from '@/lib/notification-navigate';
+  ingestNotificationIntoInbox,
+  resolveInboxDedupeKey,
+} from '@/lib/notification-inbox-ingest';
+import { resyncReminderAfterAcknowledge } from '@/lib/notification-navigate';
 import {
   acknowledgeStrongReminder,
   ensureStrongReminderNotificationCategory,
-  serializeStrongReminderPayload,
   shouldRescheduleAfterDelivery,
   snoozeStrongReminder,
   STRONG_ACTION_COMPLETE,
@@ -33,41 +32,12 @@ function isStrongPayload(data: Record<string, unknown> | null): boolean {
   return data.strong === true || data.strong === 1 || data.strong === 'true';
 }
 
-function openDisposeScreen(
-  router: ReturnType<typeof useRouter>,
-  response: Notifications.NotificationResponse,
-): void {
-  const content = response.notification.request.content;
-  const data = notificationDataRecord(content.data) ?? {};
-  const identifier = stripReminderAccessorySuffix(
-    typeof data.baseIdentifier === 'string' && data.baseIdentifier
-      ? data.baseIdentifier
-      : response.notification.request.identifier,
-  );
-  const title =
-    (typeof data.disposeTitle === 'string' && data.disposeTitle) ||
-    content.title ||
-    '提醒';
-  const body =
-    (typeof data.disposeBody === 'string' && data.disposeBody) ||
-    content.body ||
-    '';
-  router.push({
-    pathname: '/reminder-dispose',
-    params: {
-      payload: serializeStrongReminderPayload({
-        baseIdentifier: identifier,
-        title,
-        body,
-        data,
-      }),
-    },
-  });
-}
-
 async function handleSnoozeAction(
   response: Notifications.NotificationResponse,
 ): Promise<void> {
+  // §1.2.2 A：贪睡仍未读；不打开消息页。补写收件箱以防后台送达未走 received。
+  await ingestNotificationIntoInbox(response.notification);
+
   const content = response.notification.request.content;
   const data = notificationDataRecord(content.data) ?? {};
   const baseIdentifier = stripReminderAccessorySuffix(
@@ -124,12 +94,30 @@ function rescheduleAfterDelivery(data: unknown): void {
   resyncReminderAfterAcknowledge(record);
 }
 
-/** 合并后的本地通知监听：点击跳转 + 单次 DATE 提醒重排。 */
+/** 打开消息「通知」Tab 并 focus 该条；`after=dispose` 时消息页再进强提醒处置页。 */
+function openMessagesInboxFocus(
+  router: ReturnType<typeof useRouter>,
+  dedupeKey: string,
+  after?: 'dispose' | 'navigate',
+): void {
+  const params: Record<string, string> = {
+    tab: 'inbox',
+    focus: dedupeKey,
+    // 同 dedupe 再次点击时强制触发消息页 effect
+    focusNonce: String(Date.now()),
+  };
+  if (after === 'dispose') params.after = 'dispose';
+  else if (after === 'navigate') params.after = 'navigate';
+  router.push({ pathname: '/messages', params } as never);
+}
+
+/** 合并后的本地通知监听：收件箱写入 + 先消息后业务 + 强提醒 Action。 */
 export function NotificationRouter() {
   const router = useRouter();
   const handledResponseIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Web：不挂系统通知监听，避免崩；消息页仍可打开（空态）
     if (Platform.OS === 'web') return;
 
     void ensureStrongReminderNotificationCategory();
@@ -142,37 +130,43 @@ export function NotificationRouter() {
       const data = response.notification.request.content.data;
       const record = notificationDataRecord(data);
       const actionId = response.actionIdentifier;
+      const dedupeKey = resolveInboxDedupeKey(response.notification);
 
       if (actionId === STRONG_ACTION_SNOOZE) {
         void handleSnoozeAction(response);
         return;
       }
 
-      if (actionId === STRONG_ACTION_COMPLETE) {
-        const base =
-          typeof record?.baseIdentifier === 'string' && record.baseIdentifier
-            ? record.baseIdentifier
-            : response.notification.request.identifier;
-        void acknowledgeStrongReminder(base).then(() => {
-          resyncReminderAfterAcknowledge(data);
-          navigateByNotificationType(router, data);
-        });
-        return;
-      }
+      // 点击路径：先补写收件箱（覆盖后台送达未走 received 的情况）
+      void ingestNotificationIntoInbox(response.notification).then(() => {
+        if (actionId === STRONG_ACTION_COMPLETE) {
+          const base =
+            typeof record?.baseIdentifier === 'string' && record.baseIdentifier
+              ? record.baseIdentifier
+              : response.notification.request.identifier;
+          void acknowledgeStrongReminder(base).then(() => {
+            resyncReminderAfterAcknowledge(data);
+          });
+          // 完成：经消息页标已读后再进业务（不进处置页）
+          if (dedupeKey) openMessagesInboxFocus(router, dedupeKey, 'navigate');
+          return;
+        }
 
-      // 默认点击：强提醒进全屏处置页，其它类型直接跳转
-      if (isStrongPayload(record)) {
-        openDisposeScreen(router, response);
-        return;
-      }
+        // 默认点击：强提醒 → 消息页 focus 已读 → 处置页；其它 → 消息页 → 业务
+        if (isStrongPayload(record)) {
+          if (dedupeKey) openMessagesInboxFocus(router, dedupeKey, 'dispose');
+          return;
+        }
 
-      navigateByNotificationType(router, data);
-      rescheduleAfterDelivery(data);
+        if (dedupeKey) openMessagesInboxFocus(router, dedupeKey, 'navigate');
+        rescheduleAfterDelivery(data);
+      });
     };
 
     const responseSub = Notifications.addNotificationResponseReceivedListener(handleResponse);
     const receivedSub = Notifications.addNotificationReceivedListener(notification => {
       rescheduleAfterDelivery(notification.request.content.data);
+      void ingestNotificationIntoInbox(notification);
     });
 
     void Notifications.getLastNotificationResponseAsync().then(last => {

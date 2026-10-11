@@ -10,6 +10,10 @@ import {
   Spacing,
 } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import {
+  formatInboxBadgeCount,
+  useNotificationInboxBadges,
+} from '@/hooks/use-notification-inbox-badges';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
@@ -52,8 +56,9 @@ type ProfileMenuItem = {
     | '/project-completion-logs'
     | '/memo-list'
     | '/my-recipes'
-    | '/notification-center'
+    | '/messages'
     | '/blog';
+  hrefParams?: Record<string, string>;
   accent: string;
   wash: string;
 };
@@ -61,10 +66,11 @@ type ProfileMenuItem = {
 const PROFILE_MENU_BASE: Omit<ProfileMenuItem, 'accent' | 'wash'>[] = [
   {
     key: 'notification-center',
-    title: '提醒总览',
-    subtitle: '饮食、复盘、习惯与日程提醒',
+    title: '提醒设置',
+    subtitle: '频道开关与提醒时间',
     icon: 'notifications',
-    href: '/notification-center',
+    href: '/messages',
+    hrefParams: { tab: 'settings' },
   },
   {
     key: 'wish-board',
@@ -174,6 +180,8 @@ export default function ProfileScreen() {
   const reloadPageRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
   const { colors, isDark } = useAppTheme();
   const taskUi = getTaskUiColors(isDark);
+  const inboxBadges = useNotificationInboxBadges();
+  const bellBadgeLabel = formatInboxBadgeCount(inboxBadges.total);
   const [user, setUser] = useState<UserRow | null>(null);
   const [pointsBalance, setPointsBalance] = useState(0);
   const [hub, setHub] = useState<ProfileHubStats | null>(null);
@@ -402,22 +410,28 @@ export default function ProfileScreen() {
             </AppText>
           </View>
 
-          <View style={styles.identityText}>
+          <Pressable
+            onPress={() => openEdit()}
+            accessibilityRole="button"
+            accessibilityLabel="编辑个人信息"
+            style={styles.identityText}>
             <AppText variant="h1" style={{ color: colors.text }} numberOfLines={2}>
               {displayName}
             </AppText>
             <AppText variant="caption" chrome style={{ color: colors.textSecondary }}>
               {bodyIncomplete ? '完善身体数据，BMI 更准' : '身体数据已就绪'}
             </AppText>
-          </View>
+          </Pressable>
 
           <Pressable
-            onPress={() => openEdit()}
+            onPress={() => router.push('/messages')}
             accessibilityRole="button"
-            accessibilityLabel="编辑个人信息"
+            accessibilityLabel={
+              bellBadgeLabel ? `消息，${bellBadgeLabel} 条未读` : '消息'
+            }
             hitSlop={Layout.hitSlop}
             style={({ pressed }) => [
-              styles.editIconBtn,
+              styles.bellIconBtn,
               {
                 minWidth: MIN_TOUCH,
                 minHeight: MIN_TOUCH,
@@ -426,7 +440,26 @@ export default function ProfileScreen() {
                 opacity: pressed ? 0.82 : 1,
               },
             ]}>
-            <AppIcon name="edit" size={20} color={colors.primary} />
+            <AppIcon name="notifications-none" size={20} color={colors.primary} />
+            {bellBadgeLabel ? (
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.bellBadge,
+                  {
+                    backgroundColor: isDark ? '#ef4444' : colors.danger,
+                    borderColor: colors.surface,
+                  },
+                ]}>
+                <AppText
+                  variant="caption"
+                  chrome
+                  style={styles.bellBadgeText}
+                  numberOfLines={1}>
+                  {bellBadgeLabel}
+                </AppText>
+              </View>
+            ) : null}
           </Pressable>
         </View>
 
@@ -694,7 +727,13 @@ export default function ProfileScreen() {
             return (
               <Pressable
                 key={item.key}
-                onPress={() => router.push(item.href as never)}
+                onPress={() => {
+                  if (item.hrefParams) {
+                    router.push({ pathname: item.href, params: item.hrefParams } as never);
+                  } else {
+                    router.push(item.href as never);
+                  }
+                }}
                 accessibilityRole="button"
                 accessibilityLabel={`${item.title}，${item.subtitle}`}
                 style={({ pressed }) => [
@@ -750,11 +789,30 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
     minWidth: 0,
   },
-  editIconBtn: {
+  bellIconBtn: {
     borderRadius: Radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bellBadgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
+    textAlign: 'center',
   },
   checklistCard: {
     borderRadius: Radius['2xl'],

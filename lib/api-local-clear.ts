@@ -41,13 +41,20 @@ export async function clearLocalUserDataTables(opts?: {
   const tables = (await listLocalUserTablesForApiUpload()).filter(
     t => !REST_SKIP_TABLES.has(t) && !(preserve?.has(t) ?? false),
   );
-  if (tables.length === 0) return;
 
   beginCloudSqliteDirtyIgnoreBatch();
   try {
     await db.execAsync('PRAGMA foreign_keys = OFF');
     for (const table of tables) {
       await db.runAsync(`DELETE FROM ${quoteIdent(table)}`);
+    }
+    // 本地-only 表不在同步表清单 / REST_SKIP 中，清库时仍要丢掉未读收件箱
+    if (!(preserve?.has('notification_inbox') ?? false)) {
+      try {
+        await db.runAsync('DELETE FROM notification_inbox');
+      } catch {
+        /* 表可能尚未创建 */
+      }
     }
     await db.execAsync('PRAGMA foreign_keys = ON');
   } finally {

@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 57;
+export const DB_VERSION = 58;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -108,6 +108,42 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
   await db.execAsync('DROP TABLE IF EXISTS persona_portrait_cache');
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'drop_persona_portrait_cache_v33',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/**
+ * v58：本地通知收件箱（未读列表）。无 sync_status，不进云 / REST。
+ */
+async function migrateEnsureNotificationInboxLocal(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['notification_inbox_local_v58'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS notification_inbox (
+      id TEXT PRIMARY KEY NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      category TEXT NOT NULL,
+      module_tab TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      data_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      read_at TEXT NULL,
+      source TEXT NOT NULL DEFAULT 'local'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_inbox_dedupe
+      ON notification_inbox(dedupe_key);
+    CREATE INDEX IF NOT EXISTS ix_notification_inbox_unread
+      ON notification_inbox(read_at, module_tab, created_at);
+  `);
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'notification_inbox_local_v58',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -1829,6 +1865,7 @@ export async function initDatabase() {
   await migrateDropLegacyAccountsLedger(db);
   await migrateEnsureSyncRevisionColumns(db);
   await migrateEnsureLifeRoadTables(db);
+  await migrateEnsureNotificationInboxLocal(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
@@ -1848,6 +1885,7 @@ export async function resetDatabase() {
   await db.execAsync(`
     DROP TABLE IF EXISTS health_records;
     DROP TABLE IF EXISTS weight_logs;
+    DROP TABLE IF EXISTS notification_inbox;
     DROP TABLE IF EXISTS finance_transactions;
     DROP TABLE IF EXISTS finance_scheduled_expenses;
     DROP TABLE IF EXISTS finance_flow_categories;

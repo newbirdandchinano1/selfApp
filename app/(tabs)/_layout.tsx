@@ -7,6 +7,10 @@ import { HapticTab } from '@/components/haptic-tab';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
 import { getPalette } from '@/constants/design-tokens';
+import {
+  formatInboxBadgeCount,
+  useNotificationInboxBadges,
+} from '@/hooks/use-notification-inbox-badges';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -14,13 +18,27 @@ const DRAWER_WIDTH = Math.min(340, Math.round(Dimensions.get('window').width * 0
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
-  const theme = getPalette(colorScheme === 'dark' ? 'dark' : 'light');
+  const isDark = colorScheme === 'dark';
+  const theme = getPalette(isDark ? 'dark' : 'light');
   const insets = useSafeAreaInsets();
+  const badges = useNotificationInboxBadges();
 
   const baseHeight = 48;
   const paddingTop = 6;
   const paddingBottom = insets.bottom > 0 ? insets.bottom + 12 : 8;
   const tabBarHeight = baseHeight + paddingBottom;
+
+  // dark：稍亮红底 + 白字，保证对比度
+  const tabBarBadgeStyle = {
+    backgroundColor: isDark ? '#ef4444' : theme.danger,
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700' as const,
+    minWidth: 18,
+    height: 18,
+    lineHeight: 18,
+    borderRadius: 9,
+  };
 
   return (
     <SettingsDrawerProvider>
@@ -31,6 +49,7 @@ export default function TabLayout() {
             tabBarInactiveTintColor: theme.textSecondary,
             headerShown: false,
             tabBarButton: HapticTab,
+            tabBarBadgeStyle,
             tabBarStyle: {
               backgroundColor: theme.surface,
               borderTopColor: theme.tabBarBorder,
@@ -48,6 +67,7 @@ export default function TabLayout() {
             name="index"
             options={{
               title: '健康',
+              tabBarBadge: formatInboxBadgeCount(badges.index),
               tabBarIcon: ({ color }) => <MaterialIcons size={24} name="insights" color={color} />,
             }}
           />
@@ -56,6 +76,7 @@ export default function TabLayout() {
             options={{
               title: '任务',
               tabBarHideOnKeyboard: true,
+              tabBarBadge: formatInboxBadgeCount(badges.tasks),
               tabBarIcon: ({ color }) => <MaterialIcons size={24} name="check-circle-outline" color={color} />,
             }}
           />
@@ -63,6 +84,7 @@ export default function TabLayout() {
             name="finance"
             options={{
               title: '财务',
+              tabBarBadge: formatInboxBadgeCount(badges.finance),
               tabBarIcon: ({ color }) => <MaterialIcons size={24} name="account-balance-wallet" color={color} />,
             }}
           />
@@ -71,6 +93,7 @@ export default function TabLayout() {
             options={{
               title: '复盘',
               tabBarHideOnKeyboard: true,
+              tabBarBadge: formatInboxBadgeCount(badges.review),
               tabBarIcon: ({ color }) => <MaterialIcons size={24} name="edit-note" color={color} />,
             }}
           />
@@ -78,6 +101,7 @@ export default function TabLayout() {
             name="profile"
             options={{
               title: '我的',
+              // 锁定：我的 Tab 永不设角标；未读只走铃铛
               tabBarIcon: ({ color }) => <MaterialIcons size={24} name="person-outline" color={color} />,
             }}
           />

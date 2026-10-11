@@ -516,7 +516,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           <Pressable
             onPress={() => {
               closeSettingsDrawer();
-              router.push('/notification-center');
+              router.push({ pathname: '/messages', params: { tab: 'settings' } });
             }}
             style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
             <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>

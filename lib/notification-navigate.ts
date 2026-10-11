@@ -58,6 +58,12 @@ export function navigateByNotificationType(router: AppRouter, data: unknown): vo
       }
       return;
     }
+    case 'auto-ledger':
+    case 'auto-ledger-hint':
+    case 'auto-ledger-failure': {
+      router.push('/auto-ledger' as never);
+      return;
+    }
     default:
       return;
   }

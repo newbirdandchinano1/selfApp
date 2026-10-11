@@ -107,9 +107,16 @@ function isCloudManagedTableName(name: string): boolean {
   return false;
 }
 
+/** 仅设备本地、不进 D1 / 全量备份的表 */
+const LOCAL_ONLY_SQLITE_TABLES = new Set(['notification_inbox']);
+
 /** 本应用可同步的用户业务表 */
 function isAppSyncTableName(name: string): boolean {
-  return isSafeSqliteTableName(name) && !isCloudManagedTableName(name);
+  return (
+    isSafeSqliteTableName(name) &&
+    !isCloudManagedTableName(name) &&
+    !LOCAL_ONLY_SQLITE_TABLES.has(name)
+  );
 }
 
 function quoteIdent(name: string): string {

@@ -10,8 +10,10 @@ import {
   type AppToastPayload,
 } from '@/lib/app-feedback/toast-events';
 
-const FADE_IN_MS = 180;
-const FADE_OUT_MS = 220;
+const FADE_IN_MS = 260;
+const FADE_OUT_MS = 240;
+const SLIDE_OFFSET = -14;
+const SCALE_FROM = 0.94;
 
 const KIND_ICON: Record<AppToastKind, keyof typeof MaterialIcons.glyphMap> = {
   success: 'check-circle',
@@ -32,7 +34,8 @@ export function AppToastHost() {
   const insets = useSafeAreaInsets();
   const [payload, setPayload] = React.useState<AppToastPayload | null>(null);
   const opacity = React.useRef(new Animated.Value(0)).current;
-  const translateY = React.useRef(new Animated.Value(8)).current;
+  const translateY = React.useRef(new Animated.Value(SLIDE_OFFSET)).current;
+  const scale = React.useRef(new Animated.Value(SCALE_FROM)).current;
   const animRef = React.useRef<Animated.CompositeAnimation | null>(null);
 
   React.useEffect(() => {
@@ -44,13 +47,19 @@ export function AppToastHost() {
           Animated.timing(opacity, {
             toValue: 0,
             duration: FADE_OUT_MS,
-            easing: Easing.in(Easing.quad),
+            easing: Easing.in(Easing.cubic),
             useNativeDriver: true,
           }),
           Animated.timing(translateY, {
-            toValue: 8,
+            toValue: SLIDE_OFFSET,
             duration: FADE_OUT_MS,
-            easing: Easing.in(Easing.quad),
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(scale, {
+            toValue: SCALE_FROM,
+            duration: FADE_OUT_MS,
+            easing: Easing.in(Easing.cubic),
             useNativeDriver: true,
           }),
         ]);
@@ -65,7 +74,8 @@ export function AppToastHost() {
 
       setPayload(next);
       opacity.setValue(0);
-      translateY.setValue(8);
+      translateY.setValue(SLIDE_OFFSET);
+      scale.setValue(SCALE_FROM);
 
       const show = Animated.parallel([
         Animated.timing(opacity, {
@@ -80,13 +90,19 @@ export function AppToastHost() {
           easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
+        Animated.timing(scale, {
+          toValue: 1,
+          duration: FADE_IN_MS,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
       ]);
       animRef.current = show;
       show.start(({ finished }) => {
         if (finished) animRef.current = null;
       });
     });
-  }, [opacity, translateY]);
+  }, [opacity, translateY, scale]);
 
   if (payload == null) return null;
 
@@ -97,17 +113,17 @@ export function AppToastHost() {
       style={[
         styles.wrap,
         {
-          // 略高于积分 Toast，避免互相遮死
-          bottom: Math.max(insets.bottom, 12) + 132,
+          // 顶部更易注意到，避开底部 Tab / 积分 Toast
+          top: Math.max(insets.top, 12) + 16,
           opacity,
-          transform: [{ translateY }],
+          transform: [{ translateY }, { scale }],
         },
       ]}>
       <View style={styles.toast}>
         <View style={[styles.accent, { backgroundColor: KIND_COLOR[payload.kind] }]} />
         <MaterialIcons
           name={KIND_ICON[payload.kind]}
-          size={16}
+          size={20}
           color={KIND_COLOR[payload.kind]}
         />
         <Text style={styles.text} numberOfLines={2}>
@@ -130,25 +146,33 @@ const styles = StyleSheet.create({
   toast: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
+    gap: Spacing.xl,
     borderRadius: Radius.pill,
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing.lg,
-    maxWidth: '88%',
-    backgroundColor: 'rgba(17,24,39,0.94)',
+    paddingHorizontal: Spacing['5xl'],
+    paddingVertical: Spacing['3xl'],
+    minHeight: 48,
+    maxWidth: '90%',
+    backgroundColor: 'rgba(17,24,39,0.96)',
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    elevation: 10,
   },
   accent: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    width: 3,
+    width: 4,
   },
   text: {
     color: '#fff',
-    fontSize: 13,
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: '700',
+    letterSpacing: 0.2,
     flexShrink: 1,
   },
 });
