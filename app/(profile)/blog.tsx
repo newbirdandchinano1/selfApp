@@ -13,10 +13,36 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
 
-	const BLOG_ORIGIN = 'https://jaxz.xyz';
-	const BLOG_FALLBACK = 'https://www.jaxz.xyz';
-	const ALLOWED_HOSTS = new Set(['jaxz.xyz', 'www.jaxz.xyz']);
-	const LOAD_TIMEOUT_MS = 20000;
+		const BLOG_ORIGIN = 'https://jaxz.xyz';
+		const BLOG_FALLBACK = 'https://www.jaxz.xyz';
+		const ALLOWED_HOSTS = new Set(['jaxz.xyz', 'www.jaxz.xyz']);
+		const LOAD_TIMEOUT_MS = 20000;
+
+		/** App 内嵌禁止双击 / 双指缩放（viewport + 手势拦截） */
+		const DISABLE_ZOOM_JS = `(function(){
+  var content = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover';
+  var meta = document.querySelector('meta[name="viewport"]');
+  if (meta) {
+    meta.setAttribute('content', content);
+  } else {
+    meta = document.createElement('meta');
+    meta.setAttribute('name', 'viewport');
+    meta.setAttribute('content', content);
+    (document.head || document.documentElement).appendChild(meta);
+  }
+  var style = document.getElementById('selfapp-no-zoom');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'selfapp-no-zoom';
+    style.textContent = 'html,body{-ms-touch-action:pan-x pan-y;touch-action:pan-x pan-y;}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+  var block = function(e){ e.preventDefault(); };
+  document.addEventListener('gesturestart', block, {passive:false});
+  document.addEventListener('gesturechange', block, {passive:false});
+  document.addEventListener('gestureend', block, {passive:false});
+  true;
+})();`;
 
 function isAllowedBlogUrl(url: string): boolean {
   try {
@@ -171,6 +197,12 @@ export default function BlogScreen() {
               startInLoadingState={false}
               cacheEnabled
               incognito={false}
+              scalesPageToFit={false}
+              setBuiltInZoomControls={false}
+              setDisplayZoomControls={false}
+              textZoom={100}
+              injectedJavaScriptBeforeContentLoaded={DISABLE_ZOOM_JS}
+              injectedJavaScript={DISABLE_ZOOM_JS}
               userAgent="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36 SelfApp"
               renderError={(domain, code, desc) => {
                 setLoading(false);
