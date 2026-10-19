@@ -5,6 +5,13 @@ import { formatWallClockDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { readApiRecord, readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc, isYmdInRange, sortByUpdatedDesc } from '@/lib/api-read-helpers';
 import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
+import {
+  deleteStoredImageById,
+  deleteStoredImageByUri,
+  isStoredImageUri,
+  readLocalImageDataUrl,
+  uploadStoredImage,
+} from '@/lib/stored-images';
 import { getDatabase } from '../../database.native';
 import type {
   CreateHealthRecordInput,
@@ -12,6 +19,25 @@ import type {
   HealthRecordRow,
   UpdateHealthRecordInput,
 } from './health.types';
+
+/** 本地临时图 → 统一图片库；已是 `/uploads/images/...` 则跳过。 */
+async function uploadHealthIntakeSourceImage(
+  recordId: string,
+  sourceUri: string | null | undefined,
+): Promise<{ uri: string; id: string } | null> {
+  const raw = sourceUri?.trim();
+  if (!raw) return null;
+  if (isStoredImageUri(raw)) return null;
+  if (raw.startsWith('/uploads/')) return null;
+  const saved = await uploadStoredImage({
+    data: await readLocalImageDataUrl(raw),
+    purpose: 'health-intake',
+    owner_table: 'health_records',
+    owner_id: recordId,
+    owner_field: 'source_image_uri',
+  });
+  return { uri: saved.uri, id: saved.id };
+}
 
 /** 接口常省略 user_id；空值视为当前默认用户 */
 function healthRecordBelongsToUser(row: HealthRecordRow, userId: string): boolean {
@@ -28,31 +54,43 @@ function healthRecordYmd(row: HealthRecordRow): string {
 export async function createHealthRecord(input: CreateHealthRecordInput) {
   const db = await getDatabase();
   const now = formatWallClockDatetimeLocal(new Date());
-  await db.runAsync(
-    `INSERT INTO health_records (
-      id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, calories, target_calories, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
-      created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
-    [
-      input.id,
-      input.user_id,
-      input.hydration ?? 0,
-      input.target_hydration ?? 0,
-      input.protein ?? 0,
-      input.target_protein ?? 0,
-      input.carbohydrate ?? 0,
-      input.target_carbohydrate ?? 0,
-      input.calories ?? 0,
-      input.target_calories ?? 0,
-      input.record_date,
-      input.quick_add_key ?? null,
-      input.intake_display_title ?? null,
-      input.intake_ai_comment ?? null,
-      input.source_image_uri ?? null,
-      now,
-      now,
-    ]
-  );
+  const uploaded = await uploadHealthIntakeSourceImage(input.id, input.source_image_uri);
+  const incomingUri = input.source_image_uri?.trim() || null;
+  const sourceImageUri =
+    uploaded?.uri ??
+    (incomingUri && (isStoredImageUri(incomingUri) || incomingUri.startsWith('/uploads/'))
+      ? incomingUri
+      : null);
+  try {
+    await db.runAsync(
+      `INSERT INTO health_records (
+        id, user_id, hydration, target_hydration, protein, target_protein, carbohydrate, target_carbohydrate, calories, target_calories, record_date, quick_add_key, intake_display_title, intake_ai_comment, source_image_uri,
+        created_at, updated_at, sync_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
+      [
+        input.id,
+        input.user_id,
+        input.hydration ?? 0,
+        input.target_hydration ?? 0,
+        input.protein ?? 0,
+        input.target_protein ?? 0,
+        input.carbohydrate ?? 0,
+        input.target_carbohydrate ?? 0,
+        input.calories ?? 0,
+        input.target_calories ?? 0,
+        input.record_date,
+        input.quick_add_key ?? null,
+        input.intake_display_title ?? null,
+        input.intake_ai_comment ?? null,
+        sourceImageUri,
+        now,
+        now,
+      ],
+    );
+  } catch (err) {
+    if (uploaded) await deleteStoredImageById(uploaded.id).catch(() => undefined);
+    throw err;
+  }
   const { requestPush } = await import('@/lib/sync-manager');
   await requestPush({ awaitSync: true });
   void import('@/lib/notification-center')
@@ -312,14 +350,16 @@ export async function deleteHealthRecord(id: string) {
   const db = await getDatabase();
   const existing = await ensureLocalRowForWrite<HealthRecordRow>('health_records', id);
   const img = existing?.source_image_uri?.trim();
-  if (img) {
+  if (isStoredImageUri(img)) {
+    await deleteStoredImageByUri(img).catch(() => undefined);
+  } else if (img && !img.startsWith('/uploads/')) {
     try {
       const f = new File(img);
       if (f.exists) {
         f.delete();
       }
     } catch {
-      /* 忽略本地文件删除失败 */
+      /* 忽略本地历史文件删除失败 */
     }
   }
   await db.runAsync(

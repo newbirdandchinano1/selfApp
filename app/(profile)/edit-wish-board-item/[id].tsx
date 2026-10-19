@@ -1,4 +1,5 @@
 import { AppButton, AppInput, AppScreen, ScreenHeader } from '@/components/ui';
+import { WishBoardDescriptionField } from '@/components/wish-board/wish-board-description-field';
 import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
 import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -18,8 +19,9 @@ import {
   updateWishBoardItem,
 } from '@/lib/repositories/wish-board/wish-board';
 import { assertNonNegativeCostPoints, formatPoints } from '@/lib/reward-points';
+import { forgetUnusedWishUploads } from '@/lib/wish-images';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 export default function EditWishBoardItemScreen() {
@@ -27,6 +29,7 @@ export default function EditWishBoardItemScreen() {
   const { colors, isDark } = useAppTheme();
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : '';
+  const uploadedUrisRef = useRef<string[]>([]);
 
   const [title, setTitle] = useState('');
   const [costText, setCostText] = useState('');
@@ -66,6 +69,7 @@ export default function EditWishBoardItemScreen() {
         setDescription(row.description ?? '');
         setRedeemConditions(parseWishBoardRedeemConditions(row.extra_data));
         setRedeemed(row.wish_type === 'once' && row.status === 'redeemed');
+        uploadedUrisRef.current = [];
       } finally {
         if (!cancelled) {
           setBindLoading(false);
@@ -77,6 +81,15 @@ export default function EditWishBoardItemScreen() {
       cancelled = true;
     };
   }, [id, router]);
+
+  const onBack = () => {
+    const uris = uploadedUrisRef.current;
+    uploadedUrisRef.current = [];
+    if (uris.length > 0) {
+      void forgetUnusedWishUploads(uris, description);
+    }
+    router.back();
+  };
 
   const onSave = async () => {
     if (redeemed) {
@@ -96,12 +109,15 @@ export default function EditWishBoardItemScreen() {
     }
     setSaving(true);
     try {
+      const nextDescription = description.trim() || null;
       await updateWishBoardItem(id, {
         title: title.trim(),
         cost_points: cost,
-        description: description.trim() || null,
+        description: nextDescription,
         redeem_conditions: redeemConditions,
       });
+      await forgetUnusedWishUploads(uploadedUrisRef.current, nextDescription);
+      uploadedUrisRef.current = [];
       toast.success('已保存');
       router.back();
     } catch (e) {
@@ -121,7 +137,7 @@ export default function EditWishBoardItemScreen() {
 
   return (
     <AppScreen
-      header={<ScreenHeader title="编辑心愿" onBack={() => router.back()} />}
+      header={<ScreenHeader title="编辑心愿" onBack={onBack} />}
       contentContainerStyle={styles.content}>
       {redeemed ? (
         <Text style={[styles.hint, { color: colors.textSecondary }]}>该心愿已兑换，仅可查看。</Text>
@@ -142,14 +158,19 @@ export default function EditWishBoardItemScreen() {
           placeholder="0（可含小数）"
           keyboardType="decimal-pad"
         />
-        <AppInput
-          label="描述（可选）"
+        <WishBoardDescriptionField
           value={description}
-          onChangeText={setDescription}
+          onChange={setDescription}
+          onUploadedUri={(uri) => {
+            uploadedUrisRef.current.push(uri);
+          }}
+          wishId={id}
           editable={!redeemed}
-          multiline
-          maxLength={500}
-          inputStyle={{ minHeight: 96, textAlignVertical: 'top' }}
+          textColor={colors.text}
+          mutedColor={colors.textSecondary}
+          outline={colors.outline}
+          primary={colors.primary}
+          surfaceSubtle={colors.surfaceSubtle}
         />
         <WishBoardRedeemConditionsField
           value={redeemConditions}

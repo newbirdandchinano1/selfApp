@@ -4,7 +4,7 @@ import {
   type RichMark,
   type RichTextRun,
 } from '@/lib/memo-richdoc';
-import { Image } from 'expo-image';
+import { StoredImage } from '@/components/stored-image';
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
@@ -155,8 +155,8 @@ function BlockView({
     case 'image':
       return (
         <View style={styles.imageWrap}>
-          <Image
-            source={{ uri: block.uri }}
+          <StoredImage
+            uri={block.uri}
             style={[
               styles.image,
               block.width > 0 && block.height > 0

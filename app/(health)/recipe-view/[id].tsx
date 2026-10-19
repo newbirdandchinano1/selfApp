@@ -11,7 +11,7 @@ import {
 } from '@/lib/recipes';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
+import { StoredImage } from '@/components/stored-image';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -206,7 +206,7 @@ export default function RecipeViewScreen() {
                 },
               ]}>
               {row.finished_image_uri ? (
-                <Image source={{ uri: row.finished_image_uri }} style={styles.heroImage} contentFit="cover" />
+                <StoredImage uri={row.finished_image_uri} style={styles.heroImage} />
               ) : (
                 <View style={[styles.heroPlaceholder, { backgroundColor: p.placeholderBg }]}>
                   <MaterialIcons name="restaurant" size={56} color={p.accent} />

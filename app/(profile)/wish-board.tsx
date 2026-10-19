@@ -1,4 +1,5 @@
 import { AddWishBoardModal } from '@/components/wish-board/add-wish-board-modal';
+import { WishBoardDescriptionView } from '@/components/wish-board/wish-board-description-view';
 import { AppButton, AppCard, AppScreen, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -86,16 +87,16 @@ export default function WishBoardScreen() {
     return map;
   }, [items, balance, currentNetWorth, entityLookups]);
 
-  /** 一次性 → 重复性；同类型内可兑换 → 暂时无法兑换；其余保持仓库层相对顺序 */
+  /** 可兑换在前；同档内一次性 → 重复性；其余保持仓库层相对顺序 */
   const activeItems = useMemo(() => {
     return items
       .filter(i => i.status === 'active')
       .slice()
       .sort((a, b) => {
-        if (a.wish_type !== b.wish_type) return a.wish_type === 'once' ? -1 : 1;
         const aOk = eligibilityById.get(a.id)?.ok ?? false;
         const bOk = eligibilityById.get(b.id)?.ok ?? false;
         if (aOk !== bOk) return aOk ? -1 : 1;
+        if (a.wish_type !== b.wish_type) return a.wish_type === 'once' ? -1 : 1;
         return 0;
       });
   }, [items, eligibilityById]);
@@ -422,9 +423,12 @@ export default function WishBoardScreen() {
                         {item.title}
                       </Text>
                       {item.description ? (
-                        <Text style={[styles.itemNote, { color: muted }]} numberOfLines={2}>
-                          {item.description}
-                        </Text>
+                        <WishBoardDescriptionView
+                          description={item.description}
+                          color={muted}
+                          compact
+                          numberOfLines={2}
+                        />
                       ) : null}
                       {condSummary ? (
                         <Text
@@ -545,9 +549,12 @@ export default function WishBoardScreen() {
                           {record.title}
                         </Text>
                         {record.description ? (
-                          <Text style={[styles.itemNote, { color: muted }]} numberOfLines={2}>
-                            {record.description}
-                          </Text>
+                          <WishBoardDescriptionView
+                            description={record.description}
+                            color={muted}
+                            compact
+                            numberOfLines={2}
+                          />
                         ) : null}
                         <Text style={[styles.typeTag, { color: muted }]}>
                           {typeLabel}

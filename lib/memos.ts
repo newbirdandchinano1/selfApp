@@ -12,6 +12,11 @@ import {
   MEMO_BODY_MAX_BYTES as RICHDOC_BODY_MAX_BYTES,
   plainTextFromBody,
 } from '@/lib/memo-richdoc';
+import {
+  bindMemoBodyImages,
+  releaseMemoBodyImages,
+  releaseRemovedMemoImages,
+} from '@/lib/memo-images';
 import type * as SQLite from 'expo-sqlite';
 
 export const MEMO_TITLE_MAX = 120;
@@ -266,6 +271,7 @@ export async function createMemo(input: {
     await setMemoTagIds(item.id, input.tagIds);
     markCloudSqliteTableDirty('tag_links');
   }
+  await bindMemoBodyImages(item.id, item.body);
   return item;
 }
 
@@ -305,6 +311,10 @@ export async function updateMemo(
     const { setMemoTagIds } = await import('@/lib/repositories/tags/tag');
     await setMemoTagIds(id, patch.tagIds);
     markCloudSqliteTableDirty('tag_links');
+  }
+  if (patch.body !== undefined) {
+    await releaseRemovedMemoImages(prev.body, nextBody);
+    await bindMemoBodyImages(id, nextBody);
   }
   const next: MemoItem = {
     id: prev.id,
@@ -405,12 +415,14 @@ export async function runMemoAiReviewOnServer(id: string): Promise<MemoItem | nu
 }
 
 export async function deleteMemo(id: string): Promise<boolean> {
+  const existing = await getMemo(id);
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ sync_status: string }>(
     'SELECT sync_status FROM memos WHERE id = ? LIMIT 1',
     [id],
   );
   if (!row) return false;
+  if (existing) await releaseMemoBodyImages(existing.body);
   try {
     const { softDeleteTagLinksForEntity } = await import('@/lib/repositories/tags/tag');
     await softDeleteTagLinksForEntity('memo', id);

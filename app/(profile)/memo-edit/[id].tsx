@@ -24,6 +24,7 @@ import {
   serializeRichDoc,
 } from '@/lib/memo-richdoc';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { forgetUnusedMemoUploads, uploadMemoImage } from '@/lib/memo-images';
 import {
   createMemo,
   getMemo,
@@ -35,11 +36,10 @@ import { getTagIdsByEntity, getMemoTags } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -56,29 +56,22 @@ function normalizeId(raw: string | string[] | undefined): string {
   return '';
 }
 
-function promptImageUri(): Promise<string | null> {
-  return new Promise(resolve => {
-    if (Platform.OS === 'ios') {
-      Alert.prompt(
-        '图片链接',
-        '仅 URI，禁止 base64',
-        [
-          { text: '取消', style: 'cancel', onPress: () => resolve(null) },
-          {
-            text: '插入',
-            onPress: (v?: string) => resolve((v ?? '').trim() || null),
-          },
-        ],
-        'plain-text',
-        'https://',
-      );
-      return;
-    }
-    Alert.alert('插入图片', '将插入图片链接占位，请在正文中改成真实 URI', [
-      { text: '取消', style: 'cancel', onPress: () => resolve(null) },
-      { text: '插入', onPress: () => resolve('https://') },
-    ]);
+async function pickMemoImageUri(memoId: string | null): Promise<string | null> {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) {
+    toast.warn('需要相册权限才能插入图片');
+    return null;
+  }
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    quality: 0.88,
   });
+  if (result.canceled || !result.assets[0]?.uri) return null;
+  const saved = await uploadMemoImage({
+    localUri: result.assets[0].uri,
+    memoId,
+  });
+  return saved.uri;
 }
 
 export default function MemoEditScreen() {
@@ -101,6 +94,7 @@ export default function MemoEditScreen() {
   const bodyMinHeight = useMemo(() => Math.max(360, Math.round(windowHeight * 0.42)), [windowHeight]);
 
   const editorRef = useRef<MemoRichBodyInputHandle>(null);
+  const uploadedUrisRef = useRef<string[]>([]);
   const [title, setTitle] = useState('');
   const [bodyModel, setBodyModel] = useState<MemoEditModel>(emptyMemoEditModel);
   const [allTags, setAllTags] = useState<TagRow[]>([]);
@@ -163,13 +157,19 @@ export default function MemoEditScreen() {
   const onFormatAction = useCallback(async (action: MemoFormatAction) => {
     let extras: { imageUri?: string } | undefined;
     if (action === 'image') {
-      const uri = await promptImageUri();
-      if (!uri) return;
-      extras = { imageUri: uri };
+      try {
+        const uri = await pickMemoImageUri(isNew ? null : id);
+        if (!uri) return;
+        uploadedUrisRef.current.push(uri);
+        extras = { imageUri: uri };
+      } catch (e) {
+        toast.error(toUserMessage(e, '图片上传失败'));
+        return;
+      }
     }
     // 格式在 WebView 内应用（缓存选区 + execCommand / 模型重刷），避免点工具栏丢选区
     editorRef.current?.applyFormat(action, extras);
-  }, []);
+  }, [id, isNew]);
 
   const onBodyModelChange = useCallback((next: MemoEditModel) => {
     setBodyModel(next);
@@ -212,6 +212,8 @@ export default function MemoEditScreen() {
         }
       }
       toast.success('已保存');
+      await forgetUnusedMemoUploads(uploadedUrisRef.current, body);
+      uploadedUrisRef.current = [];
       router.back();
     } catch (e) {
       toast.error(toUserMessage(e, '保存失败，请稍后重试'));

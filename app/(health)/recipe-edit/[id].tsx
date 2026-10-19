@@ -26,7 +26,7 @@ import {
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
+import { StoredImage } from '@/components/stored-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -323,7 +323,7 @@ export default function RecipeEditScreen() {
           >
             {finishedImageUri ? (
               <>
-                <Image source={{ uri: finishedImageUri }} style={styles.previewImage} contentFit="cover" />
+                <StoredImage uri={finishedImageUri} style={styles.previewImage} />
                 <View style={styles.heroOverlay}>
                   <View style={[styles.heroChip, { backgroundColor: 'rgba(28,20,16,0.55)' }]}>
                     <MaterialIcons name="photo-camera" size={16} color="#fff" />

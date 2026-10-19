@@ -8,7 +8,13 @@ import {
     endCloudSqliteDirtyIgnoreBatch,
     markCloudSqliteTableDirty,
 } from '@/lib/cloud-sql-dirty-track';
-import { persistRecipeFinishedImage } from '@/lib/recipe-finished-image';
+import {
+  deleteStoredImageById,
+  deleteStoredImageByUri,
+  isStoredImageUri,
+  readLocalImageDataUrl,
+  uploadStoredImage,
+} from '@/lib/stored-images';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type * as SQLite from 'expo-sqlite';
 
@@ -525,6 +531,23 @@ export async function deleteRecipeCategory(id: string): Promise<boolean> {
   return true;
 }
 
+async function uploadRecipeFinishedImage(
+  recipeId: string,
+  sourceUri: string | null | undefined,
+): Promise<{ uri: string; id: string } | null> {
+  const raw = sourceUri?.trim();
+  if (!raw) return null;
+  if (isStoredImageUri(raw)) return null;
+  const saved = await uploadStoredImage({
+    data: await readLocalImageDataUrl(raw),
+    purpose: 'recipe',
+    owner_table: 'recipe_items',
+    owner_id: recipeId,
+    owner_field: 'finished_image_uri',
+  });
+  return { uri: saved.uri, id: saved.id };
+}
+
 export type CreateRecipeInput = {
   category_id: string;
   title: string;
@@ -543,10 +566,8 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
   if (!cat) throw new Error('分类不存在');
   const now = new Date().toISOString();
   const id = newId('recipe');
-  let imageUri: string | null = null;
-  if (input.finished_image_uri?.trim()) {
-    imageUri = await persistRecipeFinishedImage(id, input.finished_image_uri);
-  }
+  const uploaded = await uploadRecipeFinishedImage(id, input.finished_image_uri);
+  const imageUri = uploaded?.uri ?? (isStoredImageUri(input.finished_image_uri) ? input.finished_image_uri.trim() : null);
   const item: RecipeItem = {
     id,
     category_id: input.category_id,
@@ -558,23 +579,28 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
     ...(input.notes?.trim() ? { notes: clampNotes(input.notes.trim()) } : {}),
     ...(imageUri ? { finished_image_uri: imageUri } : {}),
   };
-  await db.runAsync(
-    `INSERT INTO recipe_items (
-      id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
-      created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
-    [
-      item.id,
-      item.category_id,
-      item.title,
-      encodeIngredients(item.ingredients),
-      encodeLines(item.steps),
-      item.notes ?? null,
-      item.finished_image_uri ?? null,
-      item.created_at,
-      item.updated_at,
-    ],
-  );
+  try {
+    await db.runAsync(
+      `INSERT INTO recipe_items (
+        id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
+        created_at, updated_at, sync_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
+      [
+        item.id,
+        item.category_id,
+        item.title,
+        encodeIngredients(item.ingredients),
+        encodeLines(item.steps),
+        item.notes ?? null,
+        item.finished_image_uri ?? null,
+        item.created_at,
+        item.updated_at,
+      ],
+    );
+  } catch (err) {
+    if (uploaded) await deleteStoredImageById(uploaded.id).catch(() => undefined);
+    throw err;
+  }
   markRecipesDirty();
   return item;
 }
@@ -614,21 +640,46 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
   }
 
   let finished_image_uri: string | null = prev.finished_image_uri ?? null;
+  let uploadedImageId: string | null = null;
   if (patch.finished_image_uri !== undefined) {
-    if (patch.finished_image_uri?.trim()) {
-      finished_image_uri = await persistRecipeFinishedImage(id, patch.finished_image_uri);
+    const incoming = patch.finished_image_uri?.trim() || null;
+    if (!incoming || isStoredImageUri(incoming)) {
+      finished_image_uri = incoming;
     } else {
-      finished_image_uri = null;
+      const saved = await uploadStoredImage({
+        data: await readLocalImageDataUrl(incoming),
+        purpose: 'recipe',
+        owner_table: 'recipe_items',
+        owner_id: id,
+        owner_field: 'finished_image_uri',
+      });
+      uploadedImageId = saved.id;
+      finished_image_uri = saved.uri;
     }
   }
 
-  await db.runAsync(
-    `UPDATE recipe_items SET
-      title = ?, category_id = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
-      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
-     WHERE id = ?`,
-    [title, category_id, encodeIngredients(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
-  );
+  const previousStoredUri = prev.finished_image_uri ?? null;
+  try {
+    await db.runAsync(
+      `UPDATE recipe_items SET
+        title = ?, category_id = ?, ingredients_json = ?, steps_json = ?, notes = ?, finished_image_uri = ?, updated_at = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+       WHERE id = ?`,
+      [title, category_id, encodeIngredients(ingredients), encodeLines(steps), notes, finished_image_uri, now, id],
+    );
+  } catch (err) {
+    if (uploadedImageId) {
+      await deleteStoredImageById(uploadedImageId).catch(() => undefined);
+    }
+    throw err;
+  }
+  if (
+    previousStoredUri &&
+    previousStoredUri !== finished_image_uri &&
+    isStoredImageUri(previousStoredUri)
+  ) {
+    await deleteStoredImageByUri(previousStoredUri).catch(() => undefined);
+  }
   markRecipesDirty();
 
   const next: RecipeItem = {
@@ -647,11 +698,14 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
 
 export async function deleteRecipe(id: string): Promise<boolean> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ sync_status: string }>(
-    `SELECT sync_status FROM recipe_items WHERE id = ? LIMIT 1`,
+  const row = await db.getFirstAsync<{ sync_status: string; finished_image_uri: string | null }>(
+    `SELECT sync_status, finished_image_uri FROM recipe_items WHERE id = ? LIMIT 1`,
     [id],
   );
   if (!row) return false;
+  if (isStoredImageUri(row.finished_image_uri)) {
+    await deleteStoredImageByUri(row.finished_image_uri).catch(() => undefined);
+  }
   if (row.sync_status === 'pending_create') {
     await db.runAsync('DELETE FROM recipe_items WHERE id = ?', [id]);
   } else {

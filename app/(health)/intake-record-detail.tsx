@@ -8,8 +8,8 @@ import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/heal
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getDefaultUser } from '@/lib/repositories/users/user';
+import { StoredImage } from '@/components/stored-image';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { useFocusEffect } from "expo-router/react-navigation";
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
@@ -285,11 +285,10 @@ export default function IntakeRecordDetailScreen() {
             <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>摄入附图</Text>
             <View style={[styles.photoCard, { backgroundColor: theme.surface, borderColor: border }]}>
               {intakePhotoUri && !imageLoadError ? (
-                <Image
-                  source={{ uri: intakePhotoUri }}
+                <StoredImage
+                  uri={intakePhotoUri}
                   style={styles.photoImage}
                   contentFit="cover"
-                  transition={200}
                   onError={() => setImageLoadError(true)}
                 />
               ) : (
@@ -312,7 +311,7 @@ export default function IntakeRecordDetailScreen() {
                   </Text>
                   <Text style={[styles.photoPlaceholderSub, { color: theme.textSecondary }]}>
                     {intakePhotoUri && imageLoadError
-                      ? '文件可能已移动或损坏，可删除本条后重新拍照记录'
+                      ? '图片无法加载，可删除本条后重新拍照记录'
                       : 'AI 拍照识别保存的记录会在此展示食物照片；手动与快捷添加通常无附图'}
                   </Text>
                 </View>

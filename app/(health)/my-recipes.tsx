@@ -17,7 +17,7 @@ import {
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatRecipeRelativeTime, getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
+import { StoredImage } from '@/components/stored-image';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -239,7 +239,7 @@ export default function MyRecipesScreen() {
           style={[styles.tile, { width: tileW, backgroundColor: p.card, borderColor: p.border }]}
         >
           {item.finished_image_uri ? (
-            <Image source={{ uri: item.finished_image_uri }} style={styles.tileImage} contentFit="cover" />
+            <StoredImage uri={item.finished_image_uri} style={styles.tileImage} />
           ) : (
             <View style={[styles.tilePlaceholder, { backgroundColor: p.placeholderBg }]}>
               <MaterialIcons name="restaurant" size={32} color={p.accent} />
@@ -348,11 +348,7 @@ export default function MyRecipesScreen() {
                         onPress={() => goView(item.id)}
                         style={[styles.recentCard, { backgroundColor: p.card, borderColor: p.border }]}>
                         {item.finished_image_uri ? (
-                          <Image
-                            source={{ uri: item.finished_image_uri }}
-                            style={styles.recentImage}
-                            contentFit="cover"
-                          />
+                          <StoredImage uri={item.finished_image_uri} style={styles.recentImage} />
                         ) : (
                           <View style={[styles.recentPlaceholder, { backgroundColor: p.placeholderBg }]}>
                             <MaterialIcons name="restaurant" size={22} color={p.accent} />

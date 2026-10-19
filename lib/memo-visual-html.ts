@@ -5,7 +5,7 @@
 import type { CharStyle, MemoEditModel } from '@/lib/memo-format';
 
 /** 编辑模型 → contenteditable 用 HTML（行块视觉 + 行内 strong/em/s） */
-export function memoModelToEditorHtml(model: MemoEditModel): string {
+export function memoModelToEditorHtml(model: MemoEditModel, imageBase = ''): string {
   if (!model.plain) return '';
 
   const lines: { text: string; start: number }[] = [];
@@ -45,6 +45,16 @@ export function memoModelToEditorHtml(model: MemoEditModel): string {
       if (visual.cls === 'h1' || visual.cls === 'h2' || visual.cls === 'h3' || visual.cls === 'quote') {
         return `<div class="line ${visual.cls}">${hiddenPfx}<span class="line-body">${bodyOrZwsp}</span></div>`;
       }
+      if (visual.cls === 'image') {
+        const matched = text.match(/^!\[img\]\(([^)]+)\)/);
+        const uri = (matched?.[1] ?? '').trim();
+        const src =
+          uri.startsWith('/uploads/') && imageBase
+            ? `${imageBase.replace(/\/$/, '')}${uri}`
+            : uri;
+        const imagePfx = `<span class="pfx" hidden>${escapeHtml(text)}</span>`;
+        return `<div class="line image">${imagePfx}<img class="memo-img" alt="" src="${escapeHtml(src)}" /></div>`;
+      }
       // 普通行 / meta：前缀若有则可见（如 ---、```）
       const visiblePfx = prefix ? `<span class="pfx">${escapeHtml(prefix)}</span>` : '';
       return `<div class="line ${visual.cls}">${visiblePfx}${bodyHtml}</div>`;
@@ -68,6 +78,7 @@ function lineVisualClass(line: string): { cls: string; prefixLen: number } {
     const m = rest.match(/^\d+\.\s/)!;
     return { cls: 'ordered', prefixLen: leading.length + m[0].length };
   }
+  if (/^!\[img\]\([^)]+\)\s*$/.test(rest)) return { cls: 'image', prefixLen: line.length };
   if (rest === '---' || rest.startsWith('```')) return { cls: 'meta', prefixLen: 0 };
   return { cls: 'p', prefixLen: 0 };
 }
@@ -180,7 +191,14 @@ export function buildMemoEditorDocument(chrome: EditorChrome): string {
     align-items: flex-start;
     gap: 8px;
   }
-  .line.p, .line.meta { display: block; }
+  .line.p, .line.meta, .line.image { display: block; }
+  .memo-img {
+    display: block;
+    max-width: 100%;
+    max-height: 280px;
+    object-fit: contain;
+    border-radius: 8px;
+  }
   .line.h1 { font-size: 22px; font-weight: 800; line-height: 1.35; }
   .line.h2 { font-size: 19px; font-weight: 800; line-height: 1.4; }
   .line.h3 { font-size: 17px; font-weight: 800; line-height: 1.45; }
@@ -253,6 +271,7 @@ export function buildMemoEditorDocument(chrome: EditorChrome): string {
       var tag = el.tagName.toLowerCase();
       // checkbox / 视觉圆点不进 plain（前缀在隐藏 .pfx 里）
       if (tag === 'input') return;
+      if (tag === 'img') return;
       if (el.classList && el.classList.contains('mark')) return;
       if (tag === 'br') {
         plainParts.push('\\n');

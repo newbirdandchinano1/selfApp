@@ -103,7 +103,10 @@ function isIdLikeField(fieldKey: string): boolean {
 }
 
 function shouldStripUri(value: string, fieldKey: string): boolean {
-  if (!value.trim()) return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  // 统一图片库路径要随业务行同步，不能当成本地文件清掉
+  if (trimmed.startsWith('/uploads/')) return false;
   if (DATA_URI_RE.test(value)) return true;
   if (isLikelyBase64Blob(value)) return true;
   if (STRIP_URI_COLUMNS.has(fieldKey)) return true;

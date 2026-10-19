@@ -23,7 +23,7 @@ const ITEMS: ToolbarItem[] = [
   { action: 'quote', icon: 'format-quote', label: '引用' },
   { action: 'code', icon: 'code', label: '代码块' },
   { action: 'divider', icon: 'horizontal-rule', label: '分割线' },
-  { action: 'image', icon: 'image', label: '图片链接' },
+  { action: 'image', icon: 'image', label: '插入图片' },
   { action: 'indent-in', icon: 'format-indent-increase', label: '增加缩进' },
   { action: 'indent-out', icon: 'format-indent-decrease', label: '减少缩进' },
 ];

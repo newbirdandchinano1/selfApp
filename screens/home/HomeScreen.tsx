@@ -12,7 +12,6 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { Directory, File, Paths } from 'expo-file-system';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -198,27 +197,6 @@ function pickHealthRecordsForYmd(
 }
 
 type HomeHealthReloadResult = { sliceEmpty: boolean };
-
-/** 将拍照/选图的临时 URI 复制到应用目录，便于详情页长期展示 */
-async function copyIntakePhotoToDocuments(recordId: string, sourceUri: string | null | undefined): Promise<string | null> {
-  const uri = sourceUri?.trim();
-  if (!uri) return null;
-  try {
-    const destDir = new Directory(Paths.document, 'intake_photos');
-    if (!destDir.exists) {
-      destDir.create({ intermediates: true });
-    }
-    const src = new File(uri);
-    const destFile = new File(destDir, `${recordId}.jpg`);
-    if (destFile.exists) {
-      destFile.delete();
-    }
-    src.copy(destFile);
-    return destFile.uri;
-  } catch {
-    return null;
-  }
-}
 
 function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
   const formatted = Number(value.toFixed(2)).toString();
@@ -1294,13 +1272,12 @@ export default function HealthScreen() {
       try {
         markPageDirty();
         const id = makeTimestampEntityId('h_', 8);
-        const storedImageUri = await copyIntakePhotoToDocuments(id, sourceImageUri);
         await createHealthRecord({
           id,
           user_id: user.id,
           record_date: ymd,
           quick_add_key: null,
-          source_image_uri: storedImageUri,
+          source_image_uri: sourceImageUri?.trim() || null,
           intake_display_title: clampIntakeDisplayTitle(meta?.displayTitle),
           intake_ai_comment: clampIntakeAiComment(meta?.aiComment),
           hydration: 0,
@@ -1319,7 +1296,8 @@ export default function HealthScreen() {
         setSelectedDayRecords(dayRecords);
         playIntakeFeedbackAnimation();
         return true;
-      } catch {
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后重试。'));
         return false;
       }
     },
@@ -1511,11 +1489,10 @@ export default function HealthScreen() {
             const foodName = d.food_name?.trim() ?? '';
             const displayTitleRaw =
               photoNote.length > 0 ? (foodName.length > 0 ? `${photoNote} · ${foodName}` : photoNote) : foodName;
-            const ok = await persistFoodPhotoIntake(d.protein_g, d.carbohydrate_g, d.calories_kcal, payload.sourceImageUri, {
+            await persistFoodPhotoIntake(d.protein_g, d.carbohydrate_g, d.calories_kcal, payload.sourceImageUri, {
               displayTitle: clampIntakeDisplayTitle(displayTitleRaw) ?? undefined,
               aiComment: d.ai_evaluation?.trim(),
             });
-            if (!ok) toast.error('保存失败，请稍后重试。');
           } catch (e) {
             toast.error(toUserMessage(e, '识别失败，请稍后重试。'));
           } finally {

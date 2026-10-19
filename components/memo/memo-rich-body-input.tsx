@@ -3,6 +3,7 @@ import {
   memoModelToEditorHtml,
   stylesKey,
 } from '@/lib/memo-visual-html';
+import { getApiBaseUrl } from '@/lib/api-config';
 import {
   applyMemoFormatToModel,
   type MemoEditModel,
@@ -80,6 +81,9 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
   ) {
     const webRef = useRef<WebView>(null);
     const readyRef = useRef(false);
+    const imageBaseRef = useRef('');
+    const modelRef = useRef(model);
+    modelRef.current = model;
     const lastPlainRef = useRef(model.plain);
     const lastStylesKeyRef = useRef(stylesKey(model));
     const suppressEchoRef = useRef(false);
@@ -104,7 +108,7 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
 
     const pushHtml = useCallback(
       (next: MemoEditModel, selection?: { start: number; end: number }) => {
-        const html = memoModelToEditorHtml(next);
+        const html = memoModelToEditorHtml(next, imageBaseRef.current);
         const htmlLit = JSON.stringify(html);
         const selLit = selection ? JSON.stringify(selection) : 'null';
         suppressEchoRef.current = true;
@@ -150,6 +154,18 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
     );
 
     useImperativeHandle(ref, () => ({ applyFormat }), [applyFormat]);
+
+    useEffect(() => {
+      let alive = true;
+      void getApiBaseUrl().then((url) => {
+        if (!alive) return;
+        imageBaseRef.current = url.replace(/\/$/, '');
+        if (readyRef.current) pushHtml(modelRef.current);
+      });
+      return () => {
+        alive = false;
+      };
+    }, [pushHtml]);
 
     const onMessage = useCallback(
       (e: WebViewMessageEvent) => {

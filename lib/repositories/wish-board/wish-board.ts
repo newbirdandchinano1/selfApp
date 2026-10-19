@@ -15,6 +15,16 @@ import {
   resetPointsBalance,
 } from '@/lib/repositories/points/points';
 import {
+  assertWishDescriptionParts,
+  parseWishDescription,
+  WISH_DESCRIPTION_TOTAL_MAX,
+} from '@/lib/wish-description';
+import {
+  bindWishDescriptionImages,
+  releaseRemovedWishImages,
+  releaseWishDescriptionImages,
+} from '@/lib/wish-images';
+import {
   assertWishBoardRedeemEligible,
   emptyWishBoardRedeemConditions,
   mergeWishBoardRedeemConditions,
@@ -82,11 +92,19 @@ function assertWishBoardPayload(input: CreateWishBoardItemInput | UpdateWishBoar
   if ('cost_points' in input && input.cost_points != null) {
     assertNonNegativeCostPoints(input.cost_points);
   }
-  if ('description' in input && input.description != null && String(input.description).length > 500) {
-    throw new Error('描述最多 500 字');
+  if ('description' in input && input.description != null) {
+    const raw = String(input.description);
+    if ([...raw].length > WISH_DESCRIPTION_TOTAL_MAX) {
+      throw new Error('描述内容过长');
+    }
+    assertWishDescriptionParts(parseWishDescription(raw));
   }
-  if ('note' in input && input.note != null && String(input.note).length > 500) {
-    throw new Error('描述最多 500 字');
+  if ('note' in input && input.note != null) {
+    const raw = String(input.note);
+    if ([...raw].length > WISH_DESCRIPTION_TOTAL_MAX) {
+      throw new Error('描述内容过长');
+    }
+    assertWishDescriptionParts(parseWishDescription(raw));
   }
   if ('wish_type' in input && input.wish_type != null && input.wish_type !== 'once' && input.wish_type !== 'repeat') {
     throw new Error('心愿类型无效');
@@ -101,8 +119,8 @@ export async function listWishBoardItems(opts?: PageApiReadOpts): Promise<WishBo
     .map(mapWishBoardRow)
     .sort((a, b) => {
       if (a.status !== b.status) return a.status === 'active' ? -1 : 1;
-      // 一次性在前、重复性在后；同类型内保持原 sort_order / updated_at
-      // （可兑换优先在页面层按积分/条件再排）
+      // 基线：一次性在前、重复性在后；同类型内保持 sort_order / updated_at
+      // 页面层再按「能否兑换」整体提前，避免可兑的重复心愿排在兑不了的一次性心愿后面
       if (a.wish_type !== b.wish_type) return a.wish_type === 'once' ? -1 : 1;
       return a.sort_order - b.sort_order || b.updated_at.localeCompare(a.updated_at);
     });
@@ -286,6 +304,7 @@ export async function createWishBoardItem(input: CreateWishBoardItemInput): Prom
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, ?, datetime('now'), datetime('now'), 'pending_create', ?)`,
     [id, title, description, description, iconKey, wishType, cost, sortOrder, extraData],
   );
+  await bindWishDescriptionImages(id, description);
   return id;
 }
 
@@ -347,11 +366,16 @@ export async function updateWishBoardItem(id: string, input: UpdateWishBoardItem
       id,
     ],
   );
+  if (input.description !== undefined || input.note !== undefined) {
+    await releaseRemovedWishImages(mapped.description, description);
+    await bindWishDescriptionImages(id, description);
+  }
 }
 
 export async function deleteWishBoardItem(id: string): Promise<void> {
   const wishId = id.trim();
   if (!wishId) throw new Error('缺少心愿 id');
+  const existing = await getWishBoardItemById(wishId);
   await ensureLocalRowForWrite('wish_board_items', wishId);
 
   const { appWishBoardDeleteItem } = await import('@/lib/api-app-domain');
@@ -366,6 +390,9 @@ export async function deleteWishBoardItem(id: string): Promise<void> {
     await db.runAsync(`DELETE FROM wish_board_items WHERE id = ?`, [wishId]);
   } finally {
     endCloudSqliteDirtyIgnoreBatch();
+  }
+  if (existing?.description) {
+    await releaseWishDescriptionImages(existing.description);
   }
 }
 

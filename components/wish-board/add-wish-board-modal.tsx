@@ -1,4 +1,5 @@
 import { AppButton, AppInput } from '@/components/ui';
+import { WishBoardDescriptionField } from '@/components/wish-board/wish-board-description-field';
 import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
 import { Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -20,8 +21,9 @@ import { toast, toUserMessage } from '@/lib/app-feedback';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
 import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
 import { assertNonNegativeCostPoints } from '@/lib/reward-points';
+import { forgetUnusedWishUploads } from '@/lib/wish-images';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -57,6 +59,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
   const [bindLoading, setBindLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const uploadedUrisRef = useRef<string[]>([]);
 
   useEffect(() => {
     if (!visible) return;
@@ -67,6 +70,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     setWishType('once');
     setRedeemConditions(emptyWishBoardRedeemConditions());
     setSaving(false);
+    uploadedUrisRef.current = [];
 
     let cancelled = false;
     setBindLoading(true);
@@ -96,6 +100,18 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     };
   }, [visible]);
 
+  const discardUnusedUploads = () => {
+    const uris = uploadedUrisRef.current;
+    uploadedUrisRef.current = [];
+    if (uris.length === 0) return;
+    void forgetUnusedWishUploads(uris, null);
+  };
+
+  const handleClose = () => {
+    discardUnusedUploads();
+    onClose();
+  };
+
   const onSubmit = async () => {
     let cost: number;
     try {
@@ -110,14 +126,17 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     }
     setSaving(true);
     try {
+      const nextDescription = description.trim() || null;
       await createWishBoardItem({
         title: title.trim(),
-        description: description.trim() || null,
+        description: nextDescription,
         icon_key: iconKey,
         wish_type: wishType,
         cost_points: cost,
         redeem_conditions: redeemConditions,
       });
+      await forgetUnusedWishUploads(uploadedUrisRef.current, nextDescription);
+      uploadedUrisRef.current = [];
       onClose();
       onCreated?.();
       toast.success('已添加');
@@ -134,11 +153,11 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   const selectedBorder = colors.primary;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <Pressable style={styles.backdrop} onPress={onClose} />
+        <Pressable style={styles.backdrop} onPress={handleClose} />
         <View
           style={[
             styles.sheet,
@@ -150,7 +169,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
           ]}>
           <View style={styles.sheetHead}>
             <Text style={[styles.sheetTitle, { color: colors.text }]}>添加心愿</Text>
-            <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="关闭">
+            <Pressable onPress={handleClose} hitSlop={10} accessibilityLabel="关闭">
               <MaterialIcons name="close" size={22} color={muted} />
             </Pressable>
           </View>
@@ -167,14 +186,17 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
               maxLength={80}
             />
 
-            <AppInput
-              label="描述（可选）"
+            <WishBoardDescriptionField
               value={description}
-              onChangeText={setDescription}
-              placeholder="补充说明或兑换规则"
-              multiline
-              maxLength={500}
-              inputStyle={{ minHeight: 72, textAlignVertical: 'top' }}
+              onChange={setDescription}
+              onUploadedUri={(uri) => {
+                uploadedUrisRef.current.push(uri);
+              }}
+              textColor={colors.text}
+              mutedColor={muted}
+              outline={outline}
+              primary={colors.primary}
+              surfaceSubtle={colors.surfaceSubtle}
             />
 
             <Text style={[styles.fieldLabel, { color: muted }]}>图标</Text>
