@@ -1,4 +1,4 @@
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import React from 'react';
 import { Animated, Easing } from 'react-native';
 
@@ -28,7 +28,7 @@ export function useHomeSkeletonReveal(
   options: UseHomeSkeletonRevealOptions = {},
 ): HomeSkeletonReveal {
   const { fadeContent = true } = options;
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const [skeletonMounted, setSkeletonMounted] = React.useState(true);
   const startedRef = React.useRef(false);
   const skeletonOpacity = React.useRef(new Animated.Value(1)).current;
@@ -39,19 +39,36 @@ export function useHomeSkeletonReveal(
       startedRef.current = false;
       return;
     }
-    if (startedRef.current) return;
-    startedRef.current = true;
 
-    setSkeletonMounted(true);
-    skeletonOpacity.setValue(1);
-    if (fadeContent) contentOpacity.setValue(0);
-
-    if (reduceMotion) {
+    const snapRevealed = () => {
+      skeletonOpacity.stopAnimation();
+      contentOpacity.stopAnimation();
       skeletonOpacity.setValue(0);
       if (fadeContent) contentOpacity.setValue(1);
       setSkeletonMounted(false);
+    };
+
+    /**
+     * 偏好未就绪：内容可见性优先，不能等系统偏好才揭示，否则首屏会卡空。
+     * 这里直接揭示并标记 started，等偏好返回后不再补播，避免「先播再停」。
+     */
+    if (!motionReady) {
+      startedRef.current = true;
+      snapRevealed();
       return;
     }
+
+    if (reduceMotion) {
+      startedRef.current = true;
+      snapRevealed();
+      return;
+    }
+    if (startedRef.current) return;
+
+    startedRef.current = true;
+    setSkeletonMounted(true);
+    skeletonOpacity.setValue(1);
+    if (fadeContent) contentOpacity.setValue(0);
 
     const anims: Animated.CompositeAnimation[] = [
       Animated.timing(skeletonOpacity, {
@@ -72,10 +89,14 @@ export function useHomeSkeletonReveal(
       );
     }
 
-    Animated.parallel(anims).start(({ finished }) => {
+    const reveal = Animated.parallel(anims);
+    reveal.start(({ finished }) => {
       if (finished) setSkeletonMounted(false);
     });
-  }, [contentOpacity, fadeContent, initialLoadPending, reduceMotion, skeletonOpacity]);
+    return () => {
+      reveal.stop();
+    };
+  }, [contentOpacity, fadeContent, initialLoadPending, motionReady, reduceMotion, skeletonOpacity]);
 
   return {
     skeletonMounted,

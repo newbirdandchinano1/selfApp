@@ -46,6 +46,7 @@ export default function MyRecipesScreen() {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const p = getRecipePalette(colorScheme);
+  const pageBg = p.isDark ? p.bg : '#ffffff';
   const screenW = Dimensions.get('window').width;
   const tileW = (screenW - PAGE_PAD * 2 - GRID_GAP) / 2;
 
@@ -272,7 +273,7 @@ export default function MyRecipesScreen() {
     <View
       style={[
         styles.topBarWrap,
-        { paddingTop: insets.top, backgroundColor: p.header, borderBottomColor: p.border },
+        { paddingTop: insets.top, backgroundColor: pageBg, borderBottomColor: p.border },
       ]}>
       <View style={styles.topBar}>
         <Pressable
@@ -310,7 +311,7 @@ export default function MyRecipesScreen() {
         header={recipeHeader}
         loading={loading}
         loadingHint="加载菜谱…"
-        style={{ backgroundColor: p.bg }}>
+        style={{ backgroundColor: pageBg }}>
         <ScrollView
           style={styles.list}
           refreshControl={refreshControl}

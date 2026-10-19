@@ -1,3 +1,4 @@
+import { Radius } from '@/constants/design-tokens';
 import type { MemoFormatAction } from '@/lib/memo-format';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
@@ -33,15 +34,18 @@ type Props = {
   primary: string;
   borderColor: string;
   backgroundColor: string;
+  pressedBackgroundColor: string;
 };
 
 function ToolbarBtn({
   item,
   primary,
+  pressedBackgroundColor,
   onAction,
 }: {
   item: ToolbarItem;
   primary: string;
+  pressedBackgroundColor: string;
   onAction: (action: MemoFormatAction) => void;
 }) {
   return (
@@ -50,7 +54,14 @@ function ToolbarBtn({
       onPressIn={() => onAction(item.action)}
       accessibilityRole="button"
       accessibilityLabel={item.label}
-      style={({ pressed }) => [styles.btn, { opacity: pressed ? 0.65 : 1 }]}>
+      hitSlop={{ top: 2, bottom: 2, left: 2, right: 2 }}
+      style={({ pressed }) => [
+        styles.btn,
+        {
+          opacity: pressed ? 0.85 : 1,
+          backgroundColor: pressed ? pressedBackgroundColor : 'transparent',
+        },
+      ]}>
       {item.textLabel ? (
         <Text style={[styles.textBtn, { color: primary }]}>{item.textLabel}</Text>
       ) : item.icon ? (
@@ -61,7 +72,13 @@ function ToolbarBtn({
 }
 
 /** 固定两行：前一半 / 后一半 */
-export function MemoFormatToolbar({ onAction, primary, borderColor, backgroundColor }: Props) {
+export function MemoFormatToolbar({
+  onAction,
+  primary,
+  borderColor,
+  backgroundColor,
+  pressedBackgroundColor,
+}: Props) {
   const [row1, row2] = useMemo(() => {
     const mid = Math.ceil(ITEMS.length / 2);
     return [ITEMS.slice(0, mid), ITEMS.slice(mid)] as const;
@@ -71,12 +88,24 @@ export function MemoFormatToolbar({ onAction, primary, borderColor, backgroundCo
     <View style={[styles.wrap, { borderColor, backgroundColor }]}>
       <View style={styles.row}>
         {row1.map(item => (
-          <ToolbarBtn key={item.action} item={item} primary={primary} onAction={onAction} />
+          <ToolbarBtn
+            key={item.action}
+            item={item}
+            primary={primary}
+            pressedBackgroundColor={pressedBackgroundColor}
+            onAction={onAction}
+          />
         ))}
       </View>
       <View style={styles.row}>
         {row2.map(item => (
-          <ToolbarBtn key={item.action} item={item} primary={primary} onAction={onAction} />
+          <ToolbarBtn
+            key={item.action}
+            item={item}
+            primary={primary}
+            pressedBackgroundColor={pressedBackgroundColor}
+            onAction={onAction}
+          />
         ))}
       </View>
     </View>
@@ -85,8 +114,8 @@ export function MemoFormatToolbar({ onAction, primary, borderColor, backgroundCo
 
 const styles = StyleSheet.create({
   wrap: {
-    borderWidth: 1,
-    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.md,
     marginBottom: 8,
     paddingHorizontal: 4,
     paddingVertical: 4,

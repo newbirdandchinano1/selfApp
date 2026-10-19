@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import type { InitialSyncProgress } from '@/lib/api-initial-sync';
 import { hideNativeSplashWithRetry } from '@/lib/splash-hide';
 
@@ -64,8 +65,7 @@ export function AppSplashScreen({
 
   const nativeHiddenRef = useRef(false);
   const shellOpacity = useRef(new Animated.Value(1)).current;
-  const titleOpacity = useRef(new Animated.Value(1)).current;
-  const titleTranslateY = useRef(new Animated.Value(0)).current;
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
 
   const hideNativeSplash = () => {
     // 允许多次触发：iPad 生产包上单次 hideAsync 常无效，需重试
@@ -86,7 +86,15 @@ export function AppSplashScreen({
     const wait = Math.max(0, MIN_SPLASH_MS - elapsed);
 
     const timer = setTimeout(() => {
+      if (!motionReady || hasFinishedRef.current) return;
       hasFinishedRef.current = true;
+      hideNativeSplash();
+      if (reduceMotion) {
+        shellOpacity.setValue(0);
+        setVisible(false);
+        onFinish();
+        return;
+      }
       Animated.timing(shellOpacity, {
         toValue: 0,
         duration: FADE_OUT_MS,
@@ -100,7 +108,7 @@ export function AppSplashScreen({
     }, wait);
 
     return () => clearTimeout(timer);
-  }, [exitReady, onFinish, shellOpacity]);
+  }, [exitReady, motionReady, onFinish, reduceMotion, shellOpacity]);
 
   if (!visible) return null;
 
@@ -121,19 +129,17 @@ export function AppSplashScreen({
         />
       </View>
 
-      <Animated.View
+      <View
         style={[
           styles.footer,
           {
             paddingBottom: Math.max(insets.bottom, 28),
-            opacity: titleOpacity,
-            transform: [{ translateY: titleTranslateY }],
           },
         ]}
       >
         <Text style={styles.appName}>小郑的自我修养</Text>
         {syncStatusText ? <Text style={styles.syncStatus}>{syncStatusText}</Text> : null}
-      </Animated.View>
+      </View>
 
       {dbError ? (
         <View

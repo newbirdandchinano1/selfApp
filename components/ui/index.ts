@@ -6,7 +6,9 @@ export { PullRefreshScrollView, type PullRefreshScrollViewProps } from '../pull-
 export { AppButton, type AppButtonProps, type AppButtonSize, type AppButtonVariant } from './app-button';
 export { AppCard, type AppCardProps, type AppCardVariant } from './app-card';
 export { AppIcon, type AppIconName, type AppIconProps } from './app-icon';
+export { InsetGroup, ListRow, SectionHeader, type ListRowProps } from './grouped-list';
 export { AppIconButton, type AppIconButtonProps } from './app-icon-button';
+export { MotionPressable, type MotionPressableProps } from './motion-pressable';
 export { AppInput, type AppInputProps } from './app-input';
 export { AppScreen, type AppScreenProps } from './app-screen';
 export { AppText, type AppTextProps } from './app-text';

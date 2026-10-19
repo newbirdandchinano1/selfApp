@@ -33,6 +33,8 @@ type Props = {
   backgroundColor?: string;
   containerStyle?: StyleProp<ViewStyle>;
   minHeight?: number;
+  /** 铺满剩余高度，高度跟着键盘上方的可见区域走，不再按内容把 WebView 撑高。 */
+  fill?: boolean;
 };
 
 export type MemoRichBodyInputHandle = {
@@ -76,6 +78,7 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
       backgroundColor = 'transparent',
       containerStyle,
       minHeight = 280,
+      fill = false,
     },
     ref,
   ) {
@@ -102,8 +105,9 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
           caretColor,
           backgroundColor,
           placeholder,
+          fitViewport: fill,
         }),
-      [backgroundColor, caretColor, placeholder, placeholderColor, textColor],
+      [backgroundColor, caretColor, fill, placeholder, placeholderColor, textColor],
     );
 
     const pushHtml = useCallback(
@@ -182,6 +186,7 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
           return;
         }
         if (msg.type === 'height') {
+          if (fill) return;
           setHeight(Math.max(minHeight, Math.ceil(msg.height)));
           return;
         }
@@ -220,7 +225,7 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
           });
         }
       },
-      [minHeight, model, onChangeModel, onNeedSelection, onSelectionChange, pushHtml],
+      [fill, minHeight, model, onChangeModel, onNeedSelection, onSelectionChange, pushHtml],
     );
 
     // 外部加载/同步模型时刷 DOM（跳过编辑器自己 emit 的回声）
@@ -234,14 +239,15 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
     }, [model, pushHtml]);
 
     return (
-      <View style={[styles.wrap, { minHeight }, containerStyle]}>
+      <View style={[styles.wrap, fill ? styles.fill : { minHeight }, containerStyle]}>
         <WebView
           ref={webRef}
           originWhitelist={['*']}
           source={{ html: documentHtml }}
           onMessage={onMessage}
-          style={[styles.web, { height: Math.max(minHeight, height) }]}
+          style={[styles.web, fill ? StyleSheet.absoluteFill : { height: Math.max(minHeight, height) }]}
           scrollEnabled={false}
+          nestedScrollEnabled={false}
           keyboardDisplayRequiresUserAction={false}
           hideKeyboardAccessoryView
           allowsInlineMediaPlayback
@@ -259,6 +265,10 @@ export const MemoRichBodyInput = forwardRef<MemoRichBodyInputHandle, Props>(
 const styles = StyleSheet.create({
   wrap: {
     overflow: 'hidden',
+  },
+  fill: {
+    flex: 1,
+    minHeight: 0,
   },
   web: {
     backgroundColor: 'transparent',

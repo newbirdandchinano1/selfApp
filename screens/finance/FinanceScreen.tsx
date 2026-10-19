@@ -11,6 +11,7 @@ import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
@@ -526,6 +527,7 @@ export default function FinanceScreen() {
   const markPageDirty = resetSync;
   /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
   const [initialFinanceLoadPending, setInitialFinanceLoadPending] = React.useState(true);
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const financeContentRevealDoneRef = React.useRef(false);
   const {
     showSkeleton: showFinanceSkeleton,
@@ -676,32 +678,53 @@ export default function FinanceScreen() {
   const revealAnim = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
-    Animated.timing(baseBottomAnim, {
+    if (!motionReady || reduceMotion) {
+      baseBottomAnim.stopAnimation();
+      baseBottomAnim.setValue(collapsedBottom);
+      return;
+    }
+    const move = Animated.timing(baseBottomAnim, {
       toValue: collapsedBottom,
       duration: 180,
       easing: Easing.out(Easing.quad),
       useNativeDriver: false,
-    }).start();
-  }, [baseBottomAnim, collapsedBottom, insets.bottom]);
+    });
+    move.start();
+    return () => move.stop();
+  }, [baseBottomAnim, collapsedBottom, insets.bottom, motionReady, reduceMotion]);
 
   React.useEffect(() => {
     if (initialFinanceLoadPending) return;
 
+    const snapReveal = () => {
+      revealAnim.stopAnimation();
+      revealAnim.setValue(1);
+      financeContentOpacity.setValue(1);
+    };
+
+    // 减少动态或偏好未就绪：直接到终态，不播位移淡入
+    if (!motionReady || reduceMotion) {
+      snapReveal();
+      return;
+    }
+
     if (!financeContentRevealDoneRef.current) {
       financeContentRevealDoneRef.current = true;
-      revealAnim.setValue(1);
+      snapReveal();
       return;
     }
 
     revealAnim.setValue(0);
     financeContentOpacity.setValue(1);
-    Animated.timing(revealAnim, {
+    const reveal = Animated.timing(revealAnim, {
       toValue: 1,
       duration: 460,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
-    }).start();
-  }, [financeContentOpacity, initialFinanceLoadPending, revealAnim]);
+    });
+    reveal.start();
+    return () => reveal.stop();
+  }, [financeContentOpacity, initialFinanceLoadPending, motionReady, reduceMotion, revealAnim]);
 
   const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {
     try {

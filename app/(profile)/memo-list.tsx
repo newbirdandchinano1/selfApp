@@ -1,6 +1,16 @@
 import { CrudListScreen, ScreenEmptyState } from '@/components/crud';
-import { AppIconButton } from '@/components/ui';
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { MemoCenterSheet, useMemoCenterSheetClose } from '@/components/memo/memo-center-sheet';
+import { MemoFilterDrawer } from '@/components/memo/memo-filter-drawer';
+import { MemoListRow } from '@/components/memo/memo-list-row';
+import { memoWallTone } from '@/components/memo/memo-wall';
+import { MemoListSkeleton } from '@/components/memo/memo-list-skeleton';
+import {
+  useMemoListLayout,
+  useResetMemoEnteredOnUnmount,
+} from '@/components/memo/use-memo-list-motion';
+import { AppButton, AppIconButton, MotionPressable } from '@/components/ui';
+import { Spacing } from '@/constants/design-tokens';
+import { MemoRadius, MemoText } from '@/constants/memo-ui';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
 import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
@@ -8,7 +18,6 @@ import {
   deleteMemo,
   listMemos,
   memoContextForAiReview,
-  memoListPreviewBody,
   memoListPreviewTitle,
   memoMatchesSearch,
   runMemoAiReviewOnServer,
@@ -23,9 +32,11 @@ import {
   addMemoAiReviewSavedListener,
 } from '@/lib/memo-ai-background';
 import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
+import { plainTextFromBody } from '@/lib/memo-richdoc/plain-text';
 import { getMemoTags, getTagsByEntityIds, normalizeTagDomain } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { toast, toUserMessage } from '@/lib/app-feedback';
@@ -33,33 +44,50 @@ import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
-  Modal,
-  Pressable,
-  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  type ListRenderItemInfo,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const MEMO_LIST_PAGE_KEY = 'memo-list';
 const TAG_FILTER_ALL = '__all__';
 const TAG_FILTER_NONE = '__none__';
-
 const SORT_OPTIONS: { id: MemoSortMode; label: string }[] = [
   { id: 'updated', label: '最近更新' },
   { id: 'created', label: '最近创建' },
   { id: 'title', label: '标题' },
 ];
 
-type ListRow =
-  | { kind: 'section'; key: string; label: string }
-  | { kind: 'memo'; key: string; item: MemoItem };
+type ListRow = { kind: 'board'; key: string; left: MemoItem[]; right: MemoItem[] };
+
+/** 按正文长短估算便利贴高度，短的一列继续接下一张，形成瀑布流。 */
+function estimateStickyHeight(item: MemoItem): number {
+  const text = plainTextFromBody(item.body).trim();
+  const lines = Math.min(6, Math.max(1, Math.ceil(Math.min(text.length, 140) / 16)));
+  return 120 + lines * 20;
+}
+
+function splitStickyColumns(items: MemoItem[]): { left: MemoItem[]; right: MemoItem[] } {
+  const left: MemoItem[] = [];
+  const right: MemoItem[] = [];
+  let leftHeight = 0;
+  let rightHeight = 0;
+  for (const item of items) {
+    const height = estimateStickyHeight(item);
+    if (leftHeight <= rightHeight) {
+      left.push(item);
+      leftHeight += height;
+    } else {
+      right.push(item);
+      rightHeight += height;
+    }
+  }
+  return { left, right };
+}
 
 function dayKey(iso: string): string {
   const d = new Date(iso);
@@ -67,41 +95,28 @@ function dayKey(iso: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function sectionLabelForDay(ymd: string, now = new Date()): string {
-  if (ymd === 'unknown') return '未知日期';
+function buildMasonryRows(items: MemoItem[], sortMode: MemoSortMode): ListRow[] {
+  const sorted = sortMemos(items, sortMode);
+  if (sorted.length === 0) return [];
+  const { left, right } = splitStickyColumns(sorted);
+  return [{ kind: 'board', key: 'board-all', left, right }];
+}
+
+/** 日期写在便利贴上，列表不再按天分组。 */
+function timeInside(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const clock = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const ymd = dayKey(iso);
+  if (ymd === 'unknown') return clock;
   const today = dayKey(now.toISOString());
   const yest = new Date(now);
   yest.setDate(yest.getDate() - 1);
   const yesterday = dayKey(yest.toISOString());
-  if (ymd === today) return '今天';
-  if (ymd === yesterday) return '昨天';
-  const [y, m, d] = ymd.split('-');
-  return `${Number(y)}年${Number(m)}月${Number(d)}日`;
-}
-
-function buildTimelineRows(items: MemoItem[], sortMode: MemoSortMode): ListRow[] {
-  const sorted = sortMemos(items, sortMode);
-  if (sortMode === 'title') {
-    return sorted.map(item => ({ kind: 'memo' as const, key: item.id, item }));
-  }
-  const out: ListRow[] = [];
-  let lastSection = '';
-  for (const item of sorted) {
-    const iso = sortMode === 'created' ? item.created_at : item.updated_at;
-    const ymd = dayKey(iso);
-    if (ymd !== lastSection) {
-      lastSection = ymd;
-      out.push({ kind: 'section', key: `s-${ymd}`, label: sectionLabelForDay(ymd) });
-    }
-    out.push({ kind: 'memo', key: item.id, item });
-  }
-  return out;
-}
-
-function timeShort(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  if (ymd === today) return `今天 ${clock}`;
+  if (ymd === yesterday) return `昨天 ${clock}`;
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ${clock}`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${clock}`;
 }
 
 export default function MemoListScreen() {
@@ -109,15 +124,12 @@ export default function MemoListScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
 
-  const paper = colors.background;
+  const wall = useMemo(() => memoWallTone(isDark), [isDark]);
   const ink = colors.text;
   const muted = colors.textSecondary;
-  const line = isDark ? 'rgba(148,163,184,0.22)' : colors.outlineStrong;
-  const chipBg = isDark ? colors.surfaceMuted : colors.surface;
-  const searchBg = isDark ? colors.input : colors.surface;
+  const line = colors.outline;
   const primary = colors.primary;
   const secondary = colors.secondary;
-  const danger = colors.danger;
 
   const zhipuReady = isActiveAiLlmConfigured();
 
@@ -135,9 +147,27 @@ export default function MemoListScreen() {
   const [aiModalLoading, setAiModalLoading] = useState(false);
   const [convertingMemoId, setConvertingMemoId] = useState<string | null>(null);
   const [pendingAnalysisIds, setPendingAnalysisIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [actionRow, setActionRow] = useState<MemoItem | null>(null);
 
-  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+  const listRef = useRef<FlatList<ListRow>>(null);
+  const convertingLockRef = useRef<string | null>(null);
+  const prevIdsRef = useRef<Set<string> | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollYRef = useRef(0);
+  const sortModeRef = useRef(sortMode);
+  const searchRef = useRef(search);
+  const tagFilterRef = useRef(tagFilter);
+  sortModeRef.current = sortMode;
+  searchRef.current = search;
+  tagFilterRef.current = tagFilter;
+  /** 本页生命周期内，每个标签只展开一次。离开页面后由卸载清理。 */
+  const playedTagFiltersRef = useRef<Set<string>>(new Set());
+  const [expandToken, setExpandToken] = useState(0);
   const { wrapLoad, resetSync } = usePageApiSync(MEMO_LIST_PAGE_KEY);
+  const { withLayout } = useMemoListLayout();
+
+  useResetMemoEnteredOnUnmount();
 
   useEffect(() => addMemoAiPendingAnalysisListener(setPendingAnalysisIds), []);
   useEffect(() => {
@@ -150,6 +180,38 @@ export default function MemoListScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
+
+  const armHighlight = useCallback((id: string) => {
+    setHighlightId(id);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      setHighlightId(current => (current === id ? null : current));
+    }, 600);
+  }, []);
+
+  /** 新笔记排进当前列表前 3 条、且用户不在顶部时，才滚回去看高亮。 */
+  const scrollToNewMemoIfNeeded = useCallback((memos: MemoItem[], freshId: string, tags: Map<string, TagRow[]>) => {
+    let pool = memos.filter(m => memoMatchesSearch(m, searchRef.current));
+    const filter = tagFilterRef.current;
+    if (filter === TAG_FILTER_NONE) {
+      pool = pool.filter(m => !(tags.get(m.id)?.length));
+    } else if (filter !== TAG_FILTER_ALL) {
+      pool = pool.filter(m => (tags.get(m.id) ?? []).some(t => t.id === filter));
+    }
+    const sorted = sortMemos(pool, sortModeRef.current);
+    const rank = sorted.findIndex(m => m.id === freshId);
+    if (rank < 0 || rank >= 3) return;
+    if (scrollYRef.current <= 48) return;
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    });
+  }, []);
+
   const reload = useCallback(
     async (forceRefresh = false) => {
       setError(null);
@@ -157,6 +219,8 @@ export default function MemoListScreen() {
         await wrapLoad(async () => {
           await fetchProfileMemoList({ serverFallback: true });
           const [memos, tags] = await Promise.all([listMemos(), getMemoTags()]);
+          const prevIds = prevIdsRef.current;
+          prevIdsRef.current = new Set(memos.map(m => m.id));
           setItems(memos);
           setAllTags(tags);
           const map = await getTagsByEntityIds(
@@ -164,6 +228,23 @@ export default function MemoListScreen() {
             memos.map(m => m.id),
           );
           setTagsByMemoId(map);
+
+          // 首次加载没有「上一份」，不高亮全部。高亮 id 独立于这次 setItems。
+          if (prevIds) {
+            const fresh = memos.find(m => !prevIds.has(m.id));
+            if (fresh) {
+              armHighlight(fresh.id);
+              scrollToNewMemoIfNeeded(memos, fresh.id, map);
+            } else {
+              setHighlightId(current => {
+                if (current && !memos.some(m => m.id === current)) {
+                  if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+                  return null;
+                }
+                return current;
+              });
+            }
+          }
         }, forceRefresh);
       } catch {
         setError('加载失败，请重试');
@@ -174,10 +255,10 @@ export default function MemoListScreen() {
         setLoading(false);
       }
     },
-    [wrapLoad],
+    [armHighlight, scrollToNewMemoIfNeeded, wrapLoad],
   );
 
-  const { refreshControl } = usePagePullRefresh(MEMO_LIST_PAGE_KEY, reload);
+  const { refreshing, onRefresh } = usePagePullRefresh(MEMO_LIST_PAGE_KEY, reload);
   usePageFocusReload(MEMO_LIST_PAGE_KEY, reload);
 
   const aiModalItem = useMemo(
@@ -196,9 +277,18 @@ export default function MemoListScreen() {
   }, [items, search, tagFilter, tagsByMemoId]);
 
   const listRows = useMemo(
-    () => buildTimelineRows(filteredItems, sortMode),
+    () => buildMasonryRows(filteredItems, sortMode),
     [filteredItems, sortMode],
   );
+
+  // 首次打开，或第一次切到某个还没展开过的标签，且当前有便利贴时播一轮展开。
+  // 放在 effect 里，避免渲染期间 setState 把页面打成死循环。
+  useEffect(() => {
+    if (loading || filteredItems.length === 0) return;
+    if (playedTagFiltersRef.current.has(tagFilter)) return;
+    playedTagFiltersRef.current.add(tagFilter);
+    setExpandToken(token => token + 1);
+  }, [filteredItems.length, loading, tagFilter]);
 
   const usedTags = useMemo(() => {
     const byId = new Map<string, TagRow>();
@@ -269,16 +359,19 @@ export default function MemoListScreen() {
     [zhipuReady],
   );
 
+  const aiRunLock = useRef(false);
   const onModalRegenerate = useCallback(async () => {
-    if (!aiModalItem) return;
+    if (!aiModalItem || aiModalLoading || aiRunLock.current) return;
+    aiRunLock.current = true;
     setAiModalLoading(true);
     try {
       const res = await runAiForMemo(aiModalItem);
       if (!res.ok) toast.error(res.error);
     } finally {
+      aiRunLock.current = false;
       setAiModalLoading(false);
     }
-  }, [aiModalItem, runAiForMemo]);
+  }, [aiModalItem, aiModalLoading, runAiForMemo]);
 
   const togglePin = useCallback(async (row: MemoItem) => {
     const next = !row.is_pinned;
@@ -288,19 +381,25 @@ export default function MemoListScreen() {
         toast.error('该备忘可能已删除');
         return;
       }
-      setItems(prev => prev.map(m => (m.id === row.id ? { ...m, is_pinned: next || undefined } : m)));
+      withLayout(() => {
+        setItems(prev => prev.map(m => (m.id === updated.id ? updated : m)));
+      });
     } catch (e) {
       toast.error(toUserMessage(e, '操作失败，请稍后重试'));
     }
-  }, []);
+  }, [withLayout]);
 
   const performConvertToTodo = useCallback(
     async (row: MemoItem) => {
+      if (convertingLockRef.current) return;
+      convertingLockRef.current = row.id;
       setConvertingMemoId(row.id);
       try {
         const { taskId, title } = await createStandaloneTodoFromMemo(row);
-        setItems(prev => prev.filter(m => m.id !== row.id));
-        delete swipeableRefs.current[row.id];
+        withLayout(() => {
+          setItems(prev => prev.filter(m => m.id !== row.id));
+        });
+        setHighlightId(current => (current === row.id ? null : current));
         setAiModalId(prevId => (prevId === row.id ? null : prevId));
         Alert.alert('已转为待办', `「${title}」已加入待办列表，原备忘已删除。`, [
           { text: '知道了', style: 'cancel' },
@@ -309,19 +408,24 @@ export default function MemoListScreen() {
       } catch (e) {
         toast.error(toUserMessage(e, '转换失败，请稍后重试'));
       } finally {
+        if (convertingLockRef.current === row.id) convertingLockRef.current = null;
         setConvertingMemoId(prev => (prev === row.id ? null : prev));
       }
     },
-    [router],
+    [router, withLayout],
   );
 
   const performConvertToProject = useCallback(
     async (row: MemoItem) => {
+      if (convertingLockRef.current) return;
+      convertingLockRef.current = row.id;
       setConvertingMemoId(row.id);
       try {
         const { projectId, name } = await createProjectFromMemoInInbox(row);
-        setItems(prev => prev.filter(m => m.id !== row.id));
-        delete swipeableRefs.current[row.id];
+        withLayout(() => {
+          setItems(prev => prev.filter(m => m.id !== row.id));
+        });
+        setHighlightId(current => (current === row.id ? null : current));
         setAiModalId(prevId => (prevId === row.id ? null : prevId));
         Alert.alert('已转为项目', `「${name}」已加入收集箱，原备忘已删除。`, [
           { text: '知道了', style: 'cancel' },
@@ -337,14 +441,16 @@ export default function MemoListScreen() {
           toast.error(toUserMessage(e, '转换失败，请稍后重试'));
         }
       } finally {
+        if (convertingLockRef.current === row.id) convertingLockRef.current = null;
         setConvertingMemoId(prev => (prev === row.id ? null : prev));
       }
     },
-    [router],
+    [router, withLayout],
   );
 
   const onDeleteMemo = useCallback((row: MemoItem) => {
     const title = memoListPreviewTitle(row);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     Alert.alert('删除备忘', `确定删除「${title}」？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -354,7 +460,10 @@ export default function MemoListScreen() {
           void (async () => {
             try {
               await deleteMemo(row.id);
-              setItems(prev => prev.filter(i => i.id !== row.id));
+              withLayout(() => {
+                setItems(prev => prev.filter(i => i.id !== row.id));
+              });
+              setHighlightId(current => (current === row.id ? null : current));
               setAiModalId(prevId => (prevId === row.id ? null : prevId));
               toast.success('已删除');
             } catch (e) {
@@ -364,265 +473,79 @@ export default function MemoListScreen() {
         },
       },
     ]);
-  }, []);
+  }, [withLayout]);
 
   const openNewMemo = useCallback(() => {
     router.push({ pathname: '/memo-edit/[id]', params: { id: 'new' } });
   }, [router]);
 
-  const openRowActions = useCallback(
+  const openRowActions = useCallback((row: MemoItem) => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setActionRow(row);
+  }, []);
+
+  const openRow = useCallback(
     (row: MemoItem) => {
-      Alert.alert(memoListPreviewTitle(row), undefined, [
-        {
-          text: row.is_pinned ? '取消置顶' : '置顶',
-          onPress: () => void togglePin(row),
-        },
-        { text: 'AI 分析', onPress: () => openAiModal(row) },
-        { text: '编辑', onPress: () => router.push({ pathname: '/memo-edit/[id]', params: { id: row.id } }) },
-        { text: '删除', style: 'destructive', onPress: () => onDeleteMemo(row) },
-        { text: '取消', style: 'cancel' },
-      ]);
+      router.push({ pathname: '/memo-view/[id]', params: { id: row.id } });
     },
-    [onDeleteMemo, openAiModal, router, togglePin],
+    [router],
   );
 
-  const renderListHeader = useMemo(
-    () => (
-      <View style={styles.toolbar}>
-        <View style={[styles.searchWrap, { backgroundColor: searchBg, borderColor: line }]}>
-          <MaterialIcons name="search" size={18} color={muted} />
-          <TextInput
-            value={search}
-            onChangeText={setSearch}
-            placeholder="搜索标题或正文"
-            placeholderTextColor={muted}
-            style={[styles.searchInput, { color: ink }]}
-            returnKeyType="search"
-          />
-          {search ? (
-            <Pressable onPress={() => setSearch('')} hitSlop={8}>
-              <MaterialIcons name="close" size={18} color={muted} />
-            </Pressable>
-          ) : null}
-        </View>
+  const applyTagFilter = useCallback(
+    (next: string) => {
+      withLayout(() => setTagFilter(next));
+    },
+    [withLayout],
+  );
 
-        <View style={styles.filterRow}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            <Pressable
-              onPress={() => setTagFilter(TAG_FILTER_ALL)}
-              style={[
-                styles.chip,
-                {
-                  borderColor: tagFilter === TAG_FILTER_ALL ? primary : line,
-                  backgroundColor: tagFilter === TAG_FILTER_ALL ? `${primary}14` : chipBg,
-                },
-              ]}>
-              <Text style={[styles.chipText, { color: tagFilter === TAG_FILTER_ALL ? primary : ink }]}>全部</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setTagFilter(TAG_FILTER_NONE)}
-              style={[
-                styles.chip,
-                {
-                  borderColor: tagFilter === TAG_FILTER_NONE ? primary : line,
-                  backgroundColor: tagFilter === TAG_FILTER_NONE ? `${primary}14` : chipBg,
-                },
-              ]}>
-              <Text style={[styles.chipText, { color: tagFilter === TAG_FILTER_NONE ? primary : ink }]}>无标签</Text>
-            </Pressable>
-            {usedTags.map(tag => {
-              const active = tagFilter === tag.id;
-              return (
-                <Pressable
-                  key={tag.id}
-                  onPress={() => setTagFilter(tag.id)}
-                  style={[
-                    styles.chip,
-                    {
-                      borderColor: active ? tag.color : line,
-                      backgroundColor: active ? `${tag.color}22` : chipBg,
-                    },
-                  ]}>
-                  <View style={[styles.chipDot, { backgroundColor: tag.color }]} />
-                  <Text style={[styles.chipText, { color: active ? tag.color : ink }]} numberOfLines={1}>
-                    {tag.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-            <Pressable
-              onPress={() => router.push({ pathname: '/project-tags', params: { domain: 'memo' } })}
-              style={[styles.chip, { borderColor: line, backgroundColor: chipBg }]}>
-              <MaterialIcons name="local-offer" size={14} color={primary} />
-              <Text style={[styles.chipText, { color: primary }]}>管理标签</Text>
-            </Pressable>
-          </ScrollView>
-
-          <Pressable
-            onPress={() => setSortMenuVisible(true)}
-            style={[styles.sortBtn, { borderColor: line, backgroundColor: chipBg }]}>
-            <MaterialIcons name="sort" size={18} color={primary} />
-          </Pressable>
-        </View>
-      </View>
-    ),
-    [chipBg, ink, line, muted, primary, router, search, searchBg, tagFilter, usedTags],
+  const applySortMode = useCallback(
+    (next: MemoSortMode) => {
+      withLayout(() => setSortMode(next));
+    },
+    [withLayout],
   );
 
   const renderRow = useCallback(
-    ({ item: row }: { item: ListRow }) => {
-      if (row.kind === 'section') {
+    ({ item: row }: ListRenderItemInfo<ListRow>) => {
+      const renderSticky = (item: MemoItem, staggerIndex: number) => {
+        const isConverting = convertingMemoId === item.id;
+        const tags = tagsByMemoId.get(item.id) ?? [];
+        const iso = sortMode === 'created' ? item.created_at : item.updated_at;
         return (
-          <View style={styles.sectionHead}>
-            <Text style={[styles.sectionLabel, { color: muted }]}>{row.label}</Text>
-          </View>
+          <MemoListRow
+            key={item.id}
+            item={item}
+            tags={tags}
+            timeLabel={timeInside(iso)}
+            expandToken={expandToken}
+            staggerIndex={staggerIndex}
+            highlighted={highlightId === item.id}
+            converting={isConverting}
+            aiPending={pendingAnalysisIds.has(item.id)}
+            onPress={openRow}
+            onLongPress={openRowActions}
+            onAiPress={openAiModal}
+          />
         );
-      }
-
-      const item = row.item;
-      const isConverting = convertingMemoId === item.id;
-      const tags = tagsByMemoId.get(item.id) ?? [];
-      const iso = sortMode === 'created' ? item.created_at : item.updated_at;
+      };
 
       return (
-        <Swipeable
-          ref={r => {
-            swipeableRefs.current[item.id] = r;
-          }}
-          overshootRight={false}
-          rightThreshold={48}
-          renderRightActions={() => (
-            <View style={styles.swipeActionsRow}>
-              <Pressable
-                onPress={() => void togglePin(item)}
-                style={({ pressed }) => [
-                  styles.swipeAction,
-                  { backgroundColor: colors.tertiary, opacity: pressed ? 0.9 : 1 },
-                ]}>
-                <MaterialIcons name="push-pin" size={20} color="#fff" />
-                <Text style={styles.swipeActionText}>{item.is_pinned ? '取消' : '置顶'}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => performConvertToTodo(item)}
-                disabled={isConverting}
-                style={({ pressed }) => [
-                  styles.swipeAction,
-                  { backgroundColor: primary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 },
-                ]}>
-                {isConverting ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <MaterialIcons name="playlist-add-check" size={20} color="#fff" />
-                )}
-                <Text style={styles.swipeActionText}>待办</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => performConvertToProject(item)}
-                disabled={isConverting}
-                style={({ pressed }) => [
-                  styles.swipeAction,
-                  { backgroundColor: secondary, opacity: isConverting ? 0.55 : pressed ? 0.92 : 1 },
-                ]}>
-                {isConverting ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <MaterialIcons name="folder-special" size={20} color="#fff" />
-                )}
-                <Text style={styles.swipeActionText}>项目</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => onDeleteMemo(item)}
-                style={({ pressed }) => [
-                  styles.swipeAction,
-                  { backgroundColor: danger, opacity: pressed ? 0.92 : 1 },
-                ]}>
-                <MaterialIcons name="delete-outline" size={20} color="#fff" />
-                <Text style={styles.swipeActionText}>删除</Text>
-              </Pressable>
-            </View>
-          )}>
-          <View style={styles.noteOuter}>
-            <View style={styles.timelineCol}>
-              <View style={[styles.timelineDot, { backgroundColor: item.is_pinned ? colors.tertiary : primary }]} />
-              <View style={[styles.timelineStem, { backgroundColor: line }]} />
-            </View>
-            <Pressable
-              onPress={() => router.push({ pathname: '/memo-view/[id]', params: { id: item.id } })}
-              onLongPress={() => openRowActions(item)}
-              delayLongPress={360}
-              style={({ pressed }) => [
-                styles.row,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: line,
-                  opacity: pressed ? 0.92 : 1,
-                },
-              ]}>
-              <View style={styles.rowMain}>
-                <View style={styles.rowTitleLine}>
-                  {item.is_pinned ? (
-                    <MaterialIcons name="push-pin" size={14} color={colors.tertiary} style={{ marginRight: 4 }} />
-                  ) : null}
-                  <Text style={[styles.rowTitle, { color: ink }]} numberOfLines={2}>
-                    {memoListPreviewTitle(item)}
-                  </Text>
-                  <Text style={[styles.rowTime, { color: muted }]}>{timeShort(iso)}</Text>
-                </View>
-                <Text style={[styles.rowPreview, { color: muted }]} numberOfLines={2}>
-                  {memoListPreviewBody(item)}
-                </Text>
-                {tags.length > 0 ? (
-                  <View style={styles.tagDots}>
-                    {tags.slice(0, 4).map(t => (
-                      <View
-                        key={t.id}
-                        style={[styles.miniTag, { backgroundColor: `${t.color}22`, borderColor: `${t.color}44` }]}>
-                        <Text style={[styles.miniTagText, { color: t.color }]} numberOfLines={1}>
-                          {t.name}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
-                {item.ai_evaluation ? (
-                  <Text style={[styles.aiLine, { color: secondary }]} numberOfLines={1}>
-                    AI · {item.ai_evaluation}
-                  </Text>
-                ) : pendingAnalysisIds.has(item.id) ? (
-                  <View style={styles.aiPending}>
-                    <ActivityIndicator size="small" color={primary} />
-                    <Text style={[styles.aiLine, { color: muted }]}>AI 分析中…</Text>
-                  </View>
-                ) : null}
-              </View>
-              <Pressable hitSlop={10} onPress={() => openAiModal(item)} style={styles.aiBtn}>
-                <MaterialIcons name="auto-awesome" size={18} color={primary} />
-              </Pressable>
-            </Pressable>
-          </View>
-        </Swipeable>
+        <View style={styles.board}>
+          <View style={styles.column}>{row.left.map((item, index) => renderSticky(item, index * 2))}</View>
+          <View style={styles.column}>{row.right.map((item, index) => renderSticky(item, index * 2 + 1))}</View>
+        </View>
       );
     },
     [
-      colors.surface,
-      colors.tertiary,
       convertingMemoId,
-      danger,
-      ink,
-      line,
-      muted,
-      onDeleteMemo,
+      expandToken,
+      highlightId,
       openAiModal,
+      openRow,
       openRowActions,
       pendingAnalysisIds,
-      performConvertToProject,
-      performConvertToTodo,
-      primary,
-      router,
-      secondary,
       sortMode,
       tagsByMemoId,
-      togglePin,
     ],
   );
 
@@ -638,18 +561,55 @@ export default function MemoListScreen() {
       }
       loading={loading}
       loadingHint="加载备忘…"
+      loadingSkeleton={<MemoListSkeleton />}
       error={error}
       onRetryError={() => {
         resetSync();
         void reload(true);
       }}
-      style={{ backgroundColor: paper }}>
+      immediate
+      headerProps={{ style: styles.wallHeader }}
+      style={{ backgroundColor: wall.base }}>
+      <MemoFilterDrawer
+        search={search}
+        onSearchChange={setSearch}
+        tagFilter={tagFilter}
+        filterAll={TAG_FILTER_ALL}
+        filterNone={TAG_FILTER_NONE}
+        onTagFilter={applyTagFilter}
+        usedTags={usedTags}
+        onManageTags={() => router.push({ pathname: '/project-tags', params: { domain: 'memo' } })}
+        onSort={() => setSortMenuVisible(true)}
+        refreshing={refreshing}
+        onRefresh={() => {
+          void onRefresh();
+        }}
+        paper={isDark ? '#2C261F' : '#E3D5C3'}
+        cavity={isDark ? '#241F1B' : '#E9DFD1'}
+        searchBg={isDark ? 'rgba(255,248,236,0.1)' : '#EFE4D4'}
+        chipBg={isDark ? 'rgba(255,248,236,0.08)' : 'rgba(90,70,40,0.08)'}
+        ink={wall.ink}
+        muted={wall.muted}
+        line={wall.line}
+        primary={primary}
+        renderList={({ scrollEnabled, onScroll }) => (
       <FlatList
+        ref={listRef}
         data={listRows}
+        style={styles.list}
         keyExtractor={r => r.key}
         renderItem={renderRow}
-        ListHeaderComponent={renderListHeader}
-        refreshControl={refreshControl}
+        scrollEnabled={scrollEnabled}
+        bounces={false}
+        overScrollMode="never"
+        // 便利贴有旋转与绝对定位装饰，Android 默认裁剪会把整卡裁没
+        removeClippedSubviews={false}
+        onScroll={event => {
+          const offsetY = event.nativeEvent.contentOffset.y;
+          scrollYRef.current = offsetY;
+          onScroll(offsetY);
+        }}
+        scrollEventThrottle={16}
         contentContainerStyle={[
           styles.listContent,
           { paddingBottom: Math.max(insets.bottom, 16) + 28 },
@@ -660,230 +620,243 @@ export default function MemoListScreen() {
             icon="sticky-note-2"
             title={filteredEmpty ? '没有匹配的备忘' : '还没有备忘'}
             subtitle={filteredEmpty ? '试试换个关键词或标签' : '点右上角 + 写第一条笔记'}
+            actionLabel={filteredEmpty ? undefined : '写一条'}
+            onAction={filteredEmpty ? undefined : openNewMemo}
           />
         }
         showsVerticalScrollIndicator={false}
       />
+        )}
+      />
     </CrudListScreen>
 
-      <Modal visible={sortMenuVisible} transparent animationType="fade" onRequestClose={() => setSortMenuVisible(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setSortMenuVisible(false)}>
-          <Pressable
-            onPress={() => {}}
-            style={[styles.sortSheet, { backgroundColor: colors.surface, borderColor: line }]}>
-            <Text style={[styles.sortTitle, { color: ink }]}>排序</Text>
-            <Text style={[styles.sortHint, { color: muted }]}>置顶的备忘始终排在最前</Text>
-            {SORT_OPTIONS.map(opt => {
-              const active = sortMode === opt.id;
-              return (
-                <Pressable
-                  key={opt.id}
-                  onPress={() => {
-                    setSortMode(opt.id);
-                    setSortMenuVisible(false);
-                  }}
-                  style={styles.sortOption}>
-                  <Text style={[styles.sortOptionText, { color: active ? primary : ink }]}>{opt.label}</Text>
-                  {active ? <MaterialIcons name="check" size={20} color={primary} /> : null}
-                </Pressable>
-              );
-            })}
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <MemoCenterSheet
+        visible={!!actionRow}
+        onClose={() => setActionRow(null)}
+        style={[styles.sortSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        {actionRow ? (
+          <RowActionSheet
+            row={actionRow}
+            ink={ink}
+            danger={colors.danger}
+            onPin={() => void togglePin(actionRow)}
+            onAi={() => openAiModal(actionRow)}
+            onEdit={() => router.push({ pathname: '/memo-edit/[id]', params: { id: actionRow.id } })}
+            onTodo={() => void performConvertToTodo(actionRow)}
+            onProject={() => void performConvertToProject(actionRow)}
+            onDelete={() => onDeleteMemo(actionRow)}
+          />
+        ) : null}
+      </MemoCenterSheet>
 
-      <Modal visible={!!aiModalItem} transparent animationType="fade" onRequestClose={() => setAiModalId(null)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setAiModalId(null)}>
-          <Pressable
-            onPress={() => {}}
-            style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
-            <View style={styles.aiSheetHead}>
-              <Text style={[styles.aiSheetTitle, { color: ink }]} numberOfLines={1}>
-                AI · {aiModalItem ? memoListPreviewTitle(aiModalItem) : ''}
-              </Text>
-              <Pressable onPress={() => setAiModalId(null)} hitSlop={10}>
-                <MaterialIcons name="close" size={22} color={muted} />
-              </Pressable>
-            </View>
-            {aiModalLoading ? (
-              <ActivityIndicator color={primary} style={{ marginVertical: 24 }} />
-            ) : (
-              <>
-                <Text style={[styles.aiKicker, { color: muted }]}>评价</Text>
-                <Text style={[styles.aiBody, { color: ink }]}>
-                  {aiModalItem?.ai_evaluation?.trim() || '尚未生成'}
-                </Text>
-                <Text style={[styles.aiKicker, { color: muted, marginTop: 14 }]}>建议</Text>
-                <Text style={[styles.aiBody, { color: secondary }]}>
-                  {aiModalItem?.ai_suggestions?.trim() || '尚未生成'}
-                </Text>
-              </>
-            )}
-            <Pressable
-              onPress={() => void onModalRegenerate()}
-              disabled={aiModalLoading}
-              style={({ pressed }) => [
-                styles.regenBtn,
-                { backgroundColor: primary, opacity: aiModalLoading || pressed ? 0.85 : 1 },
-              ]}>
-              <Text style={styles.regenText}>{aiModalItem?.ai_evaluation ? '重新生成' : '开始分析'}</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <MemoCenterSheet
+        visible={sortMenuVisible}
+        onClose={() => setSortMenuVisible(false)}
+        style={[styles.sortSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        <SortSheetBody
+          ink={ink}
+          muted={muted}
+          primary={primary}
+          sortMode={sortMode}
+          onPick={applySortMode}
+        />
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={!!aiModalItem}
+        onClose={() => setAiModalId(null)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        {aiModalItem ? (
+          <AiSheetBody
+            item={aiModalItem}
+            ink={ink}
+            muted={muted}
+            secondary={secondary}
+            loading={aiModalLoading}
+            onRegenerate={() => void onModalRegenerate()}
+          />
+        ) : null}
+      </MemoCenterSheet>
+    </>
+  );
+}
+
+function RowActionSheet({
+  row,
+  ink,
+  danger,
+  onPin,
+  onAi,
+  onEdit,
+  onTodo,
+  onProject,
+  onDelete,
+}: {
+  row: MemoItem;
+  ink: string;
+  danger: string;
+  onPin: () => void;
+  onAi: () => void;
+  onEdit: () => void;
+  onTodo: () => void;
+  onProject: () => void;
+  onDelete: () => void;
+}) {
+  const requestClose = useMemoCenterSheetClose();
+  const run = (action: () => void) => {
+    if (!requestClose()) return;
+    action();
+  };
+  const options: { key: string; label: string; color?: string; action: () => void }[] = [
+    { key: 'pin', label: row.is_pinned ? '取消置顶' : '置顶', action: onPin },
+    { key: 'ai', label: 'AI 分析', action: onAi },
+    { key: 'edit', label: '编辑', action: onEdit },
+    { key: 'todo', label: '转为待办', action: onTodo },
+    { key: 'project', label: '转为项目', action: onProject },
+    { key: 'delete', label: '删除', color: danger, action: onDelete },
+  ];
+  return (
+    <>
+      <Text style={[styles.sortTitle, { color: ink }]} numberOfLines={2}>
+        {memoListPreviewTitle(row)}
+      </Text>
+      {options.map(opt => (
+        <MotionPressable key={opt.key} onPress={() => run(opt.action)} style={styles.sortOption}>
+          <Text style={[styles.sortOptionText, { color: opt.color ?? ink }]}>{opt.label}</Text>
+        </MotionPressable>
+      ))}
+      <MotionPressable onPress={() => requestClose()} style={styles.sortOption}>
+        <Text style={[styles.sortOptionText, { color: ink }]}>取消</Text>
+      </MotionPressable>
+    </>
+  );
+}
+
+function SortSheetBody({
+  ink,
+  muted,
+  primary,
+  sortMode,
+  onPick,
+}: {
+  ink: string;
+  muted: string;
+  primary: string;
+  sortMode: MemoSortMode;
+  onPick: (mode: MemoSortMode) => void;
+}) {
+  const requestClose = useMemoCenterSheetClose();
+  return (
+    <>
+      <Text style={[styles.sortTitle, { color: ink }]}>排序</Text>
+      <Text style={[styles.sortHint, { color: muted }]}>置顶的备忘始终排在最前</Text>
+      {SORT_OPTIONS.map(opt => {
+        const active = sortMode === opt.id;
+        return (
+          <MotionPressable
+            key={opt.id}
+            onPress={() => {
+              if (!requestClose()) return;
+              onPick(opt.id);
+            }}
+            style={styles.sortOption}>
+            <Text style={[styles.sortOptionText, { color: active ? primary : ink }]}>{opt.label}</Text>
+            {active ? <MaterialIcons name="check" size={20} color={primary} /> : null}
+          </MotionPressable>
+        );
+      })}
+    </>
+  );
+}
+
+function AiSheetBody({
+  item,
+  ink,
+  muted,
+  secondary,
+  loading,
+  onRegenerate,
+}: {
+  item: MemoItem;
+  ink: string;
+  muted: string;
+  secondary: string;
+  loading: boolean;
+  onRegenerate: () => void;
+}) {
+  const requestClose = useMemoCenterSheetClose();
+  const evaluation = item.ai_evaluation?.trim() || '';
+  const suggestions = item.ai_suggestions?.trim() || '';
+  return (
+    <>
+      <View style={styles.aiSheetHead}>
+        <Text style={[styles.aiSheetTitle, { color: ink }]} numberOfLines={1}>
+          AI · {memoListPreviewTitle(item)}
+        </Text>
+        <MotionPressable
+          onPress={() => {
+            requestClose();
+          }}
+          hitSlop={10}
+          accessibilityLabel="关闭">
+          <MaterialIcons name="close" size={22} color={muted} />
+        </MotionPressable>
+      </View>
+      <Text style={[styles.aiKicker, { color: muted }]}>评价</Text>
+      <Text style={[styles.aiBody, { color: ink }]}>{evaluation || '尚未生成'}</Text>
+      <Text style={[styles.aiKicker, { color: muted, marginTop: 14 }]}>建议</Text>
+      <Text style={[styles.aiBody, { color: secondary }]}>{suggestions || '尚未生成'}</Text>
+      <AppButton
+        label={evaluation ? '重新生成' : '开始分析'}
+        loading={loading}
+        disabled={loading}
+        onPress={onRegenerate}
+        style={styles.regenBtn}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  toolbar: { paddingTop: Spacing['3xl'], gap: Spacing['3xl'] },
-  searchWrap: {
-    marginHorizontal: Spacing['5xl'],
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    minHeight: 42,
+  wallHeader: {
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
   },
-  searchInput: { flex: 1, fontSize: 15, fontWeight: '500', paddingVertical: 8 },
-  filterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: Spacing['5xl'],
-    paddingRight: Spacing.md,
-    gap: 8,
-  },
-  chipRow: { gap: 8, paddingRight: 4, alignItems: 'center' },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    maxWidth: 140,
-  },
-  chipDot: { width: 7, height: 7, borderRadius: 4 },
-  chipText: { fontSize: 13, fontWeight: '600' },
-  sortBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  list: { flex: 1, backgroundColor: 'transparent' },
   listContent: { flexGrow: 1 },
   listEmptyPad: { flexGrow: 1 },
-  sectionHead: {
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: Spacing['5xl'],
-    paddingBottom: Spacing.md,
-  },
-  sectionLabel: {
-    ...Typography.label,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
-  noteOuter: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    paddingLeft: Spacing['3xl'],
-    paddingRight: Spacing['5xl'],
-    paddingBottom: 10,
-    gap: 10,
-  },
-  timelineCol: {
-    width: 12,
-    alignItems: 'center',
-    paddingTop: 18,
-  },
-  timelineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  timelineStem: {
-    flex: 1,
-    width: StyleSheet.hairlineWidth * 2,
-    marginTop: 6,
-    minHeight: 12,
-    opacity: 0.7,
-  },
-  row: {
-    flex: 1,
+  board: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    gap: 8,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
+    gap: Spacing.md,
   },
-  rowMain: { flex: 1, gap: 6 },
-  rowTitleLine: { flexDirection: 'row', alignItems: 'flex-start', gap: 2 },
-  rowTitle: { flex: 1, fontSize: 16, fontWeight: '800', letterSpacing: -0.25, lineHeight: 22 },
-  rowTime: { fontSize: 11, fontWeight: '600', marginLeft: 8, marginTop: 3 },
-  rowPreview: { fontSize: 13, fontWeight: '500', lineHeight: 19, opacity: 0.92 },
-  tagDots: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
-  miniTag: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 6,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    maxWidth: 96,
-  },
-  miniTagText: { fontSize: 11, fontWeight: '700' },
-  aiLine: { fontSize: 12, fontWeight: '600', marginTop: 2 },
-  aiPending: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  aiBtn: { paddingTop: 2, paddingLeft: 4 },
-  swipeActionsRow: { flexDirection: 'row', alignItems: 'stretch' },
-  swipeAction: {
-    width: 68,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  swipeActionText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  modalOverlay: {
+  column: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'center',
-    padding: 24,
+    paddingTop: Spacing.sm,
   },
   sortSheet: {
-    borderRadius: 16,
+    borderRadius: MemoRadius.sheet,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: 18,
-    gap: 4,
   },
-  sortTitle: { fontSize: 17, fontWeight: '800' },
-  sortHint: { fontSize: 12, fontWeight: '500', marginBottom: 8 },
+  sortTitle: MemoText.sheetTitle,
+  sortHint: { ...MemoText.caption, marginBottom: 8 },
   sortOption: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 12,
   },
-  sortOptionText: { fontSize: 15, fontWeight: '600' },
+  sortOptionText: MemoText.sheetOption,
   aiSheet: {
-    borderRadius: 16,
+    borderRadius: MemoRadius.sheet,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: 18,
     maxHeight: '80%',
   },
   aiSheetHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 8 },
-  aiSheetTitle: { flex: 1, fontSize: 16, fontWeight: '800' },
-  aiKicker: { fontSize: 11, fontWeight: '800', letterSpacing: 0.8 },
-  aiBody: { fontSize: 14, fontWeight: '500', lineHeight: 22, marginTop: 4 },
-  regenBtn: {
-    marginTop: 18,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  regenText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  aiSheetTitle: { flex: 1, ...MemoText.listTitle },
+  aiKicker: MemoText.kicker,
+  aiBody: { ...MemoText.aiBody, marginTop: 4 },
+  regenBtn: { marginTop: 18 },
 });

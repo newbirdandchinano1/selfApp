@@ -1,5 +1,6 @@
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getIsLongTermFrog, isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
@@ -541,6 +542,7 @@ export function WeeklyFrogSchedule({
   const bodyOpacity = React.useRef(new Animated.Value(1)).current;
   const bodyScale = React.useRef(new Animated.Value(1)).current;
   const bodyTranslateY = React.useRef(new Animated.Value(0)).current;
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
 
   /** 墙钟：最简态每秒刷新倒计时；课表「现在」线每 30s（勿用默认 now=new Date()，否则每渲染新引用会炸更新环） */
   const nowTs = now?.getTime();
@@ -609,6 +611,22 @@ export function WeeklyFrogSchedule({
       const prev = zoomModeRef.current;
       if (prev === next || zoomBusyRef.current) return;
       zoomBusyRef.current = true;
+
+      const snapZoom = () => {
+        bodyOpacity.stopAnimation();
+        bodyScale.stopAnimation();
+        bodyTranslateY.stopAnimation();
+        bodyOpacity.setValue(1);
+        bodyScale.setValue(1);
+        bodyTranslateY.setValue(0);
+        setZoomMode(next);
+        zoomBusyRef.current = false;
+      };
+
+      if (!motionReady || reduceMotion) {
+        snapZoom();
+        return;
+      }
 
       const enteringGrid = next === 'grid';
       const leavingGrid = prev === 'grid';
@@ -681,7 +699,7 @@ export function WeeklyFrogSchedule({
         });
       });
     },
-    [bodyOpacity, bodyScale, bodyTranslateY],
+    [bodyOpacity, bodyScale, bodyTranslateY, motionReady, reduceMotion],
   );
 
   /** 长按项目指派：自动展开课表并提示点选空格 */

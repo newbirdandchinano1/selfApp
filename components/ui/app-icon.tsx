@@ -34,6 +34,16 @@ const PLATFORM_SYMBOLS: Partial<Record<string, PlatformSymbol>> = {
   'sticky-note-2': { ios: 'note.text', android: 'sticky_note' },
   'restaurant-menu': { ios: 'fork.knife', android: 'restaurant_menu' },
   'arrow-back': { ios: 'chevron.backward', android: 'arrow_back' },
+  notifications: { ios: 'bell.fill', android: 'notifications' },
+  'notifications-none': { ios: 'bell', android: 'notifications' },
+  history: { ios: 'clock.arrow.circlepath', android: 'history' },
+  'menu-book': { ios: 'book.closed', android: 'menu_book' },
+  explore: { ios: 'map', android: 'explore' },
+  insights: { ios: 'chart.bar', android: 'insights' },
+  'check-circle-outline': { ios: 'checkmark.circle', android: 'check_circle' },
+  'account-balance-wallet': { ios: 'wallet.pass', android: 'account_balance_wallet' },
+  'edit-note': { ios: 'square.and.pencil', android: 'edit_note' },
+  'person-outline': { ios: 'person', android: 'person' },
 };
 
 export type AppIconProps = {

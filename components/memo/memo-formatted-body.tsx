@@ -1,10 +1,12 @@
+import { StoredImage } from '@/components/stored-image';
+import { Radius } from '@/constants/design-tokens';
+import { MemoText } from '@/constants/memo-ui';
 import {
   parseMemoBody,
   type RichBlock,
   type RichMark,
   type RichTextRun,
 } from '@/lib/memo-richdoc';
-import { StoredImage } from '@/components/stored-image';
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
@@ -33,20 +35,23 @@ function InlineRuns({
   color,
   baseSize,
   baseWeight,
+  lineHeight,
 }: {
   runs: RichTextRun[];
   color: string;
   baseSize: number;
   baseWeight: '400' | '600' | '700' | '800';
+  lineHeight?: number;
 }) {
+  const lh = lineHeight ?? baseSize * 1.5;
   return (
-    <Text style={{ fontSize: baseSize, lineHeight: baseSize * 1.5, color }}>
+    <Text style={{ fontSize: baseSize, lineHeight: lh, color }}>
       {runs.map((r, idx) => (
         <Text
           key={`${idx}-${r.text.slice(0, 8)}`}
           style={{
             fontSize: baseSize,
-            lineHeight: baseSize * 1.5,
+            lineHeight: lh,
             ...runStyle(r.marks, baseWeight),
           }}
         >
@@ -80,7 +85,7 @@ function BlockView({
     case 'heading': {
       const size = block.level === 1 ? 22 : block.level === 2 ? 19 : 17;
       return (
-        <InlineRuns runs={block.runs} color={color} baseSize={size} baseWeight="800" />
+        <InlineRuns runs={block.runs} color={color} baseSize={size} baseWeight="700" />
       );
     }
     case 'bullet_list':
@@ -93,7 +98,13 @@ function BlockView({
             >
               <Text style={[styles.bulletDot, { color: mutedColor }]}>•</Text>
               <View style={styles.bulletText}>
-                <InlineRuns runs={it.runs} color={color} baseSize={16} baseWeight="600" />
+                <InlineRuns
+                  runs={it.runs}
+                  color={color}
+                  baseSize={MemoText.reading.fontSize}
+                  baseWeight={MemoText.reading.fontWeight}
+                  lineHeight={MemoText.reading.lineHeight}
+                />
               </View>
             </View>
           ))}
@@ -109,7 +120,13 @@ function BlockView({
             >
               <Text style={[styles.orderNum, { color: mutedColor }]}>{i + 1}.</Text>
               <View style={styles.bulletText}>
-                <InlineRuns runs={it.runs} color={color} baseSize={16} baseWeight="600" />
+                <InlineRuns
+                  runs={it.runs}
+                  color={color}
+                  baseSize={MemoText.reading.fontSize}
+                  baseWeight={MemoText.reading.fontWeight}
+                  lineHeight={MemoText.reading.lineHeight}
+                />
               </View>
             </View>
           ))}
@@ -130,8 +147,9 @@ function BlockView({
             <InlineRuns
               runs={block.runs}
               color={color}
-              baseSize={16}
-              baseWeight="600"
+              baseSize={MemoText.reading.fontSize}
+              baseWeight={MemoText.reading.fontWeight}
+              lineHeight={MemoText.reading.lineHeight}
             />
           </View>
         </View>
@@ -141,7 +159,13 @@ function BlockView({
         <View
           style={[styles.quoteBox, { backgroundColor: quoteBg, borderLeftColor: mutedColor }]}
         >
-          <InlineRuns runs={block.runs} color={color} baseSize={15} baseWeight="600" />
+          <InlineRuns
+            runs={block.runs}
+            color={color}
+            baseSize={MemoText.reading.fontSize}
+            baseWeight={MemoText.reading.fontWeight}
+            lineHeight={MemoText.reading.lineHeight}
+          />
         </View>
       );
     case 'code':
@@ -173,8 +197,9 @@ function BlockView({
         <InlineRuns
           runs={'runs' in block ? block.runs : [{ text: '', marks: [] }]}
           color={color}
-          baseSize={16}
-          baseWeight="600"
+          baseSize={MemoText.reading.fontSize}
+          baseWeight={MemoText.reading.fontWeight}
+          lineHeight={MemoText.reading.lineHeight}
         />
       );
   }
@@ -212,7 +237,7 @@ export function MemoFormattedBody({
 
 const styles = StyleSheet.create({
   root: { gap: 2 },
-  block: { marginBottom: 6 },
+  block: { marginBottom: 10 },
   gap: { height: 8 },
   empty: { fontSize: 15, fontWeight: '600', fontStyle: 'italic' },
   listCol: { gap: 4 },
@@ -223,13 +248,13 @@ const styles = StyleSheet.create({
   bulletText: { flex: 1 },
   quoteBox: {
     borderLeftWidth: 3,
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
   codeBox: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
+    borderRadius: Radius.sm,
     paddingVertical: 10,
     paddingHorizontal: 12,
   },

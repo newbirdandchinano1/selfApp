@@ -148,17 +148,22 @@ export type EditorChrome = {
   caretColor: string;
   backgroundColor: string;
   placeholder: string;
+  /** 铺满 WebView。键盘避让交给原生布局，页面内不再为输入法再留一块空白。 */
+  fitViewport?: boolean;
 };
 
 /** WebView 壳 HTML（编辑逻辑在页内脚本） */
 export function buildMemoEditorDocument(chrome: EditorChrome): string {
-  const { textColor, placeholderColor, caretColor, backgroundColor, placeholder } = chrome;
+  const { textColor, placeholderColor, caretColor, backgroundColor, placeholder, fitViewport = false } = chrome;
   const ph = escapeHtml(placeholder);
+  const viewport = fitViewport
+    ? 'width=device-width, initial-scale=1, maximum-scale=1, interactive-widget=overlays-content'
+    : 'width=device-width, initial-scale=1, maximum-scale=1';
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<meta name="viewport" content="${viewport}" />
 <style>
   html, body {
     margin: 0;
@@ -166,9 +171,10 @@ export function buildMemoEditorDocument(chrome: EditorChrome): string {
     background: ${backgroundColor};
     color: ${textColor};
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    ${fitViewport ? 'position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; overflow: hidden;' : ''}
   }
   #editor {
-    min-height: 280px;
+    ${fitViewport ? 'height: 100%; min-height: 0; box-sizing: border-box; overflow-y: auto; -webkit-overflow-scrolling: touch;' : 'min-height: 280px;'}
     padding: 14px;
     outline: none;
     line-height: 1.5;
@@ -242,6 +248,41 @@ export function buildMemoEditorDocument(chrome: EditorChrome): string {
   var root = document.getElementById('editor');
   var suppress = false;
   var composing = false;
+  var fitViewport = ${fitViewport ? 'true' : 'false'};
+
+  function pinImeGap() {
+    if (!fitViewport) return;
+    if (window.scrollY) window.scrollTo(0, 0);
+    if (document.documentElement.scrollTop) document.documentElement.scrollTop = 0;
+    if (document.body.scrollTop) document.body.scrollTop = 0;
+    document.documentElement.style.paddingBottom = '0px';
+    document.body.style.paddingBottom = '0px';
+  }
+
+  function revealCaret() {
+    if (!fitViewport || composing) return;
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    var rect;
+    try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch (e) { return; }
+    if (!rect || rect.height <= 0) return;
+    var box = root.getBoundingClientRect();
+    var bottom = box.bottom - 12;
+    var top = box.top + 8;
+    if (rect.bottom > bottom) root.scrollTop += rect.bottom - bottom;
+    else if (rect.top < top) root.scrollTop -= top - rect.top;
+  }
+
+  if (fitViewport) {
+    window.addEventListener('scroll', pinImeGap, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', pinImeGap);
+      window.visualViewport.addEventListener('scroll', pinImeGap);
+    }
+    root.addEventListener('focus', function () {
+      setTimeout(revealCaret, 80);
+    });
+  }
   /** 点工具栏前 iOS 会清掉选区，必须缓存非折叠 Range */
   var savedRange = null;
   var savedOffsets = { start: 0, end: 0 };
@@ -316,9 +357,11 @@ export function buildMemoEditorDocument(chrome: EditorChrome): string {
     var model = editorRootToMemoModel(root, true);
     post({ type: 'change', model: model });
     postHeight();
+    revealCaret();
   }
 
   function postHeight() {
+    if (fitViewport) return;
     var h = Math.max(280, root.scrollHeight + 8);
     post({ type: 'height', height: h });
   }

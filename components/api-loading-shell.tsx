@@ -1,3 +1,4 @@
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { useApiLoading } from '@/hooks/use-api-loading';
 import { useApiLoadingOverlay } from '@/hooks/use-api-loading-overlay';
 import { useActivePageApiKey } from '@/hooks/use-active-page-api-key';
@@ -21,6 +22,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const BAR_SEGMENT_WIDTH = Math.round(SCREEN_WIDTH * 0.42);
 const LOADING_TIMEOUT_MS = 10000;
+/** 减少动态时进度条停在轨道中段，不再来回滑动。 */
+const STATIC_BAR_PROGRESS =
+  ((SCREEN_WIDTH - BAR_SEGMENT_WIDTH) / 2 + BAR_SEGMENT_WIDTH) / (SCREEN_WIDTH + BAR_SEGMENT_WIDTH);
 
 type ApiLoadingShellProps = {
   children: React.ReactNode;
@@ -35,16 +39,28 @@ export function ApiLoadingShell({ children, style }: ApiLoadingShellProps) {
   const activePageKey = useActivePageApiKey();
   const suppressDim = isSkeletonLoadingTabPageKey(activePageKey);
   const isLoading = useApiLoading(suppressDim ? 0 : 480);
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const opacity = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    Animated.timing(opacity, {
-      toValue: suppressDim || !isLoading ? 1 : 0.78,
+    const target = suppressDim || !isLoading ? 1 : 0.78;
+    if (!motionReady || reduceMotion) {
+      opacity.stopAnimation();
+      opacity.setValue(target);
+      return;
+    }
+    const dim = Animated.timing(opacity, {
+      toValue: target,
       duration: suppressDim || !isLoading ? 340 : 180,
       easing: isLoading && !suppressDim ? Easing.out(Easing.quad) : Easing.out(Easing.cubic),
       useNativeDriver: true,
-    }).start();
-  }, [isLoading, opacity, suppressDim]);
+    });
+    dim.start();
+    return () => {
+      dim.stop();
+      opacity.stopAnimation();
+    };
+  }, [isLoading, motionReady, opacity, reduceMotion, suppressDim]);
 
   return (
     <View style={styles.root}>
@@ -74,6 +90,7 @@ function ApiLoadingOverlay() {
   const primary = isDark ? '#60a5fa' : '#0058be';
   const textColor = isDark ? '#e5e7eb' : '#131b2e';
 
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const slide = useRef(new Animated.Value(0)).current;
   const pillOpacity = useRef(new Animated.Value(0)).current;
   const loopRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -84,22 +101,41 @@ function ApiLoadingOverlay() {
   });
 
   useEffect(() => {
-    if (!visible) {
+    const stopLoop = () => {
       loopRef.current?.stop();
       loopRef.current = null;
-      Animated.timing(pillOpacity, {
+      slide.stopAnimation();
+    };
+
+    if (!visible) {
+      stopLoop();
+      if (!motionReady || reduceMotion) {
+        pillOpacity.setValue(0);
+        return;
+      }
+      const hide = Animated.timing(pillOpacity, {
         toValue: 0,
         duration: 200,
         useNativeDriver: true,
-      }).start();
+      });
+      hide.start();
+      return () => hide.stop();
+    }
+
+    if (!motionReady || reduceMotion) {
+      stopLoop();
+      slide.setValue(STATIC_BAR_PROGRESS);
+      pillOpacity.setValue(1);
       return;
     }
 
-    Animated.timing(pillOpacity, {
+    pillOpacity.setValue(0);
+    const show = Animated.timing(pillOpacity, {
       toValue: 1,
       duration: 180,
       useNativeDriver: true,
-    }).start();
+    });
+    show.start();
 
     slide.setValue(0);
     const loop = Animated.loop(
@@ -114,9 +150,10 @@ function ApiLoadingOverlay() {
     loop.start();
 
     return () => {
-      loop.stop();
+      show.stop();
+      stopLoop();
     };
-  }, [visible, pillOpacity, slide]);
+  }, [motionReady, pillOpacity, reduceMotion, slide, visible]);
 
   if (!blocking) return null;
 

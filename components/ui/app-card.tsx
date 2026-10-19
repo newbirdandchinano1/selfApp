@@ -1,8 +1,10 @@
 import React from 'react';
-import { Pressable, StyleSheet, View, type PressableProps, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet, View, type PressableProps, type StyleProp, type ViewStyle } from 'react-native';
 
-import { Radius, Spacing } from '@/constants/design-tokens';
+import { Motion, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+
+import { MotionPressable } from './motion-pressable';
 
 export type AppCardVariant = 'default' | 'muted' | 'accent';
 
@@ -47,9 +49,13 @@ export function AppCard({
 
   if (onPress) {
     return (
-      <Pressable onPress={onPress} style={({ pressed }) => [pressed && { opacity: 0.92 }]}>
+      <MotionPressable
+        onPress={onPress}
+        pressScale={Motion.pressScaleCard}
+        pressOpacity={1}
+        accessibilityRole="button">
         {content}
-      </Pressable>
+      </MotionPressable>
     );
   }
 
@@ -58,7 +64,7 @@ export function AppCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radius['2xl'],
+    borderRadius: Radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },

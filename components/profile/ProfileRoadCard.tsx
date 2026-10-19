@@ -3,9 +3,11 @@
  */
 import { AppIcon } from '@/components/ui/app-icon';
 import { AppText } from '@/components/ui/app-text';
+import { MotionPressable } from '@/components/ui/motion-pressable';
 import {
   getMinTouchTarget,
   getTaskUiColors,
+  Motion,
   Radius,
   Spacing,
 } from '@/constants/design-tokens';
@@ -13,7 +15,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { formatLifeBetDerivedCaption } from '@/lib/life-road/life-road-labels';
 import type { ProfileRoadBetSummary, ProfileRoadHub } from '@/lib/profile-hub-stats';
 import React from 'react';
-import { Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 const MIN_TOUCH = getMinTouchTarget(Platform.OS);
 
@@ -82,15 +84,14 @@ function CardChrome({
   );
   if (!pressable || !onPress) return shell;
   return (
-    <Pressable
+    <MotionPressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel="我的道路，打开编辑"
-      style={({ pressed }) => [
-        { opacity: pressed ? 0.94 : 1, transform: [{ scale: pressed ? 0.99 : 1 }] },
-      ]}>
+      pressScale={Motion.pressScaleCard}
+      pressOpacity={1}>
       {shell}
-    </Pressable>
+    </MotionPressable>
   );
 }
 
@@ -101,22 +102,12 @@ function RoadHeader({
   actionLabel?: string;
   actionColor: string;
 }) {
-  const { colors, isDark } = useAppTheme();
-  const taskUi = getTaskUiColors(isDark);
+  const { colors } = useAppTheme();
   return (
     <View style={styles.header}>
       <View style={styles.headerLeft}>
-        <View
-          style={[
-            styles.iconWrap,
-            {
-              backgroundColor: taskUi.primaryWash,
-              borderColor: taskUi.primaryWashBorder,
-            },
-          ]}>
-          <AppIcon name="explore" size={20} color={colors.primary} />
-        </View>
-        <AppText variant="title" style={{ color: colors.text, fontWeight: '700' }}>
+        <AppIcon name="explore" size={18} color={colors.primary} />
+        <AppText variant="title" style={{ color: colors.text }}>
           我的道路
         </AppText>
       </View>
@@ -125,7 +116,7 @@ function RoadHeader({
           <AppText variant="caption" chrome style={{ color: actionColor }}>
             {actionLabel}
           </AppText>
-          <AppIcon name="chevron-right" size={18} color={actionColor} />
+          <AppIcon name="chevron-right" size={16} color={actionColor} />
         </View>
       ) : null}
     </View>
@@ -153,23 +144,24 @@ export function ProfileRoadCard({
           {road.error}
         </AppText>
         {onRetry ? (
-          <Pressable
+          <MotionPressable
             onPress={onRetry}
             accessibilityRole="button"
             accessibilityLabel="重试加载道路"
-            style={({ pressed }) => [
+            pressScale={1}
+            pressOpacity={Motion.pressOpacityButton}
+            style={[
               styles.inlineCta,
               {
                 backgroundColor: taskUi.primaryWash,
                 borderColor: taskUi.primaryWashBorder,
-                opacity: pressed ? 0.88 : 1,
                 minHeight: MIN_TOUCH,
               },
             ]}>
             <AppText variant="bodyStrong" chrome style={{ color: colors.primary }}>
               重试
             </AppText>
-          </Pressable>
+          </MotionPressable>
         ) : null}
       </CardChrome>
     );
@@ -185,31 +177,26 @@ export function ProfileRoadCard({
     return (
       <CardChrome>
         <RoadHeader actionColor={colors.primary} />
-        <View
-          style={[
-            styles.emptyPanel,
-            { backgroundColor: taskUi.primaryWash, borderColor: taskUi.primaryWashBorder },
-          ]}>
-          <AppText variant="body" style={{ color: colors.textSecondary, lineHeight: 22 }}>
-            还没有写下方向。用来看清未来几年押什么，不是用来排任务。
-          </AppText>
-        </View>
-        <Pressable
+        <AppText variant="body" style={{ color: colors.textSecondary, lineHeight: 22 }}>
+          还没有写下方向。用来看清未来几年押什么，不是用来排任务。
+        </AppText>
+        <MotionPressable
           onPress={onWriteDirection ?? onOpen}
           accessibilityRole="button"
           accessibilityLabel="写下总方向"
-          style={({ pressed }) => [
+          pressScale={Motion.pressScaleButton}
+          pressOpacity={Motion.pressOpacityButton}
+          style={[
             styles.primaryCta,
             {
               backgroundColor: colors.primary,
-              opacity: pressed ? 0.9 : 1,
               minHeight: MIN_TOUCH,
             },
           ]}>
           <AppText variant="bodyStrong" chrome style={{ color: colors.onPrimary }}>
             写下总方向
           </AppText>
-        </Pressable>
+        </MotionPressable>
       </CardChrome>
     );
   }
@@ -227,19 +214,13 @@ export function ProfileRoadCard({
         </AppText>
       ) : null}
       {yearTheme ? (
-        <View
-          style={[
-            styles.themeChip,
-            { backgroundColor: taskUi.primaryWash, borderColor: taskUi.primaryWashBorder },
-          ]}>
-          <AppText variant="caption" chrome style={{ color: colors.primary }} numberOfLines={1}>
-            {yearTheme}
-          </AppText>
-        </View>
+        <AppText variant="caption" chrome style={{ color: colors.primary }} numberOfLines={1}>
+          {yearTheme}
+        </AppText>
       ) : null}
 
       <View style={[styles.section, { borderTopColor: colors.outline }]}>
-        <AppText variant="label" chrome style={{ color: colors.textSecondary, letterSpacing: 0.4 }}>
+        <AppText variant="label" chrome style={{ color: colors.textSecondary }}>
           今年
         </AppText>
         {yearBets.length === 0 ? (
@@ -264,7 +245,7 @@ export function ProfileRoadCard({
 
       {fartherBets.length > 0 ? (
         <View style={[styles.section, { borderTopColor: colors.outline }]}>
-          <AppText variant="label" chrome style={{ color: colors.textSecondary, letterSpacing: 0.4 }}>
+          <AppText variant="label" chrome style={{ color: colors.textSecondary }}>
             更远
           </AppText>
           <View style={styles.betList}>
@@ -288,7 +269,7 @@ export function ProfileRoadCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: Radius['2xl'],
+    borderRadius: Radius.xl,
     borderWidth: StyleSheet.hairlineWidth,
     padding: Spacing['4xl'],
     gap: Spacing['3xl'],
@@ -302,7 +283,7 @@ const styles = StyleSheet.create({
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.lg,
+    gap: Spacing.md,
     flex: 1,
     minWidth: 0,
   },
@@ -311,24 +292,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
   },
-  iconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   direction: {
-    lineHeight: 24,
-    fontWeight: '600',
-  },
-  themeChip: {
-    alignSelf: 'flex-start',
-    borderRadius: Radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xs,
+    lineHeight: 22,
   },
   section: {
     gap: Spacing.md,
@@ -344,20 +309,15 @@ const styles = StyleSheet.create({
     gap: Spacing.lg,
   },
   betDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     marginTop: 7,
   },
   betCopy: {
     flex: 1,
     minWidth: 0,
     gap: 2,
-  },
-  emptyPanel: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['3xl'],
   },
   primaryCta: {
     borderRadius: Radius.lg,

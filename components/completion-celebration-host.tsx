@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import {
   subscribeCompletionCelebration,
   type CompletionCelebrationPayload,
@@ -124,7 +124,9 @@ function buildMessage(payload: CompletionCelebrationPayload): { titleLine: strin
  * 完成后再「取消完成」时与 Alert / LayoutAnimation 叠层会整页卡死，而原生驱动动画仍在播。
  */
 export function CompletionCelebrationHost() {
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  /** 偏好未就绪时也不放彩屑，避免刚挂载就先播再停 */
+  const noConfetti = reduceMotion || !motionReady;
   const insets = useSafeAreaInsets();
   const [payload, setPayload] = React.useState<CompletionCelebrationPayload | null>(null);
   const [animKey, setAnimKey] = React.useState(0);
@@ -190,7 +192,7 @@ export function CompletionCelebrationHost() {
       }),
     ]);
 
-    const anim = reduceMotion
+    const anim = noConfetti
       ? Animated.sequence([toastIn, Animated.delay(ms(900)), toastOut])
       : Animated.parallel([
           Animated.timing(burst, {
@@ -215,7 +217,7 @@ export function CompletionCelebrationHost() {
       animRef.current?.stop();
       animRef.current = null;
     };
-  }, [animKey, burst, payload, reduceMotion, toastOpacity, toastTranslate]);
+  }, [animKey, burst, noConfetti, payload, reduceMotion, toastOpacity, toastTranslate]);
 
   if (payload == null) return null;
 
@@ -223,7 +225,7 @@ export function CompletionCelebrationHost() {
 
   return (
     <View pointerEvents="none" style={styles.root}>
-      {!reduceMotion
+      {!noConfetti
         ? particles.map((p) => (
             <ParticleView
               key={`${animKey}-${p.id}`}

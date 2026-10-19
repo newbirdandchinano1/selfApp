@@ -1,9 +1,9 @@
-import { MaterialIcons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { Dimensions } from 'react-native';
+import { Dimensions, StyleSheet } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
+import { AppIcon } from '@/components/ui/app-icon';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
 import { getPalette } from '@/constants/design-tokens';
@@ -53,13 +53,14 @@ export default function TabLayout() {
             tabBarStyle: {
               backgroundColor: theme.surface,
               borderTopColor: theme.tabBarBorder,
+              borderTopWidth: StyleSheet.hairlineWidth,
               elevation: 0,
               height: tabBarHeight,
               paddingBottom,
               paddingTop,
             },
             tabBarLabelStyle: {
-              fontSize: 10,
+              fontSize: 11,
               fontWeight: '500',
             },
           }}>
@@ -68,7 +69,7 @@ export default function TabLayout() {
             options={{
               title: '健康',
               tabBarBadge: formatInboxBadgeCount(badges.index),
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="insights" color={color} />,
+              tabBarIcon: ({ color }) => <AppIcon name="insights" size={24} color={color} />,
             }}
           />
           <Tabs.Screen
@@ -77,7 +78,7 @@ export default function TabLayout() {
               title: '任务',
               tabBarHideOnKeyboard: true,
               tabBarBadge: formatInboxBadgeCount(badges.tasks),
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="check-circle-outline" color={color} />,
+              tabBarIcon: ({ color }) => <AppIcon name="check-circle-outline" size={24} color={color} />,
             }}
           />
           <Tabs.Screen
@@ -85,7 +86,7 @@ export default function TabLayout() {
             options={{
               title: '财务',
               tabBarBadge: formatInboxBadgeCount(badges.finance),
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="account-balance-wallet" color={color} />,
+              tabBarIcon: ({ color }) => <AppIcon name="account-balance-wallet" size={24} color={color} />,
             }}
           />
           <Tabs.Screen
@@ -94,7 +95,7 @@ export default function TabLayout() {
               title: '复盘',
               tabBarHideOnKeyboard: true,
               tabBarBadge: formatInboxBadgeCount(badges.review),
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="edit-note" color={color} />,
+              tabBarIcon: ({ color }) => <AppIcon name="edit-note" size={24} color={color} />,
             }}
           />
           <Tabs.Screen
@@ -102,7 +103,7 @@ export default function TabLayout() {
             options={{
               title: '我的',
               // 锁定：我的 Tab 永不设角标；未读只走铃铛
-              tabBarIcon: ({ color }) => <MaterialIcons size={24} name="person-outline" color={color} />,
+              tabBarIcon: ({ color }) => <AppIcon name="person-outline" size={24} color={color} />,
             }}
           />
         </Tabs>

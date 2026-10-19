@@ -1,17 +1,19 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  Pressable,
   StyleSheet,
   Text,
+  View,
   type PressableProps,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
 } from 'react-native';
 
-import { Radius, Spacing } from '@/constants/design-tokens';
+import { Motion, Radius, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+
+import { MotionPressable } from './motion-pressable';
 
 export type AppButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
 export type AppButtonSize = 'sm' | 'md' | 'lg';
@@ -84,35 +86,32 @@ export function AppButton({
   const isDisabled = disabled || loading;
 
   return (
-    <Pressable
+    <MotionPressable
       accessibilityRole="button"
       disabled={isDisabled}
-      style={({ pressed }) => [
+      pressScale={Motion.pressScaleButton}
+      pressOpacity={Motion.pressOpacityButton}
+      style={[
         styles.base,
         sizeStyle.container,
         {
           backgroundColor: palette.bg,
           borderColor: palette.border,
-          opacity: isDisabled ? 0.5 : pressed ? 0.88 : 1,
         },
         fullWidth && styles.fullWidth,
         style,
       ]}
       {...pressableProps}>
-      {loading ? (
-        <ActivityIndicator color={palette.text} size="small" />
-      ) : (
-        <Text
-          style={[
-            styles.label,
-            sizeStyle.label,
-            { color: palette.text },
-            labelStyle,
-          ]}>
-          {label}
-        </Text>
-      )}
-    </Pressable>
+      <View style={isDisabled ? styles.disabledContent : undefined}>
+        {loading ? (
+          <ActivityIndicator color={palette.text} size="small" />
+        ) : (
+          <Text style={[styles.label, sizeStyle.label, { color: palette.text }, labelStyle]}>
+            {label}
+          </Text>
+        )}
+      </View>
+    </MotionPressable>
   );
 }
 
@@ -123,7 +122,7 @@ const sizeStyles = {
       paddingHorizontal: Spacing.xl,
       borderRadius: Radius.md,
     },
-    label: { fontSize: 13, fontWeight: '800' },
+    label: { fontSize: 13, fontWeight: '600' },
   }),
   md: StyleSheet.create({
     container: {
@@ -131,7 +130,7 @@ const sizeStyles = {
       paddingHorizontal: Spacing['3xl'],
       borderRadius: Radius.lg,
     },
-    label: { fontSize: 15, fontWeight: '800' },
+    label: { fontSize: 15, fontWeight: '600' },
   }),
   lg: StyleSheet.create({
     container: {
@@ -139,7 +138,7 @@ const sizeStyles = {
       paddingHorizontal: Spacing['4xl'],
       borderRadius: Radius.lg,
     },
-    label: { fontSize: 16, fontWeight: '800' },
+    label: { fontSize: 16, fontWeight: '600' },
   }),
 };
 
@@ -154,5 +153,8 @@ const styles = StyleSheet.create({
   },
   label: {
     letterSpacing: -0.2,
+  },
+  disabledContent: {
+    opacity: 0.5,
   },
 });

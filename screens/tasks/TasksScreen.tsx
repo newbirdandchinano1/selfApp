@@ -35,7 +35,7 @@ import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
@@ -344,12 +344,15 @@ function HabitProgressDots({
 const STANDALONE_TODO_TITLE_MAX = 50;
 
 function PulseDot({ color }: { color: string }) {
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const scale = React.useRef(new Animated.Value(1)).current;
   const opacity = React.useRef(new Animated.Value(0.45)).current;
+  const allowPulse = motionReady && !reduceMotion;
 
   React.useEffect(() => {
-    if (reduceMotion) {
+    if (!allowPulse) {
+      scale.stopAnimation();
+      opacity.stopAnimation();
       scale.setValue(1);
       opacity.setValue(1);
       return;
@@ -367,14 +370,18 @@ function PulseDot({ color }: { color: string }) {
       ]),
     );
     loop.start();
-    return () => loop.stop();
-  }, [opacity, reduceMotion, scale]);
+    return () => {
+      loop.stop();
+      scale.stopAnimation();
+      opacity.stopAnimation();
+    };
+  }, [allowPulse, opacity, scale]);
 
   return (
     <View style={styles.pulseWrap}>
-      {reduceMotion ? null : (
+      {allowPulse ? (
         <Animated.View style={[styles.pulseRing, { backgroundColor: color, transform: [{ scale }], opacity }]} />
-      )}
+      ) : null}
       <View style={[styles.pulseCenter, { backgroundColor: color }]} />
     </View>
   );
@@ -569,12 +576,14 @@ function ScalePressable({
   scaleTo?: number;
   animatedStyle?: any;
 }) {
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  /** 偏好未就绪时不做缩放，避免第一下按压先缩后弹 */
+  const motionReduced = reduceMotion || !motionReady;
   const scale = React.useRef(new Animated.Value(1)).current;
 
   const handlePressIn = React.useCallback(
     (event: any) => {
-      if (!reduceMotion) {
+      if (!motionReduced) {
         Animated.spring(scale, {
           toValue: scaleTo,
           speed: 30,
@@ -584,12 +593,12 @@ function ScalePressable({
       }
       onPressIn?.(event);
     },
-    [onPressIn, reduceMotion, scale, scaleTo],
+    [motionReduced, onPressIn, scale, scaleTo],
   );
 
   const handlePressOut = React.useCallback(
     (event: any) => {
-      if (!reduceMotion) {
+      if (!motionReduced) {
         Animated.spring(scale, {
           toValue: 1,
           speed: 24,
@@ -599,7 +608,7 @@ function ScalePressable({
       }
       onPressOut?.(event);
     },
-    [onPressOut, reduceMotion, scale],
+    [motionReduced, onPressOut, scale],
   );
 
   return (
@@ -1832,7 +1841,7 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 
 export default function TasksScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const { width: windowWidth } = useWindowDimensions();
   const habitGridColumns = habitGridColumnsForWidth(windowWidth);
   /** 桌面端（web 宽屏）：两栏布局——左列日程表，右列 Tab 窗格（小习惯/待办/项目） */
@@ -2247,10 +2256,13 @@ export default function TasksScreen() {
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
-  const matrixAnim = React.useRef(new Animated.Value(0)).current;
-  const projectAnim = React.useRef(new Animated.Value(0)).current;
+  /** 项目面板透明度/位移。初值即终态，避免首次进入被分段 effect 从 0 再拉一次。 */
+  const projectAnim = React.useRef(new Animated.Value(1)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
-  const frogDoneBounceMap = React.useRef<Record<string, Animated.Value>>({});
+  /** 作废进行中的 projectAnim 回调，保证同一时刻只有这一处 effect 能写入。 */
+  const projectIntroGenRef = React.useRef(0);
+  /** 已经播放过入场的项目分类。未真正开播前不推进，避免 effect 重跑丢掉这一次。 */
+  const projectIntroTabRef = React.useRef<string | null>(null);
   const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
   /** 丢弃过期的整页 reload，避免并发 focus 刷新互相覆盖项目任务 */
@@ -2741,71 +2753,94 @@ export default function TasksScreen() {
   React.useEffect(() => {
     if (initialTasksLoadPending) return;
 
-    if (!tasksContentRevealDoneRef.current) {
-      tasksContentRevealDoneRef.current = true;
+    const snapPage = () => {
+      pageFadeAnim.stopAnimation();
+      pageTranslateAnim.stopAnimation();
       pageFadeAnim.setValue(1);
       pageTranslateAnim.setValue(0);
-      matrixAnim.setValue(1);
-      projectAnim.setValue(1);
+      tasksContentOpacity.setValue(1);
+    };
+
+    if (!motionReady || reduceMotion) {
+      snapPage();
       return;
     }
 
-    if (reduceMotion) {
-      pageFadeAnim.setValue(1);
-      pageTranslateAnim.setValue(0);
-      matrixAnim.setValue(1);
-      projectAnim.setValue(1);
-      tasksContentOpacity.setValue(1);
+    if (!tasksContentRevealDoneRef.current) {
+      tasksContentRevealDoneRef.current = true;
+      snapPage();
       return;
     }
 
     pageFadeAnim.setValue(0);
     pageTranslateAnim.setValue(18);
-    matrixAnim.setValue(0);
-    projectAnim.setValue(0);
     tasksContentOpacity.setValue(1);
-    Animated.sequence([
-      Animated.parallel([
-        Animated.timing(pageFadeAnim, {
-          toValue: 1,
-          duration: 420,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(pageTranslateAnim, {
-          toValue: 0,
-          duration: 420,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.stagger(90, [
-        Animated.timing(matrixAnim, {
-          toValue: 1,
-          duration: 460,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(projectAnim, {
-          toValue: 1,
-          duration: 460,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
+    Animated.parallel([
+      Animated.timing(pageFadeAnim, {
+        toValue: 1,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(pageTranslateAnim, {
+        toValue: 0,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
     ]).start();
   }, [
     initialTasksLoadPending,
-    matrixAnim,
+    motionReady,
     pageFadeAnim,
     pageTranslateAnim,
-    projectAnim,
     reduceMotion,
     tasksContentOpacity,
   ]);
 
+  /**
+   * projectAnim 的唯一写入者。
+   * 首次内容就绪只停在终态；项目分类变化且项目面板可见时才从 0.9 spring 到 1。
+   * 面板不可见时不在后台播放，等切回项目面板再播一次。
+   */
   React.useEffect(() => {
+    if (initialTasksLoadPending) return;
+
+    if (!motionReady) {
+      projectAnim.stopAnimation();
+      projectAnim.setValue(1);
+      return;
+    }
+
+    const snapProjectPane = () => {
+      projectIntroGenRef.current += 1;
+      projectAnim.stopAnimation();
+      projectAnim.setValue(1);
+    };
+
+    if (reduceMotion) {
+      projectIntroTabRef.current = projectTab;
+      snapProjectPane();
+      return;
+    }
+
+    const introTab = projectIntroTabRef.current;
+    if (introTab === null || introTab === projectTab || secondaryPane !== 'projects') {
+      if (introTab === null || introTab === projectTab) {
+        projectIntroTabRef.current = projectTab;
+      }
+      snapProjectPane();
+      return;
+    }
+
+    const fromTab = introTab;
+    projectIntroTabRef.current = projectTab;
+    const gen = projectIntroGenRef.current + 1;
+    projectIntroGenRef.current = gen;
+    let introStarted = false;
     projectAnim.stopAnimation(() => {
+      if (projectIntroGenRef.current !== gen) return;
+      introStarted = true;
       projectAnim.setValue(0.9);
       Animated.spring(projectAnim, {
         toValue: 1,
@@ -2814,7 +2849,15 @@ export default function TasksScreen() {
         useNativeDriver: true,
       }).start();
     });
-  }, [projectAnim, projectTab]);
+
+    return () => {
+      projectIntroGenRef.current += 1;
+      if (!introStarted && projectIntroTabRef.current === projectTab) {
+        projectIntroTabRef.current = fromTab;
+      }
+      projectAnim.stopAnimation();
+    };
+  }, [initialTasksLoadPending, motionReady, projectAnim, projectTab, reduceMotion, secondaryPane]);
 
   React.useEffect(() => {
     if (!projectTabApiReadyRef.current) return;
@@ -2826,26 +2869,14 @@ export default function TasksScreen() {
   }, [projectTab, loadProjectsListFromApi]);
 
   React.useEffect(() => {
-    const anim = projectAnim;
-    anim.stopAnimation(() => {
-      anim.setValue(0.9);
-      Animated.spring(anim, {
-        toValue: 1,
-        speed: 18,
-        bounciness: 7,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, [projectAnim]);
-
-  React.useEffect(() => {
     if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
       UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
 
   React.useEffect(() => {
-    if (reduceMotion) {
+    if (!motionReady || reduceMotion) {
+      bgFloatAnim.stopAnimation();
       bgFloatAnim.setValue(0);
       return;
     }
@@ -2866,8 +2897,11 @@ export default function TasksScreen() {
       ]),
     );
     loop.start();
-    return () => loop.stop();
-  }, [bgFloatAnim, reduceMotion]);
+    return () => {
+      loop.stop();
+      bgFloatAnim.stopAnimation();
+    };
+  }, [bgFloatAnim, motionReady, reduceMotion]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -3482,37 +3516,6 @@ export default function TasksScreen() {
       }
     },
     [applyHabitBoundTaskSyncResult],
-  );
-
-  const getFrogDoneBounce = React.useCallback((taskId: string) => {
-    if (!frogDoneBounceMap.current[taskId]) {
-      frogDoneBounceMap.current[taskId] = new Animated.Value(1);
-    }
-    return frogDoneBounceMap.current[taskId];
-  }, []);
-
-  const playFrogDoneBounce = React.useCallback(
-    (taskId: string) => {
-      const anim = getFrogDoneBounce(taskId);
-      anim.stopAnimation(() => {
-        anim.setValue(1);
-        Animated.sequence([
-          Animated.timing(anim, {
-            toValue: 1.28,
-            duration: 120,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.spring(anim, {
-            toValue: 1,
-            speed: 18,
-            bounciness: 9,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      });
-    },
-    [getFrogDoneBounce]
   );
 
   const moveProjectToInboxById = React.useCallback(async (projectId: string) => {
@@ -4386,7 +4389,6 @@ export default function TasksScreen() {
         : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
       if (!current || isTaskShelvedStatus(current.status)) return;
       if (isFrogSubjectDeleted(current.extra_data)) {
-        playFrogDoneBounce(taskId);
         Alert.alert('无法操作', '该青蛙对应的任务/项目已删除，仅保留完成记录。');
         return;
       }
@@ -4395,13 +4397,11 @@ export default function TasksScreen() {
       const frogDone = isFrogDoneForToday(current.extra_data, current.status, assignYmd);
 
       if (frogDone && !isTaskTerminalStatus(current.status)) {
-        playFrogDoneBounce(taskId);
         void reopenFrogSessionOnly(taskId, assignYmd);
         return;
       }
 
       if (frogDone) {
-        playFrogDoneBounce(taskId);
         dismissCompletionCelebration();
         if (isProjectFrog && project) {
           void reopenProjectFromList(project);
@@ -4426,14 +4426,12 @@ export default function TasksScreen() {
             {
               text: '还未完成',
               onPress: () => {
-                playFrogDoneBounce(taskId);
                 void completeFrogSessionOnly(taskId, assignYmd);
               },
             },
             {
               text: '完成',
               onPress: () => {
-                playFrogDoneBounce(taskId);
                 if (isProjectFrog && project) {
                   promptProjectCompletionDisposition(project);
                 } else {
@@ -4446,7 +4444,6 @@ export default function TasksScreen() {
         return;
       }
 
-      playFrogDoneBounce(taskId);
       if (isProjectFrog && project) {
         promptProjectCompletionDisposition(project);
       } else {
@@ -4457,7 +4454,6 @@ export default function TasksScreen() {
       completeFrogSessionOnly,
       findVisibleTask,
       logicalTodayYmd,
-      playFrogDoneBounce,
       projectTaskTreeMap,
       projects,
       promptProjectCompletionDisposition,

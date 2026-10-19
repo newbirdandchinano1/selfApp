@@ -1,4 +1,4 @@
-import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import React from 'react';
 import {
   Animated,
@@ -40,7 +40,7 @@ export function ScheduleCellTitleRotator({
   numberOfLines = 1,
   style,
 }: Props) {
-  const reduceMotion = useReducedMotion();
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const safeTitles = React.useMemo(() => {
     const cleaned = titles.map((t) => t.trim()).filter(Boolean);
     return cleaned.length > 0 ? cleaned : ['青蛙'];
@@ -55,8 +55,6 @@ export function ScheduleCellTitleRotator({
   const translateY = React.useRef(new Animated.Value(0)).current;
   const indexRef = React.useRef(0);
   const animatingRef = React.useRef(false);
-  const reduceMotionRef = React.useRef(reduceMotion);
-  reduceMotionRef.current = reduceMotion;
 
   const titlesKey = safeTitles.join('\u0001');
   React.useEffect(() => {
@@ -77,7 +75,14 @@ export function ScheduleCellTitleRotator({
   }, [safeTitles.length, index]);
 
   React.useEffect(() => {
-    if (safeTitles.length <= 1) return;
+    if (!motionReady || reduceMotion || safeTitles.length <= 1) {
+      opacity.stopAnimation();
+      translateY.stopAnimation();
+      opacity.setValue(1);
+      translateY.setValue(0);
+      animatingRef.current = false;
+      return;
+    }
 
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -96,13 +101,6 @@ export function ScheduleCellTitleRotator({
         const from = indexRef.current;
         const next = (from + 1) % safeTitles.length;
         if (next === from) {
-          scheduleNext(DWELL_MS);
-          return;
-        }
-
-        if (reduceMotionRef.current) {
-          indexRef.current = next;
-          setIndex(next);
           scheduleNext(DWELL_MS);
           return;
         }
@@ -167,7 +165,7 @@ export function ScheduleCellTitleRotator({
       translateY.stopAnimation();
       animatingRef.current = false;
     };
-  }, [safeTitles.length, opacity, translateY]);
+  }, [motionReady, reduceMotion, safeTitles.length, opacity, translateY]);
 
   const current = safeTitles[index] ?? safeTitles[0]!;
 

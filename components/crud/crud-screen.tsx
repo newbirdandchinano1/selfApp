@@ -29,6 +29,8 @@ export type CrudScreenProps = {
   header?: React.ReactNode;
   loading?: boolean;
   loadingHint?: string;
+  /** 加载中的自定义骨架；不传时行为与现在完全一致（居中 spinner） */
+  loadingSkeleton?: React.ReactNode;
   error?: string | null;
   onRetryError?: () => void;
   /** 列表空数据（非加载、非错误） */
@@ -39,6 +41,8 @@ export type CrudScreenProps = {
   missingMessage?: string;
   /** 编辑页：包一层 KeyboardAvoidingView */
   keyboardAvoiding?: boolean;
+  /** 内容直接出现，不包原生透明度动画 */
+  immediate?: boolean;
   children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   bodyStyle?: StyleProp<ViewStyle>;
@@ -58,6 +62,7 @@ export function CrudScreen({
   header,
   loading = false,
   loadingHint,
+  loadingSkeleton,
   error,
   onRetryError,
   empty = false,
@@ -65,6 +70,7 @@ export function CrudScreen({
   missing = false,
   missingMessage,
   keyboardAvoiding = false,
+  immediate = false,
   children,
   style,
   bodyStyle,
@@ -98,7 +104,12 @@ export function CrudScreen({
   }
 
   const shell = (
-    <ScreenLoadingShell loading={loading} hint={loadingHint} style={styles.shell}>
+    <ScreenLoadingShell
+      loading={loading}
+      hint={loadingHint}
+      skeleton={loadingSkeleton}
+      style={styles.shell}
+      immediate={immediate}>
       <View style={[styles.body, bodyStyle]}>{body}</View>
     </ScreenLoadingShell>
   );

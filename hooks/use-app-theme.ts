@@ -1,6 +1,7 @@
 import {
   getPalette,
   Layout,
+  Motion,
   Radius,
   Shadows,
   Spacing,
@@ -22,6 +23,7 @@ export type AppTheme = {
   typography: typeof Typography;
   textScale: typeof TextScalePolicy;
   shadows: typeof Shadows;
+  motion: typeof Motion;
 };
 
 /**
@@ -40,5 +42,6 @@ export function useAppTheme(): AppTheme {
     typography: Typography,
     textScale: TextScalePolicy,
     shadows: Shadows,
+    motion: Motion,
   };
 }

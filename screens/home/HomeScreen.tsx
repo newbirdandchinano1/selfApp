@@ -10,6 +10,7 @@ import { AppIconButton } from '@/components/ui/app-icon-button';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import React from 'react';
@@ -696,29 +697,25 @@ export default function HealthScreen() {
   const [quickAddCatalog, setQuickAddCatalog] = React.useState<QuickAddCardItem[]>(() => getDefaultQuickAddItems());
 
   const weekPagerRef = React.useRef<ScrollView>(null);
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  /** 偏好未就绪时按「减少动态」处理，避免第一下按压先缩后弹 */
+  const motionReduced = reduceMotion || !motionReady;
 
-  const fadeAnim = React.useRef(new Animated.Value(0)).current;
-  const translateYAnim = React.useRef(new Animated.Value(18)).current;
-  const ctaScaleAnim = React.useRef(new Animated.Value(1)).current;
-  const ctaPressAnim = React.useRef(new Animated.Value(1)).current;
+  const [ctaScaleAnim] = React.useState(() => new Animated.Value(1));
+  const [ctaPressAnim] = React.useState(() => new Animated.Value(1));
+  /** 呼吸缩放 × 按压缩放。节点只创建一次，避免每次渲染重建原生乘法节点 */
+  const [ctaCombinedScale] = React.useState(() => Animated.multiply(ctaScaleAnim, ctaPressAnim));
   const barGrowAnim = React.useRef(new Animated.Value(0)).current;
   const selectedDayPopAnim = React.useRef(new Animated.Value(1)).current;
   const bgFloatAnim = React.useRef(new Animated.Value(0)).current;
-  const metricCardAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const metricImpactAnims = React.useRef(nutrientMetricMeta.map(() => new Animated.Value(0))).current;
   const wheelImpactAnim = React.useRef(new Animated.Value(0)).current;
   const quickAddCardAnimsRef = React.useRef<Animated.Value[]>([
-    new Animated.Value(0),
-    new Animated.Value(0),
-    new Animated.Value(0),
-    new Animated.Value(0),
+    new Animated.Value(1),
+    new Animated.Value(1),
+    new Animated.Value(1),
+    new Animated.Value(1),
   ]);
-  const sectionEntranceAnims = React.useRef([
-    new Animated.Value(0),
-    new Animated.Value(0),
-    new Animated.Value(0),
-    new Animated.Value(0),
-  ]).current;
 
   const weekDaysCurrent = React.useMemo(() => getWeekDaysFromAnchor(weekAnchorDate), [weekAnchorDate]);
   const weekDaysPrev = React.useMemo(() => getWeekDaysFromAnchor(addDays(weekAnchorDate, -7)), [weekAnchorDate]);
@@ -734,7 +731,6 @@ export default function HealthScreen() {
   const [pageLoadRetrying, setPageLoadRetrying] = React.useState(false);
   /** 首次数据未就绪前展示骨架屏，避免显示全 0 假数据 */
   const [initialHealthLoadPending, setInitialHealthLoadPending] = React.useState(true);
-  const healthContentRevealDoneRef = React.useRef(false);
   const { showSkeleton, skeletonMounted, skeletonOpacity } = useHomeSkeletonReveal(
     initialHealthLoadPending,
     { fadeContent: false },
@@ -1184,6 +1180,8 @@ export default function HealthScreen() {
   const playIntakeFeedbackAnimation = React.useCallback(() => {
     metricImpactAnims.forEach((anim) => anim.setValue(0));
     wheelImpactAnim.setValue(0);
+    // 减少动态：不做缩放脉冲，指标直接停在终态
+    if (motionReduced) return;
     Animated.parallel([
       Animated.stagger(
         60,
@@ -1219,7 +1217,7 @@ export default function HealthScreen() {
         }),
       ]),
     ]).start();
-  }, [metricImpactAnims, wheelImpactAnim]);
+  }, [metricImpactAnims, motionReduced, wheelImpactAnim]);
 
   const persistManualIntakeDelta = React.useCallback(
     async (type: 'hydration' | 'protein' | 'carbohydrate' | 'calories', amount: number, quickAddKey?: string) => {
@@ -1543,65 +1541,67 @@ export default function HealthScreen() {
 
   React.useEffect(() => {
     const anims = quickAddCardAnimsRef.current;
-    const revealed = healthContentRevealDoneRef.current;
     while (anims.length < quickAddItems.length) {
-      anims.push(new Animated.Value(revealed ? 1 : 0));
+      anims.push(new Animated.Value(1));
     }
-    if (revealed) {
-      for (let i = 0; i < quickAddItems.length; i++) {
-        anims[i]?.setValue(1);
-      }
-      sectionEntranceAnims[1].setValue(1);
+    for (let i = 0; i < quickAddItems.length; i++) {
+      anims[i]?.setValue(1);
     }
-  }, [quickAddItems.length, sectionEntranceAnims]);
+  }, [quickAddItems.length]);
 
   React.useEffect(() => {
-    if (initialHealthLoadPending) return;
-
-    metricCardAnims.forEach((anim) => anim.setValue(1));
-    quickAddCardAnimsRef.current.forEach((anim) => anim.setValue(1));
-    sectionEntranceAnims.forEach((anim) => anim.setValue(1));
-    fadeAnim.setValue(1);
-    translateYAnim.setValue(0);
-
-    if (!healthContentRevealDoneRef.current) {
-      healthContentRevealDoneRef.current = true;
+    if (!motionReady || reduceMotion) {
+      ctaScaleAnim.stopAnimation();
+      ctaScaleAnim.setValue(1);
+      return;
     }
-  }, [fadeAnim, translateYAnim, metricCardAnims, sectionEntranceAnims, initialHealthLoadPending]);
-
-  React.useEffect(() => {
     const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(ctaScaleAnim, {
           toValue: 1.035,
           duration: 1400,
           easing: Easing.inOut(Easing.sin),
-          useNativeDriver: false,
+          useNativeDriver: true,
         }),
         Animated.timing(ctaScaleAnim, {
           toValue: 1,
           duration: 1400,
           easing: Easing.inOut(Easing.sin),
-          useNativeDriver: false,
+          useNativeDriver: true,
         }),
       ])
     );
     pulse.start();
 
-    return () => pulse.stop();
-  }, [ctaScaleAnim]);
+    return () => {
+      pulse.stop();
+      ctaScaleAnim.stopAnimation();
+    };
+  }, [ctaScaleAnim, motionReady, reduceMotion]);
 
   React.useEffect(() => {
+    if (reduceMotion) {
+      barGrowAnim.stopAnimation();
+      barGrowAnim.setValue(1);
+      return;
+    }
     barGrowAnim.setValue(0);
-    Animated.timing(barGrowAnim, {
+    const grow = Animated.timing(barGrowAnim, {
       toValue: 1,
       duration: 900,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
-    }).start();
-  }, [barGrowAnim]);
+    });
+    grow.start();
+    return () => grow.stop();
+  }, [barGrowAnim, reduceMotion]);
 
   React.useEffect(() => {
+    if (!motionReady || reduceMotion) {
+      bgFloatAnim.stopAnimation();
+      bgFloatAnim.setValue(0);
+      return;
+    }
     const bgFloat = Animated.loop(
       Animated.sequence([
         Animated.timing(bgFloatAnim, {
@@ -1620,8 +1620,11 @@ export default function HealthScreen() {
     );
 
     bgFloat.start();
-    return () => bgFloat.stop();
-  }, [bgFloatAnim]);
+    return () => {
+      bgFloat.stop();
+      bgFloatAnim.stopAnimation();
+    };
+  }, [bgFloatAnim, motionReady, reduceMotion]);
 
   const assistantTheme = {
     水分: {
@@ -1907,20 +1910,24 @@ export default function HealthScreen() {
                       disabled={disabled}
                       onPress={() => {
                         if (disabled) return;
-                        Animated.sequence([
-                          Animated.spring(selectedDayPopAnim, {
-                            toValue: 0.92,
-                            speed: 24,
-                            bounciness: 0,
-                            useNativeDriver: true,
-                          }),
-                          Animated.spring(selectedDayPopAnim, {
-                            toValue: 1,
-                            speed: 20,
-                            bounciness: 9,
-                            useNativeDriver: true,
-                          }),
-                        ]).start();
+                        if (motionReduced) {
+                          selectedDayPopAnim.setValue(1);
+                        } else {
+                          Animated.sequence([
+                            Animated.spring(selectedDayPopAnim, {
+                              toValue: 0.92,
+                              speed: 24,
+                              bounciness: 0,
+                              useNativeDriver: true,
+                            }),
+                            Animated.spring(selectedDayPopAnim, {
+                              toValue: 1,
+                              speed: 20,
+                              bounciness: 9,
+                              useNativeDriver: true,
+                            }),
+                          ]).start();
+                        }
 
                         setSelectedDate(normalizedItemDate);
                         if (pageIndex === 0) {
@@ -2563,20 +2570,24 @@ export default function HealthScreen() {
                             key={`${item.day}-${index}`}
                             style={styles.barGroup}
                             onPress={() => {
-                              Animated.sequence([
-                                Animated.spring(selectedDayPopAnim, {
-                                  toValue: 0.92,
-                                  speed: 24,
-                                  bounciness: 0,
-                                  useNativeDriver: true,
-                                }),
-                                Animated.spring(selectedDayPopAnim, {
-                                  toValue: 1,
-                                  speed: 20,
-                                  bounciness: 9,
-                                  useNativeDriver: true,
-                                }),
-                              ]).start();
+                              if (motionReduced) {
+                                selectedDayPopAnim.setValue(1);
+                              } else {
+                                Animated.sequence([
+                                  Animated.spring(selectedDayPopAnim, {
+                                    toValue: 0.92,
+                                    speed: 24,
+                                    bounciness: 0,
+                                    useNativeDriver: true,
+                                  }),
+                                  Animated.spring(selectedDayPopAnim, {
+                                    toValue: 1,
+                                    speed: 20,
+                                    bounciness: 9,
+                                    useNativeDriver: true,
+                                  }),
+                                ]).start();
+                              }
                               setSelectedDate(normalizeDate(item.date));
                             }}
                           >
@@ -2680,7 +2691,7 @@ export default function HealthScreen() {
           {
             right: FLOATING_CTA_MARGIN,
             bottom: Math.max(insets.bottom, 12) + 72,
-            transform: [{ scale: Animated.multiply(ctaScaleAnim, ctaPressAnim) }],
+            transform: [{ scale: ctaCombinedScale }],
           },
         ]}
       >
@@ -2699,19 +2710,27 @@ export default function HealthScreen() {
             setSheetOpen(true);
           }}
           onPressIn={() => {
+            if (motionReduced) {
+              ctaPressAnim.setValue(1);
+              return;
+            }
             Animated.spring(ctaPressAnim, {
               toValue: 0.965,
               speed: 30,
               bounciness: 0,
-              useNativeDriver: false,
+              useNativeDriver: true,
             }).start();
           }}
           onPressOut={() => {
+            if (motionReduced) {
+              ctaPressAnim.setValue(1);
+              return;
+            }
             Animated.spring(ctaPressAnim, {
               toValue: 1,
               speed: 24,
               bounciness: 6,
-              useNativeDriver: false,
+              useNativeDriver: true,
             }).start();
           }}
           activeOpacity={0.9}

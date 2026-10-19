@@ -84,28 +84,50 @@ export const TextScalePolicy = {
   minReadableSize: 11,
 } as const;
 
-/** 字重与字号 — 财务页偏粗、紧凑字距；含 lineHeight 以便系统缩放时行距同步 */
+/**
+ * 字重与字号。页面标题用 Semibold/Bold，正文 Regular，大数字才加重并收紧字距。
+ * 含 lineHeight，系统缩放时行距同步。不加载自定义字体，使用系统字。
+ */
 export const Typography = {
-  display: { fontSize: 44, fontWeight: '900' as const, letterSpacing: -1.2, lineHeight: 52 },
-  h1: { fontSize: 28, fontWeight: '900' as const, letterSpacing: -0.8, lineHeight: 34 },
-  h2: { fontSize: 22, fontWeight: '900' as const, letterSpacing: -0.6, lineHeight: 28 },
-  h3: { fontSize: 18, fontWeight: '900' as const, letterSpacing: -0.3, lineHeight: 24 },
-  title: { fontSize: 16, fontWeight: '900' as const, letterSpacing: -0.2, lineHeight: 22 },
-  body: { fontSize: 14, fontWeight: '600' as const, lineHeight: 20 },
-  bodyStrong: { fontSize: 14, fontWeight: '900' as const, letterSpacing: -0.2, lineHeight: 20 },
-  caption: { fontSize: 12, fontWeight: '700' as const, letterSpacing: 0.3, lineHeight: 16 },
-  label: { fontSize: 11, fontWeight: '800' as const, letterSpacing: 0.6, lineHeight: 14 },
+  display: { fontSize: 44, fontWeight: '700' as const, letterSpacing: -1.1, lineHeight: 52 },
+  h1: { fontSize: 28, fontWeight: '700' as const, letterSpacing: -0.6, lineHeight: 34 },
+  h2: { fontSize: 22, fontWeight: '700' as const, letterSpacing: -0.4, lineHeight: 28 },
+  h3: { fontSize: 18, fontWeight: '600' as const, letterSpacing: -0.3, lineHeight: 24 },
+  title: { fontSize: 16, fontWeight: '600' as const, letterSpacing: -0.2, lineHeight: 22 },
+  body: { fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
+  bodyStrong: { fontSize: 14, fontWeight: '600' as const, letterSpacing: -0.2, lineHeight: 20 },
+  caption: { fontSize: 12, fontWeight: '400' as const, letterSpacing: 0, lineHeight: 16 },
+  label: { fontSize: 11, fontWeight: '600' as const, letterSpacing: 0.2, lineHeight: 14 },
   /** ≥11pt：满足 HIG 可读地板；不再使用 10pt kicker */
   kicker: {
     fontSize: 11,
-    fontWeight: '900' as const,
-    letterSpacing: 1.6,
+    fontWeight: '600' as const,
+    letterSpacing: 1.2,
     textTransform: 'uppercase' as const,
     lineHeight: 14,
   },
 } as const;
 
 export type TypographyRole = keyof typeof Typography;
+
+/** 动效只服务按压和进入，不做逐项编排 */
+export const Motion = {
+  /** @deprecated 兼容旧调用；新代码用 pressScaleButton / pressScaleCard */
+  pressScale: 0.98,
+  /** @deprecated 兼容旧调用；新代码用 pressOpacityButton */
+  pressOpacity: 0.92,
+  /** 主按钮 / 图标按钮按下缩放 */
+  pressScaleButton: 0.98,
+  /** 可点击整卡按下缩放（更克制，且不叠透明度） */
+  pressScaleCard: 0.985,
+  /** 主按钮 / 图标按钮按下透明度 */
+  pressOpacityButton: 0.94,
+  /** 按下 timing 时长 ms */
+  pressInMs: 90,
+  /** 抬起 spring；RN Animated.spring 的 speed / bounciness */
+  pressOutSpring: { speed: 24, bounciness: 3 },
+  enterMs: 220,
+} as const;
 
 export const Shadows = {
   card: {
@@ -163,7 +185,7 @@ export const PaletteLight = {
   progressTrack: '#e3eefc',
   progressFill: '#3b82f6',
   headerScrim: 'rgba(255,255,255,0.82)',
-  tabBarBorder: '#f1f5f9',
+  tabBarBorder: 'rgba(194,198,214,0.55)',
   iconOnLight: '#111827',
 } as const;
 
@@ -199,7 +221,7 @@ export const PaletteDark = {
   progressTrack: 'rgba(96,165,250,0.2)',
   progressFill: '#60a5fa',
   headerScrim: 'rgba(15,23,42,0.82)',
-  tabBarBorder: '#1e293b',
+  tabBarBorder: 'rgba(148,163,184,0.28)',
   iconOnLight: '#f8fafc',
 } as const;
 
@@ -247,6 +269,9 @@ export const TaskUiColors = {
     headerScrim: 'rgba(250,248,255,0.86)',
     pointsChipBg: 'rgba(251,191,36,0.12)',
     pointsChipBorder: 'rgba(217,119,6,0.22)',
+    /** 积分摘要表面（浅色暖纸，非主色） */
+    pointsSurface: '#fff8eb',
+    pointsSurfaceBorder: 'rgba(217,119,6,0.22)',
     primaryWash: 'rgba(0,88,190,0.08)',
     primaryWashStrong: 'rgba(0,88,190,0.1)',
     primaryWashBorder: 'rgba(0,88,190,0.22)',
@@ -295,6 +320,9 @@ export const TaskUiColors = {
     headerScrim: 'rgba(15,23,42,0.75)',
     pointsChipBg: 'rgba(251,191,36,0.14)',
     pointsChipBorder: 'rgba(251,191,36,0.28)',
+    /** 积分摘要表面（深色暖底，非简单反转） */
+    pointsSurface: '#2a2110',
+    pointsSurfaceBorder: 'rgba(251,191,36,0.28)',
     primaryWash: 'rgba(96,165,250,0.12)',
     primaryWashStrong: 'rgba(96,165,250,0.14)',
     primaryWashBorder: 'rgba(96,165,250,0.35)',
