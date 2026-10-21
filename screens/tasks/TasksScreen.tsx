@@ -2759,36 +2759,16 @@ export default function TasksScreen() {
       pageFadeAnim.setValue(1);
       pageTranslateAnim.setValue(0);
       tasksContentOpacity.setValue(1);
+      tasksContentRevealDoneRef.current = true;
     };
 
-    if (!motionReady || reduceMotion) {
+    // 已揭示过或减少动态 / 偏好未就绪：只保证终态，禁止再把 pageFadeAnim 打回 0
+    if (tasksContentRevealDoneRef.current || !motionReady || reduceMotion) {
       snapPage();
       return;
     }
 
-    if (!tasksContentRevealDoneRef.current) {
-      tasksContentRevealDoneRef.current = true;
-      snapPage();
-      return;
-    }
-
-    pageFadeAnim.setValue(0);
-    pageTranslateAnim.setValue(18);
-    tasksContentOpacity.setValue(1);
-    Animated.parallel([
-      Animated.timing(pageFadeAnim, {
-        toValue: 1,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.timing(pageTranslateAnim, {
-        toValue: 0,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-    ]).start();
+    snapPage();
   }, [
     initialTasksLoadPending,
     motionReady,

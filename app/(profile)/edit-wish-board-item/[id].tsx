@@ -1,61 +1,68 @@
-import { AppButton, AppInput, AppScreen, ScreenHeader } from '@/components/ui';
-import { WishBoardDescriptionField } from '@/components/wish-board/wish-board-description-field';
-import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
-import { Spacing } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { WishBoardItemForm } from '@/components/wish-board/wish-board-item-form';
+import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
+import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
-  emptyWishBoardRedeemConditions,
   loadWishBoardCurrentNetWorth,
   parseWishBoardRedeemConditions,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
-import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   getWishBoardItemById,
   updateWishBoardItem,
 } from '@/lib/repositories/wish-board/wish-board';
-import { assertNonNegativeCostPoints, formatPoints } from '@/lib/reward-points';
+import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
+import { getPointsBalance } from '@/lib/repositories/points/points';
 import { forgetUnusedWishUploads } from '@/lib/wish-images';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
+type FormInitial = {
+  title: string;
+  description: string | null;
+  icon_key: string;
+  wish_type: WishBoardWishType;
+  cost_points: number;
+  redeem_conditions: WishBoardRedeemConditions;
+};
+
+/** 编辑 / 查看心愿：与新增同一套表单（设计稿 05「同一表单承载新增与编辑」） */
 export default function EditWishBoardItemScreen() {
   const router = useRouter();
-  const { colors, isDark } = useAppTheme();
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : '';
   const uploadedUrisRef = useRef<string[]>([]);
+  const { c } = useWishBoxTheme();
+  const styles = useWishStyles(makeStyles);
 
-  const [title, setTitle] = useState('');
-  const [costText, setCostText] = useState('');
-  const [description, setDescription] = useState('');
-  const [redeemConditions, setRedeemConditions] = useState<WishBoardRedeemConditions>(
-    emptyWishBoardRedeemConditions(),
-  );
+  const [ready, setReady] = useState(false);
+  const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
-  const [bindLoading, setBindLoading] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [initial, setInitial] = useState<FormInitial | null>(null);
+  const [originalDescription, setOriginalDescription] = useState<string | null>(null);
   const [redeemed, setRedeemed] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const [row, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
+        const [row, nextBalance, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
           getWishBoardItemById(id),
+          getPointsBalance(),
           getProjects(),
           getTasks(),
           loadWishBoardCurrentNetWorth(),
         ]);
         if (cancelled) return;
+        setBalance(nextBalance);
         setProjects(nextProjects);
         setTasks(nextTasks);
         setCurrentNetWorth(nextNetWorth);
@@ -64,17 +71,19 @@ export default function EditWishBoardItemScreen() {
           router.back();
           return;
         }
-        setTitle(row.title);
-        setCostText(formatPoints(row.cost_points));
-        setDescription(row.description ?? '');
-        setRedeemConditions(parseWishBoardRedeemConditions(row.extra_data));
+        setInitial({
+          title: row.title,
+          description: row.description,
+          icon_key: row.icon_key ?? '',
+          wish_type: row.wish_type,
+          cost_points: row.cost_points,
+          redeem_conditions: parseWishBoardRedeemConditions(row.extra_data),
+        });
+        setOriginalDescription(row.description);
         setRedeemed(row.wish_type === 'once' && row.status === 'redeemed');
         uploadedUrisRef.current = [];
       } finally {
-        if (!cancelled) {
-          setBindLoading(false);
-          setLoading(false);
-        }
+        if (!cancelled) setReady(true);
       }
     })();
     return () => {
@@ -82,132 +91,85 @@ export default function EditWishBoardItemScreen() {
     };
   }, [id, router]);
 
-  const onBack = () => {
+  const onCancel = () => {
     const uris = uploadedUrisRef.current;
     uploadedUrisRef.current = [];
-    if (uris.length > 0) {
-      void forgetUnusedWishUploads(uris, description);
-    }
+    if (uris.length > 0) void forgetUnusedWishUploads(uris, originalDescription);
     router.back();
   };
 
-  const onSave = async () => {
+  const onSubmit = (values: FormInitial) => {
+    if (saving) return;
     if (redeemed) {
       toast.warn('已兑换的心愿不可编辑');
       return;
     }
-    let cost: number;
-    try {
-      cost = assertNonNegativeCostPoints(costText);
-    } catch (e) {
-      toast.warn(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
-      return;
-    }
-    if (!title.trim()) {
-      toast.warn('请填写心愿名称');
-      return;
-    }
     setSaving(true);
-    try {
-      const nextDescription = description.trim() || null;
-      await updateWishBoardItem(id, {
-        title: title.trim(),
-        cost_points: cost,
-        description: nextDescription,
-        redeem_conditions: redeemConditions,
-      });
-      await forgetUnusedWishUploads(uploadedUrisRef.current, nextDescription);
-      uploadedUrisRef.current = [];
-      toast.success('已保存');
-      router.back();
-    } catch (e) {
-      toast.error(toUserMessage(e, '保存失败，请稍后重试'));
-    } finally {
-      setSaving(false);
-    }
+    void (async () => {
+      try {
+        await updateWishBoardItem(id, {
+          title: values.title,
+          cost_points: values.cost_points,
+          description: values.description,
+          icon_key: values.icon_key,
+          wish_type: values.wish_type,
+          redeem_conditions: values.redeem_conditions,
+        });
+        await forgetUnusedWishUploads(uploadedUrisRef.current, values.description);
+        uploadedUrisRef.current = [];
+        toast.success('已保存');
+        router.back();
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后重试'));
+      } finally {
+        setSaving(false);
+      }
+    })();
   };
 
-  if (loading) {
+  if (!ready || !initial) {
     return (
-      <AppScreen header={<ScreenHeader title="编辑心愿" onBack={() => router.back()} />}>
-        <ActivityIndicator style={{ marginTop: 40 }} color={colors.primary} />
-      </AppScreen>
+      <View style={styles.loading}>
+        <ActivityIndicator size="small" color={c.pri} />
+        <Text style={styles.loadingText}>加载中…</Text>
+      </View>
     );
   }
 
   return (
-    <AppScreen
-      header={<ScreenHeader title="编辑心愿" onBack={onBack} />}
-      contentContainerStyle={styles.content}>
-      {redeemed ? (
-        <Text style={[styles.hint, { color: colors.textSecondary }]}>该心愿已兑换，仅可查看。</Text>
-      ) : null}
-      <View style={styles.form}>
-        <AppInput
-          label="心愿名称"
-          value={title}
-          onChangeText={setTitle}
-          editable={!redeemed}
-          maxLength={80}
-        />
-        <AppInput
-          label="所需积分"
-          value={costText}
-          onChangeText={setCostText}
-          editable={!redeemed}
-          placeholder="0（可含小数）"
-          keyboardType="decimal-pad"
-        />
-        <WishBoardDescriptionField
-          value={description}
-          onChange={setDescription}
-          onUploadedUri={(uri) => {
-            uploadedUrisRef.current.push(uri);
-          }}
-          wishId={id}
-          editable={!redeemed}
-          textColor={colors.text}
-          mutedColor={colors.textSecondary}
-          outline={colors.outline}
-          primary={colors.primary}
-          surfaceSubtle={colors.surfaceSubtle}
-        />
-        <WishBoardRedeemConditionsField
-          value={redeemConditions}
-          onChange={setRedeemConditions}
-          projects={projects}
-          tasks={tasks}
-          currentNetWorth={currentNetWorth}
-          loading={bindLoading}
-          disabled={redeemed}
-          textColor={colors.text}
-          outline={colors.textSecondary}
-          placeholderColor={colors.outline}
-          primary={colors.primary}
-          surfaceLow={colors.surfaceSubtle}
-          surfaceLowest={colors.surface}
-          isDark={isDark}
-        />
-      </View>
-      {!redeemed ? (
-        <AppButton label="保存" fullWidth loading={saving} onPress={() => void onSave()} />
-      ) : null}
-    </AppScreen>
+    <WishBoardItemForm
+      mode="edit"
+      initial={initial}
+      wishId={id}
+      balance={balance}
+      projects={projects}
+      tasks={tasks}
+      currentNetWorth={currentNetWorth}
+      saving={saving}
+      readOnly={redeemed}
+      notice={redeemed ? '该心愿已兑换，仅可查看' : undefined}
+      onUploadedUri={uri => {
+        uploadedUrisRef.current.push(uri);
+      }}
+      onSubmit={onSubmit}
+      onCancel={onCancel}
+    />
   );
 }
 
-const styles = StyleSheet.create({
-  content: {
-    paddingHorizontal: Spacing['5xl'],
-    paddingBottom: Spacing['6xl'],
-    gap: Spacing.lg,
-  },
-  form: {
-    gap: Spacing.md,
-    marginTop: Spacing.sm,
-  },
-  hint: {
-    marginTop: Spacing.sm,
-    fontSize: 13,
-  },
-});
+function makeStyles(c: WishBoxPalette, _shadows: WishBoxShadowSet) {
+  return StyleSheet.create({
+    loading: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: c.bg,
+    },
+    loadingText: {
+      fontSize: 12.5,
+      fontWeight: '600',
+      color: c.muted,
+    },
+  });
+}

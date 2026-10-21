@@ -53,6 +53,18 @@ export const AppSettingKey = {
   notificationAiCopyCache: '@selfapp/notification_ai_copy_cache_v1',
   /** 饮食偏好与禁忌（过敏、忌口、预设标签） */
   dietaryPrefs: '@selfapp/dietary_prefs_v1',
+  /** 菜谱用餐计划（按日+餐次） */
+  recipeMealPlan: '@selfapp/recipe_meal_plan_v1',
+  /** 菜谱采购清单状态（待购/库存/已购） */
+  recipeShopList: '@selfapp/recipe_shop_list_v1',
+  /** 菜谱菜单篮（待整理：可批量采购 / 安排计划） */
+  recipeMenuBasket: '@selfapp/recipe_menu_basket_v1',
+  /** 菜谱制作记录与评分 */
+  recipeCookLogs: '@selfapp/recipe_cook_logs_v1',
+  /** 菜谱模块触觉反馈开关（默认开） */
+  recipeHaptic: '@selfapp/recipe_haptic_v1',
+  /** 菜谱分类顺序与图标（同步到首页侧栏 / 分类选择器） */
+  recipeCategoryMeta: '@selfapp/recipe_category_meta_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

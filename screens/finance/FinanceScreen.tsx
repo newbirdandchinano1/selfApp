@@ -700,30 +700,17 @@ export default function FinanceScreen() {
       revealAnim.stopAnimation();
       revealAnim.setValue(1);
       financeContentOpacity.setValue(1);
+      financeContentRevealDoneRef.current = true;
     };
 
-    // 减少动态或偏好未就绪：直接到终态，不播位移淡入
-    if (!motionReady || reduceMotion) {
+    // 已揭示过或减少动态 / 偏好未就绪：只保证终态，禁止再把 revealAnim 打回 0（会整页透明）
+    if (financeContentRevealDoneRef.current || !motionReady || reduceMotion) {
       snapReveal();
       return;
     }
 
-    if (!financeContentRevealDoneRef.current) {
-      financeContentRevealDoneRef.current = true;
-      snapReveal();
-      return;
-    }
-
-    revealAnim.setValue(0);
-    financeContentOpacity.setValue(1);
-    const reveal = Animated.timing(revealAnim, {
-      toValue: 1,
-      duration: 460,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
-    reveal.start();
-    return () => reveal.stop();
+    financeContentRevealDoneRef.current = true;
+    snapReveal();
   }, [financeContentOpacity, initialFinanceLoadPending, motionReady, reduceMotion, revealAnim]);
 
   const loadFinanceTransactions = React.useCallback(async (forceRefresh = false) => {

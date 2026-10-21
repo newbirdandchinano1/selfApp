@@ -412,3 +412,33 @@ export async function listLocalPointsLedger(params?: {
     },
   };
 }
+
+/**
+ * 本月已攒积分：本地流水里本月正向 delta 之和（用于心愿匣「本月已攒 +X」）。
+ * 与余额无关，只统计入账；读取失败返回 0，不抛错。
+ */
+export async function getPointsEarnedThisMonth(date: Date = new Date()): Promise<number> {
+  try {
+    const db = await getDatabase();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const monthStart = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-01`;
+    const nextMonthStart =
+      date.getMonth() === 11
+        ? `${date.getFullYear() + 1}-01-01`
+        : `${date.getFullYear()}-${pad(date.getMonth() + 2)}-01`;
+    const rows = await db.getAllAsync<{ delta: number; created_at: string }>(
+      `SELECT delta, created_at FROM points_ledger
+       WHERE sync_status != 'pending_delete'
+         AND created_at >= ? AND created_at < ?`,
+      [monthStart, nextMonthStart],
+    );
+    let earned = 0;
+    for (const row of rows ?? []) {
+      const delta = asPoints(row.delta);
+      if (delta > 0) earned += delta;
+    }
+    return asPoints(earned);
+  } catch {
+    return 0;
+  }
+}

@@ -48,8 +48,13 @@ function clearPushDebounce(): void {
   }
 }
 
+/** 骨架 Tab 首屏加载中：拉长 debounce，让 page GET 先吃到读保留槽 */
+const SKELETON_TAB_PUSH_DEBOUNCE_MS = 1_800;
+
 function armPushTimer(delayMs: number): void {
   clearPushDebounce();
+  const delay =
+    isSkeletonLoadingTabActive() ? Math.max(delayMs, SKELETON_TAB_PUSH_DEBOUNCE_MS) : delayMs;
   pushDebounceTimer = setTimeout(() => {
     pushDebounceTimer = null;
     const task = pushChain.then(() => runFlush({}));
@@ -57,7 +62,7 @@ function armPushTimer(delayMs: number): void {
     void task.catch(e => {
       if (__DEV__) console.warn('[sync-manager] 后台推送失败', e);
     });
-  }, delayMs);
+  }, delay);
 }
 
 async function runFlush(opts?: RequestPushOpts): Promise<void> {
@@ -118,7 +123,8 @@ export function startSyncPushScheduler(): void {
     } catch (e) {
       if (__DEV__) console.warn('[sync-manager] 启动扫描 pending 失败', e);
     }
-    await requestPush({ awaitSync: true, quiet: true });
+    // 不 awaitSync：避免冷启动把写槽打满，任务/财务首屏 GET 排不上队一直骨架屏
+    requestPush({ quiet: true });
   })();
 }
 

@@ -1,40 +1,22 @@
-import { AppButton, AppInput } from '@/components/ui';
-import { WishBoardDescriptionField } from '@/components/wish-board/wish-board-description-field';
-import { WishBoardRedeemConditionsField } from '@/components/wish-board/wish-board-redeem-conditions-field';
-import { Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
 import {
-  DEFAULT_WISH_BOARD_ICON_KEY,
-  WISH_BOARD_ICON_OPTIONS,
-  wishBoardIconTintSoft,
-} from '@/lib/constants/wish-board-icons';
+  WishBoardItemForm,
+  type WishBoardItemFormValues,
+} from '@/components/wish-board/wish-board-item-form';
+import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
+import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
-import {
-  emptyWishBoardRedeemConditions,
-  loadWishBoardCurrentNetWorth,
-  type WishBoardRedeemConditions,
-} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
-import { toast, toUserMessage } from '@/lib/app-feedback';
 import { createWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
-import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
-import { assertNonNegativeCostPoints } from '@/lib/reward-points';
-import { forgetUnusedWishUploads } from '@/lib/wish-images';
-import { MaterialIcons } from '@expo/vector-icons';
-import React, { useEffect, useRef, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+  loadWishBoardCurrentNetWorth,
+} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
+import { getPointsBalance } from '@/lib/repositories/points/points';
+import { forgetUnusedWishUploads } from '@/lib/wish-images';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, StyleSheet, Text, View } from 'react-native';
 
 type Props = {
   visible: boolean;
@@ -42,333 +24,128 @@ type Props = {
   onCreated?: () => void;
 };
 
+/** 添加心愿：加载上下文后渲染标准全屏表单（设计稿 05） */
 export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
-  const { colors, isDark } = useAppTheme();
-  const insets = useSafeAreaInsets();
-
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [costText, setCostText] = useState('');
-  const [iconKey, setIconKey] = useState(DEFAULT_WISH_BOARD_ICON_KEY);
-  const [wishType, setWishType] = useState<WishBoardWishType>('once');
-  const [redeemConditions, setRedeemConditions] = useState<WishBoardRedeemConditions>(
-    emptyWishBoardRedeemConditions(),
-  );
+  const styles = useWishStyles(makeStyles);
+  const { c } = useWishBoxTheme();
+  const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
-  const [bindLoading, setBindLoading] = useState(false);
+  const [openToken, setOpenToken] = useState(0);
+  const [lastVisible, setLastVisible] = useState(visible);
+  const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const uploadedUrisRef = useRef<string[]>([]);
 
+  // 打开时重置本次会话（渲染期同步，避免 effect 内同步 setState）
+  if (visible !== lastVisible) {
+    setLastVisible(visible);
+    if (visible) {
+      setOpenToken(t => t + 1);
+      setReady(false);
+      setSaving(false);
+    }
+  }
+
   useEffect(() => {
     if (!visible) return;
-    setTitle('');
-    setDescription('');
-    setCostText('');
-    setIconKey(DEFAULT_WISH_BOARD_ICON_KEY);
-    setWishType('once');
-    setRedeemConditions(emptyWishBoardRedeemConditions());
-    setSaving(false);
     uploadedUrisRef.current = [];
-
     let cancelled = false;
-    setBindLoading(true);
     void (async () => {
       try {
-        const [nextProjects, nextTasks, nextNetWorth] = await Promise.all([
+        const [nextBalance, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
+          getPointsBalance(),
           getProjects(),
           getTasks(),
           loadWishBoardCurrentNetWorth(),
         ]);
         if (cancelled) return;
+        setBalance(nextBalance);
         setProjects(nextProjects);
         setTasks(nextTasks);
         setCurrentNetWorth(nextNetWorth);
       } catch {
-        if (!cancelled) {
-          setProjects([]);
-          setTasks([]);
-          setCurrentNetWorth(null);
-        }
+        // 上下文缺失时仍允许创建：条件选择暂不可用
       } finally {
-        if (!cancelled) setBindLoading(false);
+        if (!cancelled) setReady(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [visible]);
-
-  const discardUnusedUploads = () => {
-    const uris = uploadedUrisRef.current;
-    uploadedUrisRef.current = [];
-    if (uris.length === 0) return;
-    void forgetUnusedWishUploads(uris, null);
-  };
+  }, [visible, openToken]);
 
   const handleClose = () => {
-    discardUnusedUploads();
+    const uris = uploadedUrisRef.current;
+    uploadedUrisRef.current = [];
+    if (uris.length > 0) void forgetUnusedWishUploads(uris, null);
     onClose();
   };
 
-  const onSubmit = async () => {
-    let cost: number;
-    try {
-      cost = assertNonNegativeCostPoints(costText);
-    } catch (e) {
-      toast.warn(e instanceof Error ? e.message : '所需积分须为非负数字（可含小数）');
-      return;
-    }
-    if (!title.trim()) {
-      toast.warn('请填写心愿名称');
-      return;
-    }
+  const onSubmit = (values: WishBoardItemFormValues) => {
+    if (saving) return;
     setSaving(true);
-    try {
-      const nextDescription = description.trim() || null;
-      await createWishBoardItem({
-        title: title.trim(),
-        description: nextDescription,
-        icon_key: iconKey,
-        wish_type: wishType,
-        cost_points: cost,
-        redeem_conditions: redeemConditions,
-      });
-      await forgetUnusedWishUploads(uploadedUrisRef.current, nextDescription);
-      uploadedUrisRef.current = [];
-      onClose();
-      onCreated?.();
-      toast.success('已添加');
-    } catch (e) {
-      toast.error(toUserMessage(e, '添加失败，请稍后重试'));
-    } finally {
-      setSaving(false);
-    }
+    void (async () => {
+      try {
+        await createWishBoardItem(values);
+        await forgetUnusedWishUploads(uploadedUrisRef.current, values.description);
+        uploadedUrisRef.current = [];
+        onCreated?.();
+        onClose();
+        toast.success('已添加心愿');
+      } catch (e) {
+        toast.error(toUserMessage(e, '添加失败，请稍后重试'));
+      } finally {
+        setSaving(false);
+      }
+    })();
   };
 
-  const sheetBg = colors.surface;
-  const outline = colors.outline;
-  const muted = colors.textSecondary;
-  const selectedBorder = colors.primary;
-
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <Pressable style={styles.backdrop} onPress={handleClose} />
-        <View
-          style={[
-            styles.sheet,
-            {
-              backgroundColor: sheetBg,
-              borderColor: outline,
-              paddingBottom: Math.max(insets.bottom, Spacing['4xl']),
-            },
-          ]}>
-          <View style={styles.sheetHead}>
-            <Text style={[styles.sheetTitle, { color: colors.text }]}>添加心愿</Text>
-            <Pressable onPress={handleClose} hitSlop={10} accessibilityLabel="关闭">
-              <MaterialIcons name="close" size={22} color={muted} />
-            </Pressable>
-          </View>
-
-          <ScrollView
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.form}>
-            <AppInput
-              label="心愿名称"
-              value={title}
-              onChangeText={setTitle}
-              placeholder="例如：看一场电影"
-              maxLength={80}
-            />
-
-            <WishBoardDescriptionField
-              value={description}
-              onChange={setDescription}
-              onUploadedUri={(uri) => {
-                uploadedUrisRef.current.push(uri);
-              }}
-              textColor={colors.text}
-              mutedColor={muted}
-              outline={outline}
-              primary={colors.primary}
-              surfaceSubtle={colors.surfaceSubtle}
-            />
-
-            <Text style={[styles.fieldLabel, { color: muted }]}>图标</Text>
-            <View style={styles.iconGrid}>
-              {WISH_BOARD_ICON_OPTIONS.map(opt => {
-                const selected = opt.key === iconKey;
-                return (
-                  <Pressable
-                    key={opt.key}
-                    onPress={() => setIconKey(opt.key)}
-                    accessibilityRole="button"
-                    accessibilityLabel={opt.label}
-                    accessibilityState={{ selected }}
-                    style={[
-                      styles.iconCell,
-                      {
-                        borderColor: selected ? opt.tint : outline,
-                        backgroundColor: selected
-                          ? wishBoardIconTintSoft(opt.tint, isDark)
-                          : colors.surfaceSubtle,
-                      },
-                    ]}>
-                    <Text style={styles.iconEmoji}>{opt.emoji}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <AppInput
-              label="所需积分"
-              value={costText}
-              onChangeText={setCostText}
-              placeholder="0（可含小数）"
-              keyboardType="decimal-pad"
-            />
-
-            <WishBoardRedeemConditionsField
-              value={redeemConditions}
-              onChange={setRedeemConditions}
-              projects={projects}
-              tasks={tasks}
-              currentNetWorth={currentNetWorth}
-              loading={bindLoading}
-              textColor={colors.text}
-              outline={muted}
-              placeholderColor={outline}
-              primary={colors.primary}
-              surfaceLow={colors.surfaceSubtle}
-              surfaceLowest={colors.surface}
-              isDark={isDark}
-            />
-
-            <Text style={[styles.fieldLabel, { color: muted }]}>心愿类型</Text>
-            <View style={styles.typeRow}>
-              {(
-                [
-                  { key: 'once', label: '一次性心愿', hint: '兑换后结束' },
-                  { key: 'repeat', label: '重复性心愿', hint: '可多次兑换' },
-                ] as const
-              ).map(opt => {
-                const selected = wishType === opt.key;
-                return (
-                  <Pressable
-                    key={opt.key}
-                    onPress={() => setWishType(opt.key)}
-                    style={[
-                      styles.typeChip,
-                      {
-                        borderColor: selected ? selectedBorder : outline,
-                        backgroundColor: selected
-                          ? isDark
-                            ? 'rgba(96,165,250,0.16)'
-                            : 'rgba(0,88,190,0.08)'
-                          : 'transparent',
-                      },
-                    ]}>
-                    <MaterialIcons
-                      name={selected ? 'radio-button-checked' : 'radio-button-unchecked'}
-                      size={18}
-                      color={selected ? colors.primary : muted}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.typeLabel, { color: colors.text }]}>{opt.label}</Text>
-                      <Text style={[styles.typeHint, { color: muted }]}>{opt.hint}</Text>
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            <AppButton
-              label="添加心愿"
-              fullWidth
-              loading={saving}
-              onPress={() => void onSubmit()}
-              style={styles.submitBtn}
-            />
-          </ScrollView>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="fullScreen"
+      onRequestClose={handleClose}>
+      {ready ? (
+        <WishBoardItemForm
+          key={openToken}
+          mode="create"
+          balance={balance}
+          projects={projects}
+          tasks={tasks}
+          currentNetWorth={currentNetWorth}
+          saving={saving}
+          onUploadedUri={uri => {
+            uploadedUrisRef.current.push(uri);
+          }}
+          onSubmit={onSubmit}
+          onCancel={handleClose}
+        />
+      ) : (
+        <View style={styles.loading}>
+          <ActivityIndicator size="small" color={c.pri} />
+          <Text style={styles.loadingText}>加载中…</Text>
         </View>
-      </KeyboardAvoidingView>
+      )}
     </Modal>
   );
 }
 
-const styles = StyleSheet.create({
-  flex: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(15,23,42,0.45)',
-  },
-  sheet: {
-    maxHeight: '88%',
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: Spacing['4xl'],
-  },
-  sheetHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing['3xl'],
-  },
-  sheetTitle: {
-    ...Typography.h3,
-  },
-  form: {
-    gap: Spacing['3xl'],
-    paddingBottom: Spacing['4xl'],
-  },
-  fieldLabel: {
-    ...Typography.caption,
-    marginBottom: -Spacing.md,
-  },
-  iconGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-  },
-  iconCell: {
-    width: 44,
-    height: 44,
-    borderRadius: Radius.md,
-    borderWidth: 1.5,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  iconEmoji: {
-    fontSize: 22,
-    lineHeight: 28,
-  },
-  typeRow: {
-    gap: Spacing.md,
-  },
-  typeChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    borderWidth: 1.5,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing['3xl'],
-    paddingVertical: Spacing.xl,
-  },
-  typeLabel: {
-    ...Typography.bodyStrong,
-  },
-  typeHint: {
-    ...Typography.caption,
-    marginTop: 2,
-  },
-  submitBtn: {
-    marginTop: Spacing.sm,
-  },
-});
+function makeStyles(c: WishBoxPalette, _shadows: WishBoxShadowSet) {
+  return StyleSheet.create({
+    loading: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: c.bg,
+    },
+    loadingText: {
+      fontSize: 12.5,
+      fontWeight: '600',
+      color: c.muted,
+    },
+  });
+}

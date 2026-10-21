@@ -420,6 +420,9 @@ function RootLayoutInner() {
             <Stack.Screen name="points-ledger" />
             <Stack.Screen name="project-completion-logs" />
             <Stack.Screen name="wish-board" />
+            <Stack.Screen name="wish-board/[id]" />
+            <Stack.Screen name="wish-board-footprints" />
+            <Stack.Screen name="wish-board-redeemed" />
             <Stack.Screen name="add-wish-board-item" />
             <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="life-road" />
@@ -453,6 +456,8 @@ function RootLayoutInner() {
             <Stack.Screen name="blog" />
             <Stack.Screen name="recipe-view/[id]" />
             <Stack.Screen name="recipe-edit/[id]" />
+            <Stack.Screen name="recipe-categories" />
+            <Stack.Screen name="recipe-basket" />
             {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
             <Stack.Screen name="api-request-monitor" />
             <Stack.Screen name="category-sort" />

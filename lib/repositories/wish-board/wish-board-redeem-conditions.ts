@@ -32,6 +32,11 @@ export type WishBoardRedeemConditionCheck = {
   title: string;
   done: boolean;
   missing: boolean;
+  /**
+   * 子项进度（设计稿「2 / 4 · 还差 2 项子任务」）：
+   * 项目=项目下有效任务完成比；任务/待办=子任务完成比；无子项或未提供 allTasks 时为 null。
+   */
+  progress: { done: number; total: number } | null;
 };
 
 export type WishBoardRedeemEligibility = {
@@ -159,6 +164,23 @@ export function isTaskRedeemConditionMet(task: Pick<TaskRow, 'status'> | null | 
   return task?.status === 'done';
 }
 
+/** 子项进度：排除已取消任务（cancelled 不计入总数，done 计入完成数） */
+function computeSubTaskProgress(
+  allTasks: TaskRow[] | undefined,
+  match: (task: TaskRow) => boolean,
+): { done: number; total: number } | null {
+  if (!allTasks) return null;
+  let total = 0;
+  let done = 0;
+  for (const task of allTasks) {
+    if (!match(task)) continue;
+    if (task.status === 'cancelled') continue;
+    total += 1;
+    if (task.status === 'done') done += 1;
+  }
+  return total > 0 ? { done, total } : null;
+}
+
 function kindLabel(kind: WishBoardRedeemConditionKind): string {
   if (kind === 'project') return '项目';
   if (kind === 'todo') return '待办';
@@ -209,12 +231,15 @@ export function evaluateWishBoardRedeemEligibilitySync(
     tasksById: Map<string, TaskRow>;
     /** 与资产页「当前净资产」同一口径；未传入且设置了门槛时视为未达标 */
     currentNetWorth?: number;
+    /** 全量任务（详情页展示子项进度用）；不传则 check.progress 为 null */
+    allTasks?: TaskRow[];
   },
 ): WishBoardRedeemEligibility {
   const costPoints = Number.isFinite(item.cost_points) ? Math.max(0, item.cost_points) : 0;
   const pointsOk = costPoints <= 0 || balance >= costPoints;
   const conditions = parseWishBoardRedeemConditions(item.extra_data);
   const checks: WishBoardRedeemConditionCheck[] = [];
+  const allTasks = lookups.allTasks;
 
   for (const id of conditions.project_ids) {
     const project = lookups.projectsById.get(id) ?? null;
@@ -224,6 +249,7 @@ export function evaluateWishBoardRedeemEligibilitySync(
       title: project?.name?.trim() || '未知项目',
       done: isProjectRedeemConditionMet(project),
       missing: !project,
+      progress: computeSubTaskProgress(allTasks, t => t.project_id === id),
     });
   }
   for (const id of conditions.task_ids) {
@@ -234,6 +260,7 @@ export function evaluateWishBoardRedeemEligibilitySync(
       title: task?.title?.trim() || '未知任务',
       done: isTaskRedeemConditionMet(task),
       missing: !task,
+      progress: computeSubTaskProgress(allTasks, t => t.parent_task_id === id),
     });
   }
   for (const id of conditions.todo_ids) {
@@ -244,6 +271,7 @@ export function evaluateWishBoardRedeemEligibilitySync(
       title: task?.title?.trim() || '未知待办',
       done: isTaskRedeemConditionMet(task),
       missing: !task,
+      progress: computeSubTaskProgress(allTasks, t => t.parent_task_id === id),
     });
   }
   if (conditions.min_net_worth != null) {
@@ -260,6 +288,7 @@ export function evaluateWishBoardRedeemEligibilitySync(
       title: `净资产达到 ${needLabel}（当前 ${currentLabel}）`,
       done,
       missing: current == null,
+      progress: null,
     });
   }
 

@@ -1,8 +1,21 @@
 import { CrudDetailScreen } from '@/components/crud';
+import { AddRecipeToPlanSheet } from '@/components/recipe/add-recipe-to-plan-sheet';
+import { CompleteRecipeCookSheet } from '@/components/recipe/complete-recipe-cook-sheet';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
+import { StoredImage } from '@/components/stored-image';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
+import { toast, toUserMessage } from '@/lib/app-feedback';
+import {
+  averageRating,
+  formatAverageRating,
+  formatCookLogTime,
+  loadRecipeCookLogStore,
+  logsForRecipe,
+  type RecipeCookLog,
+} from '@/lib/recipe-cook-log';
+import { addRecipeToShop } from '@/lib/recipe-shop';
 import {
   getRecipe,
   getRecipeCategory,
@@ -11,10 +24,9 @@ import {
 } from '@/lib/recipes';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
-import { StoredImage } from '@/components/stored-image';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -49,6 +61,10 @@ export default function RecipeViewScreen() {
   const [categoryName, setCategoryName] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [planSheetVisible, setPlanSheetVisible] = useState(false);
+  const [cookSheetVisible, setCookSheetVisible] = useState(false);
+  const [cookLogs, setCookLogs] = useState<RecipeCookLog[]>([]);
+  const [shopBusy, setShopBusy] = useState(false);
 
   const heroOpacity = useRef(new Animated.Value(0)).current;
   const heroScale = useRef(new Animated.Value(1.06)).current;
@@ -100,6 +116,15 @@ export default function RecipeViewScreen() {
     ]).start();
   }, [contentOpacity, contentY, heroOpacity, heroScale, reduceMotion]);
 
+  const reloadCookLogs = useCallback(async (recipeId: string) => {
+    try {
+      const store = await loadRecipeCookLogStore();
+      setCookLogs(logsForRecipe(store, recipeId));
+    } catch {
+      setCookLogs([]);
+    }
+  }, []);
+
   const reload = useCallback(
     async (forceRefresh = false) => {
       if (!id) {
@@ -112,20 +137,23 @@ export default function RecipeViewScreen() {
           const item = await getRecipe(id);
           if (!item) {
             setRow(null);
+            setCookLogs([]);
             return;
           }
           const cat = await getRecipeCategory(item.category_id);
           setCategoryName(cat?.name ?? '');
           setRow(item);
+          await reloadCookLogs(item.id);
         }, forceRefresh);
       } catch {
         setError('加载失败，请重试');
         setRow(null);
+        setCookLogs([]);
       } finally {
         setLoading(false);
       }
     },
-    [id, wrapLoad],
+    [id, reloadCookLogs, wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
@@ -142,6 +170,28 @@ export default function RecipeViewScreen() {
   }, [loading, playEnter, row]);
 
   const displayTitle = row ? recipeListPreviewTitle(row) : '';
+  const avgRating = useMemo(() => averageRating(cookLogs), [cookLogs]);
+
+  const onAddToShop = useCallback(async () => {
+    if (!row || shopBusy) return;
+    const hasIngredient = row.ingredients.some(ing => ing.name.trim());
+    if (!hasIngredient) {
+      toast.info('该菜谱还没有食材');
+      return;
+    }
+    setShopBusy(true);
+    try {
+      const { alreadyAdded } = await addRecipeToShop({
+        recipeId: row.id,
+        recipeTitle: recipeListPreviewTitle(row),
+      });
+      toast.success(alreadyAdded ? '已在采购清单中' : '加入成功');
+    } catch (e) {
+      toast.error(toUserMessage(e, '加入失败'));
+    } finally {
+      setShopBusy(false);
+    }
+  }, [row, shopBusy]);
 
   if (!id) {
     return (
@@ -245,10 +295,135 @@ export default function RecipeViewScreen() {
                       <Text style={[styles.metaChipText, { color: p.primary }]}>{row.steps.length} 步</Text>
                     </View>
                   ) : null}
+                  {row.times_cooked > 0 ? (
+                    <View style={[styles.metaChip, { backgroundColor: p.primarySoft }]}>
+                      <Text style={[styles.metaChipText, { color: p.primary }]}>
+                        做过 {row.times_cooked} 次
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
                 <Text style={[styles.meta, { color: p.outlineMuted }]}>
                   更新于 {new Date(row.updated_at).toLocaleString('zh-CN')}
                 </Text>
+              </View>
+
+              <View style={styles.actionBlock}>
+                <View style={styles.actionRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="加入计划"
+                    onPress={() => setPlanSheetVisible(true)}
+                    style={({ pressed }) => [
+                      styles.actionSecondary,
+                      {
+                        backgroundColor: p.card,
+                        borderColor: p.border,
+                        opacity: pressed ? 0.82 : 1,
+                      },
+                    ]}>
+                    <MaterialIcons name="event-note" size={18} color={p.primary} />
+                    <Text style={[styles.actionSecondaryText, { color: p.primary }]}>加入计划</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="加入采购"
+                    onPress={() => void onAddToShop()}
+                    disabled={shopBusy}
+                    style={({ pressed }) => [
+                      styles.actionSecondary,
+                      {
+                        backgroundColor: p.card,
+                        borderColor: p.border,
+                        opacity: pressed || shopBusy ? 0.55 : 1,
+                      },
+                    ]}>
+                    <MaterialIcons name="add-shopping-cart" size={18} color={p.accent} />
+                    <Text style={[styles.actionSecondaryText, { color: p.accent }]}>加入采购</Text>
+                  </Pressable>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="完成制作＆评分"
+                  onPress={() => setCookSheetVisible(true)}
+                  style={({ pressed }) => [
+                    styles.actionPrimary,
+                    { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
+                  ]}>
+                  <MaterialIcons name="restaurant" size={18} color="#fff" />
+                  <Text style={styles.actionPrimaryText}>完成制作＆评分</Text>
+                </Pressable>
+              </View>
+
+              <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
+                <View style={styles.sectionHead}>
+                  <View style={[styles.sectionIcon, { backgroundColor: p.accentSoft }]}>
+                    <MaterialIcons name="rate-review" size={18} color={p.accent} />
+                  </View>
+                  <Text style={[styles.sectionTitle, { color: p.text }]}>制作记录与评分</Text>
+                </View>
+                <View style={styles.cookSummaryRow}>
+                  <View style={[styles.cookStat, { backgroundColor: p.inputBg }]}>
+                    <Text style={[styles.cookStatValue, { color: p.text }]}>{row.times_cooked}</Text>
+                    <Text style={[styles.cookStatLabel, { color: p.outlineMuted }]}>做过次数</Text>
+                  </View>
+                  <View style={[styles.cookStat, { backgroundColor: p.inputBg }]}>
+                    <Text style={[styles.cookStatValue, { color: p.text }]}>
+                      {formatAverageRating(avgRating)}
+                    </Text>
+                    <Text style={[styles.cookStatLabel, { color: p.outlineMuted }]}>平均评分</Text>
+                  </View>
+                  <View style={[styles.cookStat, { backgroundColor: p.inputBg }]}>
+                    <Text style={[styles.cookStatValue, { color: p.text }]} numberOfLines={1}>
+                      {row.last_cooked_at
+                        ? new Date(row.last_cooked_at).toLocaleDateString('zh-CN')
+                        : '—'}
+                    </Text>
+                    <Text style={[styles.cookStatLabel, { color: p.outlineMuted }]}>最近制作</Text>
+                  </View>
+                </View>
+                {cookLogs.length === 0 ? (
+                  <Text style={[styles.cookEmpty, { color: p.outlineMuted }]}>
+                    还没有制作记录。点上方「完成制作＆评分」记一次。
+                  </Text>
+                ) : (
+                  cookLogs.slice(0, 8).map((log, i) => (
+                    <View
+                      key={log.id}
+                      style={[
+                        styles.cookLogRow,
+                        i < Math.min(cookLogs.length, 8) - 1
+                          ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: p.border }
+                          : null,
+                      ]}>
+                      <View style={styles.cookLogMain}>
+                        <Text style={[styles.cookLogTime, { color: p.outlineMuted }]}>
+                          {formatCookLogTime(log.cookedAt)}
+                        </Text>
+                        <View style={styles.cookLogStars}>
+                          {[1, 2, 3, 4, 5].map(n => (
+                            <MaterialIcons
+                              key={n}
+                              name={n <= log.rating ? 'star' : 'star-border'}
+                              size={14}
+                              color={n <= log.rating ? p.accent : p.outlineMuted}
+                            />
+                          ))}
+                        </View>
+                      </View>
+                      {log.note?.trim() ? (
+                        <Text style={[styles.cookLogNote, { color: p.text }]} numberOfLines={2}>
+                          {log.note.trim()}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))
+                )}
+                {cookLogs.length > 8 ? (
+                  <Text style={[styles.cookMore, { color: p.outlineMuted }]}>
+                    还有 {cookLogs.length - 8} 条更早记录
+                  </Text>
+                ) : null}
               </View>
 
               {row.ingredients.length > 0 ? (
@@ -335,6 +510,28 @@ export default function RecipeViewScreen() {
             </Animated.View>
           </ScrollView>
         ) : null}
+
+        {row ? (
+          <>
+            <AddRecipeToPlanSheet
+              visible={planSheetVisible}
+              onClose={() => setPlanSheetVisible(false)}
+              recipeId={row.id}
+              recipeTitle={displayTitle}
+              categoryName={categoryName}
+            />
+            <CompleteRecipeCookSheet
+              visible={cookSheetVisible}
+              onClose={() => setCookSheetVisible(false)}
+              recipeId={row.id}
+              recipeTitle={displayTitle}
+              onSaved={updated => {
+                setRow(updated);
+                void reloadCookLogs(updated.id);
+              }}
+            />
+          </>
+        ) : null}
       </View>
     </CrudDetailScreen>
   );
@@ -405,6 +602,53 @@ const styles = StyleSheet.create({
   metaChip: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
   metaChipText: { fontSize: 12, fontWeight: '800' },
   meta: { fontSize: 12, fontWeight: '600' },
+  actionBlock: { marginBottom: 16, gap: 10 },
+  actionRow: { flexDirection: 'row', gap: 10 },
+  actionSecondary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 46,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  actionSecondaryText: { fontSize: 14, fontWeight: '800' },
+  actionPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 48,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+  },
+  actionPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '800' },
+  cookSummaryRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  cookStat: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    gap: 4,
+  },
+  cookStatValue: { fontSize: 15, fontWeight: '900' },
+  cookStatLabel: { fontSize: 11, fontWeight: '700' },
+  cookEmpty: { fontSize: 13, lineHeight: 20, fontWeight: '600' },
+  cookLogRow: { paddingVertical: 10, gap: 6 },
+  cookLogMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  cookLogTime: { fontSize: 12, fontWeight: '600', flex: 1 },
+  cookLogStars: { flexDirection: 'row', gap: 1 },
+  cookLogNote: { fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  cookMore: { fontSize: 12, fontWeight: '600', marginTop: 4 },
   sectionCard: {
     borderWidth: 1,
     borderRadius: 20,

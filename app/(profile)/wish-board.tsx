@@ -1,764 +1,807 @@
+import { ScreenEmptyState } from '@/components/crud';
 import { AddWishBoardModal } from '@/components/wish-board/add-wish-board-modal';
-import { WishBoardDescriptionView } from '@/components/wish-board/wish-board-description-view';
-import { AppButton, AppCard, AppScreen, ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { fetchProfileWishBoard } from '@/lib/profile-page-api';
+import { WishBoardBalanceBar } from '@/components/wish-board/wish-board-balance-bar';
 import {
-  resolveWishBoardIconOption,
-  wishBoardIconTintSoft,
-} from '@/lib/constants/wish-board-icons';
-import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
-import { getProjects } from '@/lib/repositories/projects/project';
-import type { ProjectRow } from '@/lib/repositories/projects/project.types';
-import { getTasks } from '@/lib/repositories/tasks/task';
-import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+  pickDefaultWishBoardTab,
+  WishBoardSegment,
+  type WishBoardTabId,
+} from '@/components/wish-board/wish-board-segment';
+import { WishBoardShelfTile } from '@/components/wish-board/wish-board-shelf-tile';
 import {
-  evaluateWishBoardRedeemEligibilitySync,
-  formatWishBoardRedeemConditionsSummary,
-  hasWishBoardRedeemConditions,
-  loadWishBoardCurrentNetWorth,
-  parseWishBoardRedeemConditions,
-  type WishBoardRedeemEligibility,
-} from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
-import {
-  deleteWishBoardItem,
-  deleteWishRedeemRecord,
-  getPointsBalance,
-  listWishBoardItems,
-  listWishRedeemRecords,
-  redeemWishBoardItem,
-  resetPointsBalance,
-} from '@/lib/repositories/wish-board/wish-board';
-import type { WishBoardItemRow, WishRedeemRecord } from '@/lib/repositories/wish-board/wish-board.types';
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { formatPoints } from '@/lib/reward-points';
+  formatWishBoxPoints,
+  greetingByHour,
+  greetingMoonByHour,
+  monogramFromName,
+  type WishBoxPalette,
+  type WishBoxShadowSet,
+} from '@/constants/wish-box-ui';
+import { formatInboxBadgeCount, useNotificationInboxBadges } from '@/hooks/use-notification-inbox-badges';
+import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
+import { useWishBoardData } from '@/hooks/use-wish-board-data';
+import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
+import { getDefaultUser } from '@/lib/repositories/users/user';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
-
-
-const WISH_BOARD_PAGE_KEY = 'wish-board';
-
-function formatRedeemedAt(raw: string | null): string | null {
-  if (!raw) return null;
-  const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
-}
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Animated,
+  Easing,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type ListRenderItemInfo,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 export default function WishBoardScreen() {
   const router = useRouter();
-  const { colors, isDark } = useAppTheme();
-  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(WISH_BOARD_PAGE_KEY);
+  const insets = useSafeAreaInsets();
+  const { c, gradients, shadows } = useWishBoxTheme();
+  const styles = useWishStyles(makeStyles);
+  const inboxBadges = useNotificationInboxBadges();
+  const bellBadge = formatInboxBadgeCount(inboxBadges.total);
 
-  const [balance, setBalance] = useState(0);
-  const [items, setItems] = useState<WishBoardItemRow[]>([]);
-  const [redeemRecords, setRedeemRecords] = useState<WishRedeemRecord[]>([]);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [tasks, setTasks] = useState<TaskRow[]>([]);
-  const [currentNetWorth, setCurrentNetWorth] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const {
+    balance,
+    monthEarned,
+    items,
+    redeemRecords,
+    loading,
+    loadError,
+    eligibilityById,
+    readyItems,
+    waitingItems,
+    currentNetWorth,
+    reload,
+    refreshControl,
+  } = useWishBoardData();
+
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  const entranceOn = motionReady && !reduceMotion;
+
   const [addVisible, setAddVisible] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const [tab, setTab] = useState<WishBoardTabId>('ready');
+  const [displayName, setDisplayName] = useState('朋友');
+  const tabTouchedRef = useRef(false);
 
-  const entityLookups = useMemo(() => {
-    const projectsById = new Map(projects.map(p => [p.id, p]));
-    const tasksById = new Map(tasks.map(t => [t.id, t]));
-    return { projectsById, tasksById };
-  }, [projects, tasks]);
+  useEffect(() => {
+    let cancelled = false;
+    void getDefaultUser()
+      .then(user => {
+        if (cancelled) return;
+        const name = user?.name?.trim();
+        if (name) setDisplayName(name);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const eligibilityById = useMemo(() => {
-    const map = new Map<string, WishBoardRedeemEligibility>();
-    for (const item of items) {
-      if (item.status !== 'active') continue;
-      map.set(
-        item.id,
-        evaluateWishBoardRedeemEligibilitySync(item, balance, {
-          ...entityLookups,
-          currentNetWorth,
-        }),
-      );
-    }
-    return map;
-  }, [items, balance, currentNetWorth, entityLookups]);
-
-  /** 可兑换在前；同档内一次性 → 重复性；其余保持仓库层相对顺序 */
-  const activeItems = useMemo(() => {
-    return items
-      .filter(i => i.status === 'active')
-      .slice()
-      .sort((a, b) => {
-        const aOk = eligibilityById.get(a.id)?.ok ?? false;
-        const bOk = eligibilityById.get(b.id)?.ok ?? false;
-        if (aOk !== bOk) return aOk ? -1 : 1;
-        if (a.wish_type !== b.wish_type) return a.wish_type === 'once' ? -1 : 1;
-        return 0;
-      });
-  }, [items, eligibilityById]);
-
-  const reload = useCallback(
-    async (forceRefresh = false) => {
-      setLoadError(null);
-      try {
-        await wrapLoad(async () => {
-          await fetchProfileWishBoard({ serverFallback: true });
-          const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks, nextNetWorth] =
-            await Promise.all([
-              getPointsBalance(),
-              listWishBoardItems(),
-              listWishRedeemRecords(),
-              getProjects(),
-              getTasks(),
-              loadWishBoardCurrentNetWorth(),
-            ]);
-          setBalance(nextBalance);
-          setItems(nextItems);
-          setRedeemRecords(nextRedeems);
-          setProjects(nextProjects);
-          setTasks(nextTasks);
-          setCurrentNetWorth(nextNetWorth);
-        }, forceRefresh);
-      } catch (e) {
-        setLoadError(e instanceof Error ? e.message : '加载失败');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [wrapLoad],
-  );
-
-  const { onRefresh: onRefreshData } = usePagePullRefresh(WISH_BOARD_PAGE_KEY, reload);
-
-  useFocusEffect(
-    useCallback(() => {
-      void reload();
-    }, [reload]),
+  const tabCounts = useMemo(
+    () => ({
+      ready: readyItems.length,
+      waiting: waitingItems.length,
+    }),
+    [readyItems.length, waitingItems.length],
   );
 
   useEffect(() => {
-    return subscribePointsBalanceChanged(setBalance);
+    if (loading || tabTouchedRef.current) return;
+    setTab(pickDefaultWishBoardTab(tabCounts));
+  }, [loading, tabCounts]);
+
+  /** 等待区里距离达成最近的心愿缺口：差 1,320 分时提示「再攒 X 可解锁全部心愿」 */
+  const unlockShortfall = useMemo(() => {
+    if (waitingItems.length === 0) return 0;
+    let nearestGap = Number.POSITIVE_INFINITY;
+    for (const item of waitingItems) {
+      const gap = Math.max(0, item.cost_points - balance);
+      if (gap > 0 && gap < nearestGap) nearestGap = gap;
+    }
+    return Number.isFinite(nearestGap) ? nearestGap : 0;
+  }, [waitingItems, balance]);
+
+  /** 等待区排序后最靠前的心愿：waitingItems 已按「还差多少积分」由近到远排好 */
+  const nearestWaiting = waitingItems[0] ?? null;
+
+  const nearestHint = useMemo(() => {
+    if (!nearestWaiting) return null;
+    const elig = eligibilityById.get(nearestWaiting.id);
+    const shortfall = Math.max(0, nearestWaiting.cost_points - balance);
+    type HintPart = { text: string; strong?: boolean };
+    const groups: HintPart[][] = [];
+    for (const p of elig?.pending ?? []) {
+      if (p.kind === 'net_worth') {
+        const need = elig?.conditions.min_net_worth;
+        const gap = typeof need === 'number' ? need - currentNetWorth : null;
+        groups.push(
+          gap != null && gap > 0
+            ? [{ text: '还差 ' }, { text: formatMoneyShort(gap), strong: true }]
+            : [{ text: '净资产未达标' }],
+        );
+      } else if (p.kind === 'todo') {
+        groups.push([{ text: `完成待办「${p.missing ? '关联项已删除' : p.title}」` }]);
+      } else if (p.kind === 'task') {
+        groups.push([{ text: `完成任务「${p.missing ? '关联项已删除' : p.title}」` }]);
+      } else {
+        groups.push([{ text: `完成项目「${p.missing ? '关联项已删除' : p.title}」` }]);
+      }
+    }
+    if (groups.length === 0 && !elig?.pointsOk && shortfall > 0) {
+      groups.push([{ text: '还差 ' }, { text: formatWishBoxPoints(shortfall), strong: true }, { text: ' 分' }]);
+    }
+    const parts: HintPart[] = [];
+    groups.slice(0, 2).forEach((group, i) => {
+      if (i > 0) parts.push({ text: ' · ' });
+      parts.push(...group);
+    });
+    return {
+      title: `${nearestWaiting.title} · 还差一点点`,
+      parts:
+        parts.length > 0
+          ? parts
+          : [{ text: elig?.message ?? '完成条件后就能兑换' } as HintPart],
+      id: nearestWaiting.id,
+    };
+  }, [nearestWaiting, eligibilityById, balance, currentNetWorth]);
+
+  const latestRedeem = redeemRecords[0] ?? null;
+
+  const onTabChange = useCallback((next: WishBoardTabId) => {
+    tabTouchedRef.current = true;
+    setTab(next);
   }, []);
 
-  const onResetPoints = useCallback(() => {
-    if (balance <= 0 || resetting) return;
-    Alert.alert(
-      '重置积分',
-      `确定将当前 ${balance} 积分清零吗？此操作会写入流水，不可自动恢复。`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '清零',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setResetting(true);
-              try {
-                const result = await resetPointsBalance();
-                setBalance(result.balance);
-                notifyAncestorsDataChanged();
-                await reload();
-                toast.success('积分已清零');
-              } catch (e) {
-                toast.error(toUserMessage(e, '重置失败，请稍后重试'));
-              } finally {
-                setResetting(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [balance, notifyAncestorsDataChanged, reload, resetting]);
+  /** 点击心愿卡进入详情 / 点击底部差距卡查看还差什么，对齐 06 号设计稿 */
+  const goDetail = useCallback(
+    (id: string) => {
+      router.push({ pathname: '/wish-board/[id]', params: { id } });
+    },
+    [router],
+  );
 
-  const onRedeem = useCallback(
-    (item: WishBoardItemRow) => {
-      if (item.wish_type === 'once' && item.status === 'redeemed') return;
-      const eligibility =
-        eligibilityById.get(item.id) ??
-        evaluateWishBoardRedeemEligibilitySync(item, balance, {
-          ...entityLookups,
-          currentNetWorth,
-        });
-      if (!eligibility.ok) {
-        toast.warn(
-          eligibility.message ??
-            (!eligibility.pointsOk
-              ? '积分不足'
-              : `暂时无法兑换「${item.title}」。`),
-        );
-        return;
-      }
-      const typeHint = item.wish_type === 'repeat' ? '（可重复兑换）' : '';
-      const condHint =
-        eligibility.checks.length > 0
-          ? `\n同时确认附加条件均已满足（含绑定项与净资产门槛）。`
-          : '';
-      Alert.alert(
-        '兑换心愿',
-        item.cost_points > 0
-          ? `确认花费 ${item.cost_points} 积分兑换「${item.title}」${typeHint}？${condHint}`
-          : `确认免费兑换「${item.title}」${typeHint}？${condHint}`,
-        [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '兑换',
-            style: 'default',
-            onPress: () => {
-              void (async () => {
-                try {
-                  const result = await redeemWishBoardItem(item.id);
-                  setBalance(result.balance);
-                  notifyAncestorsDataChanged();
-                  await reload();
-                  toast.success('兑换成功');
-                } catch (e) {
-                  toast.error(toUserMessage(e, '兑换失败，请稍后重试'));
-                }
-              })();
-            },
-          },
-        ],
+  const renderItem = useCallback(
+    ({ item, index }: ListRenderItemInfo<(typeof readyItems)[number]>) => {
+      const isReady = tab === 'ready';
+      return (
+        <View style={styles.cell}>
+          <WishBoardEnter index={index} animate={entranceOn}>
+            <WishBoardShelfTile
+              variant={isReady ? 'ready' : 'waiting'}
+              item={item}
+              balance={balance}
+              eligibility={eligibilityById.get(item.id)}
+              onPress={() => goDetail(item.id)}
+            />
+          </WishBoardEnter>
+        </View>
       );
     },
-    [balance, currentNetWorth, eligibilityById, entityLookups, notifyAncestorsDataChanged, reload],
+    [balance, eligibilityById, entranceOn, goDetail, tab],
   );
 
-  const onDelete = useCallback(
-    (item: WishBoardItemRow) => {
-      Alert.alert('删除心愿', `确定删除「${item.title}」？`, [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              try {
-                await deleteWishBoardItem(item.id);
-                await reload();
-                toast.success('已删除');
-              } catch (e) {
-                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
-              }
-            })();
+  const listData = tab === 'ready' ? readyItems : waitingItems;
+  const groupLabel =
+    tab === 'ready' ? '现在就能兑换' : '再攒一点就能兑换';
+
+  const listHeader = (
+    <View>
+      <WishBoardBalanceBar
+        balance={balance}
+        monthEarned={monthEarned}
+        unlockShortfall={tab === 'waiting' ? unlockShortfall : undefined}
+        redeemCount={redeemRecords.length}
+        onFootprints={() => router.push('/wish-board-footprints')}
+      />
+
+      {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
+
+      <View style={styles.sec}>
+        <View style={styles.secLeft}>
+          <Text style={[styles.secTitle, { color: c.ink }]}>我的心愿</Text>
+          <View style={[styles.countTag, { backgroundColor: c.priSoft }]}>
+            <Text style={styles.countTagText}>{items.filter(i => i.status === 'active').length}</Text>
+          </View>
+        </View>
+        <View style={styles.secRight}>
+          <Pressable
+            onPress={() => setAddVisible(true)}
+            style={({ pressed }) => [
+              styles.addBtn,
+              { opacity: pressed ? 0.88 : 1, backgroundColor: c.priSoft },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="新增心愿">
+            <Text style={styles.addBtnText}>＋ 新增</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/wish-board-manage')}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="心愿管理">
+            <Text style={[styles.moreText, { color: c.muted }]}>管理 ›</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <WishBoardSegment tab={tab} counts={tabCounts} onChange={onTabChange} />
+
+      <View style={styles.grouph}>
+        <View style={styles.groupLine} />
+        <Text style={styles.groupText}>{groupLabel}</Text>
+        <View style={styles.groupLine} />
+      </View>
+    </View>
+  );
+
+  const listFooter =
+    tab === 'ready' && latestRedeem ? (
+      <Pressable
+        onPress={() => router.push('/wish-board-footprints')}
+        style={({ pressed }) => [
+          styles.recent,
+          shadows.soft,
+          {
+            opacity: pressed ? 0.94 : 1,
+            backgroundColor: c.card,
+            borderColor: c.line,
           },
-        },
-      ]);
-    },
-    [reload],
-  );
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="查看兑换足迹">
+        <View style={styles.recentIcon}>
+          <Text style={styles.recentEmoji}>🎁</Text>
+        </View>
+        <View style={styles.recentBody}>
+          <Text style={[styles.recentTitle, { color: c.ink }]} numberOfLines={1}>
+            最近兑换 · {latestRedeem.title}
+          </Text>
+          <Text style={[styles.recentSub, { color: c.muted }]} numberOfLines={1}>
+            {formatRecentAt(latestRedeem.redeemed_at)} · 花费{' '}
+            {formatWishBoxPoints(latestRedeem.cost_points)} 分
+          </Text>
+        </View>
+        <Text style={styles.recentPts}>-{formatWishBoxPoints(latestRedeem.cost_points)}</Text>
+        <Text style={styles.recentArrow}>›</Text>
+      </Pressable>
+    ) : tab === 'waiting' ? (
+      <View style={styles.waitingFooter}>
+        {nearestHint ? (
+          <Pressable
+            onPress={() => goDetail(nearestHint.id)}
+            style={({ pressed }) => [
+              styles.tipCard,
+              { opacity: pressed ? 0.94 : 1, backgroundColor: c.tip, borderColor: c.tipLine },
+            ]}
+            accessibilityRole="button">
+            <View style={styles.tipIcon}>
+              <TipIconBackground />
+              <Text style={styles.tipEmoji}>💡</Text>
+            </View>
+            <View style={styles.tipBody}>
+              <Text style={[styles.tipTitle, { color: c.ink }]} numberOfLines={1}>
+                {nearestHint.title}
+              </Text>
+              <Text style={[styles.tipSub, { color: c.muted }]} numberOfLines={2}>
+                {nearestHint.parts.map((part, i) => (
+                  <Text key={i} style={part.strong ? styles.tipSubStrong : undefined}>
+                    {part.text}
+                  </Text>
+                ))}
+              </Text>
+            </View>
+            <Text style={styles.tipArrow}>›</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => setAddVisible(true)}
+          style={({ pressed }) => [
+            styles.dashAdd,
+            { opacity: pressed ? 0.9 : 1, backgroundColor: c.card, borderColor: c.line },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="新增心愿">
+          <Text style={styles.dashAddText}>＋ 许下新的心愿</Text>
+        </Pressable>
+      </View>
+    ) : null;
 
-  const onDeleteRedeemRecord = useCallback(
-    (record: WishRedeemRecord) => {
-      Alert.alert('删除兑换记录', `确定删除「${record.title}」这条兑换记录？`, [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              try {
-                await deleteWishRedeemRecord(record);
-                await reload();
-                toast.success('已删除');
-              } catch (e) {
-                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
-              }
-            })();
-          },
-        },
-      ]);
-    },
-    [reload],
-  );
-
-  const accent = isDark ? '#f472b6' : '#be185d';
-  const muted = colors.textSecondary;
+  const empty =
+    !loadError && listData.length === 0 ? (
+      <ScreenEmptyState
+        icon={tab === 'ready' ? 'check-circle-outline' : 'hourglass-empty'}
+        title={items.length === 0 ? '还没有心愿' : tab === 'ready' ? '暂无可兑换心愿' : '再攒一点就能兑换'}
+        subtitle={
+          items.length === 0
+            ? '许下第一个心愿，攒够积分就能兑换'
+            : tab === 'ready'
+              ? waitingItems.length > 0
+                ? '心愿都还差一点积分，先去攒攒吧'
+                : '所有心愿都已兑换过啦'
+              : readyItems.length > 0
+                ? '现在就有心愿可以兑换啦'
+                : '完成条件、攒够积分就能兑换'
+        }
+        actionLabel={items.length === 0 ? '去许愿' : undefined}
+        onAction={items.length === 0 ? () => setAddVisible(true) : undefined}
+        style={styles.empty}
+      />
+    ) : null;
 
   return (
-    <>
-      <AppScreen
-        loading={loading}
-        onRefreshData={onRefreshData}
-        header={
-          <ScreenHeader
-            title="心愿板"
-            onBack={() => router.back()}
-            right={
-              <ScreenHeaderIconAction
-                icon="receipt-long"
-                onPress={() => router.push('/points-ledger')}
-                accessibilityLabel="积分记录"
-              />
-            }
-          />
-        }
-        contentContainerStyle={styles.content}>
-        <AppCard variant="accent" style={styles.balanceCard}>
-          <Text style={[styles.balanceLabel, { color: 'rgba(255,255,255,0.72)' }]}>积分余额</Text>
-          <Text style={[styles.balanceValue, { color: colors.onAccent }]}>{formatPoints(balance)}</Text>
-          <Text style={[styles.balanceHint, { color: 'rgba(255,255,255,0.65)' }]}>
-            完成任务等行为可获得积分；兑换可叠加项目 / 任务 / 待办完成条件
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: c.bg }]}>
+      <View style={styles.appbar}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          style={styles.backHit}
+          accessibilityRole="button"
+          accessibilityLabel="返回">
+          <MaterialIcons name="arrow-back-ios-new" size={16} color={c.ink2} />
+        </Pressable>
+        <View style={styles.appbarLeft}>
+          <Text style={[styles.hello, { color: c.muted }]}>
+            {greetingByHour()}，{displayName}
+            {greetingMoonByHour()}
           </Text>
-          <View style={styles.balanceActions}>
-            <Pressable
-              onPress={() => router.push('/points-ledger')}
-              style={({ pressed }) => [
-                styles.resetBtn,
-                {
-                  borderColor: 'rgba(255,255,255,0.35)',
-                  opacity: pressed ? 0.85 : 1,
-                },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="积分记录">
-              <MaterialIcons name="receipt-long" size={16} color="#fff" />
-              <Text style={styles.resetBtnText}>积分记录</Text>
-            </Pressable>
-            <Pressable
-              onPress={onResetPoints}
-              disabled={balance === 0 || resetting}
-              style={({ pressed }) => [
-                styles.resetBtn,
-                {
-                  borderColor: 'rgba(255,255,255,0.35)',
-                  opacity: balance <= 0 || resetting ? 0.45 : pressed ? 0.85 : 1,
-                },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="重置积分">
-              {resetting ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <>
-                  <MaterialIcons name="restart-alt" size={16} color="#fff" />
-                  <Text style={styles.resetBtnText}>重置积分</Text>
-                </>
-              )}
-            </Pressable>
+          <Text style={[styles.appTitle, { color: c.ink }]}>心愿板</Text>
+        </View>
+        <View style={styles.appbarRight}>
+          <Pressable
+            onPress={() => router.push('/wish-board-footprints')}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              shadows.soft,
+              { opacity: pressed ? 0.88 : 1, backgroundColor: c.card, borderColor: c.line },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="兑换足迹">
+            <MaterialIcons name="schedule" size={18} color={c.ink2} />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push('/notification-center')}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              shadows.soft,
+              { opacity: pressed ? 0.88 : 1, backgroundColor: c.card, borderColor: c.line },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="通知">
+            <MaterialIcons name="notifications-none" size={19} color={c.ink2} />
+            {bellBadge ? <View style={styles.dot} /> : null}
+          </Pressable>
+          <View style={styles.avatar}>
+            <AvatarBackground />
+            <Text style={styles.avatarText}>{monogramFromName(displayName)}</Text>
           </View>
-        </AppCard>
+        </View>
+      </View>
 
-        <AppButton
-          label="添加新心愿"
-          fullWidth
-          onPress={() => setAddVisible(true)}
-          style={styles.addBtn}
+      {loading && items.length === 0 ? (
+        <View style={styles.loadingBox}>
+          <Text style={styles.loadingText}>加载中…</Text>
+        </View>
+      ) : (
+        <FlatList
+          key={tab}
+          data={listData}
+          keyExtractor={item => item.id}
+          numColumns={2}
+          renderItem={renderItem}
+          ListHeaderComponent={listHeader}
+          ListFooterComponent={listFooter}
+          ListEmptyComponent={empty}
+          contentContainerStyle={styles.listContent}
+          columnWrapperStyle={styles.row}
+          showsVerticalScrollIndicator={false}
+          refreshControl={refreshControl}
         />
-
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>心愿列表</Text>
-        <Text style={[styles.sectionHint, { color: muted }]}>
-          左滑可删除 · 点击编辑
-        </Text>
-
-        {loadError ? (
-          <Text style={[styles.empty, { color: colors.danger }]}>{loadError}</Text>
-        ) : null}
-
-        {items.length === 0 && !loadError ? (
-          <View style={styles.emptyWrap}>
-            <Text style={styles.emptyEmoji}>🎁</Text>
-            <Text style={[styles.empty, { color: muted }]}>还没有心愿，点上方按钮添加一条吧</Text>
-          </View>
-        ) : null}
-
-        {!loadError && items.length > 0 && activeItems.length === 0 ? (
-          <Text style={[styles.empty, { color: muted }]}>
-            可兑换心愿已全部兑完，可在下方「已兑换」中查看记录。
-          </Text>
-        ) : null}
-
-        {activeItems.map(item => {
-          const icon = resolveWishBoardIconOption(item.icon_key);
-          const lastRedeemed = item.wish_type === 'repeat' ? formatRedeemedAt(item.redeemed_at) : null;
-          const eligibility = eligibilityById.get(item.id);
-          const canRedeem = eligibility?.ok ?? balance >= item.cost_points;
-          const conditions = parseWishBoardRedeemConditions(item.extra_data);
-          const condSummary = hasWishBoardRedeemConditions(conditions)
-            ? formatWishBoardRedeemConditionsSummary(conditions, entityLookups)
-            : null;
-          const netWorthPendingOnly =
-            Boolean(eligibility && !eligibility.conditionsOk) &&
-            eligibility!.pending.length > 0 &&
-            eligibility!.pending.every(p => p.kind === 'net_worth');
-          const blockedLabel = !eligibility?.pointsOk
-            ? '积分不足'
-            : netWorthPendingOnly
-              ? '净资产不足'
-              : eligibility && !eligibility.conditionsOk
-                ? '条件未满'
-                : '不可兑换';
-          return (
-            <Swipeable
-              key={item.id}
-              overshootRight={false}
-              renderRightActions={() => (
-                <View style={styles.swipeTrack}>
-                  <Pressable
-                    onPress={() => onDelete(item)}
-                    style={[styles.swipeAction, { backgroundColor: colors.danger }]}>
-                    <MaterialIcons name="delete-outline" size={20} color="#fff" />
-                    <Text style={styles.swipeText}>删除</Text>
-                  </Pressable>
-                </View>
-              )}>
-              <Pressable
-                onPress={() => router.push(`/edit-wish-board-item/${item.id}`)}
-                style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1 }]}>
-                <AppCard style={styles.itemCard}>
-                  <View style={styles.itemRow}>
-                    <View
-                      style={[
-                        styles.iconBadge,
-                        { backgroundColor: wishBoardIconTintSoft(icon.tint, isDark) },
-                      ]}>
-                      <Text style={styles.iconEmoji}>{icon.emoji}</Text>
-                    </View>
-                    <View style={{ flex: 1, gap: 4 }}>
-                      <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
-                        {item.title}
-                      </Text>
-                      {item.description ? (
-                        <WishBoardDescriptionView
-                          description={item.description}
-                          color={muted}
-                          compact
-                          numberOfLines={2}
-                        />
-                      ) : null}
-                      {condSummary ? (
-                        <Text
-                          style={[
-                            styles.condTag,
-                            {
-                              color: eligibility?.conditionsOk ? muted : accent,
-                            },
-                          ]}
-                          numberOfLines={2}>
-                          {condSummary}
-                          {eligibility && !eligibility.conditionsOk
-                            ? netWorthPendingOnly
-                              ? ' · 净资产未达标'
-                              : ` · 未完成 ${eligibility.pending.length}`
-                            : eligibility?.conditionsOk
-                              ? ' · 已达成'
-                              : ''}
-                        </Text>
-                      ) : null}
-                      <Text style={[styles.typeTag, { color: muted }]}>
-                        {item.wish_type === 'repeat' ? '重复性心愿' : '一次性心愿'}
-                        {lastRedeemed ? ` · 上次兑换 ${lastRedeemed}` : ''}
-                      </Text>
-                    </View>
-                    {canRedeem ? (
-                      <Pressable
-                        onPress={() => onRedeem(item)}
-                        style={({ pressed }) => [
-                          styles.redeemBtn,
-                          { backgroundColor: accent, opacity: pressed ? 0.88 : 1 },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={`兑换${item.title}`}>
-                        <Text style={styles.redeemBtnText}>兑换</Text>
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        onPress={() => onRedeem(item)}
-                        style={[
-                          styles.redeemBtn,
-                          styles.insufficientBtn,
-                          {
-                            backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-                          },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={blockedLabel}>
-                        <Text style={[styles.insufficientBtnText, { color: muted }]}>{blockedLabel}</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                  <View style={styles.costBottom}>
-                    {item.wish_type === 'repeat' ? (
-                      <View
-                        style={[
-                          styles.repeatBadge,
-                          {
-                            backgroundColor: isDark
-                              ? 'rgba(255,255,255,0.12)'
-                              : `${accent}18`,
-                          },
-                        ]}
-                        accessibilityLabel="重复性心愿">
-                        <MaterialIcons name="repeat" size={12} color={accent} />
-                        <Text style={[styles.repeatBadgeText, { color: accent }]}>重复</Text>
-                      </View>
-                    ) : (
-                      <View />
-                    )}
-                    <View style={styles.costWrapInline}>
-                      <Text style={[styles.costValue, { color: accent }]}>{formatPoints(item.cost_points)}</Text>
-                      <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
-                    </View>
-                  </View>
-                </AppCard>
-              </Pressable>
-            </Swipeable>
-          );
-        })}
-
-        {redeemRecords.length > 0 ? (
-          <>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>已兑换</Text>
-            <Text style={[styles.sectionHint, { color: muted }]}>
-              {redeemRecords.length} 条 · 仅作记录不可编辑 · 左滑可删除
-            </Text>
-            {redeemRecords.map(record => {
-              const icon = resolveWishBoardIconOption(record.icon_key);
-              const redeemedAtLabel = formatRedeemedAt(record.redeemed_at);
-              const typeLabel =
-                record.wish_type === 'repeat' ? '重复性心愿 · 兑换记录' : '一次性心愿 · 已兑换';
-              return (
-                <Swipeable
-                  key={record.ledger_id}
-                  overshootRight={false}
-                  renderRightActions={() => (
-                    <View style={styles.swipeTrack}>
-                      <Pressable
-                        onPress={() => onDeleteRedeemRecord(record)}
-                        style={[styles.swipeAction, { backgroundColor: colors.danger }]}>
-                        <MaterialIcons name="delete-outline" size={20} color="#fff" />
-                        <Text style={styles.swipeText}>删除</Text>
-                      </Pressable>
-                    </View>
-                  )}>
-                  <AppCard style={[styles.itemCard, { opacity: 0.72 }]}>
-                    <View style={styles.itemRow}>
-                      <View
-                        style={[
-                          styles.iconBadge,
-                          { backgroundColor: wishBoardIconTintSoft(icon.tint, isDark) },
-                        ]}>
-                        <Text style={styles.iconEmoji}>{icon.emoji}</Text>
-                      </View>
-                      <View style={{ flex: 1, gap: 4 }}>
-                        <Text style={[styles.itemTitle, { color: colors.text }]} numberOfLines={2}>
-                          {record.title}
-                        </Text>
-                        {record.description ? (
-                          <WishBoardDescriptionView
-                            description={record.description}
-                            color={muted}
-                            compact
-                            numberOfLines={2}
-                          />
-                        ) : null}
-                        <Text style={[styles.typeTag, { color: muted }]}>
-                          {typeLabel}
-                          {redeemedAtLabel ? ` · ${redeemedAtLabel}` : ''}
-                        </Text>
-                      </View>
-                      <View style={styles.costWrap}>
-                        <Text style={[styles.costValue, { color: accent }]}>{formatPoints(record.cost_points)}</Text>
-                        <Text style={[styles.costUnit, { color: muted }]}>积分</Text>
-                      </View>
-                    </View>
-                  </AppCard>
-                </Swipeable>
-              );
-            })}
-          </>
-        ) : null}
-      </AppScreen>
+      )}
 
       <AddWishBoardModal
         visible={addVisible}
         onClose={() => setAddVisible(false)}
         onCreated={() => void reload()}
       />
-    </>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  content: {
-    paddingHorizontal: Spacing['5xl'],
-    paddingBottom: Spacing['6xl'],
-    gap: Spacing.md,
-  },
-  balanceCard: {
-    alignItems: 'flex-start',
-    gap: 6,
-    marginTop: Spacing.sm,
-  },
-  balanceLabel: {
-    ...Typography.caption,
-  },
-  balanceValue: {
-    fontSize: 40,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  balanceHint: {
-    ...Typography.caption,
-    lineHeight: 18,
-  },
-  balanceActions: {
-    marginTop: Spacing.sm,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  resetBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  resetBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  addBtn: {
-    marginTop: Spacing.xs,
-  },
-  sectionTitle: {
-    ...Typography.h3,
-    marginTop: Spacing.sm,
-  },
-  sectionHint: {
-    ...Typography.caption,
-    marginTop: -Spacing.xs,
-    marginBottom: Spacing.xs,
-  },
-  emptyWrap: {
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.xl,
-  },
-  empty: {
-    ...Typography.body,
-    textAlign: 'center',
-  },
-  itemCard: {
-    marginBottom: 2,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  iconBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  iconEmoji: {
-    fontSize: 22,
-    lineHeight: 28,
-  },
-  emptyEmoji: {
-    fontSize: 36,
-    lineHeight: 44,
-  },
-  itemTitle: {
-    ...Typography.bodyStrong,
-  },
-  repeatBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  repeatBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 14,
-  },
-  itemNote: {
-    ...Typography.caption,
-    lineHeight: 18,
-  },
-  typeTag: {
-    ...Typography.label,
-    marginTop: 2,
-  },
-  condTag: {
-    ...Typography.caption,
-    lineHeight: 16,
-    marginTop: 2,
-  },
-  costWrap: {
-    alignItems: 'flex-end',
-    minWidth: 56,
-  },
-  costWrapInline: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-  },
-  costBottom: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: Spacing.sm,
-    paddingTop: Spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(127,127,127,0.25)',
-  },
-  costValue: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  costUnit: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  redeemBtn: {
-    minWidth: 72,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  redeemBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  insufficientBtn: {
-    minWidth: 80,
-  },
-  insufficientBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  swipeTrack: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    marginBottom: 2,
-  },
-  swipeAction: {
-    width: 76,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  swipeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-});
+function AvatarBackground() {
+  const rawId = React.useId();
+  const { gradients } = useWishBoxTheme();
+  const gradientId = `wishAvatar${rawId.replace(/[^a-zA-Z0-9]/g, '')}`;
+  return (
+    <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Defs>
+        <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor={gradients.avatar[0]} />
+          <Stop offset="1" stopColor={gradients.avatar[1]} />
+        </LinearGradient>
+      </Defs>
+      <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${gradientId})`} />
+    </Svg>
+  );
+}
+
+/** 提示卡图标渐变底（135° 对角，#FFB37E → #EF5F38） */
+function TipIconBackground() {
+  const rawId = React.useId();
+  const { gradients } = useWishBoxTheme();
+  const gradientId = `wishTip${rawId.replace(/[^a-zA-Z0-9]/g, '')}`;
+  return (
+    <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Defs>
+        <LinearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor={gradients.avatar[0]} />
+          <Stop offset="1" stopColor={gradients.avatar[1]} />
+        </LinearGradient>
+      </Defs>
+      <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${gradientId})`} />
+    </Svg>
+  );
+}
+
+function WishBoardEnter({
+  index,
+  animate,
+  children,
+}: {
+  index: number;
+  animate: boolean;
+  children: React.ReactNode;
+}) {
+  const [value] = useState(() => new Animated.Value(animate ? 0 : 1));
+
+  useEffect(() => {
+    if (!animate) {
+      value.setValue(1);
+      return;
+    }
+    value.setValue(0);
+    const anim = Animated.timing(value, {
+      toValue: 1,
+      duration: 460,
+      delay: index * 55 + 120,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => {
+      anim.stop();
+    };
+  }, [animate, index, value]);
+
+  const translateY = value.interpolate({ inputRange: [0, 1], outputRange: [14, 0] });
+
+  return (
+    <Animated.View style={{ flex: 1, opacity: value, transform: [{ translateY }] }}>
+      {children}
+    </Animated.View>
+  );
+}
+
+/** 金额展示：整数去掉 .00（设计稿「还差 ¥8,600」） */
+function formatMoneyShort(value: number): string {
+  const text = formatSignedMoneyTrunc2(value);
+  return text.endsWith('.00') ? text.slice(0, -3) : text;
+}
+
+function formatRecentAt(raw: string): string {
+  const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return raw;
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+function makeStyles(c: WishBoxPalette, shadows: WishBoxShadowSet) {
+  return StyleSheet.create({
+    root: {
+      flex: 1,
+      backgroundColor: c.bg,
+    },
+    appbar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      paddingTop: 8,
+      paddingBottom: 4,
+      gap: 8,
+    },
+    backHit: {
+      width: 28,
+      height: 40,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    appbarLeft: {
+      flex: 1,
+      minWidth: 0,
+    },
+    hello: {
+      fontSize: 13,
+      color: c.muted,
+      fontWeight: '600',
+    },
+    appTitle: {
+      fontSize: 24,
+      fontWeight: '800',
+      color: c.ink,
+      letterSpacing: 1,
+      marginTop: 1,
+    },
+    appbarRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    iconBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 14,
+      backgroundColor: c.card,
+      borderWidth: 1,
+      borderColor: c.line,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dot: {
+      position: 'absolute',
+      top: 9,
+      right: 10,
+      width: 8,
+      height: 8,
+      borderRadius: 99,
+      backgroundColor: c.pri,
+      borderWidth: 2,
+      borderColor: c.card,
+    },
+    avatar: {
+      width: 40,
+      height: 40,
+      borderRadius: 14,
+      backgroundColor: c.pri,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+      shadowColor: c.pri,
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.35,
+      shadowRadius: 9,
+      elevation: 4,
+    },
+    avatarText: {
+      color: '#fff',
+      fontWeight: '800',
+      fontSize: 16,
+    },
+    loadingBox: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    loadingText: {
+      color: c.muted,
+      fontWeight: '600',
+    },
+    listContent: {
+      paddingBottom: 36,
+      flexGrow: 1,
+    },
+    row: {
+      paddingHorizontal: 16,
+      gap: 10,
+    },
+    cell: {
+      flex: 1,
+    },
+    errorText: {
+      textAlign: 'center',
+      color: c.danger,
+      fontWeight: '600',
+      marginTop: 8,
+      paddingHorizontal: 20,
+    },
+    sec: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 20,
+      marginTop: 12,
+      marginBottom: 10,
+    },
+    secLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+    },
+    secTitle: {
+      fontSize: 16.5,
+      fontWeight: '800',
+      color: c.ink,
+    },
+    countTag: {
+      backgroundColor: c.priSoft,
+      borderRadius: 99,
+      paddingHorizontal: 9,
+      paddingVertical: 3,
+    },
+    countTagText: {
+      fontSize: 11,
+      fontWeight: '700',
+      color: c.pri,
+      fontVariant: ['tabular-nums'],
+    },
+    secRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    addBtn: {
+      backgroundColor: c.priSoft,
+      borderRadius: 99,
+      paddingHorizontal: 13,
+      paddingVertical: 7,
+    },
+    addBtnText: {
+      fontSize: 12.5,
+      fontWeight: '800',
+      color: c.pri,
+    },
+    moreText: {
+      fontSize: 12.5,
+      color: c.muted,
+      fontWeight: '600',
+    },
+    grouph: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: 20,
+      marginTop: 10,
+      marginBottom: 7,
+    },
+    groupLine: {
+      flex: 1,
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: c.line,
+    },
+    groupText: {
+      fontSize: 11.5,
+      fontWeight: '800',
+      color: c.muted,
+      letterSpacing: 0.3,
+    },
+    recent: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      marginHorizontal: 16,
+      marginTop: 11,
+      paddingVertical: 11,
+      paddingHorizontal: 13,
+      backgroundColor: c.card,
+      borderWidth: 1,
+      borderColor: c.line,
+      borderRadius: 18,
+    },
+    recentIcon: {
+      width: 38,
+      height: 38,
+      borderRadius: 12,
+      backgroundColor: c.coinWash,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    recentEmoji: {
+      fontSize: 19,
+    },
+    recentBody: {
+      flex: 1,
+      minWidth: 0,
+    },
+    recentTitle: {
+      fontSize: 12.5,
+      fontWeight: '800',
+      color: c.ink,
+    },
+    recentSub: {
+      fontSize: 10.5,
+      color: c.muted,
+      marginTop: 2,
+    },
+    recentPts: {
+      fontSize: 13.5,
+      fontWeight: '800',
+      color: c.pri,
+      fontVariant: ['tabular-nums'],
+    },
+    recentArrow: {
+      fontSize: 15,
+      fontWeight: '800',
+      color: c.muted,
+    },
+    waitingFooter: {
+      marginTop: 2,
+      paddingBottom: 8,
+    },
+    tipCard: {
+      marginHorizontal: 16,
+      marginTop: 12,
+      paddingVertical: 14,
+      paddingHorizontal: 15,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      borderRadius: 20,
+      borderWidth: 1.5,
+      borderStyle: 'dashed',
+      borderColor: c.tipLine,
+      backgroundColor: c.tip,
+    },
+    tipIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 15,
+      backgroundColor: c.pri,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+    },
+    tipEmoji: {
+      fontSize: 22,
+    },
+    tipBody: {
+      flex: 1,
+      minWidth: 0,
+    },
+    tipTitle: {
+      fontSize: 13.5,
+      fontWeight: '800',
+      color: c.ink,
+    },
+    tipSub: {
+      fontSize: 11.5,
+      color: c.muted,
+      marginTop: 3,
+      lineHeight: 18,
+    },
+    tipSubStrong: {
+      color: c.pri,
+      fontWeight: '800',
+    },
+    tipArrow: {
+      fontSize: 16,
+      color: c.pri,
+      fontWeight: '800',
+    },
+    dashAdd: {
+      marginHorizontal: 16,
+      marginTop: 12,
+      borderWidth: 1.5,
+      borderStyle: 'dashed',
+      borderColor: c.dashedLine,
+      borderRadius: 20,
+      paddingVertical: 15,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: c.card,
+    },
+    dashAddText: {
+      fontSize: 13,
+      fontWeight: '800',
+      color: c.dashedText,
+    },
+    empty: {
+      paddingTop: 36,
+    },
+  });
+}

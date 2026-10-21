@@ -1,6 +1,7 @@
-import { AppInput } from '@/components/ui';
+import { WishFormLabel } from '@/components/wish-board/wish-board-form-ui';
 import { StoredImage } from '@/components/stored-image';
-import { Radius, Spacing, Typography } from '@/constants/design-tokens';
+import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
+import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   assertWishDescriptionParts,
@@ -19,6 +20,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -28,29 +30,18 @@ type Props = {
   onUploadedUri?: (uri: string) => void;
   wishId?: string | null;
   editable?: boolean;
-  label?: string;
-  placeholder?: string;
-  textColor: string;
-  mutedColor: string;
-  outline: string;
-  primary: string;
-  surfaceSubtle: string;
 };
 
+/** 心愿描述：文本 + 配图（设计稿 05「描述与配图同排」） */
 export function WishBoardDescriptionField({
   value,
   onChange,
   onUploadedUri,
   wishId,
   editable = true,
-  label = '描述（可选）',
-  placeholder = '补充说明或兑换规则',
-  textColor,
-  mutedColor,
-  outline,
-  primary,
-  surfaceSubtle,
 }: Props) {
+  const { c } = useWishBoxTheme();
+  const styles = useWishStyles(makeStyles);
   const [uploading, setUploading] = useState(false);
   const parts = useMemo(() => parseWishDescription(value), [value]);
 
@@ -76,136 +67,160 @@ export function WishBoardDescriptionField({
 
   const onRemoveImage = useCallback(
     (uri: string) => {
-      commit({
-        text: parts.text,
-        imageUris: parts.imageUris.filter((u) => u !== uri),
-      });
+      commit({ text: parts.text, imageUris: parts.imageUris.filter(u => u !== uri) });
     },
-    [commit, parts.imageUris, parts.text],
+    [commit, parts],
   );
 
   const onInsertImage = useCallback(async () => {
-    if (!editable || uploading) return;
     if (parts.imageUris.length >= WISH_DESCRIPTION_IMAGE_MAX) {
-      toast.warn(`描述最多插入 ${WISH_DESCRIPTION_IMAGE_MAX} 张图片`);
+      toast.warn(`最多插入 ${WISH_DESCRIPTION_IMAGE_MAX} 张图片`);
       return;
     }
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      toast.warn('需要相册权限才能插入图片');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.88,
-    });
-    if (result.canceled || !result.assets[0]?.uri) return;
-
-    setUploading(true);
     try {
-      const saved = await uploadWishImage({
-        localUri: result.assets[0].uri,
-        wishId,
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        toast.warn('未获得相册权限');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        selectionLimit: WISH_DESCRIPTION_IMAGE_MAX - parts.imageUris.length,
+        quality: 0.85,
       });
-      onUploadedUri?.(saved.uri);
-      commit({
-        text: parts.text,
-        imageUris: [...parts.imageUris, saved.uri],
-      });
+      if (result.canceled || result.assets.length === 0) return;
+      setUploading(true);
+      const nextUris = [...parts.imageUris];
+      for (const asset of result.assets) {
+        if (nextUris.length >= WISH_DESCRIPTION_IMAGE_MAX) break;
+        const uploaded = await uploadWishImage({ localUri: asset.uri, wishId });
+        nextUris.push(uploaded.uri);
+        onUploadedUri?.(uploaded.uri);
+      }
+      commit({ text: parts.text, imageUris: nextUris });
     } catch (e) {
-      toast.error(toUserMessage(e, '图片上传失败'));
+      toast.error(toUserMessage(e, '图片上传失败，请稍后再试'));
     } finally {
       setUploading(false);
     }
-  }, [
-    commit,
-    editable,
-    onUploadedUri,
-    parts.imageUris,
-    parts.text,
-    uploading,
-    wishId,
-  ]);
+  }, [commit, onUploadedUri, parts, wishId]);
 
   return (
-    <View style={styles.root}>
-      <AppInput
-        label={label}
-        value={parts.text}
-        onChangeText={onTextChange}
-        editable={editable}
-        placeholder={placeholder}
-        multiline
-        maxLength={WISH_DESCRIPTION_TEXT_MAX}
-        inputStyle={{ minHeight: 72, textAlignVertical: 'top' }}
-      />
+    <View>
+      <WishFormLabel label="心愿描述" hint="可选 · 支持配图" />
+      <View style={styles.row}>
+        <TextInput
+          value={parts.text}
+          onChangeText={onTextChange}
+          editable={editable}
+          multiline
+          textAlignVertical="top"
+          maxLength={WISH_DESCRIPTION_TEXT_MAX}
+          placeholder="写点来龙去脉，或兑换规则…"
+          placeholderTextColor={c.muted}
+          style={styles.textarea}
+        />
+        {parts.imageUris.length < WISH_DESCRIPTION_IMAGE_MAX ? (
+          <Pressable
+            onPress={() => void onInsertImage()}
+            disabled={uploading || !editable}
+            style={({ pressed }) => [styles.upload, { opacity: pressed || uploading ? 0.7 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel="添加配图">
+            {uploading ? (
+              <ActivityIndicator size="small" color={c.pri} />
+            ) : (
+              <>
+                <Text style={styles.uploadPlus}>＋</Text>
+                <Text style={styles.uploadLabel}>配图</Text>
+              </>
+            )}
+          </Pressable>
+        ) : null}
+      </View>
 
       {parts.imageUris.length > 0 ? (
-        <View style={styles.imageRow}>
-          {parts.imageUris.map((uri) => (
-            <View
-              key={uri}
-              style={[styles.thumbWrap, { borderColor: outline, backgroundColor: surfaceSubtle }]}>
+        <View style={styles.thumbRow}>
+          {parts.imageUris.map(uri => (
+            <View key={uri} style={styles.thumbWrap}>
               <StoredImage uri={uri} style={styles.thumb} contentFit="cover" />
               {editable ? (
                 <Pressable
                   onPress={() => onRemoveImage(uri)}
-                  style={[styles.removeBtn, { backgroundColor: 'rgba(15,23,42,0.72)' }]}
                   hitSlop={6}
-                  accessibilityLabel="移除图片">
-                  <MaterialIcons name="close" size={14} color="#fff" />
+                  style={styles.removeBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="移除配图">
+                  <MaterialIcons name="close" size={12} color="#fff" />
                 </Pressable>
               ) : null}
             </View>
           ))}
-        </View>
-      ) : null}
-
-      {editable ? (
-        <Pressable
-          onPress={() => void onInsertImage()}
-          disabled={uploading}
-          style={({ pressed }) => [
-            styles.insertBtn,
-            {
-              borderColor: outline,
-              opacity: pressed || uploading ? 0.7 : 1,
-            },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="插入图片">
-          {uploading ? (
-            <ActivityIndicator size="small" color={primary} />
-          ) : (
-            <MaterialIcons name="image" size={18} color={primary} />
-          )}
-          <Text style={[styles.insertLabel, { color: textColor }]}>
-            {uploading ? '上传中…' : '插入图片'}
-          </Text>
-          <Text style={[styles.insertHint, { color: mutedColor }]}>
+          <Text style={styles.countHint}>
             {parts.imageUris.length}/{WISH_DESCRIPTION_IMAGE_MAX}
           </Text>
-        </Pressable>
+        </View>
       ) : null}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
-    gap: Spacing.md,
+function makeStyles(c: WishBoxPalette, _shadows: WishBoxShadowSet) {
+  return StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 9,
   },
-  imageRow: {
+  textarea: {
+    flex: 1,
+    minHeight: 76,
+    backgroundColor: c.card,
+    borderWidth: 1.5,
+    borderColor: c.line,
+    borderRadius: 15,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    fontSize: 13.5,
+    lineHeight: 21,
+    color: c.ink,
+  },
+  upload: {
+    width: 64,
+    minHeight: 76,
+    borderRadius: 15,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: c.uploadLine,
+    backgroundColor: c.fieldSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  uploadPlus: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: c.uploadText,
+  },
+  uploadLabel: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: c.uploadText,
+  },
+  thumbRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.md,
+    alignItems: 'center',
+    gap: 9,
+    marginTop: 9,
   },
   thumbWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    width: 64,
+    height: 64,
+    borderRadius: 14,
     overflow: 'hidden',
+    backgroundColor: c.graySoft,
   },
   thumb: {
     width: '100%',
@@ -213,29 +228,19 @@ const styles = StyleSheet.create({
   },
   removeBtn: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 20,
-    height: 20,
+    top: 3,
+    right: 3,
+    width: 19,
+    height: 19,
     borderRadius: 10,
+    backgroundColor: 'rgba(46,35,32,0.75)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  insertBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    alignSelf: 'flex-start',
+  countHint: {
+    fontSize: 10.5,
+    color: c.muted,
+    fontWeight: '700',
   },
-  insertLabel: {
-    ...Typography.bodyStrong,
-    fontSize: 14,
-  },
-  insertHint: {
-    ...Typography.caption,
-  },
-});
+  });
+}

@@ -3,10 +3,9 @@ import React from 'react';
 import { Animated, Easing } from 'react-native';
 
 const SKELETON_FADE_MS = 280;
-const CONTENT_FADE_MS = 320;
 
 export type UseHomeSkeletonRevealOptions = {
-  /** 是否同步淡入内容层（任务/财务首页用）；健康页仅淡出骨架 */
+  /** 是否同步把内容层设为不透明（任务/财务首页用）；健康页仅淡出骨架 */
   fadeContent?: boolean;
 };
 
@@ -20,8 +19,12 @@ export type HomeSkeletonReveal = {
 };
 
 /**
- * 首页首屏骨架淡出：pending → 内容就绪后骨架淡出（可选内容淡入）。
- * 任务 / 健康 / 财务三 Tab 共用；入场动画仍由页面自行控制。
+ * 首页首屏骨架淡出：pending → 内容就绪后骨架淡出。
+ * 任务 / 健康 / 财务三 Tab 共用。
+ *
+ * 内容层在就绪时立刻设为不透明，不再从 0 做 native 淡入——
+ * 否则动画被 motionReady 抖动 / Strict Mode cleanup 打断时，
+ * useNativeDriver 会把整页卡在 opacity 0（表现为「所有组件消失」）。
  */
 export function useHomeSkeletonReveal(
   initialLoadPending: boolean,
@@ -40,61 +43,46 @@ export function useHomeSkeletonReveal(
       return;
     }
 
-    const snapRevealed = () => {
-      skeletonOpacity.stopAnimation();
+    // 内容可见性优先：一就绪就写死不透明，绝不在后续重入时打回 0
+    if (fadeContent) {
       contentOpacity.stopAnimation();
+      contentOpacity.setValue(1);
+    }
+
+    const hideSkeletonNow = () => {
+      skeletonOpacity.stopAnimation();
       skeletonOpacity.setValue(0);
-      if (fadeContent) contentOpacity.setValue(1);
       setSkeletonMounted(false);
+      startedRef.current = true;
     };
 
-    /**
-     * 偏好未就绪：内容可见性优先，不能等系统偏好才揭示，否则首屏会卡空。
-     * 这里直接揭示并标记 started，等偏好返回后不再补播，避免「先播再停」。
-     */
-    if (!motionReady) {
-      startedRef.current = true;
-      snapRevealed();
+    if (!motionReady || reduceMotion) {
+      hideSkeletonNow();
       return;
     }
 
-    if (reduceMotion) {
-      startedRef.current = true;
-      snapRevealed();
+    if (startedRef.current) {
+      hideSkeletonNow();
       return;
     }
-    if (startedRef.current) return;
 
     startedRef.current = true;
     setSkeletonMounted(true);
     skeletonOpacity.setValue(1);
-    if (fadeContent) contentOpacity.setValue(0);
 
-    const anims: Animated.CompositeAnimation[] = [
-      Animated.timing(skeletonOpacity, {
-        toValue: 0,
-        duration: SKELETON_FADE_MS,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-    ];
-    if (fadeContent) {
-      anims.push(
-        Animated.timing(contentOpacity, {
-          toValue: 1,
-          duration: CONTENT_FADE_MS,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      );
-    }
-
-    const reveal = Animated.parallel(anims);
-    reveal.start(({ finished }) => {
+    const fade = Animated.timing(skeletonOpacity, {
+      toValue: 0,
+      duration: SKELETON_FADE_MS,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    fade.start(({ finished }) => {
       if (finished) setSkeletonMounted(false);
+      else hideSkeletonNow();
     });
     return () => {
-      reveal.stop();
+      fade.stop();
+      hideSkeletonNow();
     };
   }, [contentOpacity, fadeContent, initialLoadPending, motionReady, reduceMotion, skeletonOpacity]);
 

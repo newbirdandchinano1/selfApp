@@ -46,6 +46,7 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'wish-board': [TAB_PAGE_KEYS.profile],
   'edit-wish-board-item': ['wish-board', TAB_PAGE_KEYS.profile],
   'my-recipes': [TAB_PAGE_KEYS.profile],
+  'recipe-categories': ['my-recipes', TAB_PAGE_KEYS.profile],
   'recipe-view': ['my-recipes', TAB_PAGE_KEYS.profile],
   'recipe-edit': ['recipe-view', 'my-recipes', TAB_PAGE_KEYS.profile],
 

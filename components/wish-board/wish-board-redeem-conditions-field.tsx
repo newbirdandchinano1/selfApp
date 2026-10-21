@@ -1,10 +1,10 @@
-import { AppInput } from '@/components/ui';
+import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
+import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
+import { WishFormLabel, WishToggleRow } from '@/components/wish-board/wish-board-form-ui';
 import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
-  countWishBoardRedeemConditions,
-  emptyWishBoardRedeemConditions,
   isProjectBoundTask,
   isProjectRedeemConditionMet,
   isTaskRedeemConditionMet,
@@ -13,20 +13,22 @@ import {
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { WishBoxGradientFill } from '@/components/wish-board/wish-box-gradient-fill';
 
 type BindKind = 'project' | 'task' | 'todo';
 
-type WishBoardRedeemConditionsFieldProps = {
+type Props = {
   value: WishBoardRedeemConditions;
   onChange: (next: WishBoardRedeemConditions) => void;
   projects: ProjectRow[];
@@ -35,108 +37,29 @@ type WishBoardRedeemConditionsFieldProps = {
   currentNetWorth?: number | null;
   loading?: boolean;
   disabled?: boolean;
-  textColor: string;
-  outline: string;
-  placeholderColor: string;
-  primary: string;
-  surfaceLow: string;
-  surfaceLowest: string;
-  isDark: boolean;
 };
 
-const KIND_META: Record<
-  BindKind,
-  { title: string; icon: keyof typeof MaterialIcons.glyphMap; empty: string; hint: string }
-> = {
-  project: {
-    title: '绑定项目',
-    icon: 'folder',
-    empty: '未绑定项目',
-    hint: '所选项目须全部执行完毕',
-  },
-  task: {
-    title: '绑定任务',
-    icon: 'checklist',
-    empty: '未绑定任务',
-    hint: '所选项目任务须全部完成',
-  },
-  todo: {
-    title: '绑定待办',
-    icon: 'event-note',
-    empty: '未绑定待办',
-    hint: '所选独立待办须全部完成',
-  },
-};
+const KIND_TABS: { key: BindKind; label: string; empty: string }[] = [
+  { key: 'project', label: '项目', empty: '暂无可绑定的项目' },
+  { key: 'task', label: '任务', empty: '暂无可绑定的任务' },
+  { key: 'todo', label: '待办', empty: '暂无可绑定的待办' },
+];
 
-function summaryForIds(
-  ids: string[],
-  nameById: Map<string, string>,
-  emptyLabel: string,
-  unknownLabel: string,
-): string {
-  if (ids.length === 0) return emptyLabel;
-  const names = ids.map(id => nameById.get(id)?.trim() || unknownLabel);
-  if (names.length <= 2) return names.join('、');
-  return `${names.slice(0, 2).join('、')} 等 ${names.length} 个`;
+function countTaskProgress(tasks: TaskRow[], projectId: string): { done: number; total: number } {
+  let done = 0;
+  let total = 0;
+  for (const t of tasks) {
+    if (t.project_id !== projectId || t.status === 'cancelled') continue;
+    total += 1;
+    if (t.status === 'done') done += 1;
+  }
+  return { done, total };
 }
 
-function BindRow({
-  kind,
-  selectedIds,
-  summary,
-  loading,
-  disabled,
-  onPress,
-  textColor,
-  outline,
-  placeholderColor,
-  primary,
-  surfaceLow,
-}: {
-  kind: BindKind;
-  selectedIds: string[];
-  summary: string;
-  loading: boolean;
-  disabled: boolean;
-  onPress: () => void;
-  textColor: string;
-  outline: string;
-  placeholderColor: string;
-  primary: string;
-  surfaceLow: string;
-}) {
-  const meta = KIND_META[kind];
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled || loading}
-      style={({ pressed }) => [
-        styles.select,
-        { backgroundColor: surfaceLow, borderColor: placeholderColor },
-        (disabled || loading) && { opacity: 0.65 },
-        pressed && !disabled && !loading && { opacity: 0.8 },
-      ]}>
-      <View style={styles.selectLeft}>
-        <MaterialIcons name={meta.icon} size={18} color={primary} />
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={[styles.selectLabel, { color: outline }]}>{meta.title}</Text>
-          <Text style={[styles.selectValue, { color: textColor }]} numberOfLines={2}>
-            {loading ? '加载中…' : summary}
-          </Text>
-          <Text style={[styles.selectHint, { color: outline }]} numberOfLines={1}>
-            {selectedIds.length > 0 ? meta.hint : '可选多个；与积分同时作为兑换条件'}
-          </Text>
-        </View>
-      </View>
-      {loading ? (
-        <ActivityIndicator size="small" color={primary} />
-      ) : (
-        <MaterialIcons name="expand-more" size={20} color={outline} />
-      )}
-    </Pressable>
-  );
-}
-
+/**
+ * 兑换条件：绑定项目/任务/待办 + 最低净资产门槛，各自开关（设计稿 05）。
+ * 绑定开启后弹出多选；净资产门槛开启后行内输入。
+ */
 export function WishBoardRedeemConditionsField({
   value,
   onChange,
@@ -145,76 +68,77 @@ export function WishBoardRedeemConditionsField({
   currentNetWorth = null,
   loading = false,
   disabled = false,
-  textColor,
-  outline,
-  placeholderColor,
-  primary,
-  surfaceLow,
-  surfaceLowest,
-  isDark,
-}: WishBoardRedeemConditionsFieldProps) {
-  const [modalKind, setModalKind] = useState<BindKind | null>(null);
+}: Props) {
+  const insets = useSafeAreaInsets();
+  const { c, gradients } = useWishBoxTheme();
+  const styles = useWishStyles(makeStyles);
+  const [pickerKind, setPickerKind] = useState<BindKind>('project');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [draftIds, setDraftIds] = useState<string[]>([]);
   const [netWorthText, setNetWorthText] = useState(
     value.min_net_worth == null ? '' : String(value.min_net_worth),
   );
 
-  useEffect(() => {
-    setNetWorthText(value.min_net_worth == null ? '' : String(value.min_net_worth));
-  }, [value.min_net_worth]);
-
-  const projectTasks = useMemo(
-    () => tasks.filter(t => isProjectBoundTask(t)),
-    [tasks],
-  );
+  const projectTasks = useMemo(() => tasks.filter(t => isProjectBoundTask(t)), [tasks]);
   const todoTasks = useMemo(() => tasks.filter(t => isTodoBoundTask(t)), [tasks]);
-
-  const projectNameById = useMemo(
-    () => new Map(projects.map(p => [p.id, p.name])),
-    [projects],
-  );
+  const projectNameById = useMemo(() => new Map(projects.map(p => [p.id, p.name])), [projects]);
   const taskNameById = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
 
-  const totalBound = countWishBoardRedeemConditions(value);
+  const boundCount =
+    value.project_ids.length + value.task_ids.length + value.todo_ids.length;
+  const bindingOn = boundCount > 0;
+  const netWorthOn = value.min_net_worth != null;
 
-  const openModal = useCallback(
-    (kind: BindKind) => {
-      if (disabled) return;
-      const ids =
-        kind === 'project'
-          ? value.project_ids
-          : kind === 'task'
-            ? value.task_ids
-            : value.todo_ids;
-      setDraftIds(ids);
-      setModalKind(kind);
+  /** 绑定副标题：单项目时带进度（设计稿「晨间跑步 · 21 天项目（18 / 21）· 更换」） */
+  const bindingSubtitle = useMemo(() => {
+    if (boundCount === 0) return '未绑定 · 点右侧开关选择';
+    const parts: string[] = [];
+    for (const id of value.project_ids) {
+      const name = projectNameById.get(id)?.trim() || '已删除的项目';
+      const { done, total } = countTaskProgress(tasks, id);
+      parts.push(total > 0 ? `${name}（${done} / ${total}）` : name);
+    }
+    for (const id of [...value.task_ids, ...value.todo_ids]) {
+      parts.push(taskNameById.get(id)?.trim() || '已删除的任务');
+    }
+    if (parts.length <= 2) return parts.join('、');
+    return `${parts.slice(0, 2).join('、')} 等 ${parts.length} 项`;
+  }, [boundCount, projectNameById, taskNameById, tasks, value]);
+
+  const openPicker = useCallback((kind: BindKind, ids: string[]) => {
+    setPickerKind(kind);
+    setDraftIds(ids);
+    setPickerOpen(true);
+  }, []);
+
+  const toggleBinding = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        onChange({ ...value, project_ids: [], task_ids: [], todo_ids: [] });
+        return;
+      }
+      openPicker('project', []);
     },
-    [disabled, value.project_ids, value.task_ids, value.todo_ids],
+    [onChange, openPicker, value],
   );
 
-  const closeModal = useCallback(() => {
-    setModalKind(null);
-    setDraftIds([]);
-  }, []);
-
-  const toggleDraft = useCallback((id: string) => {
-    setDraftIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
-  }, []);
-
-  const confirmModal = useCallback(() => {
-    if (!modalKind) return;
-    const next: WishBoardRedeemConditions = { ...value };
-    if (modalKind === 'project') next.project_ids = draftIds;
-    else if (modalKind === 'task') next.task_ids = draftIds;
-    else next.todo_ids = draftIds;
-    onChange(next);
-    closeModal();
-  }, [closeModal, draftIds, modalKind, onChange, value]);
-
-  const clearAll = useCallback(() => {
-    setNetWorthText('');
-    onChange(emptyWishBoardRedeemConditions());
-  }, [onChange]);
+  const toggleNetWorth = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        setNetWorthText('');
+        onChange({ ...value, min_net_worth: null });
+        return;
+      }
+      // 开启后先带入当前净资产作参考默认值，用户可改
+      const rounded =
+        currentNetWorth != null && Number.isFinite(currentNetWorth)
+          ? Math.round(currentNetWorth)
+          : 0;
+      setNetWorthText(String(rounded));
+      onChange({ ...value, min_net_worth: rounded });
+    },
+    [currentNetWorth, onChange, value],
+  );
 
   const onNetWorthChange = useCallback(
     (text: string) => {
@@ -232,252 +156,322 @@ export function WishBoardRedeemConditionsField({
     [onChange, value],
   );
 
-  const onNetWorthBlur = useCallback(() => {
-    const parsed = normalizeMinNetWorth(netWorthText);
-    setNetWorthText(parsed == null ? '' : String(parsed));
-    if (parsed !== value.min_net_worth) {
-      onChange({ ...value, min_net_worth: parsed });
-    }
-  }, [netWorthText, onChange, value]);
+  const toggleDraft = useCallback((id: string) => {
+    setDraftIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+  }, []);
 
-  const modalOptions = useMemo(() => {
-    // 选择器只展示未完成项；已绑定且已完成的 id 仍保留在 draft 中（确认时不丢）
-    if (modalKind === 'project') {
+  const confirmPicker = useCallback(() => {
+    const next: WishBoardRedeemConditions = { ...value };
+    if (pickerKind === 'project') next.project_ids = draftIds;
+    else if (pickerKind === 'task') next.task_ids = draftIds;
+    else next.todo_ids = draftIds;
+    onChange(next);
+    setPickerOpen(false);
+  }, [draftIds, onChange, pickerKind, value]);
+
+  const closePicker = useCallback(() => {
+    setPickerOpen(false);
+    setDraftIds([]);
+  }, []);
+
+  const pickerOptions = useMemo(() => {
+    // 只展示未完成项；已绑定且已完成的 id 仍保留在 draft 中（确认时不丢）
+    if (pickerKind === 'project') {
       return projects
         .filter(p => !isProjectRedeemConditionMet(p))
-        .map(p => ({
-          id: p.id,
-          title: p.name,
-          subtitle: '进行中',
-          icon: 'folder' as const,
-        }));
+        .map(p => ({ id: p.id, title: p.name, subtitle: '进行中', icon: 'folder' as const }));
     }
-    if (modalKind === 'task') {
+    if (pickerKind === 'task') {
       return projectTasks
         .filter(t => !isTaskRedeemConditionMet(t))
-        .map(t => ({
-          id: t.id,
-          title: t.title,
-          subtitle: '未完成',
-          icon: 'checklist' as const,
-        }));
+        .map(t => ({ id: t.id, title: t.title, subtitle: '未完成', icon: 'checklist' as const }));
     }
-    if (modalKind === 'todo') {
-      return todoTasks
-        .filter(t => !isTaskRedeemConditionMet(t))
-        .map(t => ({
-          id: t.id,
-          title: t.title,
-          subtitle: '未完成',
-          icon: 'event-note' as const,
-        }));
-    }
-    return [];
-  }, [modalKind, projectTasks, projects, todoTasks]);
+    return todoTasks
+      .filter(t => !isTaskRedeemConditionMet(t))
+      .map(t => ({ id: t.id, title: t.title, subtitle: '未完成', icon: 'event-note' as const }));
+  }, [pickerKind, projectTasks, projects, todoTasks]);
 
-  const modalTitle = modalKind ? KIND_META[modalKind].title : '';
-  const modalDesc = modalKind
-    ? '兑换时须与积分条件同时满足；可多选，全部完成后才可兑换。'
-    : '';
+  const pickerEmpty = KIND_TABS.find(k => k.key === pickerKind)?.empty ?? '暂无可选项';
 
   return (
-    <View style={styles.wrap}>
-      <View style={styles.headRow}>
-        <Text style={[styles.sectionTitle, { color: textColor }]}>兑换附加条件（可选）</Text>
-        {totalBound > 0 && !disabled ? (
-          <Pressable onPress={clearAll} hitSlop={8}>
-            <Text style={[styles.clearText, { color: primary }]}>清空</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <Text style={[styles.sectionHint, { color: outline }]}>
-        除积分外，还可要求当前净资产达标，或若干项目、任务、待办完成后才能兑换
-      </Text>
+    <View>
+      <WishFormLabel label="兑换条件" hint="可选 · 不满足时不可兑换" />
 
-      <View style={[styles.netWorthBox, { backgroundColor: surfaceLow, borderColor: placeholderColor }]}>
-        <View style={styles.selectLeft}>
-          <MaterialIcons name="account-balance-wallet" size={18} color={primary} />
-          <View style={{ flex: 1, gap: 6 }}>
-            <AppInput
-              label="当前净资产目标值"
-              value={netWorthText}
-              onChangeText={onNetWorthChange}
-              onBlur={onNetWorthBlur}
-              placeholder="留空则不限制"
-              keyboardType="decimal-pad"
-              editable={!disabled}
-              hint={
-                currentNetWorth != null && Number.isFinite(currentNetWorth)
-                  ? `与资产页一致，当前净资产 ${formatSignedMoneyTrunc2(currentNetWorth)}`
-                  : '与资产页「当前净资产」同一口径（总资产 − 总负债）'
-              }
-            />
-          </View>
+      <WishToggleRow
+        emoji="🔗"
+        title="绑定项目 / 任务 / 待办"
+        subtitle={loading ? '加载中…' : bindingSubtitle}
+        subtitleLink={bindingOn ? '更换' : undefined}
+        onPressLink={() => openPicker('project', value.project_ids)}
+        on={bindingOn}
+        disabled={disabled || loading}
+        onToggle={toggleBinding}
+      />
+
+      <WishToggleRow
+        emoji="💰"
+        title="最低净资产门槛"
+        subtitle="资产达标后才可兑换"
+        on={netWorthOn}
+        disabled={disabled}
+        onToggle={toggleNetWorth}
+      />
+
+      {netWorthOn ? (
+        <View style={styles.netWorthRow}>
+          <Text style={styles.netWorthLabel}>净资产 ≥</Text>
+          <TextInput
+            value={netWorthText}
+            onChangeText={onNetWorthChange}
+            editable={!disabled}
+            placeholder="输入门槛金额"
+            placeholderTextColor={c.muted}
+            keyboardType="decimal-pad"
+            style={styles.netWorthInput}
+          />
+          <Text style={styles.netWorthCurrent}>
+            {currentNetWorth != null && Number.isFinite(currentNetWorth)
+              ? `当前 ${formatSignedMoneyTrunc2(currentNetWorth)}`
+              : '未知'}
+          </Text>
         </View>
-      </View>
+      ) : null}
 
-      <BindRow
-        kind="project"
-        selectedIds={value.project_ids}
-        summary={summaryForIds(value.project_ids, projectNameById, '未绑定项目', '未知项目')}
-        loading={loading}
-        disabled={disabled}
-        onPress={() => openModal('project')}
-        textColor={textColor}
-        outline={outline}
-        placeholderColor={placeholderColor}
-        primary={primary}
-        surfaceLow={surfaceLow}
-      />
-      <BindRow
-        kind="task"
-        selectedIds={value.task_ids}
-        summary={summaryForIds(value.task_ids, taskNameById, '未绑定任务', '未知任务')}
-        loading={loading}
-        disabled={disabled}
-        onPress={() => openModal('task')}
-        textColor={textColor}
-        outline={outline}
-        placeholderColor={placeholderColor}
-        primary={primary}
-        surfaceLow={surfaceLow}
-      />
-      <BindRow
-        kind="todo"
-        selectedIds={value.todo_ids}
-        summary={summaryForIds(value.todo_ids, taskNameById, '未绑定待办', '未知待办')}
-        loading={loading}
-        disabled={disabled}
-        onPress={() => openModal('todo')}
-        textColor={textColor}
-        outline={outline}
-        placeholderColor={placeholderColor}
-        primary={primary}
-        surfaceLow={surfaceLow}
-      />
-
-      <Modal transparent visible={modalKind != null} animationType="fade" onRequestClose={closeModal}>
-        <Pressable style={styles.modalOverlay} onPress={closeModal}>
-          <Pressable
-            onPress={() => {}}
-            style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: placeholderColor }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>{modalTitle}</Text>
-              <Pressable onPress={closeModal} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
-                <MaterialIcons name="close" size={22} color={outline} />
+      <Modal
+        transparent
+        visible={pickerOpen}
+        animationType="slide"
+        onRequestClose={closePicker}>
+        <View style={styles.pickerRoot}>
+          <Pressable style={styles.pickerOverlay} onPress={closePicker} accessibilityLabel="关闭" />
+          <View style={[styles.pickerSheet, { paddingBottom: Math.max(insets.bottom, 18) }]}>
+            <View style={styles.handle} />
+            <View style={styles.pickerHead}>
+              <Text style={styles.pickerTitle}>绑定项目 / 任务 / 待办</Text>
+              <Pressable onPress={closePicker} hitSlop={10} accessibilityLabel="关闭">
+                <MaterialIcons name="close" size={21} color={c.ink2} />
               </Pressable>
             </View>
-            <Text style={[styles.modalDesc, { color: outline }]}>{modalDesc}</Text>
-            {modalOptions.length === 0 ? (
-              <Text style={[styles.modalEmpty, { color: outline }]}>暂无可选项</Text>
+            <Text style={styles.pickerHint}>可多选；全部完成后才能兑换该心愿</Text>
+
+            <View style={styles.tabs}>
+              {KIND_TABS.map(tab => {
+                const selected = tab.key === pickerKind;
+                return (
+                  <Pressable
+                    key={tab.key}
+                    onPress={() => setPickerKind(tab.key)}
+                    style={[styles.tab, selected ? styles.tabOn : styles.tabOff]}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected }}>
+                    <Text style={[styles.tabText, selected && styles.tabTextOn]}>{tab.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {pickerOptions.length === 0 ? (
+              <Text style={styles.pickerEmpty}>{pickerEmpty}</Text>
             ) : (
-              <>
-                <ScrollView
-                  style={styles.modalList}
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}>
-                  {modalOptions.map(opt => {
-                    const picked = draftIds.includes(opt.id);
-                    return (
-                      <Pressable
-                        key={opt.id}
-                        onPress={() => toggleDraft(opt.id)}
-                        style={({ pressed }) => [
-                          styles.modalRow,
-                          {
-                            borderBottomColor: isDark
-                              ? 'rgba(148,163,184,0.18)'
-                              : 'rgba(194,198,214,0.35)',
-                            opacity: pressed ? 0.88 : 1,
-                          },
-                        ]}>
-                        <MaterialIcons name={opt.icon} size={22} color={primary} />
-                        <View style={{ flex: 1, gap: 2 }}>
-                          <Text style={[styles.modalRowTitle, { color: textColor }]} numberOfLines={2}>
-                            {opt.title}
-                          </Text>
-                          <Text style={[styles.modalRowSub, { color: outline }]}>{opt.subtitle}</Text>
-                        </View>
-                        {picked ? (
-                          <MaterialIcons name="check-circle" size={22} color={primary} />
-                        ) : (
-                          <MaterialIcons name="radio-button-unchecked" size={22} color={outline} />
-                        )}
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-                <Pressable
-                  onPress={confirmModal}
-                  style={({ pressed }) => [
-                    styles.confirmBtn,
-                    { backgroundColor: primary, opacity: pressed ? 0.9 : 1 },
-                  ]}>
-                  <Text style={styles.confirmBtnText}>
-                    确定{draftIds.length > 0 ? `（已选 ${draftIds.length} 个）` : ''}
-                  </Text>
-                </Pressable>
-              </>
+              <ScrollView
+                style={styles.pickerList}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}>
+                {pickerOptions.map(opt => {
+                  const picked = draftIds.includes(opt.id);
+                  return (
+                    <Pressable
+                      key={opt.id}
+                      onPress={() => toggleDraft(opt.id)}
+                      style={({ pressed }) => [styles.optRow, { opacity: pressed ? 0.7 : 1 }]}>
+                      <MaterialIcons name={opt.icon} size={20} color={c.pri} />
+                      <View style={styles.optBody}>
+                        <Text style={styles.optTitle} numberOfLines={2}>
+                          {opt.title}
+                        </Text>
+                        <Text style={styles.optSub}>{opt.subtitle}</Text>
+                      </View>
+                      {picked ? (
+                        <MaterialIcons name="check-circle" size={21} color={c.pri} />
+                      ) : (
+                        <MaterialIcons
+                          name="radio-button-unchecked"
+                          size={21}
+                          color={c.muted}
+                        />
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
             )}
-          </Pressable>
-        </Pressable>
+
+            <Pressable
+              onPress={confirmPicker}
+              style={({ pressed }) => [styles.confirmBtn, { opacity: pressed ? 0.9 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="确定">
+              <WishBoxGradientFill colors={gradients.primary} radius={17} />
+              <Text style={styles.confirmText}>
+                确定{draftIds.length > 0 ? `（已选 ${draftIds.length} 个）` : ''}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
       </Modal>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { gap: 10 },
-  headRow: {
-    flexDirection: 'row',
+function makeStyles(c: WishBoxPalette, _shadows: WishBoxShadowSet) {
+  return StyleSheet.create({
+  netWorthRow: {    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 8,
+    marginTop: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: c.card,
+    borderWidth: 1.5,
+    borderColor: c.line,
+    borderRadius: 16,
   },
-  sectionTitle: { fontSize: 14, fontWeight: '700' },
-  sectionHint: { fontSize: 12, fontWeight: '600', lineHeight: 17, marginTop: -4 },
-  clearText: { fontSize: 13, fontWeight: '700' },
-  select: {
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+  netWorthLabel: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: c.ink2,
   },
-  selectLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, flex: 1 },
-  selectLabel: { fontSize: 11, fontWeight: '700' },
-  selectValue: { fontSize: 14, fontWeight: '700' },
-  selectHint: { fontSize: 11, fontWeight: '600' },
-  netWorthBox: {
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  modalOverlay: {
+  netWorthInput: {
     flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.38)',
-    justifyContent: 'center',
-    paddingHorizontal: 18,
+    minWidth: 0,
+    fontSize: 14.5,
+    fontWeight: '800',
+    color: c.ink,
+    paddingVertical: 2,
   },
-  modalCard: { borderWidth: 1, borderRadius: 16, padding: 14, maxHeight: '78%', gap: 8 },
-  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  modalTitle: { fontSize: 16, fontWeight: '800' },
-  modalDesc: { fontSize: 12, fontWeight: '600', lineHeight: 18, marginBottom: 4 },
-  modalEmpty: { fontSize: 13, fontWeight: '600', paddingVertical: 24, textAlign: 'center' },
-  modalList: { maxHeight: 360 },
-  modalRow: {
+  netWorthCurrent: {
+    fontSize: 10.5,
+    fontWeight: '600',
+    color: c.muted,
+  },
+  pickerRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  pickerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: c.overlay,
+  },
+  pickerSheet: {
+    backgroundColor: c.sheet,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  handle: {
+    width: 44,
+    height: 5,
+    borderRadius: 99,
+    backgroundColor: c.handle,
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  pickerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pickerTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: c.ink,
+  },
+  pickerHint: {
+    fontSize: 12,
+    color: c.muted,
+    marginTop: 4,
+  },
+  tabs: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  tab: {
+    flex: 1,
+    height: 36,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+  },
+  tabOn: {
+    backgroundColor: c.ink,
+    borderColor: c.ink,
+  },
+  tabOff: {
+    backgroundColor: c.card,
+    borderColor: c.line,
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: c.muted,
+  },
+  tabTextOn: {
+    color: c.onInk,
+  },
+  pickerList: {
+    marginTop: 10,
+    maxHeight: 340,
+  },
+  optRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: c.divider,
   },
-  modalRowTitle: { fontSize: 14, fontWeight: '700' },
-  modalRowSub: { fontSize: 11, fontWeight: '600' },
-  confirmBtn: { marginTop: 8, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  confirmBtnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
-});
+  optBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  optTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: c.ink,
+  },
+  optSub: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: c.muted,
+  },
+  pickerEmpty: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: c.muted,
+    paddingVertical: 28,
+    textAlign: 'center',
+  },
+  confirmBtn: {
+    marginTop: 14,
+    height: 50,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  confirmText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: 1,
+  },
+  });
+}

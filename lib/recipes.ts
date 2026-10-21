@@ -46,6 +46,10 @@ export type RecipeItem = {
   steps: string[];
   notes?: string;
   finished_image_uri?: string;
+  /** 做过次数 */
+  times_cooked: number;
+  /** 最近制作时间 ISO；未做过则为 undefined */
+  last_cooked_at?: string;
   created_at: string;
   updated_at: string;
 };
@@ -70,9 +74,17 @@ type RecipeRow = {
   steps_json: string;
   notes: string | null;
   finished_image_uri: string | null;
+  times_cooked?: number | null;
+  last_cooked_at?: string | null;
   created_at: string;
   updated_at: string;
 };
+
+function normalizeTimesCooked(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : 0;
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.floor(n), 999_999);
+}
 
 function newId(prefix: string): string {
   return makeTimestampEntityId(`${prefix}_`, 9);
@@ -186,16 +198,22 @@ function rowToCategory(row: CategoryRow): RecipeCategory {
 }
 
 function rowToRecipe(row: RecipeRow): RecipeItem {
+  const lastCooked =
+    typeof row.last_cooked_at === 'string' && row.last_cooked_at.trim()
+      ? row.last_cooked_at.trim()
+      : undefined;
   return {
     id: row.id,
     category_id: row.category_id,
     title: row.title,
     ingredients: decodeIngredients(row.ingredients_json),
     steps: decodeLines(row.steps_json),
+    times_cooked: normalizeTimesCooked(row.times_cooked),
     created_at: row.created_at,
     updated_at: row.updated_at,
     ...(row.notes?.trim() ? { notes: row.notes.trim() } : {}),
     ...(row.finished_image_uri?.trim() ? { finished_image_uri: row.finished_image_uri.trim() } : {}),
+    ...(lastCooked ? { last_cooked_at: lastCooked } : {}),
   };
 }
 
@@ -229,16 +247,22 @@ function parseLegacyRecipeRow(row: Record<string, unknown>): RecipeItem | null {
       ? row.finished_image_uri.trim()
       : undefined;
   if (!id || !created_at || !updated_at) return null;
+  const lastCooked =
+    typeof row.last_cooked_at === 'string' && row.last_cooked_at.trim()
+      ? row.last_cooked_at.trim()
+      : undefined;
   return {
     id,
     category_id: typeof row.category_id === 'string' ? row.category_id : '',
     title,
     ingredients: normalizeIngredients(row.ingredients, ingredientsText),
     steps: normalizeLineArray(row.steps, stepsText),
+    times_cooked: normalizeTimesCooked(row.times_cooked),
     created_at,
     updated_at,
     ...(notes?.trim() ? { notes: clampNotes(notes.trim()) } : {}),
     ...(finished_image_uri ? { finished_image_uri } : {}),
+    ...(lastCooked ? { last_cooked_at: lastCooked } : {}),
   };
 }
 
@@ -321,8 +345,8 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
       await db.runAsync(
         `INSERT INTO recipe_items (
           id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
-          created_at, updated_at, sync_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+          times_cooked, last_cooked_at, created_at, updated_at, sync_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
         [
           item.id,
           item.category_id,
@@ -331,6 +355,8 @@ async function importStoreToDb(db: SQLite.SQLiteDatabase, store: RecipeStore): P
           encodeLines(item.steps),
           item.notes?.trim() ? clampNotes(item.notes.trim()) : null,
           item.finished_image_uri ?? null,
+          normalizeTimesCooked(item.times_cooked),
+          item.last_cooked_at ?? null,
           item.created_at,
           item.updated_at,
         ],
@@ -574,6 +600,7 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
     title: clampTitle(input.title),
     ingredients: normalizeIngredients(input.ingredients),
     steps: normalizeLineArray(input.steps),
+    times_cooked: 0,
     created_at: now,
     updated_at: now,
     ...(input.notes?.trim() ? { notes: clampNotes(input.notes.trim()) } : {}),
@@ -583,8 +610,8 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
     await db.runAsync(
       `INSERT INTO recipe_items (
         id, category_id, title, ingredients_json, steps_json, notes, finished_image_uri,
-        created_at, updated_at, sync_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
+        times_cooked, last_cooked_at, created_at, updated_at, sync_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_create')`,
       [
         item.id,
         item.category_id,
@@ -593,6 +620,8 @@ export async function createRecipe(input: CreateRecipeInput): Promise<RecipeItem
         encodeLines(item.steps),
         item.notes ?? null,
         item.finished_image_uri ?? null,
+        0,
+        null,
         item.created_at,
         item.updated_at,
       ],
@@ -688,12 +717,37 @@ export async function updateRecipe(id: string, patch: UpdateRecipeInput): Promis
     title,
     ingredients,
     steps,
+    times_cooked: prev.times_cooked,
     created_at: prev.created_at,
     updated_at: now,
   };
   if (notes) next.notes = notes;
   if (finished_image_uri) next.finished_image_uri = finished_image_uri;
+  if (prev.last_cooked_at) next.last_cooked_at = prev.last_cooked_at;
   return next;
+}
+
+/** 记一次「做过」：次数 +1，更新最近制作时间（不改菜谱正文） */
+export async function recordRecipeCooked(id: string): Promise<RecipeItem | null> {
+  const db = await getDatabase();
+  const prevRow = await ensureLocalRowForWrite<RecipeRow>('recipe_items', id);
+  const prev = prevRow ? rowToRecipe(prevRow) : null;
+  if (!prev) return null;
+  const now = new Date().toISOString();
+  const times = normalizeTimesCooked(prev.times_cooked) + 1;
+  await db.runAsync(
+    `UPDATE recipe_items SET
+      times_cooked = ?, last_cooked_at = ?,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
+    [times, now, id],
+  );
+  markRecipesDirty();
+  return {
+    ...prev,
+    times_cooked: times,
+    last_cooked_at: now,
+  };
 }
 
 export async function deleteRecipe(id: string): Promise<boolean> {
@@ -727,11 +781,11 @@ export function recipeListPreviewTitle(row: RecipeItem): string {
 }
 
 export function recipeListPreviewSubtitle(row: RecipeItem): string {
-  const parts: string[] = [];
+  const times = normalizeTimesCooked(row.times_cooked);
+  const parts: string[] = [`做过 ${times} 次`];
   if (row.steps.length > 0) parts.push(`${row.steps.length} 步`);
   if (row.ingredients.length > 0) parts.push(`${row.ingredients.length} 项食材`);
-  if (row.finished_image_uri) parts.push('含成品图');
-  return parts.length > 0 ? parts.join(' · ') : '（暂无内容）';
+  return parts.join(' · ');
 }
 
 export function countRecipesInCategory(store: RecipeStore, categoryId: string): number {

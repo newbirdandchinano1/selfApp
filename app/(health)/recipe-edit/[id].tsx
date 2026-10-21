@@ -24,6 +24,7 @@ import {
   type RecipeIngredient,
 } from '@/lib/recipes';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { loadRecipeCategoryMeta, sortCategoriesByMeta } from '@/lib/recipe-category-meta';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { StoredImage } from '@/components/stored-image';
@@ -87,14 +88,15 @@ export default function RecipeEditScreen() {
     setLoading(true);
     setError(null);
     try {
-      const cats = await listRecipeCategories();
-      setCategories(cats);
+      const [cats, meta] = await Promise.all([listRecipeCategories(), loadRecipeCategoryMeta()]);
+      const ordered = sortCategoriesByMeta(cats, meta);
+      setCategories(ordered);
 
       if (isNew) {
         if (categoryId) {
           setSelectedCategoryId(categoryId);
-        } else if (cats.length > 0) {
-          setSelectedCategoryId(cats[0].id);
+        } else if (ordered.length > 0) {
+          setSelectedCategoryId(ordered[0].id);
         } else {
           setSelectedCategoryId('');
         }
@@ -133,9 +135,13 @@ export default function RecipeEditScreen() {
       void (async () => {
         setLoading(true);
         try {
-          const cats = await listRecipeCategories();
+          const [cats, meta] = await Promise.all([
+            listRecipeCategories(),
+            loadRecipeCategoryMeta(),
+          ]);
+          setCategories(sortCategoriesByMeta(cats, meta));
           if (cats.length === 0) {
-            Alert.alert('请先创建分类', '请先在「我的菜谱」中创建分类，再添加菜谱', [
+            Alert.alert('请先创建分类', '请先在「我的」→「菜谱分类」中创建分类，再添加菜谱', [
               { text: '确定', onPress: () => router.back() },
             ]);
           }

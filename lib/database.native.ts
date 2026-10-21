@@ -1397,6 +1397,8 @@ export async function initDatabase() {
       steps_json TEXT NOT NULL DEFAULT '[]',
       notes TEXT,
       finished_image_uri TEXT,
+      times_cooked INTEGER NOT NULL DEFAULT 0,
+      last_cooked_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'synced',
@@ -1625,6 +1627,10 @@ export async function initDatabase() {
   await ensureColumn(db, 'finance_transactions', 'amount', 'REAL');
   await ensureColumn(db, 'finance_transactions', 'note', 'TEXT');
   await ensureColumn(db, 'finance_transactions', 'extra_data', 'TEXT');
+  await ensureColumn(db, 'recipe_items', 'times_cooked', 'INTEGER');
+  await ensureColumn(db, 'recipe_items', 'last_cooked_at', 'TEXT');
+  await db.runAsync(`UPDATE recipe_items SET times_cooked = 0 WHERE times_cooked IS NULL`);
+
   await ensureColumn(db, 'memos', 'dimension_id', 'TEXT');
   await ensureColumn(db, 'memos', 'dimension', 'TEXT');
   await ensureColumn(db, 'memos', 'is_pinned', 'INTEGER NOT NULL DEFAULT 0');
