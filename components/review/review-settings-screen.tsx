@@ -1,7 +1,11 @@
-import { ReviewNavRow } from '@/components/review/review-ui-parts';
-import { loadReviewPeriodSnapshot, WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/components/review/review-utils';
-import { AppCard, ScreenHeader } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { FoldCard, FoldIconButton, FoldSwitch, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
+import { FoldReviewFooter, FoldReviewHeader } from '@/components/review/fold-review-chrome';
+import {
+  countEditableDailyEntries,
+  countFilledDailyEntries,
+  loadReviewPeriodSnapshot,
+  WEEKLY_REVIEW_WEEKDAY_LABELS,
+} from '@/components/review/review-utils';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -25,12 +29,13 @@ import { setWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -40,21 +45,122 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'review-settings';
 
+/** 周一优先的星期顺序（Date.getDay 0=周日） */
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
+const WEEK_CN = ['一', '二', '三', '四', '五', '六', '日'] as const;
+const WEEK_EN = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
+
+/** 7/14/21/30 天档位对应「七天奖励」的倍数 */
+const STREAK_TIERS = [
+  { days: 7, factor: 1 },
+  { days: 14, factor: 2 },
+  { days: 21, factor: 3 },
+  { days: 30, factor: 5 },
+] as const;
+
+function ymdToDate(ymd: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return new Date();
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function CardHead({ title, hint }: { title: string; hint?: string }) {
+  const { fold } = useFoldTheme();
+  return (
+    <View style={styles.cardHead}>
+      <Text style={[styles.cardTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+        {title}
+      </Text>
+      {hint ? (
+        <Text
+          style={[styles.cardHint, { color: fold.faint }]}
+          numberOfLines={2}
+          maxFontSizeMultiplier={1.2}>
+          {hint}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function InfoRow({
+  icon,
+  title,
+  subtitle,
+  actionLabel,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof MaterialIcons>['name'];
+  title: string;
+  subtitle: string;
+  actionLabel: string;
+  onPress?: () => void;
+}) {
+  const { fold, palette } = useFoldTheme();
+  const content = (
+    <View style={styles.infoRowInner}>
+      <View style={[styles.rowIcon, { backgroundColor: fold.paper2 }]}>
+        <MaterialIcons name={icon} size={16} color={fold.ink2} />
+      </View>
+      <View style={styles.infoRowText}>
+        <Text style={[styles.rowTitle, { color: fold.ink2 }]} maxFontSizeMultiplier={1.3}>
+          {title}
+        </Text>
+        <Text
+          style={[styles.rowSub, { color: fold.muted }]}
+          numberOfLines={2}
+          maxFontSizeMultiplier={1.3}>
+          {subtitle}
+        </Text>
+      </View>
+      <View style={styles.rowAction}>
+        <Text style={[styles.rowActionText, { color: palette.sage }]} maxFontSizeMultiplier={1.25}>
+          {actionLabel}
+        </Text>
+        {onPress ? <MaterialIcons name="chevron-right" size={14} color={fold.faint} /> : null}
+      </View>
+    </View>
+  );
+
+  if (!onPress) {
+    return (
+      <View style={[styles.infoRow, { backgroundColor: fold.card, borderColor: fold.line }]}>
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}，${actionLabel}`}
+      style={({ pressed }) => [
+        styles.infoRow,
+        { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.88 : 1 },
+      ]}>
+      {content}
+    </Pressable>
+  );
+}
+
 export function ReviewSettingsScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { colors, isDark, shadows } = useAppTheme();
+  const { isDark } = useAppTheme();
+  const { fold, palette } = useFoldTheme();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
 
   const [loading, setLoading] = useState(true);
+  const [synced, setSynced] = useState(false);
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
-  const [dailyPeriodLabel, setDailyPeriodLabel] = useState('');
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [weekRangeLabel, setWeekRangeLabel] = useState('');
+  const [filledCount, setFilledCount] = useState(0);
+  const [editableCount, setEditableCount] = useState(0);
+  const [weekdayBusy, setWeekdayBusy] = useState(false);
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
   const [dailyReminderTime, setDailyReminderTime] = useState(() => dailyReviewReminderTimeToDate(21, 0));
   const [dailyReminderTimePickerOpen, setDailyReminderTimePickerOpen] = useState(false);
@@ -79,12 +185,28 @@ export function ReviewSettingsScreen() {
             loadReviewPointsSettings(),
           ]);
           setConfiguredDow(snapshot.configuredDow);
-          setDailyPeriodLabel(snapshot.dailyPeriodLabel);
+          setWeekRangeLabel(snapshot.weekRangeLabel);
+          setFilledCount(
+            countFilledDailyEntries(
+              snapshot.dailyEntries,
+              snapshot.reviewCycleEndYmd,
+              snapshot.configuredDow,
+            ),
+          );
+          setEditableCount(
+            countEditableDailyEntries(
+              snapshot.dailyEntries,
+              snapshot.reviewCycleEndYmd,
+              snapshot.configuredDow,
+              todayYmd,
+            ),
+          );
           setDailyReminderEnabled(reminderSettings.enabled);
           setDailyReminderTime(dailyReviewReminderTimeToDate(reminderSettings.hour, reminderSettings.minute));
           setPointsSettings(reviewPoints);
           setDailyRewardText(formatPoints(reviewPoints.dailyRewardPoints));
           setStreak7BonusText(formatPoints(reviewPoints.streak7BonusPoints));
+          setSynced(true);
         }, forceRefresh);
       } finally {
         setLoading(false);
@@ -206,250 +328,418 @@ export function ReviewSettingsScreen() {
 
   const onPickWeekday = useCallback(
     async (d: number) => {
+      if (weekdayBusy || configuredDow === d) return;
+      setWeekdayBusy(true);
       try {
         await setWeeklyReviewConfiguredWeekday(d);
         setConfiguredDow(d);
-        setPickerOpen(false);
-        toast.success('复盘日已设定');
+        toast.success(`周复盘日已设为每${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}`);
         void reload();
       } catch (e) {
         toast.error(toUserMessage(e, '保存失败，请稍后重试'));
+      } finally {
+        setWeekdayBusy(false);
       }
     },
-    [reload],
+    [configuredDow, reload, weekdayBusy],
   );
 
+  const todayDow = useMemo(() => ymdToDate(todayYmd).getDay(), [todayYmd]);
+  const todayWeekdayLabel = WEEKLY_REVIEW_WEEKDAY_LABELS[todayDow] ?? '';
+
+  const remainingDays = Math.max(0, editableCount - filledCount);
+  const progressRatio = editableCount > 0 ? Math.min(1, filledCount / editableCount) : 0;
+  const weekEarned = pointsSettings.enabled
+    ? Math.round(filledCount * pointsSettings.dailyRewardPoints)
+    : 0;
+  const streakReached = pointsSettings.enabled && filledCount >= 7;
+
+  const tierPoints = useMemo(
+    () =>
+      STREAK_TIERS.map(tier => ({
+        days: tier.days,
+        points: Math.round(pointsSettings.streak7BonusPoints * tier.factor),
+      })),
+    [pointsSettings.streak7BonusPoints],
+  );
+
+  const systemSettings = useCallback(() => {
+    if (Platform.OS === 'web') return;
+    void Linking.openSettings().catch(() => {
+      toast.error('无法打开系统设置，请手动前往');
+    });
+  }, []);
+
+  const openHub = useCallback(() => router.navigate('/review'), [router]);
+
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
-      <ScreenHeader title="复盘设置" onBack={() => router.back()} />
+    <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+      <FoldReviewHeader
+        title="复盘设置"
+        subtitle="FOLD SETTINGS · 本机优先"
+        onBack={() => router.back()}
+        right={
+          <>
+            <View style={styles.syncPill}>
+              <MaterialIcons
+                name="check-circle"
+                size={12}
+                color={synced ? palette.sage : fold.faint}
+              />
+              <Text
+                style={[styles.syncText, { color: synced ? palette.sage : fold.faint }]}
+                maxFontSizeMultiplier={1.2}>
+                {synced ? '已同步' : '本机'}
+              </Text>
+            </View>
+            <FoldIconButton
+              icon="calendar-month"
+              variant="soft"
+              onPress={() => router.push('/review-calendar')}
+              accessibilityLabel="打开复盘日历"
+            />
+          </>
+        }
+      />
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={fold.pine} />
         </View>
       ) : (
         <ScrollView
           refreshControl={refreshControl}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
-          ]}>
-          <AppCard style={[shadows.card, styles.card]}>
-            <Text style={[Typography.label, { color: colors.textMuted }]}>每周复盘日</Text>
-            <Text style={[Typography.h3, { color: colors.text }]}>
-              {configuredDow === null ? '尚未设置' : `每周${WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow]}`}
-            </Text>
-            <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
-              仅在所选星期的那一天可填写与保存周复盘；统计区间为该日向前连续 7 个自然日（含当天）。
-            </Text>
-            <Pressable
-              onPress={() => setPickerOpen(true)}
-              style={({ pressed }) => [
-                styles.inlineBtn,
-                {
-                  borderColor: colors.outline,
-                  backgroundColor: colors.primaryMuted,
-                  opacity: pressed ? 0.88 : 1,
-                },
-              ]}>
-              <MaterialIcons name="edit-calendar" size={18} color={colors.primary} />
-              <Text style={[styles.inlineBtnText, { color: colors.primary }]}>设置复盘日</Text>
-            </Pressable>
-          </AppCard>
+          contentContainerStyle={styles.scroll}>
+          <FoldCard style={styles.card}>
+            <CardHead title="每周复盘日" hint="决定周复盘可写日与 7 天周期" />
+            <View style={styles.weekRow}>
+              {WEEK_ORDER.map((d, index) => {
+                const active = configuredDow === d;
+                return (
+                  <Pressable
+                    key={d}
+                    onPress={() => void onPickWeekday(d)}
+                    disabled={weekdayBusy}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`每周${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}`}
+                    style={({ pressed }) => [
+                      styles.weekCell,
+                      {
+                        backgroundColor: active ? palette.pineSolid : fold.card,
+                        borderColor: active ? palette.pineSolid : fold.line,
+                        opacity: weekdayBusy ? 0.6 : pressed ? 0.85 : 1,
+                      },
+                    ]}>
+                    <Text
+                      style={[styles.weekCellCn, { color: active ? fold.onPineButton : fold.ink2 }]}
+                      maxFontSizeMultiplier={1.2}>
+                      {WEEK_CN[index]}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.weekCellEn,
+                        { color: active ? fold.onPineButton : fold.faint },
+                      ]}
+                      maxFontSizeMultiplier={1.1}>
+                      {WEEK_EN[index]}
+                    </Text>
+                    {active ? <View style={[styles.weekDot, { backgroundColor: fold.amber }]} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={styles.hintLine}>
+              <MaterialIcons name="schedule" size={12} color={fold.faint} />
+              <Text style={[styles.hintText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                {configuredDow === null
+                  ? `今天是${todayWeekdayLabel}，点选一周中的某天作为复盘日；未选时暂以今日倒推 7 天。`
+                  : `今天是${todayWeekdayLabel}，复盘日设为每${WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow]}；本期 ${weekRangeLabel || '7 天'}。`}
+              </Text>
+            </View>
+          </FoldCard>
 
-          <AppCard style={[shadows.card, styles.card]}>
-            <View style={styles.reminderHead}>
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[Typography.title, { color: colors.text }]}>每日提醒复盘</Text>
-                <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
-                  在设定时间通过本地通知提醒你完成日复盘
-                  {Platform.OS === 'web' ? '（网页版不登记系统提醒）' : ''}
+          <FoldCard style={styles.card}>
+            <CardHead title="每日提醒" hint="本机通知 · 跳过已填与复盘日" />
+            <View style={styles.toggleRow}>
+              <View style={[styles.rowIcon, { backgroundColor: fold.sage2 }]}>
+                <MaterialIcons name="notifications-none" size={18} color={fold.pine} />
+              </View>
+              <View style={styles.toggleText}>
+                <Text style={[styles.rowTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                  每天提醒我写日复盘
+                </Text>
+                <Text style={[styles.rowSub, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                  仅在当天尚未落笔时送达
                 </Text>
               </View>
-              <Pressable
-                onPress={onToggleDailyReminder}
+              <FoldSwitch
+                value={dailyReminderEnabled}
+                onValueChange={onToggleDailyReminder}
                 disabled={dailyReminderBusy}
-                style={[
-                  styles.reminderSwitchTrack,
-                  {
-                    backgroundColor: dailyReminderEnabled ? colors.success : colors.outline,
-                    opacity: dailyReminderBusy ? 0.6 : 1,
-                  },
-                ]}
-                accessibilityRole="switch"
-                accessibilityState={{ checked: dailyReminderEnabled }}>
-                <View
-                  style={[
-                    styles.reminderSwitchDot,
-                    { backgroundColor: colors.onPrimary },
-                    dailyReminderEnabled && styles.reminderSwitchDotOn,
-                  ]}
-                />
-              </Pressable>
+                accessibilityLabel="每日复盘提醒开关"
+              />
             </View>
 
-            {dailyReminderEnabled ? (
-              <Pressable
-                onPress={() => {
-                  if (Platform.OS === 'web') return;
-                  setDailyReminderTimePickerOpen(true);
-                }}
-                style={({ pressed }) => [
-                  styles.reminderTimeRow,
-                  {
-                    borderColor: colors.outline,
-                    backgroundColor: colors.surface,
-                    opacity: Platform.OS === 'web' ? 0.65 : pressed ? 0.88 : 1,
-                  },
-                ]}>
-                <Text style={[Typography.label, { color: colors.textMuted }]}>提醒时间</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={[styles.reminderTimeValue, { color: colors.text }]}>
-                    {formatDailyReviewReminderClock(dailyReminderTime.getHours(), dailyReminderTime.getMinutes())}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS === 'web') return;
+                if (!dailyReminderEnabled) return;
+                setDailyReminderTimePickerOpen(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="设置提醒时间"
+              style={({ pressed }) => [styles.timeRow, { opacity: pressed ? 0.85 : 1 }]}>
+              <Text style={[styles.timeLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+                提醒时间
+              </Text>
+              <View style={styles.timeRight}>
+                <View
+                  style={[
+                    styles.timeChip,
+                    {
+                      backgroundColor: fold.paper2,
+                      borderColor: fold.line,
+                      opacity: dailyReminderEnabled ? 1 : 0.55,
+                    },
+                  ]}>
+                  <Text style={[styles.timeValue, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
+                    {formatDailyReviewReminderClock(
+                      dailyReminderTime.getHours(),
+                      dailyReminderTime.getMinutes(),
+                    )}
                   </Text>
-                  {Platform.OS !== 'web' ? <MaterialIcons name="schedule" size={20} color={colors.primary} /> : null}
                 </View>
-              </Pressable>
-            ) : null}
-          </AppCard>
-
-          <AppCard style={[shadows.card, styles.card]}>
-            <View style={styles.reminderHead}>
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[Typography.title, { color: colors.text }]}>积分奖励</Text>
-                <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
-                  完成日复盘发放每日奖励；连续完成七天（跳过周复盘日）再发放坚持总奖励。清空内容会自动冲正。
+                <Text style={[styles.timeMeta, { color: fold.faint }]} maxFontSizeMultiplier={1.2}>
+                  {remainingDays > 0 ? `本期还差 ${remainingDays} 天` : '本期已写满'}
                 </Text>
               </View>
-              <Pressable
-                onPress={onTogglePointsEnabled}
-                disabled={pointsBusy}
-                style={[
-                  styles.reminderSwitchTrack,
-                  {
-                    backgroundColor: pointsSettings.enabled ? colors.success : colors.outline,
-                    opacity: pointsBusy ? 0.6 : 1,
-                  },
-                ]}
-                accessibilityRole="switch"
-                accessibilityState={{ checked: pointsSettings.enabled }}>
-                <View
-                  style={[
-                    styles.reminderSwitchDot,
-                    { backgroundColor: colors.onPrimary },
-                    pointsSettings.enabled && styles.reminderSwitchDotOn,
-                  ]}
-                />
-              </Pressable>
+            </Pressable>
+
+            <View style={[styles.previewCard, { backgroundColor: fold.paper2, borderColor: fold.line }]}>
+              <View style={[styles.previewMark, { backgroundColor: fold.amber2 }]}>
+                <Text style={[styles.previewMarkText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.1}>
+                  折
+                </Text>
+              </View>
+              <View style={styles.previewBody}>
+                <Text style={[styles.previewTitle, { color: fold.ink2 }]} maxFontSizeMultiplier={1.25}>
+                  折页 · 今日复盘
+                </Text>
+                <Text
+                  style={[styles.previewText, { color: fold.muted }]}
+                  numberOfLines={2}
+                  maxFontSizeMultiplier={1.25}>
+                  {filledCount >= editableCount && editableCount > 0
+                    ? `本期 ${filledCount}/${editableCount} 天都已写完，继续保持。`
+                    : `本期已复盘 ${filledCount}/${editableCount || 7}，还差 ${remainingDays} 天，留 3 分钟给今天？`}
+                </Text>
+              </View>
+              <Text style={[styles.previewClock, { color: fold.faint }]} maxFontSizeMultiplier={1.15}>
+                {formatDailyReviewReminderClock(
+                  dailyReminderTime.getHours(),
+                  dailyReminderTime.getMinutes(),
+                )}
+              </Text>
             </View>
 
-            {pointsSettings.enabled ? (
-              <View style={styles.pointsFields}>
-                <View style={styles.pointsField}>
-                  <Text style={[Typography.label, { color: colors.textMuted }]}>每日奖励</Text>
-                  <View
-                    style={[
-                      styles.pointsInputRow,
-                      { borderColor: colors.outline, backgroundColor: colors.surface },
-                    ]}>
-                    <TextInput
-                      value={dailyRewardText}
-                      onChangeText={setDailyRewardText}
-                      onBlur={onBlurDailyReward}
-                      onSubmitEditing={onBlurDailyReward}
-                      keyboardType="decimal-pad"
-                      returnKeyType="done"
-                      editable={!pointsBusy}
-                      placeholder="5"
-                      placeholderTextColor={colors.textMuted}
-                      style={[styles.pointsInput, { color: colors.text }]}
-                      accessibilityLabel="每日复盘奖励积分"
-                    />
-                    <Text style={[styles.pointsSuffix, { color: colors.textMuted }]}>分</Text>
-                  </View>
-                </View>
-                <View style={styles.pointsField}>
-                  <Text style={[Typography.label, { color: colors.textMuted }]}>七天坚持总奖励</Text>
-                  <View
-                    style={[
-                      styles.pointsInputRow,
-                      { borderColor: colors.outline, backgroundColor: colors.surface },
-                    ]}>
-                    <TextInput
-                      value={streak7BonusText}
-                      onChangeText={setStreak7BonusText}
-                      onBlur={onBlurStreak7Bonus}
-                      onSubmitEditing={onBlurStreak7Bonus}
-                      keyboardType="decimal-pad"
-                      returnKeyType="done"
-                      editable={!pointsBusy}
-                      placeholder="30"
-                      placeholderTextColor={colors.textMuted}
-                      style={[styles.pointsInput, { color: colors.text }]}
-                      accessibilityLabel="连续七天复盘总奖励积分"
-                    />
-                    <Text style={[styles.pointsSuffix, { color: colors.textMuted }]}>分</Text>
-                  </View>
-                  <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]}>
-                    连续满 7、14、21… 天时各发放一次
-                  </Text>
-                </View>
-              </View>
-            ) : null}
-          </AppCard>
+            <View style={styles.hintLine}>
+              <MaterialIcons name="notifications-active" size={12} color={palette.sage} />
+              <Text style={[styles.hintText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                通知权限正常 · 当天若已填写会自动跳过，不打扰。
+              </Text>
+            </View>
+          </FoldCard>
 
-          <View style={styles.section}>
-            <Text style={[Typography.label, { color: colors.textMuted }]}>模板管理</Text>
-            <ReviewNavRow
-              icon="tune"
-              title="日复盘维度与栏目"
-              subtitle={dailyPeriodLabel || undefined}
-              onPress={() => router.push('/review-template-settings?scope=daily')}
-              iconColor={colors.secondary}
-              iconBg={colors.primaryMuted}
-              textColor={colors.text}
-              mutedColor={colors.textMuted}
-              borderColor={colors.outline}
-              surface={colors.surface}
+          <FoldCard style={styles.card}>
+            <CardHead title="积分奖励" hint="写入自动发放 · 清空自动冲正" />
+
+            <View style={styles.toggleRow}>
+              <View style={[styles.rowIcon, { backgroundColor: fold.amber2 }]}>
+                <MaterialIcons name="auto-awesome" size={16} color={palette.amberInk} />
+              </View>
+              <View style={styles.toggleText}>
+                <Text style={[styles.rowTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                  完成每日复盘
+                </Text>
+                <Text style={[styles.rowSub, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                  当天完成任意维度即算完成
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.amountPill,
+                  { backgroundColor: fold.amber2, borderColor: fold.line },
+                ]}>
+                <Text style={[styles.amountPlus, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
+                  +
+                </Text>
+                <TextInput
+                  value={dailyRewardText}
+                  onChangeText={setDailyRewardText}
+                  onBlur={onBlurDailyReward}
+                  onSubmitEditing={onBlurDailyReward}
+                  keyboardType="decimal-pad"
+                  returnKeyType="done"
+                  editable={!pointsBusy && pointsSettings.enabled}
+                  placeholder="5"
+                  placeholderTextColor={palette.amberInk}
+                  style={[styles.amountInput, { color: palette.amberInk }]}
+                  accessibilityLabel="每日复盘奖励积分"
+                />
+              </View>
+              <FoldSwitch
+                value={pointsSettings.enabled}
+                onValueChange={onTogglePointsEnabled}
+                disabled={pointsBusy}
+                accessibilityLabel="复盘积分奖励开关"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={[styles.rowIcon, { backgroundColor: fold.clay2 }]}>
+                <MaterialIcons name="local-fire-department" size={16} color={palette.clayInk} />
+              </View>
+              <View style={styles.toggleText}>
+                <Text style={[styles.rowTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                  七天坚持奖励
+                </Text>
+                <Text style={[styles.rowSub, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                  7 / 14 / 21 / 30 天各发放一次
+                </Text>
+              </View>
+              <View
+                style={[styles.amountPill, { backgroundColor: fold.clay2, borderColor: fold.line }]}>
+                <Text style={[styles.amountPlus, { color: palette.clayInk }]} maxFontSizeMultiplier={1.2}>
+                  +
+                </Text>
+                <TextInput
+                  value={streak7BonusText}
+                  onChangeText={setStreak7BonusText}
+                  onBlur={onBlurStreak7Bonus}
+                  onSubmitEditing={onBlurStreak7Bonus}
+                  keyboardType="decimal-pad"
+                  returnKeyType="done"
+                  editable={!pointsBusy && pointsSettings.enabled}
+                  placeholder="20"
+                  placeholderTextColor={palette.clayInk}
+                  style={[styles.amountInput, { color: palette.clayInk }]}
+                  accessibilityLabel="七天坚持复盘奖励积分"
+                />
+              </View>
+            </View>
+
+            <View style={styles.tierRow}>
+              {tierPoints.map(tier => {
+                const reached = filledCount >= tier.days;
+                return (
+                  <View
+                    key={tier.days}
+                    style={[
+                      styles.tierCell,
+                      {
+                        backgroundColor: reached ? fold.sage2 : fold.paper2,
+                        borderColor: reached ? fold.sage : fold.line,
+                      },
+                    ]}>
+                    <Text style={[styles.tierDays, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
+                      {tier.days} 天
+                    </Text>
+                    <Text
+                      style={[styles.tierPoints, { color: reached ? fold.pine : fold.ink2 }]}
+                      maxFontSizeMultiplier={1.2}>
+                      +{formatPoints(tier.points)}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          </FoldCard>
+
+          <FoldCard style={styles.card}>
+            <View style={styles.progressHead}>
+              <Text style={[styles.cardTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                本周奖励进度
+              </Text>
+              <Text style={[styles.progressCount, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+                {filledCount} / {editableCount || 7}
+              </Text>
+            </View>
+            <View style={[styles.progressTrack, { backgroundColor: fold.paper2 }]}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { backgroundColor: fold.pine, width: `${Math.round(progressRatio * 100)}%` },
+                ]}
+              />
+            </View>
+            <View style={styles.progressFooter}>
+              <Text style={[styles.progressHint, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+                {streakReached
+                  ? `已连续写满 7 天，七天奖励已计入。`
+                  : remainingDays > 0
+                    ? `再写 ${remainingDays} 天，领取 7 天奖励 +${formatPoints(pointsSettings.streak7BonusPoints)}`
+                    : '本期已完成'}
+              </Text>
+              <View style={[styles.earnedPill, { backgroundColor: fold.amber2 }]}>
+                <Text style={[styles.earnedText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
+                  本周 +{formatPoints(weekEarned)}
+                </Text>
+              </View>
+            </View>
+          </FoldCard>
+
+          <View style={styles.infoGroup}>
+            <InfoRow
+              icon="notifications-paused"
+              title="通知权限与排期失败提示"
+              subtitle="权限关闭时显示诊断与修复；失败项可单独重试，不影响复盘保存。"
+              actionLabel="去设置"
+              onPress={systemSettings}
             />
-            <ReviewNavRow
-              icon="tune"
-              title="周复盘维度与栏目"
-              onPress={() => router.push('/review-template-settings?scope=weekly')}
-              iconColor={colors.primary}
-              iconBg={colors.primaryMuted}
-              textColor={colors.text}
-              mutedColor={colors.textMuted}
-              borderColor={colors.outline}
-              surface={colors.surface}
-            />
-            <ReviewNavRow
-              icon="tune"
-              title="月复盘维度与栏目"
-              onPress={() => router.push('/review-template-settings?scope=monthly')}
-              iconColor={colors.primary}
-              iconBg={colors.primaryMuted}
-              textColor={colors.text}
-              mutedColor={colors.textMuted}
-              borderColor={colors.outline}
-              surface={colors.surface}
-            />
-            <ReviewNavRow
-              icon="tune"
-              title="全部复盘模板"
-              onPress={() => router.push('/review-template-settings')}
-              iconColor={colors.primary}
-              iconBg={colors.primaryMuted}
-              textColor={colors.text}
-              mutedColor={colors.textMuted}
-              borderColor={colors.outline}
-              surface={colors.surface}
+            <InfoRow
+              icon="sync"
+              title="同步状态"
+              subtitle="页面聚焦、本地变更与脏数据都会触发轻量刷新。"
+              actionLabel={synced ? '正常' : '本机优先'}
             />
           </View>
+
+          <Text style={[styles.footnote, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
+            积分仅用于激励记录，不影响复盘内容。关闭奖励不会回收已发放积分；删除或清空当日日复盘时，会按实际完成状态自动冲正。
+          </Text>
+
+          <View style={[styles.lockChip, { backgroundColor: fold.paper2 }]}>
+            <MaterialIcons name="lock-outline" size={12} color={fold.muted} />
+            <Text style={[styles.lockText, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+              数据仅保存在本机与应用账户
+            </Text>
+          </View>
+
+          <FoldCard style={styles.templateCard} onPress={() => router.push('/review-template-settings')}>
+            <View style={styles.templateIcon}>
+              <MaterialIcons name="dashboard-customize" size={17} color={palette.pine} />
+            </View>
+            <View style={styles.templateBody}>
+              <Text style={[styles.rowTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                复盘模板 · 日 / 周 / 月
+              </Text>
+              <Text style={[styles.rowSub, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+                三个 scope 一次管理，内置维度固定置顶
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={18} color={fold.faint} />
+          </FoldCard>
         </ScrollView>
       )}
+
+      <FoldReviewFooter
+        sibling="calendar"
+        onOpenHub={openHub}
+        onOpenSibling={() => router.push('/review-calendar')}
+      />
 
       {dailyReminderTimePickerOpen && Platform.OS === 'android' ? (
         <DateTimePicker
@@ -468,7 +758,7 @@ export function ReviewSettingsScreen() {
         onRequestClose={() => setDailyReminderTimePickerOpen(false)}>
         <View style={styles.reminderTimeModalRoot}>
           <Pressable
-            style={[styles.reminderTimeModalBackdrop, { backgroundColor: colors.overlay }]}
+            style={[styles.reminderTimeModalBackdrop, { backgroundColor: 'rgba(18,26,22,0.35)' }]}
             onPress={() => setDailyReminderTimePickerOpen(false)}
             accessibilityRole="button"
             accessibilityLabel="关闭"
@@ -476,10 +766,9 @@ export function ReviewSettingsScreen() {
           <View
             style={[
               styles.reminderTimePickerCard,
-              shadows.card,
-              { backgroundColor: colors.surface, borderColor: colors.outline },
+              { backgroundColor: fold.card, borderColor: fold.line },
             ]}>
-            <Text style={[Typography.h3, { color: colors.text }]}>选择提醒时间</Text>
+            <Text style={[styles.modalTitle, { color: fold.ink }]}>选择提醒时间</Text>
             <DateTimePicker
               value={dailyReminderTime}
               mode="time"
@@ -494,56 +783,22 @@ export function ReviewSettingsScreen() {
                 onPress={() => setDailyReminderTimePickerOpen(false)}
                 style={({ pressed }) => [
                   styles.reminderPickerBtn,
-                  { borderColor: colors.outline, opacity: pressed ? 0.88 : 1 },
+                  { borderColor: fold.line, opacity: pressed ? 0.85 : 1 },
                 ]}>
-                <Text style={[styles.reminderPickerBtnText, { color: colors.textMuted }]}>取消</Text>
+                <Text style={[styles.reminderPickerBtnText, { color: fold.muted }]}>取消</Text>
               </Pressable>
               <Pressable
                 onPress={onConfirmDailyReminderTime}
                 style={({ pressed }) => [
                   styles.reminderPickerBtn,
-                  { backgroundColor: colors.primary, borderColor: colors.primary, opacity: pressed ? 0.88 : 1 },
+                  {
+                    backgroundColor: fold.pine,
+                    borderColor: fold.pine,
+                    opacity: pressed ? 0.85 : 1,
+                  },
                 ]}>
-                <Text style={[styles.reminderPickerBtnText, { color: colors.onPrimary }]}>确定</Text>
+                <Text style={[styles.reminderPickerBtnText, { color: fold.onPineButton }]}>确定</Text>
               </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
-        <View style={[styles.modalRoot, { backgroundColor: colors.overlay }]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPickerOpen(false)} accessibilityLabel="关闭" />
-          <View
-            style={[
-              styles.modalSheet,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.outline,
-                paddingBottom: Math.max(insets.bottom, 20),
-              },
-            ]}>
-            <Text style={[Typography.h3, { color: colors.text }]}>选择每周复盘日</Text>
-            <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 20 }]}>
-              仅在所选星期的那一天可填写与保存；统计区间为该日向前连续 7 个自然日（含当天）。
-            </Text>
-            <View style={styles.modalList}>
-              {WEEKLY_REVIEW_WEEKDAY_LABELS.map((lab, i) => (
-                <Pressable
-                  key={lab}
-                  onPress={() => void onPickWeekday(i)}
-                  style={({ pressed }) => [
-                    styles.modalRow,
-                    {
-                      borderColor: colors.outline,
-                      opacity: pressed ? 0.88 : 1,
-                      backgroundColor: configuredDow === i ? colors.primaryMuted : colors.surfaceMuted,
-                    },
-                  ]}>
-                  <Text style={[styles.modalRowText, { color: colors.text }]}>{lab}</Text>
-                  {configuredDow === i ? <MaterialIcons name="check-circle" size={22} color={colors.primary} /> : null}
-                </Pressable>
-              ))}
             </View>
           </View>
         </View>
@@ -553,77 +808,255 @@ export function ReviewSettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
+  root: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.xl,
-    gap: Spacing['3xl'],
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
-    width: '100%',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 20,
+    gap: 10,
   },
-  card: {
-    gap: Spacing.lg,
-  },
-  inlineBtn: {
+  syncPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: 6,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing['3xl'],
-    marginTop: Spacing.sm,
+    gap: 4,
   },
-  inlineBtnText: { fontSize: 14, fontWeight: '800' },
-  reminderHead: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  reminderSwitchTrack: {
-    width: 48,
-    height: 28,
-    borderRadius: 14,
-    padding: 3,
-    justifyContent: 'center',
-  },
-  reminderSwitchDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-  },
-  reminderSwitchDotOn: { alignSelf: 'flex-end' },
-  reminderTimeRow: {
+  syncText: { fontSize: 10.5, fontWeight: '700' },
+  card: { gap: 12 },
+  cardHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingVertical: Spacing['3xl'],
-    paddingHorizontal: Spacing['3xl'],
+    gap: 10,
   },
-  reminderTimeValue: { fontSize: 18, fontWeight: '900' },
-  pointsFields: { gap: Spacing.xl },
-  pointsField: { gap: Spacing.sm },
-  pointsInputRow: {
+  cardTitle: {
+    fontSize: 15.5,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  cardHint: {
+    flexShrink: 1,
+    fontSize: 10,
+    textAlign: 'right',
+    letterSpacing: 0.1,
+  },
+  weekRow: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  weekCell: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  weekCellCn: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  weekCellEn: {
+    fontSize: 7.5,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  weekDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    marginTop: 1,
+  },
+  hintLine: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  hintText: {
+    flex: 1,
+    fontSize: 10.5,
+    lineHeight: 16,
+  },
+  toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    paddingHorizontal: Spacing['3xl'],
-    minHeight: 48,
+    gap: 10,
   },
-  pointsInput: {
+  rowIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleText: {
     flex: 1,
-    fontSize: 18,
-    fontWeight: '800',
-    paddingVertical: Spacing.lg,
+    minWidth: 0,
+    gap: 2,
   },
-  pointsSuffix: { fontSize: 14, fontWeight: '700', marginLeft: 8 },
-  section: { gap: Spacing.lg },
+  rowTitle: {
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  rowSub: {
+    fontSize: 10.5,
+    lineHeight: 15,
+  },
+  timeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  timeLabel: { fontSize: 12, fontWeight: '700' },
+  timeRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  timeChip: {
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  timeValue: {
+    fontSize: 15,
+    fontWeight: '800',
+    fontFamily: foldFonts.mono,
+    letterSpacing: 0.2,
+  },
+  timeMeta: { fontSize: 10 },
+  previewCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  previewMark: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewMarkText: { fontSize: 12, fontWeight: '800', fontFamily: foldFonts.serif },
+  previewBody: { flex: 1, minWidth: 0, gap: 2 },
+  previewTitle: { fontSize: 12, fontWeight: '800' },
+  previewText: { fontSize: 10.5, lineHeight: 15 },
+  previewClock: { fontSize: 10, fontWeight: '700', fontFamily: foldFonts.mono },
+  amountPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 9,
+    height: 28,
+    minWidth: 46,
+    justifyContent: 'center',
+  },
+  amountPlus: { fontSize: 12, fontWeight: '800' },
+  amountInput: {
+    minWidth: 22,
+    padding: 0,
+    fontSize: 12.5,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  tierRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  tierCell: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 7,
+    gap: 1,
+  },
+  tierDays: { fontSize: 9.5, fontWeight: '700' },
+  tierPoints: { fontSize: 13, fontWeight: '800' },
+  progressHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  progressCount: {
+    fontSize: 12,
+    fontWeight: '800',
+    fontFamily: foldFonts.mono,
+  },
+  progressTrack: {
+    height: 7,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  progressFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  progressHint: { flex: 1, fontSize: 10.5, lineHeight: 15 },
+  earnedPill: {
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  earnedText: { fontSize: 10.5, fontWeight: '800' },
+  infoGroup: { gap: 8 },
+  infoRow: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  infoRowInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+  },
+  infoRowText: { flex: 1, minWidth: 0, gap: 2 },
+  rowAction: { flexDirection: 'row', alignItems: 'center', gap: 1 },
+  rowActionText: { fontSize: 11, fontWeight: '700' },
+  footnote: {
+    fontSize: 9.5,
+    lineHeight: 14,
+    textAlign: 'center',
+    paddingHorizontal: 6,
+  },
+  lockChip: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  lockText: { fontSize: 9.5, fontWeight: '600' },
+  templateCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 11,
+  },
+  templateIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(127,166,149,0.18)',
+  },
+  templateBody: { flex: 1, minWidth: 0, gap: 2 },
   reminderTimeModalRoot: {
     flex: 1,
     justifyContent: 'center',
@@ -633,11 +1066,11 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
   },
   reminderTimePickerCard: {
-    borderRadius: Radius['2xl'],
+    borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
     maxWidth: 400,
     alignSelf: 'center',
     width: '100%',
@@ -645,37 +1078,15 @@ const styles = StyleSheet.create({
     gap: 8,
     overflow: 'hidden',
   },
+  modalTitle: { fontSize: 15, fontWeight: '800' },
   reminderPickerActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
   reminderPickerBtn: {
     flex: 1,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 42,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  reminderPickerBtnText: { fontSize: 15, fontWeight: '800' },
-  modalRoot: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    borderTopLeftRadius: Radius.sheet,
-    borderTopRightRadius: Radius.sheet,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    gap: 12,
-  },
-  modalList: { gap: 8, marginTop: 4 },
-  modalRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-  },
-  modalRowText: { fontSize: 16, fontWeight: '800' },
+  reminderPickerBtnText: { fontSize: 14, fontWeight: '800' },
 });

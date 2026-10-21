@@ -1,6 +1,6 @@
 /**
- * 复盘页专�?REST：灌入本�?SQLite 后供仓库只读�?
- * 失败时只回退本地，禁止降�?`/api/data/*` 全表 List�?
+ * ??????REST??????SQLite ????????
+ * ??????????????`/api/data/*` ?? List??
  */
 import {
   apiGetReviewCatalog,
@@ -24,7 +24,7 @@ import { REVIEW_JOURNAL_SCOPE } from '@/lib/repositories/insights/review-journal
 import type { ReviewColumnRow, ReviewDimensionRow } from '@/lib/repositories/insights/review-template.types';
 import type { WeeklyReviewJournalRow } from '@/lib/repositories/insights/weekly-review-journal.types';
 
-/** @deprecated 使用 shouldFetchPageFromApi */
+/** @deprecated ?? shouldFetchPageFromApi */
 export function shouldFetchReviewFromApi(): boolean {
   return shouldFetchPageFromApi();
 }
@@ -50,6 +50,8 @@ export type ReviewCatalogData = {
 
 export async function fetchReviewCatalog(opts?: {
   scope?: 'daily' | 'weekly' | 'monthly' | 'all';
+  /** ?????????????????? */
+  serverFallback?: boolean;
   signal?: AbortSignal;
 }): Promise<ReviewCatalogData> {
   return fetchPage<
@@ -64,7 +66,6 @@ export async function fetchReviewCatalog(opts?: {
       const { dimensions, columns } = await syncCatalogParts(payload);
       return { dimensions, columns, fromApi: true };
     },
-    fallback: (): ReviewCatalogData => ({ dimensions: [], columns: [], fromApi: false }),
   });
 }
 
@@ -83,6 +84,8 @@ export async function fetchReviewHome(opts: {
   dailyEnd: string;
   weekStart?: string;
   monthStart?: string;
+  /** ?????????????????? */
+  serverFallback?: boolean;
   signal?: AbortSignal;
 }): Promise<ReviewHomeData> {
   return fetchPage<
@@ -137,14 +140,6 @@ export async function fetchReviewHome(opts: {
         fromApi: true,
       };
     },
-    fallback: (): ReviewHomeData => ({
-      dimensions: [],
-      columns: [],
-      dailyJournals: [],
-      weeklyJournal: null,
-      monthlyJournal: null,
-      fromApi: false,
-    }),
   });
 }
 
@@ -171,8 +166,8 @@ export type ReviewMonthlyData = {
 };
 
 /**
- * �?/ �?/ �?journal 同构拉取：按 scope 选表�?REST，灌入本地后返回�?
- * 日刊要求 start+end；周/月可�?weekStart / monthStart �?start/end�?
+ * ??/ ??/ ??journal ?????? scope ????REST??????????
+ * ???? start+end??/????weekStart / monthStart ??start/end??
  */
 export async function fetchReviewJournal(opts: {
   scope: ReviewJournalScope;
@@ -180,6 +175,8 @@ export async function fetchReviewJournal(opts: {
   end?: string;
   weekStart?: string;
   monthStart?: string;
+  /** ?????????????????? */
+  serverFallback?: boolean;
   signal?: AbortSignal;
 }): Promise<ReviewJournalData> {
   const { scope } = opts;
@@ -192,7 +189,7 @@ export async function fetchReviewJournal(opts: {
     fetch: async (signal) => {
       if (scope === 'daily') {
         if (!opts.start || !opts.end) {
-          throw new Error('fetchReviewJournal(daily) 需�?start �?end');
+          throw new Error('fetchReviewJournal(daily) ???start ??end');
         }
         return apiGetReviewDaily({ start: opts.start, end: opts.end, signal });
       }
@@ -216,7 +213,6 @@ export async function fetchReviewJournal(opts: {
       await upsertPageRows(table, journals as Record<string, unknown>[]);
       return { journals, fromApi: true };
     },
-    fallback: (): ReviewJournalData => ({ journals: [], fromApi: false }),
   });
 }
 
@@ -302,6 +298,5 @@ export async function fetchReviewWeekMetrics(opts: {
       financeExpense: Math.round(Number(payload.financeExpense) || 0),
       fromApi: true,
     }),
-    fallback: (): WeekMetricsResult => ({ ...emptyWeekMetrics(opts.start, opts.end, rangeKind), fromApi: false }),
   });
 }

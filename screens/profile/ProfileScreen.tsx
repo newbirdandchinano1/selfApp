@@ -18,6 +18,8 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
+import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
+import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import {
   loadProfileHubStats,
@@ -387,13 +389,15 @@ export default function ProfileScreen() {
           styles.scrollContent,
           {
             paddingTop: insets.top + Spacing['3xl'],
-            paddingBottom: scrollBottomPad,
+            paddingBottom: scrollBottomPad + glassTabBarContentInset(insets.bottom),
             maxWidth: contentMaxWidth,
             width: '100%',
             alignSelf: 'center',
             paddingHorizontal: Layout.pagePaddingX,
           },
-        ]}>
+        ]}
+        onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
+        scrollEventThrottle={16}>
         <View style={styles.identityRow}>
           <View
             style={[

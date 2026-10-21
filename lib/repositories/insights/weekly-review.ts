@@ -114,7 +114,6 @@ export async function fetchWeeklyReviewMetrics(
     start: startYmd,
     end: endYmd,
     rangeKind: range,
-    serverFallback: true,
   });
 
   if (fromApi.fromApi) {

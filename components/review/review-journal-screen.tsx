@@ -25,6 +25,7 @@ type DailyProps = CommonProps & {
 type WeeklyProps = CommonProps & {
   scope: 'weekly';
   onRegisterReload?: (reload: () => Promise<void>) => void;
+  onSwitchToMonthly?: () => void;
 };
 
 type MonthlyProps = CommonProps & {
@@ -54,6 +55,7 @@ export function ReviewJournalScreen(props: ReviewJournalScreenProps) {
         pageApiKey={props.pageApiKey}
         refreshControl={props.refreshControl}
         onRegisterReload={props.onRegisterReload}
+        onSwitchToMonthly={props.onSwitchToMonthly}
       />
     );
   }

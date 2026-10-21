@@ -114,6 +114,8 @@ import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repo
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { addDaysToLogicalYmd, getLogicalLocalYmd, logicalYmdToLocalDate } from '@/lib/tasks-logical-day';
+import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
+import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import {
     getActiveAiLlmApiKey,
     isActiveAiLlmConfigured,
@@ -570,7 +572,10 @@ export default function FinanceScreen() {
     return `${prefix}${Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
-  const collapsedBottom = 6;
+  // 悬浮玻璃底栏高度之上的安全间距：一句话记账输入条始终露在底栏上方
+  const collapsedBottom = glassTabBarContentInset(insets.bottom) + 6;
+  /** 列表底部预留：只需避开输入条本身（输入条已抬到悬浮底栏之上） */
+  const scrollContentBottom = 226;
   const [isSheetVisible, setIsSheetVisible] = React.useState(false);
   const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('sentence');
   const [sheetAmount, setSheetAmount] = React.useState('');
@@ -1044,10 +1049,11 @@ export default function FinanceScreen() {
 
   const handleMainScroll = React.useCallback(
     (event: { nativeEvent: { contentOffset: { y: number }; layoutMeasurement: { height: number }; contentSize: { height: number } } }) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      reportTabBarScroll(contentOffset.y);
       if (!hasMoreHistoryDays || isLoadingMoreDays) {
         return;
       }
-      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       const distanceToBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
       if (distanceToBottom < 80) {
         loadMoreHistoryDays();
@@ -3013,7 +3019,7 @@ export default function FinanceScreen() {
         stickyHeaderIndices={[0]}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: 220 + collapsedBottom },
+          { paddingBottom: scrollContentBottom },
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}

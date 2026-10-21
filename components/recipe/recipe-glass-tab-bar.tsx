@@ -2,6 +2,11 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { hydrateRecipeHaptic, recipeSelectionHaptic } from '@/lib/recipe-haptic';
 import { getRecipePalette } from '@/lib/recipe-theme';
+import {
+  resetTabBarAutoHide,
+  tabBarVisibility,
+  useTabBarHidden,
+} from '@/lib/tab-bar-auto-hide';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -78,6 +83,19 @@ type TabRoute = {
   params?: object;
 };
 
+export type GlassTabIconState = { active: boolean; color: string };
+
+/**
+ * 单个 Tab 的图标与文案。
+ * 默认走 Ionicons 描边/填充对；也可以用 renderIcon 接入 AppIcon 等自定义图标。
+ */
+export type GlassTabMeta = {
+  label: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  iconActive?: keyof typeof Ionicons.glyphMap;
+  renderIcon?: (state: GlassTabIconState) => React.ReactNode;
+};
+
 /** 与 React Navigation 自定义 tabBar 入参对齐的最小类型 */
 export type RecipeGlassTabBarProps = {
   state: {
@@ -91,6 +109,8 @@ export type RecipeGlassTabBarProps = {
         title?: string;
         tabBarLabel?: string;
         tabBarAccessibilityLabel?: string;
+        /** 数字角标（0 / 空不显示） */
+        tabBarBadge?: string | number;
       };
     }
   >;
@@ -102,17 +122,19 @@ export type RecipeGlassTabBarProps = {
     }) => { defaultPrevented: boolean };
     navigate: (name: string, params?: object) => void;
   };
+  /** 路由名 → Tab 图标与文案；缺省使用内置菜谱配置 */
+  meta?: Record<string, GlassTabMeta>;
+  /** 覆盖明暗判定，默认跟随全局色板 */
+  isDark?: boolean;
+  /** 选中 / 未选中着色覆盖 */
+  activeColor?: string;
+  idleColor?: string;
+  /** 跟随页面滚动自动淡入淡出（下滑隐藏 / 上滑显示） */
+  autoHide?: boolean;
 };
 
 /** Ionicons：描边 / 填充成对，选中切填充（保留项目原图标） */
-const TAB_META: Record<
-  string,
-  {
-    label: string;
-    icon: keyof typeof Ionicons.glyphMap;
-    iconActive: keyof typeof Ionicons.glyphMap;
-  }
-> = {
+const TAB_META: Record<string, GlassTabMeta> = {
   index: { label: '菜谱', icon: 'book-outline', iconActive: 'book' },
   plan: { label: '计划', icon: 'calendar-outline', iconActive: 'calendar' },
   shop: { label: '采购', icon: 'cart-outline', iconActive: 'cart' },
@@ -146,26 +168,27 @@ function shellTokens(isDark: boolean) {
   if (isDark) {
     return {
       shellBorder: 'rgba(255,255,255,0.16)',
-      shellTint: 'rgba(22,24,28,0.32)',
-      innerStroke: 'rgba(255,255,255,0.10)',
-      specular: 'rgba(255,255,255,0.18)',
-      bevel: 'rgba(0,0,0,0.22)',
-      shadowOpacity: 0.32,
+      // 悬浮在滚动内容之上：用带灰度的半透明底色 + 深描边，任何背景上都读得出块面
+      shellTint: 'rgba(32,34,40,0.74)',
+      innerStroke: 'rgba(255,255,255,0.12)',
+      specular: 'rgba(255,255,255,0.24)',
+      bevel: 'rgba(0,0,0,0.24)',
+      shadowOpacity: 0.45,
       blurIntensity: Platform.OS === 'ios' ? 48 : 64,
       blurTint: 'systemThinMaterialDark' as const,
-      webBg: 'rgba(28,30,34,0.42)',
+      webBg: 'rgba(32,34,40,0.78)',
     };
   }
   return {
-    shellBorder: 'rgba(255,255,255,0.62)',
-    shellTint: 'rgba(255,255,255,0.22)',
-    innerStroke: 'rgba(255,255,255,0.48)',
-    specular: 'rgba(255,255,255,0.62)',
+    shellBorder: 'rgba(15,23,42,0.12)',
+    shellTint: 'rgba(240,242,247,0.78)',
+    innerStroke: 'rgba(255,255,255,0.65)',
+    specular: 'rgba(255,255,255,0.9)',
     bevel: 'rgba(0,0,0,0.05)',
-    shadowOpacity: 0.14,
+    shadowOpacity: 0.16,
     blurIntensity: Platform.OS === 'ios' ? 42 : 58,
     blurTint: 'systemThinMaterialLight' as const,
-    webBg: 'rgba(255,255,255,0.38)',
+    webBg: 'rgba(240,242,247,0.82)',
   };
 }
 
@@ -189,11 +212,21 @@ function bubbleTheme(isDark: boolean): BubbleTheme {
 }
 
 /**
- * 菜谱模块底部悬浮 Liquid Glass Tab。
+ * 菜谱模块底部悬浮 Liquid Glass Tab（同时作为主 Tab 栏通用实现）。
  * 结构：BaseGlassBackground + StaticTabItems + AnimatedGlassBubble + TabPressFeedback
  * 导航逻辑与视觉层解耦：只消费 state/navigation，不改路由表。
+ * 图标与配色可由调用方通过 meta / activeColor / idleColor 覆盖。
  */
-export function RecipeGlassTabBar({ state, descriptors, navigation }: RecipeGlassTabBarProps) {
+export function RecipeGlassTabBar({
+  state,
+  descriptors,
+  navigation,
+  meta,
+  isDark: isDarkOverride,
+  activeColor,
+  idleColor,
+  autoHide = false,
+}: RecipeGlassTabBarProps) {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme();
   const reduceMotion = useReducedMotion();
@@ -202,14 +235,25 @@ export function RecipeGlassTabBar({ state, descriptors, navigation }: RecipeGlas
   useEffect(() => {
     void hydrateRecipeHaptic();
   }, []);
-  const isDark = p.isDark;
+  const isDark = isDarkOverride ?? p.isDark;
+  const tabMeta = meta ?? TAB_META;
   const shell = shellTokens(isDark);
   const bubble = useMemo(() => bubbleTheme(isDark), [isDark]);
   const bottomPad = Math.max(insets.bottom, 10);
   const motion = RECIPE_TAB_MOTION;
 
-  const iconActive = isDark ? ICON_ACTIVE_DARK : ICON_ACTIVE_LIGHT;
-  const iconIdle = isDark ? ICON_IDLE_DARK : ICON_IDLE_LIGHT;
+  const iconActive = activeColor ?? (isDark ? ICON_ACTIVE_DARK : ICON_ACTIVE_LIGHT);
+  const iconIdle = idleColor ?? (isDark ? ICON_IDLE_DARK : ICON_IDLE_LIGHT);
+
+  // —— 滚动淡出淡入（主 Tab 悬浮栏）——
+  const barHidden = useTabBarHidden();
+  const autoHideStyle = useAnimatedStyle(() => ({
+    opacity: tabBarVisibility.value,
+  }));
+  useEffect(() => {
+    if (!autoHide) return;
+    resetTabBarAutoHide();
+  }, [autoHide, state.index]);
 
   const [layouts, setLayouts] = useState<Array<{ x: number; width: number } | null>>(
     () => state.routes.map(() => null),
@@ -352,77 +396,91 @@ export function RecipeGlassTabBar({ state, descriptors, navigation }: RecipeGlas
   }));
 
   return (
-    <View pointerEvents="box-none" style={[styles.wrap, { paddingBottom: bottomPad }]}>
-      <Animated.View
-        onLayout={onShellLayout}
-        style={[
-          styles.shell,
-          {
-            borderColor: shell.shellBorder,
-            shadowColor: isDark ? '#000' : '#1c2430',
-            ...Platform.select({
-              ios: { shadowOpacity: shell.shadowOpacity },
-              default: {},
-            }),
-          },
-          shellScaleStyle,
-        ]}>
-        {/* BaseGlassBackground：模糊与描边裁剪在内层，外壳 overflow 可见以容纳凸起气泡 */}
-        <View style={styles.shellClip} pointerEvents="none">
-          {Platform.OS === 'web' ? (
-            <View
-              style={[
-                StyleSheet.absoluteFill,
-                {
-                  backgroundColor: shell.webBg,
-                  ...({ backdropFilter: 'blur(24px) saturate(1.25)' } as object),
-                },
-              ]}
-            />
-          ) : (
-            <BlurView
-              intensity={shell.blurIntensity}
-              tint={shell.blurTint}
-              blurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
-              style={StyleSheet.absoluteFill}
-            />
-          )}
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: shell.shellTint }]} />
-          <View style={[styles.innerStroke, { borderColor: shell.innerStroke }]} />
-          <View style={[styles.specular, { backgroundColor: shell.specular }]} />
-          <View style={[styles.bevel, { backgroundColor: shell.bevel }]} />
-        </View>
+    <Animated.View
+      pointerEvents={autoHide && barHidden ? 'none' : 'box-none'}
+      style={[
+        styles.wrap,
+        { paddingBottom: bottomPad },
+        autoHide ? autoHideStyle : null,
+      ]}>
+      <View onLayout={onShellLayout} style={styles.shell}>
+        {/* 背景层独立承接整栏弹跳缩放：文字不参与 transform，避免动画期间发虚 */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.shellBg,
+            {
+              borderColor: shell.shellBorder,
+              shadowColor: isDark ? '#000' : '#1c2430',
+              ...Platform.select({
+                ios: { shadowOpacity: shell.shadowOpacity },
+                default: {},
+              }),
+            },
+            shellScaleStyle,
+          ]}>
+          {/* BaseGlassBackground：模糊与描边裁剪在内层，外壳 overflow 可见以容纳凸起气泡 */}
+          <View style={styles.shellClip} pointerEvents="none">
+            {Platform.OS === 'web' ? (
+              <View
+                style={[
+                  StyleSheet.absoluteFill,
+                  {
+                    backgroundColor: shell.webBg,
+                    ...({ backdropFilter: 'blur(24px) saturate(1.25)' } as object),
+                  },
+                ]}
+              />
+            ) : (
+              <BlurView
+                intensity={shell.blurIntensity}
+                tint={shell.blurTint}
+                blurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
+                style={StyleSheet.absoluteFill}
+              />
+            )}
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: shell.shellTint }]} />
+            <View style={[styles.innerStroke, { borderColor: shell.innerStroke }]} />
+            <View style={[styles.specular, { backgroundColor: shell.specular }]} />
+            <View style={[styles.bevel, { backgroundColor: shell.bevel }]} />
+          </View>
 
-        {/* AnimatedGlassBubble：共享动态指示器 */}
-        {barWidth > 0 ? (
-          <AnimatedGlassBubble
-            barWidth={barWidth}
-            barHeight={RECIPE_GLASS_TAB_BAR_HEIGHT}
-            bubbleX={bubbleX}
-            bubbleW={bubbleW}
-            targetX={targetX}
-            glassProgress={glassProgress}
-            opacity={bubbleOpacity}
-            theme={bubble}
-          />
-        ) : null}
+          {/* AnimatedGlassBubble：共享动态指示器 */}
+          {barWidth > 0 ? (
+            <AnimatedGlassBubble
+              barWidth={barWidth}
+              barHeight={RECIPE_GLASS_TAB_BAR_HEIGHT}
+              bubbleX={bubbleX}
+              bubbleW={bubbleW}
+              targetX={targetX}
+              glassProgress={glassProgress}
+              opacity={bubbleOpacity}
+              theme={bubble}
+            />
+          ) : null}
+        </Animated.View>
 
         {/* StaticTabItems + TabPressFeedback */}
         <View style={styles.row}>
           {state.routes.map((route, index) => {
             const focused = state.index === index;
             const { options } = descriptors[route.key];
-            const meta = TAB_META[route.name] ?? {
-              label: options.title ?? route.name,
-              icon: 'ellipse-outline' as keyof typeof Ionicons.glyphMap,
-              iconActive: 'ellipse' as keyof typeof Ionicons.glyphMap,
-            };
+            const entry = tabMeta[route.name];
             const label =
               options.tabBarLabel !== undefined
                 ? String(options.tabBarLabel)
                 : options.title !== undefined
                   ? options.title
-                  : meta.label;
+                  : (entry?.label ?? route.name);
+            const badge = normalizeTabBadge(options.tabBarBadge);
+
+            const renderIcon = (s: GlassTabIconState) => {
+              if (entry?.renderIcon) return entry.renderIcon(s);
+              const name = s.active
+                ? (entry?.iconActive ?? 'ellipse')
+                : (entry?.icon ?? 'ellipse-outline');
+              return <Ionicons name={name} size={ICON_SIZE} color={s.color} />;
+            };
 
             const onPress = () => {
               const event = navigation.emit({
@@ -441,8 +499,8 @@ export function RecipeGlassTabBar({ state, descriptors, navigation }: RecipeGlas
                 key={route.key}
                 focused={focused}
                 label={label}
-                icon={meta.icon}
-                iconActive={meta.iconActive}
+                renderIcon={renderIcon}
+                badge={badge}
                 activeColor={iconActive}
                 idleColor={iconIdle}
                 labelActive={iconActive}
@@ -455,16 +513,19 @@ export function RecipeGlassTabBar({ state, descriptors, navigation }: RecipeGlas
             );
           })}
         </View>
-      </Animated.View>
-    </View>
+      </View>
+    </Animated.View>
   );
 }
+
+/** 通用玻璃底栏：菜谱模块与主 Tab 共用同一套实现 */
+export const GlassTabBar = RecipeGlassTabBar;
 
 type TabItemProps = {
   focused: boolean;
   label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  iconActive: keyof typeof Ionicons.glyphMap;
+  renderIcon: (state: GlassTabIconState) => React.ReactNode;
+  badge?: string;
   activeColor: string;
   idleColor: string;
   labelActive: string;
@@ -479,8 +540,8 @@ type TabItemProps = {
 function TabItem({
   focused,
   label,
-  icon,
-  iconActive,
+  renderIcon,
+  badge,
   activeColor,
   idleColor,
   labelActive,
@@ -575,17 +636,24 @@ function TabItem({
       onPressIn={onPressIn}
       onPressOut={onPressOut}
       onLayout={onLayout}
-      style={[styles.item, tabScaleStyle]}>
+      style={styles.item}>
       <View style={styles.itemInner}>
         <View style={styles.iconBox}>
-          <View style={styles.iconGlyph}>
+          <Animated.View style={[styles.iconGlyph, tabScaleStyle]}>
             <Animated.View style={[styles.iconLayer, outlineStyle]}>
-              <Ionicons name={icon} size={ICON_SIZE} color={idleColor} />
+              {renderIcon({ active: false, color: idleColor })}
             </Animated.View>
             <Animated.View style={[styles.iconLayer, filledStyle]}>
-              <Ionicons name={iconActive} size={ICON_SIZE} color={activeColor} />
+              {renderIcon({ active: true, color: activeColor })}
             </Animated.View>
-          </View>
+          </Animated.View>
+          {badge ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText} numberOfLines={1}>
+                {badge}
+              </Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.labelBox}>
           <AnimatedText style={[styles.label, labelStyle]} numberOfLines={1}>
@@ -600,6 +668,22 @@ function TabItem({
 /** 列表等内容区底部预留，避免被悬浮栏挡住 */
 export function recipeGlassTabBarContentInset(bottomInset: number): number {
   return RECIPE_GLASS_TAB_BAR_HEIGHT + RECIPE_GLASS_TAB_BAR_GAP + Math.max(bottomInset, 10) + 8;
+}
+
+/** 通用别名：悬浮底栏的内容区底部预留 */
+export const glassTabBarContentInset = recipeGlassTabBarContentInset;
+
+/** 悬浮栏从屏幕底边算起的总高度（供抽屉手势区等外部避让） */
+export function glassTabBarFloatHeight(bottomInset: number): number {
+  return RECIPE_GLASS_TAB_BAR_HEIGHT + Math.max(bottomInset, 10);
+}
+
+/** tabBarBadge → 展示文案；0 / 空串 / NaN 视为无角标 */
+function normalizeTabBadge(raw: string | number | undefined): string | undefined {
+  if (typeof raw === 'number') return raw > 0 ? String(raw) : undefined;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text ? text : undefined;
 }
 
 const styles = StyleSheet.create({
@@ -618,14 +702,18 @@ const styles = StyleSheet.create({
     borderRadius: SHELL_RADIUS,
     // 外壳不裁剪，允许玻璃气泡向上凸起
     overflow: 'visible',
+  },
+  /** 玻璃背景层：单独承接整栏缩放，文字不参与 transform */
+  shellBg: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: SHELL_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'visible',
+    // 注意：不要在这里加 Android elevation，否则玻璃层会盖到上方文字行
     ...Platform.select({
       ios: {
         shadowRadius: 18,
         shadowOffset: { width: 0, height: 8 },
-      },
-      android: {
-        elevation: 10,
       },
       default: {},
     }),
@@ -685,6 +773,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'visible',
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -12,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    color: '#ffffff',
+    fontSize: 9,
+    fontWeight: '700',
+    lineHeight: 11,
+    includeFontPadding: false,
   },
   iconGlyph: {
     width: ICON_SIZE,

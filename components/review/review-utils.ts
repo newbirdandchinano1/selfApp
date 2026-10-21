@@ -18,6 +18,7 @@ import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
+import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import {
   getWeeklyReviewConfiguredWeekday,
   isDailyReviewSkippedOnWeeklyReviewDay,
@@ -27,7 +28,13 @@ import {
 
 export { WEEKLY_REVIEW_WEEKDAY_LABELS };
 
-export type DailyEntry = { ymd: string; label: string; fields: ReviewFieldValues };
+export type DailyEntry = {
+  ymd: string;
+  label: string;
+  fields: ReviewFieldValues;
+  /** 最近一次落笔时间（数据库时间戳原样），用于列表右侧「4 维 · 18:40」 */
+  updatedAt?: string | null;
+};
 
 const HEADER_WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as const;
 
@@ -202,7 +209,6 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
       dailyEnd: rolling.endYmd,
       weekStart: rolling.startYmd,
       monthStart,
-      serverFallback: true,
     });
   }
 
@@ -219,6 +225,9 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
 
   const dailyRows = await listDailyReviewsBetween(rolling.startYmd, rolling.endYmd);
   const byYmd = new Map(dailyRows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', dColIds)]));
+  const updatedByYmd = new Map(
+    dailyRows.map(r => [r.record_date_ymd, r.updated_at ?? r.created_at ?? null]),
+  );
   const dailyEntries: DailyEntry[] = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(rolling.start);
@@ -228,6 +237,7 @@ export async function loadReviewPeriodSnapshot(todayYmd: string): Promise<Review
       ymd,
       label: `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKLY_REVIEW_WEEKDAY_LABELS[d.getDay()]}`,
       fields: byYmd.get(ymd) ?? emptyFieldValues(dColIds),
+      updatedAt: updatedByYmd.get(ymd) ?? null,
     });
   }
 
@@ -335,4 +345,62 @@ export function formatWeekReviewProgressLabel(filled: number, editable: number):
   const n = Math.min(Math.max(0, filled), total || filled);
   if (total <= 0) return `本周已复盘 ${n}`;
   return `本周 ${n}/${total}`;
+}
+
+/** Hub 连续记录：近 46 天日复盘，用于「连续 12 天」 */
+export async function loadDailyStreakEntries(todayYmd: string, days = 46): Promise<DailyEntry[]> {
+  const start = shiftYmd(todayYmd, -(days - 1));
+  const [rows, tpl] = await Promise.all([
+    listDailyReviewsBetween(start, todayYmd),
+    listReviewTemplate('daily'),
+  ]);
+  const colIds = collectColumnIds(tpl);
+  const byYmd = new Map(rows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', colIds)]));
+  const out: DailyEntry[] = [];
+  for (let i = 0; i < days; i++) {
+    const ymd = shiftYmd(start, i);
+    out.push({ ymd, label: ymd, fields: byYmd.get(ymd) ?? emptyFieldValues(colIds) });
+  }
+  return out;
+}
+
+/** 数据库时间戳（MySQL DATETIME / ISO）→ HH:MM；无效返回 null */
+export function formatClockFromDatetime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const hm = formatStoredDatetimeHm(value);
+  return hm || null;
+}
+
+/** ISO 周序号（周一起算），用于「第 18 周」 */
+export function isoWeekNumber(ymd: string): number {
+  const date = parseYmd(ymd);
+  if (!date) return 1;
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayNr = (target.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNr + 3);
+  const firstThursday = new Date(target.getFullYear(), 0, 4);
+  const firstDayNr = (firstThursday.getDay() + 6) % 7;
+  firstThursday.setDate(firstThursday.getDate() - firstDayNr + 3);
+  const diff = target.getTime() - firstThursday.getTime();
+  return 1 + Math.round(diff / (7 * 24 * 3600 * 1000));
+}
+
+/** 年内第几天，用于「DAY 124」 */
+export function dayOfYear(ymd: string): number {
+  const date = parseYmd(ymd);
+  if (!date) return 1;
+  const start = new Date(date.getFullYear(), 0, 1);
+  return Math.floor((date.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+/** 拆出「5/3」「周一」这类列表用短标签 */
+export function splitEntryLabel(label: string, ymd: string): { date: string; weekday: string } {
+  const m = /(\d+)月(\d+)日\s*周?(.)/.exec(label);
+  if (m) return { date: `${Number(m[1])}/${Number(m[2])}`, weekday: `周${m[3]}` };
+  const date = parseYmd(ymd);
+  if (!date) return { date: ymd, weekday: '' };
+  return {
+    date: `${date.getMonth() + 1}/${date.getDate()}`,
+    weekday: `周${HEADER_WEEKDAY_LABELS[date.getDay()]}`,
+  };
 }

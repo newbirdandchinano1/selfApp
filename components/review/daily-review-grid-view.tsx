@@ -1,41 +1,39 @@
 import {
-  DailyReviewMetaBar,
-  DailyReviewSaveStatus,
-} from '@/components/review/daily-review-grid-parts';
-import { DailyReviewFactsStrip } from '@/components/review/daily-review-facts-strip';
-import { DailyReviewInlineComposer } from '@/components/review/daily-review-inline-composer';
-import { DailyReviewProgressHintCard } from '@/components/review/daily-review-progress-bar';
-import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
+  FoldAiMini,
+  FoldBoundaryBanner,
+  FoldDateTitle,
+  FoldDayAppBar,
+  FoldDayMetaStrip,
+  FoldDimensionGrid,
+  FoldProgressCard,
+  FoldTodayDataCard,
+  foldDayMotto,
+} from '@/components/review/fold-daily-overview-parts';
+import { FoldCard, FoldSectionHeader } from '@/components/review/fold-ui';
 import { ReviewGridSkeleton } from '@/components/skeletons/review';
-import {
-  ReviewEmptyState,
-  ReviewNoticeBanner,
-  ReviewPageContent,
-  ReviewPrimaryButton,
-} from '@/components/review/review-shared-ui';
 import {
   countDailyReviewStreak,
   countEditableDailyEntries,
   countFilledDailyEntries,
-  dailyEntryHasContent,
+  dayOfYear,
+  formatClockFromDatetime,
   formatReviewHeaderDate,
-  formatWeekReviewProgressLabel,
-  isDailyReviewDoneLight,
   isDailyReviewEditableYmd,
   isDailySkipped,
+  isoWeekNumber,
   loadReviewPeriodSnapshot,
   shiftYmd,
   type DailyEntry,
 } from '@/components/review/review-utils';
+import { Typography } from '@/constants/design-tokens';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import {
   formatDailyReviewReminderClock,
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { loadReviewDayFacts, type ReviewDayFacts } from '@/lib/review-day-facts';
-import { Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import { fetchReviewJournal, shouldFetchReviewFromApi } from '@/lib/review-page-api';
@@ -49,8 +47,12 @@ import {
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
 import { toast, toUserMessage } from '@/lib/app-feedback';
-import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
+import {
+  listDailyReviewsBetween,
+  upsertDailyReviewJournal,
+} from '@/lib/repositories/insights/daily-review-journal';
 import { ensureBuiltinDailyReviewModules, listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -65,6 +67,25 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const AUTO_SAVE_MS = 900;
+const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'] as const;
+
+function clockNow(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function parseYmdParts(ymd: string): { year: number; month: number; day: number; dow: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  return { year, month, day, dow: new Date(year, month - 1, day).getDay() };
+}
+
+function countFilledDimensions(template: ReviewDimensionTemplate[], fields: ReviewFieldValues): number {
+  return template.filter(dim => dim.columns.some(col => (fields[col.id] ?? '').trim().length > 0)).length;
+}
 
 export function DailyReviewGridView({
   ymd,
@@ -83,19 +104,17 @@ export function DailyReviewGridView({
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors } = useAppTheme();
+  const { palette } = useFoldTheme();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [savedFlash, setSavedFlash] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
   const [fields, setFields] = useState<ReviewFieldValues>({});
   const [meta, setMeta] = useState<ReviewJournalMeta>({});
   const [entryLabel, setEntryLabel] = useState('');
-  const [dailyTemplate, setDailyTemplate] = useState<
-    Awaited<ReturnType<typeof loadReviewPeriodSnapshot>>['dailyTemplate']
-  >([]);
+  const [dailyTemplate, setDailyTemplate] = useState<ReviewDimensionTemplate[]>([]);
   const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
   const [configuredDow, setConfiguredDow] = useState<number | null>(null);
   const [periodEntries, setPeriodEntries] = useState<DailyEntry[]>([]);
@@ -108,86 +127,93 @@ export function DailyReviewGridView({
   const hydratedRef = useRef(false);
   const skipFirstFocusReloadRef = useRef(true);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dirtyRef = useRef(false);
 
   const skipped = isDailySkipped(ymd, reviewCycleEndYmd, configuredDow);
   const canEdit = !skipped && isDailyReviewEditableYmd(ymd, todayYmd);
-  const todayDone = isDailyReviewDoneLight(fields);
 
-  const weekProgressLabel = useMemo(() => {
-    const filled = countFilledDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow);
-    const editable = countEditableDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow, todayYmd);
-    return formatWeekReviewProgressLabel(filled, editable);
-  }, [configuredDow, periodEntries, reviewCycleEndYmd, todayYmd]);
+  const weekFilled = useMemo(
+    () => countFilledDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow),
+    [configuredDow, periodEntries, reviewCycleEndYmd],
+  );
+  const weekTotal = useMemo(
+    () =>
+      Math.max(
+        weekFilled,
+        countEditableDailyEntries(periodEntries, reviewCycleEndYmd, configuredDow, todayYmd),
+      ),
+    [configuredDow, periodEntries, reviewCycleEndYmd, todayYmd, weekFilled],
+  );
 
   const streak = useMemo(
     () => countDailyReviewStreak(streakEntries, reviewCycleEndYmd, configuredDow, todayYmd),
     [configuredDow, reviewCycleEndYmd, streakEntries, todayYmd],
   );
 
-  const reload = useCallback(async (opts?: { silent?: boolean }) => {
-    if (!ymd) return;
-    const silent = opts?.silent === true;
-    hydratedRef.current = false;
-    // 静默刷新保留 ScrollView，避免同步/聚焦重载把滚动位置弹回顶部
-    if (!silent) setLoading(true);
-    try {
-      await wrapLoad(async () => {
-        await ensureBuiltinDailyReviewModules();
-        if (shouldFetchReviewFromApi()) {
-          await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd, serverFallback: true });
-        }
-        const streakStart = shiftYmd(todayYmd, -45);
-        const [snapshot, dailyRows, reminderSettings, dayFacts, streakRows, dailyTpl] = await Promise.all([
-          loadReviewPeriodSnapshot(todayYmd),
-          listDailyReviewsBetween(ymd, ymd),
-          getDailyReviewReminderSettings(),
-          ymd <= todayYmd ? loadReviewDayFacts(ymd) : Promise.resolve(null),
-          listDailyReviewsBetween(streakStart, todayYmd),
-          listReviewTemplate('daily'),
-        ]);
-        setDailyReminderEnabled(reminderSettings.enabled);
-        setDailyReminderTimeLabel(
-          reminderSettings.enabled
-            ? formatDailyReviewReminderClock(reminderSettings.hour, reminderSettings.minute)
-            : null,
-        );
-        setDailyTemplate(snapshot.dailyTemplate);
-        setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
-        setConfiguredDow(snapshot.configuredDow);
-        setPeriodEntries(snapshot.dailyEntries);
-        setFacts(dayFacts);
+  const filledDims = useMemo(() => countFilledDimensions(dailyTemplate, fields), [dailyTemplate, fields]);
 
-        const colIds = collectColumnIds(snapshot.dailyTemplate.length ? snapshot.dailyTemplate : dailyTpl);
-        const byYmd = new Map(
-          streakRows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', colIds)]),
-        );
-        const streakList: DailyEntry[] = [];
-        for (let i = 0; i <= 45; i++) {
-          const d = shiftYmd(streakStart, i);
-          streakList.push({
-            ymd: d,
-            label: d,
-            fields: byYmd.get(d) ?? emptyFieldValues(colIds),
-          });
-        }
-        setStreakEntries(streakList);
+  const reload = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!ymd) return;
+      const silent = opts?.silent === true;
+      hydratedRef.current = false;
+      if (!silent) setLoading(true);
+      try {
+        await wrapLoad(async () => {
+          await ensureBuiltinDailyReviewModules();
+          if (shouldFetchReviewFromApi()) {
+            await fetchReviewJournal({ scope: 'daily', start: ymd, end: ymd });
+          }
+          const streakStart = shiftYmd(todayYmd, -45);
+          const [snapshot, dailyRows, reminderSettings, dayFacts, streakRows, dailyTpl] = await Promise.all([
+            loadReviewPeriodSnapshot(todayYmd),
+            listDailyReviewsBetween(ymd, ymd),
+            getDailyReviewReminderSettings(),
+            ymd <= todayYmd ? loadReviewDayFacts(ymd) : Promise.resolve(null),
+            listDailyReviewsBetween(streakStart, todayYmd),
+            listReviewTemplate('daily'),
+          ]);
+          setDailyReminderEnabled(reminderSettings.enabled);
+          setDailyReminderTimeLabel(
+            reminderSettings.enabled
+              ? formatDailyReviewReminderClock(reminderSettings.hour, reminderSettings.minute)
+              : null,
+          );
+          setDailyTemplate(snapshot.dailyTemplate.length ? snapshot.dailyTemplate : dailyTpl);
+          setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
+          setConfiguredDow(snapshot.configuredDow);
+          setPeriodEntries(snapshot.dailyEntries);
+          setFacts(dayFacts);
 
-        const entry = snapshot.dailyEntries.find(e => e.ymd === ymd);
-        const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
-        setFields(journal.fields);
-        setMeta(journal.meta);
-        setEntryLabel(entry?.label ?? formatReviewHeaderDate(ymd));
-      });
-    } catch {
-      setFields({});
-      setMeta({});
-      setFacts(null);
-    } finally {
-      setLoading(false);
-      hydratedRef.current = true;
-    }
-  }, [todayYmd, wrapLoad, ymd]);
+          const colIds = collectColumnIds(snapshot.dailyTemplate.length ? snapshot.dailyTemplate : dailyTpl);
+          const byYmd = new Map(
+            streakRows.map(r => [r.record_date_ymd, parseDailyReviewBody(r.body ?? '', colIds)]),
+          );
+          const streakList: DailyEntry[] = [];
+          for (let i = 0; i <= 45; i++) {
+            const d = shiftYmd(streakStart, i);
+            streakList.push({ ymd: d, label: d, fields: byYmd.get(d) ?? emptyFieldValues(colIds) });
+          }
+          setStreakEntries(streakList);
+
+          const entry = snapshot.dailyEntries.find(e => e.ymd === ymd);
+          const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
+          setFields(journal.fields);
+          setMeta(journal.meta);
+          setEntryLabel(entry?.label ?? formatReviewHeaderDate(ymd));
+          setSavedAt(formatClockFromDatetime(dailyRows[0]?.updated_at ?? null));
+        });
+      } catch {
+        setFields({});
+        setMeta({});
+        setFacts(null);
+      } finally {
+        setLoading(false);
+        hydratedRef.current = true;
+      }
+    },
+    [todayYmd, wrapLoad, ymd],
+  );
 
   useEffect(() => {
     void reload({ silent: false });
@@ -212,6 +238,7 @@ export function DailyReviewGridView({
   const setMetaPatch = useCallback(
     (patch: Partial<ReviewJournalMeta>) => {
       if (!canEdit) return;
+      dirtyRef.current = true;
       setMeta(prev => ({ ...prev, ...patch }));
     },
     [canEdit],
@@ -225,9 +252,7 @@ export function DailyReviewGridView({
       if (ymd === todayYmd) {
         void syncDailyReviewReminderNotification();
       }
-      setSavedFlash(true);
-      if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
-      savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
+      setSavedAt(clockNow());
     } catch (e) {
       console.warn('daily review save', e);
       toast.error(toUserMessage(e, '复盘保存失败，请稍后重试'));
@@ -237,9 +262,10 @@ export function DailyReviewGridView({
   }, [canEdit, fields, meta, todayYmd, ymd]);
 
   useEffect(() => {
-    if (!hydratedRef.current || !canEdit) return;
+    if (!hydratedRef.current || !canEdit || !dirtyRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      dirtyRef.current = false;
       void persist();
     }, AUTO_SAVE_MS);
     return () => {
@@ -254,7 +280,7 @@ export function DailyReviewGridView({
         onYmdChange(next);
         return;
       }
-      router.replace(`/daily-review/${next}`);
+      router.replace({ pathname: '/daily-review/[ymd]', params: { ymd: next } });
     },
     [onYmdChange, router, ymd],
   );
@@ -289,9 +315,7 @@ export function DailyReviewGridView({
       if (ymd === todayYmd) {
         void syncDailyReviewReminderNotification();
       }
-      setSavedFlash(true);
-      if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
-      savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
+      setSavedAt(clockNow());
     } catch (e) {
       console.warn('daily ai analysis', e);
       toast.error(toUserMessage(e, '分析失败，请稍后重试'));
@@ -300,16 +324,39 @@ export function DailyReviewGridView({
     }
   }, [canEdit, dailyTemplate, fields, meta, todayYmd, ymd]);
 
-  const headerDateLabel = useMemo(() => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-    if (!m) return entryLabel;
-    return `${Number(m[2])}/${Number(m[3])}`;
-  }, [entryLabel, ymd]);
+  const parts = useMemo(() => parseYmdParts(ymd), [ymd]);
+  const dateLabel = parts ? `${parts.month}月${parts.day}日` : entryLabel;
+  const weekdayLabel = parts ? `周${WEEKDAY_LABELS[parts.dow]}` : '';
+  const subLabel = parts
+    ? `${parts.year} · 第 ${isoWeekNumber(ymd)} 周 · ${foldDayMotto(ymd)}`
+    : foldDayMotto(ymd);
+
+  const appbarSub = `DAY ${dayOfYear(ymd)} · ${
+    saving ? '保存中…' : savedAt ? `已自动保存 ${savedAt}` : '自动保存开启'
+  }`;
+
+  const todayTaskDimensionId = useMemo(() => {
+    const hit = dailyTemplate.find(dim => dim.title.includes('任务'));
+    return hit?.id ?? dailyTemplate[0]?.id ?? null;
+  }, [dailyTemplate]);
+
+  const openMore = useCallback(() => {
+    Alert.alert('更多', undefined, [
+      { text: '去填写每周复盘', onPress: () => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form')) },
+      { text: '生成 AI 观察', onPress: () => void runAi() },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [onSwitchToWeekly, router, runAi]);
+
+  const goWeekly = useCallback(() => {
+    if (onSwitchToWeekly) onSwitchToWeekly();
+    else router.push('/weekly-review-form');
+  }, [onSwitchToWeekly, router]);
 
   if (!ymd) {
     return (
       <View style={styles.centered}>
-        <Text style={{ color: colors.textMuted }}>无效日期</Text>
+        <Text style={{ color: palette.muted }}>无效日期</Text>
       </View>
     );
   }
@@ -319,94 +366,144 @@ export function DailyReviewGridView({
   }
 
   return (
-    <ScrollView
-      refreshControl={refreshControl}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={[
-        styles.scroll,
-        { paddingBottom: Spacing['6xl'] + Math.max(insets.bottom, Spacing.xl) },
-      ]}>
-      <ReviewPageContent style={styles.pageGap}>
-        <DailyReviewProgressHintCard
-          weekLabel={weekProgressLabel}
-          streak={streak}
-          todayDone={ymd === todayYmd ? todayDone : dailyEntryHasContent(fields)}
+    <View style={[styles.root, { backgroundColor: palette.paper }]}>
+      <FoldDayAppBar
+        title="日复盘"
+        subtitle={appbarSub}
+        onBack={() => router.back()}
+        onMore={openMore}
+        topInset={insets.top}
+      />
+
+      <ScrollView
+        refreshControl={refreshControl}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 56 }]}>
+        <FoldDateTitle
+          dateLabel={dateLabel}
+          weekdayLabel={weekdayLabel}
+          subLabel={subLabel}
+          saveLabel={saving ? '保存中' : savedAt ? '已自动保存' : '本地优先'}
         />
 
-        <DailyReviewMetaBar
+        {skipped ? (
+          <FoldBoundaryBanner
+            variant="weekly"
+            title="本日为每周复盘日"
+            body="先把这一周合上，再翻开新的一页。"
+            actionLabel="去填写"
+            onPress={goWeekly}
+          />
+        ) : !canEdit ? (
+          <FoldBoundaryBanner
+            variant="locked"
+            title="未来日期只读"
+            body="提前写下的复盘不算数，等到那一天再回来。"
+          />
+        ) : null}
+
+        <FoldProgressCard
+          filledDims={filledDims}
+          totalDims={Math.max(dailyTemplate.length, 1)}
+          weekFilled={weekFilled}
+          weekTotal={Math.max(weekTotal, 1)}
+          streak={streak}
+        />
+
+        <FoldDayMetaStrip
           meta={meta}
-          dateLabel={headerDateLabel}
           canEdit={canEdit}
-          canGoNext
           onMetaChange={setMetaPatch}
-          onPrevDay={() => navigateDay(-1)}
-          onNextDay={() => navigateDay(1)}
           reminderEnabled={dailyReminderEnabled}
           reminderTimeLabel={dailyReminderTimeLabel}
           onOpenReminderSettings={() => router.push('/review-settings')}
+          onPrevDay={() => navigateDay(-1)}
+          onNextDay={() => navigateDay(1)}
+          canGoNext={ymd < todayYmd}
         />
 
-        {skipped ? (
-          <ReviewNoticeBanner
-            icon="event-available"
-            message="本日为已设定的每周复盘日，请前往「每周复盘」填写，无需单独做日复盘。"
-          />
-        ) : !canEdit ? (
-          <ReviewNoticeBanner
-            icon="lock-outline"
-            tone="muted"
-            message="未来日期仅可查看，不可编辑与保存。"
+        {!skipped && facts ? (
+          <FoldTodayDataCard
+            facts={facts}
+            onViewAll={todayTaskDimensionId ? () => openDimension(todayTaskDimensionId) : undefined}
           />
         ) : null}
-
-        {!skipped ? <DailyReviewFactsStrip facts={facts} canEdit={false} /> : null}
-
-        {dailyTemplate.length === 0 ? (
-          <ReviewEmptyState
-            title="尚未配置日复盘维度"
-            subtitle="请点右上角「模板」按钮编辑标题与栏目。"
-          />
-        ) : (
-          <DailyReviewInlineComposer
-            dimensions={dailyTemplate}
-            fields={fields}
-            canEdit={canEdit}
-            onOpenDimension={openDimension}
-          />
-        )}
-
-        <DailyReviewSaveStatus saving={saving} saved={savedFlash} />
 
         {!skipped ? (
-          <ReviewAiAnalysisPanel
-            text={meta.ai_analysis}
-            busy={aiBusy}
-            canRun={canEdit}
-            onAnalyze={() => void runAi()}
-            disabledReason={!canEdit ? '当前日期不可生成分析' : undefined}
-          />
+          <>
+            <View style={styles.dimSectionHead}>
+              <FoldSectionHeader
+                title="维度预览"
+                hint={`点击进入编辑 · ${filledDims}/${dailyTemplate.length} 已填`}
+              />
+            </View>
+            {dailyTemplate.length === 0 ? (
+              <FoldCard tone="muted" style={styles.emptyCard}>
+                <Text style={[Typography.bodyStrong, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
+                  尚未配置日复盘维度
+                </Text>
+                <Text
+                  style={[Typography.body, { color: palette.muted, lineHeight: 20 }]}
+                  maxFontSizeMultiplier={1.35}>
+                  去「模板」里添加健康、任务、财务之后的栏目。
+                </Text>
+              </FoldCard>
+            ) : (
+              <FoldDimensionGrid
+                dimensions={dailyTemplate}
+                fields={fields}
+                canEdit={canEdit}
+                onOpenDimension={openDimension}
+              />
+            )}
+
+            <FoldAiMini
+              text={meta.ai_analysis}
+              busy={aiBusy}
+              canRun={canEdit}
+              onAnalyze={() => void runAi()}
+            />
+          </>
         ) : null}
 
-        {skipped ? (
-          <ReviewPrimaryButton
-            label="去填写每周复盘"
-            onPress={() => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form'))}
-          />
+        {savedAt ? (
+          <View style={styles.autoSave}>
+            <View style={[styles.autoSaveDot, { backgroundColor: palette.sage }]} />
+            <Text style={[styles.autoSaveText, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+              已自动保存 · {savedAt}
+            </Text>
+          </View>
         ) : null}
-      </ReviewPageContent>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: {
     width: '100%',
-    paddingTop: Spacing.sm,
+    paddingHorizontal: 16,
+    paddingTop: 2,
   },
-  pageGap: {
-    gap: Spacing.xl,
-    paddingHorizontal: 0,
+  dimSectionHead: {
+    marginTop: 16,
+    marginBottom: 2,
+    paddingHorizontal: 2,
   },
+  emptyCard: {
+    marginTop: 8,
+    gap: 6,
+  },
+  autoSave: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginTop: 14,
+  },
+  autoSaveDot: { width: 5, height: 5, borderRadius: 3 },
+  autoSaveText: { fontSize: 10 },
 });

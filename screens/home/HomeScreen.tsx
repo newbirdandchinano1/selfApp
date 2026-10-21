@@ -59,6 +59,8 @@ import {
 } from '@/lib/intake-assistant-selection';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { refreshAnchorAfterLogicalDayChange } from '@/lib/tasks-logical-day';
+import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
+import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { ensureDailyAiIntakeTargetsForToday, type DailyAiIntakeTargetsRow } from '@/lib/daily-intake-ai-targets';
 import {
   adjustNutritionMetricsForDaySchedule,
@@ -1972,10 +1974,15 @@ export default function HealthScreen() {
       <ScrollView
         refreshControl={refreshControl}
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: glassTabBarContentInset(insets.bottom) + 12 },
+        ]}
         showsVerticalScrollIndicator={false}
         directionalLockEnabled
         keyboardShouldPersistTaps="handled"
+        onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
+        scrollEventThrottle={16}
       >
         {pageLoadError ? (
           <View
@@ -2690,7 +2697,7 @@ export default function HealthScreen() {
           styles.floatingCtaWrap,
           {
             right: FLOATING_CTA_MARGIN,
-            bottom: Math.max(insets.bottom, 12) + 72,
+            bottom: glassTabBarContentInset(insets.bottom) + 8,
             transform: [{ scale: ctaCombinedScale }],
           },
         ]}

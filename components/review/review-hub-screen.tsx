@@ -1,27 +1,41 @@
+import { FoldCard, FoldIconButton, FoldPillButton, FoldSegment, foldFonts } from '@/components/review/fold-ui';
+import { FoldDailyJournal } from '@/components/review/fold-daily-journal';
 import { ReviewJournalScreen } from '@/components/review/review-journal-screen';
-import { formatReviewHeaderDate, loadReviewPeriodSnapshot } from '@/components/review/review-utils';
-import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
-import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import {
+  countDailyReviewStreak,
+  countFilledDailyEntries,
+  formatReviewHeaderDate,
+  getYesterdayYmd,
+  isoWeekNumber,
+  loadDailyStreakEntries,
+  loadReviewPeriodSnapshot,
+  type DailyEntry,
+} from '@/components/review/review-utils';
+import { ReviewListSkeleton } from '@/components/skeletons/review';
+import { Typography } from '@/constants/design-tokens';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
-import { REVIEW_PAGE_PADDING_X, reviewContentMaxWidth } from '@/lib/review-layout';
-import { isTodayConfiguredWeeklyReviewDay } from '@/lib/weekly-review-settings';
+import { resetTabBarAutoHide } from '@/lib/tab-bar-auto-hide';
+import { reviewContentMaxWidth } from '@/lib/review-layout';
+import { WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
+import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
+import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Platform,
+  Animated,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/review';
 const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
@@ -29,120 +43,222 @@ const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 /** 主切换仅日/周；月复盘从「更多」进入 */
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
 
-const SCOPE_TOGGLE_ORDER: Array<'daily' | 'weekly'> = ['daily', 'weekly'];
+const SCOPE_OPTIONS = [
+  { value: 'daily' as const, label: '日' },
+  { value: 'weekly' as const, label: '周' },
+];
 
-const SCOPE_LABEL: Record<ReviewScope, string> = {
-  daily: '日复盘',
-  weekly: '周复盘',
-  monthly: '月复盘',
-};
+function clockNow(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
-function ReviewScopeToggle({
-  value,
-  onChange,
+function HubBrand({
+  dateLabel,
+  weeklyHint,
+  onTemplate,
+  onMore,
 }: {
-  value: 'daily' | 'weekly';
-  onChange: (next: 'daily' | 'weekly') => void;
+  dateLabel: string;
+  weeklyHint: string | null;
+  onTemplate: () => void;
+  onMore: () => void;
 }) {
-  const { colors } = useAppTheme();
-  const touchMin = getMinTouchTarget(Platform.OS);
-
+  const { palette } = useFoldTheme();
   return (
-    <View style={styles.scopeWrap}>
-      <View
-        style={[styles.scopeTrack, { backgroundColor: colors.capsule }]}
-        accessibilityRole="tablist"
-        accessibilityLabel="复盘范围">
-        {SCOPE_TOGGLE_ORDER.map((scope, index) => {
-          const active = value === scope;
-          return (
-            <Pressable
-              key={scope}
-              onPress={() => onChange(scope)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={`${SCOPE_LABEL[scope]}，${index + 1}/${SCOPE_TOGGLE_ORDER.length}`}
-              style={({ pressed }) => [
-                styles.scopeItem,
-                { minHeight: touchMin },
-                active && [
-                  styles.scopeItemActive,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.outline,
-                  },
-                ],
-                pressed && { opacity: 0.88 },
-              ]}>
-              <Text
-                style={[
-                  Typography.bodyStrong,
-                  {
-                    color: active ? colors.primary : colors.textMuted,
-                    fontWeight: active ? '800' : '600',
-                  },
-                ]}
-                maxFontSizeMultiplier={1.35}>
-                {SCOPE_LABEL[scope]}
-              </Text>
-            </Pressable>
-          );
-        })}
+    <View style={styles.brandRow}>
+      <View style={styles.brandLeft}>
+        <View style={styles.brandTitleRow}>
+          <Text style={[styles.brandMark, { color: palette.pine }]} maxFontSizeMultiplier={1.35}>
+            折页
+          </Text>
+          <Text style={[styles.brandEn, { color: palette.sage }]} maxFontSizeMultiplier={1.35}>
+            FOLD / REVIEW
+          </Text>
+        </View>
+        <View style={styles.brandDateRow}>
+          <View style={[styles.liveDot, { backgroundColor: palette.amber }]} />
+          <Text style={[styles.brandDate, { color: palette.inkSoft }]} maxFontSizeMultiplier={1.35}>
+            {dateLabel}
+          </Text>
+          {weeklyHint ? (
+            <Text style={[styles.brandDate, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+              {weeklyHint}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+      <View style={styles.brandTools}>
+        <FoldPillButton label="模板" icon="grid-view" onPress={onTemplate} accessibilityLabel="编辑复盘标题与栏目" />
+        <FoldIconButton icon="more-horiz" onPress={onMore} accessibilityLabel="更多：月复盘、日历与设置" variant="soft" />
       </View>
     </View>
   );
 }
 
+/**
+ * Hub 右上「更多」浮层：月复盘 / 复盘日历 / 复盘设置。
+ * 轻遮罩淡入 + popover 从 .92 弹性放大，点击外部关闭。
+ */
+function MoreMenu({
+  open,
+  anim,
+  top,
+  right,
+  monthSub,
+  onClose,
+  onMonthly,
+  onCalendar,
+  onSettings,
+}: {
+  open: boolean;
+  anim: Animated.Value;
+  top: number;
+  right: number;
+  monthSub: string;
+  onClose: () => void;
+  onMonthly: () => void;
+  onCalendar: () => void;
+  onSettings: () => void;
+}) {
+  const { fold, palette } = useFoldTheme();
+  const items = [
+    { key: 'monthly', label: '月复盘', sub: monthSub, icon: 'calendar-month' as const, onPress: onMonthly },
+    { key: 'calendar', label: '复盘日历', sub: '42 格 · 找到任意一天', icon: 'date-range' as const, onPress: onCalendar },
+    { key: 'settings', label: '复盘设置', sub: '复盘日 / 提醒 / 积分', icon: 'settings' as const, onPress: onSettings },
+  ];
+
+  return (
+    <>
+      <Animated.View
+        pointerEvents={open ? 'auto' : 'none'}
+        style={[
+          styles.scrim,
+          {
+            opacity: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.16] }),
+          },
+        ]}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="关闭更多菜单"
+        />
+      </Animated.View>
+      <Animated.View
+        pointerEvents={open ? 'auto' : 'none'}
+        style={[
+          styles.popover,
+          {
+            top,
+            right,
+            backgroundColor: fold.card,
+            borderColor: fold.line2,
+            opacity: anim,
+            transform: [
+              { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
+            ],
+          },
+        ]}>
+        <View style={[styles.popoverCaret, { backgroundColor: fold.card, borderColor: fold.line2 }]} />
+        <View style={[styles.popoverHead, { borderBottomColor: fold.line }]}>
+          <Text style={[styles.popoverHeadTitle, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+            MORE · 更多
+          </Text>
+          <Text style={[styles.popoverHeadSub, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
+            把复盘放进更长的尺度
+          </Text>
+        </View>
+        {items.map(item => (
+          <Pressable
+            key={item.key}
+            onPress={item.onPress}
+            accessibilityRole="button"
+            accessibilityLabel={`${item.label}，${item.sub}`}
+            style={({ pressed }) => [
+              styles.popoverItem,
+              { borderTopColor: fold.line, backgroundColor: pressed ? fold.paper2 : 'transparent' },
+            ]}>
+            <View style={[styles.popoverIcon, { backgroundColor: fold.paper2 }]}>
+              <MaterialIcons name={item.icon} size={15} color={palette.pine} />
+            </View>
+            <View style={styles.popoverTextWrap}>
+              <Text style={[styles.popoverTitle, { color: fold.ink2 }]} maxFontSizeMultiplier={1.3}>
+                {item.label}
+              </Text>
+              <Text style={[styles.popoverSub, { color: fold.faint }]} numberOfLines={1} maxFontSizeMultiplier={1.25}>
+                {item.sub}
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={16} color={fold.faint} />
+          </Pressable>
+        ))}
+      </Animated.View>
+    </>
+  );
+}
+
 export function ReviewHubScreen() {
   const router = useRouter();
-  const { colors } = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const { palette } = useFoldTheme();
   const { width } = useWindowDimensions();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  const [selectedYmd, setSelectedYmd] = useState(todayYmd);
+
   const [scope, setScope] = useState<ReviewScope>('daily');
+  const [loading, setLoading] = useState(true);
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [monthLabel, setMonthLabel] = useState('');
-  const [autoSwitchedWeekly, setAutoSwitchedWeekly] = useState(false);
+  const [lastSyncLabel, setLastSyncLabel] = useState<string | null>(null);
+  const [entries, setEntries] = useState<DailyEntry[]>([]);
+  const [dailyTemplate, setDailyTemplate] = useState<ReviewDimensionTemplate[]>([]);
+  const [reviewCycleEndYmd, setReviewCycleEndYmd] = useState('');
+  const [configuredDow, setConfiguredDow] = useState<number | null>(null);
+  const [streakEntries, setStreakEntries] = useState<DailyEntry[]>([]);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreAnim] = useState(() => new Animated.Value(0));
+
   const scopeRef = useRef(scope);
-  const dailyReloadRef = useRef<(() => Promise<void>) | null>(null);
   const weeklyReloadRef = useRef<(() => Promise<void>) | null>(null);
   const monthlyReloadRef = useRef<(() => Promise<void>) | null>(null);
 
-  scopeRef.current = scope;
+  useEffect(() => {
+    scopeRef.current = scope;
+  }, [scope]);
 
   const contentMaxWidth = useMemo(() => reviewContentMaxWidth(width), [width]);
 
   useEffect(() => {
-    setSelectedYmd(todayYmd);
-  }, [todayYmd]);
+    resetTabBarAutoHide();
+  }, [scope]);
 
   const reloadSnapshot = useCallback(
     async (forceRefresh = false) => {
-      await wrapLoad(async () => {
-        const snapshot = await loadReviewPeriodSnapshot(todayYmd);
-        setWeekRangeLabel(snapshot.weekRangeLabel);
+      try {
+        await wrapLoad(async () => {
+          const snapshot = await loadReviewPeriodSnapshot(todayYmd);
+          setWeekRangeLabel(snapshot.weekRangeLabel);
+          setEntries(snapshot.dailyEntries);
+          setDailyTemplate(snapshot.dailyTemplate);
+          setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
+          setConfiguredDow(snapshot.configuredDow);
+          setLastSyncLabel(clockNow());
 
-        // 周复盘日：首次进入默认切到周视图
-        if (
-          !autoSwitchedWeekly &&
-          snapshot.configuredDow !== null &&
-          isTodayConfiguredWeeklyReviewDay(snapshot.configuredDow, new Date())
-        ) {
-          setScope('weekly');
-          setAutoSwitchedWeekly(true);
-        }
-      }, forceRefresh);
+          const streak = await loadDailyStreakEntries(todayYmd).catch(() => []);
+          setStreakEntries(streak);
+        }, forceRefresh);
+      } finally {
+        setLoading(false);
+      }
     },
-    [autoSwitchedWeekly, todayYmd, wrapLoad],
+    [todayYmd, wrapLoad],
   );
 
   const reload = useCallback(
     async (forceRefresh = false) => {
       await reloadSnapshot(forceRefresh);
-      if (scopeRef.current === 'daily') {
-        await dailyReloadRef.current?.();
-      } else if (scopeRef.current === 'weekly') {
+      if (scopeRef.current === 'weekly') {
         await weeklyReloadRef.current?.();
       } else if (scopeRef.current === 'monthly') {
         await monthlyReloadRef.current?.();
@@ -151,179 +267,348 @@ export function ReviewHubScreen() {
     [reloadSnapshot],
   );
 
-  const registerDailyReload = useCallback((fn: () => Promise<void>) => {
-    dailyReloadRef.current = fn;
-  }, []);
-
   const registerWeeklyReload = useCallback((fn: () => Promise<void>) => {
     weeklyReloadRef.current = fn;
   }, []);
-
   const registerMonthlyReload = useCallback((fn: () => Promise<void>) => {
     monthlyReloadRef.current = fn;
   }, []);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
-  usePageFocusReload(PAGE_API_KEY, () => void reload(false), { observeLocal: false });
+  usePageFocusReload(PAGE_API_KEY, forceRefresh => reload(forceRefresh ?? false), {
+    observeLocal: false,
+  });
   useLocalQuery(LOCAL_TABLES, () => {
     void reload(false);
   });
 
-  const openHeaderMore = useCallback(() => {
-    Alert.alert('更多', undefined, [
-      {
-        text: '月复盘',
-        onPress: () => setScope('monthly'),
-      },
-      {
-        text: '复盘日历',
-        onPress: () => router.push('/review-calendar'),
-      },
-      {
-        text: '复盘设置',
-        onPress: () => router.push('/review-settings'),
-      },
-      { text: '取消', style: 'cancel' },
-    ]);
-  }, [router]);
+  const openHeaderMore = useCallback(() => setMoreOpen(true), []);
+  const closeHeaderMore = useCallback(() => setMoreOpen(false), []);
+
+  useEffect(() => {
+    if (moreOpen) {
+      Animated.spring(moreAnim, {
+        toValue: 1,
+        speed: 20,
+        bounciness: 6,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      Animated.timing(moreAnim, {
+        toValue: 0,
+        duration: 160,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [moreAnim, moreOpen]);
+
+  const openDay = useCallback(
+    (ymd: string) => {
+      router.push({ pathname: '/daily-review/[ymd]', params: { ymd } });
+    },
+    [router],
+  );
+
+  const filledCount = useMemo(
+    () => countFilledDailyEntries(entries, reviewCycleEndYmd, configuredDow),
+    [configuredDow, entries, reviewCycleEndYmd],
+  );
+  const totalCount = useMemo(() => Math.max(entries.length, 1), [entries.length]);
+  const streak = useMemo(
+    () => countDailyReviewStreak(streakEntries, reviewCycleEndYmd, configuredDow, todayYmd),
+    [configuredDow, reviewCycleEndYmd, streakEntries, todayYmd],
+  );
+  const weekNumber = useMemo(() => isoWeekNumber(todayYmd), [todayYmd]);
 
   const headerSubtitle =
     scope === 'daily'
-      ? formatReviewHeaderDate(selectedYmd)
+      ? formatReviewHeaderDate(todayYmd)
       : scope === 'weekly'
         ? weekRangeLabel || formatReviewHeaderDate(todayYmd)
         : monthLabel || formatReviewHeaderDate(todayYmd);
 
-  const toggleValue: 'daily' | 'weekly' = scope === 'weekly' ? 'weekly' : 'daily';
+  const weeklyHint = useMemo(() => {
+    if (configuredDow === null) return null;
+    const label = WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow] ?? '';
+    return `每${label}复盘`;
+  }, [configuredDow]);
+
+  const headerDateLabel = useMemo(() => {
+    if (scope === 'daily') return `${headerSubtitle} · 第${isoWeekNumber(todayYmd)}周`;
+    return headerSubtitle;
+  }, [headerSubtitle, scope, todayYmd]);
+
+  const moreMonthSub = useMemo(() => {
+    const m = /^(\d{4})-(\d{2})/.exec(todayYmd.trim());
+    if (!m) return '回看更长的时间尺度';
+    return `回看 ${m[1]} 年 ${Number(m[2])} 月`;
+  }, [todayYmd]);
+
+  const moreTop = insets.top + 50;
+  const moreRight =
+    contentMaxWidth != null ? Math.max(16, (width - contentMaxWidth) / 2 + 16) : 16;
+  const closeAnd = useCallback(
+    (fn: () => void) => () => {
+      closeHeaderMore();
+      fn();
+    },
+    [closeHeaderMore],
+  );
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
-      <ScreenHeader
-        title="复盘"
-        subtitle={headerSubtitle}
-        right={
-          <View style={styles.headerActions}>
-            <ScreenHeaderIconAction
-              icon="tune"
-              onPress={() => router.push(`/review-template-settings?scope=${scope === 'monthly' ? 'monthly' : scope}`)}
-              accessibilityLabel="编辑复盘标题与栏目"
-            />
-            <ScreenHeaderIconAction
-              icon="more-horiz"
-              onPress={openHeaderMore}
-              accessibilityLabel="更多：月复盘、日历与设置"
-            />
-          </View>
-        }
-      />
-
-      <View style={[styles.body, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
-        {scope === 'monthly' ? (
-          <View style={styles.monthBar}>
-            <Pressable
-              onPress={() => setScope('daily')}
-              accessibilityRole="button"
-              accessibilityLabel="返回日复盘"
-              style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
-              <Text style={[Typography.bodyStrong, { color: colors.primary }]} maxFontSizeMultiplier={1.35}>
-                ← 返回日/周
-              </Text>
-            </Pressable>
-            <Text style={[Typography.bodyStrong, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
-              月复盘
-            </Text>
-          </View>
-        ) : (
-          <ReviewScopeToggle
-            value={toggleValue}
-            onChange={next => {
-              setScope(next);
-              if (next === 'weekly') setAutoSwitchedWeekly(true);
-            }}
+    <SafeAreaView
+      style={[styles.safe, { backgroundColor: palette.paper }]}
+      edges={['left', 'right']}>
+      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+        <View style={[styles.headerInner, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
+          <HubBrand
+            dateLabel={headerDateLabel}
+            weeklyHint={weeklyHint}
+            onTemplate={() =>
+              router.push(
+                `/review-template-settings?scope=${scope === 'monthly' ? 'monthly' : scope}`,
+              )
+            }
+            onMore={openHeaderMore}
           />
-        )}
 
-        <View style={styles.content}>
-          {scope === 'daily' ? (
-            <ReviewJournalScreen
-              scope="daily"
-              ymd={selectedYmd}
-              onYmdChange={setSelectedYmd}
-              pageApiKey={PAGE_API_KEY}
-              refreshControl={refreshControl}
-              onRegisterReload={registerDailyReload}
-              onSwitchToWeekly={() => {
-                setScope('weekly');
-                setAutoSwitchedWeekly(true);
-              }}
-            />
-          ) : scope === 'weekly' ? (
-            <ReviewJournalScreen
-              scope="weekly"
-              pageApiKey={PAGE_API_KEY}
-              refreshControl={refreshControl}
-              onRegisterReload={registerWeeklyReload}
-            />
+          {scope === 'monthly' ? (
+            <View style={styles.monthBar}>
+              <Pressable
+                onPress={() => setScope('daily')}
+                accessibilityRole="button"
+                accessibilityLabel="返回日复盘"
+                style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
+                <Text style={[Typography.bodyStrong, { color: palette.pine }]} maxFontSizeMultiplier={1.35}>
+                  ← 返回日/周
+                </Text>
+              </Pressable>
+              <Text style={[Typography.bodyStrong, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
+                月复盘
+              </Text>
+            </View>
           ) : (
-            <ReviewJournalScreen
-              scope="monthly"
-              pageApiKey={PAGE_API_KEY}
-              refreshControl={refreshControl}
-              onRegisterReload={registerMonthlyReload}
-              onMonthLabelChange={setMonthLabel}
+            <FoldSegment
+              options={SCOPE_OPTIONS}
+              value={scope === 'weekly' ? 'weekly' : 'daily'}
+              onChange={next => {
+                setScope(next);
+              }}
+              style={styles.segment}
             />
           )}
         </View>
       </View>
+
+      <View style={[styles.body, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
+        {scope === 'daily' ? (
+          loading && entries.length === 0 ? (
+            <ReviewListSkeleton />
+          ) : dailyTemplate.length === 0 && entries.length === 0 ? (
+            <ScrollView contentContainerStyle={styles.emptyWrap} refreshControl={refreshControl}>
+              <FoldCard tone="muted" style={styles.emptyCard}>
+                <Text style={[Typography.bodyStrong, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
+                  还没有日刊
+                </Text>
+                <Text style={[Typography.body, { color: palette.muted, lineHeight: 20 }]} maxFontSizeMultiplier={1.35}>
+                  请先在右上角「模板」里设置日复盘维度，再回来写今天。
+                </Text>
+              </FoldCard>
+            </ScrollView>
+          ) : (
+            <FoldDailyJournal
+              entries={entries}
+              template={dailyTemplate}
+              todayYmd={todayYmd}
+              yesterdayYmd={getYesterdayYmd(todayYmd)}
+              filledCount={filledCount}
+              totalCount={totalCount}
+              streak={streak}
+              configuredDow={configuredDow}
+              reviewCycleEndYmd={reviewCycleEndYmd}
+              lastSyncLabel={lastSyncLabel}
+              weekNumber={weekNumber}
+              onOpenDay={openDay}
+              refreshControl={refreshControl}
+            />
+          )
+        ) : scope === 'weekly' ? (
+          <ReviewJournalScreen
+            scope="weekly"
+            pageApiKey={PAGE_API_KEY}
+            refreshControl={refreshControl}
+            onRegisterReload={registerWeeklyReload}
+            onSwitchToMonthly={() => setScope('monthly')}
+          />
+        ) : (
+          <ReviewJournalScreen
+            scope="monthly"
+            pageApiKey={PAGE_API_KEY}
+            refreshControl={refreshControl}
+            onRegisterReload={registerMonthlyReload}
+            onMonthLabelChange={setMonthLabel}
+          />
+        )}
+      </View>
+
+      <MoreMenu
+        open={moreOpen}
+        anim={moreAnim}
+        top={moreTop}
+        right={moreRight}
+        monthSub={moreMonthSub}
+        onClose={closeHeaderMore}
+        onMonthly={closeAnd(() => setScope('monthly'))}
+        onCalendar={closeAnd(() => router.push('/review-calendar'))}
+        onSettings={closeAnd(() => router.push('/review-settings'))}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
-  headerActions: {
+  header: {
+    width: '100%',
+  },
+  headerInner: {
+    width: '100%',
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  brandLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  brandTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  brandMark: {
+    fontSize: 24,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    fontFamily: foldFonts.serif,
+  },
+  brandEn: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 2.6,
+  },
+  brandDateRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
+    gap: 6,
+    marginTop: 5,
+    flexWrap: 'wrap',
+  },
+  liveDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+  },
+  brandDate: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  brandTools: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: 2,
+  },
+  segment: {
+    marginTop: 12,
+  },
+  monthBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 12,
+    paddingBottom: 4,
   },
   body: {
     flex: 1,
     width: '100%',
     alignSelf: 'center',
   },
-  scopeWrap: {
-    paddingHorizontal: REVIEW_PAGE_PADDING_X,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    width: '100%',
+  emptyWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
   },
-  scopeTrack: {
+  emptyCard: {
+    gap: 6,
+  },
+  scrim: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#1B241F',
+    zIndex: 40,
+  },
+  popover: {
+    position: 'absolute',
+    width: 228,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    zIndex: 42,
+    transformOrigin: 'top right',
+    shadowColor: '#1B241F',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    elevation: 12,
+  },
+  popoverCaret: {
+    position: 'absolute',
+    top: -6,
+    right: 20,
+    width: 12,
+    height: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    transform: [{ rotate: '45deg' }],
+  },
+  popoverHead: {
+    paddingHorizontal: 12,
+    paddingTop: 11,
+    paddingBottom: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  popoverHeadTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  popoverHeadSub: {
+    marginTop: 3,
+    fontSize: 10.5,
+  },
+  popoverItem: {
     flexDirection: 'row',
-    borderRadius: Radius.lg,
-    padding: Spacing.xs,
-    gap: Spacing.xs,
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  scopeItem: {
-    flex: 1,
-    borderRadius: Radius.md,
+  popoverIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'transparent',
-    paddingHorizontal: Spacing.sm,
   },
-  scopeItemActive: {
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  monthBar: {
-    paddingHorizontal: REVIEW_PAGE_PADDING_X,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  content: {
-    flex: 1,
-  },
+  popoverTextWrap: { flex: 1, minWidth: 0 },
+  popoverTitle: { fontSize: 13, fontWeight: '800' },
+  popoverSub: { marginTop: 2, fontSize: 10.5 },
 });

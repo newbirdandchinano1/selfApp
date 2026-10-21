@@ -218,6 +218,8 @@ import {
   isTaskRowOverdue,
 } from '@/lib/standalone-todo-visibility';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
+import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
+import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
 import {
   applyRepeatingTaskRollovers,
@@ -5799,7 +5801,9 @@ export default function TasksScreen() {
       <ScrollView
         style={styles.wideLeftPane}
         contentContainerStyle={styles.wideLeftPaneContent}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+        onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
+        scrollEventThrottle={16}>
         {schedulePane}
       </ScrollView>
       ) : null}
@@ -5827,6 +5831,7 @@ export default function TasksScreen() {
         keyboardDismissMode="on-drag"
         onScroll={(e) => {
           mainScrollOffsetYRef.current = e.nativeEvent.contentOffset.y;
+          reportTabBarScroll(e.nativeEvent.contentOffset.y);
         }}
         scrollEventThrottle={16}
         initialNumToRender={6}
@@ -7145,7 +7150,7 @@ export default function TasksScreen() {
                   </View>
           ) : null
         }
-        ListFooterComponent={<View style={{ height: 46 + mainScrollKeyboardPad }} />}
+        ListFooterComponent={<View style={{ height: glassTabBarContentInset(insets.bottom) + mainScrollKeyboardPad }} />}
         renderItem={({ item: listItem }) => {
                   if (listItem.kind === 'month') {
                     const monthKey = listItem.key.replace(/^month:/, '');

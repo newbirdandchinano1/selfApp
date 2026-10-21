@@ -11,7 +11,7 @@ import {
 } from '@/lib/review-journal-format';
 import { ReviewRichTextInput } from '@/components/review/review-rich-text-input';
 import { Radius, Spacing } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import React, { useCallback } from 'react';
@@ -53,7 +53,7 @@ export function ReviewFieldEditor({
   backgroundColor,
   containerStyle,
 }: Props) {
-  const { colors } = useAppTheme();
+  const { fold } = useFoldTheme();
   const updateTextBlock = useCallback(
     (blockIndex: number, nextModel: ReviewTextModel, selection?: TextSelection) => {
       const nextBlocks = model.blocks.map((block, idx) =>
@@ -111,9 +111,9 @@ export function ReviewFieldEditor({
                   hitSlop={8}
                   style={({ pressed }) => [
                     styles.imageDeleteBtn,
-                    { backgroundColor: colors.overlay, opacity: pressed ? 0.75 : 1 },
+                    { backgroundColor: fold.summaryBg, opacity: pressed ? 0.75 : 1 },
                   ]}>
-                  <MaterialIcons name="close" size={16} color={colors.onPrimary} />
+                  <MaterialIcons name="close" size={16} color={fold.onPineButton} />
                 </Pressable>
               ) : null}
             </View>

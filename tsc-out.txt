@@ -1,0 +1,134 @@
+app/(health)/add-item.tsx(36,22): error TS2322: Type '"takeaway-box"' is not assignable to type '"android" | "web" | "light" | "input" | "filter" | "difference" | "visibility" | "key" | "sort" | "map" | "list" | "error" | "message" | "downloading" | "delete" | "fingerprint" | ... 2217 more ... | "zoom-out-map"'.
+app/(health)/intake-history.tsx(162,78): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(167,50): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(181,76): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(186,48): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(200,81): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(205,53): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(219,77): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/intake-history.tsx(224,49): error TS18048: 'qa' is possibly 'undefined'.
+app/(health)/recipe-categories.tsx(579,34): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+app/(profile)/blog.tsx(73,7): error TS2304: Cannot find name 'global'.
+app/(profile)/blog.tsx(113,26): error TS2304: Cannot find name 'global'.
+app/(profile)/blog.tsx(207,15): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(props: IOSWebViewProps & AndroidWebViewProps & WindowsWebViewProps): WebView<{}>', gave the following error.
+    Type '(domain: string | undefined, code: number, desc: string) => void' is not assignable to type '(errorDomain: string | undefined, errorCode: number, errorDesc: string) => ReactElement<unknown, string | JSXElementConstructor<any>>'.
+      Type 'void' is not assignable to type 'ReactElement<unknown, string | JSXElementConstructor<any>>'.
+  Overload 2 of 2, '(props: IOSWebViewProps & AndroidWebViewProps & WindowsWebViewProps, context: any): WebView<{}>', gave the following error.
+    Type '(domain: string | undefined, code: number, desc: string) => void' is not assignable to type '(errorDomain: string | undefined, errorCode: number, errorDesc: string) => ReactElement<unknown, string | JSXElementConstructor<any>>'.
+      Type 'void' is not assignable to type 'ReactElement<unknown, string | JSXElementConstructor<any>>'.
+app/(profile)/blog.tsx(259,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+app/(profile)/memo-list.tsx(220,40): error TS2353: Object literal may only specify known properties, and 'serverFallback' does not exist in type '{ signal?: AbortSignal | undefined; forceRefresh?: boolean | undefined; }'.
+app/(review)/review-calendar.tsx(338,32): error TS2339: Property 'pineSolid' does not exist on type 'FoldPalette'.
+app/(review)/review-calendar.tsx(343,32): error TS2339: Property 'pineSolid' does not exist on type 'FoldPalette'.
+app/(review)/review-calendar.tsx(457,38): error TS2339: Property 'lineStrong' does not exist on type 'FoldPalette'.
+app/(tasks)/project-tags.tsx(97,40): error TS2353: Object literal may only specify known properties, and 'serverFallback' does not exist in type '{ signal?: AbortSignal | undefined; forceRefresh?: boolean | undefined; }'.
+app/(tasks)/task/[id].tsx(763,30): error TS2820: Type '"cycle"' is not assignable to type '"android" | "web" | "light" | "input" | "filter" | "difference" | "visibility" | "key" | "sort" | "map" | "list" | "error" | "message" | "downloading" | "delete" | "fingerprint" | ... 2218 more ... | undefined'. Did you mean '"cyclone"'?
+app/(tasks)/tasks-calendar.tsx(802,7): error TS2322: Type '(fn: () => Promise<boolean | void | Record<string, unknown>>, forceRefresh?: boolean) => Promise<PageWrapLoadResult>' is not assignable to type '(fn: () => Promise<boolean | void>, forceRefresh?: boolean | undefined) => Promise<void>'.
+  Type 'Promise<PageWrapLoadResult>' is not assignable to type 'Promise<void>'.
+    Type 'PageWrapLoadResult' is not assignable to type 'void'.
+components/app-splash-screen.tsx(43,7): error TS2367: This comparison appears to be unintentional because the types '"done"' and '"clearing"' have no overlap.
+components/app-splash-screen.tsx(176,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/app-splash-screen.tsx(210,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/memo/memo-list-row.tsx(341,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/memo/memo-list-row.tsx(351,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/memo/memo-wall.tsx(66,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/pending-flush-block-overlay.tsx(43,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+components/review/review-hub-screen.tsx(401,18): error TS2304: Cannot find name 'HubIndex'.
+components/review/review-settings-screen.tsx(156,21): error TS2339: Property 'synced' does not exist on type '{ cacheOnly: any; getReadOpts: (forceRefresh?: boolean | undefined) => { forceRefresh: boolean; }; wrapLoad: (fn: () => Promise<boolean | void | Record<string, unknown>>, forceRefresh?: boolean) => Promise<...>; markSynced: () => void; resetSync: () => void; notifyAncestorsDataChanged: () => void; }'.
+components/review/review-settings-screen.tsx(430,56): error TS2339: Property 'pineSolid' does not exist on type 'FoldPalette'.
+components/review/review-settings-screen.tsx(431,52): error TS2339: Property 'pineSolid' does not exist on type 'FoldPalette'.
+components/review/review-settings-screen.tsx(1065,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
+hooks/use-page-api-sync.ts(50,59): error TS2339: Property 'cacheOnly' does not exist on type '{ forceRefresh: boolean; }'.
+hooks/use-page-api-sync.ts(54,52): error TS2345: Argument of type 'boolean | void | Record<string, unknown>' is not assignable to parameter of type 'boolean | void'.
+  Type 'Record<string, unknown>' is not assignable to type 'boolean | void'.
+hooks/use-page-api-sync.ts(55,63): error TS2339: Property 'cacheOnly' does not exist on type '{ forceRefresh: boolean; }'.
+hooks/use-page-api-sync.ts(61,31): error TS2339: Property 'cacheOnly' does not exist on type '{ forceRefresh: boolean; }'.
+hooks/use-page-api-sync.ts(67,16): error TS2352: Conversion of type 'Promise<boolean | void>' to type 'Promise<PageWrapLoadResult>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type 'boolean | void' is not comparable to type 'PageWrapLoadResult'.
+    Type 'void' is not comparable to type 'PageWrapLoadResult'.
+hooks/use-page-api-sync.ts(67,47): error TS2345: Argument of type '() => Promise<PageWrapLoadResult>' is not assignable to parameter of type '() => Promise<boolean | void>'.
+  Type 'Promise<PageWrapLoadResult>' is not assignable to type 'Promise<boolean | void>'.
+    Type 'PageWrapLoadResult' is not assignable to type 'boolean | void'.
+hooks/use-page-api-sync.ts(90,25): error TS2339: Property 'cacheOnly' does not exist on type '{ forceRefresh: boolean; }'.
+lib/api-read-local-sync.ts(130,28): error TS18046: 'out.sign_rule' is of type 'unknown'.
+lib/api-read-local-sync.ts(390,75): error TS2345: Argument of type 'SQLiteDatabase' is not assignable to parameter of type 'SqliteDb'.
+  Types of property 'getAllAsync' are incompatible.
+    Type '{ <T>(source: string, params: SQLiteBindParams): Promise<T[]>; <T>(source: string, ...params: SQLiteVariadicBindParams): Promise<T[]>; }' is not assignable to type '<T>(sql: string, params?: unknown[] | undefined) => Promise<T[]>'.
+      Types of parameters 'params' and 'params' are incompatible.
+        Type 'unknown[] | undefined' is not assignable to type 'SQLiteBindParams'.
+          Type 'undefined' is not assignable to type 'SQLiteBindParams'.
+lib/api-read-local-sync.ts(465,45): error TS2345: Argument of type 'SQLiteDatabase' is not assignable to parameter of type 'SqliteDb'.
+  Types of property 'getAllAsync' are incompatible.
+    Type '{ <T>(source: string, params: SQLiteBindParams): Promise<T[]>; <T>(source: string, ...params: SQLiteVariadicBindParams): Promise<T[]>; }' is not assignable to type '<T>(sql: string, params?: unknown[] | undefined) => Promise<T[]>'.
+      Types of parameters 'params' and 'params' are incompatible.
+        Type 'unknown[] | undefined' is not assignable to type 'SQLiteBindParams'.
+          Type 'undefined' is not assignable to type 'SQLiteBindParams'.
+lib/api-read.ts(409,44): error TS2554: Expected 0 arguments, but got 1.
+lib/api-read.ts(417,37): error TS2554: Expected 0 arguments, but got 1.
+lib/api-read.ts(459,44): error TS2554: Expected 0 arguments, but got 1.
+lib/api-read.ts(467,37): error TS2554: Expected 0 arguments, but got 1.
+lib/api-row-upsert.ts(331,14): error TS2551: Property 'accountId' does not exist on type '{ account_id: string; }'. Did you mean 'account_id'?
+lib/api-row-upsert.ts(392,65): error TS2554: Expected 2-3 arguments, but got 4.
+lib/cloud-sql-dirty-track.ts(69,25): error TS2304: Cannot find name 'AsyncStorage'.
+lib/cloud-sql-dirty-track.ts(71,30): error TS2304: Cannot find name 'AsyncStorage'.
+lib/cloud-sql-dirty-track.ts(83,8): error TS2304: Cannot find name 'AsyncStorage'.
+lib/daily-intake-ai-targets.ts(214,5): error TS2353: Object literal may only specify known properties, and 'forceRefresh' does not exist in type '{ cacheOnly?: boolean | undefined; }'.
+lib/finance-page-api.ts(166,29): error TS2554: Expected 0 arguments, but got 1.
+lib/finance-page-api.ts(227,29): error TS2554: Expected 0 arguments, but got 1.
+lib/notification-navigate.ts(7,15): error TS2724: '"expo-router"' has no exported member named 'Router'. Did you mean 'router'?
+lib/open-frog-heatmap-item.ts(2,15): error TS2724: '"expo-router"' has no exported member named 'Router'. Did you mean 'router'?
+lib/open-task-by-id.ts(4,15): error TS2724: '"expo-router"' has no exported member named 'Router'. Did you mean 'router'?
+lib/page-api-session.ts(327,48): error TS2345: Argument of type 'boolean | void | Record<string, unknown>' is not assignable to parameter of type 'boolean | void'.
+  Type 'Record<string, unknown>' is not assignable to type 'boolean | void'.
+lib/projects-list-api.ts(558,29): error TS2554: Expected 0 arguments, but got 1.
+lib/repositories/health/health.ts(31,11): error TS2339: Property 'startsWith' does not exist on type 'never'.
+lib/repositories/health/health.ts(61,67): error TS2339: Property 'startsWith' does not exist on type 'never'.
+lib/repositories/health/health.ts(355,26): error TS2339: Property 'startsWith' does not exist on type 'never'.
+lib/repositories/points/points.ts(23,14): error TS2339: Property 'cacheOnly' does not exist on type 'PageApiReadOpts'.
+lib/repositories/savings-plan/savings-plan-deposit.ts(58,70): error TS2339: Property 'cacheOnly' does not exist on type 'PageApiReadOpts'.
+lib/repositories/tasks/task-category-mirror.ts(40,57): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(source: string, params: SQLiteBindParams): Promise<SQLiteRunResult>', gave the following error.
+    Type '{} | null' is not assignable to type 'SQLiteBindValue'.
+      Type '{}' is not assignable to type 'SQLiteBindValue'.
+lib/repositories/tasks/task-category-mirror.ts(48,62): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(source: string, params: SQLiteBindParams): Promise<SQLiteRunResult>', gave the following error.
+    Type '{} | null' is not assignable to type 'SQLiteBindValue'.
+      Type '{}' is not assignable to type 'SQLiteBindValue'.
+lib/repositories/wish-board/wish-board.ts(133,14): error TS2339: Property 'cacheOnly' does not exist on type 'PageApiReadOpts'.
+lib/splash-hide.ts(28,13): error TS2367: This comparison appears to be unintentional because the types 'void' and 'boolean' have no overlap.
+lib/sync-apply.ts(27,22): error TS2347: Untyped function calls may not accept type arguments.
+lib/sync-apply.ts(33,24): error TS2347: Untyped function calls may not accept type arguments.
+lib/sync-bootstrap.ts(130,7): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(source: string, params: SQLiteBindParams): Promise<SQLiteRunResult>', gave the following error.
+    Argument of type '({} | null)[]' is not assignable to parameter of type 'SQLiteBindParams'.
+      Type '({} | null)[]' is not assignable to type 'SQLiteBindValue[]'.
+        Type '{} | null' is not assignable to type 'SQLiteBindValue'.
+          Type '{}' is not assignable to type 'SQLiteBindValue'.
+  Overload 2 of 2, '(source: string, ...params: SQLiteVariadicBindParams): Promise<SQLiteRunResult>', gave the following error.
+    Argument of type '({} | null)[]' is not assignable to parameter of type 'SQLiteBindValue'.
+      Type '({} | null)[]' is missing the following properties from type 'Uint8Array<ArrayBufferLike>': BYTES_PER_ELEMENT, buffer, byteLength, byteOffset, and 7 more.
+lib/task-api-write.ts(29,11): error TS7022: 'row' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.
+lib/task-api-write.ts(142,15): error TS2339: Property 'children' does not exist on type 'Record<string, unknown> | null | undefined'.
+lib/tasks-calendar-api.ts(57,97): error TS2339: Property 'cacheOnly' does not exist on type 'PageApiReadOpts'.
+lib/tasks-catalog-api.ts(313,30): error TS2554: Expected 0 arguments, but got 1.
+lib/tasks-habits-grid-api.ts(426,30): error TS2554: Expected 0 arguments, but got 1.
+lib/tasks-overview-api.ts(342,30): error TS2554: Expected 0 arguments, but got 1.
+lib/tasks-page-api.ts(772,29): error TS2554: Expected 0 arguments, but got 1.
+lib/tasks-page-api.ts(1197,28): error TS2554: Expected 0 arguments, but got 1.
+modules/zheng-background/index.ts(1,45): error TS2307: Cannot find module 'expo-modules-core' or its corresponding type declarations.
+screens/finance/FinanceScreen.tsx(1874,35): error TS2339: Property 'hasImageAsync' does not exist on type '{ new (): Clipboard; prototype: Clipboard; }'.
+screens/finance/FinanceScreen.tsx(1878,35): error TS2339: Property 'getImageAsync' does not exist on type '{ new (): Clipboard; prototype: Clipboard; }'.
+screens/home/HomeScreen.tsx(854,11): error TS2353: Object literal may only specify known properties, and 'healthRecordsLocalOnly' does not exist in type '{ user: UserRow; todayYmd: string; healthRecordsSkipFetch?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(2624,42): error TS2353: Object literal may only specify known properties, and 'forceLocal' does not exist in type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(2662,75): error TS2353: Object literal may only specify known properties, and 'forceLocal' does not exist in type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(2943,46): error TS2353: Object literal may only specify known properties, and 'serverFallback' does not exist in type 'PageApiReadOpts'.
+screens/tasks/TasksScreen.tsx(3023,38): error TS2559: Type '{ forceLocal: true; }' has no properties in common with type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(3032,36): error TS2559: Type '{ forceLocal: true; }' has no properties in common with type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(3041,36): error TS2559: Type '{ forceLocal: true; }' has no properties in common with type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(3052,36): error TS2559: Type '{ forceLocal: true; }' has no properties in common with type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(3061,38): error TS2559: Type '{ forceLocal: true; }' has no properties in common with type '{ forceRefresh?: boolean | undefined; }'.
+screens/tasks/TasksScreen.tsx(6196,73): error TS18047: 'progressTotal' is possibly 'null'.
+scripts/_recover/task-api-write.ts(27,11): error TS7022: 'row' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.
+scripts/test-memo-richdoc.ts(314,21): error TS2591: Cannot find name 'Buffer'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/test-sync-phase8-apply.ts(17,8): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.

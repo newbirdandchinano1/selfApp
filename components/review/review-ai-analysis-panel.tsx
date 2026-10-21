@@ -1,7 +1,7 @@
-import { ReviewSectionCard } from '@/components/review/review-shared-ui';
+import { FoldCard } from '@/components/review/fold-ui';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -19,17 +19,17 @@ export function ReviewAiAnalysisPanel({
   onAnalyze: () => void;
   disabledReason?: string;
 }) {
-  const { colors } = useAppTheme();
+  const { fold } = useFoldTheme();
   const body = (text ?? '').trim();
   const touchMin = useMemo(() => getMinTouchTarget(Platform.OS), []);
   const actionLabel = body ? '重新分析' : 'AI 分析';
 
   return (
-    <ReviewSectionCard variant="muted" style={styles.wrap}>
+    <FoldCard tone="muted" style={styles.wrap}>
       <View style={styles.head}>
         <View style={styles.headLeft}>
-          <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
-          <Text style={[Typography.title, { color: colors.text }]} maxFontSizeMultiplier={1.35}>
+          <MaterialIcons name="auto-awesome" size={18} color={fold.pine} />
+          <Text style={[Typography.title, { color: fold.ink }]} maxFontSizeMultiplier={1.35}>
             AI 分析
           </Text>
         </View>
@@ -39,7 +39,7 @@ export function ReviewAiAnalysisPanel({
           style={({ pressed }) => [
             styles.btn,
             {
-              backgroundColor: colors.primary,
+              backgroundColor: fold.pineButton,
               minHeight: touchMin,
               opacity: !canRun || busy ? 0.45 : pressed ? 0.88 : 1,
             },
@@ -48,16 +48,16 @@ export function ReviewAiAnalysisPanel({
           accessibilityLabel={actionLabel}
           accessibilityState={{ disabled: !canRun || busy, busy }}>
           {busy ? (
-            <ActivityIndicator color={colors.onPrimary} size="small" />
+            <ActivityIndicator color={fold.onPineButton} size="small" />
           ) : (
-            <Text style={[Typography.caption, { color: colors.onPrimary, fontWeight: '800' }]} maxFontSizeMultiplier={1.35}>
+            <Text style={[Typography.caption, { color: fold.onPineButton, fontWeight: '800' }]} maxFontSizeMultiplier={1.35}>
               {actionLabel}
             </Text>
           )}
         </Pressable>
       </View>
       {!canRun && disabledReason ? (
-        <Text style={[Typography.caption, { color: colors.textMuted, lineHeight: 18 }]} maxFontSizeMultiplier={1.35}>
+        <Text style={[Typography.caption, { color: fold.muted, lineHeight: 18 }]} maxFontSizeMultiplier={1.35}>
           {disabledReason}
         </Text>
       ) : null}
@@ -68,20 +68,20 @@ export function ReviewAiAnalysisPanel({
           <Skeleton width="78%" height={12} borderRadius={5} />
         </View>
       ) : body ? (
-        <Text style={[Typography.body, { color: colors.text, lineHeight: 22 }]} maxFontSizeMultiplier={1.35}>
+        <Text style={[Typography.body, { color: fold.ink2, lineHeight: 22 }]} maxFontSizeMultiplier={1.35}>
           {body}
         </Text>
       ) : (
         <View style={styles.emptyRow}>
-          <View style={[styles.emptyIcon, { backgroundColor: colors.primaryMuted }]}>
-            <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
+          <View style={[styles.emptyIcon, { backgroundColor: fold.sage2 }]}>
+            <MaterialIcons name="auto-awesome" size={18} color={fold.pine} />
           </View>
-          <Text style={[Typography.body, { color: colors.textMuted, lineHeight: 21, flex: 1 }]} maxFontSizeMultiplier={1.35}>
+          <Text style={[Typography.body, { color: fold.muted, lineHeight: 21, flex: 1 }]} maxFontSizeMultiplier={1.35}>
             填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
           </Text>
         </View>
       )}
-    </ReviewSectionCard>
+    </FoldCard>
   );
 }
 
