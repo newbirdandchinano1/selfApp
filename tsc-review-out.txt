@@ -31,7 +31,6 @@ components/memo/memo-list-row.tsx(341,19): error TS2551: Property 'absoluteFillO
 components/memo/memo-list-row.tsx(351,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
 components/memo/memo-wall.tsx(66,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
 components/pending-flush-block-overlay.tsx(43,19): error TS2551: Property 'absoluteFillObject' does not exist on type 'typeof StyleSheet'. Did you mean 'absoluteFill'?
-components/review/review-ai-analysis-screen.tsx(530,70): error TS2339: Property 'amberInk' does not exist on type 'FoldPalette'.
 hooks/use-page-api-sync.ts(50,59): error TS2339: Property 'cacheOnly' does not exist on type '{ forceRefresh: boolean; }'.
 hooks/use-page-api-sync.ts(54,52): error TS2345: Argument of type 'boolean | void | Record<string, unknown>' is not assignable to parameter of type 'boolean | void'.
   Type 'Record<string, unknown>' is not assignable to type 'boolean | void'.

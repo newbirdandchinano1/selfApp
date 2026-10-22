@@ -2,7 +2,7 @@ import { DailyReviewGridView } from '@/components/review/daily-review-grid-view'
 import { useFoldTheme } from '@/constants/review-fold-theme';
 import { reviewContentMaxWidth } from '@/lib/review-layout';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -13,8 +13,18 @@ export function DailyReviewEditScreen() {
   const { palette } = useFoldTheme();
   const { width } = useWindowDimensions();
   const params = useLocalSearchParams<{ ymd?: string | string[] }>();
-  const ymd = (Array.isArray(params.ymd) ? params.ymd[0] : params.ymd)?.trim() ?? '';
+  const paramYmd = (Array.isArray(params.ymd) ? params.ymd[0] : params.ymd)?.trim() ?? '';
+  /** 切日只改本地状态，避免 router.replace 触发切屏动画与整页重挂 */
+  const [ymd, setYmd] = useState(paramYmd);
   const contentMaxWidth = useMemo(() => reviewContentMaxWidth(width), [width]);
+
+  useEffect(() => {
+    if (paramYmd) setYmd(paramYmd);
+  }, [paramYmd]);
+
+  const onYmdChange = useCallback((next: string) => {
+    setYmd(next);
+  }, []);
 
   if (!ymd) {
     return (
@@ -36,7 +46,7 @@ export function DailyReviewEditScreen() {
       style={[styles.safe, { backgroundColor: palette.paper }]}
       edges={['left', 'right']}>
       <View style={[styles.content, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
-        <DailyReviewGridView ymd={ymd} pageApiKey={PAGE_API_KEY} />
+        <DailyReviewGridView ymd={ymd} onYmdChange={onYmdChange} pageApiKey={PAGE_API_KEY} />
       </View>
     </SafeAreaView>
   );

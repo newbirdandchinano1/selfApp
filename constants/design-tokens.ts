@@ -232,12 +232,12 @@ export function getPalette(scheme: ColorScheme): AppPalette {
   return (scheme === 'dark' ? PaletteDark : PaletteLight) as AppPalette;
 }
 
-/** 健康页营养素区分色（功能语义，非全局主色） */
+/** 健康页营养素区分色（功能语义，非全局主色；对齐 health-screens 设计稿） */
 export const HealthNutrientAccents = {
-  hydration: '#10b981',
-  protein: '#f59e0b',
-  carbohydrate: '#eab308',
-  calories: '#ef4444',
+  hydration: '#4F8FA8',
+  protein: '#C47852',
+  carbohydrate: '#C4A04A',
+  calories: '#5F8A6E',
 } as const;
 
 /**

@@ -32,7 +32,7 @@ import {
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import { loadReviewDayFacts, type ReviewDayFacts } from '@/lib/review-day-facts';
+import { loadReviewDayFacts, builtinDailyReviewFieldPatch, reviewDayFactsIsEmpty, type ReviewDayFacts } from '@/lib/review-day-facts';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
@@ -125,6 +125,9 @@ export function DailyReviewGridView({
   const [aiBusy, setAiBusy] = useState(false);
 
   const hydratedRef = useRef(false);
+  /** 首屏成功后永为 true；快切日期时不能用 hydratedRef 判断 silent（它会被置回 false） */
+  const readyOnceRef = useRef(false);
+  const loadGenRef = useRef(0);
   const skipFirstFocusReloadRef = useRef(true);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
@@ -155,7 +158,9 @@ export function DailyReviewGridView({
   const reload = useCallback(
     async (opts?: { silent?: boolean }) => {
       if (!ymd) return;
-      const silent = opts?.silent === true;
+      // 已首屏成功过则永远静默，避免快切时 hydratedRef 被置 false 又闪骨架
+      const silent = opts?.silent === true || readyOnceRef.current;
+      const gen = ++loadGenRef.current;
       hydratedRef.current = false;
       if (!silent) setLoading(true);
       try {
@@ -173,6 +178,7 @@ export function DailyReviewGridView({
             listDailyReviewsBetween(streakStart, todayYmd),
             listReviewTemplate('daily'),
           ]);
+          if (gen !== loadGenRef.current) return;
           setDailyReminderEnabled(reminderSettings.enabled);
           setDailyReminderTimeLabel(
             reminderSettings.enabled
@@ -204,19 +210,22 @@ export function DailyReviewGridView({
           setSavedAt(formatClockFromDatetime(dailyRows[0]?.updated_at ?? null));
         });
       } catch {
+        if (gen !== loadGenRef.current) return;
         setFields({});
         setMeta({});
         setFacts(null);
       } finally {
+        if (gen !== loadGenRef.current) return;
         setLoading(false);
         hydratedRef.current = true;
+        readyOnceRef.current = true;
       }
     },
     [todayYmd, wrapLoad, ymd],
   );
 
   useEffect(() => {
-    void reload({ silent: false });
+    void reload({ silent: readyOnceRef.current });
   }, [reload]);
 
   useEffect(() => {
@@ -276,13 +285,22 @@ export function DailyReviewGridView({
   const navigateDay = useCallback(
     (delta: number) => {
       const next = shiftYmd(ymd, delta);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      if (dirtyRef.current && canEdit) {
+        dirtyRef.current = false;
+        void persist();
+      }
       if (onYmdChange) {
         onYmdChange(next);
         return;
       }
-      router.replace({ pathname: '/daily-review/[ymd]', params: { ymd: next } });
+      // 无 onYmdChange 时用 setParams，避免 replace 的切屏动画
+      router.setParams({ ymd: next });
     },
-    [onYmdChange, router, ymd],
+    [canEdit, onYmdChange, persist, router, ymd],
   );
 
   const openDimension = useCallback(
@@ -291,6 +309,26 @@ export function DailyReviewGridView({
     },
     [router, ymd],
   );
+
+  const templateColumnIds = useMemo(() => new Set(collectColumnIds(dailyTemplate)), [dailyTemplate]);
+
+  /** 一键写入：把当日健康 / 任务 / 财务汇总写进对应内置栏目（只写有数据的栏） */
+  const insertFacts = useCallback(() => {
+    if (!canEdit || !facts) return;
+    const patch = builtinDailyReviewFieldPatch(facts);
+    const entries = Object.entries(patch).filter(([columnId]) => templateColumnIds.has(columnId));
+    if (entries.length === 0) {
+      toast.info('今天还没有可写入的健康、任务或财务数据');
+      return;
+    }
+    setFields(prev => {
+      const next = { ...prev };
+      for (const [columnId, value] of entries) next[columnId] = value;
+      return next;
+    });
+    dirtyRef.current = true;
+    toast.success(`已写入 ${entries.length} 栏今日数据`);
+  }, [canEdit, facts, templateColumnIds]);
 
   const runAi = useCallback(async () => {
     if (!canEdit) {
@@ -342,11 +380,12 @@ export function DailyReviewGridView({
 
   const openMore = useCallback(() => {
     Alert.alert('更多', undefined, [
+      { text: '一键写入今日数据', onPress: insertFacts },
       { text: '去填写每周复盘', onPress: () => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form')) },
       { text: '生成 AI 观察', onPress: () => void runAi() },
       { text: '取消', style: 'cancel' },
     ]);
-  }, [onSwitchToWeekly, router, runAi]);
+  }, [insertFacts, onSwitchToWeekly, router, runAi]);
 
   const goWeekly = useCallback(() => {
     if (onSwitchToWeekly) onSwitchToWeekly();
@@ -361,7 +400,8 @@ export function DailyReviewGridView({
     );
   }
 
-  if (loading) {
+  // 仅真正首屏显示骨架；切日保留当前页，静默换数
+  if (loading && !readyOnceRef.current) {
     return <ReviewGridSkeleton />;
   }
 
@@ -427,6 +467,7 @@ export function DailyReviewGridView({
           <FoldTodayDataCard
             facts={facts}
             onViewAll={todayTaskDimensionId ? () => openDimension(todayTaskDimensionId) : undefined}
+            onInsertFacts={canEdit && !reviewDayFactsIsEmpty(facts) ? insertFacts : undefined}
           />
         ) : null}
 

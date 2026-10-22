@@ -1,16 +1,32 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { HealthIntakeDeleteConfirmSheet } from '@/components/health/health-intake-delete-confirm-sheet';
+import { HealthPopIn, HealthRiseIn, useHealthMotionGate } from '@/components/health/health-motion';
+import { StoredImage } from '@/components/stored-image';
+import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
-import { formatYmdCN } from '@/lib/date';
-import { createQuickAddItemMap, loadAllQuickAddItems, type QuickAddCardItem } from '@/lib/quick-add-cards';
-import { deleteHealthRecord, getHealthRecordById } from '@/lib/repositories/health/health';
-import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
+import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { formatYmd, parseYmd } from '@/lib/date';
+import {
+  createQuickAddItemMap,
+  loadAllQuickAddItems,
+  type QuickAddCardItem,
+} from '@/lib/quick-add-cards';
+import {
+  DEFAULT_HEALTH_METRIC_POINTS_SETTINGS,
+  isIntakeMetricRewardEligible,
+  loadHealthMetricPointsSettings,
+  type HealthMetricPointsSettings,
+} from '@/lib/health-metric-points-settings';
+import {
+  deleteHealthRecord,
+  getHealthRecordById,
+  getHealthRecordsForUserOnDate,
+} from '@/lib/repositories/health/health';
+import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
-import { StoredImage } from '@/components/stored-image';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -22,66 +38,21 @@ import {
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type IntakeMetric = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 
 const HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY = 'ai_text_intake';
-
+const PAGE_API_KEY = 'intake-record-detail';
 const METRIC_ORDER: IntakeMetric[] = ['hydration', 'protein', 'carbohydrate', 'calories'];
-
-const METRIC_META: Record<
-  IntakeMetric,
-  {
-    label: string;
-    unit: 'ml' | 'g' | 'kcal';
-    icon: keyof typeof MaterialIcons.glyphMap;
-    color: string;
-    bgLight: string;
-    bgDark: string;
-  }
-> = {
-  hydration: {
-    label: '水分',
-    unit: 'ml',
-    icon: 'water-drop',
-    color: '#10b981',
-    bgLight: 'rgba(16,185,129,0.12)',
-    bgDark: 'rgba(6,78,59,0.32)',
-  },
-  protein: {
-    label: '蛋白质',
-    unit: 'g',
-    icon: 'restaurant',
-    color: '#f59e0b',
-    bgLight: 'rgba(245,158,11,0.14)',
-    bgDark: 'rgba(120,53,15,0.32)',
-  },
-  carbohydrate: {
-    label: '碳水',
-    unit: 'g',
-    icon: 'rice-bowl',
-    color: '#eab308',
-    bgLight: 'rgba(234,179,8,0.14)',
-    bgDark: 'rgba(113,63,18,0.32)',
-  },
-  calories: {
-    label: '热量',
-    unit: 'kcal',
-    icon: 'local-fire-department',
-    color: '#ef4444',
-    bgLight: 'rgba(239,68,68,0.14)',
-    bgDark: 'rgba(127,29,29,0.32)',
-  },
-};
 
 function formatIntakeAmount(value: number, unit: 'ml' | 'g' | 'kcal'): string {
   const formatted = Number(value.toFixed(2)).toString();
   return `${formatted}${unit}`;
 }
 
-function formatRecordTime(createdAt: string): string {
-  return formatStoredDatetimeHm(createdAt);
+function formatLocaleNum(n: number): string {
+  return Math.round(n).toLocaleString('zh-CN');
 }
 
 function getAmount(row: HealthRecordRow, metric: IntakeMetric): number {
@@ -115,31 +86,169 @@ function resolveFocusMetric(row: HealthRecordRow, requested: IntakeMetric | null
 
 function percentOfTarget(current: number, target: number): number {
   if (!Number.isFinite(current) || !Number.isFinite(target) || target <= 0) return 0;
-  return Math.min(100, Math.round((current / target) * 100));
+  return Math.round((current / target) * 100);
 }
 
 function sourceLabel(row: HealthRecordRow, catalog: QuickAddCardItem[]): string {
-  const img = row.source_image_uri?.trim();
-  if (img) return 'AI 拍照识别';
-  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 文字记录';
+  if (row.source_image_uri?.trim()) return 'AI 拍照';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 文本';
   if (!row.quick_add_key) {
     const hasMulti =
       [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.calories > 0].filter(Boolean).length > 1;
-    if (hasMulti && row.hydration === 0) return '拍照 / 合并记录';
-    return '手动或其它方式';
+    if (hasMulti && row.hydration === 0) return '拍照 / 合并';
+    return '手动';
   }
   const map = createQuickAddItemMap(catalog);
-  return map.get(row.quick_add_key)?.label ?? `快捷项 ${row.quick_add_key}`;
+  return map.get(row.quick_add_key)?.label ?? '快捷卡';
 }
 
-const PAGE_API_KEY = 'intake-record-detail';
+function sourceDetail(row: HealthRecordRow, catalog: QuickAddCardItem[]): string {
+  const base = sourceLabel(row, catalog);
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return `${base} · 原文已保留`;
+  if (row.source_image_uri?.trim()) return `${base} · 来源图已保存`;
+  if (row.intake_display_title?.trim()) return `${base} · 标题已保留`;
+  return base;
+}
+
+function heroTitle(row: HealthRecordRow, catalog: QuickAddCardItem[]): string {
+  const t = row.intake_display_title?.trim();
+  if (t) return t;
+  if (row.source_image_uri?.trim()) return 'AI 拍照识别';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) return 'AI 文本记录';
+  if (row.quick_add_key) {
+    const map = createQuickAddItemMap(catalog);
+    return map.get(row.quick_add_key)?.label ?? '摄入记录';
+  }
+  return '摄入记录';
+}
+
+function heroSubtitle(row: HealthRecordRow): string {
+  const parts: string[] = [];
+  if (row.protein > 0) parts.push(`蛋白 ${formatIntakeAmount(row.protein, 'g')}`);
+  if (row.carbohydrate > 0) parts.push(`碳水 ${formatIntakeAmount(row.carbohydrate, 'g')}`);
+  if (row.hydration > 0) parts.push(`水分 ${formatIntakeAmount(row.hydration, 'ml')}`);
+  if (row.calories > 0) parts.push(`热量 ${formatIntakeAmount(row.calories, 'kcal')}`);
+  return parts.join(' · ') || '暂无营养明细';
+}
+
+function heroKicker(row: HealthRecordRow): string {
+  const kinds = [row.hydration > 0, row.protein > 0, row.carbohydrate > 0, row.calories > 0].filter(Boolean).length;
+  if (row.source_image_uri?.trim()) return kinds > 1 ? `AI 拍照识别 · 合并 ${kinds} 项` : 'AI 拍照识别';
+  if (row.quick_add_key === HEALTH_AI_TEXT_INTAKE_QUICK_ADD_KEY) {
+    return kinds > 1 ? `AI 文本记录 · 合并 ${kinds} 项` : 'AI 文本记录';
+  }
+  if (kinds > 1) return `摄入记录 · 合并 ${kinds} 项`;
+  return '摄入记录';
+}
+
+function formatRecordDateTime(createdAt: string, recordDate: string): string {
+  const ymd = recordDate.slice(0, 10);
+  const d = parseYmd(ymd);
+  const hm = formatStoredDatetimeHm(createdAt);
+  if (!d) return `${ymd} ${hm}`;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}.${m}.${day} ${hm}`;
+}
+
+function syncBadge(status: string | undefined): { label: string; tone: 'ok' | 'warn' } {
+  const s = (status ?? '').toLowerCase();
+  if (s === 'synced' || s === '') return { label: '已同步', tone: 'ok' };
+  if (s.includes('pending')) return { label: '待同步', tone: 'warn' };
+  return { label: status || '本地', tone: 'warn' };
+}
+
+function otherRecordPrimary(
+  row: HealthRecordRow,
+  nutrients: { hydration: string; protein: string; carbohydrate: string; calories: string },
+): {
+  title: string;
+  meta: string;
+  amount: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  color: string;
+} {
+  const title = row.intake_display_title?.trim() || (row.source_image_uri?.trim() ? '拍照记录' : '摄入记录');
+  const time = formatStoredDatetimeHm(row.created_at);
+  if (row.hydration > 0 && row.protein <= 0 && row.carbohydrate <= 0 && row.calories <= 0) {
+    return {
+      title,
+      meta: `${time} · 水分 ${formatIntakeAmount(row.hydration, 'ml')}`,
+      amount: formatIntakeAmount(row.hydration, 'ml'),
+      icon: 'water-drop',
+      color: nutrients.hydration,
+    };
+  }
+  if (row.protein > 0 && row.hydration <= 0 && row.carbohydrate <= 0 && row.calories <= 0) {
+    return {
+      title,
+      meta: `${time} · 蛋白 ${formatIntakeAmount(row.protein, 'g')}`,
+      amount: formatIntakeAmount(row.protein, 'g'),
+      icon: 'restaurant',
+      color: nutrients.protein,
+    };
+  }
+  if (row.calories > 0) {
+    return {
+      title,
+      meta: `${time} · 热量 ${Math.round(row.calories)} kcal`,
+      amount: `${Math.round(row.calories)} kcal`,
+      icon: 'local-fire-department',
+      color: nutrients.calories,
+    };
+  }
+  if (row.carbohydrate > 0) {
+    return {
+      title,
+      meta: `${time} · 碳水 ${formatIntakeAmount(row.carbohydrate, 'g')}`,
+      amount: formatIntakeAmount(row.carbohydrate, 'g'),
+      icon: 'rice-bowl',
+      color: nutrients.carbohydrate,
+    };
+  }
+  return {
+    title,
+    meta: time,
+    amount: '—',
+    icon: 'restaurant',
+    color: nutrients.protein,
+  };
+}
+
+function estimatePointImpact(
+  row: HealthRecordRow,
+  settings: HealthMetricPointsSettings,
+): { text: string; pointsLabel: string } | null {
+  if (!settings.enabled || settings.rewardPoints === 0) {
+    return { text: '积分规则未启用', pointsLabel: '0 分' };
+  }
+  const hits: string[] = [];
+  let points = 0;
+  for (const metric of ['hydration', 'protein', 'carbohydrate'] as const) {
+    const pct = percentOfTarget(getAmount(row, metric), getTarget(row, metric));
+    if (getAmount(row, metric) <= 0) continue;
+    if (isIntakeMetricRewardEligible(pct, settings)) {
+      const label = metric === 'hydration' ? '水分' : metric === 'protein' ? '蛋白' : '碳水';
+      hits.push(`${label}达到 ${settings.thresholdPercent}% 阈值`);
+      points += settings.rewardPoints;
+    }
+  }
+  if (hits.length === 0) {
+    return { text: '本条未触发达标加分', pointsLabel: '0 分' };
+  }
+  return {
+    text: hits.slice(0, 2).join(' · '),
+    pointsLabel: `+${points} 分`,
+  };
+}
 
 export default function IntakeRecordDetailScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const insets = useSafeAreaInsets();
+  const { hh, nutrients, isDark } = useHealthHomeTheme();
+  const { animate: entranceOn } = useHealthMotionGate();
   const { recordId: recordIdParam, date: dateParam, metric: metricParam } = useLocalSearchParams<{
     recordId?: string;
     date?: string;
@@ -151,140 +260,300 @@ export default function IntakeRecordDetailScreen() {
 
   const [loading, setLoading] = React.useState(true);
   const [row, setRow] = React.useState<HealthRecordRow | null>(null);
+  const [sameDayRows, setSameDayRows] = React.useState<HealthRecordRow[]>([]);
   const [forbidden, setForbidden] = React.useState(false);
   const [catalog, setCatalog] = React.useState<QuickAddCardItem[]>([]);
-  const [focusMetric, setFocusMetric] = React.useState<IntakeMetric>('hydration');
+  const [pointsSettings, setPointsSettings] = React.useState<HealthMetricPointsSettings>(
+    DEFAULT_HEALTH_METRIC_POINTS_SETTINGS,
+  );
   const [deleting, setDeleting] = React.useState(false);
+  const [deleteSheetOpen, setDeleteSheetOpen] = React.useState(false);
   const [imageLoadError, setImageLoadError] = React.useState(false);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [contentReady, setContentReady] = React.useState(false);
+  const enterKeyRef = React.useRef<string | null>(null);
 
-  const reload = React.useCallback(async (forceRefresh = false) => {
-    if (!recordId?.trim()) {
-      setRow(null);
-      setForbidden(false);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      await wrapLoad(async () => {
-        const [user, items, rec] = await Promise.all([
-          getDefaultUser(),
-          loadAllQuickAddItems(),
-          getHealthRecordById(recordId.trim()),
-        ]);
-        setCatalog(items);
-        if (!rec || !user?.id || rec.user_id !== user.id) {
-          setRow(null);
-          setForbidden(Boolean(rec && user?.id && rec.user_id !== user.id));
-          return;
-        }
-        if (dateYmd && rec.record_date !== dateYmd) {
-          /* 仍展示记录，仅日期 param 用于返回上下文 */
-        }
-        setRow(rec);
-        setFocusMetric(resolveFocusMetric(rec, parseMetricParam(metricParam)));
-        setImageLoadError(false);
-      }, forceRefresh);
-    } catch {
-      setRow(null);
-      setForbidden(false);
-    } finally {
-      setLoading(false);
-    }
-  }, [recordId, dateYmd, metricParam, wrapLoad]);
+  const reload = React.useCallback(
+    async (forceRefresh = false) => {
+      if (!recordId?.trim()) {
+        setRow(null);
+        setForbidden(false);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        await wrapLoad(async () => {
+          const [user, items, rec, settings] = await Promise.all([
+            getDefaultUser(),
+            loadAllQuickAddItems(),
+            getHealthRecordById(recordId.trim()),
+            loadHealthMetricPointsSettings(),
+          ]);
+          setCatalog(items);
+          setPointsSettings(settings);
+          if (!rec || !user?.id || rec.user_id !== user.id) {
+            setRow(null);
+            setSameDayRows([]);
+            setForbidden(Boolean(rec && user?.id && rec.user_id !== user.id));
+            return;
+          }
+          setRow(rec);
+          setImageLoadError(false);
+          const ymd = dateYmd?.slice(0, 10) || rec.record_date.slice(0, 10);
+          const dayRows = await getHealthRecordsForUserOnDate(user.id, ymd);
+          setSameDayRows(
+            dayRows
+              .filter((r) => r.id !== rec.id)
+              .sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at)),
+          );
+          if (enterKeyRef.current !== rec.id) {
+            enterKeyRef.current = rec.id;
+            setContentReady(false);
+            requestAnimationFrame(() => setContentReady(true));
+          } else {
+            setContentReady(true);
+          }
+        }, forceRefresh);
+      } catch {
+        setRow(null);
+        setForbidden(false);
+        setSameDayRows([]);
+        setContentReady(false);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [recordId, dateYmd, wrapLoad],
+  );
+
+  const detailEnterOn = entranceOn && contentReady && Boolean(row);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
   useFocusEffect(
     React.useCallback(() => {
       void reload();
-    }, [reload])
+    }, [reload]),
   );
 
-  const meta = METRIC_META[focusMetric];
-  const focusCurrent = row ? getAmount(row, focusMetric) : 0;
-  const focusTarget = row ? getTarget(row, focusMetric) : 0;
-  const focusPct = percentOfTarget(focusCurrent, focusTarget);
+  const focusMetric = row ? resolveFocusMetric(row, parseMetricParam(metricParam)) : 'hydration';
+  void focusMetric;
+
   const intakePhotoUri = row?.source_image_uri?.trim() ?? '';
+  const pointImpact = row ? estimatePointImpact(row, pointsSettings) : null;
+  const sync = syncBadge(row?.sync_status);
 
-  const otherMetrics = React.useMemo(() => {
-    if (!row) return [] as { metric: IntakeMetric; amount: number }[];
-    const out: { metric: IntakeMetric; amount: number }[] = [];
-    for (const m of METRIC_ORDER) {
-      if (m === focusMetric) continue;
-      const a = getAmount(row, m);
-      if (a > 0) out.push({ metric: m, amount: a });
-    }
-    return out;
-  }, [row, focusMetric]);
-
-  const onDelete = () => {
-    if (!recordId || deleting) return;
-    Alert.alert('删除记录', '确定删除整条摄入记录吗？同一条中的水分、蛋白质等会一并删除。', [
-      { text: '取消', style: 'cancel' },
+  const metricCells = React.useMemo(() => {
+    if (!row) return [];
+    return [
       {
-        text: '删除',
-        style: 'destructive',
-        onPress: async () => {
-          setDeleting(true);
-          try {
-            await deleteHealthRecord(recordId.trim());
-            toast.success('已删除');
-            router.back();
-          } catch (e) {
-            toast.error(toUserMessage(e, '删除失败，请稍后重试'));
-          } finally {
-            setDeleting(false);
-          }
-        },
+        key: 'hydration' as const,
+        label: '水分',
+        value: `${formatLocaleNum(row.hydration)} ml`,
+        color: nutrients.hydration,
       },
+      {
+        key: 'protein' as const,
+        label: '蛋白',
+        value: `${formatLocaleNum(row.protein)} g`,
+        color: nutrients.protein,
+      },
+      {
+        key: 'carbohydrate' as const,
+        label: '碳水',
+        value: `${formatLocaleNum(row.carbohydrate)} g`,
+        color: nutrients.carbohydrate,
+      },
+      {
+        key: 'calories' as const,
+        label: '热量',
+        value: `${formatLocaleNum(row.calories)} kcal`,
+        color: nutrients.calories,
+      },
+    ];
+  }, [row, nutrients]);
+
+  const targetSnapshot = React.useMemo(() => {
+    if (!row) return '';
+    return [
+      `${formatLocaleNum(row.target_hydration)} ml`,
+      `${formatLocaleNum(row.target_protein)} g`,
+      `${formatLocaleNum(row.target_carbohydrate)} g`,
+      `${formatLocaleNum(row.target_calories)} kcal`,
+    ].join(' · ');
+  }, [row]);
+
+  const openDeleteSheet = () => {
+    if (!recordId || deleting || !row) return;
+    setMenuOpen(false);
+    setDeleteSheetOpen(true);
+  };
+
+  const performDelete = async () => {
+    if (!recordId || deleting) return;
+    setDeleting(true);
+    try {
+      await deleteHealthRecord(recordId.trim());
+      setDeleteSheetOpen(false);
+      toast.success('已删除');
+      router.back();
+    } catch (e) {
+      toast.error(toUserMessage(e, '删除失败，请稍后重试'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const onEdit = () => {
+    Alert.alert('编辑记录', '暂不支持直接改数值。可删除本条后重新添加，或在首页用快捷卡微调。', [
+      { text: '知道了', style: 'cancel' },
+      { text: '去删除', style: 'destructive', onPress: openDeleteSheet },
     ]);
   };
 
-  const border = isDark ? 'rgba(148,163,184,0.14)' : '#e2e8f0';
+  const deletePreview = React.useMemo(() => {
+    if (!row) return null;
+    const labels: string[] = [];
+    if (row.hydration > 0) labels.push('水分');
+    if (row.protein > 0) labels.push('蛋白');
+    if (row.carbohydrate > 0) labels.push('碳水');
+    if (row.calories > 0) labels.push('热量');
+    const merge =
+      labels.length >= 2 ? `合并${labels.join(' / ')}` : labels.length === 1 ? labels[0]! : '摄入';
+    const timeHm = formatStoredDatetimeHm(row.created_at);
+    const custom = row.intake_display_title?.trim();
+    const title = custom || (row.source_image_uri?.trim() ? 'AI 拍照识别' : '这条记录');
+    const pointsDelta =
+      pointsSettings.enabled && pointsSettings.rewardPoints > 0
+        ? -Math.abs(pointsSettings.rewardPoints)
+        : null;
+    return {
+      title,
+      detail: timeHm ? `${timeHm} · ${merge}` : merge,
+      icon: (row.source_image_uri?.trim() ? 'photo-camera' : 'restaurant') as keyof typeof MaterialIcons.glyphMap,
+      iconColor: nutrients.protein,
+      pointsDelta,
+    };
+  }, [row, pointsSettings.enabled, pointsSettings.rewardPoints, nutrients.protein]);
+
+  const recordTimeHm = row ? formatStoredDatetimeHm(row.created_at) : '';
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: theme.background }]} edges={['top']}>
-      <View
-        style={[
-          styles.header,
-          {
-            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(248, 250, 252, 0.92)',
-            borderBottomColor: border,
-          },
-        ]}
-      >
-        <Pressable style={styles.headerIcon} onPress={() => router.back()} hitSlop={12}>
-          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
+    <SafeAreaView style={[styles.safe, { backgroundColor: hh.paper }]} edges={['left', 'right']}>
+      <View style={[styles.header, { paddingTop: insets.top + 4, borderBottomColor: hh.line }]}>
+        <Pressable style={styles.headerBtn} onPress={() => router.back()} hitSlop={10} accessibilityLabel="返回">
+          <MaterialIcons name="arrow-back" size={22} color={hh.ink} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: theme.text }]}>摄入详情</Text>
-        <View style={styles.headerIcon} />
+        <View style={styles.headerCenter}>
+          <Text style={[styles.headerTitle, { color: hh.ink }]}>摄入详情</Text>
+          <Text style={[styles.headerSub, { color: hh.muted }]}>
+            RECORD · {recordTimeHm || '—'}
+          </Text>
+        </View>
+        <Pressable
+          style={styles.headerBtn}
+          onPress={() => setMenuOpen((v) => !v)}
+          hitSlop={10}
+          accessibilityLabel="更多">
+          <MaterialIcons name="more-horiz" size={22} color={hh.ink} />
+        </Pressable>
       </View>
+
+      {menuOpen && row ? (
+        <View style={[styles.menuPop, { backgroundColor: hh.card, borderColor: hh.line, shadowColor: hh.shadow }]}>
+          <Pressable
+            onPress={() => {
+              setMenuOpen(false);
+              onEdit();
+            }}
+            style={styles.menuItem}>
+            <Text style={[styles.menuItemText, { color: hh.ink }]}>编辑</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              openDeleteSheet();
+            }}
+            style={styles.menuItem}>
+            <Text style={[styles.menuItemText, { color: '#C45C4A' }]}>删除</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={theme.primary} />
+          <ActivityIndicator size="large" color={hh.pine} />
         </View>
       ) : !row ? (
         <View style={styles.centered}>
-          <MaterialIcons name="search-off" size={48} color={theme.textSecondary} />
-          <Text style={[styles.emptyTitle, { color: theme.text }]}>
+          <MaterialIcons name="search-off" size={48} color={hh.faint} />
+          <Text style={[styles.emptyTitle, { color: hh.ink }]}>
             {forbidden ? '无权查看该记录' : '记录不存在或已删除'}
           </Text>
-          <Text style={[styles.emptySub, { color: theme.textSecondary }]}>请返回上一页刷新列表</Text>
+          <Text style={[styles.emptySub, { color: hh.muted }]}>请返回上一页刷新列表</Text>
           <Pressable
             onPress={() => router.back()}
-            style={({ pressed }) => [styles.ghostBtn, { borderColor: theme.primary, opacity: pressed ? 0.85 : 1 }]}
-          >
-            <Text style={[styles.ghostBtnText, { color: theme.primary }]}>返回</Text>
+            style={({ pressed }) => [
+              styles.ghostBtn,
+              { borderColor: hh.pine, opacity: pressed ? 0.85 : 1 },
+            ]}>
+            <Text style={[styles.ghostBtnText, { color: hh.pine }]}>返回</Text>
           </Pressable>
         </View>
       ) : (
-        <ScrollView refreshControl={refreshControl} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>摄入附图</Text>
-            <View style={[styles.photoCard, { backgroundColor: theme.surface, borderColor: border }]}>
-              {intakePhotoUri && !imageLoadError ? (
+        <ScrollView
+          refreshControl={refreshControl}
+          contentContainerStyle={[styles.scroll, { paddingBottom: 28 + Math.max(insets.bottom, 12) }]}
+          showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={() => setMenuOpen(false)}>
+          <HealthRiseIn animate={detailEnterOn} duration={420} fromY={14}>
+            <View style={[styles.hero, { backgroundColor: hh.pine, shadowColor: hh.shadow }]}>
+              <Text style={[styles.heroKicker, { color: hh.sage }]}>{heroKicker(row)}</Text>
+              <Text style={[styles.heroTitle, { color: hh.onPine }]} numberOfLines={2}>
+                {heroTitle(row, catalog)}
+              </Text>
+              <Text style={[styles.heroSub, { color: 'rgba(247,245,236,0.72)' }]} numberOfLines={3}>
+                {heroSubtitle(row)}
+              </Text>
+              <View style={styles.metricGrid}>
+                {metricCells.map((cell, cellIndex) => (
+                  <HealthPopIn
+                    key={cell.key}
+                    animate={detailEnterOn}
+                    index={cellIndex}
+                    staggerMs={40}
+                    delayMs={120}
+                    duration={380}
+                    style={styles.metricCellWrap}
+                  >
+                    <View
+                      style={[
+                        styles.metricCell,
+                        { backgroundColor: isDark ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.18)' },
+                      ]}>
+                      <Text style={[styles.metricLabel, { color: 'rgba(247,245,236,0.65)' }]}>{cell.label}</Text>
+                      <Text style={[styles.metricValue, { color: hh.onPine }]}>{cell.value}</Text>
+                    </View>
+                  </HealthPopIn>
+                ))}
+              </View>
+            </View>
+          </HealthRiseIn>
+
+          <HealthRiseIn animate={detailEnterOn} index={1} staggerMs={70} delayMs={180} duration={360}>
+            <View style={[styles.aiStrip, { backgroundColor: hh.sageSoft, borderLeftColor: hh.sage }]}>
+              <MaterialIcons name="eco" size={16} color={hh.pine} style={{ marginTop: 2 }} />
+              <Text style={[styles.aiStripText, { color: hh.inkSoft }]}>
+                AI 评价：
+                {row.intake_ai_comment?.trim() ||
+                  '暂无点评。模型未返回评价或旧版记录无此字段。'}
+              </Text>
+            </View>
+          </HealthRiseIn>
+
+          {intakePhotoUri ? (
+            <View style={[styles.photoCard, { backgroundColor: hh.card, borderColor: hh.line }]}>
+              {!imageLoadError ? (
                 <StoredImage
                   uri={intakePhotoUri}
                   style={styles.photoImage}
@@ -292,178 +561,251 @@ export default function IntakeRecordDetailScreen() {
                   onError={() => setImageLoadError(true)}
                 />
               ) : (
-                <View
-                  style={[
-                    styles.photoPlaceholder,
-                    {
-                      backgroundColor: isDark ? 'rgba(30,41,59,0.5)' : '#f1f5f9',
-                      borderColor: isDark ? 'rgba(148,163,184,0.22)' : 'rgba(148,163,184,0.35)',
-                    },
-                  ]}
-                >
-                  <MaterialIcons
-                    name={intakePhotoUri && imageLoadError ? 'error-outline' : 'photo-camera'}
-                    size={40}
-                    color={theme.textSecondary}
-                  />
-                  <Text style={[styles.photoPlaceholderTitle, { color: theme.text }]}>
-                    {intakePhotoUri && imageLoadError ? '图片无法加载' : '暂无照片'}
-                  </Text>
-                  <Text style={[styles.photoPlaceholderSub, { color: theme.textSecondary }]}>
-                    {intakePhotoUri && imageLoadError
-                      ? '图片无法加载，可删除本条后重新拍照记录'
-                      : 'AI 拍照识别保存的记录会在此展示食物照片；手动与快捷添加通常无附图'}
-                  </Text>
+                <View style={styles.photoFail}>
+                  <MaterialIcons name="error-outline" size={28} color={hh.faint} />
+                  <Text style={[styles.photoFailText, { color: hh.muted }]}>图片无法加载</Text>
                 </View>
               )}
-            </View>
-          </View>
-
-          <View style={[styles.hero, { backgroundColor: theme.surface, borderColor: border }]}>
-            <View style={[styles.heroAccent, { backgroundColor: meta.color }]} />
-            <View style={styles.heroTop}>
-              <View style={[styles.heroIcon, { backgroundColor: isDark ? meta.bgDark : meta.bgLight }]}>
-                <MaterialIcons name={meta.icon} size={28} color={meta.color} />
-              </View>
-              <View style={styles.heroTitles}>
-                <Text style={[styles.heroLabel, { color: theme.textSecondary }]}>当前查看</Text>
-                <Text style={[styles.heroName, { color: theme.text }]}>{meta.label}</Text>
-              </View>
-            </View>
-            <Text style={[styles.heroAmount, { color: theme.text }]}>{formatIntakeAmount(focusCurrent, meta.unit)}</Text>
-            <View style={styles.heroTargetRow}>
-              <Text style={[styles.heroTargetText, { color: theme.textSecondary }]}>
-                当日目标参考 {formatIntakeAmount(focusTarget, meta.unit)}
-              </Text>
-              <View style={[styles.pctPill, { backgroundColor: `${meta.color}18` }]}>
-                <Text style={[styles.pctPillText, { color: meta.color }]}>{focusPct}%</Text>
-              </View>
-            </View>
-            <View style={[styles.track, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : 'rgba(148,163,184,0.2)' }]}>
-              <View style={[styles.trackFill, { width: `${focusPct}%`, backgroundColor: meta.color }]} />
-            </View>
-          </View>
-
-          {otherMetrics.length > 0 ? (
-            <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>同条记录 · 其它维度</Text>
-              <View style={[styles.card, { backgroundColor: theme.surface, borderColor: border }]}>
-                {otherMetrics.map(({ metric, amount }, index) => {
-                  const m = METRIC_META[metric];
-                  const t = getTarget(row, metric);
-                  const pct = percentOfTarget(amount, t);
-                  return (
-                    <Pressable
-                      key={metric}
-                      onPress={() => setFocusMetric(metric)}
-                      style={({ pressed }) => [
-                        styles.otherRow,
-                        pressed && { opacity: 0.88 },
-                        index < otherMetrics.length - 1 && {
-                          borderBottomWidth: StyleSheet.hairlineWidth,
-                          borderBottomColor: border,
-                        },
-                      ]}
-                    >
-                      <View style={[styles.otherIcon, { backgroundColor: isDark ? m.bgDark : m.bgLight }]}>
-                        <MaterialIcons name={m.icon} size={20} color={m.color} />
-                      </View>
-                      <View style={styles.otherMid}>
-                        <Text style={[styles.otherLabel, { color: theme.text }]}>{m.label}</Text>
-                        <Text style={[styles.otherSub, { color: theme.textSecondary }]}>
-                          目标 {formatIntakeAmount(t, m.unit)} · 约 {pct}%
-                        </Text>
-                      </View>
-                      <Text style={[styles.otherAmount, { color: theme.text }]}>{formatIntakeAmount(amount, m.unit)}</Text>
-                      <MaterialIcons name="chevron-right" size={20} color={theme.textSecondary} />
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <Text style={[styles.hint, { color: theme.textSecondary }]}>点击一行可切换上方主展示维度</Text>
             </View>
           ) : null}
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>记录信息</Text>
-            <View style={[styles.card, { backgroundColor: theme.surface, borderColor: border }]}>
-              {row.intake_display_title?.trim() ? (
-                <View style={styles.kvRow}>
-                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录名称</Text>
-                  <Text style={[styles.kvVal, { color: theme.text, flex: 1, textAlign: 'right' }]} numberOfLines={4}>
-                    {row.intake_display_title.trim()}
-                  </Text>
-                </View>
-              ) : null}
-              {row.intake_display_title?.trim() ? (
-                <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
-                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
-                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdCN(row.record_date)}</Text>
-                </View>
-              ) : (
-                <View style={styles.kvRow}>
-                  <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录日期</Text>
-                  <Text style={[styles.kvVal, { color: theme.text }]}>{formatYmdCN(row.record_date)}</Text>
-                </View>
-              )}
-              <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
-                <Text style={[styles.kvKey, { color: theme.textSecondary }]}>记录时间</Text>
-                <Text style={[styles.kvVal, { color: theme.text }]}>{formatRecordTime(row.created_at)}</Text>
-              </View>
-              <View style={[styles.kvRow, styles.kvDivider, { borderTopColor: border }]}>
-                <Text style={[styles.kvKey, { color: theme.textSecondary }]}>来源</Text>
-                <Text style={[styles.kvVal, { color: theme.text, flex: 1, textAlign: 'right' }]} numberOfLines={2}>
-                  {sourceLabel(row, catalog)}
-                </Text>
-              </View>
-            </View>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionTitle, { color: hh.ink }]}>记录信息</Text>
+            <Text style={[styles.sectionHint, { color: hh.faint }]}>本地 SQLite</Text>
           </View>
 
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.textSecondary }]}>备注与评价</Text>
-            <View style={[styles.card, { backgroundColor: theme.surface, borderColor: border, paddingVertical: 14, paddingHorizontal: 16 }]}>
-              <Text style={[styles.noteBody, { color: theme.textSecondary }]}>备注：暂无备注</Text>
-              <Text style={[styles.noteLabel, { color: theme.text, marginTop: 12 }]}>AI 评价</Text>
-              <Text style={[styles.noteBody, { color: row.intake_ai_comment?.trim() ? theme.text : theme.textSecondary, marginTop: 6 }]}>
-                {row.intake_ai_comment?.trim() || '暂无，模型未返回点评或旧版记录无此字段。'}
+          <View style={[styles.infoCard, { backgroundColor: hh.card, borderColor: hh.line }]}>
+            <InfoRow
+              icon="schedule"
+              iconBg={hh.sageSoft}
+              iconColor={hh.pine}
+              title="记录时间"
+              value={formatRecordDateTime(row.created_at, row.record_date)}
+              badge={sync.label}
+              badgeTone={sync.tone}
+              hh={hh}
+              divider
+            />
+            <InfoRow
+              icon="auto-awesome"
+              iconBg={`${nutrients.protein}22`}
+              iconColor={nutrients.protein}
+              title="来源"
+              value={sourceDetail(row, catalog)}
+              badge={row.intake_display_title?.trim() ? '原文' : sourceLabel(row, catalog)}
+              badgeTone="ok"
+              hh={hh}
+              divider
+            />
+            <InfoRow
+              icon="track-changes"
+              iconBg={`${nutrients.hydration}22`}
+              iconColor={nutrients.hydration}
+              title="目标快照"
+              value={targetSnapshot}
+              badge="已锁定"
+              badgeTone="ok"
+              hh={hh}
+              divider
+            />
+            <InfoRow
+              icon="stars"
+              iconBg={`${nutrients.carbohydrate}22`}
+              iconColor={nutrients.carbohydrate}
+              title="积分影响"
+              value={pointImpact?.text ?? '—'}
+              badge={pointImpact?.pointsLabel ?? '0 分'}
+              badgeTone="points"
+              hh={hh}
+            />
+          </View>
+
+          <View style={styles.actionRow}>
+            <Pressable
+              onPress={onEdit}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                {
+                  backgroundColor: hh.card,
+                  borderColor: hh.line,
+                  opacity: pressed ? 0.88 : 1,
+                },
+              ]}>
+              <MaterialIcons name="edit" size={18} color={hh.inkSoft} />
+              <Text style={[styles.actionBtnText, { color: hh.inkSoft }]}>编辑</Text>
+            </Pressable>
+            <Pressable
+              onPress={openDeleteSheet}
+              disabled={deleting}
+              style={({ pressed }) => [
+                styles.actionBtn,
+                {
+                  backgroundColor: isDark ? 'rgba(196,92,74,0.16)' : 'rgba(196,92,74,0.1)',
+                  borderColor: isDark ? 'rgba(196,92,74,0.35)' : 'rgba(196,92,74,0.28)',
+                  opacity: deleting || pressed ? 0.75 : 1,
+                },
+              ]}>
+              <MaterialIcons name="delete-outline" size={18} color="#C45C4A" />
+              <Text style={[styles.actionBtnText, { color: '#C45C4A' }]}>
+                {deleting ? '删除中…' : '删除'}
               </Text>
-            </View>
+            </Pressable>
           </View>
 
-          <Pressable
-            onPress={onDelete}
-            disabled={deleting}
-            style={({ pressed }) => [
-              styles.deleteBtn,
-              {
-                borderColor: 'rgba(239,68,68,0.45)',
-                opacity: deleting || pressed ? 0.72 : 1,
-              },
-            ]}
-          >
-            <MaterialIcons name="delete-outline" size={22} color="#ef4444" />
-            <Text style={styles.deleteText}>{deleting ? '删除中…' : '删除整条记录'}</Text>
-          </Pressable>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionTitle, { color: hh.ink }]}>同一天的其他记录</Text>
+            <Text style={[styles.sectionHint, { color: hh.faint }]}>{sameDayRows.length} 条</Text>
+          </View>
 
-          <View style={{ height: 28 }} />
+          {sameDayRows.length === 0 ? (
+            <View style={[styles.emptyDay, { backgroundColor: hh.cardMuted, borderColor: hh.line }]}>
+              <Text style={[styles.emptyDayText, { color: hh.muted }]}>当天暂无其他记录</Text>
+            </View>
+          ) : (
+            <View style={styles.sameDayList}>
+              {sameDayRows.map((other) => {
+                const item = otherRecordPrimary(other, nutrients);
+                return (
+                  <Pressable
+                    key={other.id}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/intake-record-detail',
+                        params: {
+                          recordId: other.id,
+                          date: other.record_date.slice(0, 10),
+                        },
+                      })
+                    }
+                    style={({ pressed }) => [
+                      styles.sameDayRow,
+                      {
+                        backgroundColor: hh.card,
+                        borderColor: hh.line,
+                        opacity: pressed ? 0.9 : 1,
+                      },
+                    ]}>
+                    <View style={[styles.sameDayIcon, { backgroundColor: `${item.color}22` }]}>
+                      <MaterialIcons name={item.icon} size={18} color={item.color} />
+                    </View>
+                    <View style={styles.sameDayBody}>
+                      <Text style={[styles.sameDayTitle, { color: hh.ink }]} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text style={[styles.sameDayMeta, { color: hh.muted }]} numberOfLines={1}>
+                        {item.meta}
+                      </Text>
+                    </View>
+                    <Text style={[styles.sameDayAmount, { color: hh.ink }]}>{item.amount}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          <View style={styles.footerNote}>
+            <MaterialIcons name="schedule" size={13} color={hh.faint} />
+            <Text style={[styles.footerNoteText, { color: hh.faint }]}>
+              历史百分比始终使用记录写入时的目标快照：修改全局目标不会回改这一天。
+            </Text>
+          </View>
         </ScrollView>
       )}
+
+      <HealthIntakeDeleteConfirmSheet
+        visible={deleteSheetOpen}
+        preview={deletePreview}
+        confirming={deleting}
+        onClose={() => {
+          if (deleting) return;
+          setDeleteSheetOpen(false);
+        }}
+        onConfirm={() => {
+          void performDelete();
+        }}
+      />
     </SafeAreaView>
+  );
+}
+
+function InfoRow({
+  icon,
+  iconBg,
+  iconColor,
+  title,
+  value,
+  badge,
+  badgeTone,
+  hh,
+  divider,
+}: {
+  icon: keyof typeof MaterialIcons.glyphMap;
+  iconBg: string;
+  iconColor: string;
+  title: string;
+  value: string;
+  badge: string;
+  badgeTone: 'ok' | 'warn' | 'points';
+  hh: ReturnType<typeof useHealthHomeTheme>['hh'];
+  divider?: boolean;
+}) {
+  const badgeBg =
+    badgeTone === 'points'
+      ? 'rgba(196,120,82,0.18)'
+      : badgeTone === 'warn'
+        ? 'rgba(196,160,74,0.18)'
+        : hh.sageSoft;
+  const badgeFg =
+    badgeTone === 'points' ? '#C47852' : badgeTone === 'warn' ? '#A8842E' : hh.pine;
+
+  return (
+    <View style={[styles.infoRow, divider && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: hh.line }]}>
+      <View style={[styles.infoIcon, { backgroundColor: iconBg }]}>
+        <MaterialIcons name={icon} size={18} color={iconColor} />
+      </View>
+      <View style={styles.infoMid}>
+        <Text style={[styles.infoTitle, { color: hh.muted }]}>{title}</Text>
+        <Text style={[styles.infoValue, { color: hh.ink }]} numberOfLines={2}>
+          {value}
+        </Text>
+      </View>
+      <View style={[styles.badge, { backgroundColor: badgeBg }]}>
+        <Text style={[styles.badgeText, { color: badgeFg }]}>{badge}</Text>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
   header: {
-    height: 56,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 2,
   },
-  headerIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
+  headerBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  headerCenter: { flex: 1, alignItems: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '800' },
+  headerSub: { marginTop: 2, fontSize: 11, fontWeight: '600', letterSpacing: 0.4 },
+  menuPop: {
+    position: 'absolute',
+    right: 16,
+    top: 88,
+    zIndex: 20,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 6,
+    minWidth: 120,
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  menuItem: { paddingHorizontal: 16, paddingVertical: 12 },
+  menuItemText: { fontSize: 14, fontWeight: '700' },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 12 },
   emptyTitle: { fontSize: 17, fontWeight: '800', marginTop: 8, textAlign: 'center' },
   emptySub: { fontSize: 14, fontWeight: '500', textAlign: 'center' },
@@ -475,98 +817,123 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   ghostBtnText: { fontSize: 15, fontWeight: '800' },
-  scroll: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 12 },
-  photoCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    overflow: 'hidden',
-    minHeight: 200,
-  },
-  photoImage: { width: '100%', height: 220 },
-  photoPlaceholder: {
-    minHeight: 200,
-    paddingHorizontal: 22,
-    paddingVertical: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: 18,
-    margin: 10,
-    gap: 8,
-  },
-  photoPlaceholderTitle: { fontSize: 16, fontWeight: '800', marginTop: 4, textAlign: 'center' },
-  photoPlaceholderSub: { fontSize: 13, fontWeight: '500', lineHeight: 20, textAlign: 'center' },
+  scroll: { paddingHorizontal: 16, paddingTop: 16 },
   hero: {
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 20,
-    overflow: 'hidden',
-    marginBottom: 22,
+    borderRadius: 22,
+    padding: 18,
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
-  heroAccent: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 4,
+  heroKicker: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3, marginBottom: 8 },
+  heroTitle: { fontSize: 26, fontWeight: '800', letterSpacing: -0.4, lineHeight: 32 },
+  heroSub: { marginTop: 8, fontSize: 13, fontWeight: '500', lineHeight: 20 },
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
+  metricCellWrap: { width: '48%', flexGrow: 1 },
+  metricCell: {
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
   },
-  heroTop: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 16 },
-  heroIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroTitles: { flex: 1 },
-  heroLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 4 },
-  heroName: { fontSize: 20, fontWeight: '800' },
-  heroAmount: { fontSize: 40, fontWeight: '900', letterSpacing: -1.2, marginBottom: 10 },
-  heroTargetRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  heroTargetText: { fontSize: 13, fontWeight: '600', flex: 1 },
-  pctPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  pctPillText: { fontSize: 12, fontWeight: '800' },
-  track: { height: 8, borderRadius: 999, overflow: 'hidden' },
-  trackFill: { height: '100%', borderRadius: 999 },
-  section: { marginBottom: 20 },
-  sectionTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10, marginLeft: 2 },
-  card: { borderRadius: 18, borderWidth: 1, overflow: 'hidden' },
-  otherRow: {
+  metricLabel: { fontSize: 11, fontWeight: '600', marginBottom: 4 },
+  metricValue: { fontSize: 15, fontWeight: '800' },
+  aiStrip: {
+    marginTop: 12,
+    borderRadius: 14,
+    borderLeftWidth: 3,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    gap: 12,
-  },
-  otherIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  otherMid: { flex: 1, minWidth: 0 },
-  otherLabel: { fontSize: 15, fontWeight: '700' },
-  otherSub: { fontSize: 12, fontWeight: '500', marginTop: 2 },
-  otherAmount: { fontSize: 15, fontWeight: '800' },
-  hint: { fontSize: 12, fontWeight: '500', marginTop: 8, marginLeft: 2, lineHeight: 18 },
-  kvRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, paddingHorizontal: 16, gap: 12 },
-  kvDivider: { borderTopWidth: StyleSheet.hairlineWidth },
-  kvKey: { fontSize: 14, fontWeight: '600' },
-  kvVal: { fontSize: 14, fontWeight: '700' },
-  noteBody: { fontSize: 14, fontWeight: '500', lineHeight: 22 },
-  noteLabel: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase' },
-  deleteBtn: {
-    marginTop: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
-    paddingVertical: 16,
-    borderRadius: 18,
-    borderWidth: 1.5,
-    backgroundColor: 'rgba(239,68,68,0.06)',
+    alignItems: 'flex-start',
   },
-  deleteText: { fontSize: 16, fontWeight: '800', color: '#ef4444' },
+  aiStripText: { flex: 1, fontSize: 13, fontWeight: '500', lineHeight: 20 },
+  photoCard: {
+    marginTop: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  photoImage: { width: '100%', height: 180 },
+  photoFail: { height: 120, alignItems: 'center', justifyContent: 'center', gap: 6 },
+  photoFailText: { fontSize: 13, fontWeight: '600' },
+  sectionHead: {
+    marginTop: 22,
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  sectionTitle: { fontSize: 15, fontWeight: '800' },
+  sectionHint: { fontSize: 11, fontWeight: '600' },
+  infoCard: { borderRadius: 18, borderWidth: 1, overflow: 'hidden' },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  infoIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoMid: { flex: 1, minWidth: 0 },
+  infoTitle: { fontSize: 11, fontWeight: '700', marginBottom: 3 },
+  infoValue: { fontSize: 13, fontWeight: '700', lineHeight: 18 },
+  badge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  badgeText: { fontSize: 11, fontWeight: '800' },
+  actionRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  actionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 14,
+  },
+  actionBtnText: { fontSize: 15, fontWeight: '800' },
+  emptyDay: {
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 20,
+    alignItems: 'center',
+  },
+  emptyDayText: { fontSize: 13, fontWeight: '600' },
+  sameDayList: { gap: 8 },
+  sameDayRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  sameDayIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sameDayBody: { flex: 1, minWidth: 0 },
+  sameDayTitle: { fontSize: 14, fontWeight: '800' },
+  sameDayMeta: { marginTop: 2, fontSize: 11, fontWeight: '500' },
+  sameDayAmount: { fontSize: 13, fontWeight: '800' },
+  footerNote: {
+    marginTop: 18,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 2,
+  },
+  footerNoteText: { flex: 1, fontSize: 11, fontWeight: '500', lineHeight: 16 },
 });

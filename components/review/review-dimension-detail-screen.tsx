@@ -21,7 +21,7 @@ import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
-import { loadReviewDayFacts, type ReviewDayFacts } from '@/lib/review-day-facts';
+import { loadReviewDayFacts, dailyReviewFactsTextForColumn, type ReviewDayFacts } from '@/lib/review-day-facts';
 import {
   applyFontSizeToTextModel,
   emptyReviewFieldModel,
@@ -155,7 +155,9 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       : scope === 'weekly'
         ? firstParam(params.weekStartYmd)
         : firstParam(params.monthStartYmd);
-  const dimensionId = firstParam(params.dimensionId);
+  const paramDimensionId = firstParam(params.dimensionId);
+  /** 维度切换用本地状态，避免 router.replace 切屏 + 整页骨架重挂 */
+  const [dimensionId, setDimensionId] = useState(paramDimensionId);
   const { wrapLoad } = usePageApiSync(SCOPE_PAGE_KEY[scope]);
   const fallbackTitle = SCOPE_FALLBACK_TITLE[scope];
 
@@ -178,11 +180,15 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
   const [yesterdayFacts, setYesterdayFacts] = useState<ReviewDayFacts | null>(null);
 
   const hydratedRef = useRef(false);
+  const readyOnceRef = useRef(false);
+  const loadGenRef = useRef(0);
   const lastPersistedPayloadRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoStacksRef = useRef<Record<string, string[]>>({});
   const redoStacksRef = useRef<Record<string, string[]>>({});
+  const dimensionIdRef = useRef(dimensionId);
+  dimensionIdRef.current = dimensionId;
   const weeklyMetaRef = useRef<WeeklyJournalMeta>({
     execution_score: 0,
     adjust_tasks: false,
@@ -190,6 +196,10 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     adjust_plans: false,
     ai_coaching: null,
   });
+
+  useEffect(() => {
+    if (paramDimensionId) setDimensionId(paramDimensionId);
+  }, [paramDimensionId]);
 
   const dimension = useMemo(() => template.find(d => d.id === dimensionId) ?? null, [template, dimensionId]);
   const activeColumn = useMemo(
@@ -232,6 +242,24 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     [],
   );
 
+  const focusDimension = useCallback(
+    (dimId: string, tpl: ReviewDimensionTemplate[]) => {
+      const dim = tpl.find(d => d.id === dimId) ?? null;
+      setDimensionTitle(dim?.title ?? fallbackTitle);
+      const dimColIds = dim?.columns.map(c => c.id) ?? [];
+      setActiveColumnId(dim?.columns[0]?.id ?? '');
+      setEditorStateByColumn(prev => {
+        const next = { ...prev };
+        for (const id of dimColIds) {
+          if (!next[id]) next[id] = { ...DEFAULT_EDITOR_STATE };
+        }
+        return next;
+      });
+      setControlledSelectionByColumn({});
+    },
+    [fallbackTitle],
+  );
+
   const applyLoadedState = useCallback(
     (opts: {
       tpl: ReviewDimensionTemplate[];
@@ -252,7 +280,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       setPeriodLabel(opts.label);
       setDimensionTitle(opts.title);
 
-      const dim = opts.tpl.find(d => d.id === dimensionId);
+      const dim = opts.tpl.find(d => d.id === dimensionIdRef.current);
       const dimColIds = dim?.columns.map(c => c.id) ?? [];
       setActiveColumnId(dim?.columns[0]?.id ?? '');
       setEditorStateByColumn(emptyEditorStateByColumn(dimColIds));
@@ -260,130 +288,147 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       undoStacksRef.current = {};
       redoStacksRef.current = {};
     },
-    [dimensionId],
+    [],
   );
 
-  const reload = useCallback(async () => {
-    if (!periodYmd || !dimensionId) return;
-    hydratedRef.current = false;
-    setLoading(true);
-    try {
-      await wrapLoad(async () => {
-        if (shouldFetchReviewFromApi()) {
-          if (scope === 'daily') {
-            await fetchReviewJournal({ scope: 'daily', start: periodYmd, end: periodYmd });
-          } else {
-            await Promise.all([
-              fetchReviewCatalog({ scope }),
-              fetchReviewJournal({
-                scope,
-                weekStart: scope === 'weekly' ? periodYmd : undefined,
-                monthStart: scope === 'monthly' ? periodYmd : undefined,
-              }),
-            ]);
+  const reload = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const activeDimId = dimensionIdRef.current;
+      if (!periodYmd || !activeDimId) return;
+      const silent = opts?.silent === true || readyOnceRef.current;
+      const gen = ++loadGenRef.current;
+      hydratedRef.current = false;
+      if (!silent) setLoading(true);
+      try {
+        await wrapLoad(async () => {
+          if (shouldFetchReviewFromApi()) {
+            if (scope === 'daily') {
+              await fetchReviewJournal({ scope: 'daily', start: periodYmd, end: periodYmd });
+            } else {
+              await Promise.all([
+                fetchReviewCatalog({ scope }),
+                fetchReviewJournal({
+                  scope,
+                  weekStart: scope === 'weekly' ? periodYmd : undefined,
+                  monthStart: scope === 'monthly' ? periodYmd : undefined,
+                }),
+              ]);
+            }
           }
-        }
 
-        if (scope === 'daily') {
-          const [snapshot, dailyRows] = await Promise.all([
-            loadReviewPeriodSnapshot(todayYmd),
-            listDailyReviewsBetween(periodYmd, periodYmd),
+          if (scope === 'daily') {
+            const [snapshot, dailyRows] = await Promise.all([
+              loadReviewPeriodSnapshot(todayYmd),
+              listDailyReviewsBetween(periodYmd, periodYmd),
+            ]);
+            const colIds = collectColumnIds(snapshot.dailyTemplate);
+            const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
+            const models = fieldValuesToModels(journal.fields);
+            const entry = snapshot.dailyEntries.find(e => e.ymd === periodYmd);
+            applyLoadedState({
+              tpl: snapshot.dailyTemplate,
+              models,
+              payload: serializeReviewBody(fieldModelsToValues(models), journal.meta),
+              title:
+                snapshot.dailyTemplate.find(d => d.id === activeDimId)?.title ??
+                entry?.label ??
+                fallbackTitle,
+              label: formatReviewHeaderDate(periodYmd),
+              editable: periodYmd <= todayYmd,
+              journalMeta: journal.meta,
+            });
+            return;
+          }
+
+          if (scope === 'weekly') {
+            const [snapshot, weeklyTpl, row] = await Promise.all([
+              loadReviewPeriodSnapshot(todayYmd),
+              listReviewTemplate('weekly'),
+              getWeeklyReviewJournalByWeek(periodYmd),
+            ]);
+            const colIds = collectColumnIds(weeklyTpl);
+            const parsed = rollupWeeklyFieldsFromDailyEntries(
+              parseWeeklyReviewFields(row, colIds),
+              snapshot.dailyEntries,
+              snapshot.reviewCycleEndYmd,
+              snapshot.configuredDow,
+            );
+            const models = fieldValuesToModels(parsed);
+            const weeklyMeta: WeeklyJournalMeta = {
+              execution_score: row?.execution_score ?? 0,
+              adjust_tasks: row?.adjust_tasks === 1,
+              adjust_savings: row?.adjust_savings === 1,
+              adjust_plans: row?.adjust_plans === 1,
+              ai_coaching: row?.ai_coaching ?? null,
+            };
+            applyLoadedState({
+              tpl: weeklyTpl,
+              models,
+              payload: serializeWeeklyPersistPayload(fieldModelsToValues(models), weeklyMeta),
+              title: weeklyTpl.find(d => d.id === activeDimId)?.title ?? fallbackTitle,
+              label: snapshot.weekRangeLabel,
+              editable: snapshot.canEditWeekly,
+              weeklyMeta,
+            });
+            return;
+          }
+
+          const monthEnd = monthEndYmdFromMonthStart(periodYmd);
+          if (shouldFetchReviewFromApi()) {
+            await fetchReviewJournal({
+              scope: 'weekly',
+              start: periodYmd,
+              end: monthEnd,
+            });
+          }
+          const [tpl, row] = await Promise.all([
+            listReviewTemplate('monthly'),
+            getMonthlyReviewJournalByMonth(periodYmd),
           ]);
-          const colIds = collectColumnIds(snapshot.dailyTemplate);
-          const journal = parseDailyReviewJournal(dailyRows[0]?.body ?? null, colIds);
-          const models = fieldValuesToModels(journal.fields);
-          const entry = snapshot.dailyEntries.find(e => e.ymd === periodYmd);
+          const colIds = collectColumnIds(tpl);
+          const journal = parseDailyReviewJournal(row?.body ?? null, colIds);
+          const migrated = migrateMonthlyLegacyFields(journal.fields, row?.body);
+          const rolled = await rollupMonthlyFieldsFromWeeklyJournals(migrated, periodYmd);
+          const models = fieldValuesToModels(rolled);
           applyLoadedState({
-            tpl: snapshot.dailyTemplate,
+            tpl,
             models,
             payload: serializeReviewBody(fieldModelsToValues(models), journal.meta),
-            title: snapshot.dailyTemplate.find(d => d.id === dimensionId)?.title ?? entry?.label ?? fallbackTitle,
-            label: formatReviewHeaderDate(periodYmd),
-            editable: periodYmd <= todayYmd,
+            title: tpl.find(d => d.id === activeDimId)?.title ?? fallbackTitle,
+            label: formatReviewMonthLabel(periodYmd),
+            editable: isMonthlyReviewEditable(periodYmd, todayYmd),
             journalMeta: journal.meta,
           });
-          return;
-        }
-
-        if (scope === 'weekly') {
-          const [snapshot, weeklyTpl, row] = await Promise.all([
-            loadReviewPeriodSnapshot(todayYmd),
-            listReviewTemplate('weekly'),
-            getWeeklyReviewJournalByWeek(periodYmd),
-          ]);
-          const colIds = collectColumnIds(weeklyTpl);
-          const parsed = rollupWeeklyFieldsFromDailyEntries(
-            parseWeeklyReviewFields(row, colIds),
-            snapshot.dailyEntries,
-            snapshot.reviewCycleEndYmd,
-            snapshot.configuredDow,
-          );
-          const models = fieldValuesToModels(parsed);
-          const weeklyMeta: WeeklyJournalMeta = {
-            execution_score: row?.execution_score ?? 0,
-            adjust_tasks: row?.adjust_tasks === 1,
-            adjust_savings: row?.adjust_savings === 1,
-            adjust_plans: row?.adjust_plans === 1,
-            ai_coaching: row?.ai_coaching ?? null,
-          };
-          applyLoadedState({
-            tpl: weeklyTpl,
-            models,
-            payload: serializeWeeklyPersistPayload(fieldModelsToValues(models), weeklyMeta),
-            title: weeklyTpl.find(d => d.id === dimensionId)?.title ?? fallbackTitle,
-            label: snapshot.weekRangeLabel,
-            editable: snapshot.canEditWeekly,
-            weeklyMeta,
-          });
-          return;
-        }
-
-        const monthEnd = monthEndYmdFromMonthStart(periodYmd);
-        if (shouldFetchReviewFromApi()) {
-          await fetchReviewJournal({
-            scope: 'weekly',
-            start: periodYmd,
-            end: monthEnd,
-          });
-        }
-        const [tpl, row] = await Promise.all([
-          listReviewTemplate('monthly'),
-          getMonthlyReviewJournalByMonth(periodYmd),
-        ]);
-        const colIds = collectColumnIds(tpl);
-        const journal = parseDailyReviewJournal(row?.body ?? null, colIds);
-        const migrated = migrateMonthlyLegacyFields(journal.fields, row?.body);
-        const rolled = await rollupMonthlyFieldsFromWeeklyJournals(migrated, periodYmd);
-        const models = fieldValuesToModels(rolled);
-        applyLoadedState({
-          tpl,
-          models,
-          payload: serializeReviewBody(fieldModelsToValues(models), journal.meta),
-          title: tpl.find(d => d.id === dimensionId)?.title ?? fallbackTitle,
-          label: formatReviewMonthLabel(periodYmd),
-          editable: isMonthlyReviewEditable(periodYmd, todayYmd),
-          journalMeta: journal.meta,
         });
-      });
-    } catch {
-      setFieldModels(fieldValuesToModels(emptyFieldValues([])));
-      setMeta({});
-      lastPersistedPayloadRef.current = null;
-      setDimensionTitle(fallbackTitle);
-      setActiveColumnId('');
-      setEditorStateByColumn({});
-      setControlledSelectionByColumn({});
-      undoStacksRef.current = {};
-      redoStacksRef.current = {};
-    } finally {
-      setLoading(false);
-      hydratedRef.current = true;
-    }
-  }, [applyLoadedState, dimensionId, fallbackTitle, periodYmd, scope, todayYmd, wrapLoad]);
+      } catch {
+        setFieldModels(fieldValuesToModels(emptyFieldValues([])));
+        setMeta({});
+        lastPersistedPayloadRef.current = null;
+        setDimensionTitle(fallbackTitle);
+        setActiveColumnId('');
+        setEditorStateByColumn({});
+        setControlledSelectionByColumn({});
+        undoStacksRef.current = {};
+        redoStacksRef.current = {};
+      } finally {
+        if (gen !== loadGenRef.current) return;
+        setLoading(false);
+        hydratedRef.current = true;
+        readyOnceRef.current = true;
+      }
+    },
+    [applyLoadedState, fallbackTitle, periodYmd, scope, todayYmd, wrapLoad],
+  );
 
   useEffect(() => {
-    void reload();
+    void reload({ silent: readyOnceRef.current });
   }, [reload]);
+
+  /** 同周期内切维度：已有整份 journal，只切换焦点，不重载、不闪骨架 */
+  useEffect(() => {
+    if (!hydratedRef.current || !dimensionId || template.length === 0) return;
+    focusDimension(dimensionId, template);
+  }, [dimensionId, focusDimension, template]);
 
   /** 日维度详情：拉取当日与昨日健康事实，用于「昨日对照」只读卡 */
   useEffect(() => {
@@ -650,6 +695,57 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     [canEdit, commitFieldModel, editorStateByColumn, fieldModels],
   );
 
+  /** 日复盘内置栏目（健康 / 任务 / 财务）可写入当日事实；其它栏目无素材 */
+  const factsTextByColumn = useMemo(() => {
+    const out: Record<string, string> = {};
+    if (scope !== 'daily' || !todayFacts) return out;
+    for (const dim of template) {
+      for (const col of dim.columns) {
+        const text = dailyReviewFactsTextForColumn(todayFacts, col.id);
+        if (text) out[col.id] = text;
+      }
+    }
+    return out;
+  }, [scope, template, todayFacts]);
+
+  /** 把当日事实追加到栏目末尾（保留已写内容，可撤销） */
+  const insertFactsIntoColumn = useCallback(
+    (columnId: string) => {
+      if (!canEdit) return;
+      const text = factsTextByColumn[columnId];
+      if (!text) return;
+      const model = fieldModels[columnId] ?? emptyReviewFieldModel();
+      let lastTextIndex = -1;
+      for (let i = model.blocks.length - 1; i >= 0; i -= 1) {
+        if (model.blocks[i]?.kind === 'text') {
+          lastTextIndex = i;
+          break;
+        }
+      }
+      if (lastTextIndex < 0) {
+        const created = insertTextIntoTextModel({ plain: '', styles: [] }, { start: 0, end: 0 }, text);
+        commitFieldModel(columnId, { blocks: [...model.blocks, { kind: 'text', model: created.model }] });
+        return;
+      }
+      const block = model.blocks[lastTextIndex];
+      if (!block || block.kind !== 'text') return;
+      const plain = block.model.plain;
+      const prefix = plain.trim().length > 0 ? '\n\n' : '';
+      const result = insertTextIntoTextModel(
+        block.model,
+        { start: plain.length, end: plain.length },
+        `${prefix}${text}`,
+      );
+      const nextBlocks = model.blocks.map((b, idx) =>
+        idx === lastTextIndex && b.kind === 'text' ? { kind: 'text' as const, model: result.model } : b,
+      );
+      commitFieldModel(columnId, { blocks: nextBlocks }, {
+        editorState: { blockIndex: lastTextIndex, selection: result.selection },
+      });
+    },
+    [canEdit, commitFieldModel, factsTextByColumn, fieldModels],
+  );
+
   const scopeLabel = scope === 'daily' ? '日复盘' : scope === 'weekly' ? '周复盘' : '月复盘';
   const headerTitle = `${dimensionTitle || fallbackTitle} · ${scopeLabel}`;
   const columnCount = dimension?.columns.length ?? 0;
@@ -665,22 +761,20 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       )
     : 0;
 
-  const openDimension = (nextId: string) => {
-    if (nextId === dimensionId || !periodYmd) return;
-    if (scope === 'daily') {
-      router.replace({ pathname: '/daily-review/[ymd]/[dimensionId]', params: { ymd: periodYmd, dimensionId: nextId } });
-    } else if (scope === 'weekly') {
-      router.replace({
-        pathname: '/weekly-review/[weekStartYmd]/[dimensionId]',
-        params: { weekStartYmd: periodYmd, dimensionId: nextId },
-      });
-    } else {
-      router.replace({
-        pathname: '/monthly-review/[monthStartYmd]/[dimensionId]',
-        params: { monthStartYmd: periodYmd, dimensionId: nextId },
-      });
-    }
-  };
+  const openDimension = useCallback(
+    (nextId: string) => {
+      if (nextId === dimensionId || !periodYmd) return;
+      // 同页切维度：只改本地状态，绝不走路由（避免 Stack 切屏动画）
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      void persist();
+      setDimensionId(nextId);
+      if (template.length > 0) focusDimension(nextId, template);
+    },
+    [dimensionId, focusDimension, periodYmd, persist, template],
+  );
 
   const yesterdayRows = useMemo(() => {
     if (scope !== 'daily' || !todayFacts || !yesterdayFacts) return [];
@@ -745,7 +839,42 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
           />
         </View>
       </View>
-      {loading ? (
+      {/* 维度 Tab 固定在顶栏下；横向 ScrollView 必须 flexGrow:0，否则会撑出大块空白 */}
+      {template.length > 0 ? (
+        <View style={styles.pillBar}>
+          <ScrollView
+            horizontal
+            style={styles.pillScroll}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pillRow}>
+            {template.map(dimItem => {
+              const active = dimItem.id === dimensionId;
+              return (
+                <Pressable
+                  key={dimItem.id}
+                  onPress={() => openDimension(dimItem.id)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                  style={[
+                    styles.dimPill,
+                    {
+                      backgroundColor: active ? fold.pineButton : fold.cardSoft,
+                      borderColor: active ? fold.pineButton : fold.line,
+                    },
+                  ]}>
+                  <Text
+                    style={[styles.dimPillText, { color: active ? fold.onPineButton : fold.muted }]}
+                    maxFontSizeMultiplier={1.25}>
+                    {foldDimensionGlyph(dimItem.id)} {dimItem.title}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      {loading && !readyOnceRef.current ? (
         <ReviewDimensionSkeleton />
       ) : (
         <KeyboardAvoidingView
@@ -761,37 +890,6 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                 styles.scroll,
                 { paddingBottom: Spacing['6xl'] + 132 + Math.max(insets.bottom, Spacing.lg) },
               ]}>
-              {template.length > 0 ? (
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.pillRow}>
-                  {template.map(dimItem => {
-                    const active = dimItem.id === dimensionId;
-                    return (
-                      <Pressable
-                        key={dimItem.id}
-                        onPress={() => openDimension(dimItem.id)}
-                        accessibilityRole="tab"
-                        accessibilityState={{ selected: active }}
-                        style={[
-                          styles.dimPill,
-                          {
-                            backgroundColor: active ? fold.pineButton : fold.cardSoft,
-                            borderColor: active ? fold.pineButton : fold.line,
-                          },
-                        ]}>
-                        <Text
-                          style={[styles.dimPillText, { color: active ? fold.onPineButton : fold.muted }]}
-                          maxFontSizeMultiplier={1.25}>
-                          {foldDimensionGlyph(dimItem.id)} {dimItem.title}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-              ) : null}
-
               <View style={styles.contextRow}>
                 <View style={styles.contextLeft}>
                   <View style={[styles.contextDot, { backgroundColor: canEdit ? fold.sage : fold.faint }]} />
@@ -830,6 +928,17 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                             {col.title}
                           </Text>
                           <View style={styles.fieldTools}>
+                            {canEdit && factsTextByColumn[col.id] ? (
+                              <FoldIconButton
+                                icon="bolt"
+                                size={26}
+                                onPress={() => {
+                                  setActiveColumnId(col.id);
+                                  insertFactsIntoColumn(col.id);
+                                }}
+                                accessibilityLabel="写入今日数据"
+                              />
+                            ) : null}
                             <FoldIconButton
                               icon="schedule"
                               size={26}
@@ -1086,10 +1195,21 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     width: '100%',
   },
+  pillBar: {
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingHorizontal: Layout.pagePaddingX,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xs,
+  },
+  pillScroll: {
+    flexGrow: 0,
+  },
   pillRow: {
     gap: 5,
     paddingVertical: 2,
     paddingRight: 8,
+    alignItems: 'center',
   },
   dimPill: {
     height: 27,
@@ -1102,7 +1222,8 @@ const styles = StyleSheet.create({
   dimPillText: {
     fontSize: 10,
     fontWeight: '700',
-  },  contextRow: {
+  },
+  contextRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',

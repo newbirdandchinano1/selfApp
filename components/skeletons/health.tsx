@@ -12,7 +12,7 @@ type HealthSkeletonProps = {
 
 export function HealthMetricsSkeleton({ cardWidth, colors }: HealthSkeletonProps) {
   return (
-    <View style={styles.metricsRow}>
+    <View style={styles.metricsGrid}>
       {Array.from({ length: 4 }).map((_, index) => (
         <View
           key={index}
@@ -21,11 +21,17 @@ export function HealthMetricsSkeleton({ cardWidth, colors }: HealthSkeletonProps
             { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline, width: cardWidth },
           ]}
         >
-          <Skeleton width={52} height={52} borderRadius={26} style={styles.metricCircle} />
-          <Skeleton width={32} height={11} borderRadius={5} style={styles.metricLabel} />
-          <Skeleton width={40} height={16} borderRadius={6} />
-          <Skeleton width={52} height={9} borderRadius={4} style={styles.metricSub} />
-          <Skeleton width="92%" height={22} borderRadius={6} style={styles.metricHint} />
+          <View style={styles.metricTop}>
+            <Skeleton width={56} height={12} borderRadius={5} />
+            <Skeleton width={28} height={12} borderRadius={5} />
+          </View>
+          <View style={styles.metricBody}>
+            <Skeleton width={56} height={56} borderRadius={28} />
+            <View style={styles.metricTextCol}>
+              <Skeleton width="88%" height={14} borderRadius={6} />
+              <Skeleton width="72%" height={11} borderRadius={5} style={styles.metricHint} />
+            </View>
+          </View>
           <Skeleton width="100%" height={5} borderRadius={3} style={styles.metricTrack} />
         </View>
       ))}
@@ -75,9 +81,9 @@ export function HealthQuickAddSkeleton({ cardWidth, colors }: HealthSkeletonProp
             { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline, width: cardWidth },
           ]}
         >
-          <Skeleton width={30} height={30} borderRadius={15} style={styles.quickAddIcon} />
+          <Skeleton width={26} height={26} borderRadius={13} style={styles.quickAddIcon} />
           <Skeleton width={40} height={11} borderRadius={5} style={styles.quickAddLabel} />
-          <Skeleton width={48} height={14} borderRadius={6} />
+          <Skeleton width={48} height={13} borderRadius={6} />
         </View>
       ))}
     </View>
@@ -87,23 +93,21 @@ export function HealthQuickAddSkeleton({ cardWidth, colors }: HealthSkeletonProp
 export function HealthIntakeListSkeleton({ colors }: Pick<HealthSkeletonProps, 'colors'>) {
   return (
     <View style={styles.intakeList}>
-      {Array.from({ length: 2 }).map((_, index) => (
-        <View
-          key={index}
-          style={[styles.intakeRow, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}
-        >
-          <View style={styles.intakeRowLeft}>
-            <Skeleton width={40} height={40} borderRadius={20} />
-            <View style={styles.intakeRowText}>
-              <View style={styles.intakeRowHeader}>
-                <Skeleton width="55%" height={14} borderRadius={6} />
-                <Skeleton width={36} height={11} borderRadius={5} />
-              </View>
-              <Skeleton width="78%" height={11} borderRadius={5} style={styles.intakeMeta} />
-              <Skeleton width="62%" height={11} borderRadius={5} style={styles.intakeMeta} />
-            </View>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <View key={index} style={styles.intakeTimelineRow}>
+          <View style={styles.intakeTimeCol}>
+            <Skeleton width={32} height={11} borderRadius={5} />
           </View>
-          <Skeleton width={40} height={14} borderRadius={6} />
+          <View
+            style={[styles.intakeRow, { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline }]}
+          >
+            <Skeleton width={36} height={36} borderRadius={18} />
+            <View style={styles.intakeRowText}>
+              <Skeleton width="55%" height={14} borderRadius={6} />
+              <Skeleton width="78%" height={11} borderRadius={5} style={styles.intakeMeta} />
+            </View>
+            <Skeleton width={40} height={14} borderRadius={6} />
+          </View>
         </View>
       ))}
     </View>
@@ -127,7 +131,6 @@ export function HealthTrendCardSkeleton({ colors, isDark = false }: Pick<HealthS
           <View key={index} style={styles.legendItem}>
             <Skeleton width={7} height={7} borderRadius={4} />
             <Skeleton width={28} height={12} borderRadius={5} />
-            <Skeleton width={18} height={11} borderRadius={5} />
           </View>
         ))}
       </View>
@@ -148,30 +151,35 @@ export function HealthTrendCardSkeleton({ colors, isDark = false }: Pick<HealthS
 }
 
 const styles = StyleSheet.create({
-  metricsRow: {
+  metricsGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: Spacing.md,
   },
   metricCard: {
-    borderRadius: Radius.xl,
-    paddingTop: Spacing.xl,
+    borderRadius: 16,
+    paddingTop: Spacing.lg,
     paddingBottom: Spacing.md,
-    paddingHorizontal: Spacing.sm,
-    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  metricCircle: {
-    marginBottom: Spacing.sm,
+  metricTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.md,
   },
-  metricLabel: {
-    marginBottom: 2,
+  metricBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  metricSub: {
-    marginTop: 2,
+  metricTextCol: {
+    flex: 1,
+    gap: 6,
   },
   metricHint: {
-    marginTop: Spacing.sm,
+    marginTop: 2,
   },
   metricTrack: {
     marginTop: Spacing.md,
@@ -213,11 +221,12 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   quickAddCard: {
-    borderRadius: Radius.xl,
+    borderRadius: 16,
     paddingVertical: Spacing['2xl'],
     paddingHorizontal: Spacing.md,
     alignItems: 'center',
     borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 104,
   },
   quickAddIcon: {
     marginBottom: 8,
@@ -226,33 +235,32 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   intakeList: {
-    gap: 10,
+    gap: 0,
+  },
+  intakeTimelineRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  intakeTimeCol: {
+    width: 42,
+    alignItems: 'center',
+    paddingTop: 14,
   },
   intakeRow: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    padding: 14,
-    borderRadius: Radius.lg,
+    padding: 12,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-  },
-  intakeRowLeft: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    flex: 1,
-    minWidth: 0,
+    gap: 10,
   },
   intakeRowText: {
     flex: 1,
     minWidth: 0,
-  },
-  intakeRowHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 4,
+    gap: 4,
   },
   intakeMeta: {
     marginTop: 4,

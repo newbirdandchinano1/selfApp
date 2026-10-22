@@ -71,8 +71,8 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
 export const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   habit_check_ins: ['habit-detail', 'habit-manage', 'tasks-calendar'],
   habits: ['habit-detail', 'habit-manage'],
-  health_records: ['intake-history', 'intake-record-detail'],
-  health_daily_targets: ['intake-history'],
+  health_records: ['intake-history', 'intake-record-detail', 'health-analysis'],
+  health_daily_targets: ['intake-history', 'health-analysis'],
   points_wallet: ['points-ledger', 'wish-board'],
   points_ledger: ['points-ledger', 'wish-board'],
   wish_board_items: ['wish-board'],

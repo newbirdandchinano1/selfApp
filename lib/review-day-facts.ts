@@ -294,13 +294,60 @@ export function formatFinanceFactsText(facts: ReviewDayFacts): string {
   return lines.join('\n').trim() || '今日暂无财务流水';
 }
 
-/** 写入内置三栏（覆盖这三栏，自定义栏目不动） */
+function hasHealthFacts(facts: ReviewDayFacts): boolean {
+  const h = facts.health;
+  return (
+    h.records.length > 0 ||
+    h.weightKg != null ||
+    h.hydration > 0 ||
+    h.protein > 0 ||
+    h.carbohydrate > 0 ||
+    h.calories > 0
+  );
+}
+
+function hasTaskFacts(facts: ReviewDayFacts): boolean {
+  return facts.tasks.length > 0 || facts.habits.length > 0;
+}
+
+function hasFinanceFacts(facts: ReviewDayFacts): boolean {
+  const f = facts.finance;
+  return f.txns.length > 0 || f.income > 0 || f.expense > 0;
+}
+
+/**
+ * 一键写入内置三栏：只写当日确有数据的那几栏（健康 / 任务 / 财务），
+ * 无数据的栏保持原样，自定义栏目不动。
+ */
 export function builtinDailyReviewFieldPatch(facts: ReviewDayFacts): ReviewFieldValues {
-  return {
-    [BUILTIN_DAILY_REVIEW_COLUMN_IDS.health]: formatHealthFactsText(facts),
-    [BUILTIN_DAILY_REVIEW_COLUMN_IDS.tasks]: formatTasksFactsText(facts),
-    [BUILTIN_DAILY_REVIEW_COLUMN_IDS.finance]: formatFinanceFactsText(facts),
-  };
+  const patch: ReviewFieldValues = {};
+  if (hasHealthFacts(facts)) {
+    patch[BUILTIN_DAILY_REVIEW_COLUMN_IDS.health] = formatHealthFactsText(facts);
+  }
+  if (hasTaskFacts(facts)) {
+    patch[BUILTIN_DAILY_REVIEW_COLUMN_IDS.tasks] = formatTasksFactsText(facts);
+  }
+  if (hasFinanceFacts(facts)) {
+    patch[BUILTIN_DAILY_REVIEW_COLUMN_IDS.finance] = formatFinanceFactsText(facts);
+  }
+  return patch;
+}
+
+/** 单个内置栏目对应的当日事实文本；非内置栏目或当日无数据返回 null */
+export function dailyReviewFactsTextForColumn(
+  facts: ReviewDayFacts,
+  columnId: string,
+): string | null {
+  if (columnId === BUILTIN_DAILY_REVIEW_COLUMN_IDS.health) {
+    return hasHealthFacts(facts) ? formatHealthFactsText(facts) : null;
+  }
+  if (columnId === BUILTIN_DAILY_REVIEW_COLUMN_IDS.tasks) {
+    return hasTaskFacts(facts) ? formatTasksFactsText(facts) : null;
+  }
+  if (columnId === BUILTIN_DAILY_REVIEW_COLUMN_IDS.finance) {
+    return hasFinanceFacts(facts) ? formatFinanceFactsText(facts) : null;
+  }
+  return null;
 }
 
 /** 生成可插入复盘正文的素材文本（兼容旧「写入当前栏目」） */
@@ -312,16 +359,7 @@ export function formatReviewDayFactsInsertText(facts: ReviewDayFacts): string {
 }
 
 export function reviewDayFactsIsEmpty(facts: ReviewDayFacts): boolean {
-  const h = facts.health;
-  const hasHealth =
-    h.records.length > 0 ||
-    h.weightKg != null ||
-    h.hydration > 0 ||
-    h.protein > 0 ||
-    h.carbohydrate > 0 ||
-    h.calories > 0;
-  const hasFinance = facts.finance.txns.length > 0 || facts.finance.income > 0 || facts.finance.expense > 0;
-  return facts.tasks.length === 0 && facts.habits.length === 0 && !hasHealth && !hasFinance;
+  return !hasHealthFacts(facts) && !hasTaskFacts(facts) && !hasFinanceFacts(facts);
 }
 
 export function reviewDayFactsPreviewLines(facts: ReviewDayFacts): string[] {

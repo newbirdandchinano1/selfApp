@@ -8,6 +8,7 @@ const PAGE_PARENTS: Record<string, string[]> = {
   // —— 健康 ——
   'intake-history': [TAB_PAGE_KEYS.health],
   'intake-record-detail': ['intake-history', TAB_PAGE_KEYS.health],
+  'health-analysis': [TAB_PAGE_KEYS.health],
   'quick-add-edit': [TAB_PAGE_KEYS.health],
 
   // —— 任务 ——

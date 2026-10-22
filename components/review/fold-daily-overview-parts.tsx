@@ -474,12 +474,19 @@ function FactTaskRow({ title }: { title: string }) {
   );
 }
 
+function moneyText(n: number): string {
+  const rounded = Math.round(Math.abs(n) * 100) / 100;
+  return `¥${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(2)}`;
+}
+
 export function FoldTodayDataCard({
   facts,
   onViewAll,
+  onInsertFacts,
 }: {
   facts: ReviewDayFacts;
   onViewAll?: () => void;
+  onInsertFacts?: () => void;
 }) {
   const { palette } = useFoldTheme();
   const tasks = facts.tasks.slice(0, 4);
@@ -487,15 +494,47 @@ export function FoldTodayDataCard({
   const restTasks = Math.max(0, facts.tasks.length - tasks.length);
   const restHabits = Math.max(0, facts.habits.length - habits.length);
 
+  const summaryLines = useMemo(() => {
+    const lines: string[] = [];
+    const h = facts.health;
+    if (h.records.length > 0 || h.calories > 0 || h.hydration > 0) {
+      lines.push(`健康 · 热量 ${Math.round(h.calories)}kcal · ${h.records.length} 条记录`);
+    } else if (h.weightKg != null) {
+      lines.push(`健康 · 体重 ${h.weightKg}kg`);
+    }
+    if (facts.finance.txns.length > 0 || facts.finance.income > 0 || facts.finance.expense > 0) {
+      lines.push(`财务 · 收入 ${moneyText(facts.finance.income)} · 支出 ${moneyText(facts.finance.expense)}`);
+    }
+    return lines;
+  }, [facts]);
+
   return (
     <FoldCard style={styles.todayCard}>
       <View style={styles.todayHead}>
-        <Text style={[styles.todayTitle, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
-          今日数据 · 自动汇总
-        </Text>
-        <Text style={[styles.todayMeta, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-          任务 {facts.tasks.length} · 习惯 {facts.habits.length}
-        </Text>
+        <View style={styles.todayHeadCopy}>
+          <Text style={[styles.todayTitle, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
+            今日数据 · 自动汇总
+          </Text>
+          <Text style={[styles.todayMeta, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+            任务 {facts.tasks.length} · 习惯 {facts.habits.length}
+          </Text>
+        </View>
+        {onInsertFacts ? (
+          <Pressable
+            onPress={onInsertFacts}
+            accessibilityRole="button"
+            accessibilityLabel="一键写入今日健康、任务与财务"
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.insertBtn,
+              { borderColor: palette.pine, backgroundColor: palette.sageSoft, opacity: pressed ? 0.8 : 1 },
+            ]}>
+            <MaterialIcons name="bolt" size={12} color={palette.pine} />
+            <Text style={[styles.insertText, { color: palette.pine }]} maxFontSizeMultiplier={1.3}>
+              一键写入
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
 
       <View style={styles.todayColumns}>
@@ -532,6 +571,16 @@ export function FoldTodayDataCard({
           )}
         </View>
       </View>
+
+      {summaryLines.length > 0 ? (
+        <View style={[styles.todayFacts, { borderTopColor: palette.line }]}>
+          {summaryLines.map(line => (
+            <Text key={line} style={[styles.todayFactLine, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      ) : null}
 
       {restTasks + restHabits > 0 ? (
         <Pressable
@@ -905,8 +954,25 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8,
   },
+  todayHeadCopy: { flex: 1, minWidth: 0, gap: 2 },
+  insertBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  insertText: { fontSize: 10.5, fontWeight: '700' },
   todayTitle: { fontSize: 13, fontWeight: '700' },
   todayMeta: { fontSize: 10 },
+  todayFacts: {
+    gap: 2,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  todayFactLine: { fontSize: 10.5, lineHeight: 15 },
   todayColumns: { flexDirection: 'row', gap: 10 },
   todayTasks: { flex: 1.06, gap: 6 },
   todayHabits: { flex: 0.94, gap: 6 },

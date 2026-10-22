@@ -135,19 +135,16 @@ export function ReviewAiAnalysisScreen({
   canEdit,
   onPersist,
 }: ReviewAiAnalysisScreenProps) {
-  const { fold } = useFoldTheme();
+  const { fold, palette } = useFoldTheme();
   const insets = useSafeAreaInsets();
 
-  const [text, setText] = useState<string>(initialText ?? '');
+  const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [moodByYmd, setMoodByYmd] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (!visible) return;
-    setText(initialText ?? '');
-    setExpanded({});
-  }, [visible, initialText]);
+  /** 本地草稿优先；未生成时回落到库里已保存的正文 */
+  const text = draft ?? initialText ?? '';
 
   // 近 7 天心情：只在打开时读一次，供趋势曲线使用
   useEffect(() => {
@@ -257,7 +254,7 @@ export function ReviewAiAnalysisScreen({
         template,
         fields,
       });
-      setText(result);
+      setDraft(result);
       await onPersist(result);
       toast.success('已生成新的 AI 分析');
     } catch (e) {
@@ -281,6 +278,12 @@ export function ReviewAiAnalysisScreen({
       toast.error(toUserMessage(e, '写入失败，请稍后重试'));
     }
   }, [generate, onPersist, text]);
+
+  const handleClose = useCallback(() => {
+    setDraft(null);
+    setExpanded({});
+    onClose();
+  }, [onClose]);
 
   const copyText = useCallback(async () => {
     if (!text.trim()) {
@@ -308,7 +311,7 @@ export function ReviewAiAnalysisScreen({
       <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
         <View style={[styles.header, { borderBottomColor: fold.line }]}>
           <Pressable
-            onPress={onClose}
+            onPress={handleClose}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="返回"
@@ -527,7 +530,7 @@ export function ReviewAiAnalysisScreen({
                 <View key={`suggest-${index}`} style={styles.suggestRow}>
                   {index > 0 ? <View style={[styles.divider, { backgroundColor: fold.line }]} /> : null}
                   <View style={styles.suggestIndexRow}>
-                    <Text style={[styles.suggestIndex, { color: fold.amberInk }]} maxFontSizeMultiplier={1.2}>
+                    <Text style={[styles.suggestIndex, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
                       {String(index + 1).padStart(2, '0')}
                     </Text>
                     <Text style={[styles.suggestText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.35}>

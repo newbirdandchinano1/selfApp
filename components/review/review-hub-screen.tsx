@@ -40,12 +40,13 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 const PAGE_API_KEY = 'tabs/review';
 const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 
-/** 主切换仅日/周；月复盘从「更多」进入 */
+/** 主切换：日 / 周 / 月 三个尺度并列 */
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
 
 const SCOPE_OPTIONS = [
   { value: 'daily' as const, label: '日' },
   { value: 'weekly' as const, label: '周' },
+  { value: 'monthly' as const, label: '月' },
 ];
 
 function clockNow(): string {
@@ -90,24 +91,22 @@ function HubBrand({
       </View>
       <View style={styles.brandTools}>
         <FoldPillButton label="模板" icon="grid-view" onPress={onTemplate} accessibilityLabel="编辑复盘标题与栏目" />
-        <FoldIconButton icon="more-horiz" onPress={onMore} accessibilityLabel="更多：月复盘、日历与设置" variant="soft" />
+        <FoldIconButton icon="more-horiz" onPress={onMore} accessibilityLabel="更多：复盘日历与设置" variant="soft" />
       </View>
     </View>
   );
 }
 
 /**
- * Hub 右上「更多」浮层：月复盘 / 复盘日历 / 复盘设置。
- * 轻遮罩淡入 + popover 从 .92 弹性放大，点击外部关闭。
+ * Hub 右上「更多」浮层：复盘日历 / 复盘设置。
+ * 月复盘已在主切换并列，不再收进这里。轻遮罩淡入 + popover 从 .92 弹性放大，点击外部关闭。
  */
 function MoreMenu({
   open,
   anim,
   top,
   right,
-  monthSub,
   onClose,
-  onMonthly,
   onCalendar,
   onSettings,
 }: {
@@ -115,15 +114,12 @@ function MoreMenu({
   anim: Animated.Value;
   top: number;
   right: number;
-  monthSub: string;
   onClose: () => void;
-  onMonthly: () => void;
   onCalendar: () => void;
   onSettings: () => void;
 }) {
   const { fold, palette } = useFoldTheme();
   const items = [
-    { key: 'monthly', label: '月复盘', sub: monthSub, icon: 'calendar-month' as const, onPress: onMonthly },
     { key: 'calendar', label: '复盘日历', sub: '42 格 · 找到任意一天', icon: 'date-range' as const, onPress: onCalendar },
     { key: 'settings', label: '复盘设置', sub: '复盘日 / 提醒 / 积分', icon: 'settings' as const, onPress: onSettings },
   ];
@@ -166,7 +162,7 @@ function MoreMenu({
             MORE · 更多
           </Text>
           <Text style={[styles.popoverHeadSub, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
-            把复盘放进更长的尺度
+            日历与设置
           </Text>
         </View>
         {items.map(item => (
@@ -338,12 +334,6 @@ export function ReviewHubScreen() {
     return headerSubtitle;
   }, [headerSubtitle, scope, todayYmd]);
 
-  const moreMonthSub = useMemo(() => {
-    const m = /^(\d{4})-(\d{2})/.exec(todayYmd.trim());
-    if (!m) return '回看更长的时间尺度';
-    return `回看 ${m[1]} 年 ${Number(m[2])} 月`;
-  }, [todayYmd]);
-
   const moreTop = insets.top + 50;
   const moreRight =
     contentMaxWidth != null ? Math.max(16, (width - contentMaxWidth) / 2 + 16) : 16;
@@ -364,39 +354,18 @@ export function ReviewHubScreen() {
           <HubBrand
             dateLabel={headerDateLabel}
             weeklyHint={weeklyHint}
-            onTemplate={() =>
-              router.push(
-                `/review-template-settings?scope=${scope === 'monthly' ? 'monthly' : scope}`,
-              )
-            }
+            onTemplate={() => router.push(`/review-template-settings?scope=${scope}`)}
             onMore={openHeaderMore}
           />
 
-          {scope === 'monthly' ? (
-            <View style={styles.monthBar}>
-              <Pressable
-                onPress={() => setScope('daily')}
-                accessibilityRole="button"
-                accessibilityLabel="返回日复盘"
-                style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
-                <Text style={[Typography.bodyStrong, { color: palette.pine }]} maxFontSizeMultiplier={1.35}>
-                  ← 返回日/周
-                </Text>
-              </Pressable>
-              <Text style={[Typography.bodyStrong, { color: palette.ink }]} maxFontSizeMultiplier={1.35}>
-                月复盘
-              </Text>
-            </View>
-          ) : (
-            <FoldSegment
-              options={SCOPE_OPTIONS}
-              value={scope === 'weekly' ? 'weekly' : 'daily'}
-              onChange={next => {
-                setScope(next);
-              }}
-              style={styles.segment}
-            />
-          )}
+          <FoldSegment
+            options={SCOPE_OPTIONS}
+            value={scope}
+            onChange={next => {
+              setScope(next);
+            }}
+            style={styles.segment}
+          />
         </View>
       </View>
 
@@ -456,9 +425,7 @@ export function ReviewHubScreen() {
         anim={moreAnim}
         top={moreTop}
         right={moreRight}
-        monthSub={moreMonthSub}
         onClose={closeHeaderMore}
-        onMonthly={closeAnd(() => setScope('monthly'))}
         onCalendar={closeAnd(() => router.push('/review-calendar'))}
         onSettings={closeAnd(() => router.push('/review-settings'))}
       />
@@ -526,13 +493,6 @@ const styles = StyleSheet.create({
   },
   segment: {
     marginTop: 12,
-  },
-  monthBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    paddingBottom: 4,
   },
   body: {
     flex: 1,

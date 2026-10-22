@@ -21,7 +21,7 @@ export type QuickAddCardItem = {
 export const ALL_QUICK_ADD_ITEMS: QuickAddCardItem[] = [
   {
     key: 'water',
-    label: '水',
+    label: '一杯水',
     displayAmount: 250,
     displayUnit: 'ml',
     hydrationMl: 250,
@@ -33,6 +33,102 @@ export const ALL_QUICK_ADD_ITEMS: QuickAddCardItem[] = [
 ];
 
 const DEFAULT_HOME_KEYS = ['water'];
+
+/** 首页快捷卡空态「从这三张开始」推荐（对齐 health-screens/16） */
+export type QuickAddStarterSuggestion = {
+  starterKey: string;
+  label: string;
+  amountLabel: string;
+  icon: string;
+  /** 若对应内置卡仍存在，优先启用内置而非新建 */
+  builtinKey?: string;
+  displayAmount: number;
+  displayUnit: QuickAddVolumeUnit;
+  hydrationMl: number;
+  metricType: QuickAddMetricType;
+  metricTypes: QuickAddMetricType[];
+  metricAmounts: QuickAddMetricAmounts;
+};
+
+export const QUICK_ADD_STARTER_SUGGESTIONS: QuickAddStarterSuggestion[] = [
+  {
+    starterKey: 'starter_water',
+    builtinKey: 'water',
+    label: '一杯水',
+    amountLabel: '+250 ml',
+    icon: 'local-drink',
+    displayAmount: 250,
+    displayUnit: 'ml',
+    hydrationMl: 250,
+    metricType: 'hydration',
+    metricTypes: ['hydration'],
+    metricAmounts: { hydration: 250 },
+  },
+  {
+    starterKey: 'starter_protein',
+    label: '蛋白加餐',
+    amountLabel: '+20 g',
+    icon: 'egg',
+    displayAmount: 20,
+    displayUnit: 'g',
+    hydrationMl: 20,
+    metricType: 'protein',
+    metricTypes: ['protein'],
+    metricAmounts: { protein: 20 },
+  },
+  {
+    starterKey: 'starter_americano',
+    label: '冰美式',
+    amountLabel: '+300 ml',
+    icon: 'local-cafe',
+    displayAmount: 300,
+    displayUnit: 'ml',
+    hydrationMl: 300,
+    metricType: 'hydration',
+    metricTypes: ['hydration'],
+    metricAmounts: { hydration: 300 },
+  },
+];
+
+async function appendSelectedKey(key: string): Promise<void> {
+  const selected = await loadSelectedQuickAddItems();
+  if (selected.some((item) => item.key === key)) return;
+  await saveSelectedQuickAddKeys([...selected.map((item) => item.key), key]);
+}
+
+/** 空态推荐：启用内置或按模板新建，并加入今日快捷栏。不写入摄入。 */
+export async function enableQuickAddStarter(starterKey: string): Promise<QuickAddCardItem> {
+  const starter = QUICK_ADD_STARTER_SUGGESTIONS.find((item) => item.starterKey === starterKey);
+  if (!starter) throw new Error('unknown_starter');
+
+  const allItems = await loadAllQuickAddItems();
+  const itemMap = createQuickAddItemMap(allItems);
+
+  if (starter.builtinKey && itemMap.has(starter.builtinKey)) {
+    const builtin = itemMap.get(starter.builtinKey)!;
+    await appendSelectedKey(builtin.key);
+    return builtin;
+  }
+
+  const byLabel = allItems.find((item) => item.label.trim() === starter.label);
+  if (byLabel) {
+    await appendSelectedKey(byLabel.key);
+    return byLabel;
+  }
+
+  const created = await addCustomQuickAddItem({
+    label: starter.label,
+    displayAmount: starter.displayAmount,
+    displayUnit: starter.displayUnit,
+    hydrationMl: starter.hydrationMl,
+    metricType: starter.metricType,
+    metricTypes: starter.metricTypes,
+    metricAmounts: starter.metricAmounts,
+    icon: starter.icon,
+  });
+  await appendSelectedKey(created.key);
+  return created;
+}
 
 export function createQuickAddItemMap(items: QuickAddCardItem[]) {
   return new Map(items.map((item) => [item.key, item]));
@@ -333,4 +429,164 @@ export async function deleteQuickAddItem(key: string): Promise<void> {
 /** @deprecated 使用 deleteQuickAddItem；保留别名避免旧引用报错 */
 export async function deleteCustomQuickAddItem(key: string): Promise<void> {
   await deleteQuickAddItem(key);
+}
+
+export type FrequentQuickAddCandidate = {
+  label: string;
+  count: number;
+  hydration: number;
+  protein: number;
+  carbohydrate: number;
+  calories: number;
+};
+
+/**
+ * 从最近记录中挑出「标题出现 ≥ minCount 次」的候选，均值作为快捷卡增量。
+ * 跳过已有同名卡片；不含纯快捷卡写入（无标题）。
+ */
+export function collectFrequentQuickAddCandidates(
+  records: Array<{
+    intake_display_title?: string | null;
+    quick_add_key?: string | null;
+    hydration: number;
+    protein: number;
+    carbohydrate: number;
+    calories: number;
+  }>,
+  existingLabels: Set<string>,
+  minCount = 3,
+): FrequentQuickAddCandidate[] {
+  type Acc = {
+    count: number;
+    hydration: number;
+    protein: number;
+    carbohydrate: number;
+    calories: number;
+  };
+  const byLabel = new Map<string, Acc>();
+
+  for (const row of records) {
+    const label = String(row.intake_display_title ?? '').trim();
+    if (!label) continue;
+    if (existingLabels.has(label)) continue;
+    const prev = byLabel.get(label) ?? {
+      count: 0,
+      hydration: 0,
+      protein: 0,
+      carbohydrate: 0,
+      calories: 0,
+    };
+    prev.count += 1;
+    prev.hydration += Math.max(0, Number(row.hydration) || 0);
+    prev.protein += Math.max(0, Number(row.protein) || 0);
+    prev.carbohydrate += Math.max(0, Number(row.carbohydrate) || 0);
+    prev.calories += Math.max(0, Number(row.calories) || 0);
+    byLabel.set(label, prev);
+  }
+
+  const out: FrequentQuickAddCandidate[] = [];
+  for (const [label, acc] of byLabel) {
+    if (acc.count < minCount) continue;
+    const avg = (n: number) => Math.max(0, Math.round(n / acc.count));
+    const hydration = avg(acc.hydration);
+    const protein = avg(acc.protein);
+    const carbohydrate = avg(acc.carbohydrate);
+    const calories = avg(acc.calories);
+    if (hydration + protein + carbohydrate + calories <= 0) continue;
+    out.push({ label, count: acc.count, hydration, protein, carbohydrate, calories });
+  }
+
+  return out.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
+}
+
+function pickIconForFrequent(candidate: FrequentQuickAddCandidate): string {
+  if (candidate.hydration > 0 && candidate.protein + candidate.carbohydrate + candidate.calories === 0) {
+    return 'local-drink';
+  }
+  if (candidate.protein >= candidate.carbohydrate && candidate.protein >= candidate.calories) {
+    return 'egg';
+  }
+  if (candidate.carbohydrate >= candidate.protein && candidate.carbohydrate >= candidate.calories) {
+    return 'eco';
+  }
+  if (candidate.calories > 0) return 'restaurant';
+  return 'lunch-dining';
+}
+
+/** 把常用候选写成自定义快捷卡，并追加到首页选中列表末尾。 */
+export async function createQuickAddItemsFromFrequent(
+  candidates: FrequentQuickAddCandidate[],
+): Promise<QuickAddCardItem[]> {
+  const created: QuickAddCardItem[] = [];
+  for (const candidate of candidates) {
+    const metricAmounts: QuickAddMetricAmounts = {};
+    const metricTypes: QuickAddMetricType[] = [];
+    if (candidate.hydration > 0) {
+      metricTypes.push('hydration');
+      metricAmounts.hydration = candidate.hydration;
+    }
+    if (candidate.protein > 0) {
+      metricTypes.push('protein');
+      metricAmounts.protein = candidate.protein;
+    }
+    if (candidate.carbohydrate > 0) {
+      metricTypes.push('carbohydrate');
+      metricAmounts.carbohydrate = candidate.carbohydrate;
+    }
+    if (candidate.calories > 0) {
+      metricTypes.push('calories');
+      metricAmounts.calories = candidate.calories;
+    }
+    if (metricTypes.length === 0) continue;
+
+    const primary = metricTypes[0]!;
+    const displayAmount = metricAmounts[primary] ?? 1;
+    const displayUnit: QuickAddVolumeUnit =
+      primary === 'hydration' ? 'ml' : primary === 'calories' ? 'kcal' : 'g';
+    const hydrationMl = Math.max(1, metricAmounts.hydration ?? displayAmount);
+
+    try {
+      const item = await addCustomQuickAddItem({
+        label: candidate.label.slice(0, 24),
+        displayAmount,
+        displayUnit,
+        hydrationMl,
+        metricType: primary,
+        metricTypes,
+        metricAmounts,
+        icon: pickIconForFrequent(candidate),
+      });
+      created.push(item);
+    } catch {
+      // skip invalid candidate
+    }
+  }
+
+  if (created.length > 0) {
+    const selected = await loadSelectedQuickAddItems();
+    const nextKeys = [...selected.map((item) => item.key), ...created.map((item) => item.key)];
+    await saveSelectedQuickAddKeys(nextKeys);
+  }
+
+  return created;
+}
+
+export function formatQuickAddMetricSummary(item: QuickAddCardItem): string {
+  const parts = getQuickAddMetricTypes(item).map((metric) => {
+    const amount = Math.round(getQuickAddMetricAmount(item, metric));
+    if (metric === 'hydration') return `水分 +${amount} ml`;
+    if (metric === 'protein') return `蛋白 +${amount}g`;
+    if (metric === 'carbohydrate') return `碳水 +${amount}g`;
+    return `热量 +${amount} kcal`;
+  });
+  return parts.join(' · ');
+}
+
+export function formatQuickAddPreviewMetric(item: QuickAddCardItem): string {
+  const metrics = getQuickAddMetricTypes(item);
+  const primary = metrics[0] ?? 'hydration';
+  const amount = Math.round(getQuickAddMetricAmount(item, primary));
+  if (primary === 'hydration') return `${amount} ml`;
+  if (primary === 'calories') return `${amount} kcal`;
+  return `${amount} g`;
 }
