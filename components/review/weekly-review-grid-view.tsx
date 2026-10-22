@@ -2,9 +2,15 @@ import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import { ReviewAiAnalysisScreen } from '@/components/review/review-ai-analysis-screen';
 import { WeeklyReviewLockedView } from '@/components/review/weekly-review-locked-view';
 import {
+  FoldCountUpText,
+  FoldGrowX,
+  FoldPopIn,
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import {
   FoldCard,
   FoldDimensionGrid,
-  FoldPillButton,
   FoldSectionHeader,
   FoldTag,
   foldFonts,
@@ -88,6 +94,7 @@ export function WeeklyReviewGridView({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { fold } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
@@ -300,14 +307,14 @@ export function WeeklyReviewGridView({
 
   const stats = metrics
     ? [
-        { value: String(metrics.tasksCompleted), unit: '项任务完成' },
-        { value: String(metrics.habitCheckInTotal), unit: '次打卡' },
-        { value: `¥${metrics.savingsWeekTotal}`, unit: '存下' },
+        { value: metrics.tasksCompleted, unit: '项任务完成', prefix: '' },
+        { value: metrics.habitCheckInTotal, unit: '次打卡', prefix: '' },
+        { value: metrics.savingsWeekTotal, unit: '存下', prefix: '¥' },
       ]
     : [
-        { value: '—', unit: '项任务完成' },
-        { value: '—', unit: '次打卡' },
-        { value: '—', unit: '存下' },
+        { value: null as number | null, unit: '项任务完成', prefix: '' },
+        { value: null as number | null, unit: '次打卡', prefix: '' },
+        { value: null as number | null, unit: '存下', prefix: '¥' },
       ];
 
   if (loading) {
@@ -327,26 +334,30 @@ export function WeeklyReviewGridView({
       onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
       scrollEventThrottle={16}>
       <View style={styles.page}>
-        <View style={styles.weekHead}>
-          <View style={styles.weekHeadText}>
-            <Text maxFontSizeMultiplier={1.25} style={[styles.weekTitle, { color: fold.pine, fontFamily: foldFonts.serif }]}>
-              第 {weekNo} 周
-            </Text>
-            <Text maxFontSizeMultiplier={1.3} style={[styles.weekSub, { color: fold.muted }]}>
-              {weekRangeLabel || '本周期'}
-              {configuredDowLabel ? ` · 以${configuredDowLabel}为终点` : ''}
-            </Text>
+        <FoldRiseIn animate={motionOn} index={0} duration={420} fromY={12}>
+          <View style={styles.weekHead}>
+            <View style={styles.weekHeadText}>
+              <Text
+                maxFontSizeMultiplier={1.25}
+                style={[styles.weekTitle, { color: fold.pine, fontFamily: foldFonts.serif }]}>
+                第 {weekNo} 周
+              </Text>
+              <Text maxFontSizeMultiplier={1.3} style={[styles.weekSub, { color: fold.muted }]}>
+                {weekRangeLabel || '本周期'}
+                {configuredDowLabel ? ` · 以${configuredDowLabel}为终点` : ''}
+              </Text>
+            </View>
+            <View style={styles.weekTag}>
+              {configuredDow === null ? (
+                <FoldTag tone="amber">未设置复盘日</FoldTag>
+              ) : canEdit ? (
+                <FoldTag tone="green">今天是复盘日</FoldTag>
+              ) : (
+                <FoldTag tone="gray">未到复盘日 · 只读</FoldTag>
+              )}
+            </View>
           </View>
-          <View style={styles.weekTag}>
-            {configuredDow === null ? (
-              <FoldTag tone="amber">未设置复盘日</FoldTag>
-            ) : canEdit ? (
-              <FoldTag tone="green">今天是复盘日</FoldTag>
-            ) : (
-              <FoldTag tone="gray">未到复盘日 · 只读</FoldTag>
-            )}
-          </View>
-        </View>
+        </FoldRiseIn>
 
         {!canEdit ? (
           <WeeklyReviewLockedView
@@ -368,238 +379,312 @@ export function WeeklyReviewGridView({
 
         {canEdit ? (
           <>
-        <FoldCard style={styles.storyCard}>
-          <View style={styles.storyHead}>
-            <Text
-              numberOfLines={1}
-              maxFontSizeMultiplier={1.25}
-              style={[styles.storyKicker, { color: fold.ink2 }]}>
-              周故事 · STORY OF THE WEEK
-            </Text>
-            <Text
-              numberOfLines={1}
-              maxFontSizeMultiplier={1.2}
-              style={[styles.storyMeta, monoText, { color: fold.muted }]}>
-              {weekYear} / W{weekNo}
-            </Text>
-          </View>
-
-          <View style={styles.statsRow}>
-            {stats.map((stat, index) => (
-              <React.Fragment key={stat.unit}>
-                {index > 0 ? <View style={[styles.statDivider, { backgroundColor: fold.line }]} /> : null}
-                <View style={styles.statCell}>
+            <FoldRiseIn animate={motionOn} index={1} staggerMs={70} duration={420}>
+              <FoldCard style={styles.storyCard}>
+                <View style={[styles.storyOrb, { borderColor: fold.sage2 }]} pointerEvents="none" />
+                <View style={styles.storyHead}>
                   <Text
                     numberOfLines={1}
-                    maxFontSizeMultiplier={1.15}
-                    style={[styles.statValue, monoText, { color: fold.pine }]}>
-                    {stat.value}
+                    maxFontSizeMultiplier={1.25}
+                    style={[styles.storyKicker, { color: fold.ink2 }]}>
+                    周故事 · Story of the week
                   </Text>
-                  <Text numberOfLines={1} maxFontSizeMultiplier={1.25} style={[styles.statUnit, { color: fold.muted }]}>
-                    {stat.unit}
+                  <Text
+                    numberOfLines={1}
+                    maxFontSizeMultiplier={1.2}
+                    style={[styles.storyMeta, monoText, { color: fold.muted }]}>
+                    {weekYear} / W{weekNo}
                   </Text>
                 </View>
-              </React.Fragment>
-            ))}
-          </View>
 
-          <View style={styles.timeline}>
-            <View style={[styles.timelineLine, { backgroundColor: fold.line }]} />
-            {dailyEntries.map(entry => {
-              const skipped = skippedYmds.has(entry.ymd);
-              const filled = !skipped && dailyEntryHasContent(entry.fields);
-              const isToday = entry.ymd === todayYmd;
-              return (
-                <View key={entry.ymd} style={styles.timelineItem}>
-                  <View
-                    style={[
-                      styles.timelineNode,
-                      skipped
-                        ? { backgroundColor: fold.pine, borderColor: fold.pine }
-                        : filled
-                          ? { backgroundColor: fold.sage2, borderColor: fold.sage }
-                          : { backgroundColor: fold.paper2, borderColor: fold.line },
-                      isToday && !skipped ? { borderColor: fold.amber, borderWidth: 1.5 } : null,
-                    ]}>
-                    {skipped ? (
-                      <MaterialIcons name="star" size={11} color={fold.onPineButton} />
-                    ) : filled ? (
-                      <MaterialIcons name="check" size={13} color={fold.pine2} />
-                    ) : null}
+                <View style={styles.statsRow}>
+                  {stats.map((stat, index) => (
+                    <React.Fragment key={stat.unit}>
+                      {index > 0 ? <View style={[styles.statDivider, { backgroundColor: fold.line }]} /> : null}
+                      <View style={styles.statCell}>
+                        {stat.value == null ? (
+                          <Text
+                            numberOfLines={1}
+                            maxFontSizeMultiplier={1.15}
+                            style={[styles.statValue, monoText, { color: fold.pine }]}>
+                            {stat.prefix}—
+                          </Text>
+                        ) : (
+                          <View style={styles.statValueRow}>
+                            {stat.prefix ? (
+                              <Text style={[styles.statValue, monoText, { color: fold.pine }]}>{stat.prefix}</Text>
+                            ) : null}
+                            <FoldCountUpText
+                              value={stat.value}
+                              animate={motionOn}
+                              delayMs={120 + index * 80}
+                              duration={800}
+                              textStyle={[styles.statValue, monoText, { color: fold.pine }]}
+                            />
+                          </View>
+                        )}
+                        <Text
+                          numberOfLines={1}
+                          maxFontSizeMultiplier={1.25}
+                          style={[styles.statUnit, { color: fold.muted }]}>
+                          {stat.unit}
+                        </Text>
+                      </View>
+                    </React.Fragment>
+                  ))}
+                </View>
+
+                <View style={styles.timeline}>
+                  <View style={styles.timelineLineTrack}>
+                    <FoldGrowX
+                      animate={motionOn}
+                      color={fold.line2}
+                      delayMs={100}
+                      duration={520}
+                      style={styles.timelineLineFill}
+                    />
                   </View>
-                  <Text
-                    maxFontSizeMultiplier={1.2}
-                    style={[styles.timelineDow, { color: isToday ? fold.clay : fold.muted }]}>
-                    {ymdWeekdayLabel(entry.label)}
-                  </Text>
-                  <Text
-                    maxFontSizeMultiplier={1.2}
-                    style={[
-                      styles.timelineDay,
-                      monoText,
-                      { color: skipped ? fold.pine : fold.ink2, fontWeight: skipped ? '800' : '600' },
-                    ]}>
-                    {ymdDayNumber(entry.ymd)}
-                  </Text>
+                  {dailyEntries.map((entry, index) => {
+                    const skipped = skippedYmds.has(entry.ymd);
+                    const filled = !skipped && dailyEntryHasContent(entry.fields);
+                    const isToday = entry.ymd === todayYmd;
+                    return (
+                      <View key={entry.ymd} style={styles.timelineItem}>
+                        <FoldPopIn animate={motionOn} index={index} staggerMs={65} delayMs={150}>
+                          <View
+                            style={[
+                              styles.timelineNodeHalo,
+                              skipped ? { backgroundColor: 'rgba(35,68,58,0.09)' } : null,
+                            ]}>
+                            <View
+                              style={[
+                                styles.timelineNode,
+                                skipped
+                                  ? { backgroundColor: fold.pine, borderColor: fold.pine }
+                                  : filled
+                                    ? { backgroundColor: fold.sage2, borderColor: '#B9D1C2' }
+                                    : { backgroundColor: fold.paper2, borderColor: fold.line2 },
+                              ]}>
+                              {skipped ? (
+                                <MaterialIcons name="auto-awesome" size={10} color={fold.onPineButton} />
+                              ) : filled ? (
+                                <MaterialIcons name="check" size={12} color={fold.pine2} />
+                              ) : (
+                                <Text style={[styles.timelineMiss, { color: fold.faint }]}>·</Text>
+                              )}
+                            </View>
+                          </View>
+                        </FoldPopIn>
+                        <Text
+                          maxFontSizeMultiplier={1.2}
+                          style={[
+                            styles.timelineDow,
+                            { color: skipped ? fold.pine : isToday ? fold.clay : fold.muted },
+                            skipped ? { fontWeight: '800' } : null,
+                          ]}>
+                          {ymdWeekdayLabel(entry.label)}
+                        </Text>
+                        <Text
+                          maxFontSizeMultiplier={1.2}
+                          style={[
+                            styles.timelineDay,
+                            monoText,
+                            { color: skipped ? fold.pine : fold.ink2, fontWeight: skipped ? '800' : '600' },
+                          ]}>
+                          {ymdDayNumber(entry.ymd)}
+                        </Text>
+                      </View>
+                    );
+                  })}
                 </View>
-              );
-            })}
-          </View>
-        </FoldCard>
+              </FoldCard>
+            </FoldRiseIn>
 
-        <View style={styles.summaryRow}>
-          <MaterialIcons name="sync" size={11} color={fold.sage} />
-          <Text maxFontSizeMultiplier={1.3} style={[styles.summaryText, { color: fold.muted }]}>
-            空栏已自动汇总近 7 天日复盘，已填内容不会被覆盖
-          </Text>
-        </View>
-
-        <FoldSectionHeader
-          title="维度预览"
-          hint={`${weeklyTemplate.length} 维 · ${filledDimensionCount} 维已填`}
-        />
-
-        {weeklyTemplate.length === 0 ? (
-          <FoldCard tone="muted">
-            <Text style={[styles.emptyTitle, { color: fold.ink2 }]}>尚未配置周复盘维度</Text>
-            <Text style={[styles.emptyText, { color: fold.muted }]}>
-              点右上角「模板」按钮，编辑标题与栏目。
-            </Text>
-          </FoldCard>
-        ) : (
-          <FoldDimensionGrid
-            scope="weekly"
-            dimensions={weeklyTemplate}
-            fields={fields}
-            canEdit={canEdit}
-            onOpenDimension={openDimension}
-          />
-        )}
-
-        <Pressable
-          onPress={onOpenAi}
-          accessibilityRole="button"
-          accessibilityLabel="AI 周教练 · 本周建议"
-          style={({ pressed }) => [
-            styles.aiCard,
-            {
-              backgroundColor: fold.card,
-              borderColor: fold.line,
-              opacity: pressed ? 0.92 : 1,
-            },
-          ]}>
-          <View style={styles.aiRow}>
-            <View style={[styles.aiBadge, { backgroundColor: fold.summaryBg }]}>
-              <MaterialIcons name="auto-awesome" size={15} color={fold.onPineButton} />
-            </View>
-            <View style={styles.aiBody}>
-              <View style={styles.aiHead}>
-                <Text
-                  numberOfLines={1}
-                  maxFontSizeMultiplier={1.3}
-                  style={[styles.aiTitle, { color: fold.ink }]}>
-                  AI 周教练 · 本周建议
+            <FoldRiseIn animate={motionOn} index={2} staggerMs={70} duration={400}>
+              <View style={styles.summaryRow}>
+                <MaterialIcons name="auto-awesome" size={11} color={fold.sage} />
+                <Text maxFontSizeMultiplier={1.3} style={[styles.summaryText, { color: fold.muted }]}>
+                  空栏已自动汇总近 7 天日复盘，已填内容不会被覆盖
                 </Text>
-                <MaterialIcons name="north-east" size={13} color={fold.muted} />
               </View>
-              {(aiCoaching ?? '').trim() ? (
-                <Text numberOfLines={4} maxFontSizeMultiplier={1.3} style={[styles.aiBodyText, { color: fold.ink2 }]}>
-                  {aiCoaching}
-                </Text>
-              ) : (
-                <Text numberOfLines={3} maxFontSizeMultiplier={1.3} style={[styles.aiBodyText, { color: fold.muted }]}>
-                  填写本周复盘后，会基于六个维度生成一份观察与建议。
-                </Text>
-              )}
-              <Text style={[styles.aiAction, { color: fold.aiInk }]}>
-                {(aiCoaching ?? '').trim() ? '查看全文 · 重新生成 ›' : '生成本周建议 ›'}
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={3} staggerMs={70} duration={400}>
+              <FoldSectionHeader
+                title="维度预览"
+                hint={`${weeklyTemplate.length} 维 · ${filledDimensionCount} 维已填`}
+              />
+            </FoldRiseIn>
+
+            {weeklyTemplate.length === 0 ? (
+              <FoldRiseIn animate={motionOn} index={4} staggerMs={70} duration={420}>
+                <FoldCard tone="muted">
+                  <Text style={[styles.emptyTitle, { color: fold.ink2 }]}>尚未配置周复盘维度</Text>
+                  <Text style={[styles.emptyText, { color: fold.muted }]}>
+                    点右上角「模板」按钮，编辑标题与栏目。
+                  </Text>
+                </FoldCard>
+              </FoldRiseIn>
+            ) : (
+              <FoldDimensionGrid
+                scope="weekly"
+                dimensions={weeklyTemplate}
+                fields={fields}
+                canEdit={canEdit}
+                onOpenDimension={openDimension}
+                animate={motionOn}
+                staggerDelayMs={220}
+              />
+            )}
+
+            <FoldRiseIn animate={motionOn} index={5} staggerMs={70} duration={420}>
+              <Pressable
+                onPress={onOpenAi}
+                accessibilityRole="button"
+                accessibilityLabel="AI 周教练 · 本周建议"
+                style={({ pressed }) => [
+                  styles.aiCard,
+                  {
+                    backgroundColor: fold.aiBg,
+                    borderColor: fold.aiBorder,
+                    opacity: pressed ? 0.92 : 1,
+                  },
+                ]}>
+                <View style={styles.aiRow}>
+                  <View style={[styles.aiBadge, { backgroundColor: fold.pineButton }]}>
+                    <MaterialIcons name="auto-awesome" size={14} color={fold.badgeText} />
+                  </View>
+                  <View style={styles.aiBody}>
+                    <View style={styles.aiHead}>
+                      <Text
+                        numberOfLines={1}
+                        maxFontSizeMultiplier={1.3}
+                        style={[styles.aiTitle, { color: fold.ink }]}>
+                        AI 周教练 · 本周建议
+                      </Text>
+                      <MaterialIcons name="north-east" size={13} color="#9A8D77" />
+                    </View>
+                    {(aiCoaching ?? '').trim() ? (
+                      <Text
+                        numberOfLines={2}
+                        maxFontSizeMultiplier={1.3}
+                        style={[styles.aiBodyText, { color: fold.ink2 }]}>
+                        {aiCoaching}
+                      </Text>
+                    ) : (
+                      <Text
+                        numberOfLines={2}
+                        maxFontSizeMultiplier={1.3}
+                        style={[styles.aiBodyText, { color: fold.muted }]}>
+                        填写本周复盘后，会基于六个维度生成一份观察与建议。
+                      </Text>
+                    )}
+                    <Text style={[styles.aiAction, { color: fold.aiInk }]}>
+                      {(aiCoaching ?? '').trim() ? '写入 ai_coaching ›' : '生成本周建议 ›'}
+                    </Text>
+                  </View>
+                </View>
+              </Pressable>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={6} staggerMs={70} duration={400}>
+              <View style={styles.actions}>
+                <Pressable
+                  onPress={() => {
+                    if (firstOpenDimensionId) openDimension(firstOpenDimensionId);
+                  }}
+                  disabled={!firstOpenDimensionId}
+                  accessibilityRole="button"
+                  accessibilityLabel="填写本周复盘"
+                  style={({ pressed }) => [
+                    styles.primaryAction,
+                    {
+                      backgroundColor: fold.pineButton,
+                      opacity: !firstOpenDimensionId ? 0.4 : pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <Text
+                    numberOfLines={1}
+                    maxFontSizeMultiplier={1.3}
+                    style={[styles.primaryActionText, { color: fold.onPineButton }]}>
+                    填写本周复盘
+                  </Text>
+                  <MaterialIcons name="chevron-right" size={16} color={fold.onPineButton} />
+                </Pressable>
+                <Pressable
+                  onPress={() => router.push('/weekly-review-form')}
+                  accessibilityRole="button"
+                  accessibilityLabel="经典表单"
+                  style={({ pressed }) => [
+                    styles.ghostAction,
+                    {
+                      borderColor: fold.line2,
+                      backgroundColor: fold.cardSoft,
+                      opacity: pressed ? 0.82 : 1,
+                    },
+                  ]}>
+                  <Text style={[styles.ghostActionText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.3}>
+                    经典表单
+                  </Text>
+                </Pressable>
+              </View>
+            </FoldRiseIn>
+
+            <View style={styles.autoSave}>
+              <View
+                style={[
+                  styles.autoSaveDot,
+                  { backgroundColor: saving ? fold.amber : summarizedAt ? fold.sage : fold.faint },
+                ]}
+              />
+              <Text maxFontSizeMultiplier={1.25} style={[styles.autoSaveText, { color: fold.faint }]}>
+                {saving
+                  ? '保存中…'
+                  : summarizedAt
+                    ? `已自动汇总 · ${clockLabel(summarizedAt)}`
+                    : '自动汇总已开启'}
               </Text>
             </View>
-          </View>
-        </Pressable>
 
-        <View style={styles.actions}>
-          <Pressable
-            onPress={() => {
-              if (firstOpenDimensionId) openDimension(firstOpenDimensionId);
-            }}
-            disabled={!firstOpenDimensionId}
-            accessibilityRole="button"
-            accessibilityLabel={canEdit ? '填写本周复盘' : '查看本周复盘'}
-            style={({ pressed }) => [
-              styles.primaryAction,
-              {
-                backgroundColor: fold.pineButton,
-                opacity: !firstOpenDimensionId ? 0.4 : pressed ? 0.88 : 1,
-              },
-            ]}>
-            <Text
-              numberOfLines={1}
-              maxFontSizeMultiplier={1.3}
-              style={[styles.primaryActionText, { color: fold.onPineButton }]}>
-              {canEdit ? '填写本周复盘' : '查看本周复盘'}
-            </Text>
-            <MaterialIcons name="chevron-right" size={16} color={fold.onPineButton} />
-          </Pressable>
-          <FoldPillButton
-            label="经典表单"
-            onPress={() => router.push('/weekly-review-form')}
-            style={styles.classicBtn}
-          />
-        </View>
-
-        <View style={styles.autoSave}>
-          <View
-            style={[
-              styles.autoSaveDot,
-              { backgroundColor: saving ? fold.amber : summarizedAt ? fold.sage : fold.faint },
-            ]}
-          />
-          <Text maxFontSizeMultiplier={1.25} style={[styles.autoSaveText, { color: fold.faint }]}>
-            {saving
-              ? '保存中…'
-              : summarizedAt
-                ? `已自动汇总 · ${clockLabel(summarizedAt)}`
-                : '自动汇总已开启'}
-          </Text>
-        </View>
-
-        <View style={styles.pageLinks}>
-          <Pressable
-            onPress={onSwitchToMonthly}
-            disabled={!onSwitchToMonthly}
-            accessibilityRole="button"
-            accessibilityLabel="月复盘"
-            style={({ pressed }) => [
-              styles.pageLink,
-              { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
-            ]}>
-            <Text style={[styles.pageIndex, { color: fold.ink2 }]}>月</Text>
-            <Text style={[styles.pageLinkText, { color: fold.ink2 }]}>月复盘</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => router.push('/review-calendar')}
-            accessibilityRole="button"
-            accessibilityLabel="复盘日历"
-            style={({ pressed }) => [
-              styles.pageLink,
-              { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
-            ]}>
-            <MaterialIcons name="calendar-today" size={12} color={fold.ink2} />
-            <Text style={[styles.pageLinkText, { color: fold.ink2 }]}>日历</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => router.push('/review-settings')}
-            accessibilityRole="button"
-            accessibilityLabel="复盘设置"
-            style={({ pressed }) => [
-              styles.pageLink,
-              { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
-            ]}>
-            <MaterialIcons name="settings" size={12} color={fold.ink2} />
-            <Text style={[styles.pageLinkText, { color: fold.ink2 }]}>设置</Text>
-          </Pressable>
-        </View>
+            <FoldRiseIn animate={motionOn} index={7} staggerMs={70} duration={400}>
+              <View style={styles.pageLinks}>
+                <Pressable
+                  onPress={onSwitchToMonthly}
+                  disabled={!onSwitchToMonthly}
+                  accessibilityRole="button"
+                  accessibilityLabel="月复盘"
+                  style={({ pressed }) => [
+                    styles.pageLink,
+                    { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
+                  ]}>
+                  <Text style={[styles.pageIndex, { color: fold.amber }]}>月</Text>
+                  <Text style={[styles.pageLinkText, { color: fold.ink2 }]}>月复盘</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => router.push('/review-calendar')}
+                  accessibilityRole="button"
+                  accessibilityLabel="复盘日历"
+                  style={({ pressed }) => [
+                    styles.pageLink,
+                    { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
+                  ]}>
+                  <MaterialIcons name="calendar-today" size={12} color={fold.sage} />
+                  <Text style={[styles.pageLinkText, { color: fold.ink2 }]}>日历</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => router.push('/review-settings')}
+                  accessibilityRole="button"
+                  accessibilityLabel="复盘设置"
+                  style={({ pressed }) => [
+                    styles.pageLink,
+                    styles.pageLinkLast,
+                    { backgroundColor: fold.sage2, borderColor: '#D8DECD', opacity: pressed ? 0.75 : 1 },
+                  ]}>
+                  <MaterialIcons name="settings" size={12} color={fold.pine} />
+                  <Text style={[styles.pageLinkText, { color: fold.pine }]}>设置</Text>
+                </Pressable>
+              </View>
+            </FoldRiseIn>
           </>
         ) : null}
       </View>
@@ -635,33 +720,46 @@ const styles = StyleSheet.create({
   },
   weekHead: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: 10,
     paddingHorizontal: 3,
-    paddingTop: 2,
+    paddingBottom: 5,
   },
   weekHeadText: {
     flex: 1,
     minWidth: 0,
   },
   weekTitle: {
-    fontSize: 26,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  weekSub: {
-    marginTop: 3,
-    fontSize: 9,
+    fontSize: 23,
     fontWeight: '600',
     letterSpacing: 0.2,
+    lineHeight: 26,
+  },
+  weekSub: {
+    marginTop: 4,
+    fontSize: 9,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   weekTag: {
-    paddingTop: 4,
+    flexShrink: 0,
+    paddingBottom: 2,
   },
   storyCard: {
     padding: 13,
     gap: 0,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  storyOrb: {
+    position: 'absolute',
+    right: -45,
+    top: -52,
+    width: 170,
+    height: 170,
+    borderRadius: 85,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   storyHead: {
     flexDirection: 'row',
@@ -680,65 +778,90 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   statsRow: {
-    marginTop: 9,
+    marginTop: 10,
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+    gap: 5,
   },
   statCell: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'nowrap',
+    gap: 5,
+    flexShrink: 1,
+  },
+  statValueRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
   },
   statValue: {
-    fontSize: 23,
-    lineHeight: 27,
+    fontSize: 22,
+    lineHeight: 26,
     fontWeight: '700',
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
   },
   statUnit: {
-    marginTop: 1,
     fontSize: 8,
     fontWeight: '600',
     letterSpacing: 0.2,
+    color: '#7F8A82',
   },
   statDivider: {
     width: StyleSheet.hairlineWidth,
-    marginVertical: 3,
-    marginHorizontal: 10,
+    height: 17,
+    alignSelf: 'center',
+    marginHorizontal: 5,
   },
   timeline: {
-    marginTop: 12,
+    marginTop: 14,
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     position: 'relative',
+    paddingHorizontal: 2,
   },
-  timelineLine: {
+  timelineLineTrack: {
     position: 'absolute',
-    left: 14,
-    right: 14,
-    top: 11,
+    left: 18,
+    right: 18,
+    top: 8,
+    height: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  timelineLineFill: {
     height: StyleSheet.hairlineWidth,
   },
   timelineItem: {
     flex: 1,
     alignItems: 'center',
-    gap: 2,
+    gap: 3,
+  },
+  /** 设计稿 weekday 节点外圈 4px 淡松绿环 */
+  timelineNodeHalo: {
+    padding: 4,
+    borderRadius: 999,
   },
   timelineNode: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 17,
+    height: 17,
+    borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#FFFCF5',
+  },
+  timelineMiss: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: '700',
   },
   timelineDow: {
-    fontSize: 8,
+    fontSize: 7.5,
     fontWeight: '600',
   },
   timelineDay: {
-    fontSize: 9.5,
+    fontSize: 8.5,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -779,19 +902,20 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
   aiCard: {
-    borderRadius: 16,
+    borderRadius: 15,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    minHeight: 76,
   },
   aiRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 9,
+    gap: 8,
   },
   aiBadge: {
-    width: 28,
-    height: 28,
+    width: 26,
+    height: 26,
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
@@ -810,7 +934,7 @@ const styles = StyleSheet.create({
   aiTitle: {
     flex: 1,
     minWidth: 0,
-    fontSize: 10.5,
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.1,
   },
@@ -821,24 +945,24 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   aiBodyText: {
-    fontSize: 9.5,
-    lineHeight: 15,
+    fontSize: 8.5,
+    lineHeight: 13,
     fontWeight: '500',
   },
   aiAction: {
     marginTop: 1,
-    fontSize: 8.5,
+    fontSize: 8,
     fontWeight: '700',
     letterSpacing: 0.1,
   },
   actions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
     marginTop: 2,
   },
   primaryAction: {
     flex: 1,
-    minHeight: 46,
+    minHeight: 40,
     borderRadius: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -846,15 +970,22 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   primaryActionText: {
-    fontSize: 12.5,
+    fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.2,
   },
-  classicBtn: {
-    minWidth: 104,
-    minHeight: 46,
-    borderRadius: 14,
-    paddingHorizontal: 12,
+  ghostAction: {
+    width: 102,
+    minHeight: 40,
+    borderRadius: 13,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  ghostActionText: {
+    fontSize: 10.5,
+    fontWeight: '700',
   },
   autoSave: {
     flexDirection: 'row',
@@ -875,27 +1006,29 @@ const styles = StyleSheet.create({
   },
   pageLinks: {
     flexDirection: 'row',
-    gap: 7,
+    gap: 6,
     paddingHorizontal: 2,
   },
   pageLink: {
     flex: 1,
-    height: 34,
-    borderRadius: 11,
+    height: 32,
+    borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
+    gap: 4,
     minWidth: 0,
   },
+  pageLinkLast: {},
   pageLinkText: {
-    fontSize: 9.5,
+    fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.1,
   },
   pageIndex: {
-    fontSize: 11,
-    fontWeight: '800',
+    fontFamily: foldFonts.serif,
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

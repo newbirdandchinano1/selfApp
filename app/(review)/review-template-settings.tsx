@@ -29,6 +29,7 @@ import {
 import type { KeyboardEvent } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { foldFonts, useFoldTheme } from '@/components/review/fold-ui';
 import { Spacing } from '@/constants/design-tokens';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -263,6 +264,7 @@ export default function ReviewTemplateSettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { fold, palette } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
   const { scope: scopeParam } = useLocalSearchParams<{ scope?: string }>();
 
   const [scope, setScope] = useState<ReviewTemplateScope>(normalizeScope(scopeParam));
@@ -699,7 +701,7 @@ export default function ReviewTemplateSettingsScreen() {
     const cols = dim.columns.filter(c => !c.removed);
     const meta = cols.map(c => c.title).join(' / ');
     return (
-      <View key={dim.key}>
+      <View>
         <Pressable
           onPress={() => setExpandedKey(open ? null : dim.key)}
           accessibilityRole="button"
@@ -837,52 +839,85 @@ export default function ReviewTemplateSettingsScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={[styles.scroll, { paddingBottom: Spacing['6xl'] + insets.bottom }]}>
-            <View style={[styles.note, { backgroundColor: fold.paper2 }]}>
-              <MaterialIcons name="auto-awesome" size={12} color={palette.sage} />
-              <Text style={[styles.noteText, { color: fold.muted }]}>
-                三个 scope 的模板彼此独立。内置维度不可删除 / 改名，必须排在自定义模块之前；内置栏目不可删除。
-              </Text>
-            </View>
+            <FoldRiseIn animate={motionOn} index={0} duration={420} fromY={12}>
+              <View style={[styles.note, { backgroundColor: fold.paper2 }]}>
+                <MaterialIcons name="auto-awesome" size={12} color={palette.sage} />
+                <Text style={[styles.noteText, { color: fold.muted }]}>
+                  三个 scope 的模板彼此独立。内置维度不可删除 / 改名，必须排在自定义模块之前；内置栏目不可删除。
+                </Text>
+              </View>
+            </FoldRiseIn>
 
-            <View style={styles.groupRow}>
-              <Text style={[styles.groupTitle, { color: fold.muted }]}>内置维度 · BUILT-IN</Text>
-              <Text style={[styles.groupHint, { color: fold.faint }]}>{builtinDims.length} 个 · 固定置顶</Text>
-            </View>
+            <FoldRiseIn animate={motionOn} index={1} staggerMs={55} duration={400}>
+              <View style={styles.groupRow}>
+                <Text style={[styles.groupTitle, { color: fold.muted }]}>内置维度 · BUILT-IN</Text>
+                <Text style={[styles.groupHint, { color: fold.faint }]}>{builtinDims.length} 个 · 固定置顶</Text>
+              </View>
+            </FoldRiseIn>
             <View style={[styles.moduleList, { borderColor: fold.line, backgroundColor: fold.cardSoft }]}>
               {builtinDims.length === 0 ? (
                 <Text style={[styles.listEmpty, { color: fold.faint }]}>内置维度会自动补齐</Text>
               ) : (
-                builtinDims.map((dim, idx) => renderDimensionRow(dim, idx === builtinDims.length - 1))
+                builtinDims.map((dim, idx) => (
+                  <FoldRiseIn
+                    key={dim.key}
+                    animate={motionOn}
+                    index={idx}
+                    delayMs={120}
+                    staggerMs={55}
+                    duration={420}>
+                    {renderDimensionRow(dim, idx === builtinDims.length - 1)}
+                  </FoldRiseIn>
+                ))
               )}
             </View>
 
-            <View style={styles.groupRow}>
-              <Text style={[styles.groupTitle, { color: fold.muted }]}>自定义维度 · CUSTOM</Text>
-              <Text style={[styles.groupHint, { color: fold.faint }]}>移动端暂不支持排序</Text>
-            </View>
+            <FoldRiseIn animate={motionOn} index={2} delayMs={160} staggerMs={0} duration={400}>
+              <View style={styles.groupRow}>
+                <Text style={[styles.groupTitle, { color: fold.muted }]}>自定义维度 · CUSTOM</Text>
+                <Text style={[styles.groupHint, { color: fold.faint }]}>移动端暂不支持排序</Text>
+              </View>
+            </FoldRiseIn>
             <View style={[styles.moduleList, { borderColor: fold.line, backgroundColor: fold.cardSoft }]}>
               {customDims.length === 0 ? (
                 <Text style={[styles.listEmpty, { color: fold.faint }]}>还没有自定义维度</Text>
               ) : (
-                customDims.map((dim, idx) => renderDimensionRow(dim, idx === customDims.length - 1))
+                customDims.map((dim, idx) => (
+                  <FoldRiseIn
+                    key={dim.key}
+                    animate={motionOn}
+                    index={idx}
+                    delayMs={180 + builtinDims.length * 40}
+                    staggerMs={55}
+                    duration={420}>
+                    {renderDimensionRow(dim, idx === customDims.length - 1)}
+                  </FoldRiseIn>
+                ))
               )}
             </View>
 
-            <Pressable
-              onPress={openAddDimension}
-              accessibilityRole="button"
-              accessibilityLabel="新增维度"
-              style={({ pressed }) => [
-                styles.addBtn,
-                { borderColor: fold.line2, backgroundColor: fold.cardSoft, opacity: pressed ? 0.8 : 1 },
-              ]}>
-              <MaterialIcons name="add" size={15} color={palette.sage} />
-              <Text style={[styles.addBtnText, { color: fold.muted }]}>新增维度</Text>
-            </Pressable>
+            <FoldRiseIn
+              animate={motionOn}
+              index={0}
+              delayMs={220 + (builtinDims.length + customDims.length) * 40}
+              staggerMs={0}
+              duration={400}>
+              <Pressable
+                onPress={openAddDimension}
+                accessibilityRole="button"
+                accessibilityLabel="新增维度"
+                style={({ pressed }) => [
+                  styles.addBtn,
+                  { borderColor: fold.line2, backgroundColor: fold.cardSoft, opacity: pressed ? 0.8 : 1 },
+                ]}>
+                <MaterialIcons name="add" size={15} color={palette.sage} />
+                <Text style={[styles.addBtnText, { color: fold.muted }]}>新增维度</Text>
+              </Pressable>
 
-            <Text style={[styles.footerHint, { color: fold.faint }]}>
-              {SCOPE_NOTE[scope]}进入页面时自动补齐内置模块，并软删除旧版周 / 月默认维度；APP 共享同一套 ID。
-            </Text>
+              <Text style={[styles.footerHint, { color: fold.faint }]}>
+                {SCOPE_NOTE[scope]}进入页面时自动补齐内置模块，并软删除旧版周 / 月默认维度；APP 共享同一套 ID。
+              </Text>
+            </FoldRiseIn>
           </ScrollView>
         )}
       </KeyboardAvoidingView>

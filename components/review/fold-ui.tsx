@@ -13,10 +13,12 @@ import {
 } from '@/lib/repositories/insights/review-template-defaults';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import type { ReviewFieldValues } from '@/lib/repositories/insights/review-journal-body';
+import { FoldRiseIn } from '@/components/review/fold-motion';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
   Pressable,
   StyleSheet,
   Text,
@@ -174,12 +176,54 @@ export function FoldSegment<T extends string>({
   style?: StyleProp<ViewStyle>;
 }) {
   const { fold } = useFoldTheme();
+  const count = Math.max(options.length, 1);
   const activeIndex = Math.max(
     0,
     options.findIndex(option => option.value === value),
   );
+  const [trackWidth, setTrackWidth] = useState(0);
+  const slide = useRef(new Animated.Value(activeIndex)).current;
+  const pad = 3;
+  const gap = 3;
+  const indicatorWidth =
+    trackWidth > 0 ? (trackWidth - pad * 2 - gap * (count - 1)) / count : 0;
+
+  useEffect(() => {
+    Animated.timing(slide, {
+      toValue: activeIndex,
+      duration: 280,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [activeIndex, slide]);
+
+  const translateX =
+    indicatorWidth > 0
+      ? slide.interpolate({
+          inputRange: options.map((_, i) => i),
+          outputRange: options.map((_, i) => pad + i * (indicatorWidth + gap)),
+          extrapolate: 'clamp',
+        })
+      : 0;
+
   return (
-    <View style={[styles.segmentTrack, { backgroundColor: fold.paper2, borderColor: fold.line }, style]}>
+    <View
+      onLayout={e => setTrackWidth(e.nativeEvent.layout.width)}
+      style={[styles.segmentTrack, { backgroundColor: fold.paper2, borderColor: fold.line }, style]}>
+      {indicatorWidth > 0 ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.segmentIndicator,
+            {
+              width: indicatorWidth,
+              backgroundColor: fold.card,
+              borderColor: fold.line,
+              transform: [{ translateX }],
+            },
+          ]}
+        />
+      ) : null}
       {options.map((option, index) => {
         const active = index === activeIndex;
         return (
@@ -190,9 +234,6 @@ export function FoldSegment<T extends string>({
             accessibilityState={{ selected: active }}
             accessibilityLabel={option.label}
             style={({ pressed }) => [styles.segmentItem, { opacity: pressed ? 0.8 : 1 }]}>
-            {active ? (
-              <View style={[styles.segmentIndicator, { backgroundColor: fold.card, borderColor: fold.line }]} />
-            ) : null}
             <Text
               style={[styles.segmentText, { color: active ? fold.ink : fold.muted }]}
               maxFontSizeMultiplier={1.3}>
@@ -370,12 +411,17 @@ export function FoldDimensionGrid({
   fields,
   canEdit,
   onOpenDimension,
+  animate = false,
+  staggerDelayMs = 180,
 }: {
   scope: 'weekly' | 'monthly';
   dimensions: ReviewDimensionTemplate[];
   fields: ReviewFieldValues;
   canEdit: boolean;
   onOpenDimension: (dimensionId: string) => void;
+  /** 设计稿 dim-mini 级联：每卡 riseIn · stagger 55ms */
+  animate?: boolean;
+  staggerDelayMs?: number;
 }) {
   const { fold } = useFoldTheme();
 
@@ -394,35 +440,58 @@ export function FoldDimensionGrid({
     [dimensions, fields, fold, scope],
   );
 
+  /** 设计稿 `.dim-grid { grid-template-columns: 1fr 1fr; gap: 6px }` —— 成对分行，避免 % 宽 + wrap 折行 */
+  const rows: Array<typeof cards> = [];
+  for (let i = 0; i < cards.length; i += 2) rows.push(cards.slice(i, i + 2));
+
   return (
     <View style={styles.dimGrid}>
-      {cards.map(({ dim, meta, filled, preview }) => (
-        <Pressable
-          key={dim.id}
-          onPress={() => onOpenDimension(dim.id)}
-          accessibilityRole="button"
-          accessibilityLabel={`${dim.title}，${filled ? '已填' : '待填'}，${canEdit ? '点击编辑' : '点击查看'}`}
-          style={({ pressed }) => [styles.dimCardWrap, { opacity: pressed ? 0.9 : 1 }]}>
-          <View style={[styles.dimCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
-            <View style={styles.dimHead}>
-              <View style={styles.dimName}>
-                <View style={[styles.dimIcon, { backgroundColor: meta.iconBg }]}>
-                  <MaterialIcons name={meta.icon} size={14} color={meta.iconColor} />
-                </View>
-                <Text style={[styles.dimTitle, { color: fold.ink2 }]} numberOfLines={1} maxFontSizeMultiplier={1.25}>
-                  {dim.title}
-                </Text>
-              </View>
-              <FoldTag tone={filled ? 'green' : 'gray'}>{filled ? '已填' : '待填'}</FoldTag>
-            </View>
-            <Text
-              style={[styles.dimPreview, { color: fold.muted }]}
-              numberOfLines={2}
-              maxFontSizeMultiplier={1.3}>
-              {preview}
-            </Text>
-          </View>
-        </Pressable>
+      {rows.map((row, rowIndex) => (
+        <View key={`dim-row-${rowIndex}`} style={styles.dimRow}>
+          {row.map(({ dim, meta, filled, preview }, colIndex) => {
+            const index = rowIndex * 2 + colIndex;
+            return (
+              <FoldRiseIn
+                key={dim.id}
+                animate={animate}
+                index={index}
+                delayMs={staggerDelayMs}
+                staggerMs={55}
+                duration={420}
+                style={styles.dimCardWrap}>
+                <Pressable
+                  onPress={() => onOpenDimension(dim.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${dim.title}，${filled ? '已填' : '待填'}，${canEdit ? '点击编辑' : '点击查看'}`}
+                  style={({ pressed }) => [styles.dimPress, { opacity: pressed ? 0.9 : 1 }]}>
+                  <View style={[styles.dimCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+                    <View style={styles.dimHead}>
+                      <View style={styles.dimName}>
+                        <View style={[styles.dimIcon, { backgroundColor: meta.iconBg }]}>
+                          <MaterialIcons name={meta.icon} size={12} color={meta.iconColor} />
+                        </View>
+                        <Text
+                          style={[styles.dimTitle, { color: fold.ink2 }]}
+                          numberOfLines={1}
+                          maxFontSizeMultiplier={1.25}>
+                          {dim.title}
+                        </Text>
+                      </View>
+                      <FoldTag tone={filled ? 'green' : 'gray'}>{filled ? '已填' : '待填'}</FoldTag>
+                    </View>
+                    <Text
+                      style={[styles.dimPreview, { color: fold.muted }]}
+                      numberOfLines={2}
+                      maxFontSizeMultiplier={1.3}>
+                      {preview}
+                    </Text>
+                  </View>
+                </Pressable>
+              </FoldRiseIn>
+            );
+          })}
+          {row.length === 1 ? <View style={styles.dimCardWrap} /> : null}
+        </View>
       ))}
     </View>
   );
@@ -461,6 +530,8 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     padding: 3,
     gap: 3,
+    position: 'relative',
+    overflow: 'hidden',
   },
   segmentItem: {
     flex: 1,
@@ -468,19 +539,18 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    position: 'relative',
+    zIndex: 1,
   },
   segmentIndicator: {
     position: 'absolute',
-    top: 0,
+    top: 3,
     left: 0,
-    right: 0,
-    bottom: 0,
+    height: 32,
     borderRadius: 11,
     borderWidth: StyleSheet.hairlineWidth,
     shadowColor: '#32362B',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.1,
     shadowRadius: 6,
     elevation: 1,
   },
@@ -490,14 +560,15 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   tag: {
-    height: 20,
-    paddingHorizontal: 7,
+    height: 19,
+    paddingHorizontal: 6,
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   tagText: {
-    fontSize: 10,
+    fontSize: 8.5,
     fontWeight: '700',
     letterSpacing: 0.2,
   },
@@ -505,15 +576,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
+    paddingHorizontal: 2,
   },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.6,
+    letterSpacing: 1.2,
+    flexShrink: 0,
+    textTransform: 'uppercase',
   },
   sectionHint: {
-    fontSize: 11,
+    fontSize: 9.5,
     flexShrink: 1,
     textAlign: 'right',
   },
@@ -535,48 +609,56 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   dimGrid: {
+    gap: 6,
+  },
+  dimRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   dimCardWrap: {
-    width: '48%',
-    flexGrow: 1,
+    flex: 1,
+    minWidth: 0,
+  },
+  dimPress: {
+    flex: 1,
   },
   dimCard: {
-    minHeight: 96,
-    borderRadius: 16,
+    minHeight: 64,
+    borderRadius: 13,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
   },
   dimHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 6,
+    gap: 4,
   },
   dimName: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
     flexShrink: 1,
+    minWidth: 0,
   },
   dimIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
+    width: 19,
+    height: 19,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
   dimTitle: {
-    fontSize: 12.5,
+    fontSize: 11,
     fontWeight: '800',
     flexShrink: 1,
   },
   dimPreview: {
-    marginTop: 8,
-    fontSize: 11.5,
-    lineHeight: 17,
+    marginTop: 4,
+    fontSize: 10,
+    lineHeight: 14,
     fontWeight: '500',
+    height: 28,
   },
 });

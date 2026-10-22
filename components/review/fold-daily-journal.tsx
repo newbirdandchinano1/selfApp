@@ -1,3 +1,4 @@
+import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { FoldCard, FoldSectionHeader, FoldTag, foldFonts } from '@/components/review/fold-ui';
 import {
   dailyEntryHasContent,
@@ -64,17 +65,19 @@ function DayStrip({
   reviewCycleEndYmd,
   configuredDow,
   onOpenDay,
+  animate,
 }: {
   entries: DailyEntry[];
   todayYmd: string;
   reviewCycleEndYmd: string;
   configuredDow: number | null;
   onOpenDay: (ymd: string) => void;
+  animate: boolean;
 }) {
   const { palette } = useFoldTheme();
   return (
     <View style={styles.strip}>
-      {entries.map(entry => {
+      {entries.map((entry, index) => {
         const isToday = entry.ymd === todayYmd;
         const skipped = isDailySkipped(entry.ymd, reviewCycleEndYmd, configuredDow);
         const filled = !skipped && dailyEntryHasContent(entry.fields);
@@ -86,31 +89,32 @@ function DayStrip({
           state === 'week' ? palette.amber : state === 'filled' ? palette.sage : palette.lineStrong;
 
         return (
-          <Pressable
-            key={entry.ymd}
-            onPress={() => onOpenDay(entry.ymd)}
-            accessibilityRole="button"
-            accessibilityLabel={`${entry.label}，${state === 'week' ? '周复盘日' : filled ? '已填' : '待填'}`}
-            style={({ pressed }) => [
-              styles.dayCap,
-              isToday && { backgroundColor: palette.pineSolid, borderColor: palette.pineSolid },
-              pressed && { opacity: 0.85 },
-            ]}>
-            <Text
-              style={[
-                styles.dayCapDow,
-                { color: isToday ? palette.onPine : weekend ? palette.clay : palette.muted },
-              ]}
-              maxFontSizeMultiplier={1.35}>
-              {WEEKDAY_SHORT[dow]}
-            </Text>
-            <Text
-              style={[styles.dayCapNum, { color: isToday ? palette.onPine : palette.inkSoft }]}
-              maxFontSizeMultiplier={1.35}>
-              {String(date).padStart(2, '0')}
-            </Text>
-            <View style={[styles.dayCapDot, { backgroundColor: dotColor }]} />
-          </Pressable>
+          <FoldRiseIn key={entry.ymd} animate={animate} index={index} staggerMs={55} duration={420} style={styles.dayCapWrap}>
+            <Pressable
+              onPress={() => onOpenDay(entry.ymd)}
+              accessibilityRole="button"
+              accessibilityLabel={`${entry.label}，${state === 'week' ? '周复盘日' : filled ? '已填' : '待填'}`}
+              style={({ pressed }) => [
+                styles.dayCap,
+                isToday && { backgroundColor: palette.pineSolid, borderColor: palette.pineSolid },
+                pressed && { opacity: 0.85 },
+              ]}>
+              <Text
+                style={[
+                  styles.dayCapDow,
+                  { color: isToday ? palette.onPine : weekend ? palette.clay : palette.muted },
+                ]}
+                maxFontSizeMultiplier={1.35}>
+                {WEEKDAY_SHORT[dow]}
+              </Text>
+              <Text
+                style={[styles.dayCapNum, { color: isToday ? palette.onPine : palette.inkSoft }]}
+                maxFontSizeMultiplier={1.35}>
+                {String(date).padStart(2, '0')}
+              </Text>
+              <View style={[styles.dayCapDot, { backgroundColor: dotColor }]} />
+            </Pressable>
+          </FoldRiseIn>
         );
       })}
     </View>
@@ -147,6 +151,7 @@ export function FoldDailyJournal({
   refreshControl?: React.ReactElement<RefreshControlProps>;
 }) {
   const { palette } = useFoldTheme();
+  const { animate } = useFoldMotionGate();
 
   const summaries = useMemo(
     () => new Map(entries.map(entry => [entry.ymd, summarize(entry.fields, template)])),
@@ -164,29 +169,34 @@ export function FoldDailyJournal({
         reviewCycleEndYmd={reviewCycleEndYmd}
         configuredDow={configuredDow}
         onOpenDay={onOpenDay}
+        animate={animate}
       />
 
-      <View style={styles.syncLine}>
-        <View style={styles.syncLeft}>
-          <MaterialIcons name="sync" size={11} color={palette.faint} />
+      <FoldRiseIn animate={animate} index={0} delayMs={120} staggerMs={0} duration={360}>
+        <View style={styles.syncLine}>
+          <View style={styles.syncLeft}>
+            <MaterialIcons name="sync" size={11} color={palette.faint} />
+            <Text style={[styles.syncText, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+              {lastSyncLabel ? `最近同步 ${lastSyncLabel}` : '本地优先'}
+            </Text>
+          </View>
           <Text style={[styles.syncText, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-            {lastSyncLabel ? `最近同步 ${lastSyncLabel}` : '本地优先'}
+            聚焦刷新
           </Text>
         </View>
-        <Text style={[styles.syncText, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-          聚焦刷新
-        </Text>
-      </View>
+      </FoldRiseIn>
 
-      <View style={styles.sectionHead}>
-        <FoldSectionHeader
-          title="本周日刊"
-          hint={`已填 ${filledCount} / ${totalCount}${streak > 0 ? ` · 连续 ${streak} 天` : ''}`}
-        />
-      </View>
+      <FoldRiseIn animate={animate} index={1} delayMs={140} staggerMs={0} duration={360}>
+        <View style={styles.sectionHead}>
+          <FoldSectionHeader
+            title="本周日刊"
+            hint={`已填 ${filledCount} / ${totalCount}${streak > 0 ? ` · 连续 ${streak} 天` : ''}`}
+          />
+        </View>
+      </FoldRiseIn>
 
       <View style={styles.list}>
-        {entries.map(entry => {
+        {entries.map((entry, index) => {
           const skipped = isDailySkipped(entry.ymd, reviewCycleEndYmd, configuredDow);
           const filled = !skipped && dailyEntryHasContent(entry.fields);
           const canEdit = !skipped && isDailyReviewEditableYmd(entry.ymd, todayYmd);
@@ -212,89 +222,92 @@ export function FoldDailyJournal({
                 : '这一天还没有留下文字。';
 
           return (
-            <Pressable
-              key={entry.ymd}
-              onPress={() => onOpenDay(entry.ymd)}
-              accessibilityRole="button"
-              accessibilityLabel={`${entry.label}，${
-                skipped ? '周复盘日' : filled ? '已填' : canEdit ? '待填' : '未填写'
-              }`}
-              style={({ pressed }) => [
-                styles.row,
-                {
-                  backgroundColor: isToday ? palette.amberSoft : palette.card,
-                  borderColor: isToday ? palette.amber + '99' : palette.line,
-                  opacity: pressed ? 0.9 : 1,
-                },
-              ]}>
-              <View style={styles.rowDate}>
-                <Text style={[styles.rowDateText, { color: isToday ? palette.amberInk : palette.inkSoft }]} maxFontSizeMultiplier={1.35}>
-                  {date}
-                </Text>
-                <Text style={[styles.rowWeekday, { color: isToday ? palette.amberInk : palette.muted }]} maxFontSizeMultiplier={1.35}>
-                  {isToday ? '今天' : isYesterday ? '昨天' : weekday}
-                </Text>
-              </View>
-
-              <View style={styles.rowMain}>
-                <View style={styles.rowTop}>
-                  <Text
-                    style={[styles.rowTitle, { color: palette.ink }]}
-                    numberOfLines={1}
-                    maxFontSizeMultiplier={1.35}>
-                    {title}
+            <FoldRiseIn key={entry.ymd} animate={animate} index={index} delayMs={180} staggerMs={55} duration={420}>
+              <Pressable
+                onPress={() => onOpenDay(entry.ymd)}
+                accessibilityRole="button"
+                accessibilityLabel={`${entry.label}，${
+                  skipped ? '周复盘日' : filled ? '已填' : canEdit ? '待填' : '未填写'
+                }`}
+                style={({ pressed }) => [
+                  styles.row,
+                  {
+                    backgroundColor: isToday ? palette.amberSoft : palette.card,
+                    borderColor: isToday ? palette.amber + '99' : palette.line,
+                    opacity: pressed ? 0.9 : 1,
+                  },
+                ]}>
+                <View style={styles.rowDate}>
+                  <Text style={[styles.rowDateText, { color: isToday ? palette.amberInk : palette.inkSoft }]} maxFontSizeMultiplier={1.35}>
+                    {date}
                   </Text>
-                  {skipped ? (
-                    <FoldTag tone="amber">周复盘日</FoldTag>
-                  ) : filled ? (
-                    <FoldTag tone="green">已填</FoldTag>
-                  ) : canEdit ? (
-                    <FoldTag tone="amber">待填</FoldTag>
-                  ) : (
-                    <FoldTag tone="gray">未写</FoldTag>
-                  )}
-                  {isToday ? <FoldTag tone="clay">今天</FoldTag> : null}
+                  <Text style={[styles.rowWeekday, { color: isToday ? palette.amberInk : palette.muted }]} maxFontSizeMultiplier={1.35}>
+                    {isToday ? '今天' : isYesterday ? '昨天' : weekday}
+                  </Text>
                 </View>
-                <Text
-                  style={[styles.rowPreview, { color: palette.muted }]}
-                  numberOfLines={2}
-                  maxFontSizeMultiplier={1.35}>
-                  {preview}
-                </Text>
-              </View>
 
-              <View style={styles.rowState}>
-                <FoldTag tone={skipped ? 'pine' : 'gray'}>
-                  {skipped ? (canEdit ? '可编辑' : '未到') : '日复盘'}
-                </FoldTag>
-                <Text style={[styles.rowMini, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-                  {skipped
-                    ? `第 ${weekNumber} 周`
-                    : filled
-                      ? `${summary?.filledDims ?? 0} 维${clock ? ` · ${clock}` : ''}`
-                      : summary?.filledDims
-                        ? `${summary.filledDims} 维`
-                        : '未保存'}
-                </Text>
-              </View>
-            </Pressable>
+                <View style={styles.rowMain}>
+                  <View style={styles.rowTop}>
+                    <Text
+                      style={[styles.rowTitle, { color: palette.ink }]}
+                      numberOfLines={1}
+                      maxFontSizeMultiplier={1.35}>
+                      {title}
+                    </Text>
+                    {skipped ? (
+                      <FoldTag tone="amber">周复盘日</FoldTag>
+                    ) : filled ? (
+                      <FoldTag tone="green">已填</FoldTag>
+                    ) : canEdit ? (
+                      <FoldTag tone="amber">待填</FoldTag>
+                    ) : (
+                      <FoldTag tone="gray">未写</FoldTag>
+                    )}
+                    {isToday ? <FoldTag tone="clay">今天</FoldTag> : null}
+                  </View>
+                  <Text
+                    style={[styles.rowPreview, { color: palette.muted }]}
+                    numberOfLines={2}
+                    maxFontSizeMultiplier={1.35}>
+                    {preview}
+                  </Text>
+                </View>
+
+                <View style={styles.rowState}>
+                  <FoldTag tone={skipped ? 'pine' : 'gray'}>
+                    {skipped ? (canEdit ? '可编辑' : '未到') : '日复盘'}
+                  </FoldTag>
+                  <Text style={[styles.rowMini, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+                    {skipped
+                      ? `第 ${weekNumber} 周`
+                      : filled
+                        ? `${summary?.filledDims ?? 0} 维${clock ? ` · ${clock}` : ''}`
+                        : summary?.filledDims
+                          ? `${summary.filledDims} 维`
+                          : '未保存'}
+                  </Text>
+                </View>
+              </Pressable>
+            </FoldRiseIn>
           );
         })}
       </View>
 
-      <FoldCard tone="quote" style={styles.quote}>
-        <View style={styles.quoteBody}>
-          <Text style={[styles.quoteKicker, { color: palette.amberInk }]} maxFontSizeMultiplier={1.35}>
-            TODAY'S FOLD · 今日折角
+      <FoldRiseIn animate={animate} index={0} delayMs={180 + entries.length * 55} staggerMs={0} duration={400}>
+        <FoldCard tone="quote" style={styles.quote}>
+          <View style={styles.quoteBody}>
+            <Text style={[styles.quoteKicker, { color: palette.amberInk }]} maxFontSizeMultiplier={1.35}>
+              TODAY'S FOLD · 今日折角
+            </Text>
+            <Text style={[styles.quoteText, { color: palette.inkSoft }]} maxFontSizeMultiplier={1.35}>
+              把今天折起来，留给明天一页空白。
+            </Text>
+          </View>
+          <Text style={[styles.quoteWeek, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
+            W{weekNumber}
           </Text>
-          <Text style={[styles.quoteText, { color: palette.inkSoft }]} maxFontSizeMultiplier={1.35}>
-            把今天折起来，留给明天一页空白。
-          </Text>
-        </View>
-        <Text style={[styles.quoteWeek, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-          W{weekNumber}
-        </Text>
-      </FoldCard>
+        </FoldCard>
+      </FoldRiseIn>
 
       <View style={styles.pullHint}>
         <MaterialIcons name="keyboard-arrow-down" size={12} color={palette.faint} />
@@ -317,8 +330,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 4,
   },
-  dayCap: {
+  dayCapWrap: {
     flex: 1,
+  },
+  dayCap: {
     alignItems: 'center',
     paddingVertical: 8,
     borderRadius: 13,

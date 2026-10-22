@@ -10,6 +10,7 @@ import {
   foldDayMotto,
 } from '@/components/review/fold-daily-overview-parts';
 import { FoldCard, FoldSectionHeader } from '@/components/review/fold-ui';
+import { ReviewAiAnalysisScreen } from '@/components/review/review-ai-analysis-screen';
 import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import {
   countDailyReviewStreak,
@@ -35,7 +36,6 @@ import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder
 import { loadReviewDayFacts, builtinDailyReviewFieldPatch, reviewDayFactsIsEmpty, type ReviewDayFacts } from '@/lib/review-day-facts';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
-import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
 import { fetchReviewJournal, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   collectColumnIds,
@@ -122,7 +122,7 @@ export function DailyReviewGridView({
   const [facts, setFacts] = useState<ReviewDayFacts | null>(null);
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
   const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
-  const [aiBusy, setAiBusy] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const hydratedRef = useRef(false);
   /** 首屏成功后永为 true；快切日期时不能用 hydratedRef 判断 silent（它会被置回 false） */
@@ -330,23 +330,9 @@ export function DailyReviewGridView({
     toast.success(`已写入 ${entries.length} 栏今日数据`);
   }, [canEdit, facts, templateColumnIds]);
 
-  const runAi = useCallback(async () => {
-    if (!canEdit) {
-      Alert.alert('暂不可用', '当前日期不可生成 AI 分析。');
-      return;
-    }
-    if (!reviewHasEnoughTextForAi(fields)) {
-      Alert.alert('内容偏少', '请先填写至少约 30 字，再生成 AI 分析。');
-      return;
-    }
-    setAiBusy(true);
-    try {
-      const text = await generateReviewAiAnalysis({
-        scope: 'daily',
-        periodLabel: formatReviewHeaderDate(ymd),
-        template: dailyTemplate,
-        fields,
-      });
+  const persistAiText = useCallback(
+    async (text: string) => {
+      if (!ymd) return;
       const nextMeta = { ...meta, ai_analysis: text };
       setMeta(nextMeta);
       await upsertDailyReviewJournal(ymd, serializeReviewBody(fields, nextMeta));
@@ -354,13 +340,9 @@ export function DailyReviewGridView({
         void syncDailyReviewReminderNotification();
       }
       setSavedAt(clockNow());
-    } catch (e) {
-      console.warn('daily ai analysis', e);
-      toast.error(toUserMessage(e, '分析失败，请稍后重试'));
-    } finally {
-      setAiBusy(false);
-    }
-  }, [canEdit, dailyTemplate, fields, meta, todayYmd, ymd]);
+    },
+    [fields, meta, todayYmd, ymd],
+  );
 
   const parts = useMemo(() => parseYmdParts(ymd), [ymd]);
   const dateLabel = parts ? `${parts.month}月${parts.day}日` : entryLabel;
@@ -373,6 +355,9 @@ export function DailyReviewGridView({
     saving ? '保存中…' : savedAt ? `已自动保存 ${savedAt}` : '自动保存开启'
   }`;
 
+  const weekNo = useMemo(() => isoWeekNumber(ymd), [ymd]);
+  const weekStartYmd = periodEntries[0]?.ymd || ymd;
+
   const todayTaskDimensionId = useMemo(() => {
     const hit = dailyTemplate.find(dim => dim.title.includes('任务'));
     return hit?.id ?? dailyTemplate[0]?.id ?? null;
@@ -382,10 +367,10 @@ export function DailyReviewGridView({
     Alert.alert('更多', undefined, [
       { text: '一键写入今日数据', onPress: insertFacts },
       { text: '去填写每周复盘', onPress: () => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form')) },
-      { text: '生成 AI 观察', onPress: () => void runAi() },
+      { text: 'AI 复盘分析', onPress: () => setAiOpen(true) },
       { text: '取消', style: 'cancel' },
     ]);
-  }, [insertFacts, onSwitchToWeekly, router, runAi]);
+  }, [insertFacts, onSwitchToWeekly, router]);
 
   const goWeekly = useCallback(() => {
     if (onSwitchToWeekly) onSwitchToWeekly();
@@ -499,12 +484,7 @@ export function DailyReviewGridView({
               />
             )}
 
-            <FoldAiMini
-              text={meta.ai_analysis}
-              busy={aiBusy}
-              canRun={canEdit}
-              onAnalyze={() => void runAi()}
-            />
+            <FoldAiMini text={meta.ai_analysis} onOpen={() => setAiOpen(true)} />
           </>
         ) : null}
 
@@ -517,6 +497,22 @@ export function DailyReviewGridView({
           </View>
         ) : null}
       </ScrollView>
+
+      <ReviewAiAnalysisScreen
+        visible={aiOpen}
+        onClose={() => setAiOpen(false)}
+        scope="daily"
+        scopeLabel="日复盘"
+        weekNo={weekNo}
+        periodLabel={formatReviewHeaderDate(ymd)}
+        weekStartYmd={weekStartYmd}
+        template={dailyTemplate}
+        fields={fields}
+        dailyEntries={periodEntries}
+        initialText={meta.ai_analysis ?? null}
+        canEdit={canEdit}
+        onPersist={persistAiText}
+      />
     </View>
   );
 }

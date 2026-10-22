@@ -1,3 +1,4 @@
+import { FoldPopIn, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { FoldCard, foldDimensionGlyph, useFoldTheme } from '@/components/review/fold-ui';
 import type { DailyEntry } from '@/components/review/review-utils';
 import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
@@ -60,6 +61,7 @@ export function WeeklyReviewLockedView({
   onOpenSettings,
 }: WeeklyReviewLockedViewProps) {
   const { fold, palette } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
 
   const dowLabel = configuredDowLabel ?? '周日';
   const daysLeft = useMemo(() => {
@@ -123,124 +125,165 @@ export function WeeklyReviewLockedView({
     [dimensions, fields],
   );
 
+  const dimensionPairs = useMemo(() => {
+    const pairs: Array<typeof dimensionRows> = [];
+    for (let i = 0; i < dimensionRows.length; i += 2) pairs.push(dimensionRows.slice(i, i + 2));
+    return pairs;
+  }, [dimensionRows]);
+
   return (
     <View style={styles.root}>
-      <FoldCard style={styles.bannerCard}>
-        <View style={[styles.bannerIcon, { backgroundColor: '#FFFFFF88' }]}>
-          <MaterialIcons name="lock-outline" size={18} color={palette.amberInk} />
-        </View>
-        <View style={styles.bannerCopy}>
-          <Text style={[styles.bannerTitle, { color: palette.amberInk }]} maxFontSizeMultiplier={1.3}>
-            {bannerTitle}
-          </Text>
-          <Text style={[styles.bannerBody, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-            {bannerBody}
-          </Text>
-        </View>
-        {configuredDow === null ? (
-          <Pressable
-            onPress={onOpenSettings}
-            accessibilityRole="button"
-            accessibilityLabel="去设置复盘日"
-            style={({ pressed }) => [styles.bannerChip, { opacity: pressed ? 0.7 : 1 }]}>
-            <Text style={[styles.bannerChipText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
-              去设置 ›
+      <FoldRiseIn animate={motionOn} index={0} duration={420} fromY={12}>
+        <FoldCard style={styles.bannerCard}>
+          <View style={[styles.bannerIcon, { backgroundColor: '#FFFFFF88' }]}>
+            <MaterialIcons name="lock-outline" size={18} color={palette.amberInk} />
+          </View>
+          <View style={styles.bannerCopy}>
+            <Text style={[styles.bannerTitle, { color: palette.amberInk }]} maxFontSizeMultiplier={1.3}>
+              {bannerTitle}
             </Text>
-          </Pressable>
-        ) : (
-          <View style={[styles.bannerChip, { backgroundColor: fold.amber2 }]}>
-            <Text style={[styles.bannerChipText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
-              {writableDate} 可写
+            <Text style={[styles.bannerBody, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+              {bannerBody}
             </Text>
           </View>
-        )}
-      </FoldCard>
+          {configuredDow === null ? (
+            <Pressable
+              onPress={onOpenSettings}
+              accessibilityRole="button"
+              accessibilityLabel="去设置复盘日"
+              style={({ pressed }) => [styles.bannerChip, { opacity: pressed ? 0.7 : 1 }]}>
+              <Text style={[styles.bannerChipText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
+                去设置 ›
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={[styles.bannerChip, { backgroundColor: fold.amber2 }]}>
+              <Text style={[styles.bannerChipText, { color: palette.amberInk }]} maxFontSizeMultiplier={1.2}>
+                {writableDate} 可写
+              </Text>
+            </View>
+          )}
+        </FoldCard>
+      </FoldRiseIn>
 
-      <View style={styles.stripHead}>
-        <Text style={[styles.stripLabel, { color: fold.ink2 }]} maxFontSizeMultiplier={1.25}>
-          本周期滚动 7 天
-        </Text>
-        <Text style={[styles.stripHint, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
-          日复盘仍可正常填写
-        </Text>
-      </View>
+      <FoldRiseIn animate={motionOn} index={1} staggerMs={70} duration={400}>
+        <View style={styles.stripHead}>
+          <Text style={[styles.stripLabel, { color: fold.ink2 }]} maxFontSizeMultiplier={1.25}>
+            本周期滚动 7 天
+          </Text>
+          <Text style={[styles.stripHint, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+            日复盘仍可正常填写
+          </Text>
+        </View>
+      </FoldRiseIn>
       <View style={styles.dayStrip}>
-        {dayChips.map(chip => {
+        {dayChips.map((chip, index) => {
           const isLocked = chip.isReviewDay;
           const bg = chip.isToday ? fold.pineButton : isLocked ? fold.amber2 : fold.card;
           const border = chip.isToday ? fold.pineButton : isLocked ? fold.amber : fold.line;
           const color = chip.isToday ? fold.onPineButton : isLocked ? palette.amberInk : fold.ink2;
           return (
-            <Pressable
+            <FoldPopIn
               key={chip.ymd}
-              onPress={() => onOpenDay(chip.ymd)}
-              accessibilityRole="button"
-              accessibilityLabel={`${chip.day}日 ${chip.weekday}${
-                chip.isToday ? ' 今天' : isLocked ? ' 复盘日' : chip.filled ? ' 已复盘' : ' 未复盘'
-              }`}
-              style={({ pressed }) => [
-                styles.dayChip,
-                { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 },
-              ]}>
-              <Text style={[styles.dayChipNumber, { color }]} maxFontSizeMultiplier={1.2}>
-                {chip.day}
-              </Text>
-              <Text
-                style={[styles.dayChipWeekday, { color: chip.isToday ? fold.onPineButton : fold.muted }]}
-                maxFontSizeMultiplier={1.2}>
-                {chip.weekday}
-              </Text>
-              <Text
-                style={[styles.dayChipNote, { color: chip.isToday ? fold.onPineButton : fold.faint }]}
-                maxFontSizeMultiplier={1.15}>
-                {chip.isToday ? '今天' : isLocked ? '复盘日' : chip.filled ? '已写' : '—'}
-              </Text>
-            </Pressable>
+              animate={motionOn}
+              index={index}
+              staggerMs={65}
+              delayMs={120}
+              style={styles.dayChipWrap}>
+              <Pressable
+                onPress={() => onOpenDay(chip.ymd)}
+                accessibilityRole="button"
+                accessibilityLabel={`${chip.day}日 ${chip.weekday}${
+                  chip.isToday ? ' 今天' : isLocked ? ' 复盘日' : chip.filled ? ' 已复盘' : ' 未复盘'
+                }`}
+                style={({ pressed }) => [
+                  styles.dayChip,
+                  { backgroundColor: bg, borderColor: border, opacity: pressed ? 0.8 : 1 },
+                ]}>
+                <Text style={[styles.dayChipNumber, { color }]} maxFontSizeMultiplier={1.2}>
+                  {chip.day}
+                </Text>
+                <Text
+                  style={[styles.dayChipWeekday, { color: chip.isToday ? fold.onPineButton : fold.muted }]}
+                  maxFontSizeMultiplier={1.2}>
+                  {chip.weekday}
+                </Text>
+                <Text
+                  style={[styles.dayChipNote, { color: chip.isToday ? fold.onPineButton : fold.faint }]}
+                  maxFontSizeMultiplier={1.15}>
+                  {chip.isToday ? '今天' : isLocked ? '复盘日' : chip.filled ? '已写' : '—'}
+                </Text>
+              </Pressable>
+            </FoldPopIn>
           );
         })}
       </View>
 
-      <View style={styles.sectionHead}>
-        <Text style={[styles.sectionTitle, { color: fold.ink2 }]} maxFontSizeMultiplier={1.3}>
-          维度预览 · 只读
-        </Text>
-        <Pressable
-          onPress={() => onOpenDay(todayYmd)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel="可先填写每日复盘"
-          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
-          <Text style={[styles.sectionAction, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
-            可先填写每日复盘 ›
+      <FoldRiseIn animate={motionOn} index={2} staggerMs={70} duration={400}>
+        <View style={styles.sectionHead}>
+          <Text style={[styles.sectionTitle, { color: fold.ink2 }]} maxFontSizeMultiplier={1.3}>
+            维度预览 · 只读
           </Text>
-        </Pressable>
-      </View>
+          <Pressable
+            onPress={() => onOpenDay(todayYmd)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="可先填写每日复盘"
+            style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}>
+            <Text style={[styles.sectionAction, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+              可先填写每日复盘 ›
+            </Text>
+          </Pressable>
+        </View>
+      </FoldRiseIn>
 
       <View style={styles.dimGrid}>
-        {dimensionRows.map(dim => (
-          <Pressable
-            key={dim.id}
-            onPress={() => onOpenDimension(dim.id)}
-            accessibilityRole="button"
-            accessibilityLabel={`${dim.title}，只读，点击查看`}
-            style={({ pressed }) => [styles.dimPress, { opacity: pressed ? 0.9 : 1 }]}>
-            <FoldCard style={styles.dimCard}>
-              <View style={styles.dimHead}>
-                <View style={styles.dimNameRow}>
-                  <Text style={[styles.dimGlyph, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-                    {dim.glyph}
-                  </Text>
-                  <Text style={[styles.dimTitle, { color: fold.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.3}>
-                    {dim.title}
-                  </Text>
-                </View>
-                <MaterialIcons name="lock-outline" size={13} color={fold.faint} />
-              </View>
-              <Text style={[styles.dimPreview, { color: fold.muted }]} numberOfLines={2} maxFontSizeMultiplier={1.3}>
-                {dim.preview}
-              </Text>
-            </FoldCard>
-          </Pressable>
+        {dimensionPairs.map((pair, rowIndex) => (
+          <View key={`dim-row-${rowIndex}`} style={styles.dimRow}>
+            {pair.map((dim, colIndex) => {
+              const index = rowIndex * 2 + colIndex;
+              return (
+                <FoldRiseIn
+                  key={dim.id}
+                  animate={motionOn}
+                  index={index}
+                  delayMs={200}
+                  staggerMs={55}
+                  duration={420}
+                  style={styles.dimCardWrap}>
+                  <Pressable
+                    onPress={() => onOpenDimension(dim.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${dim.title}，只读，点击查看`}
+                    style={({ pressed }) => [styles.dimPress, { opacity: pressed ? 0.9 : 1 }]}>
+                    <FoldCard style={styles.dimCard} padded={false}>
+                      <View style={styles.dimHead}>
+                        <View style={styles.dimNameRow}>
+                          <Text style={[styles.dimGlyph, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                            {dim.glyph}
+                          </Text>
+                          <Text
+                            style={[styles.dimTitle, { color: fold.ink }]}
+                            numberOfLines={1}
+                            maxFontSizeMultiplier={1.3}>
+                            {dim.title}
+                          </Text>
+                        </View>
+                        <MaterialIcons name="lock-outline" size={13} color={fold.faint} />
+                      </View>
+                      <Text
+                        style={[styles.dimPreview, { color: fold.muted }]}
+                        numberOfLines={2}
+                        maxFontSizeMultiplier={1.3}>
+                        {dim.preview}
+                      </Text>
+                    </FoldCard>
+                  </Pressable>
+                </FoldRiseIn>
+              );
+            })}
+            {pair.length === 1 ? <View style={styles.dimCardWrap} /> : null}
+          </View>
         ))}
         {dimensionRows.length === 0 ? (
           <FoldCard tone="muted" style={styles.dimEmpty}>
@@ -251,60 +294,68 @@ export function WeeklyReviewLockedView({
         ) : null}
       </View>
 
-      <View style={[styles.lockBar, { borderColor: fold.line2, backgroundColor: fold.paper2 }]}>
-        <MaterialIcons name="lock-outline" size={14} color={fold.muted} />
-        <Text style={[styles.lockBarText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-          请在{dowLabel}填写本周复盘
-        </Text>
-      </View>
+      <FoldRiseIn animate={motionOn} index={3} delayMs={260} staggerMs={0} duration={400}>
+        <View style={[styles.lockBar, { borderColor: fold.line2, backgroundColor: fold.paper2 }]}>
+          <MaterialIcons name="lock-outline" size={14} color={fold.muted} />
+          <Text style={[styles.lockBarText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+            请在{dowLabel}填写本周复盘
+          </Text>
+        </View>
+      </FoldRiseIn>
 
-      <FoldCard tone="muted" style={styles.notesCard}>
-        {[
-          { icon: 'schedule' as const, text: '未来日期：整体只读，避免提前填写不真实的复盘。' },
-          { icon: 'event-busy' as const, text: '非复盘日：周维度只读，但日复盘仍可填写。' },
-          { icon: 'lock-open' as const, text: '复盘日解锁：解锁本周维度，可保存并写入 AI 建议。' },
-        ].map((note, index) => (
-          <View key={note.text} style={styles.noteRow}>
-            {index > 0 ? <View style={[styles.divider, { backgroundColor: fold.line }]} /> : null}
-            <View style={styles.noteItem}>
-              <MaterialIcons name={note.icon} size={13} color={fold.faint} />
-              <Text style={[styles.noteText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-                {note.text}
-              </Text>
+      <FoldRiseIn animate={motionOn} index={4} delayMs={300} staggerMs={0} duration={400}>
+        <FoldCard tone="muted" style={styles.notesCard}>
+          {[
+            { icon: 'schedule' as const, text: '未来日期：整体只读，避免提前填写不真实的复盘。' },
+            { icon: 'event-busy' as const, text: '非复盘日：周维度只读，但日复盘仍可填写。' },
+            { icon: 'lock-open' as const, text: '复盘日解锁：解锁本周维度，可保存并写入 AI 建议。' },
+          ].map((note, index) => (
+            <View key={note.text} style={styles.noteRow}>
+              {index > 0 ? <View style={[styles.divider, { backgroundColor: fold.line }]} /> : null}
+              <View style={styles.noteItem}>
+                <MaterialIcons name={note.icon} size={13} color={fold.faint} />
+                <Text style={[styles.noteText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                  {note.text}
+                </Text>
+              </View>
             </View>
+          ))}
+        </FoldCard>
+      </FoldRiseIn>
+
+      <FoldRiseIn animate={motionOn} index={5} delayMs={340} staggerMs={0} duration={400}>
+        <FoldCard style={styles.todayCard}>
+          <View style={[styles.todayIcon, { backgroundColor: fold.sage2 }]}>
+            <MaterialIcons name="edit-note" size={17} color={fold.pine} />
           </View>
-        ))}
-      </FoldCard>
+          <View style={styles.todayCopy}>
+            <Text style={[styles.todayTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+              今天仍然可以写日复盘
+            </Text>
+            <Text style={[styles.todayBody, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+              未来日期整体只读，但今天的内容可以正常保存。
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => onOpenDay(todayYmd)}
+            accessibilityRole="button"
+            accessibilityLabel="去写今天的日复盘"
+            style={({ pressed }) => [
+              styles.todayBtn,
+              { borderColor: fold.line2, opacity: pressed ? 0.7 : 1 },
+            ]}>
+            <Text style={[styles.todayBtnText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.25}>
+              去写 ›
+            </Text>
+          </Pressable>
+        </FoldCard>
+      </FoldRiseIn>
 
-      <FoldCard style={styles.todayCard}>
-        <View style={[styles.todayIcon, { backgroundColor: fold.sage2 }]}>
-          <MaterialIcons name="edit-note" size={17} color={fold.pine} />
-        </View>
-        <View style={styles.todayCopy}>
-          <Text style={[styles.todayTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
-            今天仍然可以写日复盘
-          </Text>
-          <Text style={[styles.todayBody, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-            未来日期整体只读，但今天的内容可以正常保存。
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => onOpenDay(todayYmd)}
-          accessibilityRole="button"
-          accessibilityLabel="去写今天的日复盘"
-          style={({ pressed }) => [
-            styles.todayBtn,
-            { borderColor: fold.line2, opacity: pressed ? 0.7 : 1 },
-          ]}>
-          <Text style={[styles.todayBtnText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.25}>
-            去写 ›
-          </Text>
-        </Pressable>
-      </FoldCard>
-
-      <Text style={[styles.footNote, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
-        第 {weekNo} 周 · {weekRangeLabel} · 维度在复盘日解锁
-      </Text>
+      <FoldRiseIn animate={motionOn} index={6} delayMs={380} staggerMs={0} duration={360}>
+        <Text style={[styles.footNote, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
+          第 {weekNo} 周 · {weekRangeLabel} · 维度在复盘日解锁
+        </Text>
+      </FoldRiseIn>
     </View>
   );
 }
@@ -329,8 +380,8 @@ const styles = StyleSheet.create({
   stripLabel: { fontSize: 11.5, fontWeight: '700' },
   stripHint: { fontSize: 10.5 },
   dayStrip: { flexDirection: 'row', gap: 5 },
+  dayChipWrap: { flex: 1, minWidth: 0 },
   dayChip: {
-    flex: 1,
     minHeight: 52,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
@@ -342,16 +393,18 @@ const styles = StyleSheet.create({
   dayChipWeekday: { fontSize: 9.5 },
   dayChipNote: { fontSize: 8.5 },
   sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  sectionTitle: { fontSize: 13, fontWeight: '800', letterSpacing: 0.4 },
-  sectionAction: { fontSize: 10.5, fontWeight: '600' },
-  dimGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  dimPress: { width: '48%', flexGrow: 1 },
-  dimCard: { minHeight: 92, gap: 7, paddingHorizontal: 11, paddingVertical: 10 },
-  dimHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
-  dimNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 },
-  dimGlyph: { fontSize: 13 },
-  dimTitle: { fontSize: 12.5, fontWeight: '800', flexShrink: 1 },
-  dimPreview: { fontSize: 11, lineHeight: 16 },
+  sectionTitle: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, flexShrink: 0 },
+  sectionAction: { fontSize: 9.5, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
+  dimGrid: { gap: 6 },
+  dimRow: { flexDirection: 'row', gap: 6 },
+  dimCardWrap: { flex: 1, minWidth: 0 },
+  dimPress: { flex: 1 },
+  dimCard: { minHeight: 64, gap: 4, paddingHorizontal: 9, paddingVertical: 8, borderRadius: 13 },
+  dimHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 },
+  dimNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 1, minWidth: 0 },
+  dimGlyph: { fontSize: 12 },
+  dimTitle: { fontSize: 11, fontWeight: '800', flexShrink: 1 },
+  dimPreview: { fontSize: 10, lineHeight: 14, height: 28 },
   dimEmpty: { width: '100%' },
   lockBar: {
     minHeight: 42,

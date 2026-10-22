@@ -1,3 +1,4 @@
+import { FoldPopIn, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { FoldCard, FoldIconButton, FoldPillButton, FoldTag, foldDimensionGlyph, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
 import { FoldReviewFooter, FoldReviewHeader } from '@/components/review/fold-review-chrome';
 import {
@@ -93,6 +94,7 @@ export default function ReviewCalendarScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const { logicalTodayYmd } = usePageDayBoundary('review');
+  const { animate: motionOn } = useFoldMotionGate();
 
   const todayDate = useMemo(() => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(logicalTodayYmd.trim());
@@ -248,61 +250,65 @@ export default function ReviewCalendarScreen() {
         refreshControl={refreshControl}
         contentContainerStyle={[styles.scroll, { paddingBottom: 16 + insets.bottom }]}
         showsVerticalScrollIndicator={false}>
-        <View style={styles.monthHeader}>
-          <View style={styles.monthTitleRow}>
-            <Text style={[styles.monthTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
-              {monthTitle}
-            </Text>
-            <Text style={[styles.weekNumber, { color: fold.faint }]} maxFontSizeMultiplier={1.2}>
-              W{weekNumber}
-            </Text>
-          </View>
-          <View style={styles.monthNav}>
-            <Pressable
-              onPress={() => setVisibleMonth(m => addMonths(m, -1))}
-              accessibilityRole="button"
-              accessibilityLabel="上一月"
-              style={({ pressed }) => [
-                styles.monthNavBtn,
-                { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
-              ]}>
-              <MaterialIcons name="chevron-left" size={15} color={fold.muted} />
-              <Text style={[styles.monthNavText, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-                {prevMonthLabel}月
+        <FoldRiseIn animate={motionOn} index={0} duration={420} fromY={12}>
+          <View style={styles.monthHeader}>
+            <View style={styles.monthTitleRow}>
+              <Text style={[styles.monthTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
+                {monthTitle}
               </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setVisibleMonth(m => addMonths(m, 1))}
-              accessibilityRole="button"
-              accessibilityLabel="下一月"
-              style={({ pressed }) => [
-                styles.monthNavBtn,
-                { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
-              ]}>
-              <Text style={[styles.monthNavText, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-                {nextMonthLabel}月
+              <Text style={[styles.weekNumber, { color: fold.faint }]} maxFontSizeMultiplier={1.2}>
+                W{weekNumber}
               </Text>
-              <MaterialIcons name="chevron-right" size={15} color={fold.muted} />
-            </Pressable>
+            </View>
+            <View style={styles.monthNav}>
+              <Pressable
+                onPress={() => setVisibleMonth(m => addMonths(m, -1))}
+                accessibilityRole="button"
+                accessibilityLabel="上一月"
+                style={({ pressed }) => [
+                  styles.monthNavBtn,
+                  { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
+                ]}>
+                <MaterialIcons name="chevron-left" size={15} color={fold.muted} />
+                <Text style={[styles.monthNavText, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                  {prevMonthLabel}月
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setVisibleMonth(m => addMonths(m, 1))}
+                accessibilityRole="button"
+                accessibilityLabel="下一月"
+                style={({ pressed }) => [
+                  styles.monthNavBtn,
+                  { backgroundColor: fold.card, borderColor: fold.line, opacity: pressed ? 0.75 : 1 },
+                ]}>
+                <Text style={[styles.monthNavText, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                  {nextMonthLabel}月
+                </Text>
+                <MaterialIcons name="chevron-right" size={15} color={fold.muted} />
+              </Pressable>
+            </View>
           </View>
-        </View>
+        </FoldRiseIn>
 
-        <View style={styles.weekRow}>
-          {WEEK_TITLES.map((w, index) => (
-            <Text
-              key={w}
-              style={[
-                styles.weekTitle,
-                {
-                  width: cellSize,
-                  color: index >= 5 ? palette.clay : fold.muted,
-                },
-              ]}
-              maxFontSizeMultiplier={1.2}>
-              {w}
-            </Text>
-          ))}
-        </View>
+        <FoldRiseIn animate={motionOn} index={1} staggerMs={55} duration={400}>
+          <View style={styles.weekRow}>
+            {WEEK_TITLES.map((w, index) => (
+              <Text
+                key={w}
+                style={[
+                  styles.weekTitle,
+                  {
+                    width: cellSize,
+                    color: index >= 5 ? palette.clay : fold.muted,
+                  },
+                ]}
+                maxFontSizeMultiplier={1.2}>
+                {w}
+              </Text>
+            ))}
+          </View>
+        </FoldRiseIn>
 
         {loading ? (
           <View style={[styles.gridLoading, { minHeight: cellSize * 6 + GRID_GAP * 5 }]}>
@@ -310,7 +316,7 @@ export default function ReviewCalendarScreen() {
           </View>
         ) : (
           <View style={[styles.grid, { gap: GRID_GAP }]}>
-            {cells.map(cell => {
+            {cells.map((cell, index) => {
               const isToday = cell.ymd === logicalTodayYmd;
               const isSelected = cell.ymd === selectedYmd;
               const isFuture = isFutureYmd(cell.ymd, logicalTodayYmd);
@@ -322,72 +328,80 @@ export default function ReviewCalendarScreen() {
                   ? palette.sage
                   : fold.line2;
               return (
-                <Pressable
+                <FoldPopIn
                   key={cell.key}
-                  onPress={() => {
-                    setSelectedYmd(cell.ymd);
-                    if (!cell.inCurrentMonth) setVisibleMonth(monthStart(cell.date));
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${formatReviewHeaderDate(cell.ymd)}，${
-                    skipped ? '周复盘日' : filled ? '已填' : isFuture ? '未来' : '未填写'
-                  }`}
-                  style={({ pressed }) => [
-                    styles.dayCell,
-                    {
-                      width: cellSize,
-                      height: cellSize,
-                      backgroundColor: isSelected
-                        ? palette.pineSolid
-                        : isToday
-                          ? fold.amber2
-                          : 'transparent',
-                      borderColor: isSelected
-                        ? palette.pineSolid
-                        : isToday
-                          ? fold.amber
-                          : 'transparent',
-                      opacity: cell.inCurrentMonth ? (pressed ? 0.8 : 1) : 0.34,
-                    },
-                  ]}>
-                  <Text
-                    style={[
-                      styles.dayNum,
+                  animate={motionOn}
+                  index={index}
+                  staggerMs={12}
+                  delayMs={80}
+                  duration={320}>
+                  <Pressable
+                    onPress={() => {
+                      setSelectedYmd(cell.ymd);
+                      if (!cell.inCurrentMonth) setVisibleMonth(monthStart(cell.date));
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${formatReviewHeaderDate(cell.ymd)}，${
+                      skipped ? '周复盘日' : filled ? '已填' : isFuture ? '未来' : '未填写'
+                    }`}
+                    style={({ pressed }) => [
+                      styles.dayCell,
                       {
-                        color: isSelected
-                          ? fold.onPineButton
-                          : isFuture
-                            ? fold.faint
-                            : cell.inCurrentMonth
-                              ? fold.ink2
-                              : fold.faint,
-                        fontWeight: isToday || isSelected ? '800' : '600',
+                        width: cellSize,
+                        height: cellSize,
+                        backgroundColor: isSelected
+                          ? palette.pineSolid
+                          : isToday
+                            ? fold.amber2
+                            : 'transparent',
+                        borderColor: isSelected
+                          ? palette.pineSolid
+                          : isToday
+                            ? fold.amber
+                            : 'transparent',
+                        opacity: cell.inCurrentMonth ? (pressed ? 0.8 : 1) : 0.34,
                       },
-                    ]}
-                    maxFontSizeMultiplier={1.15}>
-                    {cell.date.getDate()}
-                  </Text>
-                  {isSelected && isToday ? (
-                    <Text style={[styles.todayMini, { color: fold.onPineButton }]} maxFontSizeMultiplier={1}>
-                      今天
-                    </Text>
-                  ) : (
-                    <View
+                    ]}>
+                    <Text
                       style={[
-                        styles.dayDot,
+                        styles.dayNum,
                         {
-                          backgroundColor: dotColor,
-                          opacity: isFuture ? 0.5 : filled || skipped ? 1 : 0.7,
+                          color: isSelected
+                            ? fold.onPineButton
+                            : isFuture
+                              ? fold.faint
+                              : cell.inCurrentMonth
+                                ? fold.ink2
+                                : fold.faint,
+                          fontWeight: isToday || isSelected ? '800' : '600',
                         },
                       ]}
-                    />
-                  )}
-                </Pressable>
+                      maxFontSizeMultiplier={1.15}>
+                      {cell.date.getDate()}
+                    </Text>
+                    {isSelected && isToday ? (
+                      <Text style={[styles.todayMini, { color: fold.onPineButton }]} maxFontSizeMultiplier={1}>
+                        今天
+                      </Text>
+                    ) : (
+                      <View
+                        style={[
+                          styles.dayDot,
+                          {
+                            backgroundColor: dotColor,
+                            opacity: isFuture ? 0.5 : filled || skipped ? 1 : 0.7,
+                          },
+                        ]}
+                      />
+                    )}
+                  </Pressable>
+                </FoldPopIn>
               );
             })}
           </View>
         )}
 
+        <FoldRiseIn animate={motionOn} index={2} delayMs={220} staggerMs={0} duration={420}>
         <FoldCard style={styles.detailCard}>
           <View style={styles.detailHead}>
             <View style={styles.detailHeadText}>
@@ -527,13 +541,16 @@ export default function ReviewCalendarScreen() {
             </Pressable>
           </View>
         </FoldCard>
+        </FoldRiseIn>
 
-        <View style={styles.legendRow}>
-          <Legend color={palette.sage} label="已填写" />
-          <Legend color={fold.amber} label="周复盘日" />
-          <Legend color={fold.line2} label="未填写" />
-          <Legend color={fold.amber2} label="今天" border={fold.amber} />
-        </View>
+        <FoldRiseIn animate={motionOn} index={3} delayMs={280} staggerMs={0} duration={360}>
+          <View style={styles.legendRow}>
+            <Legend color={palette.sage} label="已填写" />
+            <Legend color={fold.amber} label="周复盘日" />
+            <Legend color={fold.line2} label="未填写" />
+            <Legend color={fold.amber2} label="今天" border={fold.amber} />
+          </View>
+        </FoldRiseIn>
       </ScrollView>
 
       <FoldReviewFooter

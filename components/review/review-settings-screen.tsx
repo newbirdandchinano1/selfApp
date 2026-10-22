@@ -568,6 +568,13 @@ export function ReviewSettingsScreen() {
                   当天完成任意维度即算完成
                 </Text>
               </View>
+              {/* 设计稿 point-row：开关在前，积分编辑在后 */}
+              <FoldSwitch
+                value={pointsSettings.enabled}
+                onValueChange={onTogglePointsEnabled}
+                disabled={pointsBusy}
+                accessibilityLabel="复盘积分奖励开关"
+              />
               <View
                 style={[
                   styles.amountPill,
@@ -590,12 +597,6 @@ export function ReviewSettingsScreen() {
                   accessibilityLabel="每日复盘奖励积分"
                 />
               </View>
-              <FoldSwitch
-                value={pointsSettings.enabled}
-                onValueChange={onTogglePointsEnabled}
-                disabled={pointsBusy}
-                accessibilityLabel="复盘积分奖励开关"
-              />
             </View>
 
             <View style={styles.toggleRow}>

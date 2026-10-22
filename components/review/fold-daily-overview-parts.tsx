@@ -702,85 +702,67 @@ export function FoldDimensionGrid({
   );
 }
 
+/** 设计稿 ai-mini：整卡可点，进入 AI 复盘分析全屏（screen 11） */
 export function FoldAiMini({
   text,
   busy,
-  canRun,
-  onAnalyze,
+  insightCount,
+  onOpen,
 }: {
   text: string | null | undefined;
-  busy: boolean;
-  canRun: boolean;
-  onAnalyze: () => void;
+  busy?: boolean;
+  /** 摘要旁展示的洞察条数，缺省按正文粗估 */
+  insightCount?: number;
+  onOpen: () => void;
 }) {
   const { palette } = useFoldTheme();
-  const [expanded, setExpanded] = useState(false);
   const body = (text ?? '').trim();
-  const summary = body
-    ? body.split(/\n|。|\. /).map(s => s.trim()).filter(Boolean)[0] ?? ''
-    : '写下今天的内容后，AI 会在这里留下观察。';
+  const summary = busy
+    ? '正在阅读今天的记录…'
+    : body
+      ? body.split(/\n|。|\. /).map(s => s.trim()).filter(Boolean)[0] ?? ''
+      : '写下今天的内容后，AI 会在这里留下观察。';
+  const count =
+    insightCount ??
+    (body
+      ? Math.max(1, body.split(/\n+/).map(s => s.trim()).filter(s => s.startsWith('·') || s.length > 8).length)
+      : 0);
+  const sub =
+    body && !busy
+      ? `${summary.slice(0, 28)}${summary.length > 28 ? '…' : ''} · ${count} 条洞察`
+      : summary;
 
   return (
-    <FoldCard tone="pine" style={styles.aiCard}>
-      <View style={styles.aiHead}>
-        <View style={[styles.aiOrb, { backgroundColor: palette.aiOrb }]}>
-          <MaterialIcons name="auto-awesome" size={16} color={palette.pineSolid} />
-        </View>
-        <View style={styles.aiCopy}>
-          <Text style={[styles.aiTitle, { color: palette.aiInk }]} maxFontSizeMultiplier={1.35}>
-            AI 今日观察
-          </Text>
-          <Text
-            style={[styles.aiSummary, { color: palette.aiSoft }]}
-            numberOfLines={expanded ? undefined : 1}
-            maxFontSizeMultiplier={1.35}>
-            {busy ? '正在阅读今天的记录…' : summary}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => setExpanded(prev => !prev)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityState={{ expanded }}
-          accessibilityLabel={expanded ? '收起 AI 今日观察' : '展开 AI 今日观察'}
-          style={styles.aiAction}>
-          <Text style={[styles.aiActionText, { color: palette.aiSoft }]} maxFontSizeMultiplier={1.35}>
-            {expanded ? '收起' : '展开'}
-          </Text>
-          <MaterialIcons
-            name={expanded ? 'keyboard-arrow-up' : 'chevron-right'}
-            size={14}
-            color={palette.aiSoft}
-          />
-        </Pressable>
-      </View>
-
-      {expanded ? (
-        <View style={styles.aiBody}>
-          {body ? (
-            <Text style={[styles.aiBodyText, { color: palette.aiInk }]} maxFontSizeMultiplier={1.35}>
-              {body}
+    <Pressable
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel="打开 AI 复盘分析"
+      style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+      <FoldCard tone="pine" style={styles.aiCard}>
+        <View style={styles.aiHead}>
+          <View style={[styles.aiOrb, { backgroundColor: palette.aiOrb }]}>
+            <MaterialIcons name="auto-awesome" size={16} color={palette.pineSolid} />
+          </View>
+          <View style={styles.aiCopy}>
+            <Text style={[styles.aiTitle, { color: palette.aiInk }]} maxFontSizeMultiplier={1.35}>
+              AI 今日观察
             </Text>
-          ) : (
-            <Text style={[styles.aiBodyText, { color: palette.aiSoft }]} maxFontSizeMultiplier={1.35}>
-              {canRun ? '今天的内容还不多，可以先写几句，再生成观察。' : '当前日期只读，无法生成观察。'}
+            <Text
+              style={[styles.aiSummary, { color: palette.aiSoft }]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.35}>
+              {sub}
             </Text>
-          )}
-          <Pressable
-            onPress={onAnalyze}
-            disabled={!canRun || busy}
-            accessibilityRole="button"
-            accessibilityLabel={body ? '重新生成 AI 观察' : '生成 AI 观察'}
-            style={({ pressed }) => [
-              styles.aiBtn,
-              { borderColor: palette.aiSoft, opacity: !canRun || busy ? 0.4 : pressed ? 0.75 : 1 },
-            ]}>            <Text style={[styles.aiBtnText, { color: palette.aiInk }]} maxFontSizeMultiplier={1.35}>
-              {busy ? '生成中…' : body ? '重新分析' : '生成观察'}
+          </View>
+          <View style={styles.aiAction}>
+            <Text style={[styles.aiActionText, { color: palette.aiSoft }]} maxFontSizeMultiplier={1.35}>
+              展开
             </Text>
-          </Pressable>
+            <MaterialIcons name="chevron-right" size={14} color={palette.aiSoft} />
+          </View>
         </View>
-      ) : null}
-    </FoldCard>
+      </FoldCard>
+    </Pressable>
   );
 }
 
@@ -1060,14 +1042,4 @@ const styles = StyleSheet.create({
   aiSummary: { fontSize: 11, marginTop: 2, lineHeight: 16 },
   aiAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   aiActionText: { fontSize: 11, fontWeight: '700' },
-  aiBody: { gap: 8 },
-  aiBodyText: { fontSize: 12, lineHeight: 19 },
-  aiBtn: {
-    alignSelf: 'flex-start',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-  },
-  aiBtnText: { fontSize: 11, fontWeight: '700' },
 });

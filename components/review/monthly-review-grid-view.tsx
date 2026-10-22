@@ -1,4 +1,5 @@
 import { ReviewGridSkeleton } from '@/components/skeletons/review';
+import { FoldCountUpText, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { FoldCard, FoldDimensionGrid, FoldSectionHeader, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
 import { ReviewPageContent } from '@/components/review/review-shared-ui';
 import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
@@ -59,7 +60,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const AUTO_SAVE_MS = 900;
-const WEEKDAY_HEADERS = ['一', '二', '三', '四', '五', '六', '日'] as const;
+/** 设计稿 `.heat-grid`：14 列连续点阵 */
+const HEAT_COLS = 14;
 
 function clockLabel(d: Date): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -116,6 +118,7 @@ export function MonthlyReviewGridView({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { fold } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
 
@@ -314,10 +317,8 @@ export function MonthlyReviewGridView({
     for (const entry of dailyEntries) {
       levelByYmd.set(entry.ymd, dailyFillLevel(entry.fields));
     }
-    const first = new Date(monthParts?.y ?? 2026, (monthParts?.m ?? 1) - 1, 1);
-    const leading = (first.getDay() + 6) % 7;
-    const cells: Array<{ key: string; ymd?: string; day?: number; level: number; future: boolean; today: boolean }> = [];
-    for (let i = 0; i < leading; i++) cells.push({ key: `lead-${i}`, level: -1, future: false, today: false });
+    const cells: Array<{ key: string; ymd?: string; day?: number; level: number; future: boolean; today: boolean }> =
+      [];
     for (let day = 1; day <= totalDays; day++) {
       const ymd = ymdOf(monthStartYmd, day);
       cells.push({
@@ -329,13 +330,13 @@ export function MonthlyReviewGridView({
         today: ymd === todayYmd,
       });
     }
-    while (cells.length % 7 !== 0) {
+    while (cells.length % HEAT_COLS !== 0) {
       cells.push({ key: `tail-${cells.length}`, level: -1, future: false, today: false });
     }
     const rows: typeof cells[] = [];
-    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+    for (let i = 0; i < cells.length; i += HEAT_COLS) rows.push(cells.slice(i, i + HEAT_COLS));
     return rows;
-  }, [dailyEntries, monthParts, monthStartYmd, todayYmd, totalDays]);
+  }, [dailyEntries, monthStartYmd, todayYmd, totalDays]);
 
   const reviewedDays = useMemo(
     () => dailyEntries.reduce((count, entry) => count + (dailyFillLevel(entry.fields) > 0 ? 1 : 0), 0),
@@ -377,10 +378,16 @@ export function MonthlyReviewGridView({
           : '等待记录';
 
   const aiText = (meta.ai_analysis ?? '').trim();
+  /** 设计稿 14 列 + 再缩小一档，避免热力区占满首屏 */
   const cellGap = 3;
   const contentMaxWidth = Math.min(width, 460);
-  const heatCellSize = Math.floor((contentMaxWidth - 32 - 32 - cellGap * 6) / 7);
+  const fullHeatCell = Math.floor((contentMaxWidth - 32 - 32 - cellGap * (HEAT_COLS - 1)) / HEAT_COLS);
+  const heatCellSize = Math.max(9, Math.min(14, Math.floor(fullHeatCell * 0.92)));
   const heatLevelColors = [fold.heat0, fold.heat1, fold.heat2, fold.heat3, fold.heat4];
+  const heatLabelDays = useMemo(() => {
+    const marks = [1, 8, 15, 22, totalDays];
+    return [...new Set(marks.filter(d => d >= 1 && d <= totalDays))];
+  }, [totalDays]);
 
   if (loading) {
     return <ReviewGridSkeleton />;
@@ -398,181 +405,211 @@ export function MonthlyReviewGridView({
       onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
       scrollEventThrottle={16}>
       <ReviewPageContent style={styles.pageGap}>
-        <View style={styles.monthTitleRow}>
-          <View style={styles.monthTitleCopy}>
-            <Text style={[styles.monthTitle, { color: fold.pine }]} maxFontSizeMultiplier={1.25}>
-              {formatMonthTitle(monthStartYmd)}
-            </Text>
-            <Text style={[styles.monthDays, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-              {totalDays} 天
-            </Text>
+        <FoldRiseIn animate={motionOn} index={0} duration={420}>
+          <View style={styles.monthTitleRow}>
+            <View style={styles.monthTitleCopy}>
+              <Text style={[styles.monthTitle, { color: fold.pine }]} maxFontSizeMultiplier={1.25}>
+                {formatMonthTitle(monthStartYmd)}
+              </Text>
+              <Text style={[styles.monthDays, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                {totalDays} 天
+              </Text>
+            </View>
+            <View style={styles.monthNav}>
+              <Pressable
+                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="上个月"
+                style={({ pressed }) => [
+                  styles.navIconBtn,
+                  { borderColor: fold.line, backgroundColor: fold.cardSoft, opacity: pressed ? 0.7 : 1 },
+                ]}>
+                <MaterialIcons name="chevron-left" size={20} color={fold.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => setMonthStartYmd(currentMonthStart)}
+                disabled={monthStartYmd === currentMonthStart}
+                accessibilityRole="button"
+                accessibilityLabel="回到本月"
+                accessibilityState={{ disabled: monthStartYmd === currentMonthStart }}
+                style={({ pressed }) => [
+                  styles.navMonthPill,
+                  {
+                    borderColor: fold.line,
+                    backgroundColor: fold.cardSoft,
+                    opacity: monthStartYmd === currentMonthStart ? 0.55 : pressed ? 0.8 : 1,
+                  },
+                ]}>
+                <Text style={[styles.navMonthText, { color: fold.ink2 }]}>本月</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
+                disabled={!canGoNext}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="下个月"
+                accessibilityState={{ disabled: !canGoNext }}
+                style={({ pressed }) => [
+                  styles.navIconBtn,
+                  {
+                    borderColor: fold.line,
+                    backgroundColor: fold.cardSoft,
+                    opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1,
+                  },
+                ]}>
+                <MaterialIcons name="chevron-right" size={20} color={fold.muted} />
+              </Pressable>
+            </View>
           </View>
-          <View style={styles.monthNav}>
-            <Pressable
-              onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="上个月"
-              style={({ pressed }) => [
-                styles.navIconBtn,
-                { borderColor: fold.line, backgroundColor: fold.cardSoft, opacity: pressed ? 0.7 : 1 },
-              ]}>
-              <MaterialIcons name="chevron-left" size={20} color={fold.muted} />
-            </Pressable>
-            <Pressable
-              onPress={() => setMonthStartYmd(currentMonthStart)}
-              disabled={monthStartYmd === currentMonthStart}
-              accessibilityRole="button"
-              accessibilityLabel="回到本月"
-              accessibilityState={{ disabled: monthStartYmd === currentMonthStart }}
-              style={({ pressed }) => [
-                styles.navMonthPill,
-                {
-                  borderColor: fold.line,
-                  backgroundColor: fold.cardSoft,
-                  opacity: monthStartYmd === currentMonthStart ? 0.55 : pressed ? 0.8 : 1,
-                },
-              ]}>
-              <Text style={[styles.navMonthText, { color: fold.ink2 }]}>本月</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
-              disabled={!canGoNext}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="下个月"
-              accessibilityState={{ disabled: !canGoNext }}
-              style={({ pressed }) => [
-                styles.navIconBtn,
-                {
-                  borderColor: fold.line,
-                  backgroundColor: fold.cardSoft,
-                  opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1,
-                },
-              ]}>
-              <MaterialIcons name="chevron-right" size={20} color={fold.muted} />
-            </Pressable>
-          </View>
-        </View>
+        </FoldRiseIn>
 
-        <View style={[styles.summaryCard, { backgroundColor: fold.summaryBg }]}>
-          <View style={[styles.summaryOrb, styles.summaryOrbA]} />
-          <View style={[styles.summaryOrb, styles.summaryOrbB]} />
-          <View style={styles.summaryTop}>
-            <Text style={[styles.summaryEyebrow, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.2}>
-              MONTH IN REVIEW · {monthNumber} 月的折页
-            </Text>
-            <View
-              style={[
-                styles.summaryBadge,
-                { backgroundColor: fold.badgeBg, borderColor: fold.badgeBorder },
-              ]}>
-              <MaterialIcons name="auto-awesome" size={11} color={fold.badgeText} />
-              <Text style={[styles.summaryBadgeText, { color: fold.badgeText }]} maxFontSizeMultiplier={1.15}>
-                {badgeText}
+        <FoldRiseIn animate={motionOn} index={1} staggerMs={70} duration={420}>
+          <View style={[styles.summaryCard, { backgroundColor: fold.summaryBg }]}>
+            <View style={[styles.summaryOrb, styles.summaryOrbA]} />
+            <View style={[styles.summaryOrb, styles.summaryOrbB]} />
+            <View style={styles.summaryTop}>
+              <Text style={[styles.summaryEyebrow, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.2}>
+                MONTH IN REVIEW · {monthNumber} 月的折页
               </Text>
+              <View
+                style={[
+                  styles.summaryBadge,
+                  { backgroundColor: fold.badgeBg, borderColor: fold.badgeBorder },
+                ]}>
+                <MaterialIcons name="auto-awesome" size={11} color={fold.badgeText} />
+                <Text style={[styles.summaryBadgeText, { color: fold.badgeText }]} maxFontSizeMultiplier={1.15}>
+                  {badgeText}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.summaryStats}>
+              <View style={styles.summaryStat}>
+                <FoldCountUpText
+                  value={reviewedDays}
+                  animate={motionOn}
+                  delayMs={160}
+                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                />
+                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                  天已复盘
+                </Text>
+              </View>
+              <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
+              <View style={styles.summaryStat}>
+                <FoldCountUpText
+                  value={monthStreak}
+                  animate={motionOn}
+                  delayMs={240}
+                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                />
+                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                  个月连续
+                </Text>
+              </View>
+              <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
+              <View style={styles.summaryStat}>
+                <FoldCountUpText
+                  value={completionRate}
+                  animate={motionOn}
+                  delayMs={320}
+                  formatter={n => `${Math.round(n)}%`}
+                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                />
+                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                  完成率
+                </Text>
+              </View>
             </View>
           </View>
-          <View style={styles.summaryStats}>
-            <View style={styles.summaryStat}>
-              <Text style={[styles.summaryValue, { color: fold.summaryText }]} maxFontSizeMultiplier={1.2}>
-                {reviewedDays}
-              </Text>
-              <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
-                天已复盘
-              </Text>
-            </View>
-            <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
-            <View style={styles.summaryStat}>
-              <Text style={[styles.summaryValue, { color: fold.summaryText }]} maxFontSizeMultiplier={1.2}>
-                {monthStreak}
-              </Text>
-              <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
-                个月连续
-              </Text>
-            </View>
-            <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
-            <View style={styles.summaryStat}>
-              <Text style={[styles.summaryValue, { color: fold.summaryText }]} maxFontSizeMultiplier={1.2}>
-                {completionRate}%
-              </Text>
-              <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
-                完成率
-              </Text>
-            </View>
-          </View>
-        </View>
+        </FoldRiseIn>
 
         {!canEdit ? (
-          <FoldCard style={styles.noticeCard}>
-            <MaterialIcons name="lock-clock" size={18} color={fold.amber} />
-            <Text style={[styles.noticeText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-              未来月份仅可查看，暂不可填写与生成分析。
-            </Text>
-          </FoldCard>
+          <FoldRiseIn animate={motionOn} index={2} staggerMs={70} duration={360}>
+            <FoldCard style={styles.noticeCard}>
+              <MaterialIcons name="lock-clock" size={18} color={fold.amber} />
+              <Text style={[styles.noticeText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                未来月份仅可查看，暂不可填写与生成分析。
+              </Text>
+            </FoldCard>
+          </FoldRiseIn>
         ) : null}
 
-        <FoldCard style={styles.heatCard}>
-          <View style={styles.heatTop}>
-            <Text style={[styles.cardTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
-              {monthNumber}月记录热力
-            </Text>
-            <Text style={[styles.cardHint, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
-              颜色越深，记录越完整
-            </Text>
-          </View>
-          <View style={styles.weekdayRow}>
-            {WEEKDAY_HEADERS.map(label => (
-              <Text key={label} style={[styles.weekdayText, { color: fold.muted }]} maxFontSizeMultiplier={1.1}>
-                {label}
+        <FoldRiseIn animate={motionOn} index={3} staggerMs={70} duration={420}>
+          <FoldCard style={styles.heatCard}>
+            <View style={styles.heatTop}>
+              <Text style={[styles.cardTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
+                {monthNumber}月记录热力
               </Text>
-            ))}
-          </View>
-          <View style={styles.heatGrid}>
-            {heatCells.map((row, rowIndex) => (
-              <View key={`row-${rowIndex}`} style={[styles.heatRow, { gap: cellGap }]}>
-                {row.map(cell => (
-                  <View
-                    key={cell.key}
-                    accessibilityLabel={
-                      cell.day != null
-                        ? `${monthNumber}月${cell.day}日，${cell.future ? '未来日期' : cell.level > 0 ? '已复盘' : '未复盘'}`
-                        : undefined
-                    }
-                    style={[
-                      styles.heatCell,
-                      {
-                        width: heatCellSize,
-                        height: heatCellSize,
-                        borderRadius: Math.max(3, Math.round(heatCellSize * 0.18)),
-                        backgroundColor:
-                          cell.level < 0
-                            ? 'transparent'
-                            : cell.future
-                              ? fold.paper
-                              : heatLevelColors[Math.max(0, Math.min(4, cell.level))],
-                        borderWidth: cell.today ? 1.5 : 0,
-                        borderColor: fold.pine,
-                        opacity: cell.future ? 0.6 : 1,
-                      },
-                    ]}
-                  />
+              <Text style={[styles.cardHint, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
+                颜色越深，记录越完整
+              </Text>
+            </View>
+            <View style={styles.heatBody}>
+              <View style={styles.heatGrid}>
+                {heatCells.map((row, rowIndex) => (
+                  <FoldRiseIn
+                    key={`heat-row-${monthStartYmd}-${rowIndex}`}
+                    animate={motionOn}
+                    index={rowIndex}
+                    staggerMs={45}
+                    delayMs={220}
+                    duration={360}
+                    fromY={8}>
+                    <View style={[styles.heatRow, { gap: cellGap }]}>
+                      {row.map(cell => (
+                        <View
+                          key={cell.key}
+                          accessibilityLabel={
+                            cell.day != null
+                              ? `${monthNumber}月${cell.day}日，${cell.future ? '未来日期' : cell.level > 0 ? '已复盘' : '未复盘'}`
+                              : undefined
+                          }
+                          style={[
+                            styles.heatCell,
+                            {
+                              width: heatCellSize,
+                              height: heatCellSize,
+                              borderRadius: Math.max(2, Math.round(heatCellSize * 0.22)),
+                              backgroundColor:
+                                cell.level < 0
+                                  ? 'transparent'
+                                  : cell.future
+                                    ? fold.paper
+                                    : heatLevelColors[Math.max(0, Math.min(4, cell.level))],
+                              borderWidth: cell.today ? 1.5 : 0,
+                              borderColor: fold.pine,
+                              opacity: cell.future ? 0.55 : cell.level < 0 ? 0 : 1,
+                            },
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  </FoldRiseIn>
                 ))}
               </View>
-            ))}
-          </View>
-          <View style={styles.heatLabels}>
-            {['01', '08', '15', '22', '29'].map((day, index) => (
-              <Text key={day} style={[styles.heatLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.1}>
-                {index === 0 ? `${monthNumber}.${day}` : day}
-              </Text>
-            ))}
-          </View>
-        </FoldCard>
+              <View
+                style={[
+                  styles.heatLabels,
+                  { width: heatCellSize * HEAT_COLS + cellGap * (HEAT_COLS - 1) },
+                ]}>
+                {heatLabelDays.map((day, index) => (
+                  <Text key={day} style={[styles.heatLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.1}>
+                    {index === 0 ? `${monthNumber}.${String(day).padStart(2, '0')}` : String(day).padStart(2, '0')}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          </FoldCard>
+        </FoldRiseIn>
 
-        <View style={styles.dimensionSection}>
-          <FoldSectionHeader title="月度维度" hint="空栏已汇总本月各周复盘" />
-          {monthlyTemplate.length === 0 ? (
+        <FoldRiseIn animate={motionOn} index={4} staggerMs={70} duration={420}>
+          <View style={styles.dimensionSection}>
+            <FoldSectionHeader title="月度维度" hint="空栏已汇总本月各周复盘" />
+          </View>
+        </FoldRiseIn>
+        {monthlyTemplate.length === 0 ? (
+          <FoldRiseIn animate={motionOn} index={5} staggerMs={70} duration={420}>
             <FoldCard style={styles.emptyCard}>
               <MaterialIcons name="dashboard-customize" size={22} color={fold.muted} />
               <Text style={[styles.emptyTitle, { color: fold.ink }]}>尚未配置月复盘维度</Text>
@@ -588,75 +625,82 @@ export function MonthlyReviewGridView({
                 <Text style={[styles.emptyBtnText, { color: fold.onPineButton }]}>去模板设置</Text>
               </Pressable>
             </FoldCard>
-          ) : (
-            <FoldDimensionGrid
-              scope="monthly"
-              dimensions={monthlyTemplate}
-              fields={fields}
-              canEdit={canEdit}
-              onOpenDimension={openDimension}
-            />
-          )}
-        </View>
+          </FoldRiseIn>
+        ) : (
+          <FoldDimensionGrid
+            scope="monthly"
+            dimensions={monthlyTemplate}
+            fields={fields}
+            canEdit={canEdit}
+            onOpenDimension={openDimension}
+            animate={motionOn}
+            staggerDelayMs={280}
+          />
+        )}
 
-        <View style={[styles.aiCard, { backgroundColor: fold.aiBg, borderColor: fold.aiBorder }]}>
-          <View style={styles.aiHead}>
-            <View style={[styles.aiOrb, { backgroundColor: fold.pineButton }]}>
-              <MaterialIcons name="auto-awesome" size={14} color={fold.badgeText} />
-            </View>
-            <Text style={[styles.aiTitle, { color: fold.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.25}>
-              月 AI 分析
-            </Text>
-            <Pressable
-              onPress={() => void runAi()}
-              disabled={aiBusy || !canEdit}
-              accessibilityRole="button"
-              accessibilityLabel={aiText ? '重新生成月 AI 分析' : '生成月 AI 分析'}
-              style={({ pressed }) => [
-                styles.aiAction,
-                { borderColor: fold.aiBorder, opacity: aiBusy || !canEdit ? 0.45 : pressed ? 0.75 : 1 },
-              ]}>
-              {aiBusy ? (
-                <ActivityIndicator size="small" color={fold.aiInk} />
-              ) : (
-                <Text style={[styles.aiActionText, { color: fold.aiInk }]}>{aiText ? '重新生成' : '生成分析'}</Text>
-              )}
-            </Pressable>
-          </View>
-
-          {aiBusy && !aiText ? (
-            <View style={styles.aiSkeleton}>
-              {[100, 88, 72].map((pct, index) => (
-                <View key={index} style={[styles.aiSkeletonLine, { width: `${pct}%`, backgroundColor: fold.line }]} />
-              ))}
-            </View>
-          ) : aiText ? (
-            <Text
-              style={[styles.aiBody, { color: fold.ink2 }]}
-              numberOfLines={aiExpanded ? undefined : 3}
-              maxFontSizeMultiplier={1.4}>
-              {aiText}
-            </Text>
-          ) : (
-            <Text style={[styles.aiHint, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-              汇总本月各周复盘后，可生成一段对本月节奏的回看与建议。
-            </Text>
-          )}
-
-          {aiText ? (
-            <Pressable
-              onPress={() => setAiExpanded(v => !v)}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: aiExpanded }}
-              style={styles.aiLink}>
-              <Text style={[styles.aiLinkText, { color: fold.aiInk }]} maxFontSizeMultiplier={1.2}>
-                {aiExpanded ? '收起完整分析' : '展开完整分析并写入 meta.ai_analysis'}
+        <FoldRiseIn animate={motionOn} index={6} staggerMs={70} duration={420}>
+          <View style={[styles.aiCard, { backgroundColor: fold.aiBg, borderColor: fold.aiBorder }]}>
+            <View style={styles.aiHead}>
+              <View style={[styles.aiOrb, { backgroundColor: fold.pineButton }]}>
+                <MaterialIcons name="auto-awesome" size={14} color={fold.badgeText} />
+              </View>
+              <Text style={[styles.aiTitle, { color: fold.ink }]} numberOfLines={1} maxFontSizeMultiplier={1.25}>
+                月 AI 分析
               </Text>
-              <MaterialIcons name={aiExpanded ? 'expand-less' : 'chevron-right'} size={14} color={fold.aiInk} />
-            </Pressable>
-          ) : null}
-        </View>
+              <Pressable
+                onPress={() => void runAi()}
+                disabled={aiBusy || !canEdit}
+                accessibilityRole="button"
+                accessibilityLabel={aiText ? '重新生成月 AI 分析' : '生成月 AI 分析'}
+                style={({ pressed }) => [
+                  styles.aiAction,
+                  { borderColor: fold.aiBorder, opacity: aiBusy || !canEdit ? 0.45 : pressed ? 0.75 : 1 },
+                ]}>
+                {aiBusy ? (
+                  <ActivityIndicator size="small" color={fold.aiInk} />
+                ) : (
+                  <Text style={[styles.aiActionText, { color: fold.aiInk }]}>{aiText ? '重新生成' : '生成分析'}</Text>
+                )}
+              </Pressable>
+            </View>
+
+            {aiBusy && !aiText ? (
+              <View style={styles.aiSkeleton}>
+                {[100, 88, 72].map((pct, index) => (
+                  <View
+                    key={index}
+                    style={[styles.aiSkeletonLine, { width: `${pct}%` as `${number}%`, backgroundColor: fold.line }]}
+                  />
+                ))}
+              </View>
+            ) : aiText ? (
+              <Text
+                style={[styles.aiBody, { color: fold.ink2 }]}
+                numberOfLines={aiExpanded ? undefined : 3}
+                maxFontSizeMultiplier={1.4}>
+                {aiText}
+              </Text>
+            ) : (
+              <Text style={[styles.aiHint, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                汇总本月各周复盘后，可生成一段对本月节奏的回看与建议。
+              </Text>
+            )}
+
+            {aiText ? (
+              <Pressable
+                onPress={() => setAiExpanded(v => !v)}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: aiExpanded }}
+                style={styles.aiLink}>
+                <Text style={[styles.aiLinkText, { color: fold.aiInk }]} maxFontSizeMultiplier={1.2}>
+                  {aiExpanded ? '收起完整分析' : '展开完整分析并写入 meta.ai_analysis'}
+                </Text>
+                <MaterialIcons name={aiExpanded ? 'expand-less' : 'chevron-right'} size={14} color={fold.aiInk} />
+              </Pressable>
+            ) : null}
+          </View>
+        </FoldRiseIn>
 
         <View style={styles.footerStatus}>
           <View style={[styles.footerDot, { backgroundColor: saving ? fold.amber : fold.sage }]} />
@@ -761,17 +805,16 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   noticeText: { flex: 1, fontSize: 12, lineHeight: 18 },
-  heatCard: { gap: 9 },
+  heatCard: { gap: 8 },
   heatTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  cardTitle: { fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
-  cardHint: { fontSize: 10.5 },
-  weekdayRow: { flexDirection: 'row', gap: 3 },
-  weekdayText: { flex: 1, fontSize: 9, fontWeight: '600', textAlign: 'center' },
-  heatGrid: { gap: 3 },
+  cardTitle: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
+  cardHint: { fontSize: 9.5 },
+  heatBody: { alignItems: 'center', gap: 4 },
+  heatGrid: { gap: 3, alignItems: 'center' },
   heatRow: { flexDirection: 'row' },
   heatCell: {},
   heatLabels: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 1 },
-  heatLabel: { fontSize: 9, fontWeight: '500' },
+  heatLabel: { fontSize: 8, fontWeight: '500' },
   dimensionSection: { gap: 8, marginTop: 2 },
   emptyCard: { alignItems: 'center', gap: 8, paddingVertical: 24 },
   emptyTitle: { fontSize: 15, fontWeight: '800' },
