@@ -5,7 +5,6 @@ import {
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import { isValidYmd } from '@/lib/date';
-import { InteractionManager } from 'react-native';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
@@ -270,7 +269,7 @@ export function scheduleSyncBreakHabitCompletions(opts?: { force?: boolean }): v
   }
   lastBreakHabitSyncAtMs = now;
 
-  InteractionManager.runAfterInteractions(() => {
+  requestIdleCallback(() => {
     void syncBreakHabitCompletions().catch((err) => {
       if (__DEV__) console.warn('[break-habit] scheduleSyncBreakHabitCompletions', err);
     });

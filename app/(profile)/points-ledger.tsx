@@ -24,7 +24,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 const PAGE_LIMIT = 50;
 
@@ -195,6 +195,7 @@ export default function PointsLedgerScreen() {
             key={item.id}
             overshootRight={false}
             enabled={!isDeleting}
+            childrenContainerStyle={{ backgroundColor: colors.background }}
             renderRightActions={() => (
               <View style={styles.swipeTrack}>
                 <Pressable

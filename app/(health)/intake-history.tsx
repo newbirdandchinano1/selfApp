@@ -27,7 +27,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type FilterKey = 'all' | 'hydration' | 'protein' | 'carbohydrate' | 'calories' | 'photo';
@@ -627,28 +627,30 @@ export default function IntakeHistoryScreen() {
                   );
 
                   return (
-                    <HealthRiseIn
+                    <Swipeable
                       key={`${line.key}-${listAnimKey}`}
-                      animate={entranceOn}
-                      index={rowStagger}
-                      staggerMs={30}
-                      delayMs={80}
-                      duration={300}
-                      fromY={10}
-                    >
-                      <Swipeable
-                        overshootRight={false}
-                        rightThreshold={44}
-                        renderRightActions={() => (
-                          <Pressable
-                            onPress={() => confirmDelete(line.recordId)}
-                            style={[styles.swipeDelete, { backgroundColor: '#C45C4A' }]}
-                            accessibilityRole="button"
-                            accessibilityLabel="删除这条记录">
-                            <MaterialIcons name="delete" size={20} color="#fff" />
-                            <Text style={styles.swipeDeleteText}>删除</Text>
-                          </Pressable>
-                        )}>
+                      overshootRight={false}
+                      rightThreshold={44}
+                      // 入场动画放在 Swipeable 内；不透明底挡住常驻后方的删除条
+                      childrenContainerStyle={{ backgroundColor: hh.paper }}
+                      renderRightActions={() => (
+                        <Pressable
+                          onPress={() => confirmDelete(line.recordId)}
+                          style={[styles.swipeDelete, { backgroundColor: '#C45C4A' }]}
+                          accessibilityRole="button"
+                          accessibilityLabel="删除这条记录">
+                          <MaterialIcons name="delete" size={20} color="#fff" />
+                          <Text style={styles.swipeDeleteText}>删除</Text>
+                        </Pressable>
+                      )}>
+                      <HealthRiseIn
+                        animate={entranceOn}
+                        index={rowStagger}
+                        staggerMs={30}
+                        delayMs={80}
+                        duration={300}
+                        fromY={10}
+                      >
                         <Pressable
                           onPress={() =>
                             router.push({
@@ -665,8 +667,8 @@ export default function IntakeHistoryScreen() {
                           style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1 }]}>
                           {rowInner}
                         </Pressable>
-                      </Swipeable>
-                    </HealthRiseIn>
+                      </HealthRiseIn>
+                    </Swipeable>
                   );
                 })}
               </View>
@@ -836,8 +838,9 @@ const styles = StyleSheet.create({
   itemMeta: { marginTop: 3, fontSize: 11, fontWeight: '500' },
   itemAmount: { fontSize: 13, fontWeight: '800', maxWidth: '30%', textAlign: 'right' },
   swipeDelete: {
-    width: 76,
-    marginLeft: 8,
+    width: 72,
+    alignSelf: 'stretch',
+    marginVertical: 6,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',

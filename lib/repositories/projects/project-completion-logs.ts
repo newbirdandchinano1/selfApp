@@ -178,6 +178,23 @@ export async function listProjectCompletionLogs(): Promise<ProjectCompletionLogR
     });
 }
 
+/** 单条履历（只读详情） */
+export async function getProjectCompletionLogById(
+  id: string,
+): Promise<ProjectCompletionLogRow | null> {
+  const key = id.trim();
+  if (!key) return null;
+  const rows = await listProjectCompletionLogs();
+  return rows.find((r) => r.id === key) ?? null;
+}
+
+/** 归档编号展示：ARC-YYYYMMDD-xx */
+export function formatCompletionArchiveCode(row: ProjectCompletionLogRow): string {
+  const ymd = row.completed_ymd.replace(/-/g, '');
+  const tail = row.id.replace(/^pcl_/, '').slice(-2).toUpperCase() || '00';
+  return `ARC-${ymd}-${tail}`;
+}
+
 /** 实体已删、仅剩履历的条目（用于收集箱「摘要」区） */
 export async function listOrphanProjectCompletionLogs(
   existingProjectIds: Set<string> | string[],

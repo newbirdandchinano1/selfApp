@@ -1,14 +1,32 @@
+/**
+ * 消息 · 提醒设置：系统权限、总开关、频道、健康模式、时间摘要、已预约入口。
+ * 对齐设计稿 09；嵌入消息壳时无自有顶栏。
+ */
+import {
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { AppIcon } from '@/components/ui';
+import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  dailyReviewReminderTimeToDate,
+  formatDailyReviewReminderClock,
+  getDailyReviewReminderSettings,
+  readDailyReviewReminderTimeFromDate,
+  setDailyReviewReminderSettings,
+} from '@/lib/daily-review-reminder-settings';
+import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
 import {
   NOTIFICATION_CATEGORIES,
   type NotificationCategoryId,
 } from '@/lib/notification-catalog';
 import {
   getNotificationPermissionSnapshot,
-  requestAppNotificationPermission,
+  listScheduledAppNotifications,
   openSystemNotificationSettings,
+  requestAppNotificationPermission,
   resyncAppNotificationsAfterPreferenceChange,
   type NotificationPermissionSnapshot,
 } from '@/lib/notification-center';
@@ -20,25 +38,15 @@ import {
   type NotificationCategoryPrefs,
   type NotificationCenterSettings,
 } from '@/lib/notification-center-settings';
-import {
-  dailyReviewReminderTimeToDate,
-  formatDailyReviewReminderClock,
-  getDailyReviewReminderSettings,
-  readDailyReviewReminderTimeFromDate,
-  setDailyReviewReminderSettings,
-} from '@/lib/daily-review-reminder-settings';
-import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { getHabits, updateHabit } from '@/lib/repositories/habits/habit';
 import {
   formatHabitReminderClock,
   mergeHabitReminderIntoExtraData,
   parseHabitReminder,
 } from '@/lib/repositories/habits/habit-reminder-meta';
-import { syncHabitReminderNotification } from '@/lib/habit-reminder-notifications';
-import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -63,27 +71,43 @@ type HabitRowUi = {
 
 const INTERVAL_OPTIONS: HealthIntakeIntervalMinutes[] = [30, 60, 120];
 
+const CHANNEL_UI: Record<
+  NotificationCategoryId,
+  { emoji: string; title: string; hint: string }
+> = {
+  'health-intake-reminder': { emoji: '💧', title: '健康摄入', hint: '喝水、记录、达标' },
+  'schedule-slot-reminder': { emoji: '📅', title: '日程', hint: '训练、专注、约会' },
+  'habit-reminder': { emoji: '✅', title: '习惯', hint: '每日打卡提醒' },
+  'daily-review-reminder': { emoji: '📖', title: '日复盘', hint: '睡前提醒填写' },
+  'auto-ledger': { emoji: '🖼️', title: '截图记账', hint: '识别到账单截图时' },
+};
+
 function pad2(n: number) {
   return n < 10 ? `0${n}` : String(n);
 }
 
+function permLabel(permission: NotificationPermissionSnapshot | null): string {
+  if (!permission) return '检测中…';
+  if (permission.sandboxDisabled) return 'Expo Go 沙盒不会展示本地通知';
+  if (permission.status === 'granted') return '已允许通知、声音与角标';
+  if (permission.status === 'denied') return '已拒绝 · 请到系统设置开启';
+  if (Platform.OS === 'web') return 'Web 端不支持本地推送';
+  return '尚未决定 · 可请求授权';
+}
+
 export type NotificationCenterScreenProps = {
-  /** 嵌入消息模块时隐藏自有顶栏，避免与「消息」页双重标题 */
+  /** 嵌入消息模块时隐藏自有顶栏 */
   embedded?: boolean;
+  onMasterEnabledChange?: (enabled: boolean) => void;
 };
 
-export function NotificationCenterScreen({ embedded = false }: NotificationCenterScreenProps) {
+export function NotificationCenterScreen({
+  embedded = false,
+  onMasterEnabledChange,
+}: NotificationCenterScreenProps) {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const theme = Colors[colorScheme ?? 'light'];
-  const text = theme.text;
-  const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
-  const pageBg = theme.background;
+  const { fold } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -92,25 +116,32 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
   const [habits, setHabits] = useState<HabitRowUi[]>([]);
   const [reviewEnabled, setReviewEnabled] = useState(false);
   const [reviewTime, setReviewTime] = useState(() => dailyReviewReminderTimeToDate(21, 0));
+  const [scheduledCount, setScheduledCount] = useState(0);
+  const [nextFireLabel, setNextFireLabel] = useState<string | null>(null);
+  const [showHabits, setShowHabits] = useState(false);
   const [timePicker, setTimePicker] = useState<
     | null
-    | { kind: 'health-fixed' | 'health-quiet-start' | 'health-quiet-end' | 'review' | 'habit'; habitId?: string }
+    | {
+        kind: 'health-fixed' | 'health-quiet-start' | 'health-quiet-end' | 'review' | 'habit';
+        habitId?: string;
+      }
   >(null);
   const [draftTime, setDraftTime] = useState(() => dailyReviewReminderTimeToDate(20, 0));
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSettings, nextPerm, habitRows, review] = await Promise.all([
+      const [nextSettings, nextPerm, habitRows, review, scheduled] = await Promise.all([
         getNotificationCenterSettings(),
         getNotificationPermissionSnapshot(),
         getHabits().catch(() => []),
         getDailyReviewReminderSettings(),
+        listScheduledAppNotifications().catch(() => []),
       ]);
       setSettings(nextSettings);
       setPermission(nextPerm);
       setHabits(
-        habitRows.map(h => {
+        habitRows.map((h) => {
           const rem = parseHabitReminder(h.extra_data);
           return {
             id: h.id,
@@ -123,12 +154,16 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
       );
       setReviewEnabled(review.enabled);
       setReviewTime(dailyReviewReminderTimeToDate(review.hour, review.minute));
+      setScheduledCount(scheduled.length);
+      const next = scheduled.find((s) => s.status === 'active' && s.fireAtLabel);
+      setNextFireLabel(next?.fireAtLabel ?? null);
+      onMasterEnabledChange?.(nextSettings.masterEnabled !== false);
     } catch (e) {
       console.warn('加载通知管理失败', e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onMasterEnabledChange]);
 
   useFocusEffect(
     useCallback(() => {
@@ -136,8 +171,13 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
     }, [reload]),
   );
 
+  useEffect(() => {
+    if (settings) onMasterEnabledChange?.(settings.masterEnabled !== false);
+  }, [onMasterEnabledChange, settings]);
+
   const applySettings = useCallback(async (next: NotificationCenterSettings) => {
     setSettings(next);
+    onMasterEnabledChange?.(next.masterEnabled !== false);
     setBusy(true);
     try {
       await resyncAppNotificationsAfterPreferenceChange(next);
@@ -147,7 +187,7 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [onMasterEnabledChange]);
 
   const onMasterToggle = useCallback(
     async (enabled: boolean) => {
@@ -259,7 +299,7 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
     ) => {
       setBusy(true);
       try {
-        const habit = (await getHabits()).find(h => h.id === habitId);
+        const habit = (await getHabits()).find((h) => h.id === habitId);
         if (!habit) return;
         const extra = mergeHabitReminderIntoExtraData(habit.extra_data, reminder);
         await updateHabit(habitId, { extra_data: extra });
@@ -282,8 +322,8 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
             extraData: extra,
           });
         }
-        setHabits(prev =>
-          prev.map(h =>
+        setHabits((prev) =>
+          prev.map((h) =>
             h.id === habitId
               ? {
                   ...h,
@@ -343,7 +383,6 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
       }
       if (date) {
         setDraftTime(date);
-        // Android 选完即提交
         const { hour, minute } = readDailyReviewReminderTimeFromDate(date);
         const kind = timePicker?.kind;
         const habitId = timePicker?.habitId;
@@ -365,384 +404,427 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
   const masterOn = settings?.masterEnabled !== false;
   const health = settings?.health;
   const advance = settings?.schedule.advanceMinutes ?? 15;
+  const healthChannelOn = settings?.categories['health-intake-reminder'] !== false;
 
-  return (
-    <SafeAreaView
-      style={[styles.safe, { backgroundColor: embedded ? 'transparent' : pageBg }]}
-      edges={embedded ? [] : ['top']}>
-      {embedded ? null : (
-        <View style={[styles.header, { borderBottomColor: cardBorder }]}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerIcon}>
-            <MaterialIcons name="arrow-back" size={22} color={text} />
+  const habitSummary = useMemo(() => {
+    const enabled = habits.filter((h) => h.enabled);
+    if (enabled.length === 0) return '未开启';
+    const first = enabled[0]!;
+    const clock = formatHabitReminderClock({
+      enabled: true,
+      hour: first.hour,
+      minute: first.minute,
+    });
+    return enabled.length === 1 ? clock : `${clock} · ${enabled.length} 个`;
+  }, [habits]);
+
+  const reviewClock = formatDailyReviewReminderClock(
+    readDailyReviewReminderTimeFromDate(reviewTime).hour,
+    readDailyReviewReminderTimeFromDate(reviewTime).minute,
+  );
+
+  const switchTrack = {
+    false: fold.trackOff,
+    true: fold.pineButton,
+  } as const;
+
+  const body = (
+    <>
+      {!embedded ? (
+        <View style={[styles.appBar, { borderBottomColor: fold.line }]}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={12}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              { borderColor: fold.line, backgroundColor: fold.card },
+              pressed && { opacity: 0.88 },
+            ]}>
+            <AppIcon name="arrow-back" size={18} color={fold.ink2} />
           </Pressable>
-          <Text style={[styles.headerTitle, { color: text }]}>提醒设置</Text>
-          <View style={styles.headerIcon} />
+          <View style={styles.appBarTitle}>
+            <Text style={[styles.title, { color: fold.ink }]}>提醒设置</Text>
+            <Text style={[styles.sub, { color: fold.muted }]}>本地调度 · 不上传服务器</Text>
+          </View>
+          <View
+            style={[
+              styles.statusTag,
+              { backgroundColor: masterOn ? fold.sage2 : fold.paper2 },
+            ]}>
+            <Text style={{ fontSize: 10, fontWeight: '700', color: masterOn ? '#36594D' : fold.muted }}>
+              {masterOn ? '已开启' : '已关闭'}
+            </Text>
+          </View>
         </View>
-      )}
+      ) : null}
 
       {loading || !settings || !health ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={primary} />
+          <ActivityIndicator color={fold.pine} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
-            <View style={styles.rowBetween}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>启用通知</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  关闭后将取消全部本地预约提醒，并停止新的推送登记。
-                </Text>
-                {permission ? (
-                  <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
-                    {permission.sandboxDisabled
-                      ? '当前为 Expo Go：系统不会展示本地通知。'
-                      : permission.status === 'granted'
-                        ? '系统通知权限：已授权'
-                        : permission.status === 'denied'
-                          ? '系统通知权限：已拒绝'
-                          : Platform.OS === 'web'
-                            ? 'Web 端不支持本地推送'
-                            : '系统通知权限：未决定'}
-                  </Text>
-                ) : null}
-                {Platform.OS === 'ios' ? (
-                  <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
-                    习惯、日程表、每日复盘使用强提醒：Time
-                    Sensitive、专属铃声；未处理时约 5/15
-                    分钟后再提醒。可在通知上点「完成」或「贪睡」。
-                  </Text>
-                ) : null}
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={12}>
+            <View style={[styles.card, styles.permCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <View style={[styles.permIcon, { backgroundColor: '#E3EFE6' }]}>
+                <AppIcon name="notifications" size={14} color="#3C614F" />
               </View>
-              <Switch
-                value={masterOn}
-                disabled={busy || Platform.OS === 'web'}
-                onValueChange={v => void onMasterToggle(v)}
-                trackColor={{ false: outlineVariant, true: primary }}
-                thumbColor="#ffffff"
-              />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.rowTitle}>系统通知权限</Text>
+                <Text style={styles.rowHint}>{permLabel(permission)}</Text>
+              </View>
+              <Pressable
+                onPress={() => {
+                  void (async () => {
+                    if (permission?.status !== 'granted') {
+                      const perm = await requestAppNotificationPermission();
+                      setPermission(perm);
+                      if (perm.status !== 'granted') await openSystemNotificationSettings();
+                    } else {
+                      await openSystemNotificationSettings();
+                    }
+                  })();
+                }}
+                style={({ pressed }) => [
+                  styles.pillBtn,
+                  {
+                    borderColor: fold.line2,
+                    backgroundColor: 'rgba(255,252,245,0.66)',
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}>
+                <Text style={[styles.pillLabel, { color: fold.ink2 }]}>去设置 ›</Text>
+              </Pressable>
             </View>
-          </View>
+          </FoldRiseIn>
 
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: cardBg,
-                borderColor: cardBorder,
-                gap: 10,
-                opacity: masterOn ? 1 : 0.55,
-              },
-            ]}
-            pointerEvents={masterOn ? 'auto' : 'none'}>
-            <Text style={[styles.rowTitle, { color: text }]}>推送频道</Text>
-            {NOTIFICATION_CATEGORIES.map(cat => {
-              const enabled = settings.categories[cat.id] !== false;
-              return (
-                <View key={cat.id} style={styles.categoryBlock}>
-                  <View style={styles.rowBetween}>
-                    <View style={{ flex: 1, paddingRight: 10 }}>
-                      <Text style={[styles.categoryTitle, { color: text }]}>{cat.title}</Text>
-                      <Text style={[styles.rowHint, { color: outline, marginTop: 2 }]}>
-                        {cat.description}
-                      </Text>
+          <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={12}>
+            <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line, paddingVertical: 8 }]}>
+              <View style={styles.toggleRow}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={styles.rowTitle}>允许折页提醒我</Text>
+                  <Text style={styles.rowHint}>关闭后所有本地通知静默，不删除已预约</Text>
+                </View>
+                <Switch
+                  value={masterOn}
+                  disabled={busy || Platform.OS === 'web'}
+                  onValueChange={(v) => void onMasterToggle(v)}
+                  trackColor={switchTrack}
+                  thumbColor="#ffffff"
+                  style={motionOn ? undefined : undefined}
+                />
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={2} staggerMs={45} fromY={12}>
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: fold.card,
+                  borderColor: fold.line,
+                  opacity: masterOn ? 1 : 0.55,
+                },
+              ]}
+              pointerEvents={masterOn ? 'auto' : 'none'}>
+              <View style={styles.sectionHead}>
+                <Text style={styles.sectionTitle}>频道</Text>
+                <Text style={styles.sectionHint}>逐项可控</Text>
+              </View>
+              {NOTIFICATION_CATEGORIES.map((cat) => {
+                const ui = CHANNEL_UI[cat.id];
+                const enabled = settings.categories[cat.id] !== false;
+                return (
+                  <View key={cat.id} style={styles.toggleRow}>
+                    <Text style={styles.ti}>{ui.emoji}</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.rowTitle}>{ui.title}</Text>
+                      <Text style={styles.rowHint}>{ui.hint}</Text>
                     </View>
                     <Switch
                       value={enabled}
                       disabled={busy}
-                      onValueChange={v => void onCategoryToggle(cat.id, v)}
-                      trackColor={{ false: outlineVariant, true: primary }}
+                      onValueChange={(v) => void onCategoryToggle(cat.id, v)}
+                      trackColor={switchTrack}
                       thumbColor="#ffffff"
                     />
                   </View>
-                </View>
-              );
-            })}
-          </View>
-
-          {/* 健康偏好 */}
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: cardBg,
-                borderColor: cardBorder,
-                gap: 10,
-                opacity: masterOn && settings.categories['health-intake-reminder'] !== false ? 1 : 0.55,
-              },
-            ]}
-            pointerEvents={
-              masterOn && settings.categories['health-intake-reminder'] !== false ? 'auto' : 'none'
-            }>
-            <Text style={[styles.rowTitle, { color: text }]}>健康摄入提醒</Text>
-            <Text style={[styles.rowHint, { color: outline }]}>
-              今日（健康逻辑日）水/蛋白/碳/热量任一未达目标时推送；达标后停止。每日最多 2 条。
-            </Text>
-            <Text style={[styles.subLabel, { color: text }]}>模式</Text>
-            <View style={styles.chipRow}>
-              {(
-                [
-                  { id: 'fixed' as HealthIntakeReminderMode, label: '固定时刻' },
-                  { id: 'interval' as HealthIntakeReminderMode, label: '间隔检查' },
-                ] as const
-              ).map(opt => {
-                const selected = health.mode === opt.id;
-                return (
-                  <Pressable
-                    key={opt.id}
-                    onPress={() => void patchHealth({ mode: opt.id })}
-                    style={[
-                      styles.chip,
-                      {
-                        borderColor: selected ? primary : outlineVariant,
-                        backgroundColor: selected
-                          ? isDark
-                            ? 'rgba(96,165,250,0.15)'
-                            : 'rgba(0,88,190,0.08)'
-                          : 'transparent',
-                      },
-                    ]}>
-                    <Text style={[styles.chipText, { color: text }]}>{opt.label}</Text>
-                  </Pressable>
                 );
               })}
             </View>
-            {health.mode === 'fixed' ? (
-              <Pressable
-                onPress={() =>
-                  openTimePicker(
-                    'health-fixed',
-                    dailyReviewReminderTimeToDate(health.fixedHour, health.fixedMinute),
-                  )
-                }
-                style={[styles.timeRow, { borderColor: cardBorder }]}>
-                <Text style={[styles.rowHint, { color: outline }]}>固定时刻</Text>
-                <Text style={[styles.timeValue, { color: text }]}>
-                  {pad2(health.fixedHour)}:{pad2(health.fixedMinute)}
-                </Text>
-              </Pressable>
-            ) : (
-              <View style={styles.chipRow}>
-                {INTERVAL_OPTIONS.map(mins => {
-                  const selected = health.intervalMinutes === mins;
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={12}>
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: fold.card,
+                  borderColor: fold.line,
+                  opacity: masterOn && healthChannelOn ? 1 : 0.55,
+                },
+              ]}
+              pointerEvents={masterOn && healthChannelOn ? 'auto' : 'none'}>
+              <View style={styles.sectionHead}>
+                <Text style={styles.sectionTitle}>健康提醒模式</Text>
+                <View
+                  style={[
+                    styles.statusTag,
+                    { backgroundColor: healthChannelOn ? fold.sage2 : fold.paper2 },
+                  ]}>
+                  <Text
+                    style={{
+                      fontSize: 9,
+                      fontWeight: '700',
+                      color: healthChannelOn ? '#36594D' : fold.muted,
+                    }}>
+                    {healthChannelOn ? '已开启' : '已关闭'}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.pillRow}>
+                {(
+                  [
+                    { id: 'fixed' as HealthIntakeReminderMode, label: '固定时刻' },
+                    { id: 'interval' as HealthIntakeReminderMode, label: '间隔提醒' },
+                  ] as const
+                ).map((opt) => {
+                  const on = health.mode === opt.id;
                   return (
                     <Pressable
-                      key={mins}
-                      onPress={() => void patchHealth({ intervalMinutes: mins })}
-                      style={[
-                        styles.chip,
+                      key={opt.id}
+                      onPress={() => void patchHealth({ mode: opt.id })}
+                      style={({ pressed }) => [
+                        styles.pill2,
                         {
-                          borderColor: selected ? primary : outlineVariant,
-                          backgroundColor: selected
-                            ? isDark
-                              ? 'rgba(96,165,250,0.15)'
-                              : 'rgba(0,88,190,0.08)'
-                            : 'transparent',
+                          backgroundColor: on ? fold.pineButton : '#F7F3E9',
+                          borderColor: on ? fold.pineButton : fold.line,
                         },
+                        pressed && { transform: [{ scale: 0.96 }] },
                       ]}>
-                      <Text style={[styles.chipText, { color: text }]}>{mins} 分钟</Text>
+                      <Text
+                        style={[
+                          styles.pill2Text,
+                          { color: on ? fold.onPineButton : fold.muted, fontWeight: on ? '700' : '600' },
+                        ]}>
+                        {opt.label}
+                      </Text>
                     </Pressable>
                   );
                 })}
               </View>
-            )}
-            <Text style={[styles.subLabel, { color: text }]}>免打扰</Text>
-            <Pressable
-              onPress={() =>
-                openTimePicker(
-                  'health-quiet-start',
-                  dailyReviewReminderTimeToDate(health.quietStartHour, health.quietStartMinute),
-                )
-              }
-              style={[styles.timeRow, { borderColor: cardBorder }]}>
-              <Text style={[styles.rowHint, { color: outline }]}>开始</Text>
-              <Text style={[styles.timeValue, { color: text }]}>
-                {pad2(health.quietStartHour)}:{pad2(health.quietStartMinute)}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() =>
-                openTimePicker(
-                  'health-quiet-end',
-                  dailyReviewReminderTimeToDate(health.quietEndHour, health.quietEndMinute),
-                )
-              }
-              style={[styles.timeRow, { borderColor: cardBorder }]}>
-              <Text style={[styles.rowHint, { color: outline }]}>结束</Text>
-              <Text style={[styles.timeValue, { color: text }]}>
-                {pad2(health.quietEndHour)}:{pad2(health.quietEndMinute)}
-              </Text>
-            </Pressable>
-            <Text style={[styles.rowHint, { color: outline, fontSize: 11 }]}>
-              免打扰内本应发出的提醒会延后到结束时刻，仍计入每日 2 条上限。
-            </Text>
-          </View>
 
-          {/* 日程表 */}
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: cardBg,
-                borderColor: cardBorder,
-                gap: 10,
-                opacity:
-                  masterOn && settings.categories['schedule-slot-reminder'] !== false ? 1 : 0.55,
-              },
-            ]}
-            pointerEvents={
-              masterOn && settings.categories['schedule-slot-reminder'] !== false ? 'auto' : 'none'
-            }>
-            <Text style={[styles.rowTitle, { color: text }]}>日程表提醒</Text>
-            <Text style={[styles.rowHint, { color: outline }]}>
-              已入格占用在开始前推送；未入格任务不提醒。提前 {advance} 分钟（5–60）。
-            </Text>
-            <View style={styles.stepperRow}>
-              <Pressable
-                onPress={() => void patchScheduleAdvance(advance - 5)}
-                disabled={busy || advance <= 5}
-                style={[styles.stepperBtn, { borderColor: cardBorder, opacity: advance <= 5 ? 0.4 : 1 }]}>
-                <MaterialIcons name="remove" size={20} color={text} />
-              </Pressable>
-              <Text style={[styles.timeValue, { color: text }]}>{advance} 分钟</Text>
-              <Pressable
-                onPress={() => void patchScheduleAdvance(advance + 5)}
-                disabled={busy || advance >= 60}
-                style={[
-                  styles.stepperBtn,
-                  { borderColor: cardBorder, opacity: advance >= 60 ? 0.4 : 1 },
-                ]}>
-                <MaterialIcons name="add" size={20} color={text} />
-              </Pressable>
-            </View>
-          </View>
-
-          {/* 习惯 */}
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: cardBg,
-                borderColor: cardBorder,
-                gap: 10,
-                opacity: masterOn && settings.categories['habit-reminder'] !== false ? 1 : 0.55,
-              },
-            ]}
-            pointerEvents={
-              masterOn && settings.categories['habit-reminder'] !== false ? 'auto' : 'none'
-            }>
-            <Text style={[styles.rowTitle, { color: text }]}>习惯打卡提醒</Text>
-            <Text style={[styles.rowHint, { color: outline }]}>
-              与习惯详情同源；关闭或改时间后立刻重同步。
-            </Text>
-            {habits.length === 0 ? (
-              <Text style={[styles.rowHint, { color: outline }]}>暂无习惯</Text>
-            ) : (
-              habits.map(h => (
-                <View key={h.id} style={[styles.habitRow, { borderColor: cardBorder }]}>
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={[styles.categoryTitle, { color: text }]} numberOfLines={1}>
-                      {h.name}
-                    </Text>
-                    {h.enabled ? (
+              {health.mode === 'fixed' ? (
+                <Pressable
+                  onPress={() =>
+                    openTimePicker(
+                      'health-fixed',
+                      dailyReviewReminderTimeToDate(health.fixedHour, health.fixedMinute),
+                    )
+                  }
+                  style={({ pressed }) => [
+                    styles.tpill,
+                    {
+                      backgroundColor: '#E7EFE9',
+                      borderColor: '#BFD4C6',
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <Text style={[styles.tpillText, { color: '#3C5C4D', fontFamily: foldFonts.mono }]}>
+                    ✓ {pad2(health.fixedHour)}:{pad2(health.fixedMinute)}
+                  </Text>
+                </Pressable>
+              ) : (
+                <View style={styles.tpillRow}>
+                  {INTERVAL_OPTIONS.map((mins) => {
+                    const on = health.intervalMinutes === mins;
+                    return (
                       <Pressable
-                        onPress={() =>
-                          openTimePicker(
-                            'habit',
-                            dailyReviewReminderTimeToDate(h.hour, h.minute),
-                            h.id,
-                          )
-                        }>
-                        <Text style={[styles.rowHint, { color: primary }]}>
-                          每日 {formatHabitReminderClock({ enabled: true, hour: h.hour, minute: h.minute })}
+                        key={mins}
+                        onPress={() => void patchHealth({ intervalMinutes: mins })}
+                        style={[
+                          styles.tpill,
+                          {
+                            backgroundColor: on ? '#E7EFE9' : '#F8F4EA',
+                            borderColor: on ? '#BFD4C6' : fold.line,
+                          },
+                        ]}>
+                        <Text
+                          style={[
+                            styles.tpillText,
+                            { color: on ? '#3C5C4D' : '#6F7A72', fontWeight: on ? '700' : '600' },
+                          ]}>
+                          {on ? '✓ ' : ''}
+                          {mins} 分
                         </Text>
                       </Pressable>
-                    ) : (
-                      <Text style={[styles.rowHint, { color: outline }]}>未开启</Text>
-                    )}
-                  </View>
-                  <Switch
-                    value={h.enabled}
-                    disabled={busy}
-                    onValueChange={v => {
-                      void persistHabitReminder(
-                        h.id,
-                        v ? { enabled: true, hour: h.hour, minute: h.minute } : { enabled: false },
-                      );
-                    }}
-                    trackColor={{ false: outlineVariant, true: primary }}
-                    thumbColor="#ffffff"
-                  />
+                    );
+                  })}
                 </View>
-              ))
-            )}
-          </View>
+              )}
 
-          {/* 复盘 */}
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: cardBg,
-                borderColor: cardBorder,
-                gap: 10,
-                opacity:
-                  masterOn && settings.categories['daily-review-reminder'] !== false ? 1 : 0.55,
-              },
-            ]}
-            pointerEvents={
-              masterOn && settings.categories['daily-review-reminder'] !== false ? 'auto' : 'none'
-            }>
-            <View style={styles.rowBetween}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>每日复盘提醒</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  与复盘设置同源；已填写日复盘或周复盘日会跳过。
+              <View style={[styles.quietRow, { marginTop: 8 }]}>
+                <Pressable
+                  onPress={() =>
+                    openTimePicker(
+                      'health-quiet-start',
+                      dailyReviewReminderTimeToDate(health.quietStartHour, health.quietStartMinute),
+                    )
+                  }>
+                  <Text style={styles.quietText}>
+                    免打扰 {pad2(health.quietStartHour)}:{pad2(health.quietStartMinute)}
+                  </Text>
+                </Pressable>
+                <Text style={styles.quietText}> – </Text>
+                <Pressable
+                  onPress={() =>
+                    openTimePicker(
+                      'health-quiet-end',
+                      dailyReviewReminderTimeToDate(health.quietEndHour, health.quietEndMinute),
+                    )
+                  }>
+                  <Text style={styles.quietText}>
+                    {pad2(health.quietEndHour)}:{pad2(health.quietEndMinute)}
+                  </Text>
+                </Pressable>
+                <Text style={[styles.quietText, { marginLeft: 'auto' as never, color: '#A0A69D' }]}>
+                  每日最多 2 条
                 </Text>
               </View>
-              <Switch
-                value={reviewEnabled}
-                disabled={busy}
-                onValueChange={v => {
-                  const { hour, minute } = readDailyReviewReminderTimeFromDate(reviewTime);
-                  void persistReview({ enabled: v, hour, minute });
-                }}
-                trackColor={{ false: outlineVariant, true: primary }}
-                thumbColor="#ffffff"
-              />
             </View>
-            {reviewEnabled ? (
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
+            <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line, paddingVertical: 8 }]}>
               <Pressable
-                onPress={() => openTimePicker('review', reviewTime)}
-                style={[styles.timeRow, { borderColor: cardBorder }]}>
-                <Text style={[styles.rowHint, { color: outline }]}>提醒时间</Text>
-                <Text style={[styles.timeValue, { color: text }]}>
-                  {formatDailyReviewReminderClock(
-                    readDailyReviewReminderTimeFromDate(reviewTime).hour,
-                    readDailyReviewReminderTimeFromDate(reviewTime).minute,
+                onPress={() => {
+                  Alert.alert(
+                    '日程提前',
+                    `当前提前 ${advance} 分钟提醒`,
+                    [
+                      { text: '取消', style: 'cancel' },
+                      advance > 5
+                        ? { text: '-5 分钟', onPress: () => void patchScheduleAdvance(advance - 5) }
+                        : undefined,
+                      advance < 60
+                        ? { text: '+5 分钟', onPress: () => void patchScheduleAdvance(advance + 5) }
+                        : undefined,
+                    ].filter(Boolean) as { text: string; style?: 'cancel'; onPress?: () => void }[],
+                  );
+                }}
+                style={styles.linkRow}>
+                <Text style={styles.linkLabel}>日程提前</Text>
+                <Text style={[styles.linkValue, { color: '#8B6126' }]}>{advance} 分钟 ›</Text>
+              </Pressable>
+              <Pressable onPress={() => setShowHabits((v) => !v)} style={styles.linkRow}>
+                <Text style={styles.linkLabel}>习惯提醒</Text>
+                <Text style={[styles.linkValue, { color: '#8B6126' }]}>{habitSummary} ›</Text>
+              </Pressable>
+              {showHabits ? (
+                <View style={styles.habitList}>
+                  {habits.length === 0 ? (
+                    <Text style={styles.rowHint}>暂无习惯</Text>
+                  ) : (
+                    habits.map((h) => (
+                      <View key={h.id} style={styles.habitRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.rowTitle} numberOfLines={1}>
+                            {h.name}
+                          </Text>
+                          {h.enabled ? (
+                            <Pressable
+                              onPress={() =>
+                                openTimePicker(
+                                  'habit',
+                                  dailyReviewReminderTimeToDate(h.hour, h.minute),
+                                  h.id,
+                                )
+                              }>
+                              <Text style={[styles.rowHint, { color: '#8B6126' }]}>
+                                每日{' '}
+                                {formatHabitReminderClock({
+                                  enabled: true,
+                                  hour: h.hour,
+                                  minute: h.minute,
+                                })}
+                              </Text>
+                            </Pressable>
+                          ) : (
+                            <Text style={styles.rowHint}>未开启</Text>
+                          )}
+                        </View>
+                        <Switch
+                          value={h.enabled}
+                          disabled={busy}
+                          onValueChange={(v) => {
+                            void persistHabitReminder(
+                              h.id,
+                              v
+                                ? { enabled: true, hour: h.hour, minute: h.minute }
+                                : { enabled: false },
+                            );
+                          }}
+                          trackColor={switchTrack}
+                          thumbColor="#ffffff"
+                        />
+                      </View>
+                    ))
                   )}
+                </View>
+              ) : null}
+              <Pressable
+                onPress={() => {
+                  if (!reviewEnabled) {
+                    const { hour, minute } = readDailyReviewReminderTimeFromDate(reviewTime);
+                    void persistReview({ enabled: true, hour, minute });
+                  }
+                  openTimePicker('review', reviewTime);
+                }}
+                style={styles.linkRow}>
+                <Text style={styles.linkLabel}>日复盘提醒</Text>
+                <Text style={[styles.linkValue, { color: '#8B6126' }]}>
+                  {reviewEnabled ? `${reviewClock} ›` : '未开启 ›'}
                 </Text>
               </Pressable>
-            ) : null}
-          </View>
-
-          <Pressable
-            onPress={() => router.push('/notification-center-scheduled' as never)}
-            style={({ pressed }) => [
-              styles.card,
-              styles.actionCard,
-              { backgroundColor: cardBg, borderColor: cardBorder, opacity: pressed ? 0.88 : 1 },
-            ]}>
-            <MaterialIcons name="event-note" size={24} color={primary} />
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.rowTitle, { color: text }]}>已预约通知</Text>
-              <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                将来要响的提醒队列（「通知」列表是已经响过的记录）
-              </Text>
             </View>
-            <MaterialIcons name="chevron-right" size={22} color={outline} />
-          </Pressable>
+          </FoldRiseIn>
 
+          <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={12}>
+            <Pressable
+              onPress={() => router.push('/notification-center-scheduled' as never)}
+              style={({ pressed }) => [
+                styles.card,
+                styles.schedEntry,
+                {
+                  backgroundColor: fold.card,
+                  borderColor: fold.line,
+                  opacity: pressed ? 0.9 : 1,
+                  transform: [{ scale: pressed ? 0.985 : 1 }],
+                },
+              ]}>
+              <AppIcon name="access-time" size={16} color="#6A786F" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>已预约通知</Text>
+                <Text style={styles.rowHint}>
+                  {scheduledCount > 0
+                    ? `${scheduledCount} 条${nextFireLabel ? ` · 最近 ${nextFireLabel}` : ''}`
+                    : '暂无预约 · 开启频道后自动登记'}
+                </Text>
+              </View>
+              <Text style={{ color: '#B2B6AD', fontSize: 14 }}>›</Text>
+            </Pressable>
+          </FoldRiseIn>
+
+          <View style={styles.footNote}>
+            <View style={[styles.dot, { backgroundColor: fold.sage }]} />
+            <Text style={[styles.footText, { color: fold.muted }]}>
+              全部在本地调度 · 可随时一键暂停
+            </Text>
+          </View>
           <View style={{ height: 28 }} />
         </ScrollView>
       )}
@@ -751,21 +833,16 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
         <Modal transparent animationType="fade" visible onRequestClose={() => setTimePicker(null)}>
           <View style={styles.modalRoot}>
             <Pressable style={styles.modalBackdrop} onPress={() => setTimePicker(null)} />
-            <View style={[styles.modalCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <DateTimePicker
-                value={draftTime}
-                mode="time"
-                display="spinner"
-                onChange={onTimeChange}
-              />
+            <View style={[styles.modalCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <DateTimePicker value={draftTime} mode="time" display="spinner" onChange={onTimeChange} />
               <View style={styles.modalActions}>
                 <Pressable onPress={() => setTimePicker(null)} style={styles.modalBtn}>
-                  <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
+                  <Text style={{ color: fold.muted, fontWeight: '700' }}>取消</Text>
                 </Pressable>
                 <Pressable
                   onPress={commitTimePicker}
-                  style={[styles.modalBtn, { backgroundColor: primary }]}>
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>确定</Text>
+                  style={[styles.modalBtn, { backgroundColor: fold.pineButton }]}>
+                  <Text style={{ color: fold.onPineButton, fontWeight: '700' }}>确定</Text>
                 </Pressable>
               </View>
             </View>
@@ -775,80 +852,145 @@ export function NotificationCenterScreen({ embedded = false }: NotificationCente
       {timePicker && Platform.OS === 'android' ? (
         <DateTimePicker value={draftTime} mode="time" display="default" onChange={onTimeChange} />
       ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return <View style={styles.root}>{body}</View>;
+  }
+  return (
+    <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['top']}>
+      {body}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  header: {
+  root: { flex: 1 },
+  appBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  headerIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700' },
+  iconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appBarTitle: { flex: 1 },
+  title: { fontSize: 15, fontWeight: '700' },
+  sub: { fontSize: 10, marginTop: 2 },
+  statusTag: {
+    height: 22,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scroll: { padding: 16, gap: 12 },
+  scroll: { paddingBottom: 16, gap: 7 },
   card: {
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
   },
-  actionCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  rowBetween: { flexDirection: 'row', alignItems: 'center' },
-  rowTitle: { fontSize: 15, fontWeight: '700' },
-  rowHint: { fontSize: 12, lineHeight: 17 },
-  categoryTitle: { fontSize: 14, fontWeight: '700' },
-  categoryBlock: { gap: 4, paddingTop: 4 },
-  subLabel: { fontSize: 13, fontWeight: '700', marginTop: 4 },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
+  permCard: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  permIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pillBtn: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  chipText: { fontSize: 13, fontWeight: '600' },
-  timeRow: {
+  pillLabel: { fontSize: 10, fontWeight: '650' as never },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 34,
+    paddingVertical: 4,
+  },
+  ti: { fontSize: 14, width: 22, textAlign: 'center' },
+  rowTitle: { fontSize: 12, fontWeight: '700', color: '#3F4C44' },
+  rowHint: { fontSize: 10, color: '#9A9F97', marginTop: 1, lineHeight: 14 },
+  sectionHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    marginBottom: 4,
   },
-  timeValue: { fontSize: 16, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  stepperRow: {
+  sectionTitle: { fontSize: 11, fontWeight: '700', color: '#4F5C53' },
+  sectionHint: { fontSize: 9, color: '#A0A69D' },
+  pillRow: { flexDirection: 'row', gap: 5, marginBottom: 6 },
+  pill2: {
+    flex: 1,
+    height: 30,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pill2Text: { fontSize: 11 },
+  tpillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  tpill: {
+    height: 23,
+    paddingHorizontal: 8,
+    borderRadius: 7,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'flex-start',
+  },
+  tpillText: { fontSize: 11 },
+  quietRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
+  quietText: { fontSize: 10, color: '#8D958D' },
+  linkRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 20,
-    paddingVertical: 4,
+    justifyContent: 'space-between',
+    paddingVertical: 7,
   },
-  stepperBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  linkLabel: { fontSize: 12, color: '#5E6B62' },
+  linkValue: { fontSize: 12, fontWeight: '700' },
+  habitList: { paddingBottom: 4, gap: 6 },
   habitRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
+    paddingVertical: 4,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
+    borderTopColor: 'rgba(230,221,206,0.65)',
   },
+  schedEntry: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  footNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
+  dot: { width: 5, height: 5, borderRadius: 3 },
+  footText: { fontSize: 10 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
-  modalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.35)' },
+  modalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(24,32,28,0.42)' },
   modalCard: {
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     padding: 16,
     paddingBottom: 24,

@@ -120,7 +120,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import Svg, { Circle } from 'react-native-svg';
 
 const { width } = Dimensions.get('window');
@@ -3574,6 +3574,8 @@ export default function HealthScreen() {
                     key={line.key}
                     overshootRight={false}
                     rightThreshold={44}
+                    // ReanimatedSwipeable 删除条常驻内容层后方；不透明底避免未左滑时透出
+                    childrenContainerStyle={{ backgroundColor: hh.paper }}
                     renderRightActions={() => (
                       <Pressable
                         onPress={() => {
@@ -4791,12 +4793,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   swipeDeleteAction: {
-    width: 86,
+    width: 76,
+    alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: Radius.lg,
-    marginLeft: Spacing.xl,
-    marginVertical: 2,
+    marginVertical: 4,
     gap: 4,
   },
   swipeDeleteText: {

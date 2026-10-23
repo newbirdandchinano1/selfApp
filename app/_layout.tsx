@@ -3,7 +3,7 @@ import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
-import { InteractionManager, Platform, AppState, View } from 'react-native';
+import { Platform, AppState, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -157,7 +157,7 @@ function RootLayoutInner() {
   const runDeferredBootstrapOnce = () => {
     if (deferredStartedRef.current) return;
     deferredStartedRef.current = true;
-    InteractionManager.runAfterInteractions(() => {
+    requestIdleCallback(() => {
       void (async () => {
         try {
           await loadPersistedIntakeTargets();
@@ -419,6 +419,7 @@ function RootLayoutInner() {
             <Stack.Screen name="add-item" />
             <Stack.Screen name="points-ledger" />
             <Stack.Screen name="project-completion-logs" />
+            <Stack.Screen name="project-completion-log/[id]" />
             <Stack.Screen name="wish-board" />
             <Stack.Screen name="wish-board/[id]" />
             <Stack.Screen name="wish-board-footprints" />
@@ -426,6 +427,7 @@ function RootLayoutInner() {
             <Stack.Screen name="add-wish-board-item" />
             <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="life-road" />
+            <Stack.Screen name="edit-life-direction" />
             <Stack.Screen name="add-life-bet" />
             <Stack.Screen name="edit-life-bet/[id]" />
             <Stack.Screen name="memo-list" />

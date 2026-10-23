@@ -124,3 +124,50 @@ export async function getLifeBetDerivedStats(
     betStatus === 'on_track' && activeProjectCount !== null && activeProjectCount === 0;
   return { activeProjectCount, latestCompletedName, isEmptyWindow };
 }
+
+/**
+ * 关联项目下任务完成比例 0–1；无任务返回 null。
+ * 已完成/已放弃由调用方直接覆盖为 1 / 0.06。
+ */
+export async function getLifeBetProgressRatio(lifeBetId: string): Promise<number | null> {
+  const id = lifeBetId.trim();
+  if (!id) return null;
+  try {
+    const db = await getDatabase();
+    if (!db) return null;
+    const row = await db.getFirstAsync<{ done: number; total: number }>(
+      `SELECT
+         SUM(CASE WHEN t.status IN ('done', 'completed', 'cancelled') THEN 1 ELSE 0 END) AS done,
+         COUNT(*) AS total
+       FROM tasks t
+       INNER JOIN projects p ON p.id = t.project_id
+       WHERE p.life_bet_id = ?
+         AND p.sync_status != 'pending_delete'
+         AND t.sync_status != 'pending_delete'`,
+      [id],
+    );
+    const total = Number(row?.total ?? 0);
+    if (!Number.isFinite(total) || total <= 0) return null;
+    const done = Number(row?.done ?? 0);
+    return Math.max(0, Math.min(1, (Number.isFinite(done) ? done : 0) / total));
+  } catch (e) {
+    if (__DEV__) console.warn('[life-road-derived] progressRatio failed', id, e);
+    return null;
+  }
+}
+
+/** UI 进度条比例：状态优先，其次任务派生，再回退项目数启发式 */
+export function resolveLifeBetProgressRatio(
+  status: string,
+  taskRatio: number | null,
+  activeProjectCount: number | null,
+): number {
+  if (status === 'arrived') return 1;
+  if (status === 'dropped') return 0.06;
+  if (taskRatio != null && Number.isFinite(taskRatio)) {
+    return Math.max(0.04, Math.min(0.98, taskRatio));
+  }
+  const n = activeProjectCount ?? 0;
+  if (n <= 0) return 0.06;
+  return Math.max(0.12, Math.min(0.78, 0.18 + n * 0.14));
+}

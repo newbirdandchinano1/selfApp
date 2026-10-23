@@ -69,7 +69,9 @@
       [
         "expo-notifications",
         {
-          "sounds": ["./assets/sounds/strong_reminder.wav"],
+          "sounds": [
+            "./assets/sounds/strong_reminder.wav"
+          ],
           "enableBackgroundRemoteNotifications": false
         }
       ],
@@ -87,7 +89,10 @@
       "./plugins/with-zheng-app-intents",
       "expo-font",
       "expo-audio",
-      "expo-asset"
+      "expo-asset",
+      "expo-image",
+      "expo-secure-store",
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true,

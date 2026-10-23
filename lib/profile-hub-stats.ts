@@ -33,6 +33,8 @@ export type ProfileWishProgress = {
   pointsBalance: number;
   pointsNeeded: number;
   canRedeemNearest: boolean;
+  /** 余额足以兑换的在售心愿件数 */
+  redeemableCount: number;
   weekEarned: number;
   weekSpent: number;
 };
@@ -41,17 +43,28 @@ export type ProfileWeekRhythm = {
   weekStartYmd: string;
   weekEndYmd: string;
   habitCheckInTotal: number;
+  /** 习惯 × 已过天数，用于「9 / 11」分母 */
+  habitExpectedSlots: number;
   activeHabitCount: number;
   habitCheckInRatePercent: number;
   tasksCompleted: number;
+  /** 较上周任务完成数差；无上周数据时为 null */
+  tasksDeltaVsLastWeek: number | null;
   dailyReviewDays: number;
   daysElapsedInclusive: number;
   weeklyReviewDone: boolean;
+  /** 本周一至日：是否有日复盘；长度 7 */
+  dayStrip: boolean[];
+  /** 今天在 strip 中的下标，未落在本周则为 -1 */
+  todayStripIndex: number;
 };
 
 export type ProfileWeightTrend = {
   latestKg: number | null;
   points: { ymd: string; weight_kg: number }[];
+  /** 近 30 天首末体重差（末 − 首）；不足 2 点为 null */
+  deltaKg: number | null;
+  lastRecordYmd: string | null;
 };
 
 export type ProfileArchiveSummary = {
@@ -59,8 +72,17 @@ export type ProfileArchiveSummary = {
   lifestyle: string;
   workoutDaysLabel: string;
   personaFilled: boolean;
+  personaCharCount: number;
   dietarySummary: string;
   dietaryEmpty: boolean;
+};
+
+/** 资料待完善芯片（设计稿：画像 / 饮食 / 生日 / 身高体重） */
+export type ProfileFillChip = {
+  key: 'persona' | 'dietary' | 'birthday' | 'body';
+  label: string;
+  filled: boolean;
+  tab: 'basic' | 'persona' | 'body';
 };
 
 /** 我的页道路卡片：单条赌注摘要（含派生，失败时 count 为 null） */
@@ -88,13 +110,25 @@ export type ProfileRoadHub = {
 
 export type ProfileHubStats = {
   completeness: ProfileCompletenessItem[];
+  /** 设计稿四枚芯片 */
+  fillChips: ProfileFillChip[];
+  filledCount: number;
+  totalCount: number;
+  completenessPercent: number;
   missingCount: number;
+  /** 生日推算西式星座；无生日为 null */
+  zodiacLabel: string | null;
   wish: ProfileWishProgress;
   week: ProfileWeekRhythm;
   weightTrend: ProfileWeightTrend;
   archive: ProfileArchiveSummary;
   dietary: DietaryPrefs;
   road: ProfileRoadHub;
+  menuCounts: {
+    completionLogs: number;
+    memos: number;
+    recipes: number;
+  };
 };
 
 const EMPTY_ROAD: ProfileRoadHub = {
@@ -240,6 +274,79 @@ function buildCompleteness(user: UserRow | null, dietaryEmpty: boolean): Profile
   ];
 }
 
+function buildFillChips(user: UserRow | null, dietaryEmpty: boolean): ProfileFillChip[] {
+  return [
+    {
+      key: 'persona',
+      label: '人物画像',
+      filled: Boolean(user?.persona_portrait?.trim()),
+      tab: 'persona',
+    },
+    {
+      key: 'dietary',
+      label: '饮食偏好',
+      filled: !dietaryEmpty,
+      tab: 'body',
+    },
+    {
+      key: 'birthday',
+      label: '生日',
+      filled: Boolean(user?.birthday?.trim()),
+      tab: 'basic',
+    },
+    {
+      key: 'body',
+      label: '身高体重',
+      filled: Boolean(user && user.height > 0 && user.weight > 0),
+      tab: 'body',
+    },
+  ];
+}
+
+/** 西式星座中文名（按月日） */
+export function zodiacLabelFromBirthday(birthday: string | null | undefined): string | null {
+  const raw = birthday?.trim();
+  if (!raw || raw.length < 10) return null;
+  const m = Number(raw.slice(5, 7));
+  const d = Number(raw.slice(8, 10));
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const names = [
+    '摩羯座',
+    '水瓶座',
+    '双鱼座',
+    '白羊座',
+    '金牛座',
+    '双子座',
+    '巨蟹座',
+    '狮子座',
+    '处女座',
+    '天秤座',
+    '天蝎座',
+    '射手座',
+  ];
+  /** 当月此日（含）起进入下一星座 */
+  const nextStarts = [20, 19, 21, 20, 21, 22, 23, 23, 23, 24, 23, 22];
+  const idx = d < nextStarts[m - 1] ? (m + 11) % 12 : m % 12;
+  return names[idx];
+}
+
+function addDaysYmd(ymd: string, delta: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
+  dt.setDate(dt.getDate() + delta);
+  return localYmd(dt);
+}
+
+function formatMd(ymd: string): string {
+  const m = Number(ymd.slice(5, 7));
+  const d = Number(ymd.slice(8, 10));
+  return `${m}.${String(d).padStart(2, '0')}`;
+}
+
+export function formatWeekRangeLabel(startYmd: string, endYmd: string): string {
+  return `${formatMd(startYmd)} – ${formatMd(endYmd)}`;
+}
+
 export async function loadProfileHubStats(
   user: UserRow | null,
   pointsBalance: number,
@@ -252,44 +359,48 @@ export async function loadProfileHubStats(
   const dietary = await loadDietaryPrefs();
   const dietaryEmpty = isDietaryPrefsEmpty(dietary);
 
-  const [wishItems, weekPoints, weightLogs, dailyReviews, weeklyJournal, habitMeta, tasksDone, road] =
-    await Promise.all([
-      listWishBoardItems().catch(() => []),
-      loadWeekPoints(startYmd, endYmd),
-      listWeightLogsLastNDays(30, todayYmd).catch(() => []),
-      listDailyReviewsBetween(startYmd, elapsedEnd).catch(() => []),
-      getWeeklyReviewJournalByWeek(startYmd).catch(() => null),
-      (async () => {
-        const db = await getDatabase();
-        if (!db) return { checkIns: 0, habits: 0 };
-        const [habits, checkIns] = await Promise.all([
-          db.getAllAsync<{ id: string }>(`SELECT id FROM habits WHERE sync_status != 'pending_delete'`),
-          db.getAllAsync<{ habit_id: string; count: number }>(
-            `SELECT habit_id, count FROM habit_check_ins
+  const lastWeekStart = addDaysYmd(startYmd, -7);
+  const lastWeekEnd = addDaysYmd(startYmd, -1);
+
+  const [
+    wishItems,
+    weekPoints,
+    weightLogs,
+    dailyReviews,
+    weeklyJournal,
+    habitMeta,
+    tasksDone,
+    lastWeekTasks,
+    road,
+    menuCounts,
+  ] = await Promise.all([
+    listWishBoardItems().catch(() => []),
+    loadWeekPoints(startYmd, endYmd),
+    listWeightLogsLastNDays(30, todayYmd).catch(() => []),
+    listDailyReviewsBetween(startYmd, endYmd).catch(() => []),
+    getWeeklyReviewJournalByWeek(startYmd).catch(() => null),
+    (async () => {
+      const db = await getDatabase();
+      if (!db) return { checkIns: 0, habits: 0 };
+      const [habits, checkIns] = await Promise.all([
+        db.getAllAsync<{ id: string }>(`SELECT id FROM habits WHERE sync_status != 'pending_delete'`),
+        db.getAllAsync<{ habit_id: string; count: number }>(
+          `SELECT habit_id, count FROM habit_check_ins
              WHERE record_date >= ? AND record_date <= ? AND sync_status != 'pending_delete'`,
-            [startYmd, elapsedEnd],
-          ),
-        ]);
-        const active = new Set((habits ?? []).map((h) => h.id));
-        const total = (checkIns ?? [])
-          .filter((c) => active.has(c.habit_id) && (c.count ?? 0) > 0)
-          .reduce((sum, c) => sum + Math.max(0, Number(c.count) || 0), 0);
-        return { checkIns: total, habits: active.size };
-      })(),
-      (async () => {
-        const db = await getDatabase();
-        if (!db) return 0;
-        const tasks = await db.getAllAsync<{ status?: string; completed_at?: string | null }>(
-          `SELECT status, completed_at FROM tasks WHERE sync_status != 'pending_delete'`,
-        );
-        return (tasks ?? []).filter((t) => {
-          if (t.status !== 'done' || !t.completed_at) return false;
-          const day = ymdFromAuditDatetime(t.completed_at);
-          return day != null && isYmdInRange(day, startYmd, elapsedEnd);
-        }).length;
-      })(),
-      loadRoadHub(),
-    ]);
+          [startYmd, elapsedEnd],
+        ),
+      ]);
+      const active = new Set((habits ?? []).map((h) => h.id));
+      const total = (checkIns ?? [])
+        .filter((c) => active.has(c.habit_id) && (c.count ?? 0) > 0)
+        .reduce((sum, c) => sum + Math.max(0, Number(c.count) || 0), 0);
+      return { checkIns: total, habits: active.size };
+    })(),
+    countDoneTasksBetween(startYmd, elapsedEnd),
+    countDoneTasksBetween(lastWeekStart, lastWeekEnd),
+    loadRoadHub(),
+    loadMenuCounts(),
+  ]);
 
   const activeWishes = (wishItems ?? []).filter((w) => w.status === 'active');
   const priced = activeWishes
@@ -300,9 +411,22 @@ export async function loadProfileHubStats(
   const balance = roundPoints(pointsBalance);
   const nearestCost = nearest?.cost ?? 0;
   const pointsNeeded = nearest ? Math.max(0, roundPoints(nearestCost - balance)) : 0;
+  const redeemableCount = priced.filter((w) => w.cost <= balance).length;
 
   const expectedSlots = Math.max(1, habitMeta.habits * daysElapsedInclusive);
   const habitRate = Math.min(100, Math.round((habitMeta.checkIns / expectedSlots) * 100));
+
+  const reviewDays = new Set(
+    (dailyReviews ?? []).map((r) => r.record_date_ymd).filter(Boolean),
+  );
+  const dayStrip = Array.from({ length: 7 }, (_, i) => reviewDays.has(addDaysYmd(startYmd, i)));
+  let todayStripIndex = -1;
+  for (let i = 0; i < 7; i++) {
+    if (addDaysYmd(startYmd, i) === todayYmd) {
+      todayStripIndex = i;
+      break;
+    }
+  }
 
   const latestFromLog = weightLogs.length ? weightLogs[weightLogs.length - 1] : null;
   const latestKg =
@@ -311,19 +435,39 @@ export async function loadProfileHubStats(
       : user && user.weight > 0
         ? user.weight
         : null;
+  const weightPoints = (weightLogs ?? []).map((r) => ({
+    ymd: r.recorded_ymd,
+    weight_kg: r.weight_kg,
+  }));
+  const weightDeltaKg =
+    weightPoints.length >= 2
+      ? Math.round(
+          (weightPoints[weightPoints.length - 1].weight_kg - weightPoints[0].weight_kg) * 10,
+        ) / 10
+      : null;
 
   const workoutDays = parseWorkoutDays(user?.workout_days);
   const completeness = buildCompleteness(user, dietaryEmpty);
+  const fillChips = buildFillChips(user, dietaryEmpty);
+  const filledCount = completeness.filter((c) => c.filled).length;
+  const totalCount = completeness.length;
+  const personaText = user?.persona_portrait?.trim() ?? '';
 
   return {
     completeness,
-    missingCount: completeness.filter((c) => !c.filled).length,
+    fillChips,
+    filledCount,
+    totalCount,
+    completenessPercent: totalCount === 0 ? 0 : Math.round((filledCount / totalCount) * 100),
+    missingCount: totalCount - filledCount,
+    zodiacLabel: zodiacLabelFromBirthday(user?.birthday),
     wish: {
       nearestWishTitle: nearest?.title ?? null,
       nearestWishCost: nearestCost,
       pointsBalance: balance,
       pointsNeeded,
       canRedeemNearest: Boolean(nearest && pointsNeeded <= 0),
+      redeemableCount,
       weekEarned: weekPoints.earned,
       weekSpent: weekPoints.spent,
     },
@@ -331,29 +475,73 @@ export async function loadProfileHubStats(
       weekStartYmd: startYmd,
       weekEndYmd: endYmd,
       habitCheckInTotal: habitMeta.checkIns,
+      habitExpectedSlots: expectedSlots,
       activeHabitCount: habitMeta.habits,
       habitCheckInRatePercent: habitMeta.habits === 0 ? 0 : habitRate,
       tasksCompleted: tasksDone,
-      dailyReviewDays: (dailyReviews ?? []).length,
+      tasksDeltaVsLastWeek: tasksDone - lastWeekTasks,
+      dailyReviewDays: reviewDays.size,
       daysElapsedInclusive,
       weeklyReviewDone: Boolean(weeklyJournal),
+      dayStrip,
+      todayStripIndex,
     },
     weightTrend: {
       latestKg,
-      points: (weightLogs ?? []).map((r) => ({
-        ymd: r.recorded_ymd,
-        weight_kg: r.weight_kg,
-      })),
+      points: weightPoints,
+      deltaKg: weightDeltaKg,
+      lastRecordYmd: latestFromLog?.recorded_ymd ?? null,
     },
     archive: {
       goal: (user?.goal ?? '无').trim() || '无',
       lifestyle: (user?.lifestyle ?? '').trim() || '未设置',
-      workoutDaysLabel: workoutDays.length ? workoutDays.join('、') : '未设置',
-      personaFilled: Boolean(user?.persona_portrait?.trim()),
+      workoutDaysLabel: workoutDays.length ? workoutDays.join(' / ') : '未设置',
+      personaFilled: personaText.length > 0,
+      personaCharCount: personaText.length,
       dietarySummary: formatDietaryPrefsSummary(dietary),
       dietaryEmpty,
     },
     dietary,
     road,
+    menuCounts,
   };
+}
+
+async function countDoneTasksBetween(startYmd: string, endYmd: string): Promise<number> {
+  const db = await getDatabase();
+  if (!db) return 0;
+  const tasks = await db.getAllAsync<{ status?: string; completed_at?: string | null }>(
+    `SELECT status, completed_at FROM tasks WHERE sync_status != 'pending_delete'`,
+  );
+  return (tasks ?? []).filter((t) => {
+    if (t.status !== 'done' || !t.completed_at) return false;
+    const day = ymdFromAuditDatetime(t.completed_at);
+    return day != null && isYmdInRange(day, startYmd, endYmd);
+  }).length;
+}
+
+async function loadMenuCounts(): Promise<ProfileHubStats['menuCounts']> {
+  const empty = { completionLogs: 0, memos: 0, recipes: 0 };
+  try {
+    const db = await getDatabase();
+    if (!db) return empty;
+    const [logs, memos, recipes] = await Promise.all([
+      db.getFirstAsync<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM project_completion_logs WHERE sync_status != 'pending_delete'`,
+      ),
+      db.getFirstAsync<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM memos WHERE sync_status != 'pending_delete'`,
+      ).catch(() => ({ c: 0 })),
+      db.getFirstAsync<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM recipe_items WHERE sync_status != 'pending_delete'`,
+      ).catch(() => ({ c: 0 })),
+    ]);
+    return {
+      completionLogs: Number(logs?.c ?? 0),
+      memos: Number(memos?.c ?? 0),
+      recipes: Number(recipes?.c ?? 0),
+    };
+  } catch {
+    return empty;
+  }
 }

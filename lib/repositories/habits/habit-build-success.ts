@@ -1,6 +1,5 @@
 import { getLogicalLocalYmd, loadTasksDayBoundary, type TasksDayBoundary } from '@/lib/tasks-logical-day';
 import { isValidYmd } from '@/lib/date';
-import { InteractionManager } from 'react-native';
 import { getCheckInsMapByHabitId } from './habit-check-in';
 import { getHabitById, getHabits, updateHabit } from './habit';
 import type { HabitRow } from './habit.types';
@@ -144,7 +143,7 @@ export function scheduleSyncBuildHabitCompletions(opts?: { force?: boolean }): v
   }
   lastBuildHabitSyncAtMs = now;
 
-  InteractionManager.runAfterInteractions(() => {
+  requestIdleCallback(() => {
     void syncBuildHabitCompletions().catch((err) => {
       if (__DEV__) console.warn('[build-habit] scheduleSyncBuildHabitCompletions', err);
     });

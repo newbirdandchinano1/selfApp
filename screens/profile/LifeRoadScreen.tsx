@@ -1,35 +1,30 @@
 /**
- * 道路子页：总方向编辑 + 按时间桶分组的赌注列表 CRUD / 同桶排序。
+ * 道路总览：对齐设计稿 11 / 14（时间桶 Tab、总方向卡、名额已满拦截）。
+ * 动效：入场 420ms 错峰；切桶赌注上浮；满额点新增抖动 + 琥珀闪。
  */
 import {
-  AppButton,
-  AppInput,
-  AppScreen,
-  ScreenHeader,
-  ScreenHeaderIconAction,
-} from '@/components/ui';
+  FoldRiseIn,
+  FOLD_MOTION_EASE,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
 import { AppIcon } from '@/components/ui/app-icon';
-import { AppText } from '@/components/ui/app-text';
-import {
-  getMinTouchTarget,
-  getTaskUiColors,
-  Radius,
-  Spacing,
-} from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { getMinTouchTarget, Spacing } from '@/constants/design-tokens';
+import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   getLifeBetDerivedStats,
+  getLifeBetProgressRatio,
   listActiveProjectsForLifeBet,
+  resolveLifeBetProgressRatio,
   type LifeBetActiveProjectRef,
   type LifeBetDerivedStats,
 } from '@/lib/life-road/life-road-derived';
 import {
-  formatLifeBetDerivedCaption,
+  formatLifeBetListMeta,
   LIFE_BET_HORIZON_LABELS,
   LIFE_BET_STATUS_LABELS,
-  lifeBetStatusTone,
+  lifeBetFoldStatusTone,
 } from '@/lib/life-road/life-road-labels';
 import {
   currentCalendarYear,
@@ -43,20 +38,22 @@ import {
   updateLifeBet,
 } from '@/lib/repositories/life-road/life-bet';
 import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
-import {
-  getLifeDirection,
-  upsertLifeDirection,
-} from '@/lib/repositories/life-road/life-direction';
+import { getLifeDirection } from '@/lib/repositories/life-road/life-direction';
 import type { LifeDirectionRow } from '@/lib/repositories/life-road/life-direction.types';
-import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Animated,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_KEY = 'life-road';
 const MIN_TOUCH = getMinTouchTarget(Platform.OS);
@@ -67,9 +64,9 @@ type BetView = {
   derived: LifeBetDerivedStats;
   projects: LifeBetActiveProjectRef[];
   projectTotal: number;
+  progressRatio: number;
 };
 
-/** 同桶内交换 sort_order */
 async function swapSortOrder(a: LifeBetRow, b: LifeBetRow): Promise<void> {
   const orderA = a.sort_order;
   const orderB = b.sort_order;
@@ -82,57 +79,188 @@ async function swapSortOrder(a: LifeBetRow, b: LifeBetRow): Promise<void> {
   await updateLifeBet(b.id, { sort_order: orderA });
 }
 
-function IconAction({
-  icon,
-  label,
-  color,
-  disabled,
-  onPress,
+function formatUpdatedAt(iso: string | null | undefined): string {
+  if (!iso) return '尚未更新';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return '尚未更新';
+  return `更新于 ${d.getMonth() + 1}月${d.getDate()}日 · 影响赌注排序`;
+}
+
+function ProgressBar({
+  ratio,
+  animate,
+  trackColor,
+  fillColor,
 }: {
-  icon: 'keyboard-arrow-up' | 'keyboard-arrow-down' | 'delete-outline';
-  label: string;
-  color: string;
-  disabled?: boolean;
-  onPress: () => void;
+  ratio: number;
+  animate: boolean;
+  trackColor: string;
+  fillColor: string;
 }) {
+  const width = useRef(new Animated.Value(animate ? 0 : ratio)).current;
+  useEffect(() => {
+    if (!animate) {
+      width.setValue(ratio);
+      return;
+    }
+    Animated.timing(width, {
+      toValue: ratio,
+      duration: 500,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: false,
+    }).start();
+  }, [animate, ratio, width]);
+
+  const pct = width.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', '100%'],
+  });
+
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={6}
-      style={({ pressed }) => [
-        styles.iconAction,
-        {
-          opacity: disabled ? 0.28 : pressed ? 0.7 : 1,
-          minWidth: MIN_TOUCH * 0.85,
-          minHeight: MIN_TOUCH * 0.85,
-        },
-      ]}>
-      <AppIcon name={icon} size={22} color={color} />
-    </Pressable>
+    <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
+      <Animated.View style={[styles.progressFill, { width: pct, backgroundColor: fillColor }]} />
+    </View>
+  );
+}
+
+function BetCard({
+  view,
+  index,
+  total,
+  animate,
+  animKey,
+  onEdit,
+  onPromote,
+  onDemote,
+  onDelete,
+  showDelete,
+  fold,
+}: {
+  view: BetView;
+  index: number;
+  total: number;
+  animate: boolean;
+  animKey: number;
+  onEdit: () => void;
+  onPromote: () => void;
+  onDemote: () => void;
+  onDelete: () => void;
+  showDelete?: boolean;
+  fold: ReturnType<typeof useFoldTheme>['fold'];
+}) {
+  const tone = lifeBetFoldStatusTone(view.bet.status, fold);
+  const meta = formatLifeBetListMeta(view.bet, view.derived, Math.round(view.progressRatio * 100));
+  const faded = view.bet.status === 'arrived' || view.bet.status === 'dropped';
+  const canUp = index > 0;
+  const canDown = index < total - 1;
+
+  return (
+    <FoldRiseIn animate={animate} index={index} staggerMs={45} fromY={14} key={`${animKey}-${view.bet.id}`}>
+      <View
+        style={[
+          styles.betItem,
+          {
+            backgroundColor: 'rgba(255,252,245,0.92)',
+            borderColor: fold.line,
+            opacity: faded ? 0.66 : 1,
+          },
+        ]}>
+        <Text style={[styles.grip, { color: fold.faint }]} accessibilityLabel="拖动手柄">
+          ⋮⋮
+        </Text>
+        <Pressable onPress={onEdit} style={styles.betMain} accessibilityRole="button">
+          <View style={styles.betTitleRow}>
+            <Text style={[styles.betTitle, { color: fold.ink }]} numberOfLines={2}>
+              {view.bet.title}
+            </Text>
+            <View style={[styles.betStatus, { backgroundColor: tone.bg }]}>
+              <Text style={[styles.betStatusText, { color: tone.text }]}>
+                {LIFE_BET_STATUS_LABELS[view.bet.status]}
+              </Text>
+            </View>
+          </View>
+          <Text style={[styles.betMeta, { color: fold.faint }]} numberOfLines={2}>
+            {meta}
+          </Text>
+          {view.bet.status !== 'dropped' ? (
+            <ProgressBar
+              ratio={view.progressRatio}
+              animate={animate}
+              trackColor="#E7E2D5"
+              fillColor={fold.pine2}
+            />
+          ) : null}
+        </Pressable>
+        <View style={styles.betActs}>
+          <Pressable
+            onPress={onPromote}
+            disabled={!canUp}
+            accessibilityLabel="上移"
+            style={({ pressed }) => [
+              styles.bactBtn,
+              { backgroundColor: '#F0EBE0', opacity: !canUp ? 0.35 : pressed ? 0.75 : 1 },
+            ]}>
+            <AppIcon name="keyboard-arrow-up" size={14} color={fold.muted} />
+          </Pressable>
+          <Pressable
+            onPress={onDemote}
+            disabled={!canDown}
+            accessibilityLabel="下移"
+            style={({ pressed }) => [
+              styles.bactBtn,
+              { backgroundColor: '#F0EBE0', opacity: !canDown ? 0.35 : pressed ? 0.75 : 1 },
+            ]}>
+            <AppIcon name="keyboard-arrow-down" size={14} color={fold.muted} />
+          </Pressable>
+          {showDelete ? (
+            <Pressable
+              onPress={onDelete}
+              accessibilityLabel="删除"
+              style={({ pressed }) => [
+                styles.bactBtn,
+                { backgroundColor: '#F0EBE0', opacity: pressed ? 0.75 : 1 },
+              ]}>
+              <AppIcon name="delete-outline" size={12} color={fold.clay} />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={onEdit}
+              accessibilityLabel="编辑"
+              style={({ pressed }) => [
+                styles.bactBtn,
+                { backgroundColor: '#F0EBE0', opacity: pressed ? 0.75 : 1 },
+              ]}>
+              <AppIcon name="edit" size={12} color={fold.muted} />
+            </Pressable>
+          )}
+        </View>
+      </View>
+    </FoldRiseIn>
   );
 }
 
 export default function LifeRoadScreen() {
   const router = useRouter();
-  const { colors, isDark } = useAppTheme();
-  const taskUi = getTaskUiColors(isDark);
+  const insets = useSafeAreaInsets();
+  const { fold } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
+  const params = useLocalSearchParams<{ focus?: string | string[] }>();
   const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_KEY);
 
   const [direction, setDirection] = useState<LifeDirectionRow | null>(null);
   const [bets, setBets] = useState<BetView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [editingDirection, setEditingDirection] = useState(false);
-  const editingDirectionRef = useRef(false);
-  editingDirectionRef.current = editingDirection;
-  const [bodyDraft, setBodyDraft] = useState('');
-  const [themeDraft, setThemeDraft] = useState('');
-  const [savingDirection, setSavingDirection] = useState(false);
   const [yearActiveCount, setYearActiveCount] = useState(0);
-  const [showDropped, setShowDropped] = useState(false);
+  const [horizon, setHorizon] = useState<LifeBetHorizon>('year');
+  const [bucketAnimKey, setBucketAnimKey] = useState(0);
+  const [sortMode, setSortMode] = useState(false);
+
+  const shakeX = useRef(new Animated.Value(0)).current;
+  const bannerFlash = useRef(new Animated.Value(0)).current;
+
+  const yearFull = yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT;
+  const capacityMode = yearFull && horizon === 'year';
 
   const reload = useCallback(
     async (forceRefresh = false) => {
@@ -145,15 +273,21 @@ export default function LifeRoadScreen() {
           ]);
           const views: BetView[] = await Promise.all(
             nextBets.map(async (bet) => {
-              const [derived, linked] = await Promise.all([
+              const [derived, linked, taskRatio] = await Promise.all([
                 getLifeBetDerivedStats(bet.id, bet.status),
                 listActiveProjectsForLifeBet(bet.id, 3),
+                getLifeBetProgressRatio(bet.id),
               ]);
               return {
                 bet,
                 derived,
                 projects: linked?.projects ?? [],
                 projectTotal: linked?.total ?? 0,
+                progressRatio: resolveLifeBetProgressRatio(
+                  bet.status,
+                  taskRatio,
+                  linked?.total ?? derived.activeProjectCount,
+                ),
               };
             }),
           );
@@ -161,10 +295,6 @@ export default function LifeRoadScreen() {
           setDirection(nextDirection);
           setBets(views);
           setYearActiveCount(activeYear);
-          if (!editingDirectionRef.current) {
-            setBodyDraft(nextDirection?.body ?? '');
-            setThemeDraft(nextDirection?.year_theme ?? '');
-          }
         }, forceRefresh);
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : '加载失败');
@@ -175,7 +305,7 @@ export default function LifeRoadScreen() {
     [wrapLoad],
   );
 
-  const { onRefresh: onRefreshData } = usePagePullRefresh(PAGE_KEY, reload);
+  const { refreshControl } = usePagePullRefresh(PAGE_KEY, reload);
 
   useFocusEffect(
     useCallback(() => {
@@ -183,64 +313,87 @@ export default function LifeRoadScreen() {
     }, [reload]),
   );
 
+  useEffect(() => {
+    const focus = Array.isArray(params.focus) ? params.focus[0] : params.focus;
+    if (focus === 'full') {
+      setHorizon('year');
+    }
+  }, [params.focus]);
+
   const grouped = useMemo(() => {
-    const map: Record<LifeBetHorizon, BetView[]> = {
-      year: [],
-      multi: [],
-      farther: [],
-    };
+    const map: Record<LifeBetHorizon, BetView[]> = { year: [], multi: [], farther: [] };
+    const archived: BetView[] = [];
+    const yearNow = currentCalendarYear();
     for (const view of bets) {
-      if (!showDropped && view.bet.status === 'dropped') continue;
+      if (
+        view.bet.status === 'arrived' ||
+        (view.bet.horizon === 'year' && view.bet.year != null && view.bet.year < yearNow)
+      ) {
+        archived.push(view);
+        continue;
+      }
+      if (view.bet.status === 'dropped') continue;
       map[view.bet.horizon].push(view);
     }
-    return map;
-  }, [bets, showDropped]);
+    return { map, archived };
+  }, [bets]);
 
-  const droppedCount = useMemo(
-    () => bets.filter((b) => b.bet.status === 'dropped').length,
-    [bets],
-  );
+  const activeList = grouped.map[horizon];
+  const horizonCounts = useMemo(() => {
+    return {
+      year: grouped.map.year.filter((v) =>
+        v.bet.status === 'on_track' || v.bet.status === 'paused',
+      ).length,
+      multi: grouped.map.multi.length,
+      farther: grouped.map.farther.length,
+    };
+  }, [grouped]);
+
+  const flashCapacity = useCallback(() => {
+    if (!motionOn) {
+      toast.warn('今年名额已满 · 完成、移出今年或放弃后可腾出');
+      return;
+    }
+    shakeX.setValue(0);
+    bannerFlash.setValue(0);
+    Animated.sequence([
+      Animated.timing(shakeX, { toValue: 5, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: -5, duration: 55, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: 4, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: -3, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: 0, duration: 70, useNativeDriver: true }),
+    ]).start();
+    Animated.sequence([
+      Animated.timing(bannerFlash, {
+        toValue: 1,
+        duration: 160,
+        easing: FOLD_MOTION_EASE,
+        useNativeDriver: false,
+      }),
+      Animated.timing(bannerFlash, {
+        toValue: 0,
+        duration: 280,
+        easing: FOLD_MOTION_EASE,
+        useNativeDriver: false,
+      }),
+    ]).start();
+    toast.warn('今年名额已满 · 完成或放弃后可腾出');
+  }, [bannerFlash, motionOn, shakeX]);
 
   const openAdd = useCallback(
-    (horizon: LifeBetHorizon) => {
-      if (horizon === 'year' && yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
-        Alert.alert(
-          '今年已满',
-          `今年进行中的道路赌注最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条（在路上/暂搁）。已抵达或放弃不占名额。`,
-        );
+    (target: LifeBetHorizon = horizon) => {
+      if (target === 'year' && yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
+        setHorizon('year');
+        flashCapacity();
         return;
       }
       router.push({
         pathname: '/edit-life-bet/[id]',
-        params: { id: 'new', horizon },
+        params: { id: 'new', horizon: target },
       });
     },
-    [router, yearActiveCount],
+    [flashCapacity, horizon, router, yearActiveCount],
   );
-
-  const onSaveDirection = useCallback(async () => {
-    if (!bodyDraft.trim()) {
-      toast.warn('请填写总方向');
-      return;
-    }
-    setSavingDirection(true);
-    try {
-      const row = await upsertLifeDirection({
-        id: direction?.id,
-        body: bodyDraft,
-        year_theme: themeDraft,
-      });
-      setDirection(row);
-      setEditingDirection(false);
-      notifyAncestorsDataChanged();
-      toast.success('已保存');
-      await reload();
-    } catch (e) {
-      toast.error(toUserMessage(e, '保存失败，请检查网络后重试'));
-    } finally {
-      setSavingDirection(false);
-    }
-  }, [bodyDraft, themeDraft, direction?.id, notifyAncestorsDataChanged, reload]);
 
   const onDeleteBet = useCallback(
     (bet: LifeBetRow) => {
@@ -268,8 +421,7 @@ export default function LifeRoadScreen() {
   );
 
   const onMove = useCallback(
-    async (horizon: LifeBetHorizon, index: number, dir: -1 | 1) => {
-      const list = grouped[horizon];
+    async (list: BetView[], index: number, dir: -1 | 1) => {
       const other = list[index + dir];
       const self = list[index];
       if (!self || !other) return;
@@ -281,500 +433,536 @@ export default function LifeRoadScreen() {
         Alert.alert('排序失败', e instanceof Error ? e.message : '请稍后重试');
       }
     },
-    [grouped, notifyAncestorsDataChanged, reload],
+    [notifyAncestorsDataChanged, reload],
   );
 
-  const muted = colors.textSecondary;
+  const switchHorizon = (next: LifeBetHorizon) => {
+    if (next === horizon) return;
+    setHorizon(next);
+    setBucketAnimKey((k) => k + 1);
+  };
+
+  const headerTitle = capacityMode ? `今年 · ${yearActiveCount} 条` : '我的道路';
+  const headerSub = capacityMode
+    ? '名额已满 · 先做完再写新的'
+    : `今年 ${yearActiveCount} 条在路上 · 最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条`;
+
+  const bannerBg = bannerFlash.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#FBEEDC', '#F5D9A8'],
+  });
+
+  const yearNow = currentCalendarYear();
+  const archivedYear =
+    grouped.archived[0]?.bet.year ??
+    (grouped.archived.length > 0 ? yearNow - 1 : yearNow - 1);
 
   return (
-    <AppScreen
-      loading={loading}
-      onRefreshData={onRefreshData}
-      header={
-        <ScreenHeader
-          title="道路"
-          onBack={() => router.back()}
-          right={
-            <ScreenHeaderIconAction
-              icon="add"
-              onPress={() => openAdd('year')}
-              accessibilityLabel="添加今年赌注"
-            />
-          }
-        />
-      }
-      contentContainerStyle={styles.content}>
-      {loadError ? (
-        <View
-          style={[
-            styles.errorCard,
-            { backgroundColor: taskUi.dangerSoftWash, borderColor: taskUi.dangerSoftBorder },
+    <SafeAreaView style={[styles.safe, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      <View style={[styles.appBar, { paddingTop: insets.top + 4, borderBottomColor: fold.line }]}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="返回"
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            { borderColor: fold.line, backgroundColor: fold.card },
+            pressed && { opacity: 0.88 },
           ]}>
-          <AppText variant="body" style={{ color: colors.danger, textAlign: 'center' }}>
-            {loadError}
-          </AppText>
-          <AppButton label="重试" variant="outline" onPress={() => void reload(true)} />
+          <AppIcon name="arrow-back" size={20} color={fold.ink} />
+        </Pressable>
+        <View style={styles.appBarTitleWrap}>
+          <Text style={[styles.appTitle, { color: fold.ink }]}>{headerTitle}</Text>
+          <Text style={[styles.appSub, { color: fold.muted }]} numberOfLines={1}>
+            {headerSub}
+          </Text>
         </View>
-      ) : null}
-
-      <View
-        style={[
-          styles.directionCard,
-          { backgroundColor: colors.surface, borderColor: colors.outline },
-        ]}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionTitleRow}>
-            <View
-              style={[
-                styles.sectionIcon,
-                { backgroundColor: taskUi.primaryWash, borderColor: taskUi.primaryWashBorder },
-              ]}>
-              <AppIcon name="explore" size={18} color={colors.primary} />
-            </View>
-            <AppText variant="title" style={{ color: colors.text, fontWeight: '700' }}>
-              总方向
-            </AppText>
-          </View>
-          {!editingDirection ? (
-            <Pressable
-              onPress={() => {
-                setBodyDraft(direction?.body ?? '');
-                setThemeDraft(direction?.year_theme ?? '');
-                setEditingDirection(true);
-              }}
-              hitSlop={8}
-              style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
-              <AppText variant="bodyStrong" chrome style={{ color: colors.primary, fontSize: 14 }}>
-                {direction ? '编辑' : '写下'}
-              </AppText>
-            </Pressable>
-          ) : null}
-        </View>
-
-        {editingDirection ? (
-          <View style={styles.formGap}>
-            <AppInput
-              label="总方向（1–200 字）"
-              value={bodyDraft}
-              onChangeText={setBodyDraft}
-              multiline
-              maxLength={200}
-              inputStyle={{ minHeight: 96, textAlignVertical: 'top' }}
-            />
-            <AppInput
-              label="年主题（可选，最多 40 字）"
-              value={themeDraft}
-              onChangeText={setThemeDraft}
-              maxLength={40}
-              placeholder="如 2026：底座年"
-            />
-            <View style={styles.rowActions}>
-              <AppButton
-                label="取消"
-                variant="ghost"
-                onPress={() => setEditingDirection(false)}
-                style={{ flex: 1 }}
-              />
-              <AppButton
-                label="保存"
-                loading={savingDirection}
-                onPress={() => void onSaveDirection()}
-                style={{ flex: 1 }}
-              />
-            </View>
-          </View>
-        ) : direction ? (
-          <View style={styles.directionBodyWrap}>
-            <AppText variant="body" style={[styles.directionBody, { color: colors.text }]}>
-              {direction.body}
-            </AppText>
-            {direction.year_theme ? (
-              <View
-                style={[
-                  styles.themeChip,
-                  { backgroundColor: taskUi.primaryWash, borderColor: taskUi.primaryWashBorder },
-                ]}>
-                <AppText variant="caption" chrome style={{ color: colors.primary }}>
-                  {direction.year_theme}
-                </AppText>
-              </View>
-            ) : null}
-          </View>
-        ) : (
-          <View
-            style={[
-              styles.emptyPanel,
-              { backgroundColor: taskUi.primaryWash, borderColor: taskUi.primaryWashBorder },
+        {capacityMode ? (
+          <Pressable
+            onPress={() => setSortMode((v) => !v)}
+            accessibilityRole="button"
+            accessibilityLabel="排序"
+            style={({ pressed }) => [
+              styles.pillBtn,
+              { borderColor: fold.line2, backgroundColor: 'rgba(255,252,245,0.66)' },
+              pressed && { opacity: 0.88 },
             ]}>
-            <AppText variant="body" style={{ color: muted, lineHeight: 22 }}>
-              还没有写下方向。用来看清未来几年押什么，不是用来排任务。
-            </AppText>
-          </View>
+            <Text style={[styles.pillBtnLabel, { color: fold.ink2 }]}>
+              {sortMode ? '完成' : '排序'}
+            </Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => router.push('/edit-life-direction')}
+            accessibilityRole="button"
+            accessibilityLabel="编辑总方向"
+            style={({ pressed }) => [
+              styles.pillBtn,
+              { borderColor: fold.line2, backgroundColor: 'rgba(255,252,245,0.66)' },
+              pressed && { opacity: 0.88 },
+            ]}>
+            <AppIcon name="edit" size={12} color={fold.ink2} />
+            <Text style={[styles.pillBtnLabel, { color: fold.ink2 }]}>总方向</Text>
+          </Pressable>
         )}
       </View>
 
-      {HORIZON_ORDER.map((horizon) => {
-        const list = grouped[horizon];
-        const yearFull =
-          horizon === 'year' && yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT;
-        return (
-          <View key={horizon} style={styles.sectionBlock}>
-            <View style={styles.sectionHeader}>
-              <AppText variant="title" style={{ color: colors.text, fontWeight: '700' }}>
-                {LIFE_BET_HORIZON_LABELS[horizon]}
-              </AppText>
-              <Pressable
-                onPress={() => openAdd(horizon)}
-                disabled={yearFull}
-                hitSlop={8}
-                style={({ pressed }) => [
-                  styles.addChip,
-                  {
-                    backgroundColor: yearFull ? colors.surfaceMuted : taskUi.primaryWash,
-                    borderColor: yearFull ? colors.outline : taskUi.primaryWashBorder,
-                    opacity: yearFull ? 0.7 : pressed ? 0.85 : 1,
-                  },
-                ]}>
-                <AppIcon
-                  name="add"
-                  size={16}
-                  color={yearFull ? muted : colors.primary}
-                />
-                <AppText
-                  variant="caption"
-                  chrome
-                  style={{ color: yearFull ? muted : colors.primary, fontWeight: '700' }}>
-                  {yearFull ? '已满 5 条' : '添加'}
-                </AppText>
+      {loading ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={fold.pine} />
+        </View>
+      ) : (
+        <ScrollView
+          refreshControl={refreshControl}
+          contentContainerStyle={[
+            styles.scroll,
+            { paddingBottom: Math.max(insets.bottom, 16) + 28 },
+          ]}
+          showsVerticalScrollIndicator={false}>
+          {loadError ? (
+            <View style={[styles.errorCard, { backgroundColor: fold.clay2, borderColor: fold.clay }]}>
+              <Text style={{ color: fold.clay, textAlign: 'center', fontWeight: '700' }}>{loadError}</Text>
+              <Pressable onPress={() => void reload(true)} style={[styles.retryBtn, { backgroundColor: fold.pine }]}>
+                <Text style={{ color: fold.onPineButton, fontWeight: '700' }}>重试</Text>
               </Pressable>
             </View>
+          ) : null}
 
-            {list.length === 0 ? (
-              <View
-                style={[
-                  styles.emptySlot,
-                  { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle },
-                ]}>
-                <AppText variant="body" style={{ color: muted }}>
-                  {horizon === 'year' ? '今年还没有下注' : '这一段还空着'}
-                </AppText>
-              </View>
-            ) : (
-              <View
-                style={[
-                  styles.betGroup,
-                  { backgroundColor: colors.surface, borderColor: colors.outline },
-                ]}>
-                {list.map((view, index) => {
-                  const caption = formatLifeBetDerivedCaption(view.derived);
-                  const statusLabel = LIFE_BET_STATUS_LABELS[view.bet.status];
-                  const tone = lifeBetStatusTone(view.bet.status, taskUi, colors);
-                  const isLast = index === list.length - 1;
-                  return (
-                    <View
-                      key={view.bet.id}
+          {!capacityMode ? (
+            <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={10}>
+              <Pressable
+                onPress={() => router.push('/edit-life-direction')}
+                style={[styles.dirCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+                <View style={styles.rowline}>
+                  <Text style={[styles.kicker, { color: fold.muted }]}>TOTAL DIRECTION</Text>
+                  <View style={[styles.tagAmber, { backgroundColor: fold.amber2 }]}>
+                    <Text style={[styles.tagAmberText, { color: '#8B6126' }]} numberOfLines={1}>
+                      {direction?.year_theme?.trim() || String(yearNow)}
+                    </Text>
+                  </View>
+                </View>
+                {direction?.body ? (
+                  <Text style={[styles.roadDir, { color: fold.pine, fontFamily: foldFonts.serif }]}>
+                    {direction.body}
+                  </Text>
+                ) : (
+                  <Text style={[styles.roadDirEmpty, { color: fold.muted }]}>
+                    还没有写下方向。用来看清未来几年押什么，不是用来排任务。
+                  </Text>
+                )}
+                <View style={styles.rowline}>
+                  <Text style={[styles.dirMeta, { color: fold.faint }]}>
+                    {formatUpdatedAt(direction?.updated_at)}
+                  </Text>
+                  <Text style={[styles.dirEdit, { color: '#8B6126' }]}>编辑 ›</Text>
+                </View>
+              </Pressable>
+            </FoldRiseIn>
+          ) : (
+            <Animated.View
+              style={[
+                styles.limitBanner,
+                {
+                  backgroundColor: bannerBg,
+                  borderColor: '#E7CFA6',
+                },
+              ]}>
+              <AppIcon name="lock" size={14} color="#B08A4E" />
+              <Text style={styles.limitBannerText}>
+                <Text style={{ fontWeight: '800' }}>今年 {yearActiveCount} / {LIFE_BET_YEAR_ACTIVE_LIMIT} 已满。</Text>
+                「在路上 + 暂搁」合计不超过 {LIFE_BET_YEAR_ACTIVE_LIMIT} 条，完成或放弃后自动腾出名额。
+              </Text>
+            </Animated.View>
+          )}
+
+          <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={10}>
+            <View style={styles.roadTabs}>
+              {HORIZON_ORDER.map((key) => {
+                const on = horizon === key;
+                const count =
+                  key === 'year'
+                    ? `${yearActiveCount} / ${LIFE_BET_YEAR_ACTIVE_LIMIT}`
+                    : `${horizonCounts[key]} 条`;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => switchHorizon(key)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    style={[
+                      styles.roadTab,
+                      {
+                        backgroundColor: on ? fold.pineButton : '#F8F4EA',
+                        borderColor: on ? fold.pineButton : fold.line,
+                      },
+                    ]}>
+                    <Text
                       style={[
-                        styles.betItem,
-                        !isLast && {
-                          borderBottomWidth: StyleSheet.hairlineWidth,
-                          borderBottomColor: colors.outline,
-                        },
+                        styles.roadTabTitle,
+                        { color: on ? fold.onPineButton : fold.muted, fontWeight: on ? '800' : '700' },
                       ]}>
-                      <Pressable
-                        onPress={() =>
-                          router.push({
-                            pathname: '/edit-life-bet/[id]',
-                            params: { id: view.bet.id },
-                          })
-                        }
-                        style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-                        <View style={styles.betTop}>
-                          <AppText
-                            variant="bodyStrong"
-                            style={[styles.betTitle, { color: colors.text }]}
-                            numberOfLines={2}>
-                            {view.bet.title}
-                          </AppText>
-                          <View
-                            style={[
-                              styles.statusTag,
-                              { backgroundColor: tone.bg, borderColor: tone.border },
-                            ]}>
-                            <AppText
-                              variant="caption"
-                              chrome
-                              style={{ color: tone.text, fontWeight: '700' }}>
-                              {statusLabel}
-                            </AppText>
-                          </View>
-                        </View>
-                        <AppText
-                          variant="caption"
-                          chrome
-                          style={{ color: muted, marginTop: 4 }}
-                          numberOfLines={2}>
-                          {caption}
-                        </AppText>
-                        {view.projects.length > 0 ? (
-                          <View style={styles.projectNamesRow}>
-                            {view.projects.map((p, i) => (
-                              <React.Fragment key={p.id}>
-                                {i > 0 ? (
-                                  <AppText variant="caption" chrome style={{ color: muted }}>
-                                    {' · '}
-                                  </AppText>
-                                ) : null}
-                                <Pressable
-                                  onPress={(e) => {
-                                    e.stopPropagation?.();
-                                    router.push({
-                                      pathname: '/edit-project',
-                                      params: { id: p.id },
-                                    });
-                                  }}
-                                  hitSlop={6}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`打开项目 ${p.name}`}>
-                                  <AppText
-                                    variant="caption"
-                                    chrome
-                                    style={{
-                                      color: colors.primary,
-                                      fontWeight: '700',
-                                      lineHeight: 18,
-                                    }}
-                                    numberOfLines={1}>
-                                    {p.name}
-                                  </AppText>
-                                </Pressable>
-                              </React.Fragment>
-                            ))}
-                            {view.projectTotal > view.projects.length ? (
-                              <AppText variant="caption" chrome style={{ color: muted, lineHeight: 18 }}>
-                                {` 等 ${view.projectTotal - view.projects.length} 个`}
-                              </AppText>
-                            ) : null}
-                          </View>
-                        ) : null}
-                        {view.bet.note ? (
-                          <AppText
-                            variant="caption"
-                            chrome
-                            style={{ color: muted, marginTop: 4, lineHeight: 18 }}
-                            numberOfLines={2}>
-                            {view.bet.note}
-                          </AppText>
-                        ) : null}
-                      </Pressable>
-                      <View style={styles.betActions}>
-                        <IconAction
-                          icon="keyboard-arrow-up"
-                          label="上移"
-                          color={colors.primary}
-                          disabled={index === 0}
-                          onPress={() => void onMove(horizon, index, -1)}
-                        />
-                        <IconAction
-                          icon="keyboard-arrow-down"
-                          label="下移"
-                          color={colors.primary}
-                          disabled={index >= list.length - 1}
-                          onPress={() => void onMove(horizon, index, 1)}
-                        />
-                        <IconAction
-                          icon="delete-outline"
-                          label="删除"
-                          color={colors.danger}
-                          onPress={() => onDeleteBet(view.bet)}
-                        />
-                        <View style={{ flex: 1 }} />
-                        <Pressable
-                          onPress={() =>
-                            router.push({
-                              pathname: '/edit-life-bet/[id]',
-                              params: { id: view.bet.id },
-                            })
-                          }
-                          hitSlop={8}
-                          style={({ pressed }) => [
-                            styles.editLink,
-                            { opacity: pressed ? 0.75 : 1 },
-                          ]}>
-                          <AppText
-                            variant="caption"
-                            chrome
-                            style={{ color: colors.primary, fontWeight: '700' }}>
-                            编辑
-                          </AppText>
-                          <AppIcon name="chevron-right" size={16} color={colors.primary} />
-                        </Pressable>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-        );
-      })}
+                      {LIFE_BET_HORIZON_LABELS[key]}
+                    </Text>
+                    <Text style={[styles.roadTabSub, { color: on ? '#B7CCC1' : '#A1A69D' }]}>
+                      {count}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </FoldRiseIn>
 
-      {droppedCount > 0 ? (
-        <Pressable
-          onPress={() => setShowDropped((v) => !v)}
-          hitSlop={8}
-          style={({ pressed }) => [
-            styles.droppedToggle,
-            {
-              borderColor: colors.outline,
-              backgroundColor: colors.surface,
-              opacity: pressed ? 0.88 : 1,
-            },
-          ]}>
-          <AppText variant="bodyStrong" chrome style={{ color: muted, fontSize: 13 }}>
-            {showDropped ? '隐藏已放弃' : `显示已放弃（${droppedCount}）`}
-          </AppText>
-        </Pressable>
-      ) : null}
-    </AppScreen>
+          {activeList.length === 0 ? (
+            <View style={[styles.emptySlot, { borderColor: fold.line, backgroundColor: fold.paper2 }]}>
+              <Text style={{ color: fold.muted, fontWeight: '600' }}>
+                {horizon === 'year' ? '今年还没有下注' : '这一段还空着'}
+              </Text>
+            </View>
+          ) : (
+            activeList.map((view, index) => (
+              <BetCard
+                key={view.bet.id}
+                view={view}
+                index={index}
+                total={activeList.length}
+                animate={motionOn}
+                animKey={bucketAnimKey}
+                fold={fold}
+                showDelete={sortMode}
+                onEdit={() =>
+                  router.push({ pathname: '/edit-life-bet/[id]', params: { id: view.bet.id } })
+                }
+                onPromote={() => void onMove(activeList, index, -1)}
+                onDemote={() => void onMove(activeList, index, 1)}
+                onDelete={() => onDeleteBet(view.bet)}
+              />
+            ))
+          )}
+
+          <Animated.View style={{ transform: [{ translateX: shakeX }] }}>
+            {horizon === 'year' && yearFull ? (
+              <Pressable
+                onPress={flashCapacity}
+                accessibilityRole="button"
+                accessibilityLabel="今年名额已满"
+                style={[styles.addBtnLocked, { borderColor: fold.line2 }]}>
+                <AppIcon name="lock" size={14} color="#9AA097" />
+                <Text style={styles.addBtnLockedText}>今年名额已满</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => openAdd(horizon)}
+                accessibilityRole="button"
+                accessibilityLabel={`写下一条${LIFE_BET_HORIZON_LABELS[horizon]}赌注`}
+                style={({ pressed }) => [
+                  styles.addBtn,
+                  { backgroundColor: fold.pineButton, opacity: pressed ? 0.92 : 1 },
+                ]}>
+                <AppIcon name="add" size={16} color={fold.onPineButton} />
+                <Text style={[styles.addBtnText, { color: fold.onPineButton }]}>
+                  写下一条{LIFE_BET_HORIZON_LABELS[horizon]}赌注
+                </Text>
+              </Pressable>
+            )}
+          </Animated.View>
+
+          {capacityMode ? (
+            <View style={[styles.tipsCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <View style={styles.rowline}>
+                <Text style={[styles.tipsTitle, { color: fold.ink2 }]}>腾出名额的三种方式</Text>
+                <Text style={{ fontSize: 11, color: fold.faint }}>任选其一</Text>
+              </View>
+              {[
+                { text: '标记一条为「已完成」', tag: '腾出 1', tone: 'green' as const },
+                { text: '把一条移到「更远 / 多年」', tag: '腾出 1', tone: 'amber' as const },
+                { text: '放弃一条并写一句原因', tag: '腾出 1', tone: 'gray' as const },
+              ].map((row) => (
+                <View key={row.text} style={styles.tipRow}>
+                  <Text style={[styles.tipText, { color: fold.ink2 }]}>{row.text}</Text>
+                  <View
+                    style={[
+                      styles.tipTag,
+                      {
+                        backgroundColor:
+                          row.tone === 'green'
+                            ? fold.sage2
+                            : row.tone === 'amber'
+                              ? fold.amber2
+                              : fold.paper2,
+                      },
+                    ]}>
+                    <Text
+                      style={{
+                        fontSize: 10,
+                        fontWeight: '700',
+                        color:
+                          row.tone === 'green'
+                            ? fold.pine2
+                            : row.tone === 'amber'
+                              ? '#8B6126'
+                              : fold.muted,
+                      }}>
+                      {row.tag}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {!capacityMode && horizon === 'year' && grouped.archived.length > 0 ? (
+            <>
+              <View style={styles.bucketCap}>
+                <Text style={{ color: fold.faint, fontSize: 12 }}>已归档 · {archivedYear}</Text>
+                <Text style={{ color: fold.faint, fontSize: 12 }}>
+                  查看 {grouped.archived.length} 条 ›
+                </Text>
+              </View>
+              {grouped.archived.slice(0, 2).map((view, index) => (
+                <BetCard
+                  key={`arch-${view.bet.id}`}
+                  view={view}
+                  index={index}
+                  total={1}
+                  animate={motionOn}
+                  animKey={bucketAnimKey + 100}
+                  fold={fold}
+                  onEdit={() =>
+                    router.push({ pathname: '/edit-life-bet/[id]', params: { id: view.bet.id } })
+                  }
+                  onPromote={() => undefined}
+                  onDemote={() => undefined}
+                  onDelete={() => onDeleteBet(view.bet)}
+                />
+              ))}
+            </>
+          ) : null}
+
+          {!capacityMode ? (
+            <View style={[styles.noteCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <AppIcon name="gps-fixed" size={12} color={fold.faint} />
+              <Text style={[styles.noteText, { color: fold.faint }]}>
+                今年「在路上 + 暂搁」合计最多 {LIFE_BET_YEAR_ACTIVE_LIMIT} 条；完成或放弃后才能腾出位置。
+              </Text>
+            </View>
+          ) : null}
+        </ScrollView>
+      )}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    paddingHorizontal: Spacing['5xl'],
-    paddingBottom: Spacing['6xl'],
-    gap: Spacing['4xl'],
-  },
-  errorCard: {
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['3xl'],
-    gap: Spacing.md,
-  },
-  directionCard: {
-    borderRadius: Radius['2xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['4xl'],
-    gap: Spacing['3xl'],
-  },
-  sectionBlock: {
-    gap: Spacing.lg,
-  },
-  sectionHeader: {
+  safe: { flex: 1 },
+  appBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  sectionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  sectionIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.md,
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  directionBodyWrap: {
-    gap: Spacing.lg,
-  },
-  directionBody: {
-    lineHeight: 24,
-    fontWeight: '600',
-  },
-  themeChip: {
-    alignSelf: 'flex-start',
-    borderRadius: Radius.sm,
+  appBarTitleWrap: { flex: 1, minWidth: 0 },
+  appTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.2 },
+  appSub: { marginTop: 2, fontSize: 11, fontWeight: '600' },
+  pillBtn: {
+    height: 30,
+    paddingHorizontal: 11,
+    borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xs,
-  },
-  emptyPanel: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['3xl'],
-  },
-  emptySlot: {
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderStyle: 'dashed',
-    paddingVertical: Spacing['4xl'],
-    paddingHorizontal: Spacing['3xl'],
-    alignItems: 'center',
-  },
-  formGap: {
-    gap: Spacing.md,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-  },
-  addChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    borderRadius: Radius.pill,
+  },
+  pillBtnLabel: { fontSize: 12, fontWeight: '700' },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  scroll: { paddingHorizontal: 15, paddingTop: 10, gap: 8 },
+  errorCard: {
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+    padding: 14,
+    gap: 10,
+    marginBottom: 6,
   },
-  betGroup: {
-    borderRadius: Radius['2xl'],
+  retryBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  dirCard: {
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
-    overflow: 'hidden',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    marginBottom: 2,
   },
-  betItem: {
-    paddingHorizontal: Spacing['3xl'],
-    paddingTop: Spacing['3xl'],
-    paddingBottom: Spacing.lg,
-    gap: Spacing.sm,
-  },
-  betTop: {
+  rowline: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
-  betTitle: {
-    flex: 1,
+  kicker: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  tagAmber: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  tagAmberText: { fontSize: 10, fontWeight: '800' },
+  roadDir: {
+    fontSize: 15,
     lineHeight: 22,
+    marginVertical: 6,
+    fontWeight: '600',
   },
-  projectNamesRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  statusTag: {
-    borderRadius: Radius.sm,
+  roadDirEmpty: { fontSize: 13, lineHeight: 20, marginVertical: 6 },
+  dirMeta: { fontSize: 11, flex: 1 },
+  dirEdit: { fontSize: 11, fontWeight: '700' },
+  roadTabs: { flexDirection: 'row', gap: 5, marginBottom: 2 },
+  roadTab: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  betActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: Spacing.xs,
-    gap: 2,
-  },
-  iconAction: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 5,
+    gap: 1,
   },
-  editLink: {
+  roadTabTitle: { fontSize: 13 },
+  roadTabSub: { fontSize: 10, fontWeight: '600' },
+  betItem: {
+    borderRadius: 13,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  grip: { fontSize: 12, lineHeight: 18, marginTop: 2, width: 14, textAlign: 'center' },
+  betMain: { flex: 1, minWidth: 0 },
+  betTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  betTitle: { flex: 1, fontSize: 14, fontWeight: '700', lineHeight: 20 },
+  betStatus: {
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  betStatusText: { fontSize: 10, fontWeight: '700' },
+  betMeta: { marginTop: 4, fontSize: 11, lineHeight: 16 },
+  progressTrack: {
+    height: 2,
+    borderRadius: 2,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  progressFill: { height: '100%', borderRadius: 2 },
+  betActs: { gap: 3 },
+  bactBtn: {
+    width: 24,
+    height: 20,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: MIN_TOUCH * 0.55,
+  },
+  addBtn: {
+    height: 40,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
-    paddingVertical: Spacing.sm,
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 4,
   },
-  droppedToggle: {
-    alignSelf: 'center',
-    borderRadius: Radius.pill,
+  addBtnText: { fontSize: 13, fontWeight: '800' },
+  addBtnLocked: {
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    backgroundColor: '#E2DDD1',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  addBtnLockedText: { fontSize: 13, fontWeight: '700', color: '#9AA097' },
+  limitBanner: {
+    borderRadius: 11,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['3xl'],
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+    marginBottom: 2,
+  },
+  limitBannerText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#8B5A1E',
+  },
+  tipsCard: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    marginTop: 4,
+    gap: 4,
+  },
+  tipsTitle: { fontSize: 13, fontWeight: '800' },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+    gap: 8,
+  },
+  tipText: { flex: 1, fontSize: 12 },
+  tipTag: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  bucketCap: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    marginBottom: 2,
+    paddingHorizontal: 2,
+  },
+  noteCard: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginTop: 4,
+  },
+  noteText: { flex: 1, fontSize: 11, lineHeight: 16 },
+  emptySlot: {
+    borderRadius: 13,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
+    paddingVertical: Spacing['4xl'],
+    alignItems: 'center',
   },
 });

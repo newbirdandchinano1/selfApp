@@ -108,7 +108,7 @@ export function assertLifeBetYearRulesMerged(input: {
   if (input.horizon !== 'year' || input.year == null) return;
   if (input.activeCountSameYear >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
     throw new LifeRoadValidationError(
-      `今年进行中的道路赌注最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条（在路上/暂搁）；已抵达或放弃不占名额`,
+      `今年进行中的道路赌注最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条（在路上/暂搁）；已完成或已放弃不占名额`,
     );
   }
 }

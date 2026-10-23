@@ -271,7 +271,6 @@ import {
   Animated,
   Dimensions,
   Easing,
-  InteractionManager,
   Keyboard,
   LayoutAnimation,
   Modal,
@@ -287,7 +286,7 @@ import {
   useWindowDimensions,
   type KeyboardEvent,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const PAGE_API_KEY = 'tabs/tasks';
@@ -1198,10 +1197,10 @@ function TaskCompletionHeatmap({
   // 仅随父页 reloadToken 加载：首屏等 reloadPage  bump；勿再挂 useFocusEffect（会与父页 focus 重载叠打）
   React.useEffect(() => {
     if (reloadToken <= 0) return;
-    const handle = InteractionManager.runAfterInteractions(() => {
+    const idleId = requestIdleCallback(() => {
       void loadCompletionHeatmap();
     });
-    return () => handle.cancel();
+    return () => cancelIdleCallback(idleId);
   }, [loadCompletionHeatmap, reloadToken]);
 
   const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
@@ -2265,8 +2264,8 @@ export default function TasksScreen() {
   const projectIntroGenRef = React.useRef(0);
   /** 已经播放过入场的项目分类。未真正开播前不推进，避免 effect 重跑丢掉这一次。 */
   const projectIntroTabRef = React.useRef<string | null>(null);
-  const projectSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
-  const standaloneTodoSwipeableRefs = React.useRef<Record<string, Swipeable | null>>({});
+  const projectSwipeableRefs = React.useRef<Record<string, SwipeableMethods | null>>({});
+  const standaloneTodoSwipeableRefs = React.useRef<Record<string, SwipeableMethods | null>>({});
   /** 丢弃过期的整页 reload，避免并发 focus 刷新互相覆盖项目任务 */
   const reloadGenerationRef = React.useRef(0);
   const projectTabApiReadyRef = React.useRef(false);
@@ -6725,6 +6724,7 @@ export default function TasksScreen() {
                           }}
                           overshootRight={false}
                           friction={2}
+                          childrenContainerStyle={{ backgroundColor: bg }}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
                               {isShelved ? (
@@ -7654,6 +7654,7 @@ export default function TasksScreen() {
                         enabled={canSwipeArchiveToInbox || canSwipeDeleteFromInbox}
                         overshootRight={false}
                         friction={2}
+                        childrenContainerStyle={{ backgroundColor: bg }}
                         renderRightActions={() => (
                           <View style={styles.projectSwipeActions}>
                             {canSwipeDeleteFromInbox ? (

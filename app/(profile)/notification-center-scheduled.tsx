@@ -1,79 +1,161 @@
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+/**
+ * 提醒设置 · 已预约通知：按天分组、单条静音开关、全部暂停。
+ * 对齐设计稿 10。
+ */
 import {
-  getNotificationCategoryMeta,
-  resolveNotificationCategoryFromIdentifier,
-} from '@/lib/notification-catalog';
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { AppIcon } from '@/components/ui';
+import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   deleteScheduledAppNotification,
-  getNotificationPermissionSnapshot,
   listScheduledAppNotifications,
-  openSystemNotificationSettings,
-  requestAppNotificationPermission,
   restoreMutedAppNotification,
-  type NotificationPermissionSnapshot,
   type ScheduledAppNotificationItem,
 } from '@/lib/notification-center';
 import {
   getNotificationCenterSettings,
   type NotificationCenterSettings,
 } from '@/lib/notification-center-settings';
-import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-function formatMutedLabel(identifier: string): string {
-  const category = resolveNotificationCategoryFromIdentifier(identifier);
-  if (!category) return identifier;
-  const meta = getNotificationCategoryMeta(category);
-  const prefix = meta.identifierPrefix;
-  if (prefix?.endsWith(':')) {
-    const entity = identifier.slice(prefix.length);
-    return entity ? `${meta.title} · ${entity.slice(0, 8)}…` : meta.title;
+type DayBucket = {
+  key: string;
+  label: string;
+  items: ScheduledAppNotificationItem[];
+};
+
+function startOfLocalDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function pad2(n: number) {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+function clockFromIso(iso: string | null): string {
+  if (!iso) return '--:--';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '--:--';
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function formatBucketLabel(dayStart: number, todayStart: number): string {
+  const d = new Date(dayStart);
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  if (dayStart === todayStart) return `今天 · ${md}`;
+  if (dayStart === todayStart + 86_400_000) return `明天 · ${md}`;
+  if (dayStart > todayStart && dayStart < todayStart + 7 * 86_400_000) {
+    const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+    return `周${wd} · ${md}`;
   }
-  return meta.title;
+  return md;
+}
+
+function groupByDay(items: ScheduledAppNotificationItem[]): DayBucket[] {
+  const todayStart = startOfLocalDay(new Date());
+  const weekEnd = todayStart + 7 * 86_400_000;
+  const map = new Map<string, ScheduledAppNotificationItem[]>();
+  const rest: ScheduledAppNotificationItem[] = [];
+
+  for (const item of items) {
+    const ms = item.fireAtIso ? Date.parse(item.fireAtIso) : NaN;
+    if (!Number.isFinite(ms)) {
+      rest.push(item);
+      continue;
+    }
+    const day = startOfLocalDay(new Date(ms));
+    if (day >= weekEnd) {
+      rest.push(item);
+      continue;
+    }
+    const key = String(day);
+    const list = map.get(key) ?? [];
+    list.push(item);
+    map.set(key, list);
+  }
+
+  const buckets: DayBucket[] = [...map.entries()]
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([key, list]) => ({
+      key,
+      label: formatBucketLabel(Number(key), todayStart),
+      items: list.sort((a, b) => {
+        const ta = a.fireAtIso ? Date.parse(a.fireAtIso) : 0;
+        const tb = b.fireAtIso ? Date.parse(b.fireAtIso) : 0;
+        return ta - tb;
+      }),
+    }));
+
+  if (rest.length > 0) {
+    buckets.push({
+      key: 'rest',
+      label: '本周其余 / 更晚',
+      items: rest,
+    });
+  }
+  return buckets;
+}
+
+function formatCountdown(iso: string | null): string {
+  if (!iso) return '时间待定';
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms)) return '时间待定';
+  if (ms <= 0) return '即将触发';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `距现在 ${mins} 分`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (hours < 24) return `距现在 ${hours} 小时 ${rem} 分`;
+  const days = Math.floor(hours / 24);
+  return `距现在 ${days} 天`;
+}
+
+function nextProgress(iso: string | null): number {
+  if (!iso) return 0;
+  const fire = Date.parse(iso);
+  if (!Number.isFinite(fire)) return 0;
+  const span = 6 * 60 * 60 * 1000;
+  const start = fire - span;
+  const now = Date.now();
+  if (now <= start) return 0.08;
+  if (now >= fire) return 1;
+  return Math.max(0.08, Math.min(1, (now - start) / span));
 }
 
 export default function NotificationCenterScheduledScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const theme = Colors[colorScheme ?? 'light'];
-  const text = theme.text;
-  const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
-  const destructive = isDark ? '#f87171' : '#b91c1c';
+  const insets = useSafeAreaInsets();
+  const { fold } = useFoldTheme();
+  const { animate: motionOn } = useFoldMotionGate();
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [settings, setSettings] = useState<NotificationCenterSettings | null>(null);
-  const [permission, setPermission] = useState<NotificationPermissionSnapshot | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledAppNotificationItem[]>([]);
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSettings, nextPerm, nextScheduled] = await Promise.all([
+      const [nextSettings, nextScheduled] = await Promise.all([
         getNotificationCenterSettings(),
-        getNotificationPermissionSnapshot(),
         listScheduledAppNotifications(),
       ]);
       setSettings(nextSettings);
-      setPermission(nextPerm);
       setScheduled(nextScheduled);
     } catch (e) {
       console.warn('加载已预约通知失败', e);
@@ -88,29 +170,90 @@ export default function NotificationCenterScheduledScreen() {
     }, [reload]),
   );
 
-  const onDeleteScheduled = useCallback((item: ScheduledAppNotificationItem) => {
+  const buckets = useMemo(() => groupByDay(scheduled), [scheduled]);
+  const activeItems = useMemo(
+    () => scheduled.filter((s) => s.status === 'active'),
+    [scheduled],
+  );
+  const nextItem = useMemo(() => {
+    const withTime = activeItems
+      .filter((s) => s.fireAtIso)
+      .sort((a, b) => Date.parse(a.fireAtIso!) - Date.parse(b.fireAtIso!));
+    return withTime[0] ?? activeItems[0] ?? null;
+  }, [activeItems]);
+
+  const channelCount = useMemo(() => {
+    const set = new Set(scheduled.map((s) => s.category).filter(Boolean));
+    return set.size;
+  }, [scheduled]);
+
+  const allPaused =
+    scheduled.length > 0 && scheduled.every((s) => s.status === 'muted' || s.status === 'blocked');
+
+  const onToggleItem = useCallback(
+    async (item: ScheduledAppNotificationItem, enable: boolean) => {
+      setBusy(true);
+      try {
+        if (enable) {
+          await restoreMutedAppNotification(item.identifier);
+        } else {
+          await deleteScheduledAppNotification(item.identifier);
+        }
+        const [nextSettings, nextScheduled] = await Promise.all([
+          getNotificationCenterSettings(),
+          listScheduledAppNotifications(),
+        ]);
+        setSettings(nextSettings);
+        setScheduled(nextScheduled);
+      } catch (e) {
+        console.warn('切换预约通知失败', e);
+        toast.error(toUserMessage(e, '操作失败，请稍后再试'));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const onPauseAll = useCallback(() => {
+    if (scheduled.length === 0) return;
+    const pause = !allPaused;
     Alert.alert(
-      '关闭这条通知',
-      `将停止「${item.title}」的推送登记，直到你在本页重新开启。\n\n来源：${item.sourceLabel}`,
+      pause ? '全部暂停' : '全部恢复',
+      pause
+        ? '将静音本页全部预约；恢复后按原时间继续，错过的不会补发。'
+        : '将重新允许这些预约写入系统队列。',
       [
         { text: '取消', style: 'cancel' },
         {
-          text: '关闭',
-          style: 'destructive',
+          text: pause ? '暂停' : '恢复',
+          style: pause ? 'destructive' : 'default',
           onPress: () => {
             void (async () => {
               setBusy(true);
               try {
-                await deleteScheduledAppNotification(item.identifier);
+                if (pause) {
+                  for (const item of scheduled) {
+                    if (item.status !== 'muted') {
+                      await deleteScheduledAppNotification(item.identifier);
+                    }
+                  }
+                } else {
+                  for (const item of scheduled) {
+                    if (item.status === 'muted') {
+                      await restoreMutedAppNotification(item.identifier);
+                    }
+                  }
+                }
                 const [nextSettings, nextScheduled] = await Promise.all([
                   getNotificationCenterSettings(),
                   listScheduledAppNotifications(),
                 ]);
                 setSettings(nextSettings);
                 setScheduled(nextScheduled);
+                toast.success(pause ? '本地预约已全部暂停' : '本地预约已恢复');
               } catch (e) {
-                console.warn('关闭预约通知失败', e);
-                toast.error(toUserMessage(e, '操作失败，请稍后再试'));
+                toast.error(toUserMessage(e, '操作失败'));
               } finally {
                 setBusy(false);
               }
@@ -119,229 +262,179 @@ export default function NotificationCenterScheduledScreen() {
         },
       ],
     );
-  }, []);
+  }, [allPaused, scheduled]);
 
-  const onRestoreMuted = useCallback((identifier: string) => {
-    void (async () => {
-      setBusy(true);
-      try {
-        await restoreMutedAppNotification(identifier);
-        const [nextSettings, nextScheduled] = await Promise.all([
-          getNotificationCenterSettings(),
-          listScheduledAppNotifications(),
-        ]);
-        setSettings(nextSettings);
-        setScheduled(nextScheduled);
-      } catch (e) {
-        console.warn('恢复通知失败', e);
-        toast.error(toUserMessage(e, '恢复失败，请稍后再试'));
-      } finally {
-        setBusy(false);
-      }
-    })();
-  }, []);
-
-  const muted = settings?.mutedIdentifiers ?? [];
   const masterOn = settings?.masterEnabled !== false;
+  const progress = nextProgress(nextItem?.fireAtIso ?? null);
+  const sub =
+    scheduled.length > 0
+      ? `${scheduled.length} 条${nextItem?.fireAtLabel ? ` · 最近 ${nextItem.fireAtLabel}` : ''}`
+      : '暂无预约';
+
+  const switchTrack = { false: fold.trackOff, true: fold.pineButton } as const;
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: theme.background }]} edges={['top']}>
-      <View style={[styles.header, { borderBottomColor: cardBorder }]}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerIcon}>
-          <MaterialIcons name="arrow-back" size={22} color={text} />
+    <SafeAreaView style={[styles.safe, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+      <View style={[styles.appBar, { paddingTop: insets.top + 4 }]}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            { borderColor: fold.line, backgroundColor: fold.card },
+            pressed && { opacity: 0.88 },
+          ]}>
+          <AppIcon name="arrow-back" size={18} color={fold.ink2} />
         </Pressable>
-        <Text style={[styles.headerTitle, { color: text }]}>已预约与权限</Text>
-        <View style={styles.headerIcon} />
+        <View style={styles.titleWrap}>
+          <Text style={[styles.title, { color: fold.ink }]}>已预约通知</Text>
+          <Text style={[styles.sub, { color: fold.muted }]} numberOfLines={1}>
+            {sub}
+          </Text>
+        </View>
+        <Pressable
+          onPress={onPauseAll}
+          disabled={busy || scheduled.length === 0}
+          style={({ pressed }) => [
+            styles.pillBtn,
+            {
+              borderColor: fold.line2,
+              backgroundColor: 'rgba(255,252,245,0.66)',
+              opacity: scheduled.length === 0 ? 0.4 : pressed ? 0.85 : 1,
+            },
+          ]}>
+          <Text style={[styles.pillLabel, { color: fold.ink2 }]}>
+            {allPaused ? '全部恢复' : '全部暂停'}
+          </Text>
+        </Pressable>
       </View>
 
       {loading || !settings ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={primary} />
+          <ActivityIndicator color={fold.pine} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scroll}>
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>系统通知权限</Text>
-            <Text style={[styles.rowHint, { color: outline }]}>
-              {permission?.sandboxDisabled
-                ? '当前为 Expo Go：系统不会展示本地通知。'
-                : permission?.status === 'granted'
-                  ? '已授权。可在本页管理预约列表。'
-                  : permission?.status === 'denied'
-                    ? '已拒绝。请到系统设置开启通知。'
-                    : Platform.OS === 'web'
-                      ? 'Web 端不支持本地推送。'
-                      : '尚未决定，可请求授权。'}
-            </Text>
-            {permission &&
-            !permission.sandboxDisabled &&
-            permission.status !== 'granted' &&
-            Platform.OS !== 'web' ? (
-              <Pressable
-                onPress={() => {
-                  void (async () => {
-                    const perm = await requestAppNotificationPermission();
-                    setPermission(perm);
-                    if (perm.status !== 'granted') {
-                      await openSystemNotificationSettings();
-                    }
-                  })();
-                }}
-                style={({ pressed }) => [
-                  styles.secondaryBtn,
-                  { borderColor: cardBorder, opacity: pressed ? 0.85 : 1 },
-                ]}>
-                <MaterialIcons name="notifications-active" size={18} color={primary} />
-                <Text style={[styles.secondaryBtnText, { color: primary }]}>
-                  请求 / 打开系统通知设置
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>已开启的提醒</Text>
-            <Text style={[styles.rowHint, { color: outline }]}>
-              {Platform.OS === 'web'
-                ? 'Web 端无本地推送'
-                : `共 ${scheduled.length} 条（健康 / 日程表 / 习惯 / 复盘）`}
-            </Text>
-
-            {scheduled.length === 0 ? (
-              <Text style={[styles.rowHint, { color: outline }]}>
-                {masterOn
-                  ? '暂无已开启的提醒。请在通知管理中打开频道与模块提醒后，将出现在此列表。'
-                  : '总开关已关闭；开启后可在此管理各来源提醒。'}
+        <ScrollView
+          contentContainerStyle={[styles.scroll, { paddingBottom: Math.max(insets.bottom, 24) + 16 }]}
+          showsVerticalScrollIndicator={false}>
+          {!masterOn ? (
+            <View style={[styles.card, { backgroundColor: fold.amber2, borderColor: '#E7CFA6' }]}>
+              <Text style={{ fontSize: 11, color: '#8B5A1E', fontWeight: '700' }}>
+                总开关已关闭 · 列表仍可查看与静音，恢复总开关后才会重新登记
               </Text>
-            ) : (
-              scheduled.map(item => (
-                <View
-                  key={item.identifier}
-                  style={[styles.scheduledItem, { borderColor: cardBorder }]}>
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={[styles.categoryTitle, { color: text }]} numberOfLines={1}>
-                      {item.title}
-                    </Text>
-                    {item.body ? (
-                      <Text style={[styles.rowHint, { color: outline }]} numberOfLines={2}>
-                        {item.body}
-                      </Text>
-                    ) : null}
-                    <Text style={[styles.metaLine, { color: outline }]}>
-                      来源 · {item.sourceLabel} · {item.fireAtLabel}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.metaLine,
-                        {
-                          color:
-                            item.status === 'active'
-                              ? primary
-                              : item.status === 'muted' || item.status === 'blocked'
-                                ? destructive
-                                : outline,
-                        },
-                      ]}>
-                      {item.statusLabel}
-                    </Text>
-                    {item.customizeHref ? (
-                      <Pressable
-                        onPress={() => router.push(item.customizeHref as never)}
-                        style={({ pressed }) => [
-                          styles.linkRow,
-                          { opacity: pressed ? 0.8 : 1, marginTop: 2 },
-                        ]}>
-                        <MaterialIcons name="place" size={15} color={primary} />
-                        <Text style={[styles.linkText, { color: primary }]}>查看来源功能</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                  {item.status === 'muted' ? (
-                    <Pressable
-                      onPress={() => onRestoreMuted(item.identifier)}
-                      disabled={busy}
-                      style={({ pressed }) => [
-                        styles.secondaryBtn,
-                        {
-                          borderColor: cardBorder,
-                          paddingHorizontal: 8,
-                          paddingVertical: 6,
-                          opacity: pressed || busy ? 0.75 : 1,
-                        },
-                      ]}>
-                      <Text style={[styles.secondaryBtnText, { color: primary, fontSize: 12 }]}>
-                        开启
-                      </Text>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      onPress={() => onDeleteScheduled(item)}
-                      disabled={busy}
-                      hitSlop={8}
-                      style={({ pressed }) => [
-                        styles.deleteBtn,
-                        {
-                          borderColor: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(185,28,28,0.3)',
-                          opacity: pressed || busy ? 0.7 : 1,
-                        },
-                      ]}
-                      accessibilityLabel="关闭这条通知">
-                      <MaterialIcons name="delete-outline" size={18} color={destructive} />
-                    </Pressable>
-                  )}
-                </View>
-              ))
-            )}
+            </View>
+          ) : null}
 
-            {muted.filter(id => !scheduled.some(s => s.identifier === id)).length > 0 ? (
-              <View style={{ gap: 8, marginTop: 4 }}>
-                <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>其它已关闭项</Text>
-                {muted
-                  .filter(id => !scheduled.some(s => s.identifier === id))
-                  .map(id => (
-                    <View
-                      key={id}
-                      style={[styles.scheduledItem, { borderColor: cardBorder, opacity: 0.9 }]}>
-                      <Text style={[styles.rowHint, { color: outline, flex: 1 }]} numberOfLines={2}>
-                        {formatMutedLabel(id)}
-                      </Text>
-                      <Pressable
-                        onPress={() => onRestoreMuted(id)}
-                        disabled={busy}
-                        style={({ pressed }) => [
-                          styles.secondaryBtn,
+          <FoldRiseIn animate={motionOn} index={0} staggerMs={40} fromY={10}>
+            <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <View style={styles.nextHead}>
+                <Text style={styles.nextLabel}>下一次</Text>
+                <Text style={[styles.nextValue, { color: '#8B6126' }]} numberOfLines={1}>
+                  {nextItem
+                    ? `${nextItem.fireAtLabel || clockFromIso(nextItem.fireAtIso)} · ${nextItem.title}`
+                    : '暂无'}
+                </Text>
+              </View>
+              <View style={[styles.progressTrack, { backgroundColor: '#E7E2D5' }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.round(progress * 100)}%`,
+                      backgroundColor: fold.amber,
+                    },
+                  ]}
+                />
+              </View>
+              <View style={styles.nextFoot}>
+                <Text style={styles.nextMeta}>{formatCountdown(nextItem?.fireAtIso ?? null)}</Text>
+                <Text style={styles.nextMeta}>共 {channelCount} 个频道</Text>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          {scheduled.length === 0 ? (
+            <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
+              <Text style={styles.emptyTitle}>暂无已预约</Text>
+              <Text style={styles.emptyHint}>
+                在提醒设置中打开频道与模块提醒后，将出现在此列表。
+              </Text>
+            </View>
+          ) : (
+            buckets.map((bucket, bIdx) => (
+              <View key={bucket.key}>
+                <View style={styles.bucketCap}>
+                  <Text style={styles.bucketLabel}>{bucket.label}</Text>
+                  <Text style={styles.bucketCount}>{bucket.items.length} 条</Text>
+                </View>
+                {bucket.items.map((item, i) => {
+                  const muted = item.status === 'muted' || item.status === 'blocked';
+                  const isRest = bucket.key === 'rest';
+                  return (
+                    <FoldRiseIn
+                      key={item.identifier}
+                      animate={motionOn}
+                      index={bIdx * 3 + i}
+                      staggerMs={40}
+                      fromY={10}>
+                      <View
+                        style={[
+                          styles.schedRow,
                           {
-                            borderColor: cardBorder,
-                            paddingHorizontal: 10,
-                            paddingVertical: 6,
-                            opacity: pressed || busy ? 0.75 : 1,
+                            backgroundColor: muted
+                              ? 'rgba(255,252,245,0.5)'
+                              : 'rgba(255,252,245,0.88)',
+                            borderColor: fold.line,
+                            borderStyle: isRest ? 'dashed' : 'solid',
+                            opacity: muted ? 0.55 : 1,
                           },
                         ]}>
-                        <Text style={[styles.secondaryBtnText, { color: primary, fontSize: 12 }]}>
-                          重新开启
+                        <Text
+                          style={[
+                            styles.schedTime,
+                            {
+                              color: isRest ? '#9AA097' : '#2F5A4C',
+                              fontFamily: foldFonts.mono,
+                            },
+                          ]}>
+                          {isRest && !item.fireAtIso
+                            ? '—'
+                            : clockFromIso(item.fireAtIso) !== '--:--'
+                              ? clockFromIso(item.fireAtIso)
+                              : item.fireAtLabel.slice(0, 5)}
                         </Text>
-                      </Pressable>
-                    </View>
-                  ))}
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text
+                            style={[styles.schedTitle, { color: muted ? '#7A857D' : '#3F4C44' }]}
+                            numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          <Text style={styles.schedDesc} numberOfLines={1}>
+                            {muted ? '已静音 · ' : ''}
+                            {item.body || item.statusLabel} · {item.sourceLabel}
+                          </Text>
+                        </View>
+                        <Switch
+                          value={!muted}
+                          disabled={busy}
+                          onValueChange={(v) => void onToggleItem(item, v)}
+                          trackColor={switchTrack}
+                          thumbColor="#ffffff"
+                        />
+                      </View>
+                    </FoldRiseIn>
+                  );
+                })}
               </View>
-            ) : null}
+            ))
+          )}
 
-            <Pressable
-              onPress={() => void reload()}
-              disabled={busy || loading}
-              style={({ pressed }) => [
-                styles.secondaryBtn,
-                { borderColor: cardBorder, opacity: pressed || busy ? 0.75 : 1 },
-              ]}>
-              {busy ? (
-                <ActivityIndicator size="small" color={primary} />
-              ) : (
-                <MaterialIcons name="refresh" size={18} color={text} />
-              )}
-              <Text style={[styles.secondaryBtnText, { color: text }]}>刷新列表</Text>
-            </Pressable>
+          <View style={[styles.card, styles.noteCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
+            <AppIcon name="lock" size={12} color={fold.sage} />
+            <Text style={[styles.noteText, { color: fold.muted }]}>
+              暂停不会清除预约；恢复后按原时间继续，错过的不会补发。
+            </Text>
           </View>
-          <View style={{ height: 28 }} />
         </ScrollView>
       )}
     </SafeAreaView>
@@ -350,52 +443,86 @@ export default function NotificationCenterScheduledScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
-  header: {
+  appBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  headerIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '700' },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scroll: { padding: 16, gap: 12 },
-  card: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 14,
-  },
-  rowTitle: { fontSize: 15, fontWeight: '700' },
-  rowHint: { fontSize: 12, lineHeight: 17 },
-  categoryTitle: { fontSize: 14, fontWeight: '700' },
-  metaLine: { fontSize: 11 },
-  scheduledItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
     gap: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
   },
-  secondaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  secondaryBtnText: { fontSize: 13, fontWeight: '700' },
-  deleteBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+  iconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  linkText: { fontSize: 12, fontWeight: '700' },
+  titleWrap: { flex: 1, minWidth: 0 },
+  title: { fontSize: 15, fontWeight: '700' },
+  sub: { fontSize: 10, marginTop: 2 },
+  pillBtn: {
+    height: 28,
+    paddingHorizontal: 11,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pillLabel: { fontSize: 10, fontWeight: '650' as never },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  scroll: { paddingHorizontal: 15, gap: 8 },
+  card: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  nextHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  nextLabel: { fontSize: 11, color: '#5E6B62' },
+  nextValue: { flex: 1, textAlign: 'right', fontSize: 11, fontWeight: '700' },
+  progressTrack: {
+    height: 3,
+    borderRadius: 3,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  progressFill: { height: '100%', borderRadius: 3 },
+  nextFoot: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  nextMeta: { fontSize: 9, color: '#A0A69D' },
+  bucketCap: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    marginBottom: 6,
+    paddingHorizontal: 1,
+  },
+  bucketLabel: { fontSize: 10, color: '#9A9F97' },
+  bucketCount: { fontSize: 10, color: '#9A9F97' },
+  schedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 9,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginBottom: 5,
+  },
+  schedTime: { fontSize: 13, fontWeight: '700', width: 42 },
+  schedTitle: { fontSize: 12, fontWeight: '700' },
+  schedDesc: { fontSize: 10, color: '#969C94', marginTop: 1 },
+  emptyTitle: { fontSize: 13, fontWeight: '700', color: '#3F4C44' },
+  emptyHint: { fontSize: 11, color: '#9A9F97', marginTop: 4, lineHeight: 16 },
+  noteCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4 },
+  noteText: { flex: 1, fontSize: 10, lineHeight: 15 },
 });

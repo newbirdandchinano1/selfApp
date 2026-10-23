@@ -149,7 +149,8 @@ import {
     ViewStyle,
     type KeyboardEvent,
 } from 'react-native';
-import { Gesture, GestureDetector, ScrollView, Swipeable } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { runOnJS } from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
@@ -3688,6 +3689,7 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
+                      childrenContainerStyle={{ backgroundColor: surfaceSubtle }}
                       renderRightActions={() => (
                         <View style={[styles.swipeDeleteTrack, { backgroundColor: surfaceSubtle }]}>
                           <Pressable
@@ -3749,6 +3751,7 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
+                      childrenContainerStyle={{ backgroundColor: surfaceSubtle }}
                       renderRightActions={() => (
                         <View style={[styles.swipeDeleteTrack, { backgroundColor: surfaceSubtle }]}>
                           <Pressable

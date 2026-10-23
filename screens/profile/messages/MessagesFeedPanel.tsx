@@ -1,6 +1,13 @@
-import { ScreenEmptyState } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+/**
+ * 消息 · 资讯：远端采集列表，封面色块、已读态、下拉刷新。
+ * 对齐设计稿 08。
+ */
+import {
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { AppIcon, ScreenEmptyState, type AppIconName } from '@/components/ui';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import {
   fetchRemoteInboxPage,
@@ -8,18 +15,53 @@ import {
   markRemoteInboxRead,
   type RemoteInboxItem,
 } from '@/lib/api/remote-inbox';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useState,
+} from 'react';
+import {
+  FlatList,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
-function formatRelativeTime(iso: string): string {
+export type MessagesFeedPanelHandle = {
+  markAllRead: () => void;
+};
+
+type Props = {
+  onStatsChange?: (stats: { total: number; unread: number }) => void;
+};
+
+const COVER_PALETTES: { bg: [string, string]; fg: string; icon: AppIconName }[] = [
+  { bg: ['#CBDCCB', '#8FB49F'], fg: '#22483B', icon: 'spa' },
+  { bg: ['#F0DFC2', '#D9A45E'], fg: '#7A4E12', icon: 'whatshot' },
+  { bg: ['#D6DEE8', '#8FA3B8'], fg: '#2F4557', icon: 'menu-book' },
+  { bg: ['#E4D5CE', '#C08E77'], fg: '#6B3A26', icon: 'favorite-border' },
+];
+
+function coverFor(id: string, index: number) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return COVER_PALETTES[(hash + index) % COVER_PALETTES.length]!;
+}
+
+function formatMeta(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
   const diffMs = Date.now() - t;
   const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return '刚刚';
-  if (mins < 60) return `${mins} 分钟前`;
+  if (mins < 60) return mins < 1 ? '刚刚' : `${mins} 分钟`;
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return `${hours} 小时`;
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days} 天前`;
   try {
@@ -29,197 +71,266 @@ function formatRelativeTime(iso: string): string {
   }
 }
 
-export function MessagesFeedPanel() {
-  const { colors } = useAppTheme();
-  const [items, setItems] = useState<RemoteInboxItem[]>([]);
+function estimateMinutes(body: string): number {
+  const len = body.trim().length;
+  return Math.max(3, Math.min(12, Math.round(len / 80) || 4));
+}
 
-  const unreadCount = useMemo(() => items.filter((i) => !i.readAt).length, [items]);
+export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
+  function MessagesFeedPanel({ onStatsChange }, ref) {
+    const { fold } = useFoldTheme();
+    const { animate: motionOn } = useFoldMotionGate();
+    const [items, setItems] = useState<RemoteInboxItem[]>([]);
 
-  const reload = useCallback(async () => {
-    try {
-      const page = await fetchRemoteInboxPage();
-      setItems(Array.isArray(page?.items) ? page.items : []);
-    } catch (e) {
-      // 失败静默空态，不崩
-      if (__DEV__) console.warn('[messages/feed] fetch failed', e);
-      setItems([]);
-    }
-  }, []);
+    const unreadCount = useMemo(() => items.filter((i) => !i.readAt).length, [items]);
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+    useEffect(() => {
+      onStatsChange?.({ total: items.length, unread: unreadCount });
+    }, [items.length, onStatsChange, unreadCount]);
 
-  const { refreshControl } = usePullToRefresh(reload);
+    const reload = useCallback(async () => {
+      try {
+        const page = await fetchRemoteInboxPage();
+        setItems(Array.isArray(page?.items) ? page.items : []);
+      } catch (e) {
+        if (__DEV__) console.warn('[messages/feed] fetch failed', e);
+        setItems([]);
+      }
+    }, []);
 
-  const onMarkAllRead = useCallback(async () => {
-    if (unreadCount === 0) return;
-    const now = new Date().toISOString();
-    setItems((prev) => prev.map((i) => (i.readAt ? i : { ...i, readAt: now })));
-    try {
-      await markAllRemoteInboxRead();
-    } catch (e) {
-      if (__DEV__) console.warn('[messages/feed] mark-all failed', e);
-    }
-  }, [unreadCount]);
+    useEffect(() => {
+      void reload();
+    }, [reload]);
 
-  const onPressItem = useCallback((item: RemoteInboxItem) => {
-    if (!item.readAt) {
+    const { refreshControl } = usePullToRefresh(reload);
+
+    const doMarkAllRead = useCallback(() => {
+      if (unreadCount === 0) return;
       const now = new Date().toISOString();
-      setItems((prev) =>
-        prev.map((i) => (i.id === item.id && !i.readAt ? { ...i, readAt: now } : i)),
-      );
-    }
-    void markRemoteInboxRead(item.id).catch((e) => {
-      if (__DEV__) console.warn('[messages/feed] mark-read failed', e);
-    });
-  }, []);
+      setItems((prev) => prev.map((i) => (i.readAt ? i : { ...i, readAt: now })));
+      void markAllRemoteInboxRead().catch((e) => {
+        if (__DEV__) console.warn('[messages/feed] mark-all failed', e);
+      });
+    }, [unreadCount]);
 
-  const sorted = useMemo(() => {
-    return [...items].sort((a, b) => {
-      const aUnread = a.readAt ? 0 : 1;
-      const bUnread = b.readAt ? 0 : 1;
-      if (aUnread !== bUnread) return bUnread - aUnread;
-      return Date.parse(b.createdAt) - Date.parse(a.createdAt);
-    });
-  }, [items]);
+    useImperativeHandle(ref, () => ({ markAllRead: doMarkAllRead }), [doMarkAllRead]);
 
-  return (
-    <View style={styles.root}>
-      <View style={styles.toolbar}>
-        <Text style={[styles.toolbarHint, { color: colors.textSecondary }]} numberOfLines={1}>
-          {items.length === 0 ? '采集资讯' : `未读 ${unreadCount}`}
-        </Text>
-        <Pressable
-          onPress={() => void onMarkAllRead()}
-          disabled={unreadCount === 0}
-          accessibilityRole="button"
-          accessibilityLabel="全部已读"
-          accessibilityState={{ disabled: unreadCount === 0 }}
-          style={({ pressed }) => [
-            styles.markAllBtn,
-            {
-              opacity: unreadCount === 0 ? 0.4 : pressed ? 0.75 : 1,
-              borderColor: colors.outline,
-              backgroundColor: colors.surface,
-            },
-          ]}>
-          <Text style={[styles.markAllText, { color: colors.primary }]}>全部已读</Text>
-        </Pressable>
-      </View>
+    const onPressItem = useCallback((item: RemoteInboxItem) => {
+      if (!item.readAt) {
+        const now = new Date().toISOString();
+        setItems((prev) =>
+          prev.map((i) => (i.id === item.id && !i.readAt ? { ...i, readAt: now } : i)),
+        );
+      }
+      void markRemoteInboxRead(item.id).catch((e) => {
+        if (__DEV__) console.warn('[messages/feed] mark-read failed', e);
+      });
+      const href = item.href || item.sourceUrl;
+      if (href && /^https?:\/\//i.test(href)) {
+        void Linking.openURL(href).catch(() => {});
+      }
+    }, []);
 
-      {sorted.length === 0 ? (
-        <ScrollView
-          contentContainerStyle={styles.emptyList}
-          refreshControl={refreshControl}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
-          <ScreenEmptyState
-            icon="article"
-            title="暂无资讯"
-            subtitle="下拉刷新；内容将由采集推送填充"
-            style={styles.empty}
-          />
-        </ScrollView>
-      ) : (
-        <FlatList
-          data={sorted}
-          keyExtractor={(item) => item.id}
-          refreshControl={refreshControl}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => {
-            const unread = !item.readAt;
-            return (
-              <Pressable
-                onPress={() => onPressItem(item)}
-                accessibilityRole="button"
-                accessibilityLabel={`${unread ? '未读，' : ''}${item.title}`}
-                style={({ pressed }) => [
-                  styles.row,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.outline,
-                    opacity: pressed ? 0.9 : 1,
-                  },
-                ]}>
-                <View style={styles.titleRow}>
-                  {unread ? (
-                    <View style={[styles.unreadDot, { backgroundColor: colors.primary }]} />
-                  ) : (
-                    <View style={styles.unreadDotSpacer} />
-                  )}
-                  <Text
-                    style={[
-                      styles.title,
-                      { color: colors.text, fontWeight: unread ? '700' : '600' },
-                    ]}
-                    numberOfLines={1}>
-                    {item.title}
+    const sorted = useMemo(() => {
+      return [...items].sort((a, b) => {
+        const aUnread = a.readAt ? 0 : 1;
+        const bUnread = b.readAt ? 0 : 1;
+        if (aUnread !== bUnread) return bUnread - aUnread;
+        return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+      });
+    }, [items]);
+
+    return (
+      <View style={styles.root}>
+        <View style={styles.metaRow}>
+          <Text style={[styles.metaLeft, { color: fold.muted }]}>为你挑选 · 基于近期节奏</Text>
+          <Text style={[styles.metaRight, { color: '#8B6126' }]}>
+            {unreadCount > 0 ? `未读 ${unreadCount}` : '已读完'}
+          </Text>
+        </View>
+
+        {sorted.length === 0 ? (
+          <ScrollView
+            contentContainerStyle={styles.emptyList}
+            refreshControl={refreshControl}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            <ScreenEmptyState
+              icon="article"
+              title="暂无资讯"
+              subtitle="下拉刷新；内容将由采集推送填充"
+              style={styles.empty}
+            />
+          </ScrollView>
+        ) : (
+          <FlatList
+            data={sorted}
+            keyExtractor={(item) => item.id}
+            refreshControl={refreshControl}
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+            ListFooterComponent={
+              <View style={styles.footerBlock}>
+                <View style={styles.footerRow}>
+                  <Text style={styles.footerHint}>共 {items.length} 篇</Text>
+                </View>
+                <View
+                  style={[
+                    styles.noteCard,
+                    { borderColor: fold.line, backgroundColor: fold.card },
+                  ]}>
+                  <AppIcon name="refresh" size={12} color={fold.sage} />
+                  <Text style={[styles.noteText, { color: fold.muted }]}>
+                    下拉刷新会在顶部短暂出现骨架，不遮挡已读列表。
                   </Text>
                 </View>
-                {item.body ? (
-                  <Text style={[styles.body, { color: colors.textSecondary }]} numberOfLines={2}>
-                    {item.body}
-                  </Text>
-                ) : null}
-                <Text style={[styles.time, { color: colors.textMuted }]}>
-                  {formatRelativeTime(item.createdAt)}
-                </Text>
-              </Pressable>
-            );
-          }}
-        />
-      )}
-    </View>
-  );
-}
+              </View>
+            }
+            renderItem={({ item, index }) => {
+              const unread = !item.readAt;
+              const cover = coverFor(item.id, index);
+              const mins = estimateMinutes(item.body || item.title);
+              const source =
+                (typeof item.sourceKey === 'string' && item.sourceKey.trim()) || '折页精选';
+              return (
+                <FoldRiseIn
+                  animate={motionOn}
+                  index={Math.min(index, 6)}
+                  staggerMs={50}
+                  fromY={16}
+                  duration={300}>
+                  <Pressable
+                    onPress={() => onPressItem(item)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${unread ? '未读，' : ''}${item.title}`}
+                    style={({ pressed }) => [
+                      styles.card,
+                      {
+                        borderColor: fold.line,
+                        backgroundColor: fold.card,
+                        opacity: unread ? 1 : 0.82,
+                      },
+                      pressed && { transform: [{ scale: 0.985 }] },
+                    ]}>
+                    <View
+                      style={[
+                        styles.cover,
+                        {
+                          backgroundColor: cover.bg[1],
+                        },
+                      ]}>
+                      <AppIcon name={cover.icon} size={18} color={cover.fg} />
+                    </View>
+                    <View style={styles.cardMain}>
+                      <View style={styles.titleRow}>
+                        <Text
+                          style={[styles.cardTitle, { color: '#3E4B43' }]}
+                          numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                        {unread ? (
+                          <View style={[styles.unreadDot, { backgroundColor: fold.clay }]} />
+                        ) : null}
+                      </View>
+                      {item.body ? (
+                        <Text style={styles.cardBody} numberOfLines={2}>
+                          {item.body}
+                        </Text>
+                      ) : null}
+                      <View style={styles.cardMeta}>
+                        <Text style={styles.cardMetaText}>
+                          {source} · {mins} 分钟
+                          {formatMeta(item.createdAt) ? ` · ${formatMeta(item.createdAt)}` : ''}
+                        </Text>
+                        <View
+                          style={[
+                            styles.tag,
+                            {
+                              backgroundColor: unread ? fold.amber2 : '#EAE6DC',
+                            },
+                          ]}>
+                          <Text
+                            style={[
+                              styles.tagText,
+                              { color: unread ? '#8B5A1E' : '#777B75' },
+                            ]}>
+                            {unread ? '新' : '已读'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  </Pressable>
+                </FoldRiseIn>
+              );
+            }}
+          />
+        )}
+      </View>
+    );
+  },
+);
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  toolbar: {
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 7,
+    paddingHorizontal: 2,
+  },
+  metaLeft: { fontSize: 11 },
+  metaRight: { fontSize: 10, fontWeight: '700' },
+  emptyList: { flexGrow: 1 },
+  empty: { flex: 1, paddingTop: 40 },
+  listContent: { paddingBottom: 40, gap: 6 },
+  card: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    padding: 9,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  cover: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardMain: { flex: 1, minWidth: 0 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
+  cardTitle: { flex: 1, fontSize: 12, fontWeight: '700', lineHeight: 17 },
+  unreadDot: { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
+  cardBody: { fontSize: 11, color: '#8F968E', marginTop: 3, lineHeight: 15 },
+  cardMeta: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingVertical: Spacing.md,
-    gap: Spacing.md,
+    marginTop: 4,
+    gap: 6,
   },
-  toolbarHint: {
-    ...Typography.caption,
-    flex: 1,
+  cardMetaText: { fontSize: 9, color: '#A5A9A1', flex: 1 },
+  tag: {
+    height: 18,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  markAllBtn: {
+  tagText: { fontSize: 9, fontWeight: '700' },
+  footerBlock: { marginTop: 10, gap: 8 },
+  footerRow: { paddingHorizontal: 2 },
+  footerHint: { fontSize: 10, color: '#A0A69D' },
+  noteCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.sm,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.sm,
   },
-  markAllText: {
-    ...Typography.label,
-    fontWeight: '700',
-  },
-  emptyList: { flexGrow: 1 },
-  empty: {
-    flex: 1,
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing['6xl'],
-  },
-  listContent: {
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingBottom: Spacing['6xl'],
-    gap: Spacing.md,
-  },
-  row: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.lg,
-    padding: Spacing['3xl'],
-    gap: Spacing.xs,
-  },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  unreadDot: { width: 8, height: 8, borderRadius: 4 },
-  unreadDotSpacer: { width: 8, height: 8 },
-  title: { ...Typography.bodyStrong, flex: 1 },
-  body: { ...Typography.caption, marginLeft: 16, lineHeight: 18 },
-  time: { ...Typography.caption, marginLeft: 16, marginTop: 2 },
+  noteText: { flex: 1, fontSize: 10, lineHeight: 15 },
 });

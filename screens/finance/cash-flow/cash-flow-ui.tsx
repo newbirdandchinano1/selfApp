@@ -30,7 +30,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
+import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import type {
   CashFlowExpenseBucket,
@@ -1309,6 +1309,7 @@ function FlowDetail({
               key={detailRowKey(item, idx)}
               overshootRight={false}
               rightThreshold={44}
+              childrenContainerStyle={{ backgroundColor: surface }}
               renderRightActions={() => (
                 <Pressable
                   onPress={() => applyDetailItemDelete(da, setState, showToast)}

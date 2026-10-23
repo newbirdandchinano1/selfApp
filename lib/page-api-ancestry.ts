@@ -38,12 +38,17 @@ const PAGE_PARENTS: Record<string, string[]> = {
 
   // —— 我的 / 个人 ——
   'edit-profile': [TAB_PAGE_KEYS.profile],
+  'life-road': [TAB_PAGE_KEYS.profile],
+  'edit-life-direction': ['life-road', TAB_PAGE_KEYS.profile],
+  'edit-life-bet': ['life-road', TAB_PAGE_KEYS.profile],
   'memo-list': [TAB_PAGE_KEYS.profile],
   'memo-view': ['memo-list', TAB_PAGE_KEYS.profile],
   'memo-edit': ['memo-view', 'memo-list', TAB_PAGE_KEYS.profile],
   /** 备忘录 / 任务标签管理；标签数据由 profile/memo-list 拼盘灌入 */
   'project-tags': ['memo-list', TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
   'points-ledger': [TAB_PAGE_KEYS.profile],
+  'project-completion-logs': [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
+  'project-completion-log': ['project-completion-logs', TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
   'wish-board': [TAB_PAGE_KEYS.profile],
   'edit-wish-board-item': ['wish-board', TAB_PAGE_KEYS.profile],
   'my-recipes': [TAB_PAGE_KEYS.profile],

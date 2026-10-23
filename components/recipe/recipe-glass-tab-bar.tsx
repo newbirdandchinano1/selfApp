@@ -96,7 +96,7 @@ export type GlassTabMeta = {
   renderIcon?: (state: GlassTabIconState) => React.ReactNode;
 };
 
-/** 与 React Navigation 自定义 tabBar 入参对齐的最小类型 */
+/** 与 Expo Router / React Navigation 自定义 tabBar 入参对齐的最小类型 */
 export type RecipeGlassTabBarProps = {
   state: {
     index: number;
@@ -114,14 +114,16 @@ export type RecipeGlassTabBarProps = {
       };
     }
   >;
-  navigation: {
+  /** Expo Router 新 API：替代旧的 navigation.emit */
+  emitter: {
     emit: (event: {
       type: string;
       target?: string;
       canPreventDefault?: boolean;
     }) => { defaultPrevented: boolean };
-    navigate: (name: string, params?: object) => void;
   };
+  /** Expo Router 新 API：按 route.key 切 Tab（替代 navigation.navigate） */
+  navigateToTab: (routeKey: string) => void;
   /** 路由名 → Tab 图标与文案；缺省使用内置菜谱配置 */
   meta?: Record<string, GlassTabMeta>;
   /** 覆盖明暗判定，默认跟随全局色板 */
@@ -214,13 +216,14 @@ function bubbleTheme(isDark: boolean): BubbleTheme {
 /**
  * 菜谱模块底部悬浮 Liquid Glass Tab（同时作为主 Tab 栏通用实现）。
  * 结构：BaseGlassBackground + StaticTabItems + AnimatedGlassBubble + TabPressFeedback
- * 导航逻辑与视觉层解耦：只消费 state/navigation，不改路由表。
+ * 导航逻辑与视觉层解耦：只消费 state/emitter/navigateToTab，不改路由表。
  * 图标与配色可由调用方通过 meta / activeColor / idleColor 覆盖。
  */
 export function RecipeGlassTabBar({
   state,
   descriptors,
-  navigation,
+  emitter,
+  navigateToTab,
   meta,
   isDark: isDarkOverride,
   activeColor,
@@ -483,14 +486,14 @@ export function RecipeGlassTabBar({
             };
 
             const onPress = () => {
-              const event = navigation.emit({
+              const event = emitter.emit({
                 type: 'tabPress',
                 target: route.key,
                 canPreventDefault: true,
               });
               if (!focused && !event.defaultPrevented) {
                 recipeSelectionHaptic();
-                navigation.navigate(route.name, route.params);
+                navigateToTab(route.key);
               }
             };
 

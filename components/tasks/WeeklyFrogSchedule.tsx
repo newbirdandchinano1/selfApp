@@ -65,7 +65,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -334,7 +333,7 @@ function uniquePlacementsBySubject(list: SchedulePlacementRow[]): SchedulePlacem
 
 /** Alert / Modal 关闭后再改状态，避免 Android 触摸层与 LayoutAnimation 抢焦点卡死 */
 function runAfterUiSettles(action: () => void) {
-  InteractionManager.runAfterInteractions(() => {
+  requestIdleCallback(() => {
     // 再等一帧，让原生 Dialog / Modal dismiss 动画真正卸掉
     requestAnimationFrame(() => {
       action();
