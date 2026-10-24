@@ -1,23 +1,29 @@
+import { FinanceDeeplinkLoading } from '@/components/finance/finance-deeplink-loading';
 import { setFinanceSheetLaunchIntent } from '@/lib/finance-transaction-sheet/controller';
 import { Stack, useRouter } from 'expo-router';
 import { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
 
-/** 兼容旧链接 zheng://screenshot，重定向到财务页弹窗记账。 */
+/**
+ * 兼容旧链接 zheng://screenshot：标记剪贴板自动记账意图后跳转财务主 Tab。
+ * Loading UI 对齐设计稿 19 · 扫描角标 / 步骤推进；无业务界面。
+ */
 export default function ScreenshotRedirectScreen() {
   const router = useRouter();
 
   useEffect(() => {
     setFinanceSheetLaunchIntent({ kind: 'auto_ledger_clipboard_pending' });
-    router.replace('/(tabs)/finance');
+    const t = setTimeout(() => {
+      router.replace('/(tabs)/finance');
+    }, 720);
+    return () => {
+      clearTimeout(t);
+    };
   }, [router]);
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: false }} />
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator size="large" />
-      </View>
+      <Stack.Screen options={{ headerShown: false, animation: 'fade' }} />
+      <FinanceDeeplinkLoading variant="screenshot" />
     </>
   );
 }

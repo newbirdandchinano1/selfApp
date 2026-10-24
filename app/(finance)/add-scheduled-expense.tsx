@@ -1,13 +1,21 @@
-import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
-import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
+  FoldPopIn,
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { FinanceFoldSwitch } from '@/components/finance/finance-fold-switch';
+import { Skeleton } from '@/components/ui';
+import { Layout } from '@/constants/design-tokens';
+import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
+import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { toast, toUserMessage } from '@/lib/app-feedback';
+import {
+  findNextScheduledExpenseOccurrence,
   getScheduledFinanceExpenseById,
   newScheduledFinanceExpenseId,
   upsertScheduledFinanceExpense,
   type ScheduledExpenseRepeat,
+  type ScheduledFinanceExpense,
 } from '@/lib/finance-scheduled-expense';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
@@ -23,7 +31,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -32,10 +39,10 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const PAGE_API_KEY = 'add-scheduled-expense';
 
-const REPEAT_TABS: { key: ScheduledExpenseRepeat; label: string }[] = [
-  { key: 'daily', label: '每天' },
-  { key: 'weekly', label: '每周' },
-  { key: 'monthly', label: '每月' },
+const REPEAT_TABS: { key: ScheduledExpenseRepeat; label: string; hint: string }[] = [
+  { key: 'daily', label: '每天', hint: '按天循环' },
+  { key: 'weekly', label: '每周', hint: '选星期' },
+  { key: 'monthly', label: '每月', hint: '选日期' },
 ];
 
 const WEEKDAY_OPTIONS = [
@@ -47,6 +54,8 @@ const WEEKDAY_OPTIONS = [
   { value: 6, label: '六' },
   { value: 7, label: '日' },
 ];
+
+const MONTH_QUICK_DAYS = [1, 5, 8, 15, 18, 24, 28];
 
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -63,50 +72,99 @@ function pickParam(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
-function NumberControl({
-  label,
+function applyTemplate(template: string): {
+  name: string;
+  amountText: string;
+  repeatOption: ScheduledExpenseRepeat;
+  weeklyDays: number[];
+  monthlyDays: number[];
+  hour: number;
+  minute: number;
+} {
+  switch (template) {
+    case 'rent':
+      return {
+        name: '房租',
+        amountText: '3000',
+        repeatOption: 'monthly',
+        weeklyDays: [1],
+        monthlyDays: [1],
+        hour: 9,
+        minute: 0,
+      };
+    case 'membership':
+      return {
+        name: '会员订阅',
+        amountText: '15',
+        repeatOption: 'monthly',
+        weeklyDays: [1],
+        monthlyDays: [18],
+        hour: 8,
+        minute: 30,
+      };
+    case 'insurance':
+      return {
+        name: '保险',
+        amountText: '200',
+        repeatOption: 'monthly',
+        weeklyDays: [1],
+        monthlyDays: [1],
+        hour: 10,
+        minute: 0,
+      };
+    default:
+      return {
+        name: '',
+        amountText: '',
+        repeatOption: 'daily',
+        weeklyDays: [1, 2, 3, 4, 5],
+        monthlyDays: [1],
+        hour: 8,
+        minute: 0,
+      };
+  }
+}
+
+function Stepper({
   value,
   onMinus,
   onPlus,
-  min = 1,
-  max = 10,
-  textColor,
-  mutedColor,
+  min,
+  max,
+  muted,
+  ink,
+  chipBg,
 }: {
-  label: string;
   value: number;
   onMinus: () => void;
   onPlus: () => void;
-  min?: number;
-  max?: number;
-  textColor: string;
-  mutedColor: string;
+  min: number;
+  max: number;
+  muted: string;
+  ink: string;
+  chipBg: string;
 }) {
-  const { colors } = useAppTheme();
   return (
-    <View style={styles.numberRow}>
-      <Text style={[Typography.bodyStrong, { color: textColor }]}>{label}</Text>
-      <View style={styles.numberActions}>
-        <Pressable
-          onPress={onMinus}
-          disabled={value <= min}
-          style={({ pressed }) => [
-            styles.numberBtn,
-            { backgroundColor: colors.surfaceMuted, opacity: value <= min ? 0.45 : pressed ? 0.75 : 1 },
-          ]}>
-          <MaterialIcons name="remove" size={16} color={mutedColor} />
-        </Pressable>
-        <Text style={[styles.numberValue, { color: textColor }]}>{value}</Text>
-        <Pressable
-          onPress={onPlus}
-          disabled={value >= max}
-          style={({ pressed }) => [
-            styles.numberBtn,
-            { backgroundColor: colors.surfaceMuted, opacity: value >= max ? 0.45 : pressed ? 0.75 : 1 },
-          ]}>
-          <MaterialIcons name="add" size={16} color={mutedColor} />
-        </Pressable>
-      </View>
+    <View style={styles.stepper}>
+      <Pressable
+        onPress={onMinus}
+        disabled={value <= min}
+        style={({ pressed }) => [
+          styles.stepBtn,
+          { backgroundColor: chipBg, opacity: value <= min ? 0.4 : pressed ? 0.8 : 1 },
+        ]}>
+        <Text style={{ color: muted, fontSize: 16, fontWeight: '600' }}>−</Text>
+      </Pressable>
+      <Text style={[styles.stepValue, { color: ink }]}>{value}</Text>
+      <Pressable
+        onPress={onPlus}
+        disabled={value >= max}
+        style={({ pressed }) => [
+          styles.stepBtn,
+          { backgroundColor: chipBg, opacity: value >= max ? 0.4 : pressed ? 0.8 : 1 },
+        ]}>
+        <Text style={{ color: muted, fontSize: 16, fontWeight: '600' }}>＋</Text>
+      </Pressable>
     </View>
   );
 }
@@ -114,16 +172,31 @@ function NumberControl({
 export default function AddScheduledExpenseScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string }>();
+  const params = useLocalSearchParams<{ id?: string; template?: string }>();
   const editId = pickParam(params.id)?.trim() ?? '';
+  const templateKey = pickParam(params.template)?.trim() ?? '';
   const isEditMode = editId.length > 0;
 
   const insets = useSafeAreaInsets();
-  const { colors, isDark, shadows } = useAppTheme();
+  const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
+
+  const bg = ff.paper;
+  const card = isDark ? ff.paper2 : ff.card;
+  const text = ff.ink;
+  const subtle = ff.muted;
+  const faint = ff.faint;
+  const line = ff.line;
+  const pine = ff.pine;
+  const headerScrim = isDark ? 'rgba(23,43,36,0.94)' : 'rgba(243,238,228,0.94)';
+  const chipBg = isDark ? ff.paper2 : '#F3EDE1';
+  const chipIdle = isDark ? ff.paper2 : '#F8F3E9';
+  const chipBorder = isDark ? line : '#E5DBC9';
 
   const [accounts, setAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
   const [loading, setLoading] = React.useState(isEditMode);
   const [saving, setSaving] = React.useState(false);
+  const [savePop, setSavePop] = React.useState(false);
 
   const [name, setName] = React.useState('');
   const [amountText, setAmountText] = React.useState('');
@@ -137,6 +210,7 @@ export default function AddScheduledExpenseScreen() {
   const [enabled, setEnabled] = React.useState(true);
   const [timePickerOpen, setTimePickerOpen] = React.useState(false);
   const [accountPickerOpen, setAccountPickerOpen] = React.useState(false);
+  const [monthPickerOpen, setMonthPickerOpen] = React.useState(false);
 
   React.useEffect(() => {
     void wrapLoad(async () => {
@@ -166,6 +240,16 @@ export default function AddScheduledExpenseScreen() {
           setTimesPerDay(row.timesPerDay);
           setIncludeInBudget(row.includeInBudget);
           setEnabled(row.enabled);
+        } else if (templateKey) {
+          const tpl = applyTemplate(templateKey);
+          setName(tpl.name);
+          setAmountText(tpl.amountText);
+          setRepeatOption(tpl.repeatOption);
+          setWeeklyDays(tpl.weeklyDays);
+          setMonthlyDays(tpl.monthlyDays);
+          const t = defaultScheduleTime();
+          t.setHours(tpl.hour, tpl.minute, 0, 0);
+          setScheduleTime(t);
         }
       } catch (e) {
         console.warn('Failed to load scheduled expense form:', e);
@@ -173,9 +257,55 @@ export default function AddScheduledExpenseScreen() {
         setLoading(false);
       }
     });
-  }, [editId, isEditMode, router, wrapLoad]);
+  }, [editId, isEditMode, router, templateKey, wrapLoad]);
 
   const selectedAccount = accounts.find((a) => a.id === accountId) ?? null;
+  const motionOn = foldAnimate && !loading;
+
+  const previewItem = React.useMemo((): ScheduledFinanceExpense | null => {
+    const amount = parseFloat(amountText.trim().replace(/,/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    return {
+      id: editId || 'preview',
+      name: name.trim() || '定时支出',
+      amount,
+      accountId: accountId || 'preview',
+      repeatOption,
+      weeklyDays: repeatOption === 'weekly' ? weeklyDays : [],
+      monthlyDays: repeatOption === 'monthly' ? monthlyDays : [],
+      hour: scheduleTime.getHours(),
+      minute: scheduleTime.getMinutes(),
+      timesPerDay,
+      includeInBudget,
+      enabled,
+      createdAt: new Date().toISOString(),
+    };
+  }, [
+    accountId,
+    amountText,
+    editId,
+    enabled,
+    includeInBudget,
+    monthlyDays,
+    name,
+    repeatOption,
+    scheduleTime,
+    timesPerDay,
+    weeklyDays,
+  ]);
+
+  const nextPreview = React.useMemo(() => {
+    if (!previewItem || !enabled) return null;
+    return findNextScheduledExpenseOccurrence(previewItem);
+  }, [enabled, previewItem]);
+
+  const headerTitle = isEditMode ? '编辑定时支出' : '添加定时支出';
+  const headerSub =
+    repeatOption === 'daily'
+      ? 'SCHEDULE · DAILY'
+      : repeatOption === 'weekly'
+        ? 'SCHEDULE · WEEKLY'
+        : 'SCHEDULE · MONTHLY';
 
   const toggleWeeklyDay = React.useCallback((day: number) => {
     setWeeklyDays((prev) => {
@@ -238,7 +368,8 @@ export default function AddScheduledExpenseScreen() {
         enabled,
       });
       scheduleRunScheduledFinanceExpenses('save');
-      toast.success('已保存');
+      setSavePop(true);
+      toast.success('已保存并重新计算下次执行');
       router.back();
     } catch (e) {
       toast.error(toUserMessage(e, '保存失败，请稍后重试'));
@@ -261,199 +392,379 @@ export default function AddScheduledExpenseScreen() {
     weeklyDays,
   ]);
 
+  const canSave = !saving && !loading;
+  const saveBarBottom = 10 + Math.max(insets.bottom, 8);
+  const accountTail =
+    selectedAccount?.account_no && selectedAccount.account_no.length >= 4
+      ? ` · ${selectedAccount.account_no.slice(-4)}`
+      : '';
+
+  const monthlyDayLabel =
+    monthlyDays.length === 0
+      ? '未选'
+      : monthlyDays.length === 1
+        ? `${monthlyDays[0]} 日`
+        : `${monthlyDays.length} 天`;
+
   if (loading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        <ScreenHeader title={isEditMode ? '编辑定时支出' : '添加定时支出'} onBack={() => router.back()} />
+      <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
+        <View style={[styles.header, { paddingTop: insets.top, backgroundColor: headerScrim, borderBottomColor: line }]}>
+          <View style={styles.headerInner}>
+            <View style={[styles.foldIconBtn, { borderColor: line, backgroundColor: card }]}>
+              <MaterialIcons name="arrow-back" size={16} color={ff.ink2} />
+            </View>
+            <View style={styles.headerCenter}>
+              <Text style={[styles.headerTitle, { color: text, fontFamily: ffFonts.serif }]}>{headerTitle}</Text>
+              <Text style={[styles.headerSub, { color: subtle }]}>{headerSub}</Text>
+            </View>
+            <View style={{ width: 48 }} />
+          </View>
+        </View>
         <View style={styles.loadingWrap}>
-          <Text style={{ color: colors.textSecondary }}>加载中…</Text>
+          <Skeleton width="90%" height={120} borderRadius={18} />
+          <Skeleton width="90%" height={160} borderRadius={18} style={{ marginTop: 10 }} />
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
-      <ScreenHeader title={isEditMode ? '编辑定时支出' : '添加定时支出'} onBack={() => router.back()} />
+    <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
+      <View style={[styles.header, { paddingTop: insets.top, backgroundColor: headerScrim, borderBottomColor: line }]}>
+        <View style={styles.headerInner}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              styles.foldIconBtn,
+              { borderColor: line, backgroundColor: card },
+              pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="返回">
+            <MaterialIcons name="arrow-back" size={16} color={ff.ink2} />
+          </Pressable>
+          <View style={styles.headerCenter}>
+            <Text style={[styles.headerTitle, { color: text, fontFamily: ffFonts.serif }]}>{headerTitle}</Text>
+            <Text style={[styles.headerSub, { color: subtle }]} numberOfLines={1}>
+              {headerSub}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => void handleSave()}
+            disabled={!canSave}
+            style={({ pressed }) => [
+              styles.pillSave,
+              {
+                backgroundColor: canSave ? pine : isDark ? ff.paper2 : '#EAE6DC',
+                borderColor: canSave ? pine : line,
+                opacity: canSave ? 1 : 0.7,
+              },
+              pressed && canSave && { opacity: 0.9, transform: [{ scale: 0.96 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="保存">
+            {savePop ? (
+              <FoldPopIn animate={foldAnimate} delayMs={0} duration={320}>
+                <Text style={[styles.pillSaveText, { color: canSave ? ff.onPine : faint }]}>
+                  {saving ? '…' : '保存'}
+                </Text>
+              </FoldPopIn>
+            ) : (
+              <Text style={[styles.pillSaveText, { color: canSave ? ff.onPine : faint }]}>
+                {saving ? '…' : '保存'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
-          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 96 }]}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingBottom: 82 + saveBarBottom,
+              maxWidth: Layout.contentMaxWidth,
+              alignSelf: 'center',
+              width: '100%',
+            },
+          ]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}>
-          <AppCard variant="default" padded style={styles.section}>
-            <Text style={[Typography.kicker, { color: colors.textSecondary }]}>基本信息</Text>
-            <AppInput label="支出名称" value={name} onChangeText={setName} placeholder="例如：地铁、房租" />
-            <View style={styles.amountRow}>
-              <Text style={[Typography.bodyStrong, styles.fieldLabel, { color: colors.text }]}>金额（每次）</Text>
-              <View style={[styles.amountWrap, { borderColor: colors.outline }]}>
-                <Text style={{ color: colors.textSecondary }}>¥</Text>
+          <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={11}>
+            <View style={[styles.formCard, { backgroundColor: card, borderColor: line }]}>
+              <View style={[styles.inputLine, { borderBottomColor: line }]}>
+                <Text style={[styles.inputLab, { color: subtle }]}>名称</Text>
+                <TextInput
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="例如：房租、会员"
+                  placeholderTextColor={faint}
+                  style={[styles.inputVal, { color: text }]}
+                />
+                <MaterialIcons name="edit" size={12} color={faint} />
+              </View>
+              <View style={[styles.inputLine, { borderBottomColor: line }]}>
+                <Text style={[styles.inputLab, { color: subtle }]}>金额</Text>
+                <Text style={[styles.inputYuan, { color: ff.amberInk, fontFamily: ffFonts.mono }]}>¥</Text>
                 <TextInput
                   value={amountText}
                   onChangeText={setAmountText}
                   keyboardType="decimal-pad"
                   placeholder="0.00"
-                  placeholderTextColor={colors.textSecondary}
-                  style={[styles.amountInput, { color: colors.text }]}
+                  placeholderTextColor={faint}
+                  style={[styles.inputVal, { color: text, fontFamily: ffFonts.mono }]}
+                />
+                <MaterialIcons name="edit" size={12} color={faint} />
+              </View>
+              <Pressable
+                onPress={() => setAccountPickerOpen(true)}
+                style={[styles.inputLine, { borderBottomColor: line }]}>
+                <Text style={[styles.inputLab, { color: subtle }]}>账户</Text>
+                <Text
+                  style={[styles.inputVal, { color: selectedAccount ? text : faint }]}
+                  numberOfLines={1}>
+                  {selectedAccount ? `${selectedAccount.name}${accountTail}` : '请选择'}
+                </Text>
+                <MaterialIcons name="chevron-right" size={16} color={faint} />
+              </Pressable>
+              <View style={[styles.formRow, { borderBottomColor: line }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.formRowLabel, { color: text }]}>预扣本月预算</Text>
+                  <Text style={[styles.formRowHint, { color: faint }]}>
+                    开启后从可支配预算中预先扣除，自动记账不再计入已用
+                  </Text>
+                </View>
+                <FinanceFoldSwitch
+                  value={includeInBudget}
+                  onValueChange={setIncludeInBudget}
+                  accessibilityLabel="预扣本月预算"
                 />
               </View>
+              <View style={[styles.formRow, { borderBottomWidth: 0 }]}>
+                <Text style={[styles.formRowLabel, { color: text }]}>启用定时记账</Text>
+                <FinanceFoldSwitch value={enabled} onValueChange={setEnabled} accessibilityLabel="启用定时记账" />
+              </View>
             </View>
+          </FoldRiseIn>
 
-            <Pressable
-              onPress={() => setAccountPickerOpen(true)}
-              style={[styles.pickRow, { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle }]}>
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>支付账户</Text>
-              <View style={styles.pickRight}>
-                <Text style={[Typography.body, { color: selectedAccount ? colors.text : colors.textSecondary }]}>
-                  {selectedAccount?.name ?? '请选择'}
-                </Text>
-                <MaterialIcons name="chevron-right" size={20} color={colors.textSecondary} />
+          <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={11}>
+            <View style={[styles.formCard, { backgroundColor: card, borderColor: line }]}>
+              <Text style={[styles.blockT, { color: faint }]}>重复规则</Text>
+              <View style={styles.ruleCards}>
+                {REPEAT_TABS.map((tab) => {
+                  const active = tab.key === repeatOption;
+                  return (
+                    <Pressable
+                      key={tab.key}
+                      onPress={() => setRepeatOption(tab.key)}
+                      style={({ pressed }) => [
+                        styles.ruleCard,
+                        {
+                          backgroundColor: active
+                            ? isDark
+                              ? ff.sage2
+                              : '#E7EFE9'
+                            : chipIdle,
+                          borderColor: active ? (isDark ? ff.sage : '#A5C2B2') : chipBorder,
+                        },
+                        pressed && { opacity: 0.9 },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.ruleLabel,
+                          { color: active ? pine : subtle, fontWeight: active ? '750' : '600' },
+                        ]}>
+                        {tab.label}
+                      </Text>
+                      <Text style={[styles.ruleHint, { color: active ? '#6C8B7A' : faint }]}>{tab.hint}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
-            </Pressable>
 
-            <View style={styles.switchRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>预扣本月预算</Text>
-                <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-                  开启后从可支配预算中预先扣除本周期预计金额，并抬高预期存款每日需存；自动记账不再计入已用
-                </Text>
-              </View>
-              <Switch
-                value={includeInBudget}
-                onValueChange={setIncludeInBudget}
-                trackColor={{ false: colors.capsule, true: colors.successSwitch }}
-              />
-            </View>
+              {repeatOption === 'weekly' ? (
+                <View style={styles.weekRow}>
+                  {WEEKDAY_OPTIONS.map((opt) => {
+                    const active = weeklyDays.includes(opt.value);
+                    return (
+                      <Pressable
+                        key={opt.value}
+                        onPress={() => toggleWeeklyDay(opt.value)}
+                        style={[
+                          styles.weekChip,
+                          {
+                            backgroundColor: active ? pine : chipIdle,
+                            borderColor: active ? pine : chipBorder,
+                          },
+                        ]}>
+                        <Text style={{ color: active ? ff.onPine : subtle, fontSize: 12, fontWeight: '700' }}>
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
 
-            {isEditMode ? (
-              <View style={styles.switchRow}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>启用定时记账</Text>
-                <Switch
-                  value={enabled}
-                  onValueChange={setEnabled}
-                  trackColor={{ false: colors.capsule, true: colors.successSwitch }}
-                />
-              </View>
-            ) : null}
-          </AppCard>
-
-          <AppCard variant="muted" padded style={styles.section}>
-            <Text style={[Typography.kicker, { color: colors.textSecondary }]}>重复周期</Text>
-            <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
-              {REPEAT_TABS.map((tab) => {
-                const active = tab.key === repeatOption;
-                return (
-                  <Pressable
-                    key={tab.key}
-                    onPress={() => setRepeatOption(tab.key)}
-                    style={({ pressed }) => [
-                      styles.tabItem,
-                      active && [{ backgroundColor: colors.surface }, shadows.card],
-                      pressed && { opacity: 0.9 },
-                    ]}>
-                    <Text style={[Typography.bodyStrong, { color: active ? colors.text : colors.textSecondary }]}>
-                      {tab.label}
-                    </Text>
+              {repeatOption === 'monthly' ? (
+                <>
+                  <View style={styles.monthHead}>
+                    <Text style={[styles.monthHeadLab, { color: subtle }]}>每月日期</Text>
+                    <Pressable
+                      onPress={() => setMonthPickerOpen(true)}
+                      style={[styles.tag, { backgroundColor: isDark ? ff.sage2 : '#E7EFE9' }]}>
+                      <Text style={[styles.tagText, { color: pine }]}>{monthlyDayLabel}</Text>
+                    </Pressable>
+                  </View>
+                  <View style={styles.weekRow}>
+                    {MONTH_QUICK_DAYS.map((day) => {
+                      const active = monthlyDays.includes(day);
+                      return (
+                        <Pressable
+                          key={day}
+                          onPress={() => toggleMonthlyDay(day)}
+                          style={[
+                            styles.weekChip,
+                            {
+                              backgroundColor: active ? pine : chipIdle,
+                              borderColor: active ? pine : chipBorder,
+                            },
+                          ]}>
+                          <Text style={{ color: active ? ff.onPine : subtle, fontSize: 12, fontWeight: '700' }}>
+                            {day}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Pressable onPress={() => setMonthPickerOpen(true)} style={styles.moreDays}>
+                    <Text style={{ color: subtle, fontSize: 12 }}>选择更多日期…</Text>
                   </Pressable>
-                );
-              })}
+                </>
+              ) : null}
+
+              <Pressable
+                onPress={() => {
+                  if (Platform.OS !== 'web') setTimePickerOpen(true);
+                }}
+                style={[styles.formRow, { borderBottomColor: line, marginTop: 4 }]}>
+                <Text style={[styles.formRowLabel, { color: text }]}>记账时间</Text>
+                <View style={styles.formRowRight}>
+                  <MaterialIcons name="schedule" size={14} color={subtle} />
+                  <Text style={[styles.formRowValue, { color: text, fontFamily: ffFonts.mono }]}>
+                    {pad2(scheduleTime.getHours())}:{pad2(scheduleTime.getMinutes())}
+                  </Text>
+                </View>
+              </Pressable>
+
+              <View style={[styles.formRow, { borderBottomWidth: 0 }]}>
+                <Text style={[styles.formRowLabel, { color: text }]}>每天记几笔</Text>
+                <Stepper
+                  value={timesPerDay}
+                  min={1}
+                  max={10}
+                  onMinus={() => setTimesPerDay((v) => Math.max(1, v - 1))}
+                  onPlus={() => setTimesPerDay((v) => Math.min(10, v + 1))}
+                  muted={subtle}
+                  ink="#3C4B42"
+                  chipBg={chipBg}
+                />
+              </View>
             </View>
+          </FoldRiseIn>
 
-            {repeatOption === 'weekly' ? (
-              <View style={styles.dayGrid}>
-                {WEEKDAY_OPTIONS.map((opt) => {
-                  const active = weeklyDays.includes(opt.value);
-                  return (
-                    <Pressable
-                      key={opt.value}
-                      onPress={() => toggleWeeklyDay(opt.value)}
-                      style={[
-                        styles.dayChip,
-                        {
-                          borderColor: active ? colors.primary : colors.outline,
-                          backgroundColor: active ? `${colors.primary}18` : colors.surface,
-                        },
-                      ]}>
-                      <Text style={{ color: active ? colors.primary : colors.textSecondary, fontWeight: '600' }}>
-                        {opt.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : null}
-
-            {repeatOption === 'monthly' ? (
-              <View style={styles.monthGrid}>
-                {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => {
-                  const active = monthlyDays.includes(day);
-                  return (
-                    <Pressable
-                      key={day}
-                      onPress={() => toggleMonthlyDay(day)}
-                      style={[
-                        styles.monthChip,
-                        {
-                          borderColor: active ? colors.primary : colors.outline,
-                          backgroundColor: active ? `${colors.primary}18` : colors.surface,
-                        },
-                      ]}>
-                      <Text style={{ color: active ? colors.primary : colors.textSecondary, fontSize: 13 }}>
-                        {day}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : null}
-
-            <Pressable
-              onPress={() => {
-                if (Platform.OS !== 'web') setTimePickerOpen(true);
-              }}
-              style={[styles.pickRow, { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle }]}>
-              <Text style={[Typography.bodyStrong, { color: colors.text }]}>记账时间</Text>
-              <View style={styles.pickRight}>
-                <Text style={[Typography.title, { color: colors.text }]}>
-                  {pad2(scheduleTime.getHours())}:{pad2(scheduleTime.getMinutes())}
+          <FoldRiseIn animate={motionOn} index={2} staggerMs={45} fromY={11}>
+            <View
+              style={[
+                styles.autoPreview,
+                {
+                  backgroundColor: isDark ? ff.sage2 : '#EDF3ED',
+                  borderColor: isDark ? line : '#D8E5DA',
+                },
+              ]}>
+              <MaterialIcons name="calendar-today" size={14} color="#527260" />
+              <Text style={[styles.autoPreviewText, { color: '#527260' }]}>
+                下次自动记账{' '}
+                <Text style={{ fontFamily: ffFonts.mono, fontWeight: '700', color: '#365B48' }}>
+                  {enabled && nextPreview
+                    ? nextPreview.fullLabel
+                    : enabled
+                      ? '待计算'
+                      : '已暂停'}
                 </Text>
-                <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
-              </View>
-            </Pressable>
+              </Text>
+              {includeInBudget && enabled ? (
+                <View style={[styles.tag, { backgroundColor: isDark ? 'rgba(30,64,52,0.35)' : '#E7EFE9', marginLeft: 'auto' }]}>
+                  <Text style={[styles.tagText, { color: pine }]}>预算已预扣</Text>
+                </View>
+              ) : null}
+            </View>
+          </FoldRiseIn>
 
-            <NumberControl
-              label="每天记几笔"
-              value={timesPerDay}
-              min={1}
-              max={10}
-              onMinus={() => setTimesPerDay((v) => Math.max(1, v - 1))}
-              onPlus={() => setTimesPerDay((v) => Math.min(10, v + 1))}
-              textColor={colors.text}
-              mutedColor={colors.textSecondary}
-            />
-            <Text style={[Typography.caption, { color: colors.textSecondary, lineHeight: 18 }]}>
-              到达设定时间后自动记 {timesPerDay} 笔，每笔金额为上方填写的金额。
-            </Text>
-          </AppCard>
+          <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={11}>
+            <View
+              style={[
+                styles.helper,
+                {
+                  backgroundColor: isDark ? 'rgba(216,154,77,0.1)' : '#F5EBD9',
+                  borderColor: isDark ? line : '#EAD6B7',
+                },
+              ]}>
+              <MaterialIcons name="lightbulb-outline" size={14} color={ff.amberInk} />
+              <Text style={[styles.helperText, { color: isDark ? ff.amberInk : '#6F6452' }]}>
+                定时支出会自动写入首页流水，并参与本月预算；删除规则不会删除已经生成的流水。
+              </Text>
+            </View>
+          </FoldRiseIn>
         </ScrollView>
 
         <View
           style={[
-            styles.footer,
+            styles.saveBar,
             {
-              paddingBottom: insets.bottom + Spacing.sm,
-              backgroundColor: colors.background,
-              borderTopColor: colors.outline,
+              paddingBottom: saveBarBottom,
+              backgroundColor: bg,
+              borderTopColor: line,
             },
           ]}>
-          <AppButton label={saving ? '保存中…' : '保存'} onPress={() => void handleSave()} disabled={saving} />
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              styles.saveGhost,
+              {
+                borderColor: isDark ? line : '#E5DBC9',
+                backgroundColor: isDark ? ff.paper2 : '#F7F2E7',
+              },
+              pressed && { opacity: 0.85 },
+            ]}>
+            <Text style={{ color: '#56645B', fontWeight: '700' }}>取消</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void handleSave()}
+            disabled={!canSave}
+            style={({ pressed }) => [
+              styles.savePrimary,
+              {
+                backgroundColor: pine,
+                opacity: canSave ? 1 : 0.55,
+                shadowColor: ff.shadow,
+              },
+              pressed && canSave && { opacity: 0.9 },
+            ]}>
+            <Text style={{ color: ff.onPine, fontWeight: '700', fontSize: 14 }}>
+              {saving ? '保存中…' : '保存规则'}
+            </Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
 
       {Platform.OS === 'ios' && timePickerOpen ? (
         <Modal transparent animationType="slide" visible onRequestClose={() => setTimePickerOpen(false)}>
           <Pressable style={styles.modalBackdrop} onPress={() => setTimePickerOpen(false)}>
-            <Pressable style={[styles.modalSheet, { backgroundColor: colors.surface }]}>
+            <Pressable style={[styles.modalSheet, { backgroundColor: card }]} onPress={(e) => e.stopPropagation()}>
               <DateTimePicker
                 value={scheduleTime}
                 mode="time"
@@ -462,7 +773,11 @@ export default function AddScheduledExpenseScreen() {
                   if (date) setScheduleTime(date);
                 }}
               />
-              <AppButton label="确定" onPress={() => setTimePickerOpen(false)} />
+              <Pressable
+                onPress={() => setTimePickerOpen(false)}
+                style={[styles.modalDone, { backgroundColor: pine }]}>
+                <Text style={{ color: ff.onPine, fontWeight: '700' }}>确定</Text>
+              </Pressable>
             </Pressable>
           </Pressable>
         </Modal>
@@ -480,12 +795,16 @@ export default function AddScheduledExpenseScreen() {
         />
       ) : null}
 
-      <Modal transparent visible={accountPickerOpen} animationType="fade" onRequestClose={() => setAccountPickerOpen(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setAccountPickerOpen(false)}>
-          <View style={[styles.accountSheet, { backgroundColor: colors.surface }]}>
-            <Text style={[Typography.title, { color: colors.text, marginBottom: Spacing.sm }]}>选择支付账户</Text>
+      <Modal
+        transparent
+        visible={accountPickerOpen}
+        animationType="fade"
+        onRequestClose={() => setAccountPickerOpen(false)}>
+        <Pressable style={styles.modalBackdropCenter} onPress={() => setAccountPickerOpen(false)}>
+          <View style={[styles.accountSheet, { backgroundColor: card, borderColor: line }]}>
+            <Text style={[styles.sheetTitle, { color: text }]}>选择支付账户</Text>
             {accounts.length === 0 ? (
-              <Text style={{ color: colors.textSecondary }}>暂无账户，请先到资产页添加。</Text>
+              <Text style={{ color: subtle }}>暂无账户，请先到资产页添加。</Text>
             ) : (
               accounts.map((acc) => (
                 <Pressable
@@ -496,13 +815,49 @@ export default function AddScheduledExpenseScreen() {
                   }}
                   style={({ pressed }) => [
                     styles.accountRow,
-                    { borderColor: colors.outline, opacity: pressed ? 0.75 : 1 },
+                    { borderBottomColor: line, opacity: pressed ? 0.75 : 1 },
                   ]}>
-                  <Text style={{ color: colors.text, flex: 1 }}>{acc.name}</Text>
-                  {acc.id === accountId ? <MaterialIcons name="check" size={20} color={colors.primary} /> : null}
+                  <Text style={{ color: text, flex: 1 }}>{acc.name}</Text>
+                  {acc.id === accountId ? <MaterialIcons name="check" size={18} color={pine} /> : null}
                 </Pressable>
               ))
             )}
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={monthPickerOpen}
+        animationType="fade"
+        onRequestClose={() => setMonthPickerOpen(false)}>
+        <Pressable style={styles.modalBackdropCenter} onPress={() => setMonthPickerOpen(false)}>
+          <View style={[styles.accountSheet, { backgroundColor: card, borderColor: line }]}>
+            <Text style={[styles.sheetTitle, { color: text }]}>选择每月日期</Text>
+            <View style={styles.monthGrid}>
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => {
+                const active = monthlyDays.includes(day);
+                return (
+                  <Pressable
+                    key={day}
+                    onPress={() => toggleMonthlyDay(day)}
+                    style={[
+                      styles.monthChip,
+                      {
+                        backgroundColor: active ? pine : chipIdle,
+                        borderColor: active ? pine : chipBorder,
+                      },
+                    ]}>
+                    <Text style={{ color: active ? ff.onPine : subtle, fontSize: 12 }}>{day}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable
+              onPress={() => setMonthPickerOpen(false)}
+              style={[styles.modalDone, { backgroundColor: pine, marginTop: 12 }]}>
+              <Text style={{ color: ff.onPine, fontWeight: '700' }}>完成</Text>
+            </Pressable>
           </View>
         </Pressable>
       </Modal>
@@ -511,143 +866,228 @@ export default function AddScheduledExpenseScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  content: {
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.md,
-    gap: Spacing.md,
-  },
-  section: { gap: Spacing.sm },
-  fieldLabel: { marginBottom: 6 },
-  amountRow: { gap: 6 },
-  amountWrap: {
+  root: { flex: 1 },
+  flex: { flex: 1 },
+  header: { borderBottomWidth: StyleSheet.hairlineWidth, zIndex: 60 },
+  headerInner: {
+    minHeight: 54,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.sm,
-    minHeight: 44,
-    gap: 4,
+    gap: 10,
   },
-  amountInput: {
-    flex: 1,
-    fontSize: 16,
-    paddingVertical: 8,
-  },
-  pickRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 12,
-    marginTop: 4,
-  },
-  pickRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.sm,
-    marginTop: 4,
-  },
-  tabWrap: {
-    flexDirection: 'row',
-    borderRadius: Radius.lg,
-    padding: 4,
-    gap: 4,
-  },
-  tabItem: {
-    flex: 1,
+  headerCenter: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
+  headerTitle: { fontSize: 17, fontWeight: '600', letterSpacing: 0.2 },
+  headerSub: { fontSize: 10, fontWeight: '600', letterSpacing: 0.6 },
+  foldIconBtn: {
+    width: 31,
+    height: 31,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
-    borderRadius: Radius.md,
   },
-  dayGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 4,
-  },
-  dayChip: {
-    width: 40,
-    height: 40,
+  pillSave: {
+    minWidth: 48,
+    height: 27,
+    paddingHorizontal: 12,
     borderRadius: 20,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  monthGrid: {
+  pillSaveText: { fontSize: 12, fontWeight: '700' },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24 },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    gap: 8,
+  },
+  formCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  blockT: {
+    fontSize: 11,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  inputLine: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: 4,
-  },
-  monthChip: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+    minHeight: 42,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  numberRow: {
+  inputLab: { width: 36, fontSize: 12, flexShrink: 0 },
+  inputYuan: { fontSize: 13, fontWeight: '700' },
+  inputVal: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+  },
+  formRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 4,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 12,
   },
-  numberActions: {
-    flexDirection: 'row',
+  formRowLabel: { fontSize: 13, fontWeight: '600' },
+  formRowHint: { fontSize: 11, lineHeight: 15, marginTop: 2 },
+  formRowRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  formRowValue: { fontSize: 14, fontWeight: '700' },
+  ruleCards: { flexDirection: 'row', gap: 5, marginBottom: 8 },
+  ruleCard: {
+    flex: 1,
+    height: 52,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    gap: 2,
   },
-  numberBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  ruleLabel: { fontSize: 13 },
+  ruleHint: { fontSize: 10 },
+  weekRow: { flexDirection: 'row', gap: 4, marginTop: 4 },
+  weekChip: {
+    flex: 1,
+    height: 28,
+    borderRadius: 7,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  numberValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    minWidth: 24,
-    textAlign: 'center',
+  monthHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
   },
-  footer: {
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.sm,
+  monthHeadLab: { fontSize: 13 },
+  moreDays: { paddingVertical: 6, alignItems: 'center' },
+  tag: {
+    height: 18,
+    paddingHorizontal: 6,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tagText: { fontSize: 10, fontWeight: '700' },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  stepBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepValue: { fontSize: 14, fontWeight: '700', minWidth: 14, textAlign: 'center' },
+  autoPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexWrap: 'wrap',
+  },
+  autoPreviewText: { fontSize: 12, flexShrink: 1 },
+  helper: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+    paddingVertical: 10,
+    paddingHorizontal: 11,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  helperText: { flex: 1, fontSize: 12, lineHeight: 18 },
+  saveBar: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
+    maxWidth: Layout.contentMaxWidth,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  saveGhost: {
+    width: 78,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  savePrimary: {
+    flex: 1,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.17,
+    shadowRadius: 18,
+    elevation: 3,
   },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.35)',
     justifyContent: 'flex-end',
   },
+  modalBackdropCenter: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
   modalSheet: {
-    padding: Spacing.md,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
+    padding: 16,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+  },
+  modalDone: {
+    height: 42,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   accountSheet: {
-    marginHorizontal: Spacing.lg,
-    marginVertical: '30%',
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    maxHeight: '50%',
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+    maxHeight: '70%',
   },
+  sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 10 },
   accountRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  monthGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  monthChip: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

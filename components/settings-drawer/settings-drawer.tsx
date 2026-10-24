@@ -1,10 +1,17 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useFoldMotionGate } from '@/components/review/fold-motion';
+import { useFoldTheme } from '@/constants/review-fold-theme';
 import { MaterialIcons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 import React, { useCallback, useEffect, useMemo } from 'react';
-import { Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import Animated, {
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createPanCloseGesture } from './create-pan-close-gesture';
 import { GlobalSettingsPanel } from './global-settings-panel';
@@ -20,6 +27,12 @@ const LEFT_OPEN_EDGE_WIDTH = 16;
 const OPEN_HORIZONTAL_ACTIVATE_PX = 16;
 const OPEN_VERTICAL_FAIL_PX = 10;
 
+/** 设计稿 drawer .4s ease / overlay .35s */
+const DRAWER_OPEN_MS = 400;
+const DRAWER_CLOSE_MS = 360;
+const OVERLAY_MS = 350;
+const DRAWER_EASE = Easing.bezier(0.22, 1, 0.36, 1);
+
 type Props = {
   children: React.ReactNode;
   drawerWidth: number;
@@ -30,9 +43,8 @@ type Props = {
 /** 包裹主 Tab 内容：在屏幕左缘向右滑，从左侧拉出全局设置抽屉 */
 export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: Props) {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { palette, fold, isDark } = useFoldTheme();
+  const { animate: motionOk } = useFoldMotionGate();
   const { isOpen, initialSection, open, close } = useSettingsDrawer();
   const screenHeight = Dimensions.get('window').height;
 
@@ -41,17 +53,23 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
   const backdropOpacity = useSharedValue(0);
   const touchStartX = useSharedValue(0);
   const touchStartY = useSharedValue(0);
+  const closeRotate = useSharedValue(0);
   const openThreshold = drawerWidth * OPEN_THRESHOLD_RATIO;
 
   const snapOpen = useCallback(() => {
-    translateX.value = 0;
-    backdropOpacity.value = 1;
-  }, [backdropOpacity, translateX]);
+    const ms = motionOk ? DRAWER_OPEN_MS : 0;
+    const overlayMs = motionOk ? OVERLAY_MS : 0;
+    translateX.value = withTiming(0, { duration: ms, easing: DRAWER_EASE });
+    backdropOpacity.value = withTiming(1, { duration: overlayMs, easing: DRAWER_EASE });
+  }, [backdropOpacity, motionOk, translateX]);
 
   const snapClose = useCallback(() => {
-    translateX.value = closedOffset;
-    backdropOpacity.value = 0;
-  }, [backdropOpacity, closedOffset, translateX]);
+    const ms = motionOk ? DRAWER_CLOSE_MS : 0;
+    const overlayMs = motionOk ? OVERLAY_MS : 0;
+    translateX.value = withTiming(closedOffset, { duration: ms, easing: DRAWER_EASE });
+    backdropOpacity.value = withTiming(0, { duration: overlayMs, easing: DRAWER_EASE });
+    closeRotate.value = withTiming(0, { duration: motionOk ? 180 : 0 });
+  }, [backdropOpacity, closeRotate, closedOffset, motionOk, translateX]);
 
   useEffect(() => {
     if (isOpen) snapOpen();
@@ -112,13 +130,21 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
         .onEnd(e => {
           'worklet';
           const shouldOpen = e.translationX > openThreshold || e.velocityX > OPEN_VELOCITY;
+          const ms = motionOk ? DRAWER_OPEN_MS : 0;
+          const closeMs = motionOk ? DRAWER_CLOSE_MS : 0;
           if (shouldOpen) {
-            translateX.value = 0;
-            backdropOpacity.value = 1;
+            translateX.value = withTiming(0, { duration: ms, easing: DRAWER_EASE });
+            backdropOpacity.value = withTiming(1, {
+              duration: motionOk ? OVERLAY_MS : 0,
+              easing: DRAWER_EASE,
+            });
             runOnJS(finishOpen)();
           } else {
-            translateX.value = closedOffset;
-            backdropOpacity.value = 0;
+            translateX.value = withTiming(closedOffset, { duration: closeMs, easing: DRAWER_EASE });
+            backdropOpacity.value = withTiming(0, {
+              duration: motionOk ? OVERLAY_MS : 0,
+              easing: DRAWER_EASE,
+            });
           }
         }),
     [
@@ -132,6 +158,7 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
       backdropOpacity,
       touchStartX,
       touchStartY,
+      motionOk,
     ],
   );
 
@@ -149,8 +176,19 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
       drawerWidth,
       openThreshold,
       onClose: finishClose,
+      motionOk,
     }),
-    [closedOffset, drawerWidth, openThreshold, finishClose, translateX, backdropOpacity, touchStartX, touchStartY],
+    [
+      closedOffset,
+      drawerWidth,
+      openThreshold,
+      finishClose,
+      translateX,
+      backdropOpacity,
+      touchStartX,
+      touchStartY,
+      motionOk,
+    ],
   );
 
   const panCloseScroll = useMemo(
@@ -181,9 +219,24 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
     opacity: backdropOpacity.value,
   }));
 
-  const text = theme.text;
-  const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
-  const surface = isDark ? theme.surface : '#ffffff';
+  const closeBtnStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${closeRotate.value}deg` }, { scale: closeRotate.value > 45 ? 0.92 : 1 }],
+  }));
+
+  const onClosePressIn = useCallback(() => {
+    closeRotate.value = withTiming(90, {
+      duration: motionOk ? 200 : 0,
+      easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+    });
+  }, [closeRotate, motionOk]);
+
+  const onClosePressOut = useCallback(() => {
+    if (!isOpen) {
+      closeRotate.value = withTiming(0, { duration: motionOk ? 160 : 0 });
+    }
+  }, [closeRotate, isOpen, motionOk]);
+
+  const overlayTint = isDark ? 'rgba(18,26,22,0.55)' : 'rgba(32,42,37,0.35)';
 
   return (
     <View style={styles.host}>
@@ -193,15 +246,22 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
         </View>
       </GestureDetector>
 
-      {/* 跟手滑动时的半透明层（不拦截点击） */}
-      {!isOpen ? <Animated.View pointerEvents="none" style={[styles.backdrop, backdropStyle]} /> : null}
-
-      {/* 打开后：点击或左滑遮罩区域关闭 */}
-      {isOpen ? (
-        <GestureDetector gesture={backdropGestures}>
-          <View style={styles.backdropPressable} accessibilityLabel="关闭设置" />
-        </GestureDetector>
-      ) : null}
+      <GestureDetector gesture={backdropGestures}>
+        <Animated.View
+          pointerEvents={isOpen ? 'auto' : 'none'}
+          style={[styles.backdrop, backdropStyle]}
+          accessibilityLabel="关闭设置">
+          {Platform.OS !== 'web' ? (
+            <BlurView
+              intensity={isDark ? 18 : 12}
+              tint={isDark ? 'dark' : 'light'}
+              style={StyleSheet.absoluteFill}
+              blurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
+            />
+          ) : null}
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: overlayTint }]} />
+        </Animated.View>
+      </GestureDetector>
 
       <Animated.View
         pointerEvents={isOpen ? 'auto' : 'none'}
@@ -209,33 +269,47 @@ export function SettingsDrawerHost({ children, drawerWidth, tabBarHeight = 0 }: 
           styles.drawer,
           {
             width: drawerWidth,
-            backgroundColor: isDark ? theme.background : '#faf8ff',
+            backgroundColor: palette.paper,
             paddingTop: insets.top,
             paddingBottom: insets.bottom,
+            shadowColor: fold.shadow,
           },
           drawerStyle,
         ]}>
         <View style={styles.drawerInner}>
           <GestureDetector gesture={panCloseHeader}>
-            <View style={[styles.header, { borderBottomColor: isDark ? 'rgba(148,163,184,0.15)' : 'rgba(0,0,0,0.06)' }]}>
+            <View style={[styles.header, { borderBottomColor: palette.line }]}>
               <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={[styles.headerKicker, { color: outline }]}>SETTINGS</Text>
-                <Text style={[styles.headerTitle, { color: text }]}>全局设置</Text>
-                <Text style={[styles.headerHint, { color: outline }]}>左缘右滑打开 · 面板内左滑收起</Text>
+                <Text style={[styles.headerKicker, { color: palette.muted }]}>SETTINGS</Text>
+                <Text style={[styles.headerTitle, { color: palette.ink }]}>全局设置</Text>
+                <Text style={[styles.headerHint, { color: palette.muted }]}>
+                  左缘右滑打开 · 面板内左滑收起
+                </Text>
               </View>
               <Pressable
                 onPress={close}
+                onPressIn={onClosePressIn}
+                onPressOut={onClosePressOut}
                 hitSlop={12}
-                style={({ pressed }) => [
-                  styles.closeBtn,
-                  { backgroundColor: surface, opacity: pressed ? 0.8 : 1 },
-                ]}
                 accessibilityLabel="关闭">
-                <MaterialIcons name="close" size={22} color={text} />
+                <Animated.View
+                  style={[
+                    styles.closeBtn,
+                    {
+                      backgroundColor: isDark ? fold.cardSoft : 'rgba(255,252,245,0.65)',
+                      borderColor: palette.line,
+                    },
+                    closeBtnStyle,
+                  ]}>
+                  <MaterialIcons name="close" size={20} color={palette.inkSoft} />
+                </Animated.View>
               </Pressable>
             </View>
           </GestureDetector>
-          <GlobalSettingsPanel initialSection={initialSection} panCloseGesture={panCloseScroll} />
+          <GlobalSettingsPanel
+            initialSection={initialSection}
+            panCloseGesture={panCloseScroll as never}
+          />
           <GestureDetector gesture={panCloseEdge}>
             <View
               style={[styles.drawerRightDragEdge, { width: DRAWER_RIGHT_DRAG_WIDTH }]}
@@ -254,14 +328,9 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   backdrop: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(0,0,0,0.42)',
-    zIndex: 30,
-  },
-  backdropPressable: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(0,0,0,0.42)',
     zIndex: 35,
     elevation: 35,
+    overflow: 'hidden',
   },
   drawer: {
     position: 'absolute',
@@ -269,10 +338,9 @@ const styles = StyleSheet.create({
     left: 0,
     bottom: 0,
     zIndex: 40,
-    shadowColor: '#000',
-    shadowOffset: { width: 4, height: 0 },
+    shadowOffset: { width: 10, height: 0 },
     shadowOpacity: 0.18,
-    shadowRadius: 16,
+    shadowRadius: 24,
     elevation: 40,
   },
   drawerInner: { flex: 1 },
@@ -288,18 +356,25 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingTop: 8,
+    paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  headerKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
-  headerTitle: { fontSize: 20, fontWeight: '800', marginTop: 2 },
-  headerHint: { fontSize: 11, marginTop: 6, lineHeight: 16 },
+  headerKicker: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1.9,
+    textTransform: 'uppercase',
+  },
+  headerTitle: { fontSize: 20, fontWeight: '700', marginTop: 2, letterSpacing: 0.2 },
+  headerHint: { fontSize: 10, marginTop: 4, lineHeight: 14 },
   closeBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
   },
 });
 

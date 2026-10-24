@@ -5,6 +5,8 @@
 
 /** 与后端/本地存储约定的键名，勿随意改名（否则历史数据失效） */
 export const FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS = 'exclude_from_total_assets' as const;
+/** 关闭后不在财务首页账户横向卡片中展示（资产页仍可见） */
+export const FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME = 'hide_from_home' as const;
 
 /** 将 extra_data 安全解析为普通对象，解析失败时返回空对象 */
 export function parseFinanceAccountExtraObject(extraData: string | null): Record<string, unknown> {
@@ -42,6 +44,29 @@ export function mergeFinanceAccountExcludeFromTotalAssets(
     next[FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS] = true;
   } else {
     delete next[FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS];
+  }
+  return JSON.stringify(next);
+}
+
+/** 是否勾选「不在首页账户卡片中显示」（资产页仍可见） */
+export function isFinanceAccountHiddenFromHome(extraData: string | null): boolean {
+  const obj = parseFinanceAccountExtraObject(extraData);
+  return obj[FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME] === true;
+}
+
+/**
+ * 在保留原有 extra 字段的前提下，写入或清除「隐藏于首页账户卡片」标记。
+ * @returns 可传给 `updateFinanceAccount` / `createFinanceAccount` 的 `extra_data` 字符串
+ */
+export function mergeFinanceAccountHideFromHome(
+  currentExtraData: string | null,
+  hidden: boolean,
+): string {
+  const next = { ...parseFinanceAccountExtraObject(currentExtraData) };
+  if (hidden) {
+    next[FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME] = true;
+  } else {
+    delete next[FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME];
   }
   return JSON.stringify(next);
 }

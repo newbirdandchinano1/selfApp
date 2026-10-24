@@ -14,6 +14,7 @@ import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { AutoLedgerCoordinator } from '@/components/auto-ledger-coordinator';
 import { ScheduledExpenseCoordinator } from '@/components/scheduled-expense-coordinator';
 import { CompletionCelebrationHost } from '@/components/completion-celebration-host';
+import { AppDialogHost } from '@/components/app-dialog-host';
 import { AppToastHost } from '@/components/app-toast-host';
 import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
 import { FinanceTransactionSheet } from '@/components/finance/finance-transaction-sheet';
@@ -406,6 +407,8 @@ function RootLayoutInner() {
             <Stack.Screen name="intake-history" />
             <Stack.Screen name="health-analysis" />
             <Stack.Screen name="finance-calendar" />
+            <Stack.Screen name="finance-stats" />
+            <Stack.Screen name="finance-stats-detail" />
             <Stack.Screen name="scheduled-expenses" />
             <Stack.Screen name="add-scheduled-expense" />
             <Stack.Screen name="tasks-calendar" />
@@ -470,6 +473,7 @@ function RootLayoutInner() {
             </ApiLoadingShell>
             </AppErrorBoundary>
             <AppToastHost />
+            <AppDialogHost />
             <PointsEarnedToastHost />
             <CompletionCelebrationHost />
             {flushError ? (

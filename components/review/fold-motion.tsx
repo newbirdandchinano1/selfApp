@@ -41,11 +41,18 @@ type RiseInProps = {
   staggerMs?: number;
   delayMs?: number;
   fromY?: number;
+  /** 可选：自 fromScale → 1，增强卡片入场存在感 */
+  fromScale?: number;
+  /**
+   * 等待 animate 变为 true 时保持 opacity 0，避免「先终态闪一下再入场」。
+   * 减少动态效果时勿开（应直接显示终态）。
+   */
+  holdHidden?: boolean;
   style?: StyleProp<ViewStyle>;
   children: React.ReactNode;
 };
 
-/** 上浮淡入：opacity 0→1 + translateY */
+/** 上浮淡入：opacity 0→1 + translateY（可选 scale） */
 export function FoldRiseIn({
   animate,
   index = 0,
@@ -53,14 +60,18 @@ export function FoldRiseIn({
   staggerMs = 55,
   delayMs = 0,
   fromY = 12,
+  fromScale,
+  holdHidden = false,
   style,
   children,
 }: RiseInProps) {
-  const progress = React.useRef(new Animated.Value(animate ? 0 : 1)).current;
+  const progress = React.useRef(
+    new Animated.Value(animate ? 0 : holdHidden ? 0 : 1),
+  ).current;
 
   React.useEffect(() => {
     if (!animate) {
-      progress.setValue(1);
+      progress.setValue(holdHidden ? 0 : 1);
       return;
     }
     progress.setValue(0);
@@ -73,15 +84,29 @@ export function FoldRiseIn({
     });
     anim.start();
     return () => anim.stop();
-  }, [animate, delayMs, duration, index, progress, staggerMs]);
+  }, [animate, delayMs, duration, holdHidden, index, progress, staggerMs]);
 
   const translateY = progress.interpolate({
     inputRange: [0, 1],
     outputRange: [fromY, 0],
   });
+  const scale =
+    typeof fromScale === 'number'
+      ? progress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [fromScale, 1],
+        })
+      : null;
 
   return (
-    <Animated.View style={[style, { opacity: progress, transform: [{ translateY }] }]}>
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: progress,
+          transform: scale != null ? [{ translateY }, { scale }] : [{ translateY }],
+        },
+      ]}>
       {children}
     </Animated.View>
   );
@@ -201,6 +226,63 @@ type CountUpProps = {
   textStyle?: StyleProp<TextStyle>;
   formatter?: (n: number) => string;
 };
+
+type BreatheProps = {
+  animate: boolean;
+  /** 循环时长，默认 3.4s（设计稿 softPulse / empty breathe） */
+  durationMs?: number;
+  style?: StyleProp<ViewStyle>;
+  children: React.ReactNode;
+};
+
+/** 空态插画轻呼吸：scale .92↔1.05 + opacity（设计稿 `@keyframes softPulse`） */
+export function FoldBreathe({
+  animate,
+  durationMs = 3400,
+  style,
+  children,
+}: BreatheProps) {
+  const pulse = React.useRef(new Animated.Value(animate ? 0 : 0.5)).current;
+
+  React.useEffect(() => {
+    if (!animate) {
+      pulse.setValue(0.5);
+      return;
+    }
+    pulse.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: durationMs / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: durationMs / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [animate, durationMs, pulse]);
+
+  const scale = pulse.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0.92, 1.05, 0.92],
+  });
+  const opacity = pulse.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0.45, 1, 0.45],
+  });
+
+  return (
+    <Animated.View style={[style, { opacity, transform: [{ scale }] }]}>{children}</Animated.View>
+  );
+}
 
 /** 数字 count-up（设计稿 800ms ease-out） */
 export function FoldCountUpText({

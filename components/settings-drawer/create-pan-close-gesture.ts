@@ -1,9 +1,12 @@
 import { Gesture } from 'react-native-gesture-handler';
-import { runOnJS, type SharedValue } from 'react-native-reanimated';
+import { Easing, runOnJS, withTiming, type SharedValue } from 'react-native-reanimated';
 
 const OPEN_VELOCITY = 520;
 const HORIZONTAL_ACTIVATE_PX = 12;
 const VERTICAL_FAIL_PX = 10;
+const CLOSE_MS = 360;
+const OVERLAY_MS = 350;
+const DRAWER_EASE = Easing.bezier(0.22, 1, 0.36, 1);
 
 export type PanCloseGestureRefs = {
   translateX: SharedValue<number>;
@@ -14,6 +17,8 @@ export type PanCloseGestureRefs = {
   drawerWidth: number;
   openThreshold: number;
   onClose: () => void;
+  /** 减少动态效果时瞬间贴合 */
+  motionOk?: boolean;
 };
 
 export function createPanCloseGesture(enabled: boolean, refs: PanCloseGestureRefs) {
@@ -26,6 +31,7 @@ export function createPanCloseGesture(enabled: boolean, refs: PanCloseGestureRef
     drawerWidth,
     openThreshold,
     onClose,
+    motionOk = true,
   } = refs;
 
   return Gesture.Pan()
@@ -61,13 +67,15 @@ export function createPanCloseGesture(enabled: boolean, refs: PanCloseGestureRef
     .onEnd(e => {
       'worklet';
       const shouldClose = e.translationX < -openThreshold || e.velocityX < -OPEN_VELOCITY;
+      const closeMs = motionOk ? CLOSE_MS : 0;
+      const overlayMs = motionOk ? OVERLAY_MS : 0;
       if (shouldClose) {
-        translateX.value = closedOffset;
-        backdropOpacity.value = 0;
+        translateX.value = withTiming(closedOffset, { duration: closeMs, easing: DRAWER_EASE });
+        backdropOpacity.value = withTiming(0, { duration: overlayMs, easing: DRAWER_EASE });
         runOnJS(onClose)();
       } else {
-        translateX.value = 0;
-        backdropOpacity.value = 1;
+        translateX.value = withTiming(0, { duration: closeMs, easing: DRAWER_EASE });
+        backdropOpacity.value = withTiming(1, { duration: overlayMs, easing: DRAWER_EASE });
       }
     });
 }

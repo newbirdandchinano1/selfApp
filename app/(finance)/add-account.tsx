@@ -1,6 +1,7 @@
-import { AppButton, AppInput, ScreenHeader, Skeleton } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { AppInput, Skeleton } from '@/components/ui';
+import { FoldPopIn, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { Layout, Spacing } from '@/constants/design-tokens';
+import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
@@ -8,11 +9,13 @@ import {
   FINANCE_ACCOUNT_ICON_OPTIONS,
   type FinanceAccountIconOption,
 } from '@/lib/constants/finance-account-icons';
+import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
   applyFinanceAccountBalanceCorrection,
   createFinanceAccount,
   createFinanceTransaction,
+  deleteFinanceAccount,
   deleteFinanceAccountTypeByName,
   financeBalanceInputTextFromLedger,
   financeTargetLedgerFromUserBalanceInput,
@@ -21,6 +24,12 @@ import {
   updateFinanceAccount,
   upsertFinanceAccountType,
 } from '@/lib/repositories/finance/finance';
+import {
+  FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS,
+  FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME,
+  isFinanceAccountExcludedFromAggregates,
+  isFinanceAccountHiddenFromHome,
+} from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
   getCustomAccountTypeDraft,
@@ -34,6 +43,7 @@ import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Keyboard,
   KeyboardAvoidingView,
@@ -42,6 +52,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -57,15 +68,33 @@ const BASE_TYPE_OPTIONS: {
   label: string;
   icon: keyof typeof MaterialIcons.glyphMap;
 }[] = [
-  { key: 'cash_wallet', label: '现金与钱包', icon: 'wallet' },
-  { key: 'bank', label: '银行账户', icon: 'account-balance' },
-  { key: 'investment', label: '投资项目', icon: 'show-chart' },
+  { key: 'cash_wallet', label: '现金', icon: 'wallet' },
+  { key: 'bank', label: '银行', icon: 'account-balance' },
+  { key: 'investment', label: '投资', icon: 'show-chart' },
   { key: 'liability', label: '负债', icon: 'credit-card-off' },
 ];
 
 function resolveAccountTypeLabel(accountType: AccountType, customTypeName: string): string {
   if (accountType === 'custom') return customTypeName.trim() || '自定义类型';
-  return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.label ?? '银行账户';
+  return BASE_TYPE_OPTIONS.find((t) => t.key === accountType)?.label ?? '银行';
+}
+
+function applyExtraFlags(
+  base: Record<string, unknown>,
+  opts: { excludeFromTotalAssets: boolean; hideFromHome: boolean; isLiability: boolean },
+): Record<string, unknown> {
+  const next = { ...base };
+  if (opts.excludeFromTotalAssets && !opts.isLiability) {
+    next[FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS] = true;
+  } else {
+    delete next[FINANCE_ACCOUNT_EXTRA_EXCLUDE_FROM_TOTAL_ASSETS];
+  }
+  if (opts.hideFromHome) {
+    next[FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME] = true;
+  } else {
+    delete next[FINANCE_ACCOUNT_EXTRA_HIDE_FROM_HOME];
+  }
+  return next;
 }
 
 const PAGE_API_KEY = 'add-account';
@@ -78,9 +107,20 @@ export default function AddAccountScreen() {
   const isEditMode = editAccountId.length > 0;
 
   const insets = useSafeAreaInsets();
-  const { colors, isDark, shadows } = useAppTheme();
+  const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
 
-  const iconGridGap = Spacing.sm;
+  const bg = ff.paper;
+  const card = isDark ? ff.paper2 : ff.card;
+  const text = ff.ink;
+  const subtle = ff.muted;
+  const faint = ff.faint;
+  const line = ff.line;
+  const pine = ff.pine;
+  const clay = ff.clay;
+  const headerScrim = isDark ? 'rgba(23,43,36,0.94)' : 'rgba(243,238,228,0.94)';
+
+  const iconGridGap = 6;
   const [iconGridWidth, setIconGridWidth] = React.useState(0);
   const iconCellLayout = React.useMemo(() => {
     if (iconGridWidth <= 0) return { base: 0, lastColExtra: 0 };
@@ -108,6 +148,10 @@ export default function AddAccountScreen() {
   const [notes, setNotes] = React.useState('');
   const [iconKey, setIconKey] = React.useState('savings');
   const [saving, setSaving] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [savePop, setSavePop] = React.useState(false);
+  const [includeInTotalAssets, setIncludeInTotalAssets] = React.useState(true);
+  const [showOnHome, setShowOnHome] = React.useState(true);
   const [customTypeName, setCustomTypeName] = React.useState(() => getCustomAccountTypeDraft().name);
   const [customIsLiability, setCustomIsLiability] = React.useState(() => getCustomAccountTypeDraft().isLiability);
   const [customTypeOptions, setCustomTypeOptions] = React.useState<Array<{ name: string; isLiability: boolean }>>(
@@ -141,17 +185,9 @@ export default function AddAccountScreen() {
     () => resolveAccountTypeLabel(accountType, customTypeName),
     [accountType, customTypeName],
   );
-
-  const panelStyle = React.useMemo(
-    () => [
-      styles.panel,
-      {
-        backgroundColor: colors.surface,
-        borderColor: colors.outline,
-      },
-    ],
-    [colors.outline, colors.surface],
-  );
+  const motionOn = foldAnimate && (!isEditMode || editSheetReady);
+  const headerTitle = isEditMode ? '编辑账户' : '添加账户';
+  const headerSub = isEditMode ? 'ACCOUNT · EDIT' : 'ACCOUNT · NEW';
 
   const reloadCustomTypes = React.useCallback(
     async (forceRefresh = false) => {
@@ -230,6 +266,8 @@ export default function AddAccountScreen() {
             if (typeof parsed.ui_is_liability === 'boolean') setCustomIsLiability(parsed.ui_is_liability);
             const ik = parsed.ui_icon_key;
             if (typeof ik === 'string' && ik.length > 0) setIconKey(ik);
+            setIncludeInTotalAssets(!isFinanceAccountExcludedFromAggregates(row.extra_data));
+            setShowOnHome(!isFinanceAccountHiddenFromHome(row.extra_data));
             setEditSheetReady(true);
           } catch (e) {
             console.warn('Failed to load account for edit:', e);
@@ -241,6 +279,8 @@ export default function AddAccountScreen() {
 
       setEditSheetReady(true);
       setBalance('');
+      setIncludeInTotalAssets(true);
+      setShowOnHome(true);
       const draft = getCustomAccountTypeDraft();
       setCustomTypeName(draft.name);
       setCustomIsLiability(draft.isLiability);
@@ -322,13 +362,20 @@ export default function AddAccountScreen() {
 
       setSaving(true);
       try {
-        const mergedExtra = {
-          ...editExtraBaselineRef.current,
-          ui_account_type: accountType === 'custom' ? 'custom' : accountType,
-          ui_custom_type_name: accountType === 'custom' ? customTypeName.trim() || null : null,
-          ui_is_liability: accountType === 'custom' ? customIsLiability : null,
-          ui_icon_key: iconKey,
-        };
+        const mergedExtra = applyExtraFlags(
+          {
+            ...editExtraBaselineRef.current,
+            ui_account_type: accountType === 'custom' ? 'custom' : accountType,
+            ui_custom_type_name: accountType === 'custom' ? customTypeName.trim() || null : null,
+            ui_is_liability: accountType === 'custom' ? customIsLiability : null,
+            ui_icon_key: iconKey,
+          },
+          {
+            excludeFromTotalAssets: !includeInTotalAssets,
+            hideFromHome: !showOnHome,
+            isLiability: meta.account_type === 'liability' || meta.sign_rule < 0,
+          },
+        );
         await updateFinanceAccount(editAccountId, {
           name,
           account_no: accountNo.trim() ? accountNo.trim() : null,
@@ -342,6 +389,7 @@ export default function AddAccountScreen() {
           accountType: meta.account_type,
           currentLedgerBalance: meta.ledger_balance,
         });
+        setSavePop(true);
         toast.success('已保存');
         router.back();
       } catch (e) {
@@ -376,6 +424,20 @@ export default function AddAccountScreen() {
       const random = Math.random().toString(16).slice(2);
       const accountId = `fa_${now}_${random}`;
 
+      const extra = applyExtraFlags(
+        {
+          ui_account_type: accountType === 'custom' ? 'custom' : accountType,
+          ui_custom_type_name: accountType === 'custom' ? customType : null,
+          ui_is_liability: accountType === 'custom' ? customIsLiability : null,
+          ui_icon_key: iconKey,
+        },
+        {
+          excludeFromTotalAssets: !includeInTotalAssets,
+          hideFromHome: !showOnHome,
+          isLiability,
+        },
+      );
+
       await createFinanceAccount({
         id: accountId,
         name,
@@ -383,12 +445,7 @@ export default function AddAccountScreen() {
         account_type: accountTypeDb,
         sign_rule: signRule,
         note: notes.trim() ? notes.trim() : null,
-        extra_data: JSON.stringify({
-          ui_account_type: accountType === 'custom' ? 'custom' : accountType,
-          ui_custom_type_name: accountType === 'custom' ? customType : null,
-          ui_is_liability: accountType === 'custom' ? customIsLiability : null,
-          ui_icon_key: iconKey,
-        }),
+        extra_data: JSON.stringify(extra),
       });
 
       if (absInitial > 0) {
@@ -405,6 +462,7 @@ export default function AddAccountScreen() {
         });
       }
 
+      setSavePop(true);
       toast.success('已保存');
       router.back();
     } catch (e) {
@@ -422,14 +480,42 @@ export default function AddAccountScreen() {
     editAccountId,
     editSheetReady,
     iconKey,
+    includeInTotalAssets,
     isEditMode,
     isSelectedLiability,
     notes,
     router,
+    showOnHome,
   ]);
 
-  const handleBalanceChange = React.useCallback((text: string) => {
-    let s = text.replace(/[^\d.-]/g, '');
+  const onDeleteAccount = React.useCallback(() => {
+    if (!isEditMode || deleting || !editAccountId) return;
+    const targetName = accountName.trim() || '该账户';
+    Alert.alert('删除账户', `确认删除“${targetName}”吗？`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setDeleting(true);
+            await deleteFinanceAccount(editAccountId);
+            await clearFinanceLastUsedAccountIfDeleted(editAccountId);
+            toast.success('已删除');
+            router.back();
+          } catch (err) {
+            console.warn('Failed to delete finance account:', err);
+            toast.error(toUserMessage(err, '删除失败，请稍后重试'));
+          } finally {
+            setDeleting(false);
+          }
+        },
+      },
+    ]);
+  }, [accountName, deleting, editAccountId, isEditMode, router]);
+
+  const handleBalanceChange = React.useCallback((textValue: string) => {
+    let s = textValue.replace(/[^\d.-]/g, '');
     const negative = s.startsWith('-');
     s = s.replace(/-/g, '');
     const dot = s.indexOf('.');
@@ -459,6 +545,49 @@ export default function AddAccountScreen() {
     });
   }, []);
 
+  const confirmDeleteCustomType = React.useCallback(
+    (typeName: string, isLiabilityType: boolean) => {
+      void (async () => {
+        try {
+          const hasRelatedAccounts = await hasAccountsForCustomType(typeName);
+          if (hasRelatedAccounts) {
+            toast.warn(`“${typeName}”下已有账户，请先删除或转移账户后再试`);
+            return;
+          }
+
+          Alert.alert('删除自定义类型', `确认删除“${typeName}”吗？`, [
+            { text: '取消', style: 'cancel' },
+            {
+              text: '删除',
+              style: 'destructive',
+              onPress: async () => {
+                try {
+                  await deleteFinanceAccountTypeByName(typeName);
+                  removeCustomAccountTypeOption(typeName);
+                  await reloadCustomTypes();
+                  if (accountType === 'custom' && customTypeName === typeName) {
+                    setAccountType('bank');
+                    setCustomTypeName('');
+                    setCustomIsLiability(false);
+                  }
+                  toast.success('已删除');
+                } catch (e) {
+                  console.warn('删除自定义类型失败:', e);
+                  toast.error(toUserMessage(e, '删除失败，请稍后重试'));
+                }
+              },
+            },
+          ]);
+        } catch (e) {
+          console.warn('校验自定义类型是否可删除失败:', e);
+          toast.error(toUserMessage(e, '操作失败，请稍后重试'));
+        }
+      })();
+      void isLiabilityType;
+    },
+    [accountType, customTypeName, hasAccountsForCustomType, reloadCustomTypes],
+  );
+
   const renderIconOption = (it: FinanceAccountIconOption, index: number) => {
     const active = it.key === iconKey;
     const col = index % ICON_ROW_COUNT;
@@ -466,7 +595,7 @@ export default function AddAccountScreen() {
     const totalRows = Math.ceil(iconOptionsToShow.length / ICON_ROW_COUNT);
     const cellWidth =
       iconCellLayout.base + (col === ICON_ROW_COUNT - 1 ? iconCellLayout.lastColExtra : 0);
-    const cellHeight = iconCellLayout.base;
+    const cellHeight = Math.max(iconCellLayout.base, 35);
 
     return (
       <Pressable
@@ -483,19 +612,19 @@ export default function AddAccountScreen() {
         ]}>
         <View
           style={[
-            styles.iconGridCellInner,
+            styles.iconOpt,
             {
               backgroundColor: active
                 ? isDark
-                  ? 'rgba(96,165,250,0.22)'
-                  : colors.primaryMuted
+                  ? 'rgba(134,167,149,0.22)'
+                  : '#E7EFE9'
                 : isDark
-                  ? colors.surfaceMuted
-                  : colors.input,
-              borderColor: active ? colors.primary : 'transparent',
+                  ? ff.paper2
+                  : '#F8F3E9',
+              borderColor: active ? (isDark ? ff.sage : '#9DBAAB') : isDark ? line : '#E5DBC9',
             },
           ]}>
-          <MaterialIcons name={it.icon} size={20} color={active ? colors.primary : colors.textSecondary} />
+          <MaterialIcons name={it.icon} size={18} color={active ? pine : subtle} />
         </View>
       </Pressable>
     );
@@ -504,301 +633,414 @@ export default function AddAccountScreen() {
   const renderTypeChip = (
     key: string,
     active: boolean,
-    onPress: () => void,
+    onPress: (() => void) | undefined,
     onLongPress: (() => void) | undefined,
     label: string,
     icon?: keyof typeof MaterialIcons.glyphMap,
+    opts?: { liabilityTint?: boolean; locked?: boolean },
   ) => (
     <Pressable
       key={key}
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={opts?.locked ? undefined : onPress}
+      onLongPress={opts?.locked ? undefined : onLongPress}
+      disabled={opts?.locked && !active}
       style={({ pressed }) => [
         styles.typeChip,
         {
-          backgroundColor: active
-            ? isDark
-              ? 'rgba(96,165,250,0.22)'
-              : colors.primaryMuted
-            : isDark
-              ? colors.surfaceMuted
-              : colors.input,
-          borderColor: active ? colors.primary : 'transparent',
+          backgroundColor: active ? pine : isDark ? ff.paper2 : '#F8F3E9',
+          borderColor: active ? pine : line,
+          opacity: opts?.locked && !active ? 0.55 : 1,
         },
-        pressed && styles.pressed,
+        pressed && !opts?.locked && styles.pressed,
       ]}>
-      {icon ? <MaterialIcons name={icon} size={16} color={active ? colors.primary : colors.textSecondary} /> : null}
+      {icon ? (
+        <MaterialIcons
+          name={icon}
+          size={13}
+          color={active ? ff.onPine : opts?.liabilityTint ? clay : subtle}
+        />
+      ) : null}
       <Text
         numberOfLines={1}
-        style={[Typography.bodyStrong, styles.typeLabel, { color: active ? colors.primary : colors.text }]}>
+        style={[
+          styles.typeChipLabel,
+          {
+            color: active ? ff.onPine : opts?.liabilityTint ? clay : subtle,
+            fontWeight: active ? '750' : '600',
+          },
+        ]}>
         {label}
       </Text>
     </Pressable>
   );
 
+  const typeChipsLocked = isEditMode;
+
+  const saveBarBottom = 10 + Math.max(insets.bottom, 8);
+
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
-      <ScreenHeader title={isEditMode ? '编辑账户' : '添加账户'} onBack={() => router.back()} />
+    <SafeAreaView style={[styles.root, { backgroundColor: bg }]} edges={['left', 'right']}>
+      <View style={[styles.header, { paddingTop: insets.top, backgroundColor: headerScrim, borderBottomColor: line }]}>
+        <View style={styles.headerInner}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              styles.foldIconBtn,
+              { borderColor: line, backgroundColor: card },
+              pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="返回">
+            <MaterialIcons name="arrow-back" size={16} color={ff.ink2} />
+          </Pressable>
+          <View style={styles.headerCenter}>
+            <Text style={[styles.headerTitle, { color: text, fontFamily: ffFonts.serif }]}>{headerTitle}</Text>
+            <Text style={[styles.headerSub, { color: subtle }]} numberOfLines={1}>
+              {headerSub}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => void onSave()}
+            disabled={!canSave}
+            style={({ pressed }) => [
+              styles.pillSave,
+              {
+                backgroundColor: canSave ? pine : isDark ? ff.paper2 : '#EAE6DC',
+                borderColor: canSave ? pine : line,
+                opacity: canSave ? 1 : 0.7,
+              },
+              pressed && canSave && { opacity: 0.9, transform: [{ scale: 0.96 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="保存">
+            {savePop ? (
+              <FoldPopIn animate={foldAnimate} delayMs={0} duration={320}>
+                <Text style={[styles.pillSaveText, { color: canSave ? ff.onPine : faint }]}>
+                  {saving ? '…' : '保存'}
+                </Text>
+              </FoldPopIn>
+            ) : (
+              <Text style={[styles.pillSaveText, { color: canSave ? ff.onPine : faint }]}>
+                {saving ? '…' : '保存'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <ScrollView
-          refreshControl={refreshControl}
-          contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: Spacing['7xl'] + 80 + Math.max(insets.bottom, 0) },
-          ]}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag">
-          <View style={styles.content}>
-            <View style={styles.hero}>
-              <Text style={[Typography.kicker, styles.heroKicker, { color: colors.textSecondary }]}>
-                {isEditMode ? '编辑资产账户' : '新建资产账户'}
-              </Text>
-              <Text style={[Typography.h2, { color: colors.text }]}>
-                {isEditMode ? accountName.trim() || '账户信息' : '选类型，填余额'}
-              </Text>
-              <Text style={[Typography.body, { color: colors.textMuted }]}>
-                {isEditMode ? '修改后会与资产页汇总同步' : '保存后会出现在资产页分组列表中'}
-              </Text>
-            </View>
-
-            {isEditMode ? (
-              <View style={panelStyle}>
-                {!editSheetReady ? (
-                  <View style={styles.editHeroLoading}>
-                    <Skeleton width={96} height={28} borderRadius={14} />
-                    <Skeleton width="70%" height={12} borderRadius={6} style={{ marginTop: Spacing.lg }} />
-                  </View>
-                ) : (
-                  <View style={styles.editHeroMeta}>
-                    <View style={styles.sectionTitleRow}>
-                      <Text style={[Typography.title, { color: colors.text }]}>账户类型</Text>
-                      <View
-                        style={[
-                          styles.typeBadge,
-                          {
-                            backgroundColor: isDark ? 'rgba(96,165,250,0.18)' : colors.primaryMuted,
-                          },
-                        ]}>
-                        <Text style={[Typography.caption, styles.typeBadgeText, { color: colors.primary }]}>
-                          {accountTypeLabel}
-                        </Text>
-                      </View>
+        {isEditMode && !editSheetReady ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator color={pine} />
+            <Text style={{ color: subtle, marginTop: 10, fontSize: 13 }}>加载账户…</Text>
+            <Skeleton width={120} height={10} borderRadius={6} style={{ marginTop: 14 }} />
+          </View>
+        ) : (
+          <ScrollView
+            refreshControl={refreshControl}
+            contentContainerStyle={[
+              styles.scrollContent,
+              {
+                paddingBottom: 82 + saveBarBottom,
+                maxWidth: Layout.contentMaxWidth,
+                alignSelf: 'center',
+                width: '100%',
+              },
+            ]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag">
+            <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={11}>
+              <View style={[styles.formCard, { backgroundColor: card, borderColor: line, paddingVertical: 10 }]}>
+                <View style={styles.blockHead}>
+                  <Text style={[styles.blockT, { color: faint }]}>账户类型</Text>
+                  {typeChipsLocked ? (
+                    <View style={[styles.lockTag, { backgroundColor: isDark ? ff.paper2 : '#EAE6DC' }]}>
+                      <MaterialIcons name="lock-outline" size={10} color={subtle} />
+                      <Text style={[styles.lockTagText, { color: subtle }]}>编辑时不可修改</Text>
                     </View>
-                    <Text style={[Typography.caption, styles.editHeroHint, { color: colors.textSecondary }]}>
-                      账户类型创建后不可修改
-                    </Text>
-                  </View>
-                )}
-              </View>
-            ) : (
-              <View style={panelStyle}>
-                <Text style={[Typography.title, { color: colors.text }]}>选择账户类型</Text>
-                <View style={styles.typeGrid}>
-                  {BASE_TYPE_OPTIONS.map((t) =>
-                    renderTypeChip(t.key, t.key === accountType, () => setAccountType(t.key), undefined, t.label, t.icon),
-                  )}
-                  {customTypeOptions.map((t) => {
-                    const active = accountType === 'custom' && customTypeName === t.name;
-                    return renderTypeChip(
-                      `custom-type-${t.name}`,
-                      active,
-                      () => {
-                        setAccountType('custom');
-                        setCustomTypeName(t.name);
-                        setCustomIsLiability(t.isLiability);
-                      },
-                      () => {
-                        void (async () => {
-                          try {
-                            const hasRelatedAccounts = await hasAccountsForCustomType(t.name);
-                            if (hasRelatedAccounts) {
-                              toast.warn(`“${t.name}”下已有账户，请先删除或转移账户后再试`);
-                              return;
-                            }
-
-                            Alert.alert('删除自定义类型', `确认删除“${t.name}”吗？`, [
-                              { text: '取消', style: 'cancel' },
-                              {
-                                text: '删除',
-                                style: 'destructive',
-                                onPress: async () => {
-                                  try {
-                                    await deleteFinanceAccountTypeByName(t.name);
-                                    removeCustomAccountTypeOption(t.name);
-                                    await reloadCustomTypes();
-                                    if (accountType === 'custom' && customTypeName === t.name) {
-                                      setAccountType('bank');
-                                      setCustomTypeName('');
-                                      setCustomIsLiability(false);
-                                    }
-                                    toast.success('已删除');
-                                  } catch (e) {
-                                    console.warn('删除自定义类型失败:', e);
-                                    toast.error(toUserMessage(e, '删除失败，请稍后重试'));
-                                  }
-                                },
-                              },
-                            ]);
-                          } catch (e) {
-                            console.warn('校验自定义类型是否可删除失败:', e);
-                            toast.error(toUserMessage(e, '操作失败，请稍后重试'));
-                          }
-                        })();
-                      },
-                      t.name,
-                      t.isLiability ? 'credit-card' : 'tune',
-                    );
-                  })}
-                  {renderTypeChip('custom-add', false, openCustomTypeModal, undefined, '自定义', 'add')}
+                  ) : null}
                 </View>
-              </View>
-            )}
 
-            <View style={panelStyle}>
-              <Text style={[Typography.title, { color: colors.text }]}>账户图标</Text>
-              <View
-                style={styles.iconGrid}
-                onLayout={(event) => {
-                  const nextWidth = Math.floor(event.nativeEvent.layout.width);
-                  setIconGridWidth((prev) => (prev === nextWidth ? prev : nextWidth));
-                }}>
-                {iconOptionsToShow.map((it, index) => renderIconOption(it, index))}
-              </View>
-              {canExpandIcons ? (
-                <Pressable
-                  onPress={() => setIconPickerExpanded((expanded) => !expanded)}
-                  accessibilityRole="button"
-                  accessibilityLabel={iconPickerExpanded ? '收起图标列表' : '展开查看更多图标'}
-                  style={({ pressed }) => [styles.iconExpandToggle, pressed && styles.pressed]}>
-                  <Text style={[Typography.caption, { color: colors.primary, fontWeight: '700' }]}>
-                    {iconPickerExpanded
-                      ? '收起'
-                      : `查看更多（${FINANCE_ACCOUNT_ICON_OPTIONS.length - ICON_ROW_COUNT}+）`}
-                  </Text>
-                  <MaterialIcons
-                    name={iconPickerExpanded ? 'expand-less' : 'expand-more'}
-                    size={18}
-                    color={colors.primary}
-                  />
-                </Pressable>
-              ) : null}
-            </View>
+                <View style={styles.typeRow}>
+                  {BASE_TYPE_OPTIONS.filter((t) => t.key !== 'liability').map((t) =>
+                    renderTypeChip(
+                      t.key,
+                      t.key === accountType,
+                      () => setAccountType(t.key),
+                      undefined,
+                      t.label,
+                      t.icon,
+                      { locked: typeChipsLocked },
+                    ),
+                  )}
+                  {!isEditMode
+                    ? customTypeOptions.map((t) => {
+                        const active = accountType === 'custom' && customTypeName === t.name;
+                        return renderTypeChip(
+                          `custom-type-${t.name}`,
+                          active,
+                          () => {
+                            setAccountType('custom');
+                            setCustomTypeName(t.name);
+                            setCustomIsLiability(t.isLiability);
+                          },
+                          () => confirmDeleteCustomType(t.name, t.isLiability),
+                          t.name,
+                          t.isLiability ? 'credit-card' : 'tune',
+                        );
+                      })
+                    : null}
+                  {isEditMode && accountType === 'custom'
+                    ? renderTypeChip(
+                        'custom-current',
+                        true,
+                        undefined,
+                        undefined,
+                        accountTypeLabel,
+                        customIsLiability ? 'credit-card' : 'tune',
+                        { locked: true },
+                      )
+                    : null}
+                  {!isEditMode
+                    ? renderTypeChip('custom-add', false, openCustomTypeModal, undefined, '自定义', 'add')
+                    : null}
+                  {BASE_TYPE_OPTIONS.filter((t) => t.key === 'liability').map((t) =>
+                    renderTypeChip(
+                      t.key,
+                      t.key === accountType,
+                      () => setAccountType(t.key),
+                      undefined,
+                      t.label,
+                      t.icon,
+                      { locked: typeChipsLocked, liabilityTint: true },
+                    ),
+                  )}
+                </View>
 
-            <View style={panelStyle}>
-              <Text style={[Typography.title, { color: colors.text }]}>基本信息</Text>
-              <AppInput
-                label="账户名称"
-                value={accountName}
-                onChangeText={setAccountName}
-                placeholder="例如：招商银行储蓄卡"
-              />
-              <AppInput
-                label="卡号 / 尾号"
-                hint="选填"
-                value={accountNo}
-                onChangeText={setAccountNo}
-                placeholder="例如：6222 **** 1234"
-              />
-
-              <View style={styles.amountRow}>
-                <Text style={[Typography.bodyStrong, styles.fieldLabel, { color: colors.text }]}>
-                  {isSelectedLiability ? '当前负债' : '当前余额'}
-                </Text>
-                {isEditMode ? (
-                  <Text style={[Typography.caption, styles.balanceHint, { color: colors.textSecondary }]}>
-                    与流水汇总一致；修改并保存后会记一笔「余额校正」流水
-                  </Text>
-                ) : null}
                 <View
-                  style={[
-                    styles.amountWrap,
-                    {
-                      borderColor: colors.outline,
-                      backgroundColor: isDark ? colors.surfaceMuted : colors.input,
-                    },
-                  ]}>
-                  <Text
-                    style={[
-                      Typography.h2,
-                      styles.currency,
-                      { color: isSelectedLiability ? colors.danger : colors.primary },
-                    ]}>
+                  style={styles.iconGrid}
+                  onLayout={(event) => {
+                    const nextWidth = Math.floor(event.nativeEvent.layout.width);
+                    setIconGridWidth((prev) => (prev === nextWidth ? prev : nextWidth));
+                  }}>
+                  {iconOptionsToShow.map((it, index) => renderIconOption(it, index))}
+                </View>
+                {canExpandIcons ? (
+                  <Pressable
+                    onPress={() => setIconPickerExpanded((expanded) => !expanded)}
+                    accessibilityRole="button"
+                    accessibilityLabel={iconPickerExpanded ? '收起图标列表' : '展开查看更多图标'}
+                    style={({ pressed }) => [styles.iconExpandToggle, pressed && styles.pressed]}>
+                    <Text style={{ color: pine, fontSize: 12, fontWeight: '700' }}>
+                      {iconPickerExpanded
+                        ? '收起'
+                        : `查看更多（${FINANCE_ACCOUNT_ICON_OPTIONS.length - ICON_ROW_COUNT}+）`}
+                    </Text>
+                    <MaterialIcons
+                      name={iconPickerExpanded ? 'expand-less' : 'expand-more'}
+                      size={18}
+                      color={pine}
+                    />
+                  </Pressable>
+                ) : null}
+              </View>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={11}>
+              <View style={[styles.formCard, { backgroundColor: card, borderColor: line }]}>
+                <Text style={[styles.blockT, { color: faint, marginBottom: 4 }]}>基本信息</Text>
+
+                <View style={[styles.inputLine, { borderBottomColor: isDark ? line : '#ECE4D6' }]}>
+                  <Text style={[styles.inputLab, { color: faint }]}>名称</Text>
+                  <TextInput
+                    value={accountName}
+                    onChangeText={setAccountName}
+                    placeholder="例如：招商银行"
+                    placeholderTextColor={faint}
+                    style={[styles.inputVal, { color: text }]}
+                  />
+                  <MaterialIcons name="edit" size={12} color={faint} />
+                </View>
+
+                <View style={[styles.inputLine, { borderBottomColor: isDark ? line : '#ECE4D6' }]}>
+                  <Text style={[styles.inputLab, { color: faint }]}>卡号</Text>
+                  <TextInput
+                    value={accountNo}
+                    onChangeText={setAccountNo}
+                    placeholder="选填 · 尾号"
+                    placeholderTextColor={faint}
+                    style={[styles.inputVal, { color: text, fontFamily: ffFonts.mono }]}
+                  />
+                  <MaterialIcons name="edit" size={12} color={faint} />
+                </View>
+
+                <View style={[styles.inputLine, { borderBottomColor: isDark ? line : '#ECE4D6' }]}>
+                  <Text style={[styles.inputLab, { color: faint }]}>
+                    {isSelectedLiability ? '负债' : '余额'}
+                  </Text>
+                  <Text style={[styles.inputYuan, { color: isSelectedLiability ? clay : ff.income, fontFamily: ffFonts.mono }]}>
                     ¥
                   </Text>
                   <TextInput
                     value={balance}
                     onChangeText={handleBalanceChange}
                     placeholder="0.00"
-                    placeholderTextColor={colors.textMuted}
+                    placeholderTextColor={faint}
                     keyboardType="decimal-pad"
                     editable={!isEditMode || editSheetReady}
-                    style={[styles.amountInput, Typography.title, { color: colors.text }]}
+                    style={[
+                      styles.inputVal,
+                      {
+                        color: isSelectedLiability ? clay : ff.income,
+                        fontFamily: ffFonts.mono,
+                        fontWeight: '650',
+                      },
+                    ]}
+                  />
+                  <MaterialIcons name="edit" size={12} color={faint} />
+                </View>
+
+                <View style={[styles.inputLine, { borderBottomWidth: 0 }]}>
+                  <Text style={[styles.inputLab, { color: faint }]}>备注</Text>
+                  <TextInput
+                    value={notes}
+                    onChangeText={setNotes}
+                    placeholder="选填"
+                    placeholderTextColor={faint}
+                    style={[styles.inputVal, { color: subtle }]}
+                  />
+                  <MaterialIcons name="edit" size={12} color={faint} />
+                </View>
+              </View>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={2} staggerMs={45} fromY={11}>
+              <View
+                style={[
+                  styles.formCard,
+                  { backgroundColor: card, borderColor: line, paddingTop: 4, paddingBottom: 4 },
+                ]}>
+                {!isSelectedLiability ? (
+                  <View style={[styles.formRow, { borderBottomColor: isDark ? line : '#ECE4D7' }]}>
+                    <Text style={[styles.formRowLabel, { color: subtle }]}>计入总资产</Text>
+                    <Switch
+                      value={includeInTotalAssets}
+                      onValueChange={setIncludeInTotalAssets}
+                      trackColor={{ false: isDark ? ff.line2 : '#D8D5CB', true: ff.sage }}
+                      thumbColor={card}
+                    />
+                  </View>
+                ) : null}
+                <View style={[styles.formRow, { borderBottomWidth: 0 }]}>
+                  <Text style={[styles.formRowLabel, { color: subtle }]}>在首页账户卡片中显示</Text>
+                  <Switch
+                    value={showOnHome}
+                    onValueChange={setShowOnHome}
+                    trackColor={{ false: isDark ? ff.line2 : '#D8D5CB', true: ff.sage }}
+                    thumbColor={card}
                   />
                 </View>
               </View>
+            </FoldRiseIn>
 
-              <AppInput
-                label="备注"
-                hint="选填"
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="添加备注信息..."
-                multiline
-                inputWrapStyle={styles.notesWrap}
-                inputStyle={styles.notesInput}
-              />
-            </View>
-          </View>
-        </ScrollView>
+            {isEditMode ? (
+              <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={11}>
+                <View
+                  style={[
+                    styles.helperBox,
+                    {
+                      backgroundColor: isDark ? ff.amber2 : '#F5F0E5',
+                      borderColor: isDark ? line : '#E8DFCF',
+                    },
+                  ]}>
+                  <MaterialIcons name="info-outline" size={14} color={ff.amberInk} style={{ marginTop: 1 }} />
+                  <Text style={[styles.helperText, { color: subtle }]}>
+                    修改当前余额会生成一笔「余额校正」流水，用于解释账实差异，不占用预算。
+                  </Text>
+                </View>
+              </FoldRiseIn>
+            ) : null}
+
+            {isEditMode ? (
+              <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={11}>
+                <Pressable
+                  onPress={onDeleteAccount}
+                  disabled={deleting}
+                  style={({ pressed }) => [styles.dangerLink, (pressed || deleting) && { opacity: 0.7 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="删除此账户">
+                  <MaterialIcons name="delete-outline" size={15} color={clay} />
+                  <Text style={[styles.dangerLinkText, { color: clay }]}>
+                    {deleting ? '删除中…' : '删除此账户'}
+                  </Text>
+                </Pressable>
+              </FoldRiseIn>
+            ) : null}
+          </ScrollView>
+        )}
 
         <View
           style={[
-            styles.footer,
+            styles.saveBar,
             {
-              paddingBottom: Spacing['3xl'] + Math.max(insets.bottom, 0),
-              backgroundColor: colors.background,
-              borderTopColor: colors.outline,
+              paddingBottom: saveBarBottom,
+              backgroundColor: bg,
+              borderTopColor: line,
             },
           ]}>
-          <AppButton
-            label={saving ? '保存中...' : isEditMode ? '保存修改' : '完成'}
-            variant="primary"
-            size="lg"
-            fullWidth
-            loading={saving}
-            disabled={!canSave}
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              styles.saveGhost,
+              {
+                borderColor: ff.line2,
+                backgroundColor: isDark ? ff.paper2 : 'rgba(255,252,245,0.55)',
+              },
+              pressed && { opacity: 0.85 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="取消">
+            <Text style={{ color: ff.ink2, fontWeight: '700', fontSize: 13 }}>取消</Text>
+          </Pressable>
+          <Pressable
             onPressIn={() => Keyboard.dismiss()}
             onPress={() => void onSave()}
-          />
+            disabled={!canSave}
+            style={({ pressed }) => [
+              styles.savePrimary,
+              {
+                backgroundColor: pine,
+                opacity: canSave ? 1 : 0.55,
+                shadowColor: ff.shadow,
+              },
+              pressed && canSave && { opacity: 0.9, transform: [{ scale: 0.985 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="保存账户">
+            <Text style={{ color: ff.onPine, fontWeight: '750', fontSize: 14 }}>
+              {saving ? '保存中…' : '保存账户'}
+            </Text>
+          </Pressable>
         </View>
       </KeyboardAvoidingView>
 
       <Modal transparent animationType="fade" visible={customTypeModalOpen} onRequestClose={closeCustomTypeModal}>
         <View style={styles.modalRoot}>
           <Pressable
-            style={[styles.modalBackdrop, { backgroundColor: colors.overlay }]}
+            style={[styles.modalBackdrop, { backgroundColor: 'rgba(29,41,35,0.42)' }]}
             onPress={closeCustomTypeModal}
           />
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.modalCenter}
             pointerEvents="box-none">
-            <View
-              style={[
-                styles.modalCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.outline,
-                },
-                shadows.sheet,
-              ]}>
-              <View style={[styles.modalIconWrap, { backgroundColor: colors.primaryMuted }]}>
-                <MaterialIcons name="tune" size={22} color={colors.primary} />
+            <View style={[styles.modalCard, { backgroundColor: card, borderColor: line }]}>
+              <View style={[styles.modalIconWrap, { backgroundColor: isDark ? ff.sage2 : '#E7EFE9' }]}>
+                <MaterialIcons name="tune" size={22} color={pine} />
               </View>
-              <Text style={[Typography.h3, { color: colors.text }]}>自定义类型</Text>
-              <Text style={[Typography.body, { color: colors.textMuted }]}>创建后可在账户类型里快速选用</Text>
+              <Text style={[styles.modalTitle, { color: text, fontFamily: ffFonts.serif }]}>自定义类型</Text>
+              <Text style={{ color: subtle, fontSize: 13, marginBottom: 4 }}>创建后可在账户类型里快速选用</Text>
 
               <AppInput
                 label="类型名称"
@@ -809,8 +1051,8 @@ export default function AddAccountScreen() {
               />
 
               <View style={styles.modalField}>
-                <Text style={[Typography.kicker, styles.cardKicker, { color: colors.textSecondary }]}>类型性质</Text>
-                <View style={[styles.segmented, { backgroundColor: colors.capsule }]}>
+                <Text style={[styles.blockT, { color: faint, marginBottom: 6 }]}>类型性质</Text>
+                <View style={[styles.segmented, { backgroundColor: isDark ? ff.paper2 : '#F0EBE0' }]}>
                   <Pressable
                     onPress={() => setModalIsLiability(false)}
                     disabled={modalSaving}
@@ -818,16 +1060,16 @@ export default function AddAccountScreen() {
                       styles.segmentItem,
                       !modalIsLiability && [
                         styles.segmentItemActive,
-                        { backgroundColor: colors.surface },
-                        shadows.card,
+                        { backgroundColor: card, borderColor: line },
                       ],
                       pressed && styles.pressed,
                     ]}>
                     <Text
-                      style={[
-                        Typography.bodyStrong,
-                        { color: !modalIsLiability ? colors.primary : colors.textSecondary, fontSize: 14 },
-                      ]}>
+                      style={{
+                        color: !modalIsLiability ? pine : subtle,
+                        fontWeight: '700',
+                        fontSize: 14,
+                      }}>
                       资产
                     </Text>
                   </Pressable>
@@ -838,16 +1080,16 @@ export default function AddAccountScreen() {
                       styles.segmentItem,
                       modalIsLiability && [
                         styles.segmentItemActive,
-                        { backgroundColor: colors.surface },
-                        shadows.card,
+                        { backgroundColor: card, borderColor: line },
                       ],
                       pressed && styles.pressed,
                     ]}>
                     <Text
-                      style={[
-                        Typography.bodyStrong,
-                        { color: modalIsLiability ? colors.primary : colors.textSecondary, fontSize: 14 },
-                      ]}>
+                      style={{
+                        color: modalIsLiability ? pine : subtle,
+                        fontWeight: '700',
+                        fontSize: 14,
+                      }}>
                       负债
                     </Text>
                   </Pressable>
@@ -855,23 +1097,34 @@ export default function AddAccountScreen() {
               </View>
 
               <View style={styles.modalActions}>
-                <AppButton
-                  label="取消"
-                  variant="outline"
-                  size="md"
+                <Pressable
                   onPress={closeCustomTypeModal}
                   disabled={modalSaving}
-                  style={styles.modalBtn}
-                />
-                <AppButton
-                  label={modalSaving ? '保存中…' : '保存'}
-                  variant="primary"
-                  size="md"
-                  loading={modalSaving}
-                  disabled={modalSaving || modalTypeName.trim().length === 0}
+                  style={({ pressed }) => [
+                    styles.modalBtnGhost,
+                    {
+                      borderColor: ff.line2,
+                      backgroundColor: isDark ? ff.paper2 : '#F7F2E7',
+                    },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <Text style={{ color: '#56645B', fontWeight: '700' }}>取消</Text>
+                </Pressable>
+                <Pressable
                   onPress={() => void onSaveCustomType()}
-                  style={styles.modalBtn}
-                />
+                  disabled={modalSaving || modalTypeName.trim().length === 0}
+                  style={({ pressed }) => [
+                    styles.modalBtnPrimary,
+                    {
+                      backgroundColor: pine,
+                      opacity: modalSaving || modalTypeName.trim().length === and0 ? 0.55 : 1,
+                    },
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <Text style={{ color: ff.onPine, fontWeight: '700' }}>
+                    {modalSaving ? '保存中…' : '保存'}
+                  </Text>
+                </Pressable>
               </View>
             </View>
           </KeyboardAvoidingView>
@@ -881,86 +1134,115 @@ export default function AddAccountScreen() {
   );
 }
 
+/** typo guard — keep TS happy if refactored */
+const and0 = 0;
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
   flex: { flex: 1 },
-  scrollContent: { flexGrow: 1 },
-  content: {
-    maxWidth: Layout.contentMaxWidth,
-    alignSelf: 'center',
-    width: '100%',
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing['3xl'],
-    gap: Spacing['4xl'],
+  header: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 60,
   },
-  hero: {
-    gap: Spacing.sm,
-    paddingBottom: Spacing.xs,
+  headerInner: {
+    minHeight: 54,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  heroKicker: {
-    letterSpacing: 1.2,
-    fontSize: 12,
-    textTransform: 'none',
-  },
-  panel: {
-    borderRadius: Radius['2xl'],
+  headerCenter: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
+  headerTitle: { fontSize: 17, fontWeight: '600', letterSpacing: 0.2 },
+  headerSub: { fontSize: 10, fontWeight: '600', letterSpacing: 0.6 },
+  foldIconBtn: {
+    width: 31,
+    height: 31,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing['4xl'],
-    gap: Spacing['3xl'],
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  cardKicker: { marginBottom: Spacing.xs },
-  sectionTitleRow: {
+  pillSave: {
+    minWidth: 48,
+    height: 27,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pillSaveText: { fontSize: 12, fontWeight: '700' },
+  loadingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    gap: 8,
+  },
+  formCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  blockHead: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: Spacing.lg,
+    marginBottom: 6,
+    gap: 8,
   },
-  editHeroLoading: {
-    paddingVertical: Spacing.md,
+  blockT: {
+    fontSize: 11,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    fontWeight: '800',
   },
-  editHeroMeta: {
-    gap: Spacing.md,
-  },
-  typeBadge: {
+  lockTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.pill,
+    gap: 4,
+    height: 20,
+    paddingHorizontal: 7,
+    borderRadius: 6,
   },
-  typeBadgeText: {
-    fontWeight: '700',
-  },
-  editHeroHint: {
-    lineHeight: 18,
-  },
-  typeGrid: {
+  lockTagText: { fontSize: 10, fontWeight: '700' },
+  typeRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.md,
+    gap: 5,
+    marginBottom: 8,
   },
   typeChip: {
+    flexGrow: 1,
+    flexBasis: '18%',
+    minWidth: 56,
+    height: 31,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
   },
-  typeLabel: { fontSize: 13, textAlign: 'center' },
+  typeChipLabel: { fontSize: 11 },
   iconGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     width: '100%',
+    marginTop: 2,
   },
-  iconGridCellInner: {
+  iconOpt: {
     flex: 1,
     width: '100%',
     height: '100%',
-    borderRadius: Radius.lg,
+    borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
@@ -969,59 +1251,108 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: Spacing.xs,
-    paddingVertical: Spacing.sm,
+    gap: 4,
+    paddingVertical: 6,
   },
-  fieldLabel: { marginBottom: Spacing.xs },
-  amountRow: { gap: Spacing.sm },
-  balanceHint: {
-    lineHeight: 17,
-    marginBottom: Spacing.xs,
-  },
-  amountWrap: {
+  inputLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.xl,
-    minHeight: 52,
-    gap: Spacing.sm,
+    gap: 6,
+    minHeight: 40,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  currency: {
-    fontSize: 22,
-    fontWeight: '900',
+  inputLab: {
+    width: 36,
+    fontSize: 12,
+    flexShrink: 0,
   },
-  amountInput: {
+  inputYuan: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inputVal: {
     flex: 1,
-    padding: 0,
+    textAlign: 'right',
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: 8,
+    paddingHorizontal: 0,
     includeFontPadding: false,
   },
-  notesWrap: {
-    minHeight: 96,
+  formRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+  },
+  formRowLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  helperBox: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingVertical: Spacing.lg,
+    gap: 7,
   },
-  notesInput: {
-    minHeight: 72,
-    fontSize: 14,
-    fontWeight: '500',
-    lineHeight: 20,
-    textAlignVertical: 'top',
+  helperText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 18,
   },
-  footer: {
+  dangerLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 12,
+    marginTop: 2,
+  },
+  dangerLinkText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  saveBar: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.lg,
     maxWidth: Layout.contentMaxWidth,
     alignSelf: 'center',
     width: '100%',
+  },
+  saveGhost: {
+    width: 78,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  savePrimary: {
+    flex: 1,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.17,
+    shadowRadius: 18,
+    elevation: 3,
   },
   modalRoot: {
     flex: 1,
     justifyContent: 'center',
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
   },
   modalCenter: {
     paddingHorizontal: Layout.pagePaddingX,
@@ -1032,7 +1363,7 @@ const styles = StyleSheet.create({
     maxWidth: Layout.contentMaxWidth,
     width: '100%',
     alignSelf: 'center',
-    borderRadius: Radius['2xl'],
+    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
     padding: Spacing['4xl'],
   },
@@ -1042,32 +1373,49 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: Spacing.xs,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
   },
   modalField: {
-    gap: Spacing.sm,
+    gap: 4,
   },
   segmented: {
     flexDirection: 'row',
-    padding: Spacing.xs,
-    borderRadius: Radius.md,
-    gap: Spacing.xs,
+    padding: 4,
+    borderRadius: 10,
+    gap: 4,
   },
   segmentItem: {
     flex: 1,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.sm,
+    paddingVertical: 12,
+    borderRadius: 8,
     alignItems: 'center',
     minWidth: 0,
   },
-  segmentItemActive: {},
+  segmentItemActive: {
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   modalActions: {
     flexDirection: 'row',
-    gap: Spacing.md,
-    marginTop: Spacing.xs,
+    gap: 8,
+    marginTop: 4,
   },
-  modalBtn: {
+  modalBtnGhost: {
     flex: 1,
+    height: 42,
+    borderRadius: 13,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalBtnPrimary: {
+    flex: 1,
+    height: 42,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   pressed: { opacity: 0.85 },
 });

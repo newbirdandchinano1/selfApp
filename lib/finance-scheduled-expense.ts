@@ -462,6 +462,35 @@ export function describeScheduledFinanceExpense(item: ScheduledFinanceExpense): 
   });
 }
 
+/** 下次自动记账日（本地日历）；暂停或未找到则返回 null。 */
+export function findNextScheduledExpenseOccurrence(
+  item: ScheduledFinanceExpense,
+  from: Date = new Date(),
+  horizonDays = 400,
+): { ymd: string; shortLabel: string; fullLabel: string } | null {
+  if (!item.enabled) return null;
+  const fromMs = from.getTime();
+  let cursor = dateToFinanceYmd(from);
+  for (let i = 0; i < horizonDays; i += 1) {
+    if (isScheduledFinanceExpenseDueOnDay(item, cursor)) {
+      const happenedAt = scheduledExpenseHappenedAtIso(cursor, item.hour, item.minute, 0);
+      const happenedMs = parseStoredDatetime(happenedAt).getTime();
+      if (Number.isFinite(happenedMs) && happenedMs > fromMs) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(cursor);
+        const shortLabel = m ? `${Number(m[2])}.${m[3]}` : cursor;
+        const fullLabel = m
+          ? `${m[1]}.${m[2]}.${m[3]} · ${formatScheduledExpenseTime(item.hour, item.minute)}`
+          : `${cursor} · ${formatScheduledExpenseTime(item.hour, item.minute)}`;
+        return { ymd: cursor, shortLabel, fullLabel };
+      }
+    }
+    const next = addDaysToYmd(cursor, 1);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return null;
+}
+
 /** 旧版槽位键（无定时支出 id），仅用于兼容历史流水去重。 */
 export function legacyScheduledExpenseSlotKey(ymd: string, slotIndex: number): string {
   return `${ymd}:${slotIndex}`;

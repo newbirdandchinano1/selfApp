@@ -47,6 +47,12 @@ function useFinanceInsights() {
   return ctx;
 }
 
+/** 看板英雄卡健康分标签等轻量消费 */
+export function useCashFlowHealthScore() {
+  const { displayHealthScore, aiLoading, fallbackHealthScore } = useFinanceInsights();
+  return { displayHealthScore, aiLoading, fallbackHealthScore };
+}
+
 type ThemeProps = {
   surface: string;
   text: string;

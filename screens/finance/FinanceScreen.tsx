@@ -1,4 +1,17 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
+import { FinanceFoldBudgetSheet } from '@/components/finance/finance-fold-budget-sheet';
+import {
+  FinanceFoldAlbumScanPanel,
+  FinanceFoldExpenseIncomePanel,
+  FinanceFoldPhrasePanel,
+  FinanceFoldRecordFab,
+  FinanceFoldSegment,
+  FinanceFoldSheetChrome,
+  FinanceFoldSheetHead,
+  FinanceFoldTransferPanel,
+  type FinanceAlbumScanResult,
+  type FinanceFoldParsePill,
+} from '@/components/finance/finance-fold-record-sheet';
 import {
   FinanceAccountCarouselSkeleton,
   FinanceBudgetCardSkeleton,
@@ -6,10 +19,10 @@ import {
 } from '@/components/skeletons/finance';
 import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-goal-block';
-import { AppIconButton } from '@/components/ui';
+import { FoldCountUpText, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
+import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -50,9 +63,7 @@ import {
     computeDailyBudgetFromPeriodSurplus,
     DEFAULT_BUDGET_REFRESH_DAY,
     formatBudgetPeriodCountdownLabel,
-    formatBudgetPeriodEndDateLabel,
     getBudgetMonthKeyForDate,
-    getBudgetPeriodLastInclusiveDay,
     getBudgetPeriodStartForDate,
     getNextBudgetPeriodStart,
     getPreviousBudgetPeriodStart,
@@ -105,6 +116,7 @@ import {
   financeLiabilityDebtMagnitude,
   isFinanceLiabilityAccount,
 } from '@/lib/finance-net-worth';
+import { isFinanceAccountHiddenFromHome } from '@/lib/repositories/finance/finance-account-extra';
 import {
     budgetExtraPatchForTransaction,
     buildFinanceTransferTxnExtra,
@@ -134,7 +146,6 @@ import {
     Animated,
     Dimensions,
     Easing,
-    Image,
     Keyboard,
     KeyboardAvoidingView,
     Modal,
@@ -389,13 +400,22 @@ function pickSheetCategoryForParsed(
   return pool[0];
 }
 
+/** 相册识图结果时间片：`10.23 12:18` */
+function formatAlbumHappenedLabel(at: Date): string {
+  const mm = at.getMonth() + 1;
+  const dd = String(at.getDate()).padStart(2, '0');
+  const hh = String(at.getHours()).padStart(2, '0');
+  const mi = String(at.getMinutes()).padStart(2, '0');
+  return `${mm}.${dd} ${hh}:${mi}`;
+}
+
+type AlbumScanPhase = 'off' | 'scanning' | 'result' | 'error';
+
 function TxnItemInner({
   themeText,
   themeSubtle,
-  tagBg,
-  timeTagColor,
-  accountTagColor,
   dividerColor,
+  monoFont,
   item,
   style,
   showDivider,
@@ -403,10 +423,8 @@ function TxnItemInner({
 }: {
   themeText: string;
   themeSubtle: string;
-  tagBg: string;
-  timeTagColor: string;
-  accountTagColor: string;
   dividerColor: string;
+  monoFont?: string;
   item: Txn;
   style?: StyleProp<ViewStyle>;
   showDivider?: boolean;
@@ -420,58 +438,29 @@ function TxnItemInner({
   const canToggle = item.insightIsAiBody && item.insight.length > 44;
   const maxLines = canToggle && !expanded ? 2 : undefined;
   const iconTint = `${item.iconColor}18`;
-
-  const tagToneStyle = (tone: TxnMetaTag['tone']): { bg: string; color: string; border: string } => {
-    if (tone === 'time') {
-      return { bg: `${timeTagColor}24`, color: timeTagColor, border: `${timeTagColor}40` };
-    }
-    if (tone === 'account') {
-      return { bg: `${accountTagColor}24`, color: accountTagColor, border: `${accountTagColor}40` };
-    }
-    if (tone === 'income' || tone === 'expense' || tone === 'transfer') {
-      return { bg: `${item.amountColor}22`, color: item.amountColor, border: `${item.amountColor}38` };
-    }
-    return { bg: tagBg, color: themeSubtle, border: dividerColor };
-  };
+  const timeTag = item.tags.find((t) => t.tone === 'time');
+  const metaLine = item.tags
+    .filter((t) => t.tone !== 'time')
+    .map((t) => t.label)
+    .join(' · ');
 
   const inner = (
-    <Animated.View style={[styles.txnItem, style]}>
+    <Animated.View
+      style={[
+        styles.txnItem,
+        showDivider ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: dividerColor } : null,
+        style,
+      ]}>
       <View style={[styles.txnIconWrap, { backgroundColor: iconTint }]}>
-        <MaterialIcons name={item.icon} size={18} color={item.iconColor} />
+        <MaterialIcons name={item.icon} size={16} color={item.iconColor} />
       </View>
-      <View
-        style={[
-          styles.txnMain,
-          showDivider ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: dividerColor } : null,
-        ]}>
-        <View style={styles.txnTopRow}>
-          <Text style={[styles.txnTitle, { color: themeText }]} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <Text style={[styles.txnAmount, { color: item.amountColor }]}>{item.amount}</Text>
-        </View>
-        <View style={styles.txnTagRow}>
-          {item.tags.map((tag, index) => {
-            const tone = tagToneStyle(tag.tone);
-            const shrink = tag.tone === 'account' || tag.tone === 'status';
-            return (
-              <View
-                key={`${index}-${tag.label}`}
-                style={[
-                  styles.txnTag,
-                  shrink ? styles.txnTagShrink : null,
-                  {
-                    backgroundColor: tone.bg,
-                    borderColor: tone.border,
-                  },
-                ]}>
-                <Text style={[styles.txnTagText, { color: tone.color }]} numberOfLines={1}>
-                  {tag.label}
-                </Text>
-              </View>
-            );
-          })}
-        </View>
+      <View style={styles.txnMain}>
+        <Text style={[styles.txnTitle, { color: themeText }]} numberOfLines={1}>
+          {item.title}
+        </Text>
+        <Text style={[styles.txnMetaLine, { color: themeSubtle }]} numberOfLines={1}>
+          {metaLine || '—'}
+        </Text>
         {item.insight ? (
           <View style={[styles.insightRow, item.insightPendingAi ? styles.insightRowPending : null]}>
             {item.insightPendingAi ? (
@@ -479,7 +468,7 @@ function TxnItemInner({
             ) : (
               <MaterialIcons
                 name="auto-awesome"
-                size={12}
+                size={11}
                 color={item.insightIsAiBody ? item.iconColor : themeSubtle}
               />
             )}
@@ -504,6 +493,18 @@ function TxnItemInner({
               ) : null}
             </View>
           </View>
+        ) : null}
+      </View>
+      <View style={styles.txnAmtCol}>
+        <Text
+          style={[
+            styles.txnAmount,
+            { color: item.amountColor, fontFamily: monoFont },
+          ]}>
+          {item.amount}
+        </Text>
+        {timeTag ? (
+          <Text style={[styles.txnTimeOnly, { color: themeSubtle }]}>{timeTag.label}</Text>
         ) : null}
       </View>
     </Animated.View>
@@ -538,27 +539,27 @@ export default function FinanceScreen() {
     skeletonOpacity: financeSkeletonOpacity,
     contentOpacity: financeContentOpacity,
   } = useHomeSkeletonReveal(initialFinanceLoadPending);
-  const { colors, isDark } = useAppTheme();
+  const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
 
-  const bg = colors.background;
-  const surface = colors.surface;
-  const surfaceSubtle = colors.surfaceSubtle;
-  const surfaceMuted = colors.surfaceMuted;
-  const text = colors.text;
-  const subtle = colors.textSecondary;
-  const textMuted = colors.textMuted;
-  const outlineVariant = colors.outline;
-  const outlineStrong = colors.outlineStrong;
-  const primary = colors.primary;
-  const primaryMuted = colors.primaryMuted;
-  const primarySoft = colors.primarySoft;
-  const secondary = colors.secondary;
-  const tertiary = colors.tertiary;
-  const danger = colors.danger;
-  const progressTrack = colors.progressTrack;
-  const progressFill = colors.progressFill;
-  const headerScrim = colors.headerScrim;
-  const accountTagColor = isDark ? '#2dd4bf' : '#0f766e';
+  const bg = ff.paper;
+  const surface = isDark ? ff.paper2 : ff.card;
+  const surfaceSubtle = isDark ? ff.cardSoft : ff.paper2;
+  const surfaceMuted = isDark ? 'rgba(255,255,255,0.06)' : '#F5F0E5';
+  const text = ff.ink;
+  const subtle = ff.muted;
+  const textMuted = ff.faint;
+  const outlineVariant = ff.line;
+  const outlineStrong = ff.line2;
+  const primary = ff.pine;
+  const primaryMuted = ff.sage2;
+  const primarySoft = ff.sage;
+  const secondary = ff.income;
+  const tertiary = ff.amber;
+  const danger = ff.clay;
+  const progressTrack = ff.budgetTrack;
+  const progressFill = ff.amber;
+  const headerScrim = isDark ? 'rgba(23,43,36,0.94)' : 'rgba(243,238,228,0.94)';
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
   const { logicalTodayYmd: calendarTodayYmd, logicalTodayDate: today, boundary: financeDayBoundary } =
     usePageDayBoundary('finance');
@@ -566,17 +567,21 @@ export default function FinanceScreen() {
     () => addDaysToLogicalYmd(calendarTodayYmd, -1),
     [calendarTodayYmd],
   );
-  const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 ${weekdayCn[today.getDay()]}`;
+  const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 · ${weekdayCn[today.getDay()]}`;
+  const calendarMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const daysToMonthEnd = Math.max(0, calendarMonthEnd - today.getDate());
+  const headerSubLabel =
+    daysToMonthEnd <= 0 ? '本月最后一天' : `距离本月结束还有 ${daysToMonthEnd} 天`;
 
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
     const prefix = value < 0 ? '-¥' : '¥';
     return `${prefix}${Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }, []);
 
-  // 悬浮玻璃底栏高度之上的安全间距：一句话记账输入条始终露在底栏上方
-  const collapsedBottom = glassTabBarContentInset(insets.bottom) + 6;
-  /** 列表底部预留：只需避开输入条本身（输入条已抬到悬浮底栏之上） */
-  const scrollContentBottom = 226;
+  // 悬浮玻璃底栏之上：记一笔 FAB 贴右下
+  const collapsedBottom = glassTabBarContentInset(insets.bottom) + 12;
+  /** 列表底部预留：避开记一笔 FAB + 悬浮底栏 */
+  const scrollContentBottom = 168;
   const [isSheetVisible, setIsSheetVisible] = React.useState(false);
   const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('sentence');
   const [sheetAmount, setSheetAmount] = React.useState('');
@@ -675,6 +680,24 @@ export default function FinanceScreen() {
   const [isPickingImage, setIsPickingImage] = React.useState(false);
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
+  const [albumScanPhase, setAlbumScanPhase] = React.useState<AlbumScanPhase>('off');
+  const [albumImageUri, setAlbumImageUri] = React.useState<string | null>(null);
+  const [albumScanError, setAlbumScanError] = React.useState<string | null>(null);
+  const [albumScanResult, setAlbumScanResult] = React.useState<FinanceAlbumScanResult | null>(null);
+  const [albumParsePayload, setAlbumParsePayload] = React.useState<null | {
+    transaction_type: 'expense' | 'income';
+    amount: number;
+    name: string;
+    category_key: string;
+    category_label: string;
+    account_id: string;
+    account_name: string;
+    happened_at: string;
+    imageDataUri: string;
+  }>(null);
+  const [albumConfirming, setAlbumConfirming] = React.useState(false);
+  /** 递增以作废进行中的相册识图异步结果（关闭弹层 / 取消选图） */
+  const albumScanGenerationRef = React.useRef(0);
   /** 手动记账弹窗内键盘高度，用于整体上移弹层并收缩可滚动区域，避免一句话输入框被 IME 遮挡 */
   const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
   const budgetBaseInputRef = React.useRef<TextInput>(null);
@@ -826,13 +849,10 @@ export default function FinanceScreen() {
     void loadFinanceSavingsGoal().then((g) => setSavingsGoalTargetDate(g?.targetDate ?? null));
   }, []);
 
-  const screenWidth = Dimensions.get('window').width;
-  const expandedWidth = Math.min(420, screenWidth - 36);
-
   /** 手动记账弹窗：不超过安全区顶部以下，避免顶栏关闭按钮被挡 */
   const manualSheetMaxHeight = React.useMemo(() => Dimensions.get('window').height - insets.top - 10, [insets.top]);
-  /** 顶栏 + Tab 区域估算高度，余量给下方可滚动内容 */
-  const MANUAL_SHEET_CHROME_HEIGHT = 124;
+  /** 折叠记一笔顶栏 + Segment 估算高度，余量给下方可滚动内容 */
+  const MANUAL_SHEET_CHROME_HEIGHT = 168;
 
   const sheetModalMaxHeight = React.useMemo(
     () => Math.max(200, manualSheetMaxHeight - sheetKeyboardInset),
@@ -870,26 +890,6 @@ export default function FinanceScreen() {
       subHide.remove();
     };
   }, [isSheetVisible]);
-
-  const heroTranslateY = revealAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [18, 0],
-  });
-
-  const heroOpacity = revealAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-  });
-
-  const listTranslateY = revealAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [28, 0],
-  });
-
-  const listOpacity = revealAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-  });
 
   const getDayKey = React.useCallback(
     (value: Date) => getLogicalLocalYmd(value, financeDayBoundary),
@@ -1496,9 +1496,7 @@ export default function FinanceScreen() {
   const savingRateText = showNetAmounts ? `${savingsRate.toFixed(1)}%` : '--';
 
   const daysLeftIncludingToday = budgetDaysLeftIncludingToday(today, budgetPeriodEndExclusive);
-  const budgetPeriodLastDay = getBudgetPeriodLastInclusiveDay(budgetPeriodEndExclusive);
   const budgetPeriodCountdownLabel = formatBudgetPeriodCountdownLabel(daysLeftIncludingToday);
-  const budgetPeriodEndDateLabel = formatBudgetPeriodEndDateLabel(budgetPeriodLastDay);
   const currentMonthKey = getBudgetMonthKeyForDate(today, budgetRefreshDay);
   const budgetSheetMonthNumber = parseInt(currentMonthKey.split('-')[1] ?? '1', 10);
   const persistedBudgetSetting = monthBudgetSettings[currentMonthKey];
@@ -1639,6 +1637,31 @@ export default function FinanceScreen() {
   /** 今日净资产必须与账户余额汇总一致；历史日期仍用趋势回溯值。 */
   const displayedNetWorthAmount = isSelectedNetTrendToday ? netTotalForTrend : selectedNetTrend.value;
 
+  const enabledScheduledCount = React.useMemo(
+    () => scheduledExpenses.filter((item) => item.enabled).length,
+    [scheduledExpenses],
+  );
+
+  /** 较月初净资产变动（从 30 日趋势点推算，有则展示） */
+  const netMonthChange = React.useMemo(() => {
+    if (netTrendPoints.length < 2) return null;
+    const monthStartKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+    const startPt =
+      netTrendPoints.find((p) => p.dayKey === monthStartKey) ??
+      netTrendPoints.find((p) => p.dayKey >= monthStartKey) ??
+      netTrendPoints[0];
+    if (!startPt) return null;
+    const delta = netTotalForTrend - startPt.value;
+    const pct = Math.abs(startPt.value) > 0.005 ? (delta / Math.abs(startPt.value)) * 100 : null;
+    return { delta, pct };
+  }, [netTotalForTrend, netTrendPoints, today]);
+
+  const foldEntranceAnimate = foldAnimate && !initialFinanceLoadPending;
+  const todayAvailableRingPct =
+    dailyBudgetAmount > 0
+      ? Math.min(1, Math.max(0, todayAvailableAmount / dailyBudgetAmount))
+      : 0;
+
   /** 与 Svg viewBox 一致；圆点层不裁切，故 inset 只需覆盖圆点半径。 */
   const trendChartGeometry = React.useMemo(() => {
     const w = NET_WORTH_TREND_CHART_W;
@@ -1759,14 +1782,17 @@ export default function FinanceScreen() {
 
   /** 账户资产卡片：资产按余额高→低，负债按债务绝对值高→低，并保证负债账户也能出现在轮播中 */
   const financeAccountsSortedByBalance = React.useMemo(() => {
+    const visible = financeAccounts.filter(
+      (acc) => !isFinanceAccountHiddenFromHome(acc.extra_data ?? null),
+    );
     const displayBalance = (acc: FinanceAccountBalanceRow) => {
       if (isFinanceLiabilityAccount(acc)) return -financeLiabilityDebtMagnitude(acc.balance);
       return Math.max(0, acc.balance ?? 0);
     };
-    const assets = financeAccounts
+    const assets = visible
       .filter((acc) => !isFinanceLiabilityAccount(acc))
       .sort((a, b) => displayBalance(b) - displayBalance(a));
-    const liabilities = financeAccounts
+    const liabilities = visible
       .filter((acc) => isFinanceLiabilityAccount(acc))
       .sort((a, b) => Math.abs(displayBalance(b)) - Math.abs(displayBalance(a)));
     const MAX_CARDS = 8;
@@ -2198,6 +2224,16 @@ export default function FinanceScreen() {
     }
   }, [activeSheetTab, expenseCategories, incomeCategories, selectedCategoryKey]);
 
+  const resetAlbumScanState = React.useCallback(() => {
+    albumScanGenerationRef.current += 1;
+    setAlbumScanPhase('off');
+    setAlbumImageUri(null);
+    setAlbumScanError(null);
+    setAlbumScanResult(null);
+    setAlbumParsePayload(null);
+    setAlbumConfirming(false);
+  }, []);
+
   const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
     setActiveSheetTab(nextTab);
     setSheetAmount('');
@@ -2217,11 +2253,12 @@ export default function FinanceScreen() {
     setSelectedCategoryKey(nextTab === 'income' ? 'salary' : 'food');
     setSentenceLedgerPreview(null);
     setIsSentencePreviewBusy(false);
+    resetAlbumScanState();
     const list = financeAccountsRef.current;
     if (list.length > 0) {
       setSelectedAccountId(getDefaultSheetAccountIdForTab(nextTab, list));
     }
-  }, [applySheetIncludeInBudget, getDefaultSheetAccountIdForTab]);
+  }, [applySheetIncludeInBudget, getDefaultSheetAccountIdForTab, resetAlbumScanState]);
 
   const switchSheetTab = React.useCallback(
     (nextTab: SheetTab) => {
@@ -2401,13 +2438,14 @@ export default function FinanceScreen() {
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   const closeSheet = React.useCallback(() => {
-    if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy) return;
+    if (isSavingTransaction || isParsingSentence || isSentencePreviewBusy || albumConfirming) return;
     setIsDatePickerVisible(false);
     setIsTimePickerVisible(false);
     setIsAccountPickerVisible(false);
     setAccountPickerTarget('sheet');
+    resetAlbumScanState();
     setIsSheetVisible(false);
-  }, [isParsingSentence, isSavingTransaction, isSentencePreviewBusy]);
+  }, [albumConfirming, isParsingSentence, isSavingTransaction, isSentencePreviewBusy, resetAlbumScanState]);
 
   const closeBudgetAdjust = React.useCallback(() => {
     setIsBudgetAdjustVisible(false);
@@ -2494,6 +2532,44 @@ export default function FinanceScreen() {
     });
     setIsBudgetAdjustVisible(false);
   }, [currentMonthKey, markPageDirty]);
+
+  /** 滑杆目标为「展示用预算总额」，折算回月预算基数草稿 */
+  const handleBudgetSliderChange = React.useCallback(
+    (targetTotal: number) => {
+      const gross = targetTotal + scheduledBudgetDeduction - monthlyBudgetIncome;
+      const base = Math.max(0, gross - (modalIncludeLast ? lastMonthRemaining : 0));
+      setBudgetBaseDraft(base.toFixed(2));
+      const previewGross = modalIncludeLast ? base + lastMonthRemaining : base;
+      const previewTotal = Math.max(0, previewGross - scheduledBudgetDeduction + monthlyBudgetIncome);
+      const autoSurplus = previewTotal - monthlyBudgetExpense;
+      setPeriodSurplusDraft(autoSurplus.toFixed(2));
+      setPeriodSurplusLoadedFromBudget(autoSurplus);
+    },
+    [
+      lastMonthRemaining,
+      modalIncludeLast,
+      monthlyBudgetExpense,
+      monthlyBudgetIncome,
+      scheduledBudgetDeduction,
+    ],
+  );
+
+  const budgetAdjustAiHint = React.useMemo(() => {
+    const surplus = Number.isFinite(parsedPeriodSurplusDraft)
+      ? parsedPeriodSurplusDraft
+      : autoPeriodSurplusPreview;
+    const surplusText = formatCurrencyWithDecimals(surplus);
+    if (surplus >= 0) {
+      return `按目前节奏，${budgetUiScopeShort}预计结余 ${surplusText} · 今日可用约 ${formatCurrencyWithDecimals(todayAvailableAmount)}`;
+    }
+    return `按目前节奏，${budgetUiScopeShort}预计超支 ${formatCurrencyWithDecimals(Math.abs(surplus))} · 建议下调支出或上调预算`;
+  }, [
+    autoPeriodSurplusPreview,
+    budgetUiScopeShort,
+    formatCurrencyWithDecimals,
+    parsedPeriodSurplusDraft,
+    todayAvailableAmount,
+  ]);
 
   const handleSelectAccount = React.useCallback(
     (accountId: string) => {
@@ -3013,6 +3089,293 @@ export default function FinanceScreen() {
     [isPickingImage, processAutoLedgerFromImage],
   );
 
+  /** 弹层内相册识图：预览确认，不走静默 processAutoLedgerFromImage */
+  const openAlbumScanFlow = React.useCallback(async () => {
+    if (isPickingImage || albumConfirming || albumScanPhase === 'scanning') return;
+
+    const accounts = financeAccountsRef.current;
+    if (!accounts.length) {
+      toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
+      return;
+    }
+
+    if (!isSheetVisible) {
+      resetSheetForm('sentence');
+      setIsSheetVisible(true);
+    }
+
+    const gen = ++albumScanGenerationRef.current;
+    const isStale = () => gen !== albumScanGenerationRef.current;
+
+    setIsDatePickerVisible(false);
+    setIsTimePickerVisible(false);
+    setIsAccountPickerVisible(false);
+    setIsPickingImage(true);
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (isStale()) return;
+      if (!permission.granted) {
+        toast.warn('需要相册权限才能选择图片。');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.85,
+        base64: true,
+      });
+
+      if (isStale()) return;
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      const b64 = asset?.base64;
+      if (!b64) {
+        toast.error('未能获取图片数据，请换一张图片重试。');
+        return;
+      }
+
+      const mime = asset.mimeType?.trim() || 'image/jpeg';
+      const imageDataUri = `data:${mime};base64,${b64}`;
+      setAlbumScanError(null);
+      setAlbumScanResult(null);
+      setAlbumParsePayload(null);
+      setAlbumImageUri(imageDataUri);
+      setAlbumScanPhase('scanning');
+
+      const key = getActiveAiLlmApiKey().trim();
+      if (!key) {
+        setAlbumScanPhase('error');
+        setAlbumScanError('未配置 AI 密钥，无法识图。');
+        return;
+      }
+
+      const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
+      const resolved = await parseFinanceOneLinerFromImage({
+        apiKey: key,
+        imageDataUri,
+        accounts: accountHints,
+        maxAttempts: 2,
+        retryDelayMs: 800,
+      });
+
+      if (isStale()) return;
+
+      if (!resolved.ok) {
+        setAlbumScanPhase('error');
+        setAlbumScanError(
+          resolved.notBill ? AUTO_LEDGER_NOT_BILL_MESSAGE : resolved.error || '未能识别出有效账单。',
+        );
+        return;
+      }
+
+      const lastUsedAccountId = sanitizeFinanceLastUsedAccountId(
+        getCachedFinanceLastUsedAccountId(),
+        accounts,
+      );
+      const account = pickAccountForAutoLedger(
+        accounts,
+        {
+          transaction_type: resolved.transaction_type,
+          account_name: resolved.account_name,
+          payment_account_label: resolved.payment_account_label,
+        },
+        lastUsedAccountId,
+      );
+      if (!account) {
+        setAlbumScanPhase('error');
+        setAlbumScanError('请先添加至少一个账户。');
+        return;
+      }
+
+      const cat = pickSheetCategoryForParsed(
+        resolved.transaction_type,
+        resolved.category_label,
+        expenseCategories,
+        incomeCategories,
+      );
+      const { iso: happenedAtIso } = resolveHappenedAtForBillLedger(resolved.happened_at);
+      const happenedAtDate = parseStoredDatetime(happenedAtIso) ?? new Date();
+      const happenedLabel = formatAlbumHappenedLabel(happenedAtDate);
+
+      const scanResult: FinanceAlbumScanResult = {
+        transaction_type: resolved.transaction_type,
+        amount: resolved.amount,
+        name: resolved.name,
+        categoryLabel: cat.label,
+        accountName: account.name,
+        happenedLabel,
+        confidenceLabel: '置信度 高',
+      };
+
+      setAlbumScanResult(scanResult);
+      setAlbumParsePayload({
+        transaction_type: resolved.transaction_type,
+        amount: resolved.amount,
+        name: resolved.name,
+        category_key: cat.key,
+        category_label: cat.label,
+        account_id: account.id,
+        account_name: account.name,
+        happened_at: happenedAtIso,
+        imageDataUri,
+      });
+      setAlbumScanPhase('result');
+    } catch (error) {
+      if (isStale()) return;
+      console.warn('Album scan flow failed:', error);
+      setAlbumScanPhase('error');
+      setAlbumScanError(toUserMessage(error, '识图失败，请稍后重试。'));
+    } finally {
+      setIsPickingImage(false);
+    }
+  }, [
+    albumConfirming,
+    albumScanPhase,
+    expenseCategories,
+    incomeCategories,
+    isPickingImage,
+    isSheetVisible,
+    pickAccountForAutoLedger,
+    resetAlbumScanState,
+    resetSheetForm,
+  ]);
+
+  const confirmAlbumScan = React.useCallback(async () => {
+    if (albumConfirming || !albumParsePayload) return;
+    const payload = albumParsePayload;
+    const account = financeAccountsRef.current.find((a) => a.id === payload.account_id);
+    if (!account) {
+      toast.warn('账户已失效，请重新识图或手动记账。');
+      return;
+    }
+
+    const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, payload.amount);
+    const boundsErr = await validateFinanceTransactionBeforeSave({
+      accountId: account.id,
+      transactionType: payload.transaction_type,
+      amount: signedAmount,
+      extraData: null,
+      accountName: account.name,
+      uiLedgerBalance: account.balance,
+    });
+    if (boundsErr) {
+      toast.warn(boundsErr);
+      return;
+    }
+
+    setAlbumConfirming(true);
+    markPageDirty();
+    financeReloadGenerationRef.current += 1;
+    try {
+      const txnId = makeTimestampEntityId('ft_', 8);
+      await createFinanceTransaction(
+        {
+          id: txnId,
+          name: payload.name,
+          happened_at: payload.happened_at,
+          account_id: account.id,
+          transaction_type: payload.transaction_type,
+          amount: signedAmount,
+          note: `图片记账 · ${payload.name}`,
+          extra_data: JSON.stringify({
+            manual: true,
+            sentence: true,
+            parse_source: 'ai',
+            from_picker_image: true,
+            from_album_scan_sheet: true,
+            category_key: payload.category_key,
+            category_label: payload.category_label,
+            matched_account_name: payload.account_name,
+            attachments: [{ type: 'image', uri: payload.imageDataUri }],
+            ...budgetExtraPatchForTransaction(payload.transaction_type, sheetIncludeInBudgetRef.current),
+          }),
+        },
+        { skipBalanceRecheck: true },
+      );
+      await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
+      resetAlbumScanState();
+      setIsSheetVisible(false);
+      resetSheetForm('sentence');
+      notifyFinanceSheetSaved();
+      toast.success('已记账');
+    } catch (error) {
+      console.warn('Confirm album scan failed:', error);
+      toast.error(toUserMessage(error, '入账失败，请稍后重试。'));
+    } finally {
+      setAlbumConfirming(false);
+    }
+  }, [
+    albumConfirming,
+    albumParsePayload,
+    markPageDirty,
+    reloadFinanceAccounts,
+    reloadFinanceTransactions,
+    resetAlbumScanState,
+    resetSheetForm,
+  ]);
+
+  const applyAlbumScanToForm = React.useCallback(() => {
+    if (!albumParsePayload) {
+      resetAlbumScanState();
+      return;
+    }
+    const p = albumParsePayload;
+    setActiveSheetTab(p.transaction_type);
+    setSheetAmount(String(p.amount));
+    setSheetSentence(`${p.name} ${p.amount}`);
+    setSheetNote(p.name);
+    setSelectedCategoryKey(p.category_key);
+    setSelectedAccountId(p.account_id);
+    setSelectedHappenedAt(parseStoredDatetime(p.happened_at) ?? new Date());
+    setSheetImageUris([p.imageDataUri]);
+    setSentenceLedgerPreview(null);
+    setAlbumScanPhase('off');
+    setAlbumScanError(null);
+    setAlbumScanResult(null);
+    setAlbumParsePayload(null);
+    setAlbumConfirming(false);
+  }, [albumParsePayload, resetAlbumScanState]);
+
+  const sentenceFoldPills = React.useMemo((): FinanceFoldParsePill[] => {
+    if (sentenceLedgerPreview?.kind !== 'ok') return [];
+    const typeLabel = sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出';
+    const pills: FinanceFoldParsePill[] = [
+      {
+        key: 'amt',
+        label: `${typeLabel} ¥${sentenceLedgerPreview.amount.toFixed(2)}`,
+        emphasize: true,
+      },
+      { key: 'cat', label: sentenceLedgerPreview.categoryLabel },
+    ];
+    if (selectedAccount?.name) {
+      pills.push({ key: 'acc', label: selectedAccount.name, amber: true });
+    }
+    pills.push({ key: 'time', label: formatAlbumHappenedLabel(selectedHappenedAt) });
+    return pills;
+  }, [selectedAccount?.name, selectedHappenedAt, sentenceLedgerPreview]);
+
+  const sentenceAiLine = React.useMemo(() => {
+    if (sentenceLedgerPreview?.kind === 'error') return sentenceLedgerPreview.message;
+    if (sentenceLedgerPreview?.kind === 'ok') {
+      return sentenceLedgerPreview.source === 'ai'
+        ? `智谱已识别：${sentenceLedgerPreview.name}`
+        : `本地规则：${sentenceLedgerPreview.name}`;
+    }
+    return zhipuTxnReady
+      ? '说一句日常消费，AI 会帮你拆成金额、分类与账户'
+      : '未检测到 AI：仅本地规则（需句中含阿拉伯数字金额）';
+  }, [sentenceLedgerPreview, zhipuTxnReady]);
+
+  const foldTransferLabel =
+    transferPairMeta.mode === 'repay'
+      ? '还款'
+      : transferPairMeta.mode === 'draw'
+        ? '取款'
+        : '转账';
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
       <ScrollView
@@ -3037,21 +3400,44 @@ export default function FinanceScreen() {
             },
           ]}
           collapsable={false}>
-          <View style={styles.headerInner}>
-            <View style={styles.headerSide} />
-            <View style={styles.headerCenter} pointerEvents="box-none">
-              <Text style={[styles.headerTitle, { color: text }]} numberOfLines={1} pointerEvents="none">
+          <View style={styles.headerInnerFold}>
+            <View style={styles.headerFoldText}>
+              <Text
+                style={[styles.headerTitleFold, { color: text, fontFamily: ffFonts.serif }]}
+                numberOfLines={1}>
                 {headerDateLabel}
               </Text>
+              <Text style={[styles.headerSubFold, { color: subtle }]} numberOfLines={1}>
+                {headerSubLabel}
+              </Text>
             </View>
-            <View style={[styles.headerSide, styles.headerSideRight]}>
-              <AppIconButton
-                icon="calendar-today"
-                color={text}
-                hitSlop={Layout.hitSlop}
+            <View style={styles.headerFoldActions}>
+              <Pressable
                 onPress={() => router.push('/finance-calendar')}
-                accessibilityLabel="财务日历"
-              />
+                style={({ pressed }) => [
+                  styles.foldIconBtn,
+                  { borderColor: outlineVariant, backgroundColor: surface },
+                  pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="财务日历">
+                <MaterialIcons name="calendar-today" size={16} color={ff.ink2} />
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  markPageDirty();
+                  void reloadPage();
+                  toast.success('已同步');
+                }}
+                style={({ pressed }) => [
+                  styles.foldIconBtn,
+                  { borderColor: outlineVariant, backgroundColor: surface },
+                  pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="同步账户">
+                <MaterialIcons name="sync" size={16} color={ff.ink2} />
+              </Pressable>
             </View>
           </View>
         </View>
@@ -3061,471 +3447,437 @@ export default function FinanceScreen() {
           {!initialFinanceLoadPending ? (
             <Animated.View style={{ opacity: financeContentOpacity }}>
           <View style={styles.sectionStack}>
-          <Animated.View style={{ opacity: heroOpacity, transform: [{ translateY: heroTranslateY }] }}>
-            <View
-              style={[
-                styles.netCard,
-                styles.budgetOverviewCard,
-                Shadows.card,
-                { backgroundColor: surface, borderColor: outlineStrong },
-              ]}>
-                  {/* 主层：预算结余 + 今日可用 */}
-                  <View style={styles.budgetHeroBand}>
-                    <View style={styles.budgetTopRow}>
-                      <View style={styles.budgetTopMain}>
-                        <View style={styles.budgetTitleRow}>
-                          <Text style={[styles.budgetSurplusTitle, { color: subtle }]}>
-                            {budgetUiScopeShort}预算结余
-                          </Text>
-                          <View style={[styles.budgetPeriodBadge, { backgroundColor: primaryMuted }]}>
-                            <Text style={[styles.budgetPeriodCountdown, { color: primary }]}>
-                              {budgetPeriodCountdownLabel}
-                            </Text>
-                          </View>
-                        </View>
-                        <Text style={[styles.budgetPeriodEndDate, { color: textMuted }]}>
-                          截止 {budgetPeriodEndDateLabel}
-                        </Text>
-                        <View style={styles.budgetAmountRow}>
-                          <Pressable
-                            onPress={openBudgetAdjust}
-                            hitSlop={8}
-                            style={({ pressed }) => [pressed && { opacity: 0.72 }]}
-                            accessibilityRole="button"
-                            accessibilityLabel="调整本月预算">
-                            <Text style={[styles.budgetSurplusValue, { color: text }]}>
-                              {showNetAmounts
-                                ? formatCurrencyWithDecimals(budgetSurplusAmount)
-                                : hiddenAmountText}
-                            </Text>
-                          </Pressable>
-                          <Pressable
-                            onPress={() => setShowNetAmounts((prev) => !prev)}
-                            style={({ pressed }) => [
-                              styles.netVisibilityBtn,
-                              { backgroundColor: surfaceMuted },
-                              pressed && { opacity: 0.75 },
-                            ]}
-                            accessibilityRole="button"
-                            accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
-                            <MaterialIcons
-                              name={showNetAmounts ? 'visibility-off' : 'visibility'}
-                              size={18}
-                              color={subtle}
-                            />
-                          </Pressable>
-                        </View>
-
-                        <View style={styles.budgetProgressBlock}>
-                          <View style={styles.budgetProgressLabels}>
-                            <Text style={[styles.budgetProgressEnd, { color: subtle }]}>
-                              已用{' '}
-                              {showNetAmounts
-                                ? formatCurrencyWithDecimals(monthlyBudgetExpense)
-                                : hiddenAmountText}
-                            </Text>
-                            <Text style={[styles.budgetProgressEnd, { color: primary }]}>
-                              {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
-                              {' · '}
-                              {showNetAmounts
-                                ? formatCurrencyWithDecimals(budgetTotalAmount)
-                                : hiddenAmountText}
-                            </Text>
-                          </View>
-                          <View style={[styles.budgetProgressTrack, { backgroundColor: progressTrack }]}>
-                            <View
-                              style={[
-                                styles.budgetProgressFill,
-                                {
-                                  width: `${budgetUsedPercent}%`,
-                                  backgroundColor: progressFill,
-                                },
-                              ]}
-                            />
-                          </View>
-                        </View>
-                      </View>
-
-                      <Pressable
-                        onPress={() => setIsTodayBudgetHintVisible(true)}
-                        style={({ pressed }) => [styles.budgetTodayRing, pressed && { opacity: 0.82 }]}
-                        accessibilityRole="button"
-                        accessibilityLabel="查看今日可用与剩余预算说明">
-                        {(() => {
-                          const ringSize = 80;
-                          const stroke = 5;
-                          const r = (ringSize - stroke) / 2;
-                          const c = 2 * Math.PI * r;
-                          const dash = c * (isTodayBudgetOver ? 1 : todayBudgetUsagePct);
-                          const ringTrack = progressTrack;
-                          const budgetAlertColor = danger;
-                          const ringProg = isTodayBudgetOver ? budgetAlertColor : primarySoft;
-                          const ringPadBg = isTodayBudgetOver
-                            ? isDark
-                              ? 'rgba(248,113,113,0.12)'
-                              : 'rgba(220,38,38,0.08)'
-                            : primaryMuted;
-                          return (
-                            <View
-                              style={[
-                                styles.budgetTodayRingPad,
-                                {
-                                  width: ringSize + 8,
-                                  height: ringSize + 8,
-                                  borderRadius: (ringSize + 8) / 2,
-                                  backgroundColor: ringPadBg,
-                                },
-                              ]}>
-                              <View
-                                style={{
-                                  width: ringSize,
-                                  height: ringSize,
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                }}>
-                                <Svg
-                                  key={`today-budget-ring-${todayBudgetUsagePct.toFixed(4)}-${todayAvailableAmount.toFixed(2)}-${todayBudgetOverAmount.toFixed(2)}`}
-                                  width={ringSize}
-                                  height={ringSize}
-                                  viewBox={`0 0 ${ringSize} ${ringSize}`}
-                                  style={{
-                                    position: 'absolute',
-                                    transform: [{ rotate: '-90deg' }],
-                                  }}>
-                                  <Circle
-                                    cx={ringSize / 2}
-                                    cy={ringSize / 2}
-                                    r={r}
-                                    stroke={ringTrack}
-                                    strokeWidth={stroke}
-                                    fill="none"
-                                  />
-                                  <Circle
-                                    cx={ringSize / 2}
-                                    cy={ringSize / 2}
-                                    r={r}
-                                    stroke={ringProg}
-                                    strokeWidth={stroke}
-                                    fill="none"
-                                    strokeDasharray={`${dash} ${c}`}
-                                    strokeLinecap="round"
-                                  />
-                                </Svg>
-                                <View style={styles.budgetRingCenter}>
-                                  <Text
-                                    style={[
-                                      styles.budgetRingLabel,
-                                      { color: isTodayBudgetOver ? budgetAlertColor : subtle },
-                                    ]}
-                                    numberOfLines={2}>
-                                    {isTodayBudgetOver ? '超出预算' : '今日可用'}
-                                  </Text>
-                                  <Text
-                                    style={[
-                                      styles.budgetRingValue,
-                                      { color: isTodayBudgetOver ? budgetAlertColor : text },
-                                    ]}>
-                                    {showNetAmounts
-                                      ? formatCurrencyWithDecimals(
-                                          isTodayBudgetOver
-                                            ? todayBudgetOverAmount
-                                            : todayAvailableAmount,
-                                        )
-                                      : hiddenAmountText}
-                                  </Text>
-                                </View>
-                              </View>
-                            </View>
-                          );
-                        })()}
-                      </Pressable>
-                    </View>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={0} fromY={11}>
+            <Pressable
+              onPress={openBudgetAdjust}
+              style={({ pressed }) => [
+                styles.budgetCardFold,
+                {
+                  backgroundColor: ff.budgetFrom,
+                  borderColor: ff.budgetBorder,
+                  opacity: pressed ? 0.96 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="调整预算">
+              <View style={styles.budgetFoldMain}>
+                <View style={styles.budgetFoldLabelRow}>
+                  <Text style={[styles.budgetFoldLabel, { color: ff.budgetLabel }]}>
+                    {budgetUiScopeShort}预算结余
+                  </Text>
+                  <Pressable
+                    onPress={() => setShowNetAmounts((prev) => !prev)}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.budgetMiniEye,
+                      pressed && { opacity: 0.75 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
+                    <MaterialIcons
+                      name={showNetAmounts ? 'visibility' : 'visibility-off'}
+                      size={12}
+                      color={ff.budgetLabel}
+                    />
+                  </Pressable>
+                </View>
+                <View style={styles.budgetFoldAmountRow}>
+                  {showNetAmounts ? (
+                    <FoldCountUpText
+                      value={budgetSurplusAmount}
+                      animate={foldAnimate}
+                      duration={760}
+                      textStyle={[
+                        styles.budgetFoldAmount,
+                        { color: ff.budgetAmount, fontFamily: ffFonts.mono },
+                      ]}
+                      formatter={(n) => formatCurrencyWithDecimals(n)}
+                    />
+                  ) : (
+                    <Text
+                      style={[
+                        styles.budgetFoldAmount,
+                        { color: ff.budgetAmount, fontFamily: ffFonts.mono },
+                      ]}>
+                      {hiddenAmountText}
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.budgetFoldProgress}>
+                  <View style={[styles.budgetFoldTrack, { backgroundColor: ff.budgetTrack }]}>
+                    <View
+                      style={[
+                        styles.budgetFoldFill,
+                        {
+                          width: `${budgetUsedPercent}%`,
+                          backgroundColor: ff.amber,
+                        },
+                      ]}
+                    />
                   </View>
-
-                  <FinanceSavingsGoalBlock
-                    currentNetWorth={netTotalForTrend}
-                    today={today}
-                    showAmounts={showNetAmounts}
-                    hiddenAmountText={hiddenAmountText}
-                    formatCurrency={formatCurrencyWithDecimals}
-                    isDark={isDark}
-                    text={text}
-                    subtle={subtle}
-                    primary={primary}
-                    surface={surface}
-                    surfaceMuted={surfaceMuted}
-                    primaryMuted={primaryMuted}
-                    danger={danger}
-                    secondary={secondary}
-                    outlineVariant={outlineVariant}
-                    tertiary={tertiary}
-                    scheduledDrainUntilTarget={scheduledWithholdingRemaining}
-                    scheduledBudgetDeduction={scheduledWithholdingRemaining}
-                    logicalTodayYmd={calendarTodayYmd}
-                    dayBoundaryHour={financeDayBoundary.hour}
-                    dayBoundaryMinute={financeDayBoundary.minute}
-                    onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
-                  />
-
-                  {/* 次层：净资产与趋势（与预算视觉分离） */}
-                  <View style={[styles.budgetNetBand, { borderTopColor: outlineVariant }]}>
-                    <View style={styles.budgetNetHeader}>
-                      <Pressable
-                        onPress={() => setBudgetCardNetExpanded((v) => !v)}
-                        style={({ pressed }) => [
-                          styles.budgetNetHeaderLeft,
-                          pressed && { opacity: 0.75 },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={
-                          budgetCardNetExpanded ? '收起净资产详情' : '展开净资产详情'
-                        }>
-                        <Text style={[styles.budgetNetTitle, { color: text }]}>净资产</Text>
-                        <MaterialIcons
-                          name={
-                            budgetCardNetExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'
-                          }
-                          size={20}
-                          color={subtle}
-                        />
-                      </Pressable>
-                      <Pressable
-                        onPress={() => router.push('/finance-stats')}
-                        style={({ pressed }) => [
-                          styles.trendPill,
-                          {
-                            borderColor: outlineVariant,
-                            backgroundColor: surfaceMuted,
-                          },
-                          pressed && { opacity: 0.8 },
-                        ]}>
-                        <MaterialIcons name="timeline" size={14} color={subtle} />
-                        <Text style={[styles.trendPillText, { color: subtle }]}>30 日</Text>
-                      </Pressable>
-                    </View>
-                    <View style={styles.budgetNetAmountRow}>
-                      <Text style={[styles.budgetNetAmount, { color: text }]}>
+                  <View style={styles.budgetFoldFoot}>
+                    <Text style={[styles.budgetFoldFootText, { color: ff.budgetFoot }]}>
+                      已用{' '}
+                      <Text style={{ color: ff.budgetAmountSoft, fontWeight: '700' }}>
+                        {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
+                      </Text>
+                      {' · '}
+                      {budgetPeriodCountdownLabel}
+                    </Text>
+                    <Text style={[styles.budgetFoldFootText, { color: ff.budgetFoot }]}>
+                      月预算{' '}
+                      <Text style={{ color: ff.budgetAmountSoft, fontWeight: '700' }}>
                         {showNetAmounts
-                          ? formatCurrencyWithDecimals(displayedNetWorthAmount)
+                          ? formatCurrencyWithDecimals(budgetTotalAmount)
                           : hiddenAmountText}
                       </Text>
-                      <Text
-                        style={[
-                          styles.trendChartDayLabel,
-                          { color: isSelectedNetTrendToday ? textMuted : primary },
-                        ]}>
-                        {selectedNetTrend.label}
-                        {!isSelectedNetTrendToday ? ' · 净资产' : ''}
-                      </Text>
-                    </View>
-                    {isSelectedNetTrendToday ? (
-                      <View style={styles.netBreakdownRow}>
-                        <Text style={[styles.netBreakdownText, { color: subtle }]}>
-                          总资产{' '}
-                          {showNetAmounts
-                            ? formatCurrencyWithDecimals(totalAssetsAmount)
-                            : hiddenAmountText}
-                        </Text>
-                        <Text style={[styles.netBreakdownSep, { color: outlineVariant }]}>·</Text>
-                        <Text style={[styles.netBreakdownText, { color: subtle }]}>
-                          总负债{' '}
-                          {showNetAmounts
-                            ? formatCurrencyWithDecimals(totalLiabilitiesAbsAmount)
-                            : hiddenAmountText}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    <View style={styles.trendChartWrap}>
-                      <GestureDetector gesture={netWorthTrendScrubGesture}>
-                        <View
-                          collapsable={false}
-                          style={styles.trendChartPlot}
-                          onLayout={(e) => {
-                            trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
-                          }}
-                          accessibilityRole="adjustable"
-                          accessibilityLabel="净资产趋势图，点按或滑动查看不同日期"
-                          accessibilityHint="在图表上点按或左右滑动以查看各日净资产">
-                          <View
-                            pointerEvents="none"
+                    </Text>
+                  </View>
+                </View>
+              </View>
+              <Pressable
+                onPress={() => setIsTodayBudgetHintVisible(true)}
+                style={styles.budgetFoldRingCol}
+                accessibilityRole="button"
+                accessibilityLabel="查看今日可用说明">
+                {(() => {
+                  const ringSize = 72;
+                  const stroke = 5;
+                  const r = (ringSize - stroke) / 2;
+                  const c = 2 * Math.PI * r;
+                  const usage = isTodayBudgetOver ? 1 : todayBudgetUsagePct;
+                  const dash = c * usage;
+                  const ringProg = isTodayBudgetOver ? ff.clay : ff.ringStroke;
+                  return (
+                    <>
+                      <View style={{ width: ringSize, height: ringSize, alignItems: 'center', justifyContent: 'center' }}>
+                        <Svg
+                          width={ringSize}
+                          height={ringSize}
+                          viewBox={`0 0 ${ringSize} ${ringSize}`}
+                          style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
+                          <Circle
+                            cx={ringSize / 2}
+                            cy={ringSize / 2}
+                            r={r}
+                            stroke={ff.ringTrack}
+                            strokeWidth={stroke}
+                            fill="none"
+                          />
+                          <Circle
+                            cx={ringSize / 2}
+                            cy={ringSize / 2}
+                            r={r}
+                            stroke={ringProg}
+                            strokeWidth={stroke}
+                            fill="none"
+                            strokeDasharray={`${dash} ${c}`}
+                            strokeLinecap="round"
+                          />
+                        </Svg>
+                        <View style={styles.budgetRingCenter}>
+                          <Text
                             style={[
-                              styles.trendChartPlotBg,
+                              styles.budgetFoldRingValue,
                               {
-                                backgroundColor: surfaceSubtle,
-                                borderColor: outlineVariant,
+                                color: isTodayBudgetOver ? ff.clay : ff.budgetAmount,
+                                fontFamily: ffFonts.mono,
                               },
                             ]}
-                          />
-                          <Svg
-                            width="100%"
-                            height={NET_WORTH_TREND_CHART_H}
-                            viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
-                            preserveAspectRatio="none"
-                            pointerEvents="none"
-                            style={StyleSheet.absoluteFill}>
-                            {trendChartGeometry ? (
-                              <>
-                                <Defs>
-                                  <LinearGradient
-                                    id="netWorthTrendFill"
-                                    x1="0"
-                                    y1="0"
-                                    x2="0"
-                                    y2="1">
-                                    <Stop
-                                      offset="0"
-                                      stopColor={primary}
-                                      stopOpacity={isDark ? 0.22 : 0.16}
-                                    />
-                                    <Stop offset="1" stopColor={primary} stopOpacity={0} />
-                                  </LinearGradient>
-                                </Defs>
-                                <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
-                                <Path
-                                  d={trendChartGeometry.pathD}
-                                  fill="none"
-                                  stroke={primary}
-                                  strokeWidth={2}
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                                {selectedNetTrendChartPoint && !isSelectedNetTrendToday ? (
-                                  <Path
-                                    d={`M${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_INSET} L${selectedNetTrendChartPoint.x.toFixed(1)},${NET_WORTH_TREND_CHART_H - NET_WORTH_TREND_CHART_INSET}`}
-                                    stroke={primaryMuted}
-                                    strokeWidth={1}
-                                    strokeDasharray="3 3"
-                                  />
-                                ) : null}
-                              </>
-                            ) : null}
-                          </Svg>
-                          {trendChartGeometry ? (
-                            <View
-                              style={styles.trendChartNodes}
-                              pointerEvents="none"
-                              collapsable={false}>
-                              {netTrendVisibleNodeIndices.map((i) => {
-                                const p = trendChartGeometry.points[i];
-                                if (!p) return null;
-                                const isSelected = i === selectedNetTrendIndex;
-                                const isLast = i === netTrendLastIndex;
-                                const dotSize = isSelected ? 10 : 8;
-                                return (
-                                  <View
-                                    key={`net-trend-node-${i}`}
-                                    style={[
-                                      styles.trendChartNodeHit,
-                                      {
-                                        left: `${(p.x / NET_WORTH_TREND_CHART_W) * 100}%`,
-                                        top: `${(p.y / NET_WORTH_TREND_CHART_H) * 100}%`,
-                                      },
-                                    ]}>
-                                    <View
-                                      style={[
-                                        styles.trendChartNodeDot,
-                                        {
-                                          width: dotSize,
-                                          height: dotSize,
-                                          borderRadius: dotSize / 2,
-                                          backgroundColor: isSelected ? primary : surface,
-                                          borderColor: primary,
-                                          borderWidth: isSelected ? 2 : 1.5,
-                                          opacity: isLast && !isSelected ? 0.85 : 1,
-                                        },
-                                      ]}
-                                    />
-                                  </View>
-                                );
-                              })}
-                            </View>
-                          ) : null}
-                        </View>
-                      </GestureDetector>
-                      <Text style={[styles.trendChartHint, { color: textMuted }]}>
-                        滑动查看各日净资产
-                      </Text>
-                    </View>
-
-                    {budgetCardNetExpanded ? (
-                      <View style={styles.netStats}>
-                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
-                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月收入</Text>
-                          <Text style={[styles.netStatValue, { color: secondary }]}>
-                            {monthlyIncomeText}
+                            numberOfLines={1}>
+                            {showNetAmounts
+                              ? formatCurrencyWithDecimals(
+                                  isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
+                                )
+                              : hiddenAmountText}
                           </Text>
-                        </View>
-                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
-                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月支出</Text>
-                          <Text style={[styles.netStatValue, { color: danger }]}>
-                            {monthlyExpenseText}
+                          <Text style={[styles.budgetFoldRingLabel, { color: ff.budgetFoot }]}>
+                            {isTodayBudgetOver ? '超出预算' : '今日可用'}
                           </Text>
-                        </View>
-                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
-                          <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
-                          <Text style={[styles.netStatValue, { color: monthlySurplusColor }]}>
-                            {monthlySurplusText}
-                          </Text>
-                        </View>
-                        <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
-                          <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
-                          <Text style={[styles.netStatValue, { color: text }]}>{savingRateText}</Text>
                         </View>
                       </View>
-                    ) : null}
-                  </View>
+                      <View style={styles.budgetFoldRingCap}>
+                        <View style={[styles.foldDot, { backgroundColor: ff.amber }]} />
+                        <Text style={{ color: ff.budgetLabel, fontSize: 10 }}>
+                          今日已用{' '}
+                          {showNetAmounts
+                            ? formatCurrencyWithDecimals(todayBudgetExpenseTotal)
+                            : hiddenAmountText}
+                        </Text>
+                      </View>
+                    </>
+                  );
+                })()}
+              </Pressable>
+            </Pressable>
+          </FoldRiseIn>
 
-                  {/* 底层：快捷入口，弱化填充避免与主数字抢视线 */}
-                  <View style={[styles.assetsBtnRow, styles.budgetShortcutsBand]}>
-                    <Pressable
-                      onPress={() => router.push('/assets')}
-                      style={({ pressed }) => [
-                        styles.assetsBtn,
-                        { borderColor: outlineVariant, backgroundColor: surface },
-                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel="资产">
-                      <MaterialIcons name="account-balance" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: subtle }]}>资产</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => router.push('/scheduled-expenses')}
-                      style={({ pressed }) => [
-                        styles.assetsBtn,
-                        { borderColor: outlineVariant, backgroundColor: surface },
-                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel="定时支出">
-                      <MaterialIcons name="event-repeat" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: subtle }]}>定时支出</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => router.push('/cash-flow')}
-                      style={({ pressed }) => [
-                        styles.assetsBtn,
-                        { borderColor: outlineVariant, backgroundColor: surface },
-                        pressed && { opacity: 0.88, backgroundColor: surfaceMuted },
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityLabel="现金流图">
-                      <MaterialIcons name="show-chart" size={18} color={primary} />
-                      <Text style={[styles.assetsBtnText, { color: subtle }]}>现金流</Text>
-                    </Pressable>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={1} fromY={11}>
+            <FinanceSavingsGoalBlock
+              currentNetWorth={netTotalForTrend}
+              today={today}
+              showAmounts={showNetAmounts}
+              hiddenAmountText={hiddenAmountText}
+              formatCurrency={formatCurrencyWithDecimals}
+              isDark={isDark}
+              text={text}
+              subtle={subtle}
+              primary={primary}
+              surface={surface}
+              surfaceMuted={surfaceMuted}
+              primaryMuted={primaryMuted}
+              danger={danger}
+              secondary={secondary}
+              outlineVariant={outlineVariant}
+              tertiary={tertiary}
+              scheduledDrainUntilTarget={scheduledWithholdingRemaining}
+              scheduledBudgetDeduction={scheduledWithholdingRemaining}
+              logicalTodayYmd={calendarTodayYmd}
+              dayBoundaryHour={financeDayBoundary.hour}
+              dayBoundaryMinute={financeDayBoundary.minute}
+              onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
+            />
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={2} fromY={11}>
+            <View
+              style={[
+                styles.netCardFold,
+                { backgroundColor: surface, borderColor: outlineVariant },
+              ]}>
+              <View style={styles.budgetNetHeader}>
+                <View style={styles.budgetNetHeaderLeft}>
+                  <Text style={[styles.netLabelFold, { color: subtle }]}>净资产</Text>
+                  <Pressable
+                    onPress={() => setShowNetAmounts((prev) => !prev)}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.netMiniEyeLight,
+                      { backgroundColor: surfaceMuted, borderColor: outlineVariant },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
+                    <MaterialIcons
+                      name={showNetAmounts ? 'visibility' : 'visibility-off'}
+                      size={12}
+                      color={subtle}
+                    />
+                  </Pressable>
+                </View>
+                <Pressable
+                  onPress={() => router.push('/finance-stats')}
+                  style={({ pressed }) => [
+                    styles.trendPill,
+                    {
+                      borderColor: outlineVariant,
+                      backgroundColor: surfaceMuted,
+                    },
+                    pressed && { opacity: 0.8 },
+                  ]}>
+                  <Text style={[styles.trendPillText, { color: subtle }]}>30 日</Text>
+                  <MaterialIcons name="chevron-right" size={14} color={subtle} />
+                </Pressable>
+              </View>
+              <Text
+                style={[
+                  styles.budgetNetAmount,
+                  { color: primary, fontFamily: ffFonts.mono },
+                ]}>
+                {showNetAmounts
+                  ? formatCurrencyWithDecimals(displayedNetWorthAmount)
+                  : hiddenAmountText}
+              </Text>
+              {isSelectedNetTrendToday ? (
+                <View style={styles.netBreakdownRow}>
+                  <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                    总资产{' '}
+                    {showNetAmounts
+                      ? formatCurrencyWithDecimals(totalAssetsAmount)
+                      : hiddenAmountText}
+                  </Text>
+                  <Text style={[styles.netBreakdownSep, { color: outlineVariant }]}>·</Text>
+                  <Text style={[styles.netBreakdownText, { color: subtle }]}>
+                    总负债{' '}
+                    {showNetAmounts
+                      ? formatCurrencyWithDecimals(totalLiabilitiesAbsAmount)
+                      : hiddenAmountText}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={[styles.trendChartDayLabel, { color: primary }]}>
+                  {selectedNetTrend.label} · 净资产
+                </Text>
+              )}
+
+              <View style={styles.trendChartWrap}>
+                <GestureDetector gesture={netWorthTrendScrubGesture}>
+                  <View
+                    collapsable={false}
+                    style={styles.trendChartPlot}
+                    onLayout={(e) => {
+                      trendChartPlotWidthRef.current = e.nativeEvent.layout.width;
+                    }}
+                    accessibilityRole="adjustable"
+                    accessibilityLabel="净资产趋势图，点按或滑动查看不同日期"
+                    accessibilityHint="在图表上点按或左右滑动以查看各日净资产">
+                    <Svg
+                      width="100%"
+                      height={NET_WORTH_TREND_CHART_H}
+                      viewBox={`0 0 ${NET_WORTH_TREND_CHART_W} ${NET_WORTH_TREND_CHART_H}`}
+                      preserveAspectRatio="none"
+                      pointerEvents="none"
+                      style={StyleSheet.absoluteFill}>
+                      {trendChartGeometry ? (
+                        <>
+                          <Defs>
+                            <LinearGradient
+                              id="netWorthTrendFill"
+                              x1="0"
+                              y1="0"
+                              x2="0"
+                              y2="1">
+                              <Stop
+                                offset="0"
+                                stopColor={ff.sage}
+                                stopOpacity={isDark ? 0.35 : 0.35}
+                              />
+                              <Stop offset="1" stopColor={ff.sage} stopOpacity={0} />
+                            </LinearGradient>
+                          </Defs>
+                          <Path d={trendChartGeometry.areaD} fill="url(#netWorthTrendFill)" />
+                          <Path
+                            d={trendChartGeometry.pathD}
+                            fill="none"
+                            stroke={ff.pine3}
+                            strokeWidth={1.5}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          {selectedNetTrendChartPoint ? (
+                            <Circle
+                              cx={selectedNetTrendChartPoint.x}
+                              cy={selectedNetTrendChartPoint.y}
+                              r={3.2}
+                              fill={ff.amber}
+                              stroke={ff.card}
+                              strokeWidth={1.5}
+                            />
+                          ) : null}
+                        </>
+                      ) : null}
+                    </Svg>
                   </View>
+                </GestureDetector>
+              </View>
+
+              <Pressable
+                onPress={() => setBudgetCardNetExpanded((v) => !v)}
+                style={[styles.netExpandFold, { borderTopColor: outlineVariant }]}
+                accessibilityRole="button"
+                accessibilityLabel={budgetCardNetExpanded ? '收起明细' : '展开明细'}>
+                <Text style={[styles.netExpandText, { color: subtle }]}>
+                  本月{' '}
+                  <Text style={{ color: ff.ink2, fontWeight: '700' }}>
+                    收入 {monthlyIncomeText}
+                  </Text>
+                  {' · '}
+                  <Text style={{ color: ff.ink2, fontWeight: '700' }}>
+                    支出 {monthlyExpenseText}
+                  </Text>
+                </Text>
+                <MaterialIcons
+                  name={budgetCardNetExpanded ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+                  size={16}
+                  color={subtle}
+                />
+              </Pressable>
+              {budgetCardNetExpanded ? (
+                <View style={styles.netStats}>
+                  <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                    <Text style={[styles.netStatLabel, { color: subtle }]}>本月盈余</Text>
+                    <Text style={[styles.netStatValue, { color: monthlySurplusColor }]}>
+                      {monthlySurplusText}
+                    </Text>
+                  </View>
+                  <View style={[styles.netStatCol, { backgroundColor: surfaceSubtle }]}>
+                    <Text style={[styles.netStatLabel, { color: subtle }]}>储蓄率</Text>
+                    <Text style={[styles.netStatValue, { color: text }]}>{savingRateText}</Text>
+                  </View>
+                </View>
+              ) : null}
             </View>
-          </Animated.View>
+          </FoldRiseIn>
 
-          <Animated.View style={{ opacity: listOpacity, transform: [{ translateY: listTranslateY }] }}>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={3} fromY={11}>
+            <View style={styles.quickRow}>
+              <Pressable
+                onPress={() => router.push('/assets')}
+                style={({ pressed }) => [
+                  styles.quickBtn,
+                  { backgroundColor: surface, borderColor: outlineVariant },
+                  pressed && { opacity: 0.9 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="资产">
+                <View style={[styles.quickIcon, { backgroundColor: ff.sage2 }]}>
+                  <MaterialIcons name="account-balance" size={14} color={ff.pine2} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.quickTitle, { color: text }]}>资产</Text>
+                  <Text style={[styles.quickSub, { color: subtle }]} numberOfLines={1}>
+                    {financeAccounts.length} 个账户
+                  </Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => router.push('/scheduled-expenses')}
+                style={({ pressed }) => [
+                  styles.quickBtn,
+                  { backgroundColor: surface, borderColor: outlineVariant },
+                  pressed && { opacity: 0.9 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="定时支出">
+                <View style={[styles.quickIcon, { backgroundColor: ff.amber2 }]}>
+                  <MaterialIcons name="event-repeat" size={14} color={ff.amberInk} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.quickTitle, { color: text }]}>定时支出</Text>
+                  <Text style={[styles.quickSub, { color: subtle }]} numberOfLines={1}>
+                    {scheduledExpenses.filter((s) => s.enabled).length} 项启用
+                  </Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => router.push('/cash-flow')}
+                style={({ pressed }) => [
+                  styles.quickBtn,
+                  { backgroundColor: surface, borderColor: outlineVariant },
+                  pressed && { opacity: 0.9 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="现金流">
+                <View style={[styles.quickIcon, { backgroundColor: isDark ? 'rgba(100,131,140,0.22)' : '#E7EEF0' }]}>
+                  <MaterialIcons name="show-chart" size={14} color={isDark ? '#9BB5BC' : '#587A83'} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.quickTitle, { color: text }]}>现金流</Text>
+                  <Text style={[styles.quickSub, { color: subtle }]} numberOfLines={1}>
+                    自由进度
+                  </Text>
+                </View>
+              </Pressable>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={4} fromY={12}>
           <View style={styles.sectionStack}>
-          <View style={[styles.sectionPanel, { backgroundColor: surface, borderColor: outlineStrong }, Shadows.card]}>
-          <View style={[styles.sectionHeaderRow, { borderBottomColor: outlineVariant }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>账户资产</Text>
+          <View style={styles.sectionEyebrowRow}>
+            <Text style={[styles.sectionEyebrow, { color: ff.ink2 }]}>ACCOUNTS / 账户</Text>
             <Pressable onPress={() => router.push('/assets')} style={({ pressed }) => [styles.sectionLink, pressed && { opacity: 0.8 }]}>
-              <Text style={[styles.sectionLinkText, { color: subtle }]}>查看</Text>
-              <MaterialIcons name="arrow-forward-ios" size={16} color={subtle} />
+              <Text style={[styles.sectionLinkText, { color: subtle }]}>全部</Text>
+              <MaterialIcons name="chevron-right" size={14} color={subtle} />
             </Pressable>
           </View>
 
@@ -3534,105 +3886,97 @@ export default function FinanceScreen() {
               <Pressable
                 onPress={() => router.push('/add-account')}
                 style={({ pressed }) => [
-                  styles.accountCard,
-                  { backgroundColor: surfaceSubtle, borderColor: outlineVariant },
-                  pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
+                  styles.accountCardFoldAdd,
+                  { borderColor: ff.line2, backgroundColor: surface },
+                  pressed && { opacity: 0.92 },
                 ]}>
-                <View style={[styles.accountIconBadge, { backgroundColor: `${primary}14` }]}>
-                  <MaterialIcons name="add-circle-outline" size={20} color={primary} />
-                </View>
-                <Text style={[styles.accountKicker, { color: subtle }]}>还没有账户</Text>
-                <Text style={[styles.accountValue, { color: text }]}>去添加</Text>
+                <MaterialIcons name="add" size={18} color={subtle} />
+                <Text style={{ color: subtle, fontSize: 11, fontWeight: '600' }}>添加账户</Text>
               </Pressable>
             ) : (
-              financeAccountsSortedByBalance.map((acc) => {
-                return (
-                  <Pressable
-                    key={acc.id}
-                    onPress={() =>
-                      router.push({
-                        pathname: '/account-detail',
-                        params: {
-                          accountId: acc.id,
-                          accountName: acc.name,
-                          accountNo: acc.account_no ?? '',
-                        },
-                      })
-                    }
-                    style={({ pressed }) => [
-                      styles.accountCard,
-                      { backgroundColor: surfaceSubtle, borderColor: outlineVariant },
-                      pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
-                    ]}>
-                    <View style={[styles.accountIconBadge, { backgroundColor: `${primary}14` }]}>
-                      <MaterialIcons name={accountIcon(acc)} size={18} color={primary} />
-                    </View>
-                    <Text style={[styles.accountKicker, { color: subtle }]} numberOfLines={1}>
-                      {isFinanceLiabilityAccount(acc)
-                        ? acc.account_no
-                          ? `负债 · ${acc.name} (${acc.account_no})`
-                          : `负债 · ${acc.name}`
-                        : acc.account_no
-                          ? `${acc.name} (${acc.account_no})`
-                          : acc.name}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.accountValue,
-                        {
-                          color: isFinanceLiabilityAccount(acc) ? danger : text,
-                        },
+              <>
+                {financeAccountsSortedByBalance.map((acc, idx) => {
+                  const isLiab = isFinanceLiabilityAccount(acc);
+                  const tone = isLiab ? 'warm' : idx % 3 === 1 ? 'soft' : 'pine';
+                  const cardBg =
+                    tone === 'warm' ? '#C88947' : tone === 'soft' ? '#E9DED0' : ff.budgetFrom;
+                  const cardFg = tone === 'soft' ? '#3D473F' : ff.onPine;
+                  return (
+                    <Pressable
+                      key={acc.id}
+                      onPress={() =>
+                        router.push({
+                          pathname: '/account-detail',
+                          params: {
+                            accountId: acc.id,
+                            accountName: acc.name,
+                            accountNo: acc.account_no ?? '',
+                          },
+                        })
+                      }
+                      style={({ pressed }) => [
+                        styles.accountCardFold,
+                        { backgroundColor: cardBg },
+                        pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
                       ]}>
-                      {formatCurrencyBalanceForAccount(acc)}
-                    </Text>
-                  </Pressable>
-                );
-              })
+                      <View style={styles.accountFoldTop}>
+                        <Text style={[styles.accountFoldName, { color: cardFg }]} numberOfLines={1}>
+                          {acc.account_no ? `${acc.name} · ${acc.account_no}` : acc.name}
+                        </Text>
+                        <MaterialIcons name={accountIcon(acc)} size={14} color={cardFg} style={{ opacity: 0.7 }} />
+                      </View>
+                      <Text
+                        style={[
+                          styles.accountFoldBal,
+                          { color: cardFg, fontFamily: ffFonts.mono },
+                        ]}>
+                        {formatCurrencyBalanceForAccount(acc)}
+                      </Text>
+                      <View style={styles.accountFoldFoot}>
+                        <Text style={{ color: cardFg, opacity: 0.7, fontSize: 10 }}>
+                          {isLiab ? '负债' : '资产'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+                <Pressable
+                  onPress={() => router.push('/add-account')}
+                  style={({ pressed }) => [
+                    styles.accountCardFoldAdd,
+                    { borderColor: ff.line2, backgroundColor: surface },
+                    pressed && { opacity: 0.92 },
+                  ]}>
+                  <MaterialIcons name="add" size={18} color={subtle} />
+                  <Text style={{ color: subtle, fontSize: 11, fontWeight: '600' }}>添加账户</Text>
+                </Pressable>
+              </>
             )}
           </ScrollView>
-          </View>
 
-          <View style={[styles.sectionPanel, { backgroundColor: surface, borderColor: outlineStrong }, Shadows.card]}>
-          <View style={[styles.sectionHeaderRow, { borderBottomColor: outlineVariant }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>收支明细</Text>
+          <View style={styles.sectionEyebrowRow}>
+            <Text style={[styles.sectionEyebrow, { color: ff.ink2 }]}>LEDGER / 今日流水</Text>
             <Text style={[styles.txnSwipeHint, { color: subtle }]}>左滑删除</Text>
           </View>
           <View style={styles.dayGroups}>
-            <View
-              style={[
-                styles.dayGroup,
-                { backgroundColor: surfaceSubtle, borderColor: outlineVariant },
-              ]}>
-              <View
-                style={[
-                  styles.dayGroupHeader,
-                  {
-                    borderBottomColor: outlineVariant,
-                    backgroundColor: isDark ? 'rgba(148,163,184,0.06)' : 'rgba(255,255,255,0.72)',
-                  },
-                ]}>
-                <View style={styles.dayGroupTitleCol}>
-                  <Text style={[styles.dayGroupTitle, { color: text }]}>今天</Text>
-                  <Text style={[styles.dayGroupSub, { color: subtle }]}>
-                    {today.getMonth() + 1}月{today.getDate()}日 · {weekdayCn[today.getDay()]}
-                  </Text>
-                </View>
-                <View style={styles.dayGroupTotals}>
-                  <Text style={[styles.dayGroupTotalText, { color: danger }]}>
-                    支 {formatCurrencyWithDecimals(todayExpenseTotal)}
-                  </Text>
-                  <Text style={[styles.dayGroupTotalText, { color: secondary }]}>
-                    收 {formatCurrencyWithDecimals(todayIncomeTotal)}
-                  </Text>
-                </View>
+            <View style={[styles.ledgerGroup, { backgroundColor: bg }]}>
+              <View style={styles.ledgerGroupH}>
+                <Text style={[styles.ledgerGroupTitle, { color: ff.ink2 }]}>
+                  {today.getMonth() + 1}月{today.getDate()}日 · 今天
+                </Text>
+                <Text style={[styles.ledgerGroupSum, { color: subtle, fontFamily: ffFonts.mono }]}>
+                  支出 {formatCurrencyWithDecimals(todayExpenseTotal)}
+                </Text>
               </View>
               {todayDisplayTxns.length === 0 ? (
                 <View style={styles.dayGroupEmpty}>
-                  <View style={[styles.emptyStateIconWrap, { backgroundColor: outlineVariant }]}>
+                  <View style={[styles.emptyStateIconWrap, { backgroundColor: ff.sage2 }]}>
                     <MaterialIcons name="event-note" size={18} color={subtle} />
                   </View>
                   <Text style={[styles.emptyStateTitle, { color: text }]}>今天暂无记录</Text>
-                  <Text style={[styles.emptyStateSubTitle, { color: subtle }]}>点击底部输入框，开始记第一笔</Text>
+                  <Text style={[styles.emptyStateSubTitle, { color: subtle }]}>
+                    点右下角记一笔，开始第一笔
+                  </Text>
                 </View>
               ) : (
                 todayDisplayTxns.map((t, index) => {
@@ -3641,15 +3985,14 @@ export default function FinanceScreen() {
                     <Animated.View
                       style={[
                         styles.txnSwipeForeground,
+                        { backgroundColor: bg },
                         t.isPendingPlaceholder ? styles.txnSwipeForegroundPending : null,
                       ]}>
                       <TxnItem
                         themeText={text}
                         themeSubtle={subtle}
-                        tagBg={isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)'}
-                        timeTagColor={primary}
-                        accountTagColor={accountTagColor}
                         dividerColor={outlineVariant}
+                        monoFont={ffFonts.mono}
                         item={t}
                         showDivider={showDivider && !t.isPendingPlaceholder}
                         onPress={
@@ -3674,7 +4017,9 @@ export default function FinanceScreen() {
                           ]}
                           accessibilityRole="button"
                           accessibilityLabel="取消 AI 识别">
-                          <Text style={[styles.pendingAutoLedgerCancelText, { color: subtle }]}>取消识别</Text>
+                          <Text style={[styles.pendingAutoLedgerCancelText, { color: subtle }]}>
+                            取消识别
+                          </Text>
                         </Pressable>
                         {showDivider ? (
                           <View style={[styles.txnRowDivider, { backgroundColor: outlineVariant }]} />
@@ -3689,15 +4034,18 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
-                      childrenContainerStyle={{ backgroundColor: surfaceSubtle }}
+                      childrenContainerStyle={{ backgroundColor: bg }}
                       renderRightActions={() => (
-                        <View style={[styles.swipeDeleteTrack, { backgroundColor: surfaceSubtle }]}>
+                        <View style={[styles.swipeDeleteTrack, { backgroundColor: ff.clay2 }]}>
                           <Pressable
                             onPress={() => handleDeleteFinanceTxn(t.id, t.title)}
-                            style={({ pressed }) => [styles.swipeDeletePill, pressed && { opacity: 0.88 }]}
+                            style={({ pressed }) => [
+                              styles.swipeDeletePill,
+                              { backgroundColor: '#B8583C' },
+                              pressed && { opacity: 0.88 },
+                            ]}
                             accessibilityRole="button"
                             accessibilityLabel={`删除 ${t.title}`}>
-                            <MaterialIcons name="delete-outline" size={20} color="#fff" />
                             <Text style={styles.swipeDeleteText}>删除</Text>
                           </Pressable>
                         </View>
@@ -3712,38 +4060,15 @@ export default function FinanceScreen() {
             {historySections.map((section) => {
               const isYesterday = section.dayKey === calendarYesterdayYmd;
               const dayTitle = isYesterday
-                ? '昨天'
-                : `${section.date.getMonth() + 1}月${section.date.getDate()}日`;
-              const daySub = isYesterday
-                ? `${section.date.getMonth() + 1}月${section.date.getDate()}日 · ${weekdayCn[section.date.getDay()]}`
-                : weekdayCn[section.date.getDay()];
+                ? `${section.date.getMonth() + 1}月${section.date.getDate()}日 · 昨天`
+                : `${section.date.getMonth() + 1}月${section.date.getDate()}日 · ${weekdayCn[section.date.getDay()]}`;
               return (
-                <View
-                  key={section.dayKey}
-                  style={[
-                    styles.dayGroup,
-                    { backgroundColor: surfaceSubtle, borderColor: outlineVariant },
-                  ]}>
-                  <View
-                    style={[
-                      styles.dayGroupHeader,
-                      {
-                        borderBottomColor: outlineVariant,
-                        backgroundColor: isDark ? 'rgba(148,163,184,0.06)' : 'rgba(255,255,255,0.72)',
-                      },
-                    ]}>
-                    <View style={styles.dayGroupTitleCol}>
-                      <Text style={[styles.dayGroupTitle, { color: text }]}>{dayTitle}</Text>
-                      <Text style={[styles.dayGroupSub, { color: subtle }]}>{daySub}</Text>
-                    </View>
-                    <View style={styles.dayGroupTotals}>
-                      <Text style={[styles.dayGroupTotalText, { color: danger }]}>
-                        支 {formatCurrencyWithDecimals(section.expense)}
-                      </Text>
-                      <Text style={[styles.dayGroupTotalText, { color: secondary }]}>
-                        收 {formatCurrencyWithDecimals(section.income)}
-                      </Text>
-                    </View>
+                <View key={section.dayKey} style={[styles.ledgerGroup, { backgroundColor: bg }]}>
+                  <View style={styles.ledgerGroupH}>
+                    <Text style={[styles.ledgerGroupTitle, { color: ff.ink2 }]}>{dayTitle}</Text>
+                    <Text style={[styles.ledgerGroupSum, { color: subtle, fontFamily: ffFonts.mono }]}>
+                      支出 {formatCurrencyWithDecimals(section.expense)}
+                    </Text>
                   </View>
                   {section.items.map((t, index) => (
                     <Swipeable
@@ -3751,27 +4076,28 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
-                      childrenContainerStyle={{ backgroundColor: surfaceSubtle }}
+                      childrenContainerStyle={{ backgroundColor: bg }}
                       renderRightActions={() => (
-                        <View style={[styles.swipeDeleteTrack, { backgroundColor: surfaceSubtle }]}>
+                        <View style={[styles.swipeDeleteTrack, { backgroundColor: ff.clay2 }]}>
                           <Pressable
                             onPress={() => handleDeleteFinanceTxn(t.id, t.title)}
-                            style={({ pressed }) => [styles.swipeDeletePill, pressed && { opacity: 0.88 }]}
+                            style={({ pressed }) => [
+                              styles.swipeDeletePill,
+                              { backgroundColor: '#B8583C' },
+                              pressed && { opacity: 0.88 },
+                            ]}
                             accessibilityRole="button"
                             accessibilityLabel={`删除 ${t.title}`}>
-                            <MaterialIcons name="delete-outline" size={20} color="#fff" />
                             <Text style={styles.swipeDeleteText}>删除</Text>
                           </Pressable>
                         </View>
                       )}>
-                      <Animated.View style={styles.txnSwipeForeground}>
+                      <Animated.View style={[styles.txnSwipeForeground, { backgroundColor: bg }]}>
                         <TxnItem
                           themeText={text}
                           themeSubtle={subtle}
-                          tagBg={isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)'}
-                          timeTagColor={primary}
-                          accountTagColor={accountTagColor}
                           dividerColor={outlineVariant}
+                          monoFont={ffFonts.mono}
                           item={t}
                           showDivider={index < section.items.length - 1}
                           onPress={() => router.push(`/edit-finance-transaction/${t.id}`)}
@@ -3784,15 +4110,17 @@ export default function FinanceScreen() {
             })}
 
             {displayTxns.length > 0 && isLoadingMoreDays ? (
-              <Text style={[styles.loadMoreText, { color: subtle }]}>加载中...</Text>
+              <View style={styles.loadMoreRow}>
+                <ActivityIndicator size="small" color={ff.sage} />
+                <Text style={[styles.loadMoreText, { color: subtle }]}>正在加载更早的流水</Text>
+              </View>
             ) : null}
             {displayTxns.length > 0 && !hasMoreHistoryDays ? (
               <Text style={[styles.loadMoreText, { color: subtle }]}>没有更早记录了</Text>
             ) : null}
           </View>
           </View>
-          </View>
-          </Animated.View>
+          </FoldRiseIn>
           </View>
             </Animated.View>
           ) : null}
@@ -3821,124 +4149,74 @@ export default function FinanceScreen() {
         </View>
       </ScrollView>
 
-      <Animated.View style={[styles.composerWrap, { bottom: baseBottomAnim }]}>
-        <View style={{ width: expandedWidth, opacity: !hasAccounts ? 0.78 : 1 }}>
-          <View
-            style={[
-              styles.composerShell,
-              {
-                backgroundColor: surface,
-                borderColor: outlineVariant,
-              },
-            ]}>
-            <View style={styles.composerRow}>
-              <Pressable
-                onPress={() => {
-                  void handleOpenComposer();
+      <FinanceFoldRecordFab
+        ff={ff}
+        bottom={baseBottomAnim}
+        disabled={!hasAccounts}
+        busy={isPickingImage}
+        onPress={() => {
+          void handleOpenComposer();
+        }}
+        onLongPress={() => {
+          if (!isPickingImage) void openAlbumScanFlow();
+        }}
+      />
+
+      <Modal visible={isSheetVisible} animationType="fade" transparent onRequestClose={closeSheet}>
+        {albumScanPhase !== 'off' ? (
+          <FinanceFoldSheetChrome
+            ff={ff}
+            isDark={isDark}
+            paddingBottom={sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom)}
+            maxHeight={sheetModalMaxHeight}
+            marginBottom={sheetKeyboardInset}
+            onClose={closeSheet}>
+            <ScrollView
+              style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+              contentContainerStyle={styles.sheetBodyScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+              nestedScrollEnabled
+              bounces>
+              <FinanceFoldAlbumScanPanel
+                ff={ff}
+                fonts={ffFonts}
+                imageUri={albumImageUri}
+                scanning={albumScanPhase === 'scanning'}
+                result={albumScanResult}
+                error={albumScanError}
+                includeInBudget={sheetIncludeInBudget}
+                onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+                onConfirm={() => void confirmAlbumScan()}
+                onCorrect={applyAlbumScanToForm}
+                onClose={() => {
+                  if (!albumConfirming) resetAlbumScanState();
                 }}
-                style={({ pressed }) => [
-                  styles.composerInput,
-                  {
-                    backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f3f4f6',
-                  },
-                  pressed && { opacity: 0.92 },
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="打开记账">
-                <MaterialIcons name="edit" size={18} color={subtle} />
-                <Text style={[styles.composerPlaceholder, { color: subtle }]} numberOfLines={1}>
-                  记一笔…
-                </Text>
-              </Pressable>
-
-              <View style={[styles.composerDivider, { backgroundColor: outlineVariant }]} />
-
-              <View style={styles.composerActions}>
-                <Pressable
-                  disabled={isPickingImage}
-                  onPress={() => void handlePickImage('library')}
-                  style={({ pressed }) => [
-                    styles.composerActionBtn,
-                    pressed && { opacity: 0.85 },
-                    isPickingImage && { opacity: 0.5 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="从相册识图记账">
-                  <MaterialIcons name="photo-library" size={22} color={primary} />
-                </Pressable>
-
-                <Pressable
-                  disabled={isPickingImage}
-                  onPress={() => void handlePickImage('camera')}
-                  style={({ pressed }) => [
-                    styles.composerActionBtn,
-                    pressed && { opacity: 0.85 },
-                    isPickingImage && { opacity: 0.5 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="拍照识图记账">
-                  {isPickingImage ? (
-                    <ActivityIndicator size="small" color={primary} />
-                  ) : (
-                    <MaterialIcons name="photo-camera" size={22} color={primary} />
-                  )}
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Animated.View>
-
-      <Modal visible={isSheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
-        <View style={styles.sheetOverlay}>
-          <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
-          <View
-            style={[
-              styles.sheetContainer,
-              {
-                /** 键盘打开时不再塞一条「安全区」底内边距，避免白底卡片里键盘与内容之间多出一条空带 */
-                paddingBottom: sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom),
-                maxHeight: sheetModalMaxHeight,
-                marginBottom: sheetKeyboardInset,
-                backgroundColor: surface,
-              },
-            ]}>
-            <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="close" size={24} color={subtle} />
-              </Pressable>
-              <Text style={[styles.sheetTitle, { color: text }]}>
-                {activeSheetTab === 'transfer'
-                  ? transferPairMeta.mode === 'repay'
-                    ? '负债还款'
-                    : transferPairMeta.mode === 'draw'
-                      ? '负债取款'
-                      : '财务转账'
-                  : activeSheetTab === 'sentence'
-                    ? '一句话记账'
-                    : '手动记账'}
-              </Text>
-              <View style={styles.sheetCloseBtn} />
-            </View>
-
-            <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => switchSheetTab('sentence')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
-                {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('expense')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
-                {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('income')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
-                {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('transfer')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
-                {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-            </View>
+                confirming={albumConfirming}
+              />
+            </ScrollView>
+          </FinanceFoldSheetChrome>
+        ) : (
+          <FinanceFoldSheetChrome
+            ff={ff}
+            isDark={isDark}
+            paddingBottom={sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom)}
+            maxHeight={sheetModalMaxHeight}
+            marginBottom={sheetKeyboardInset}
+            onClose={closeSheet}>
+            <FinanceFoldSheetHead
+              ff={ff}
+              fonts={ffFonts}
+              title="记一笔"
+              subtitle="说一句、拍一张，剩下的交给账本。"
+              onClose={closeSheet}
+            />
+            <FinanceFoldSegment
+              ff={ff}
+              active={activeSheetTab}
+              onChange={switchSheetTab}
+              transferLabel={foldTransferLabel}
+            />
 
             <ScrollView
               style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
@@ -3952,630 +4230,296 @@ export default function FinanceScreen() {
               nestedScrollEnabled
               bounces>
             {activeSheetTab === 'transfer' ? (
+              <FinanceFoldTransferPanel
+                ff={ff}
+                fonts={ffFonts}
+                amountDisplay={amountDisplay}
+                feeDisplay={transferFeeDisplay}
+                amountTarget={transferAmountTarget}
+                onFocusAmount={() => setTransferAmountTarget('amount')}
+                onFocusFee={() => setTransferAmountTarget('fee')}
+                fromLabel={transferPairMeta.fromLabel}
+                toLabel={transferPairMeta.toLabel}
+                fromName={transferFromAccount?.name ?? '选择账户'}
+                toName={transferToAccount?.name ?? '选择账户'}
+                onPressFrom={() => {
+                  setIsDatePickerVisible(false);
+                  setIsTimePickerVisible(false);
+                  setAccountPickerTarget('transferFrom');
+                  setIsAccountPickerVisible(true);
+                }}
+                onPressTo={() => {
+                  setIsDatePickerVisible(false);
+                  setIsTimePickerVisible(false);
+                  setAccountPickerTarget('transferTo');
+                  setIsAccountPickerVisible(true);
+                }}
+                onSwap={() => {
+                  setTransferFromAccountId(transferToAccountId);
+                  setTransferToAccountId(transferFromAccountId);
+                }}
+                hint={
+                  transferFromAccount && transferToAccount
+                    ? transferFromAccount.id === transferToAccount.id
+                      ? '请选择两个不同的账户。'
+                      : transferPairMeta.hint
+                    : null
+                }
+                note={sheetNote}
+                onChangeNote={setSheetNote}
+                timeLabel={`${sheetDateLabel} ${sheetTimeLabel}`}
+                onPressTime={() => {
+                  setIsAccountPickerVisible(false);
+                  setIsTimePickerVisible(false);
+                  setIsDatePickerVisible(true);
+                }}
+                canSave={canSaveTransaction}
+                isSaving={isSavingTransaction}
+                onSave={() => void handleSaveTransaction()}
+                keypadKeys={keypadRows.flat()}
+                onKeypadKey={handleAmountKeyPress}
+              />
+            ) : activeSheetTab === 'sentence' ? (
               <>
-                <View style={styles.transferContent}>
-                  <View style={styles.transferAccountRow}>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setAccountPickerTarget('transferFrom');
-                        setIsAccountPickerVisible(true);
-                      }}
-                      style={({ pressed }) => [
-                        styles.transferAccountCard,
-                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
-                        pressed && { opacity: 0.88 },
-                      ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
-                        {transferPairMeta.fromLabel}
-                      </Text>
-                      <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons
-                          name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
-                          size={20}
-                          color={tertiary}
-                        />
-                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
-                          {transferFromAccount?.name ?? '选择账户'}
-                        </Text>
-                      </View>
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="交换扣款与入账账户"
-                      onPress={() => {
-                        setTransferFromAccountId(transferToAccountId);
-                        setTransferToAccountId(transferFromAccountId);
-                      }}
-                      style={({ pressed }) => [styles.transferArrowWrap, pressed && { opacity: 0.75 }]}>
-                      <MaterialIcons name="swap-horiz" size={28} color={subtle} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setAccountPickerTarget('transferTo');
-                        setIsAccountPickerVisible(true);
-                      }}
-                      style={({ pressed }) => [
-                        styles.transferAccountCard,
-                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
-                        pressed && { opacity: 0.88 },
-                      ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
-                        {transferPairMeta.toLabel}
-                      </Text>
-                      <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons
-                          name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
-                          size={20}
-                          color={primary}
-                        />
-                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
-                          {transferToAccount?.name ?? '选择账户'}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  </View>
-
-                  {transferFromAccount && transferToAccount ? (
-                    transferFromAccount.id === transferToAccount.id ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
-                    ) : transferPairMeta.hint ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>{transferPairMeta.hint}</Text>
-                    ) : null
-                  ) : null}
-
+                <View style={[styles.sheetConfigRow, { marginBottom: 10 }]}>
                   <Pressable
-                    onPress={() => setTransferAmountTarget('amount')}
-                    style={({ pressed }) => [
-                      styles.transferAmountWrap,
-                      transferAmountTarget === 'amount' ? { opacity: 1 } : { opacity: 0.55 },
-                      pressed && { opacity: 0.8 },
-                    ]}>
-                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
-                    <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
+                    onPress={() => {
+                      setIsTimePickerVisible(false);
+                      setIsAccountPickerVisible(false);
+                      setIsDatePickerVisible(true);
+                    }}
+                    style={[styles.configChip, { backgroundColor: ff.cardSoft, borderColor: ff.line }]}>
+                    <MaterialIcons name="calendar-today" size={16} color={ff.muted} />
+                    <Text style={[styles.configChipText, { color: ff.ink }]}>{sheetDateLabel}</Text>
                   </Pressable>
-
                   <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="编辑转账手续费"
-                    onPress={() => setTransferAmountTarget('fee')}
+                    onPress={() => {
+                      setIsTimePickerVisible(false);
+                      setIsAccountPickerVisible(false);
+                      setIsDatePickerVisible(true);
+                    }}
                     style={({ pressed }) => [
-                      styles.transferFeeRow,
-                      {
-                        backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
-                        borderColor: transferAmountTarget === 'fee' ? tertiary : outlineVariant,
-                      },
-                      pressed && { opacity: 0.88 },
+                      styles.configChip,
+                      { backgroundColor: ff.cardSoft, borderColor: ff.line },
+                      pressed ? { opacity: 0.8 } : null,
                     ]}>
-                    <Text style={[styles.transferFeeLabel, { color: subtle }]}>手续费（可选）</Text>
-                    <Text
-                      style={[
-                        styles.transferFeeValue,
-                        { color: transferAmountTarget === 'fee' ? tertiary : text },
-                      ]}>
-                      ¥{transferFeeDisplay}
-                    </Text>
+                    <MaterialIcons name="schedule" size={16} color={ff.muted} />
+                    <Text style={[styles.configChipText, { color: ff.ink }]}>{sheetTimeLabel}</Text>
                   </Pressable>
-                  {transferAmountTarget === 'fee' ? (
-                    <Text style={[styles.transferFeeHint, { color: subtle }]}>
-                      从转账金额中扣除，对方实收 = 转账额 − 手续费
+                  <Pressable
+                    onPress={() => {
+                      setIsDatePickerVisible(false);
+                      setIsTimePickerVisible(false);
+                      setIsAccountPickerVisible((prev) => {
+                        if (!prev) setAccountPickerTarget('sheet');
+                        return !prev;
+                      });
+                    }}
+                    style={({ pressed }) => [
+                      styles.configChip,
+                      { backgroundColor: ff.cardSoft, borderColor: ff.line },
+                      pressed ? { opacity: 0.8 } : null,
+                    ]}>
+                    <MaterialIcons name="account-balance-wallet" size={16} color={ff.pine} />
+                    <Text style={[styles.configChipText, { color: ff.ink }]}>
+                      {selectedAccount?.name ?? '支付账户'}
                     </Text>
-                  ) : null}
-
-                  <View style={styles.transferDateWrap}>
-                    <Pressable
-                      onPress={() => {
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsDatePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
-                      <MaterialIcons name="calendar-today" size={14} color={subtle} />
-                      <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsTimePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
-                      <MaterialIcons name="schedule" size={14} color={subtle} />
-                      <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
-                    </Pressable>
-                  </View>
-
-                  <View style={[styles.sheetNoteRow, { marginTop: 4 }]}>
-                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <TextInput
-                        value={sheetNote}
-                        onChangeText={setSheetNote}
-                        multiline
-                        scrollEnabled
-                        textAlignVertical="top"
-                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 56 }]}
-                        placeholder="备注（可选）"
-                        placeholderTextColor={subtle}
-                      />
-                    </View>
-                  </View>
-
-                  {isDatePickerVisible ? (
-                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
-                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择日期</Text>
-                      <View style={styles.inlinePickerActions}>
-                        <Pressable onPress={() => handleChangeSheetDate(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>前一天</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>今天</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetDate(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>后一天</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {isTimePickerVisible ? (
-                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
-                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择时间</Text>
-                      <View style={styles.inlinePickerActions}>
-                        <Pressable onPress={() => handleChangeSheetTime(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-1 小时</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(0, -10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-10 分钟</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>现在</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(0, 10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+10 分钟</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+1 小时</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : null}
+                    <MaterialIcons name="expand-more" size={16} color={ff.muted} />
+                  </Pressable>
                 </View>
-
-                <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                  <View style={styles.transferKeypadInner}>
-                    <View style={styles.transferNumberGrid}>
-                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '00'].map((key) => (
-                        <Pressable
-                          key={key}
-                          onPress={() => handleAmountKeyPress(key)}
-                          style={({ pressed }) => [
-                            styles.transferNumberBtn,
-                            { backgroundColor: surface, borderColor: outlineVariant },
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          <Text style={[styles.transferNumberText, { color: text }]}>{key}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                    <View style={styles.transferActionCol}>
-                      <Pressable
-                        onPress={() => handleAmountKeyPress('backspace')}
-                        style={({ pressed }) => [
-                          styles.transferBackBtn,
-                          { backgroundColor: surface, borderColor: outlineVariant },
-                          pressed && { opacity: 0.86 },
-                        ]}>
-                        <MaterialIcons name="backspace" size={20} color={subtle} />
-                      </Pressable>
-                      <Pressable
-                        onPress={handleSaveTransaction}
-                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }, pressed && { opacity: 0.9 }]}>
-                        <MaterialIcons name="check" size={30} color="#ffffff" />
-                      </Pressable>
-                    </View>
-                  </View>
-                </View>
+                <FinanceFoldPhrasePanel
+                  ff={ff}
+                  fonts={ffFonts}
+                  sentence={sheetSentence}
+                  onChangeSentence={setSheetSentence}
+                  pills={sentenceFoldPills}
+                  aiLine={sentenceAiLine}
+                  includeInBudget={sheetIncludeInBudget}
+                  onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+                  budgetDetail="占用本月"
+                  canSave={canSaveSentence}
+                  isSaving={isParsingSentence}
+                  onPreview={() => void handleSentenceLedgerPreview()}
+                  isPreviewBusy={isSentencePreviewBusy}
+                  onConfirm={() => void handleSaveTransaction()}
+                  onOpenAlbum={() => void openAlbumScanFlow()}
+                  quickTags={['午餐', '打车', '咖啡', '工资']}
+                  onQuickTag={(tag) =>
+                    setSheetSentence((prev) => {
+                      const t = prev.trim();
+                      return t ? `${t} ${tag}` : tag;
+                    })
+                  }
+                />
               </>
             ) : (
               <>
-                {activeSheetTab !== 'sentence' ? (
-                <FinanceCategoryPicker
-                  categories={activeCategories}
-                  selectedKey={selectedCategoryKey}
-                  onSelectKey={setSelectedCategoryKey}
-                  transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
-                  singleRowCollapsed
-                  subtle={subtle}
-                  primary={primary}
-                  text={text}
-                  surface={surface}
-                  outlineVariant={outlineVariant}
-                  styles={styles}
-                  onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
-                  onLongPressCustom={confirmDeleteCustomCategory}
-                  addModalVisible={addModalVisible}
-                  newCategoryName={newCategoryName}
-                  onChangeNewCategoryName={setNewCategoryName}
-                  newCategoryIcon={newCategoryIcon}
-                  onChangeNewCategoryIcon={setNewCategoryIcon}
-                  isSavingCategory={isSavingCategory}
-                  onCloseAddModal={closeAddCategoryModal}
-                  onSaveNewCategory={() => {
-                    markPageDirty();
-                    void saveNewCategory(setSelectedCategoryKey);
+                <FinanceFoldExpenseIncomePanel
+                  ff={ff}
+                  fonts={ffFonts}
+                  mode={activeSheetTab === 'income' ? 'income' : 'expense'}
+                  amountDisplay={amountDisplay}
+                  amountFocused
+                  onFocusAmount={() => {}}
+                  categories={activeCategories.map((c) => ({
+                    key: c.key,
+                    label: c.label,
+                    isCustom: c.isCustom,
+                  }))}
+                  selectedCategoryKey={selectedCategoryKey}
+                  onSelectCategory={setSelectedCategoryKey}
+                  onAddCategory={() =>
+                    openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')
+                  }
+                  onLongPressCustomCategory={(item) => {
+                    const cat = activeCategories.find((c) => c.key === item.key);
+                    if (cat) confirmDeleteCustomCategory(cat);
                   }}
+                  accountLabel={selectedAccount?.name ?? '选择账户'}
+                  onPressAccount={() => {
+                    setIsDatePickerVisible(false);
+                    setIsTimePickerVisible(false);
+                    setIsAccountPickerVisible((prev) => {
+                      if (!prev) setAccountPickerTarget('sheet');
+                      return !prev;
+                    });
+                  }}
+                  timeLabel={`${sheetDateLabel} ${sheetTimeLabel}`}
+                  onPressTime={() => {
+                    setIsTimePickerVisible(false);
+                    setIsAccountPickerVisible(false);
+                    setIsDatePickerVisible(true);
+                  }}
+                  title={sheetNote}
+                  onChangeTitle={setSheetNote}
+                  includeInBudget={sheetIncludeInBudget}
+                  onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+                  imageUris={sheetImageUris}
+                  onRemoveImage={(idx) =>
+                    setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))
+                  }
+                  onPressImage={() => void openAlbumScanFlow()}
+                  canSave={canSaveTransaction}
+                  isSaving={isSavingTransaction}
+                  onSave={() => void handleSaveTransaction()}
+                  keypadKeys={keypadRows.flat()}
+                  onKeypadKey={handleAmountKeyPress}
                 />
-                ) : (
-                  <View style={styles.sentenceHintBox}>
-                    <Text style={[styles.sentenceHintText, { color: subtle }]}>
-                      写清事由与金额。例如：午饭 28、打车 15.5 元、工资到账 8000
-                    </Text>
-                    <View style={styles.sentenceAiMetaRow}>
-                      <MaterialIcons name="auto-awesome" size={16} color={zhipuTxnReady ? secondary : subtle} />
-                      <Text
-                        style={[
-                          styles.sentenceAiMetaText,
-                          { color: zhipuTxnReady ? secondary : subtle },
-                        ]}
-                        numberOfLines={2}>
-                        {zhipuTxnReady
-                          ? '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
-                          : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
-                      </Text>
-                    </View>
-                    {__DEV__ ? (
-                      <Pressable
-                        onPress={() => router.push('/zhipu-api-test')}
-                        style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-                        <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
-                          智谱 API 调试页（验证密钥与请求）
-                        </Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                )}
-
-                <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                  <View style={styles.sheetConfigRow}>
-                    <Pressable
-                      onPress={() => {
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsDatePickerVisible((prev) => !prev);
-                      }}
-                      style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <MaterialIcons name="calendar-today" size={16} color={subtle} />
-                      <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsTimePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [
-                        styles.configChip,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.8 } : null,
-                      ]}>
-                      <MaterialIcons name="schedule" size={16} color={subtle} />
-                      <Text style={[styles.configChipText, { color: text }]}>{sheetTimeLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible((prev) => {
-                          if (!prev) setAccountPickerTarget('sheet');
-                          return !prev;
-                        });
-                      }}
-                      style={({ pressed }) => [
-                        styles.configChip,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.8 } : null,
-                      ]}>
-                      <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
-                      <Text style={[styles.configChipText, { color: text }]}>
-                        {selectedAccount?.name ?? '支付账户'}
-                      </Text>
-                      <MaterialIcons name="expand-more" size={16} color={subtle} />
-                    </Pressable>
-                  </View>
-
-                  {activeSheetTab === 'expense' || activeSheetTab === 'income' || activeSheetTab === 'sentence' ? (
-                    <Pressable
-                      accessibilityRole="switch"
-                      accessibilityLabel="计入本月预算"
-                      accessibilityState={{ checked: sheetIncludeInBudget }}
-                      onPress={() => applySheetIncludeInBudget((prev) => !prev)}
-                      style={({ pressed }) => [
-                        styles.sheetBudgetCard,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.82 } : null,
-                      ]}>
-                      <View style={styles.sheetBudgetMainHit}>
-                        <View
-                          style={[
-                            styles.sheetBudgetIconWrap,
-                            {
-                              backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
-                            },
-                          ]}>
-                          <MaterialIcons name="pie-chart" size={22} color={tertiary} />
-                        </View>
-                        <View style={styles.sheetBudgetTextCol}>
-                          <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
-                          <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
-                            {sheetIncludeInBudget
-                              ? activeSheetTab === 'income'
-                                ? '增加本月预算与「今日可用」计算'
-                                : '占用本月预算与「今日可用」计算'
-                              : activeSheetTab === 'income'
-                                ? '仍记为收入，不参与预算与今日可用'
-                                : '仍记为支出，不参与预算与今日可用'}
-                          </Text>
-                        </View>
-                      </View>
-                      <Switch
-                        value={sheetIncludeInBudget}
-                        pointerEvents="none"
-                        trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
-                        thumbColor="#ffffff"
-                        ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
-                      />
-                    </Pressable>
-                  ) : null}
-
-                  {activeSheetTab === 'sentence' ? (
-                    <View style={styles.sheetSentenceBlock}>
-                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 130 }]}>
-                        <TextInput
-                          value={sheetSentence}
-                          onChangeText={setSheetSentence}
-                          multiline
-                          scrollEnabled
-                          textAlignVertical="top"
-                          style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 96 }]}
-                          placeholder="例如：咖啡 18、地铁 6、工资 12000"
-                          placeholderTextColor={subtle}
-                        />
-                      </View>
-                      {sentenceLedgerPreview?.kind === 'ok' ? (
-                        <View
-                          style={[
-                            styles.sentencePreviewCard,
-                            { backgroundColor: surface, borderColor: outlineVariant },
-                          ]}>
-                          <View
-                            style={[
-                              styles.sentencePreviewBadge,
-                              {
-                                backgroundColor:
-                                  sentenceLedgerPreview.source === 'ai'
-                                    ? isDark
-                                      ? 'rgba(52,211,153,0.18)'
-                                      : 'rgba(0,108,73,0.12)'
-                                    : isDark
-                                      ? 'rgba(148,163,184,0.2)'
-                                      : 'rgba(66,71,84,0.1)',
-                              },
-                            ]}>
-                            <Text
-                              style={[
-                                styles.sentencePreviewBadgeText,
-                                {
-                                  color: sentenceLedgerPreview.source === 'ai' ? secondary : subtle,
-                                },
-                              ]}>
-                              {sentenceLedgerPreview.source === 'ai' ? '智谱 AI 识别' : '本地规则'}
-                            </Text>
-                          </View>
-                          <Text style={[styles.sentencePreviewLine, { color: text }]}>
-                            {sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出'} ·{' '}
-                            {formatCurrencyWithDecimals(sentenceLedgerPreview.amount)} · {sentenceLedgerPreview.name}
-                          </Text>
-                          <Text style={[styles.sentencePreviewLine, { color: subtle, fontWeight: '600' }]}>
-                            分类：{sentenceLedgerPreview.categoryLabel}
-                          </Text>
-                        </View>
-                      ) : sentenceLedgerPreview?.kind === 'error' ? (
-                        <View
-                          style={[
-                            styles.sentencePreviewCard,
-                            {
-                              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(254,226,226,0.9)',
-                              borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(252,165,165,0.8)',
-                            },
-                          ]}>
-                          <Text style={[styles.sentencePreviewErr, { color: isDark ? '#fecaca' : '#991b1b' }]}>
-                            {sentenceLedgerPreview.message}
-                          </Text>
-                        </View>
-                      ) : null}
-                      <View style={styles.sentenceActionsRow}>
-                        <Pressable
-                          onPress={() => void handleSentenceLedgerPreview()}
-                          disabled={!canSaveSentence}
-                          style={({ pressed }) => [
-                            styles.sheetSentencePreviewBtn,
-                            {
-                              borderColor: outlineVariant,
-                              backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
-                              opacity: !canSaveSentence ? 0.55 : pressed ? 0.88 : 1,
-                            },
-                          ]}>
-                          {isSentencePreviewBusy ? (
-                            <ActivityIndicator color={tertiary} />
-                          ) : (
-                            <Text style={[styles.sheetSentencePreviewBtnText, { color: tertiary }]}>AI 识别预览</Text>
-                          )}
-                        </Pressable>
-                        <Pressable
-                          onPress={() => void handleSaveTransaction()}
-                          disabled={!canSaveSentence}
-                          style={({ pressed }) => [
-                            styles.sheetSentenceSubmit,
-                            styles.sheetSentenceSubmitFlex,
-                            { backgroundColor: canSaveSentence ? tertiary : subtle },
-                            pressed && canSaveSentence && { opacity: 0.9 },
-                          ]}>
-                          {isParsingSentence ? (
-                            <ActivityIndicator color="#fff" />
-                          ) : (
-                            <Text style={styles.sheetSentenceSubmitText}>记账</Text>
-                          )}
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : (
-                    <>
-                  <View style={styles.sheetNoteRow}>
-                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <TextInput
-                        value={sheetNote}
-                        onChangeText={setSheetNote}
-                        multiline
-                        scrollEnabled
-                        textAlignVertical="top"
-                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
-                        placeholder="添加备注..."
-                        placeholderTextColor={subtle}
-                      />
-                    </View>
-                  </View>
-
-                  {sheetImageUris.length ? (
-                    <View style={styles.attachmentPreview}>
-                      <Text style={[styles.attachmentPreviewText, { color: subtle }]}>已添加图片</Text>
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.attachmentThumbRow}>
-                        {sheetImageUris.map((uri, idx) => (
-                          <View key={`${uri}-${idx}`} style={styles.attachmentThumbWrap}>
-                            <Image source={{ uri }} style={styles.attachmentThumb} />
-                            <Pressable
-                              onPress={() => setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))}
-                              style={({ pressed }) => [styles.attachmentRemoveBtn, pressed && { opacity: 0.85 }]}>
-                              <MaterialIcons name="close" size={14} color="#fff" />
-                            </Pressable>
-                          </View>
-                        ))}
-                      </ScrollView>
-                    </View>
-                  ) : null}
-                    </>
-                  )}
-
-                  <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
-                    <View style={styles.pickerModalOverlay}>
-                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
-                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
-                          <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
-                            <MaterialIcons name="close" size={22} color={subtle} />
-                          </Pressable>
-                        </View>
-                        <View style={styles.pickerModalBody}>
-                          <DateTimePicker
-                            value={selectedHappenedAt}
-                            mode="date"
-                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                            locale="zh-CN"
-                            themeVariant={isDark ? 'dark' : 'light'}
-                            onChange={handleDatePickerChange}
-                            style={styles.nativePicker}
-                          />
-                          <View style={styles.pickerModalFooter}>
-                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                              <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
-                            </Pressable>
-                            <Pressable onPress={() => setIsDatePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
-                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </View>
-                    </View>
-                  </Modal>
-
-                  <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
-                    <View style={styles.pickerModalOverlay}>
-                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
-                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
-                          <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
-                            <MaterialIcons name="close" size={22} color={subtle} />
-                          </Pressable>
-                        </View>
-                        <View style={styles.pickerModalBody}>
-                          <DateTimePicker
-                            value={selectedHappenedAt}
-                            mode="time"
-                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                            locale="zh-CN"
-                            themeVariant={isDark ? 'dark' : 'light'}
-                            onChange={handleTimePickerChange}
-                            style={styles.nativePicker}
-                          />
-                          <View style={styles.pickerModalFooter}>
-                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                              <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
-                            </Pressable>
-                            <Pressable onPress={() => setIsTimePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
-                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </View>
-                    </View>
-                  </Modal>
-
-                  {activeSheetTab !== 'sentence' ? (
-                    <>
-                  <View style={styles.amountPreview}>
-                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
-                    <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
-                  </View>
-
-                  <View style={styles.keypad}>
-                    {keypadRows.flat().map((key, idx) => {
-                      const isDone = key === 'done';
-                      const isBackspace = key === 'backspace';
-                      const showLabel = isBackspace ? 'backspace' : isDone ? '完成' : key;
-                      return (
-                        <Pressable
-                          key={`${key}-${idx}`}
-                          onPress={() => (isDone ? handleSaveTransaction() : handleAmountKeyPress(key))}
-                          style={({ pressed }) => [
-                            styles.keypadBtn,
-                            isDone
-                              ? [styles.keypadDoneBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }]
-                              : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
-                            key === '0' && idx === 12 ? styles.keypadWideBtn : null,
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          {isBackspace ? (
-                            <MaterialIcons name="backspace" size={20} color={subtle} />
-                          ) : (
-                            <Text style={isDone ? styles.keypadDoneText : [styles.keypadText, { color: text }]}>{showLabel}</Text>
-                          )}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                    </>
-                  ) : null}
+                <View style={{ height: 0, overflow: 'hidden', opacity: 0 }} pointerEvents="none">
+                  <FinanceCategoryPicker
+                    categories={activeCategories}
+                    selectedKey={selectedCategoryKey}
+                    onSelectKey={setSelectedCategoryKey}
+                    transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                    singleRowCollapsed
+                    subtle={subtle}
+                    primary={primary}
+                    text={text}
+                    surface={surface}
+                    outlineVariant={outlineVariant}
+                    styles={styles}
+                    onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
+                    onLongPressCustom={confirmDeleteCustomCategory}
+                    addModalVisible={addModalVisible}
+                    newCategoryName={newCategoryName}
+                    onChangeNewCategoryName={setNewCategoryName}
+                    newCategoryIcon={newCategoryIcon}
+                    onChangeNewCategoryIcon={setNewCategoryIcon}
+                    isSavingCategory={isSavingCategory}
+                    onCloseAddModal={closeAddCategoryModal}
+                    onSaveNewCategory={() => {
+                      markPageDirty();
+                      void saveNewCategory(setSelectedCategoryKey);
+                    }}
+                  />
                 </View>
               </>
             )}
             </ScrollView>
+
+            <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
+              <View style={styles.pickerModalOverlay}>
+                <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
+                <View
+                  style={[
+                    styles.pickerModalCard,
+                    { backgroundColor: ff.card, borderColor: ff.line, shadowColor: isDark ? '#000' : '#0f172a' },
+                  ]}>
+                  <View style={[styles.pickerModalHeader, { borderBottomColor: ff.line }]}>
+                    <Text style={[styles.pickerModalTitle, { color: ff.ink }]}>选择日期</Text>
+                    <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                      <MaterialIcons name="close" size={22} color={ff.muted} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.pickerModalBody}>
+                    <DateTimePicker
+                      value={selectedHappenedAt}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      locale="zh-CN"
+                      themeVariant={isDark ? 'dark' : 'light'}
+                      onChange={handleDatePickerChange}
+                      style={styles.nativePicker}
+                    />
+                    <View style={styles.pickerModalFooter}>
+                      <Pressable
+                        onPress={() => setSelectedHappenedAt(new Date())}
+                        style={[styles.pickerModalAction, { borderColor: ff.line, backgroundColor: ff.cardSoft }]}>
+                        <Text style={[styles.pickerModalActionText, { color: ff.ink }]}>今天</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setIsDatePickerVisible(false);
+                          setIsTimePickerVisible(true);
+                        }}
+                        style={[styles.pickerModalAction, { borderColor: ff.pine, backgroundColor: ff.pine }]}>
+                        <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+            <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
+              <View style={styles.pickerModalOverlay}>
+                <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
+                <View
+                  style={[
+                    styles.pickerModalCard,
+                    { backgroundColor: ff.card, borderColor: ff.line, shadowColor: isDark ? '#000' : '#0f172a' },
+                  ]}>
+                  <View style={[styles.pickerModalHeader, { borderBottomColor: ff.line }]}>
+                    <Text style={[styles.pickerModalTitle, { color: ff.ink }]}>选择时间</Text>
+                    <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                      <MaterialIcons name="close" size={22} color={ff.muted} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.pickerModalBody}>
+                    <DateTimePicker
+                      value={selectedHappenedAt}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      locale="zh-CN"
+                      themeVariant={isDark ? 'dark' : 'light'}
+                      onChange={handleTimePickerChange}
+                      style={styles.nativePicker}
+                    />
+                    <View style={styles.pickerModalFooter}>
+                      <Pressable
+                        onPress={() => setSelectedHappenedAt(new Date())}
+                        style={[styles.pickerModalAction, { borderColor: ff.line, backgroundColor: ff.cardSoft }]}>
+                        <Text style={[styles.pickerModalActionText, { color: ff.ink }]}>现在</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => setIsTimePickerVisible(false)}
+                        style={[styles.pickerModalAction, { borderColor: ff.pine, backgroundColor: ff.pine }]}>
+                        <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </Modal>
 
             <Modal
               visible={isAccountPickerVisible}
@@ -4651,239 +4595,37 @@ export default function FinanceScreen() {
                 </View>
               </View>
             </Modal>
-          </View>
-        </View>
+          </FinanceFoldSheetChrome>
+        )}
       </Modal>
 
-      <Modal visible={isBudgetAdjustVisible} animationType="slide" transparent onRequestClose={closeBudgetAdjust}>
-        <KeyboardAvoidingView
-          style={styles.budgetKeyboardAvoidingRoot}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}>
-          <View style={styles.budgetModalOverlayInner}>
-            <Pressable style={styles.sheetBackdrop} onPress={closeBudgetAdjust} />
-            <View style={[styles.budgetDetailsSheet, { paddingBottom: Math.max(24, insets.bottom), backgroundColor: surface }]}>
-            <View style={styles.budgetDetailsHeader}>
-              <Text style={[styles.budgetDetailsTitle, { color: text }]}>
-                {budgetSheetMonthNumber}月预算详情
-              </Text>
-              <Pressable
-                onPress={handleResetBudgetAdjust}
-                style={({ pressed }) => [styles.budgetDetailsResetBtn, pressed && { opacity: 0.85 }]}>
-                <MaterialIcons name="refresh" size={16} color="#ef4444" />
-                <Text style={styles.budgetDetailsResetText}>重置预算</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.budgetDetailsTotalWrap}>
-              <View style={[styles.budgetDetailsTotalCard, { backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb' }]}>
-                <View style={styles.budgetDetailsTotalTextCol}>
-                  <Text style={[styles.budgetDetailsTotalLabel, { color: subtle }]}>真实{budgetUiScopeShort}预算</Text>
-                  {scheduledBudgetDeduction > 0 ? (
-                    <Text style={[styles.budgetDetailsTotalHint, { color: subtle }]}>
-                      毛预算 {formatCurrencyWithDecimals(budgetPreviewGross)}，已扣定时支出{' '}
-                      {formatCurrencyWithDecimals(scheduledBudgetDeduction)}
-                    </Text>
-                  ) : null}
-                </View>
-                <Text style={[styles.budgetDetailsTotalValue, { color: text }]}>
-                  {formatCurrencyWithDecimals(budgetPreviewTotal)}
-                </Text>
-              </View>
-            </View>
-
-            <ScrollView
-              style={styles.budgetDetailsScroll}
-              contentContainerStyle={styles.budgetDetailsScrollContent}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}>
-            <View style={styles.budgetDetailsComposition}>
-              <View style={styles.budgetDetailsCompositionTop}>
-                <Text style={[styles.budgetDetailsCompositionTitle, { color: subtle }]}>{budgetUiScopeShort}预算构成</Text>
-                <View style={styles.budgetDetailsSwitchRow}>
-                  <Text style={[styles.budgetDetailsSwitchLabel, { color: subtle }]}>{budgetUiIncludePrevLabel}</Text>
-                  <Switch
-                    value={modalIncludeLast}
-                    onValueChange={setModalIncludeLast}
-                    trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
-                    thumbColor="#ffffff"
-                    ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.budgetRefreshDayBlock}>
-                <View style={styles.budgetRefreshDayTextCol}>
-                  <Text style={[styles.budgetRefreshDayTitle, { color: text }]}>预算刷新日</Text>
-                  <Text style={[styles.budgetRefreshDayHint, { color: subtle }]}>
-                    每月该日 0 点起进入新预算周期；默认 1 日即按自然月。短月会与当月最后一天对齐。
-                  </Text>
-                </View>
-                <View style={styles.budgetRefreshDayStepper}>
-                  <Pressable
-                    onPress={() => setBudgetRefreshDayDraft((d) => Math.max(1, d - 1))}
-                    style={({ pressed }) => [
-                      styles.budgetRefreshDayStepBtn,
-                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="预算刷新日减一">
-                    <MaterialIcons name="remove" size={22} color={text} />
-                  </Pressable>
-                  <Text style={[styles.budgetRefreshDayValue, { color: text }]}>{budgetRefreshDayDraft}</Text>
-                  <Pressable
-                    onPress={() => setBudgetRefreshDayDraft((d) => Math.min(31, d + 1))}
-                    style={({ pressed }) => [
-                      styles.budgetRefreshDayStepBtn,
-                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="预算刷新日加一">
-                    <MaterialIcons name="add" size={22} color={text} />
-                  </Pressable>
-                </View>
-              </View>
-
-              <View style={styles.budgetDetailsBreakdownRow}>
-                <Pressable
-                  onPress={() => budgetBaseInputRef.current?.focus()}
-                  style={({ pressed }) => [
-                    styles.budgetDetailsBreakdownCard,
-                    {
-                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
-                      opacity: pressed ? 0.92 : 1,
-                    },
-                  ]}>
-                  <View style={styles.budgetDetailsBreakdownLabelRow}>
-                    <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>月预算基数</Text>
-                    <MaterialIcons name="edit" size={12} color={primary} style={{ opacity: 0.85 }} />
-                  </View>
-                  <View style={styles.budgetDetailsBaseInputWrap}>
-                    <Text style={[styles.budgetDetailsBreakdownYuan, { color: text }]}>¥</Text>
-                    <TextInput
-                      ref={budgetBaseInputRef}
-                      value={budgetBaseDraft}
-                      onChangeText={setBudgetBaseDraft}
-                      keyboardType="decimal-pad"
-                      placeholder="0.00"
-                      placeholderTextColor={subtle}
-                      style={[styles.budgetDetailsBreakdownInput, { color: text }]}
-                      selectTextOnFocus
-                    />
-                  </View>
-                </Pressable>
-
-                <Text style={[styles.budgetDetailsPlus, { color: isDark ? '#4b5563' : '#d1d5db' }]}>+</Text>
-
-                <View
-                  style={[
-                    styles.budgetDetailsBreakdownCard,
-                    {
-                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
-                      opacity: modalIncludeLast ? 1 : 0.5,
-                    },
-                  ]}>
-                  <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>{budgetUiPrevCarryLabel}</Text>
-                  <Text
-                    style={[
-                      styles.budgetDetailsBreakdownAmount,
-                      modalIncludeLast ? { color: text } : { color: isDark ? '#4b5563' : '#d1d5db' },
-                    ]}>
-                    {modalIncludeLast ? formatCurrencyWithDecimals(lastMonthRemaining) : '--'}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.budgetPeriodSurplusBlock}>
-                <View style={styles.budgetPeriodSurplusHeader}>
-                  <Text style={[styles.budgetPeriodSurplusTitle, { color: text }]}>
-                    {budgetUiScopeShort}预算结余
-                  </Text>
-                  <Text style={[styles.budgetPeriodSurplusHint, { color: subtle }]}>
-                    可手动校正；与下方自动值一致时随记账自动更新
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => periodSurplusInputRef.current?.focus()}
-                  style={({ pressed }) => [
-                    styles.budgetPeriodSurplusInputCard,
-                    {
-                      backgroundColor: isDark ? 'rgba(148,163,184,0.12)' : '#f9fafb',
-                      borderColor: outlineVariant,
-                      opacity: pressed ? 0.92 : 1,
-                    },
-                  ]}>
-                  <View style={styles.budgetDetailsBreakdownLabelRow}>
-                    <Text style={[styles.budgetDetailsBreakdownLabel, { color: subtle }]}>当前结余</Text>
-                    <MaterialIcons name="edit" size={12} color={primary} style={{ opacity: 0.85 }} />
-                  </View>
-                  <View style={styles.budgetDetailsBaseInputWrap}>
-                    <Text style={[styles.budgetDetailsBreakdownYuan, { color: text }]}>¥</Text>
-                    <TextInput
-                      ref={periodSurplusInputRef}
-                      value={periodSurplusDraft}
-                      onChangeText={setPeriodSurplusDraft}
-                      keyboardType="decimal-pad"
-                      placeholder="0.00"
-                      placeholderTextColor={subtle}
-                      style={[styles.budgetDetailsBreakdownInput, { color: text }]}
-                      selectTextOnFocus
-                    />
-                  </View>
-                  <Text style={[styles.budgetPeriodSurplusAutoHint, { color: subtle }]}>你修改结余后，会自动折算到月预算基数里</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.budgetFixedExpensesBlock}>
-                <View style={styles.budgetFixedExpensesHeader}>
-                  <View style={styles.budgetFixedExpensesTitleCol}>
-                    <Text style={[styles.budgetFixedExpensesTitle, { color: text }]}>定时支出预扣</Text>
-                    <Text style={[styles.budgetFixedExpensesHint, { color: subtle }]}>
-                      房租、订阅等请在「定时支出」中设置；开启预扣后会从本周期预算与预期存款中扣除预计金额
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={() => {
-                      closeBudgetAdjust();
-                      router.push('/scheduled-expenses');
-                    }}
-                    style={({ pressed }) => [
-                      styles.budgetFixedExpensesAddBtn,
-                      { borderColor: outlineVariant, opacity: pressed ? 0.84 : 1 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="管理定时支出">
-                    <MaterialIcons name="schedule" size={18} color={primary} />
-                    <Text style={[styles.budgetFixedExpensesAddText, { color: primary }]}>管理</Text>
-                  </Pressable>
-                </View>
-
-                {scheduledBudgetDeduction > 0 ? (
-                  <Text style={[styles.budgetFixedExpensesSum, { color: subtle }]}>
-                    本周期预扣合计 {formatCurrencyWithDecimals(scheduledBudgetDeduction)}
-                  </Text>
-                ) : (
-                  <Text style={[styles.budgetFixedExpensesEmpty, { color: subtle }]}>
-                    暂无预扣项，可点「管理」添加定时支出
-                  </Text>
-                )}
-              </View>
-            </View>
-            </ScrollView>
-
-            <Pressable
-              onPress={handleSaveBudgetAdjust}
-              style={({ pressed }) => [
-                styles.budgetDetailsSaveBtn,
-                { backgroundColor: tertiary, opacity: pressed ? 0.92 : 1 },
-              ]}>
-              <Text style={styles.budgetDetailsSaveText}>完成</Text>
-            </Pressable>
-
-            <View style={[styles.budgetDetailsHomeIndicator, { backgroundColor: isDark ? '#9ca3af' : '#111827' }]} />
-            </View>
-          </View>
-        </KeyboardAvoidingView>
+      <Modal visible={isBudgetAdjustVisible} animationType="fade" transparent onRequestClose={closeBudgetAdjust}>
+        <FinanceFoldBudgetSheet
+          visible={isBudgetAdjustVisible}
+          ff={ff}
+          isDark={isDark}
+          paddingBottom={Math.max(16, insets.bottom)}
+          maxHeight={sheetModalMaxHeight}
+          scopeLabel={budgetUiScopeShort}
+          budgetAmount={budgetPreviewTotal}
+          budgetUsedAmount={monthlyBudgetExpense}
+          budgetUsedPercent={
+            budgetPreviewTotal > 0 ? Math.min(100, (monthlyBudgetExpense / budgetPreviewTotal) * 100) : 0
+          }
+          todayAvailable={isTodayBudgetOver ? 0 : todayAvailableAmount}
+          todayRingPct={todayAvailableRingPct}
+          scheduledDeduction={scheduledBudgetDeduction}
+          hasSavedBudget={currentMonthKey in monthBudgetSettings}
+          aiHint={budgetAdjustAiHint}
+          onClose={closeBudgetAdjust}
+          onChangeBudget={handleBudgetSliderChange}
+          onManageScheduled={() => {
+            closeBudgetAdjust();
+            router.push('/scheduled-expenses');
+          }}
+          onReset={handleResetBudgetAdjust}
+          onSave={handleSaveBudgetAdjust}
+        />
       </Modal>
 
       <Modal
@@ -5053,6 +4795,45 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerInnerFold: {
+    width: '100%',
+    minHeight: 54,
+    paddingHorizontal: 17,
+    paddingBottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  headerFoldText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  headerTitleFold: {
+    fontSize: 20,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+    lineHeight: 24,
+  },
+  headerSubFold: {
+    fontSize: 11,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+  },
+  headerFoldActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  foldIconBtn: {
+    width: 31,
+    height: 31,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   headerSide: {
     minWidth: Layout.iconButtonSize,
     alignItems: 'flex-start',
@@ -5073,6 +4854,292 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900',
     letterSpacing: -0.2,
+  },
+  budgetCardFold: {
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 13,
+    paddingHorizontal: 13,
+    flexDirection: 'row',
+    gap: 8,
+    overflow: 'hidden',
+    shadowColor: '#1A342A',
+    shadowOpacity: 0.19,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
+  budgetFoldMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  budgetFoldLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  budgetFoldLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.6,
+  },
+  budgetMiniEye: {
+    width: 19,
+    height: 19,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  budgetFoldAmountRow: {
+    marginTop: 2,
+  },
+  budgetFoldAmount: {
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: -0.4,
+  },
+  budgetFoldProgress: {
+    marginTop: 4,
+    gap: 6,
+  },
+  budgetFoldTrack: {
+    height: 4,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  budgetFoldFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  budgetFoldFoot: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  budgetFoldFootText: {
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  budgetFoldRingCol: {
+    width: 88,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 2,
+    gap: 5,
+  },
+  budgetFoldRingValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  budgetFoldRingLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 2,
+    letterSpacing: 0.3,
+  },
+  budgetFoldRingCap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  foldDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+  },
+  netCardFold: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 11,
+    paddingHorizontal: 11,
+    gap: 4,
+  },
+  netLabelFold: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  netMiniEyeLight: {
+    width: 19,
+    height: 19,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  netExpandFold: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 6,
+    paddingTop: 8,
+  },
+  netExpandText: {
+    fontSize: 11,
+    fontWeight: '500',
+    flex: 1,
+    minWidth: 0,
+  },
+  quickRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  quickBtn: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 8,
+  },
+  quickIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 14,
+  },
+  quickSub: {
+    fontSize: 9,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  sectionEyebrowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 2,
+    marginBottom: 4,
+    paddingHorizontal: 2,
+  },
+  sectionEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  accountCardFold: {
+    width: 184,
+    height: 82,
+    borderRadius: 15,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    overflow: 'hidden',
+  },
+  accountCardFoldAdd: {
+    width: 112,
+    height: 82,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  accountFoldTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  accountFoldName: {
+    fontSize: 11,
+    fontWeight: '700',
+    flex: 1,
+    minWidth: 0,
+  },
+  accountFoldBal: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 12,
+    letterSpacing: -0.2,
+  },
+  accountFoldFoot: {
+    marginTop: 2,
+  },
+  ledgerGroup: {
+    marginBottom: 4,
+  },
+  ledgerGroupH: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 2,
+    marginBottom: 2,
+    marginTop: 6,
+  },
+  ledgerGroupTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  ledgerGroupSum: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  loadMoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  recordFabWrap: {
+    position: 'absolute',
+    right: 17,
+    zIndex: 100,
+    elevation: 20,
+  },
+  recordFab: {
+    height: 43,
+    paddingLeft: 12,
+    paddingRight: 15,
+    borderRadius: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  recordFabPlus: {
+    width: 23,
+    height: 23,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  recordFabText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  txnMetaLine: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  txnAmtCol: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 2,
+    paddingRight: 2,
+  },
+  txnTimeOnly: {
+    fontSize: 10,
+    fontWeight: '500',
+    opacity: 0.75,
   },
   content: {
     width: '100%',
@@ -5564,27 +5631,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   swipeDeleteTrack: {
-    width: 100,
+    width: 65,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    paddingLeft: 14,
-    paddingRight: 8,
+    paddingRight: 9,
   },
   swipeDeletePill: {
-    minWidth: 68,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: 'rgba(220, 38, 38, 0.9)',
+    height: 27,
+    paddingHorizontal: 10,
+    borderRadius: 7,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 2,
   },
   swipeDeleteText: {
     color: '#fff',
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   dayGroups: {
     gap: 12,
@@ -5690,25 +5753,22 @@ const styles = StyleSheet.create({
   },
   txnItem: {
     flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 12,
-    paddingLeft: 14,
-    paddingRight: 14,
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 2,
   },
   txnIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
+    width: 29,
+    height: 29,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 12,
   },
   txnMain: {
     flex: 1,
     minWidth: 0,
-    paddingTop: 12,
-    paddingBottom: 12,
-    gap: 6,
+    gap: 2,
   },
   txnTopRow: {
     flexDirection: 'row',
@@ -5719,9 +5779,9 @@ const styles = StyleSheet.create({
   txnTitle: {
     flex: 1,
     minWidth: 0,
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: -0.15,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.1,
   },
   txnTagRow: {
     flexDirection: 'row',
@@ -5773,9 +5833,9 @@ const styles = StyleSheet.create({
   },
   txnAmount: {
     flexShrink: 0,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.1,
   },
   insightRow: {
     flexDirection: 'row',

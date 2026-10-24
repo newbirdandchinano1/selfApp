@@ -1,27 +1,72 @@
 import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import {
+  FinanceFoldAlbumScanPanel,
+  FinanceFoldExpenseIncomePanel,
+  FinanceFoldPhrasePanel,
+  FinanceFoldSegment,
+  FinanceFoldSheetChrome,
+  FinanceFoldSheetHead,
+  FinanceFoldTransferPanel,
+  type FinanceAlbumScanResult,
+  type FinanceFoldParsePill,
+} from '@/components/finance/finance-fold-record-sheet';
+import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
+import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
+import { toast, toUserMessage } from '@/lib/app-feedback';
+import { makeTimestampEntityId } from '@/lib/entity-id';
+import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
+import {
+  getCachedFinanceLastUsedAccountId,
+  sanitizeFinanceLastUsedAccountId,
+} from '@/lib/finance-last-used-account';
+import {
+  notifyFinanceSheetSaved,
   subscribeFinanceSheetOpen,
   useFinanceTransactionSheetController,
   type FinanceSheetLaunchIntent,
   type FinanceTransactionSheetController,
 } from '@/lib/finance-transaction-sheet/controller';
+import { pickSheetCategoryForParsed } from '@/lib/finance-transaction-sheet/helpers';
+import {
+  createFinanceTransaction,
+  financeSignedAmountForSave,
+  validateFinanceTransactionBeforeSave,
+} from '@/lib/repositories/finance/finance';
+import { budgetExtraPatchForTransaction } from '@/lib/repositories/finance/finance-transaction-extra';
+import {
+  getActiveAiLlmApiKey,
+  parseFinanceOneLinerFromImage,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
 import {
   ActivityIndicator,
-  Image,
   Modal,
   Platform,
   Pressable,
   ScrollView,
-  Switch,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
+const AUTO_LEDGER_NOT_BILL_MESSAGE =
+  '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
+
+type AlbumScanPhase = 'off' | 'scanning' | 'result' | 'error';
+
+/** 相册识图结果时间片：`10.23 12:18` */
+function formatAlbumHappenedLabel(at: Date): string {
+  const mm = at.getMonth() + 1;
+  const dd = String(at.getDate()).padStart(2, '0');
+  const hh = String(at.getHours()).padStart(2, '0');
+  const mi = String(at.getMinutes()).padStart(2, '0');
+  return `${mm}.${dd} ${hh}:${mi}`;
+}
+
 function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetController }) {
+  const { ff, isDark: foldDark, fonts: ffFonts } = useFinanceFoldTheme();
   const {
     styles,
     insets,
@@ -30,15 +75,13 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
     text,
     subtle,
     outlineVariant,
-    tertiary,
     primary,
-    secondary,
-    router,
     closeSheet,
     sheetKeyboardInset,
     sheetModalMaxHeight,
     sheetModalBodyMaxHeight,
     activeSheetTab,
+    setActiveSheetTab,
     switchSheetTab,
     transferFromAccount,
     transferToAccount,
@@ -63,14 +106,17 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
     isDatePickerVisible,
     isTimePickerVisible,
     selectedHappenedAt,
-    handleChangeSheetDate,
-    handleChangeSheetTime,
     handleAmountKeyPress,
     handleSaveTransaction,
     canSaveTransaction,
+    isSavingTransaction,
     activeCategories,
+    expenseCategories,
+    incomeCategories,
     selectedCategoryKey,
     setSelectedCategoryKey,
+    setSelectedAccountId,
+    pickAccountForAutoLedger,
     openAddCategoryModal,
     closeAddCategoryModal,
     saveNewCategory,
@@ -85,16 +131,17 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,
+    setSentenceLedgerPreview,
     isSentencePreviewBusy,
     handleSentenceLedgerPreview,
     canSaveSentence,
     isParsingSentence,
     sheetIncludeInBudget,
     applySheetIncludeInBudget,
+    sheetIncludeInBudgetRef,
     selectedAccount,
     sheetImageUris,
     setSheetImageUris,
-    formatCurrencyWithDecimals,
     handleDatePickerChange,
     handleTimePickerChange,
     isAccountPickerVisible,
@@ -104,769 +151,790 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
     formatCurrencyBalanceForAccount,
     keypadRows,
     setSelectedHappenedAt,
+    setSheetAmount,
+    loadFinanceAccounts,
   } = c;
 
+  const [albumScanPhase, setAlbumScanPhase] = React.useState<AlbumScanPhase>('off');
+  const [albumImageUri, setAlbumImageUri] = React.useState<string | null>(null);
+  const [albumScanError, setAlbumScanError] = React.useState<string | null>(null);
+  const [albumScanResult, setAlbumScanResult] = React.useState<FinanceAlbumScanResult | null>(null);
+  const [albumParsePayload, setAlbumParsePayload] = React.useState<null | {
+    transaction_type: 'expense' | 'income';
+    amount: number;
+    name: string;
+    category_key: string;
+    category_label: string;
+    account_id: string;
+    account_name: string;
+    happened_at: string;
+    imageDataUri: string;
+  }>(null);
+  const [albumConfirming, setAlbumConfirming] = React.useState(false);
+  const [isPickingImage, setIsPickingImage] = React.useState(false);
+  const albumScanGenerationRef = React.useRef(0);
+
+  const resetAlbumScanState = React.useCallback(() => {
+    albumScanGenerationRef.current += 1;
+    setAlbumScanPhase('off');
+    setAlbumImageUri(null);
+    setAlbumScanError(null);
+    setAlbumScanResult(null);
+    setAlbumParsePayload(null);
+    setAlbumConfirming(false);
+  }, []);
+
+  const guardedCloseSheet = React.useCallback(() => {
+    if (albumConfirming) return;
+    resetAlbumScanState();
+    closeSheet();
+  }, [albumConfirming, closeSheet, resetAlbumScanState]);
+
+  const openAlbumScanFlow = React.useCallback(async () => {
+    if (isPickingImage || albumConfirming || albumScanPhase === 'scanning') return;
+    if (!financeAccounts.length) {
+      toast.warn('当前还没有可用账户，请先前往资产页添加账户后再记账。');
+      return;
+    }
+
+    const gen = ++albumScanGenerationRef.current;
+    const isStale = () => gen !== albumScanGenerationRef.current;
+
+    setIsDatePickerVisible(false);
+    setIsTimePickerVisible(false);
+    setIsAccountPickerVisible(false);
+    setIsPickingImage(true);
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (isStale()) return;
+      if (!permission.granted) {
+        toast.warn('需要相册权限才能选择图片。');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.85,
+        base64: true,
+      });
+
+      if (isStale()) return;
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      const b64 = asset?.base64;
+      if (!b64) {
+        toast.error('未能获取图片数据，请换一张图片重试。');
+        return;
+      }
+
+      const mime = asset.mimeType?.trim() || 'image/jpeg';
+      const imageDataUri = `data:${mime};base64,${b64}`;
+      setAlbumScanError(null);
+      setAlbumScanResult(null);
+      setAlbumParsePayload(null);
+      setAlbumImageUri(imageDataUri);
+      setAlbumScanPhase('scanning');
+
+      const key = getActiveAiLlmApiKey().trim();
+      if (!key) {
+        setAlbumScanPhase('error');
+        setAlbumScanError('未配置 AI 密钥，无法识图。');
+        return;
+      }
+
+      const accountHints = financeAccounts.map((a) => ({ name: a.name, account_no: a.account_no }));
+      const resolved = await parseFinanceOneLinerFromImage({
+        apiKey: key,
+        imageDataUri,
+        accounts: accountHints,
+        maxAttempts: 2,
+        retryDelayMs: 800,
+      });
+
+      if (isStale()) return;
+
+      if (!resolved.ok) {
+        setAlbumScanPhase('error');
+        setAlbumScanError(
+          resolved.notBill ? AUTO_LEDGER_NOT_BILL_MESSAGE : resolved.error || '未能识别出有效账单。',
+        );
+        return;
+      }
+
+      const lastUsedAccountId = sanitizeFinanceLastUsedAccountId(
+        getCachedFinanceLastUsedAccountId(),
+        financeAccounts,
+      );
+      const account = pickAccountForAutoLedger(
+        financeAccounts,
+        {
+          transaction_type: resolved.transaction_type,
+          account_name: resolved.account_name,
+          payment_account_label: resolved.payment_account_label,
+        },
+        lastUsedAccountId,
+      );
+      if (!account) {
+        setAlbumScanPhase('error');
+        setAlbumScanError('请先添加至少一个账户。');
+        return;
+      }
+
+      const cat = pickSheetCategoryForParsed(
+        resolved.transaction_type,
+        resolved.category_label,
+        expenseCategories,
+        incomeCategories,
+      );
+      const { iso: happenedAtIso } = resolveHappenedAtForBillLedger(resolved.happened_at);
+      const happenedAtDate = parseStoredDatetime(happenedAtIso);
+      const happenedLabel = formatAlbumHappenedLabel(
+        Number.isNaN(happenedAtDate.getTime()) ? new Date() : happenedAtDate,
+      );
+
+      setAlbumScanResult({
+        transaction_type: resolved.transaction_type,
+        amount: resolved.amount,
+        name: resolved.name,
+        categoryLabel: cat.label,
+        accountName: account.name,
+        happenedLabel,
+        confidenceLabel: '置信度 高',
+      });
+      setAlbumParsePayload({
+        transaction_type: resolved.transaction_type,
+        amount: resolved.amount,
+        name: resolved.name,
+        category_key: cat.key,
+        category_label: cat.label,
+        account_id: account.id,
+        account_name: account.name,
+        happened_at: happenedAtIso,
+        imageDataUri,
+      });
+      setAlbumScanPhase('result');
+    } catch (error) {
+      if (isStale()) return;
+      console.warn('Global sheet album scan failed:', error);
+      setAlbumScanPhase('error');
+      setAlbumScanError(toUserMessage(error, '识图失败，请稍后重试。'));
+    } finally {
+      setIsPickingImage(false);
+    }
+  }, [
+    albumConfirming,
+    albumScanPhase,
+    expenseCategories,
+    financeAccounts,
+    incomeCategories,
+    isPickingImage,
+    pickAccountForAutoLedger,
+    resetAlbumScanState,
+    setIsAccountPickerVisible,
+    setIsDatePickerVisible,
+    setIsTimePickerVisible,
+  ]);
+
+  const confirmAlbumScan = React.useCallback(async () => {
+    if (albumConfirming || !albumParsePayload) return;
+    const payload = albumParsePayload;
+    const account = financeAccounts.find((a) => a.id === payload.account_id);
+    if (!account) {
+      toast.warn('账户已失效，请重新识图或手动记账。');
+      return;
+    }
+
+    const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, payload.amount);
+    const boundsErr = await validateFinanceTransactionBeforeSave({
+      accountId: account.id,
+      transactionType: payload.transaction_type,
+      amount: signedAmount,
+      extraData: null,
+      accountName: account.name,
+      uiLedgerBalance: account.balance,
+    });
+    if (boundsErr) {
+      toast.warn(boundsErr);
+      return;
+    }
+
+    setAlbumConfirming(true);
+    try {
+      const txnId = makeTimestampEntityId('ft_', 8);
+      await createFinanceTransaction(
+        {
+          id: txnId,
+          name: payload.name,
+          happened_at: payload.happened_at,
+          account_id: account.id,
+          transaction_type: payload.transaction_type,
+          amount: signedAmount,
+          note: `图片记账 · ${payload.name}`,
+          extra_data: JSON.stringify({
+            manual: true,
+            sentence: true,
+            parse_source: 'ai',
+            from_picker_image: true,
+            from_album_scan_sheet: true,
+            category_key: payload.category_key,
+            category_label: payload.category_label,
+            matched_account_name: payload.account_name,
+            attachments: [{ type: 'image', uri: payload.imageDataUri }],
+            ...budgetExtraPatchForTransaction(payload.transaction_type, sheetIncludeInBudgetRef.current),
+          }),
+        },
+        { skipBalanceRecheck: true },
+      );
+      await loadFinanceAccounts();
+      resetAlbumScanState();
+      notifyFinanceSheetSaved();
+      closeSheet();
+      toast.success('已记账');
+    } catch (error) {
+      console.warn('Confirm album scan failed:', error);
+      toast.error(toUserMessage(error, '入账失败，请稍后重试。'));
+    } finally {
+      setAlbumConfirming(false);
+    }
+  }, [
+    albumConfirming,
+    albumParsePayload,
+    closeSheet,
+    financeAccounts,
+    loadFinanceAccounts,
+    resetAlbumScanState,
+    sheetIncludeInBudgetRef,
+  ]);
+
+  const applyAlbumScanToForm = React.useCallback(() => {
+    if (!albumParsePayload) {
+      resetAlbumScanState();
+      return;
+    }
+    const p = albumParsePayload;
+    setActiveSheetTab(p.transaction_type);
+    setSheetAmount(String(p.amount));
+    setSheetSentence(`${p.name} ${p.amount}`);
+    setSheetNote(p.name);
+    setSelectedCategoryKey(p.category_key);
+    setSelectedAccountId(p.account_id);
+    const happened = parseStoredDatetime(p.happened_at);
+    setSelectedHappenedAt(Number.isNaN(happened.getTime()) ? new Date() : happened);
+    setSheetImageUris([p.imageDataUri]);
+    setSentenceLedgerPreview(null);
+    setAlbumScanPhase('off');
+    setAlbumScanError(null);
+    setAlbumScanResult(null);
+    setAlbumParsePayload(null);
+    setAlbumConfirming(false);
+  }, [
+    albumParsePayload,
+    resetAlbumScanState,
+    setActiveSheetTab,
+    setSelectedAccountId,
+    setSelectedCategoryKey,
+    setSelectedHappenedAt,
+    setSentenceLedgerPreview,
+    setSheetAmount,
+    setSheetImageUris,
+    setSheetNote,
+    setSheetSentence,
+  ]);
+
+  const sentenceFoldPills = React.useMemo((): FinanceFoldParsePill[] => {
+    if (sentenceLedgerPreview?.kind !== 'ok') return [];
+    const typeLabel = sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出';
+    const pills: FinanceFoldParsePill[] = [
+      {
+        key: 'amt',
+        label: `${typeLabel} ¥${sentenceLedgerPreview.amount.toFixed(2)}`,
+        emphasize: true,
+      },
+      { key: 'cat', label: sentenceLedgerPreview.categoryLabel },
+    ];
+    if (selectedAccount?.name) {
+      pills.push({ key: 'acc', label: selectedAccount.name, amber: true });
+    }
+    pills.push({ key: 'time', label: formatAlbumHappenedLabel(selectedHappenedAt) });
+    return pills;
+  }, [selectedAccount?.name, selectedHappenedAt, sentenceLedgerPreview]);
+
+  const sentenceAiLine = React.useMemo(() => {
+    if (sentenceLedgerPreview?.kind === 'error') return sentenceLedgerPreview.message;
+    if (sentenceLedgerPreview?.kind === 'ok') {
+      return sentenceLedgerPreview.source === 'ai'
+        ? `智谱已识别：${sentenceLedgerPreview.name}`
+        : `本地规则：${sentenceLedgerPreview.name}`;
+    }
+    return zhipuTxnReady
+      ? '说一句日常消费，AI 会帮你拆成金额、分类与账户'
+      : '未检测到 AI：仅本地规则（需句中含阿拉伯数字金额）';
+  }, [sentenceLedgerPreview, zhipuTxnReady]);
+
+  const foldTransferLabel =
+    transferPairMeta.mode === 'repay'
+      ? '还款'
+      : transferPairMeta.mode === 'draw'
+        ? '取款'
+        : '转账';
+
+  const softSurface = ff.paper2;
+  const accent = ff.pine;
+
+  if (albumScanPhase !== 'off') {
+    return (
+      <FinanceFoldSheetChrome
+        ff={ff}
+        isDark={foldDark}
+        paddingBottom={sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom)}
+        maxHeight={sheetModalMaxHeight}
+        marginBottom={sheetKeyboardInset}
+        onClose={guardedCloseSheet}>
+        <ScrollView
+          style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+          contentContainerStyle={styles.sheetBodyScrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+          nestedScrollEnabled
+          bounces>
+          <FinanceFoldAlbumScanPanel
+            ff={ff}
+            fonts={ffFonts}
+            imageUri={albumImageUri}
+            scanning={albumScanPhase === 'scanning'}
+            result={albumScanResult}
+            error={albumScanError}
+            includeInBudget={sheetIncludeInBudget}
+            onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+            onConfirm={() => void confirmAlbumScan()}
+            onCorrect={applyAlbumScanToForm}
+            onClose={() => {
+              if (!albumConfirming) resetAlbumScanState();
+            }}
+            confirming={albumConfirming}
+          />
+        </ScrollView>
+      </FinanceFoldSheetChrome>
+    );
+  }
+
   return (
-<View style={styles.sheetOverlay}>
-          <Pressable style={styles.sheetBackdrop} onPress={closeSheet} />
+    <FinanceFoldSheetChrome
+      ff={ff}
+      isDark={foldDark}
+      paddingBottom={sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom)}
+      maxHeight={sheetModalMaxHeight}
+      marginBottom={sheetKeyboardInset}
+      onClose={guardedCloseSheet}>
+      <FinanceFoldSheetHead
+        ff={ff}
+        fonts={ffFonts}
+        title="记一笔"
+        subtitle="说一句、拍一张，剩下的交给账本。"
+        onClose={guardedCloseSheet}
+      />
+      <FinanceFoldSegment
+        ff={ff}
+        active={activeSheetTab}
+        onChange={switchSheetTab}
+        transferLabel={foldTransferLabel}
+      />
+
+      <ScrollView
+        style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
+        contentContainerStyle={
+          sheetKeyboardInset > 0
+            ? [styles.sheetBodyScrollContent, styles.sheetBodyScrollContentKeyboardOpen]
+            : styles.sheetBodyScrollContent
+        }
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        nestedScrollEnabled
+        bounces>
+        {activeSheetTab === 'transfer' ? (
+          <FinanceFoldTransferPanel
+            ff={ff}
+            fonts={ffFonts}
+            amountDisplay={amountDisplay}
+            feeDisplay={transferFeeDisplay}
+            amountTarget={transferAmountTarget}
+            onFocusAmount={() => setTransferAmountTarget('amount')}
+            onFocusFee={() => setTransferAmountTarget('fee')}
+            fromLabel={transferPairMeta.fromLabel}
+            toLabel={transferPairMeta.toLabel}
+            fromName={transferFromAccount?.name ?? '选择账户'}
+            toName={transferToAccount?.name ?? '选择账户'}
+            onPressFrom={() => {
+              setIsDatePickerVisible(false);
+              setIsTimePickerVisible(false);
+              setAccountPickerTarget('transferFrom');
+              setIsAccountPickerVisible(true);
+            }}
+            onPressTo={() => {
+              setIsDatePickerVisible(false);
+              setIsTimePickerVisible(false);
+              setAccountPickerTarget('transferTo');
+              setIsAccountPickerVisible(true);
+            }}
+            onSwap={() => {
+              setTransferFromAccountId(transferToAccountId);
+              setTransferToAccountId(transferFromAccountId);
+            }}
+            hint={
+              transferFromAccount && transferToAccount
+                ? transferFromAccount.id === transferToAccount.id
+                  ? '请选择两个不同的账户。'
+                  : transferPairMeta.hint
+                : null
+            }
+            note={sheetNote}
+            onChangeNote={setSheetNote}
+            timeLabel={`${sheetDateLabel} ${sheetTimeLabel}`}
+            onPressTime={() => {
+              setIsAccountPickerVisible(false);
+              setIsTimePickerVisible(false);
+              setIsDatePickerVisible(true);
+            }}
+            canSave={canSaveTransaction}
+            isSaving={isSavingTransaction}
+            onSave={() => void handleSaveTransaction()}
+            keypadKeys={keypadRows.flat()}
+            onKeypadKey={handleAmountKeyPress}
+          />
+        ) : activeSheetTab === 'sentence' ? (
+          <>
+            <View style={[styles.sheetConfigRow, { marginBottom: 10 }]}>
+              <Pressable
+                onPress={() => {
+                  setIsTimePickerVisible(false);
+                  setIsAccountPickerVisible(false);
+                  setIsDatePickerVisible(true);
+                }}
+                style={[styles.configChip, { backgroundColor: softSurface, borderColor: ff.line }]}>
+                <MaterialIcons name="calendar-today" size={16} color={ff.muted} />
+                <Text style={[styles.configChipText, { color: ff.ink }]}>{sheetDateLabel}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setIsTimePickerVisible(false);
+                  setIsAccountPickerVisible(false);
+                  setIsDatePickerVisible(true);
+                }}
+                style={({ pressed }) => [
+                  styles.configChip,
+                  { backgroundColor: softSurface, borderColor: ff.line },
+                  pressed ? { opacity: 0.8 } : null,
+                ]}>
+                <MaterialIcons name="schedule" size={16} color={ff.muted} />
+                <Text style={[styles.configChipText, { color: ff.ink }]}>{sheetTimeLabel}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setIsDatePickerVisible(false);
+                  setIsTimePickerVisible(false);
+                  setIsAccountPickerVisible((prev) => {
+                    if (!prev) setAccountPickerTarget('sheet');
+                    return !prev;
+                  });
+                }}
+                style={({ pressed }) => [
+                  styles.configChip,
+                  { backgroundColor: softSurface, borderColor: ff.line },
+                  pressed ? { opacity: 0.8 } : null,
+                ]}>
+                <MaterialIcons name="account-balance-wallet" size={16} color={accent} />
+                <Text style={[styles.configChipText, { color: ff.ink }]}>
+                  {selectedAccount?.name ?? '支付账户'}
+                </Text>
+                <MaterialIcons name="expand-more" size={16} color={ff.muted} />
+              </Pressable>
+            </View>
+            <FinanceFoldPhrasePanel
+              ff={ff}
+              fonts={ffFonts}
+              sentence={sheetSentence}
+              onChangeSentence={setSheetSentence}
+              pills={sentenceFoldPills}
+              aiLine={sentenceAiLine}
+              includeInBudget={sheetIncludeInBudget}
+              onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+              budgetDetail="占用本月"
+              canSave={canSaveSentence}
+              isSaving={isParsingSentence}
+              onPreview={() => void handleSentenceLedgerPreview()}
+              isPreviewBusy={isSentencePreviewBusy}
+              onConfirm={() => void handleSaveTransaction()}
+              onOpenAlbum={() => void openAlbumScanFlow()}
+              quickTags={['午餐', '打车', '咖啡', '工资']}
+              onQuickTag={(tag) =>
+                setSheetSentence((prev) => {
+                  const t = prev.trim();
+                  return t ? `${t} ${tag}` : tag;
+                })
+              }
+            />
+          </>
+        ) : (
+          <>
+            <FinanceFoldExpenseIncomePanel
+              ff={ff}
+              fonts={ffFonts}
+              mode={activeSheetTab === 'income' ? 'income' : 'expense'}
+              amountDisplay={amountDisplay}
+              amountFocused
+              onFocusAmount={() => {}}
+              categories={activeCategories.map((cat) => ({
+                key: cat.key,
+                label: cat.label,
+                isCustom: cat.isCustom,
+              }))}
+              selectedCategoryKey={selectedCategoryKey}
+              onSelectCategory={setSelectedCategoryKey}
+              onAddCategory={() =>
+                openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')
+              }
+              onLongPressCustomCategory={(item) => {
+                const cat = activeCategories.find((c) => c.key === item.key);
+                if (cat) confirmDeleteCustomCategory(cat);
+              }}
+              accountLabel={selectedAccount?.name ?? '选择账户'}
+              onPressAccount={() => {
+                setIsDatePickerVisible(false);
+                setIsTimePickerVisible(false);
+                setIsAccountPickerVisible((prev) => {
+                  if (!prev) setAccountPickerTarget('sheet');
+                  return !prev;
+                });
+              }}
+              timeLabel={`${sheetDateLabel} ${sheetTimeLabel}`}
+              onPressTime={() => {
+                setIsTimePickerVisible(false);
+                setIsAccountPickerVisible(false);
+                setIsDatePickerVisible(true);
+              }}
+              title={sheetNote}
+              onChangeTitle={setSheetNote}
+              includeInBudget={sheetIncludeInBudget}
+              onToggleBudget={() => applySheetIncludeInBudget((prev) => !prev)}
+              imageUris={sheetImageUris}
+              onRemoveImage={(idx) =>
+                setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))
+              }
+              onPressImage={() => void openAlbumScanFlow()}
+              canSave={canSaveTransaction}
+              isSaving={isSavingTransaction}
+              onSave={() => void handleSaveTransaction()}
+              keypadKeys={keypadRows.flat()}
+              onKeypadKey={handleAmountKeyPress}
+            />
+            <View style={{ height: 0, overflow: 'hidden', opacity: 0 }} pointerEvents="none">
+              <FinanceCategoryPicker
+                categories={activeCategories}
+                selectedKey={selectedCategoryKey}
+                onSelectKey={setSelectedCategoryKey}
+                transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
+                singleRowCollapsed
+                subtle={subtle}
+                primary={primary}
+                text={text}
+                surface={surface}
+                outlineVariant={outlineVariant}
+                styles={styles}
+                onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
+                onLongPressCustom={confirmDeleteCustomCategory}
+                addModalVisible={addModalVisible}
+                newCategoryName={newCategoryName}
+                onChangeNewCategoryName={setNewCategoryName}
+                newCategoryIcon={newCategoryIcon}
+                onChangeNewCategoryIcon={setNewCategoryIcon}
+                isSavingCategory={isSavingCategory}
+                onCloseAddModal={closeAddCategoryModal}
+                onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}
+              />
+            </View>
+          </>
+        )}
+      </ScrollView>
+
+      <Modal
+        visible={isDatePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsDatePickerVisible(false)}>
+        <View style={styles.pickerModalOverlay}>
+          <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
           <View
             style={[
-              styles.sheetContainer,
-              {
-                /** 键盘打开时不再塞一条「安全区」底内边距，避免白底卡片里键盘与内容之间多出一条空带 */
-                paddingBottom: sheetKeyboardInset > 0 ? 0 : Math.max(16, insets.bottom),
-                maxHeight: sheetModalMaxHeight,
-                marginBottom: sheetKeyboardInset,
-                backgroundColor: surface,
-              },
+              styles.pickerModalCard,
+              { backgroundColor: ff.card, borderColor: ff.line, shadowColor: foldDark ? '#000' : '#0f172a' },
             ]}>
-            <View style={[styles.sheetHeader, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={closeSheet} style={({ pressed }) => [styles.sheetCloseBtn, pressed && { opacity: 0.75 }]}>
-                <MaterialIcons name="close" size={24} color={subtle} />
-              </Pressable>
-              <Text style={[styles.sheetTitle, { color: text }]}>
-                {activeSheetTab === 'transfer'
-                  ? transferPairMeta.mode === 'repay'
-                    ? '负债还款'
-                    : transferPairMeta.mode === 'draw'
-                      ? '负债取款'
-                      : '财务转账'
-                  : activeSheetTab === 'sentence'
-                    ? '一句话记账'
-                    : '手动记账'}
-              </Text>
-              <View style={styles.sheetCloseBtn} />
-            </View>
-
-            <View style={[styles.sheetTabs, { borderBottomColor: outlineVariant }]}>
-              <Pressable onPress={() => switchSheetTab('sentence')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'sentence' ? { color: tertiary } : { color: subtle }]}>一句话</Text>
-                {activeSheetTab === 'sentence' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('expense')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'expense' ? { color: tertiary } : { color: subtle }]}>支出</Text>
-                {activeSheetTab === 'expense' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('income')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'income' ? { color: tertiary } : { color: subtle }]}>收入</Text>
-                {activeSheetTab === 'income' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
-              </Pressable>
-              <Pressable onPress={() => switchSheetTab('transfer')} style={styles.sheetTabBtn}>
-                <Text style={[styles.sheetTabText, activeSheetTab === 'transfer' ? { color: tertiary } : { color: subtle }]}>转账</Text>
-                {activeSheetTab === 'transfer' ? <View style={[styles.sheetTabLine, { backgroundColor: tertiary }]} /> : null}
+            <View style={[styles.pickerModalHeader, { borderBottomColor: ff.line }]}>
+              <Text style={[styles.pickerModalTitle, { color: ff.ink }]}>选择日期</Text>
+              <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                <MaterialIcons name="close" size={22} color={ff.muted} />
               </Pressable>
             </View>
-
-            <ScrollView
-              style={[styles.sheetBodyScroll, { maxHeight: sheetModalBodyMaxHeight }]}
-              contentContainerStyle={
-                sheetKeyboardInset > 0
-                  ? [styles.sheetBodyScrollContent, styles.sheetBodyScrollContentKeyboardOpen]
-                  : styles.sheetBodyScrollContent
-              }
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator
-              nestedScrollEnabled
-              bounces>
-            {activeSheetTab === 'transfer' ? (
-              <>
-                <View style={styles.transferContent}>
-                  <View style={styles.transferAccountRow}>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setAccountPickerTarget('transferFrom');
-                        setIsAccountPickerVisible(true);
-                      }}
-                      style={({ pressed }) => [
-                        styles.transferAccountCard,
-                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
-                        pressed && { opacity: 0.88 },
-                      ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
-                        {transferPairMeta.fromLabel}
-                      </Text>
-                      <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons
-                          name={transferFromAccount ? accountIcon(transferFromAccount) : 'account-balance-wallet'}
-                          size={20}
-                          color={tertiary}
-                        />
-                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
-                          {transferFromAccount?.name ?? '选择账户'}
-                        </Text>
-                      </View>
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="交换扣款与入账账户"
-                      onPress={() => {
-                        setTransferFromAccountId(transferToAccountId);
-                        setTransferToAccountId(transferFromAccountId);
-                      }}
-                      style={({ pressed }) => [styles.transferArrowWrap, pressed && { opacity: 0.75 }]}>
-                      <MaterialIcons name="swap-horiz" size={28} color={subtle} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setAccountPickerTarget('transferTo');
-                        setIsAccountPickerVisible(true);
-                      }}
-                      style={({ pressed }) => [
-                        styles.transferAccountCard,
-                        { backgroundColor: isDark ? '#161d2b' : '#faf8ff', borderColor: outlineVariant },
-                        pressed && { opacity: 0.88 },
-                      ]}>
-                      <Text style={[styles.transferAccountLabel, { color: subtle }]}>
-                        {transferPairMeta.toLabel}
-                      </Text>
-                      <View style={styles.transferAccountValueRow}>
-                        <MaterialIcons
-                          name={transferToAccount ? accountIcon(transferToAccount) : 'savings'}
-                          size={20}
-                          color={primary}
-                        />
-                        <Text style={[styles.transferAccountValue, { color: text }]} numberOfLines={1}>
-                          {transferToAccount?.name ?? '选择账户'}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  </View>
-
-                  {transferFromAccount && transferToAccount ? (
-                    transferFromAccount.id === transferToAccount.id ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>请选择两个不同的账户。</Text>
-                    ) : transferPairMeta.hint ? (
-                      <Text style={[styles.transferHintText, { color: subtle }]}>{transferPairMeta.hint}</Text>
-                    ) : null
-                  ) : null}
-
-                  <Pressable
-                    onPress={() => setTransferAmountTarget('amount')}
-                    style={({ pressed }) => [
-                      styles.transferAmountWrap,
-                      transferAmountTarget === 'amount' ? { opacity: 1 } : { opacity: 0.55 },
-                      pressed && { opacity: 0.8 },
-                    ]}>
-                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
-                    <Text style={[styles.transferAmountValue, { color: tertiary }]}>{amountDisplay}</Text>
-                  </Pressable>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="编辑转账手续费"
-                    onPress={() => setTransferAmountTarget('fee')}
-                    style={({ pressed }) => [
-                      styles.transferFeeRow,
-                      {
-                        backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
-                        borderColor: transferAmountTarget === 'fee' ? tertiary : outlineVariant,
-                      },
-                      pressed && { opacity: 0.88 },
-                    ]}>
-                    <Text style={[styles.transferFeeLabel, { color: subtle }]}>手续费（可选）</Text>
-                    <Text
-                      style={[
-                        styles.transferFeeValue,
-                        { color: transferAmountTarget === 'fee' ? tertiary : text },
-                      ]}>
-                      ¥{transferFeeDisplay}
-                    </Text>
-                  </Pressable>
-                  {transferAmountTarget === 'fee' ? (
-                    <Text style={[styles.transferFeeHint, { color: subtle }]}>
-                      从转账金额中扣除，对方实收 = 转账额 − 手续费
-                    </Text>
-                  ) : null}
-
-                  <View style={styles.transferDateWrap}>
-                    <Pressable
-                      onPress={() => {
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsDatePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
-                      <MaterialIcons name="calendar-today" size={14} color={subtle} />
-                      <Text style={[styles.transferDateText, { color: text }]}>{sheetDateLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsTimePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [styles.transferDateBtn, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }, pressed && { opacity: 0.85 }]}>
-                      <MaterialIcons name="schedule" size={14} color={subtle} />
-                      <Text style={[styles.transferDateText, { color: text }]}>{sheetTimeLabel}</Text>
-                    </Pressable>
-                  </View>
-
-                  <View style={[styles.sheetNoteRow, { marginTop: 4 }]}>
-                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <TextInput
-                        value={sheetNote}
-                        onChangeText={setSheetNote}
-                        multiline
-                        scrollEnabled
-                        textAlignVertical="top"
-                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 56 }]}
-                        placeholder="备注（可选）"
-                        placeholderTextColor={subtle}
-                      />
-                    </View>
-                  </View>
-
-                  {isDatePickerVisible ? (
-                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
-                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择日期</Text>
-                      <View style={styles.inlinePickerActions}>
-                        <Pressable onPress={() => handleChangeSheetDate(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>前一天</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>今天</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetDate(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>后一天</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {isTimePickerVisible ? (
-                    <View style={[styles.nativePickerCard, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff', borderColor: outlineVariant }]}>
-                      <Text style={[styles.inlinePickerTitle, { color: text }]}>选择时间</Text>
-                      <View style={styles.inlinePickerActions}>
-                        <Pressable onPress={() => handleChangeSheetTime(-1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-1 小时</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(0, -10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>-10 分钟</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>现在</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(0, 10)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+10 分钟</Text>
-                        </Pressable>
-                        <Pressable onPress={() => handleChangeSheetTime(1)} style={[styles.inlinePickerBtn, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                          <Text style={[styles.inlinePickerBtnText, { color: text }]}>+1 小时</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-
-                <View style={[styles.transferKeypadWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                  <View style={styles.transferKeypadInner}>
-                    <View style={styles.transferNumberGrid}>
-                      {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '00'].map((key) => (
-                        <Pressable
-                          key={key}
-                          onPress={() => handleAmountKeyPress(key)}
-                          style={({ pressed }) => [
-                            styles.transferNumberBtn,
-                            { backgroundColor: surface, borderColor: outlineVariant },
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          <Text style={[styles.transferNumberText, { color: text }]}>{key}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                    <View style={styles.transferActionCol}>
-                      <Pressable
-                        onPress={() => handleAmountKeyPress('backspace')}
-                        style={({ pressed }) => [
-                          styles.transferBackBtn,
-                          { backgroundColor: surface, borderColor: outlineVariant },
-                          pressed && { opacity: 0.86 },
-                        ]}>
-                        <MaterialIcons name="backspace" size={20} color={subtle} />
-                      </Pressable>
-                      <Pressable
-                        onPress={handleSaveTransaction}
-                        style={({ pressed }) => [styles.transferCheckBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }, pressed && { opacity: 0.9 }]}>
-                        <MaterialIcons name="check" size={30} color="#ffffff" />
-                      </Pressable>
-                    </View>
-                  </View>
-                </View>
-              </>
-            ) : (
-              <>
-                {activeSheetTab !== 'sentence' ? (
-                <FinanceCategoryPicker
-                  categories={activeCategories}
-                  selectedKey={selectedCategoryKey}
-                  onSelectKey={setSelectedCategoryKey}
-                  transactionType={activeSheetTab === 'income' ? 'income' : 'expense'}
-                  singleRowCollapsed
-                  subtle={subtle}
-                  primary={primary}
-                  text={text}
-                  surface={surface}
-                  outlineVariant={outlineVariant}
-                  styles={styles}
-                  onAddPress={() => openAddCategoryModal(activeSheetTab === 'income' ? 'income' : 'expense')}
-                  onLongPressCustom={confirmDeleteCustomCategory}
-                  addModalVisible={addModalVisible}
-                  newCategoryName={newCategoryName}
-                  onChangeNewCategoryName={setNewCategoryName}
-                  newCategoryIcon={newCategoryIcon}
-                  onChangeNewCategoryIcon={setNewCategoryIcon}
-                  isSavingCategory={isSavingCategory}
-                  onCloseAddModal={closeAddCategoryModal}
-                  onSaveNewCategory={() => void saveNewCategory(setSelectedCategoryKey)}
-                />
-                ) : (
-                  <View style={styles.sentenceHintBox}>
-                    <Text style={[styles.sentenceHintText, { color: subtle }]}>
-                      写清事由与金额。例如：午饭 28、打车 15.5 元、工资到账 8000
-                    </Text>
-                    <View style={styles.sentenceAiMetaRow}>
-                      <MaterialIcons name="auto-awesome" size={16} color={zhipuTxnReady ? secondary : subtle} />
-                      <Text
-                        style={[
-                          styles.sentenceAiMetaText,
-                          { color: zhipuTxnReady ? secondary : subtle },
-                        ]}
-                        numberOfLines={2}>
-                        {zhipuTxnReady
-                          ? '已配置智谱密钥：一句话将优先由 AI（glm-4-flash）解析，失败时回退本地规则。'
-                          : '未检测到智谱密钥：仅能用本地规则（需句中含阿拉伯数字金额）。设置 EXPO_PUBLIC_ZHIPU_API_KEY 后启用 AI。'}
-                      </Text>
-                    </View>
-                    {__DEV__ ? (
-                      <Pressable
-                        onPress={() => router.push('/zhipu-api-test')}
-                        style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-                        <Text style={[styles.sentenceZhipuDevLink, { color: tertiary }]}>
-                          智谱 API 调试页（验证密钥与请求）
-                        </Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                )}
-
-                <View style={[styles.sheetInputWrap, { backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                  <View style={styles.sheetConfigRow}>
-                    <Pressable
-                      onPress={() => {
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsDatePickerVisible((prev) => !prev);
-                      }}
-                      style={[styles.configChip, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <MaterialIcons name="calendar-today" size={16} color={subtle} />
-                      <Text style={[styles.configChipText, { color: text }]}>{sheetDateLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsAccountPickerVisible(false);
-                        setIsTimePickerVisible((prev) => !prev);
-                      }}
-                      style={({ pressed }) => [
-                        styles.configChip,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.8 } : null,
-                      ]}>
-                      <MaterialIcons name="schedule" size={16} color={subtle} />
-                      <Text style={[styles.configChipText, { color: text }]}>{sheetTimeLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setIsDatePickerVisible(false);
-                        setIsTimePickerVisible(false);
-                        setIsAccountPickerVisible((prev) => {
-                          if (!prev) setAccountPickerTarget('sheet');
-                          return !prev;
-                        });
-                      }}
-                      style={({ pressed }) => [
-                        styles.configChip,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.8 } : null,
-                      ]}>
-                      <MaterialIcons name="account-balance-wallet" size={16} color={tertiary} />
-                      <Text style={[styles.configChipText, { color: text }]}>
-                        {selectedAccount?.name ?? '支付账户'}
-                      </Text>
-                      <MaterialIcons name="expand-more" size={16} color={subtle} />
-                    </Pressable>
-                  </View>
-
-                  {activeSheetTab === 'expense' || activeSheetTab === 'income' || activeSheetTab === 'sentence' ? (
-                    <Pressable
-                      accessibilityRole="switch"
-                      accessibilityLabel="计入本月预算"
-                      accessibilityState={{ checked: sheetIncludeInBudget }}
-                      onPress={() => applySheetIncludeInBudget((prev) => !prev)}
-                      style={({ pressed }) => [
-                        styles.sheetBudgetCard,
-                        { backgroundColor: surface, borderColor: outlineVariant },
-                        pressed ? { opacity: 0.82 } : null,
-                      ]}>
-                      <View style={styles.sheetBudgetMainHit}>
-                        <View
-                          style={[
-                            styles.sheetBudgetIconWrap,
-                            {
-                              backgroundColor: isDark ? 'rgba(251, 191, 36, 0.14)' : 'rgba(130, 81, 0, 0.09)',
-                            },
-                          ]}>
-                          <MaterialIcons name="pie-chart" size={22} color={tertiary} />
-                        </View>
-                        <View style={styles.sheetBudgetTextCol}>
-                          <Text style={[styles.sheetBudgetTitle, { color: text }]}>计入本月预算</Text>
-                          <Text style={[styles.sheetBudgetSubtitle, { color: subtle }]} numberOfLines={2}>
-                            {sheetIncludeInBudget
-                              ? activeSheetTab === 'income'
-                                ? '增加本月预算与「今日可用」计算'
-                                : '占用本月预算与「今日可用」计算'
-                              : activeSheetTab === 'income'
-                                ? '仍记为收入，不参与预算与今日可用'
-                                : '仍记为支出，不参与预算与今日可用'}
-                          </Text>
-                        </View>
-                      </View>
-                      <Switch
-                        value={sheetIncludeInBudget}
-                        pointerEvents="none"
-                        trackColor={{ false: isDark ? '#374151' : '#e5e7eb', true: '#4ade80' }}
-                        thumbColor="#ffffff"
-                        ios_backgroundColor={isDark ? '#374151' : '#e5e7eb'}
-                      />
-                    </Pressable>
-                  ) : null}
-
-                  {activeSheetTab === 'sentence' ? (
-                    <View style={styles.sheetSentenceBlock}>
-                      <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant, minHeight: 130 }]}>
-                        <TextInput
-                          value={sheetSentence}
-                          onChangeText={setSheetSentence}
-                          multiline
-                          scrollEnabled
-                          textAlignVertical="top"
-                          style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent', minHeight: 96 }]}
-                          placeholder="例如：咖啡 18、地铁 6、工资 12000"
-                          placeholderTextColor={subtle}
-                        />
-                      </View>
-                      {sentenceLedgerPreview?.kind === 'ok' ? (
-                        <View
-                          style={[
-                            styles.sentencePreviewCard,
-                            { backgroundColor: surface, borderColor: outlineVariant },
-                          ]}>
-                          <View
-                            style={[
-                              styles.sentencePreviewBadge,
-                              {
-                                backgroundColor:
-                                  sentenceLedgerPreview.source === 'ai'
-                                    ? isDark
-                                      ? 'rgba(52,211,153,0.18)'
-                                      : 'rgba(0,108,73,0.12)'
-                                    : isDark
-                                      ? 'rgba(148,163,184,0.2)'
-                                      : 'rgba(66,71,84,0.1)',
-                              },
-                            ]}>
-                            <Text
-                              style={[
-                                styles.sentencePreviewBadgeText,
-                                {
-                                  color: sentenceLedgerPreview.source === 'ai' ? secondary : subtle,
-                                },
-                              ]}>
-                              {sentenceLedgerPreview.source === 'ai' ? '智谱 AI 识别' : '本地规则'}
-                            </Text>
-                          </View>
-                          <Text style={[styles.sentencePreviewLine, { color: text }]}>
-                            {sentenceLedgerPreview.transaction_type === 'income' ? '收入' : '支出'} ·{' '}
-                            {formatCurrencyWithDecimals(sentenceLedgerPreview.amount)} · {sentenceLedgerPreview.name}
-                          </Text>
-                          <Text style={[styles.sentencePreviewLine, { color: subtle, fontWeight: '600' }]}>
-                            分类：{sentenceLedgerPreview.categoryLabel}
-                          </Text>
-                        </View>
-                      ) : sentenceLedgerPreview?.kind === 'error' ? (
-                        <View
-                          style={[
-                            styles.sentencePreviewCard,
-                            {
-                              backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : 'rgba(254,226,226,0.9)',
-                              borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(252,165,165,0.8)',
-                            },
-                          ]}>
-                          <Text style={[styles.sentencePreviewErr, { color: isDark ? '#fecaca' : '#991b1b' }]}>
-                            {sentenceLedgerPreview.message}
-                          </Text>
-                        </View>
-                      ) : null}
-                      <View style={styles.sentenceActionsRow}>
-                        <Pressable
-                          onPress={() => void handleSentenceLedgerPreview()}
-                          disabled={!canSaveSentence}
-                          style={({ pressed }) => [
-                            styles.sheetSentencePreviewBtn,
-                            {
-                              borderColor: outlineVariant,
-                              backgroundColor: isDark ? '#161d2b' : '#f2f3ff',
-                              opacity: !canSaveSentence ? 0.55 : pressed ? 0.88 : 1,
-                            },
-                          ]}>
-                          {isSentencePreviewBusy ? (
-                            <ActivityIndicator color={tertiary} />
-                          ) : (
-                            <Text style={[styles.sheetSentencePreviewBtnText, { color: tertiary }]}>AI 识别预览</Text>
-                          )}
-                        </Pressable>
-                        <Pressable
-                          onPress={() => void handleSaveTransaction()}
-                          disabled={!canSaveSentence}
-                          style={({ pressed }) => [
-                            styles.sheetSentenceSubmit,
-                            styles.sheetSentenceSubmitFlex,
-                            { backgroundColor: canSaveSentence ? tertiary : subtle },
-                            pressed && canSaveSentence && { opacity: 0.9 },
-                          ]}>
-                          {isParsingSentence ? (
-                            <ActivityIndicator color="#fff" />
-                          ) : (
-                            <Text style={styles.sheetSentenceSubmitText}>记账</Text>
-                          )}
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : (
-                    <>
-                  <View style={styles.sheetNoteRow}>
-                    <View style={[styles.noteRowWrap, { backgroundColor: surface, borderColor: outlineVariant }]}>
-                      <TextInput
-                        value={sheetNote}
-                        onChangeText={setSheetNote}
-                        multiline
-                        scrollEnabled
-                        textAlignVertical="top"
-                        style={[styles.noteRowInput, { color: text, backgroundColor: 'transparent' }]}
-                        placeholder="添加备注..."
-                        placeholderTextColor={subtle}
-                      />
-                    </View>
-                  </View>
-
-                  {sheetImageUris.length ? (
-                    <View style={styles.attachmentPreview}>
-                      <Text style={[styles.attachmentPreviewText, { color: subtle }]}>已添加图片</Text>
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.attachmentThumbRow}>
-                        {sheetImageUris.map((uri, idx) => (
-                          <View key={`${uri}-${idx}`} style={styles.attachmentThumbWrap}>
-                            <Image source={{ uri }} style={styles.attachmentThumb} />
-                            <Pressable
-                              onPress={() => setSheetImageUris((prev) => prev.filter((_, i) => i !== idx))}
-                              style={({ pressed }) => [styles.attachmentRemoveBtn, pressed && { opacity: 0.85 }]}>
-                              <MaterialIcons name="close" size={14} color="#fff" />
-                            </Pressable>
-                          </View>
-                        ))}
-                      </ScrollView>
-                    </View>
-                  ) : null}
-                    </>
-                  )}
-
-                  <Modal visible={isDatePickerVisible} transparent animationType="fade" onRequestClose={() => setIsDatePickerVisible(false)}>
-                    <View style={styles.pickerModalOverlay}>
-                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsDatePickerVisible(false)} />
-                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择日期</Text>
-                          <Pressable onPress={() => setIsDatePickerVisible(false)} style={styles.pickerModalCloseBtn}>
-                            <MaterialIcons name="close" size={22} color={subtle} />
-                          </Pressable>
-                        </View>
-                        <View style={styles.pickerModalBody}>
-                          <DateTimePicker
-                            value={selectedHappenedAt}
-                            mode="date"
-                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                            locale="zh-CN"
-                            themeVariant={isDark ? 'dark' : 'light'}
-                            onChange={handleDatePickerChange}
-                            style={styles.nativePicker}
-                          />
-                          <View style={styles.pickerModalFooter}>
-                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                              <Text style={[styles.pickerModalActionText, { color: text }]}>今天</Text>
-                            </Pressable>
-                            <Pressable onPress={() => setIsDatePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
-                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </View>
-                    </View>
-                  </Modal>
-
-                  <Modal visible={isTimePickerVisible} transparent animationType="fade" onRequestClose={() => setIsTimePickerVisible(false)}>
-                    <View style={styles.pickerModalOverlay}>
-                      <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
-                      <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                        <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                          <Text style={[styles.pickerModalTitle, { color: text }]}>选择时间</Text>
-                          <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
-                            <MaterialIcons name="close" size={22} color={subtle} />
-                          </Pressable>
-                        </View>
-                        <View style={styles.pickerModalBody}>
-                          <DateTimePicker
-                            value={selectedHappenedAt}
-                            mode="time"
-                            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                            locale="zh-CN"
-                            themeVariant={isDark ? 'dark' : 'light'}
-                            onChange={handleTimePickerChange}
-                            style={styles.nativePicker}
-                          />
-                          <View style={styles.pickerModalFooter}>
-                            <Pressable onPress={() => setSelectedHappenedAt(new Date())} style={[styles.pickerModalAction, { borderColor: outlineVariant, backgroundColor: isDark ? '#161d2b' : '#f2f3ff' }]}>
-                              <Text style={[styles.pickerModalActionText, { color: text }]}>现在</Text>
-                            </Pressable>
-                            <Pressable onPress={() => setIsTimePickerVisible(false)} style={[styles.pickerModalAction, { borderColor: tertiary, backgroundColor: tertiary }]}>
-                              <Text style={styles.pickerModalPrimaryText}>确定</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </View>
-                    </View>
-                  </Modal>
-
-                  {activeSheetTab !== 'sentence' ? (
-                    <>
-                  <View style={styles.amountPreview}>
-                    <Text style={[styles.amountYuan, { color: tertiary }]}>¥</Text>
-                    <Text style={[styles.amountValue, { color: tertiary }]}>{amountDisplay}</Text>
-                  </View>
-
-                  <View style={styles.keypad}>
-                    {keypadRows.flat().map((key, idx) => {
-                      const isDone = key === 'done';
-                      const isBackspace = key === 'backspace';
-                      const showLabel = isBackspace ? 'backspace' : isDone ? '完成' : key;
-                      return (
-                        <Pressable
-                          key={`${key}-${idx}`}
-                          onPress={() => (isDone ? handleSaveTransaction() : handleAmountKeyPress(key))}
-                          style={({ pressed }) => [
-                            styles.keypadBtn,
-                            isDone
-                              ? [styles.keypadDoneBtn, { backgroundColor: canSaveTransaction ? tertiary : subtle }]
-                              : [styles.keypadNormalBtn, { backgroundColor: surface, borderColor: outlineVariant }],
-                            key === '0' && idx === 12 ? styles.keypadWideBtn : null,
-                            pressed && { opacity: 0.86 },
-                          ]}>
-                          {isBackspace ? (
-                            <MaterialIcons name="backspace" size={20} color={subtle} />
-                          ) : (
-                            <Text style={isDone ? styles.keypadDoneText : [styles.keypadText, { color: text }]}>{showLabel}</Text>
-                          )}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                    </>
-                  ) : null}
-                </View>
-              </>
-            )}
-            </ScrollView>
-
-            <Modal
-              visible={isAccountPickerVisible}
-              transparent
-              animationType="fade"
-              onRequestClose={() => {
-                setIsAccountPickerVisible(false);
-                setAccountPickerTarget('sheet');
-              }}>
-              <View style={styles.pickerModalOverlay}>
+            <View style={styles.pickerModalBody}>
+              <DateTimePicker
+                value={selectedHappenedAt}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                locale="zh-CN"
+                themeVariant={foldDark ? 'dark' : 'light'}
+                onChange={handleDatePickerChange}
+                style={styles.nativePicker}
+              />
+              <View style={styles.pickerModalFooter}>
                 <Pressable
-                  style={styles.pickerModalBackdrop}
+                  onPress={() => setSelectedHappenedAt(new Date())}
+                  style={[styles.pickerModalAction, { borderColor: ff.line, backgroundColor: ff.cardSoft }]}>
+                  <Text style={[styles.pickerModalActionText, { color: ff.ink }]}>今天</Text>
+                </Pressable>
+                <Pressable
                   onPress={() => {
-                    setIsAccountPickerVisible(false);
-                    setAccountPickerTarget('sheet');
+                    setIsDatePickerVisible(false);
+                    setIsTimePickerVisible(true);
                   }}
-                />
-                <View style={[styles.pickerModalCard, { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' }]}>
-                  <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
-                    <Text style={[styles.pickerModalTitle, { color: text }]}>
-                      {accountPickerTarget === 'transferFrom'
-                        ? `选择${transferPairMeta.fromLabel}`
-                        : accountPickerTarget === 'transferTo'
-                          ? `选择${transferPairMeta.toLabel}`
-                          : '选择账户'}
-                    </Text>
-                    <Pressable
-                      onPress={() => {
-                        setIsAccountPickerVisible(false);
-                        setAccountPickerTarget('sheet');
-                      }}
-                      style={styles.pickerModalCloseBtn}>
-                      <MaterialIcons name="close" size={22} color={subtle} />
-                    </Pressable>
-                  </View>
-                  <View style={styles.pickerModalBody}>
-                    <ScrollView style={styles.accountPickerScroll} contentContainerStyle={styles.accountPickerList} showsVerticalScrollIndicator={false}>
-                      {financeAccounts.map((account) => {
-                        const selected =
-                          accountPickerTarget === 'transferFrom'
-                            ? account.id === transferFromAccountId
-                            : accountPickerTarget === 'transferTo'
-                              ? account.id === transferToAccountId
-                              : account.id === selectedAccount?.id;
-                        const transferPickBlocked =
-                          (accountPickerTarget === 'transferFrom' && account.id === transferToAccountId) ||
-                          (accountPickerTarget === 'transferTo' && account.id === transferFromAccountId);
-                        return (
-                          <Pressable
-                            key={account.id}
-                            disabled={transferPickBlocked}
-                            onPress={() => handleSelectAccount(account.id)}
-                            style={({ pressed }) => [
-                              styles.accountPickerItem,
-                              {
-                                backgroundColor: selected ? `${tertiary}18` : isDark ? '#161d2b' : '#f2f3ff',
-                                borderColor: selected ? tertiary : outlineVariant,
-                              },
-                              transferPickBlocked ? { opacity: 0.45 } : null,
-                              pressed && !transferPickBlocked ? { opacity: 0.84 } : null,
-                            ]}>
-                            <MaterialIcons name={accountIcon(account)} size={18} color={selected ? tertiary : subtle} />
-                            <View style={styles.accountPickerTextCol}>
-                              <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
-                              <Text style={[styles.accountPickerBalance, { color: subtle }]}>{formatCurrencyBalanceForAccount(account)}</Text>
-                            </View>
-                            {selected ? <MaterialIcons name="check" size={18} color={tertiary} /> : null}
-                          </Pressable>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                </View>
+                  style={[styles.pickerModalAction, { borderColor: ff.pine, backgroundColor: ff.pine }]}>
+                  <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                </Pressable>
               </View>
-            </Modal>
+            </View>
           </View>
         </View>
+      </Modal>
+      <Modal
+        visible={isTimePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsTimePickerVisible(false)}>
+        <View style={styles.pickerModalOverlay}>
+          <Pressable style={styles.pickerModalBackdrop} onPress={() => setIsTimePickerVisible(false)} />
+          <View
+            style={[
+              styles.pickerModalCard,
+              { backgroundColor: ff.card, borderColor: ff.line, shadowColor: foldDark ? '#000' : '#0f172a' },
+            ]}>
+            <View style={[styles.pickerModalHeader, { borderBottomColor: ff.line }]}>
+              <Text style={[styles.pickerModalTitle, { color: ff.ink }]}>选择时间</Text>
+              <Pressable onPress={() => setIsTimePickerVisible(false)} style={styles.pickerModalCloseBtn}>
+                <MaterialIcons name="close" size={22} color={ff.muted} />
+              </Pressable>
+            </View>
+            <View style={styles.pickerModalBody}>
+              <DateTimePicker
+                value={selectedHappenedAt}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                locale="zh-CN"
+                themeVariant={foldDark ? 'dark' : 'light'}
+                onChange={handleTimePickerChange}
+                style={styles.nativePicker}
+              />
+              <View style={styles.pickerModalFooter}>
+                <Pressable
+                  onPress={() => setSelectedHappenedAt(new Date())}
+                  style={[styles.pickerModalAction, { borderColor: ff.line, backgroundColor: ff.cardSoft }]}>
+                  <Text style={[styles.pickerModalActionText, { color: ff.ink }]}>现在</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setIsTimePickerVisible(false)}
+                  style={[styles.pickerModalAction, { borderColor: ff.pine, backgroundColor: ff.pine }]}>
+                  <Text style={styles.pickerModalPrimaryText}>确定</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={isAccountPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setIsAccountPickerVisible(false);
+          setAccountPickerTarget('sheet');
+        }}>
+        <View style={styles.pickerModalOverlay}>
+          <Pressable
+            style={styles.pickerModalBackdrop}
+            onPress={() => {
+              setIsAccountPickerVisible(false);
+              setAccountPickerTarget('sheet');
+            }}
+          />
+          <View
+            style={[
+              styles.pickerModalCard,
+              { backgroundColor: surface, borderColor: outlineVariant, shadowColor: isDark ? '#000' : '#0f172a' },
+            ]}>
+            <View style={[styles.pickerModalHeader, { borderBottomColor: outlineVariant }]}>
+              <Text style={[styles.pickerModalTitle, { color: text }]}>
+                {accountPickerTarget === 'transferFrom'
+                  ? `选择${transferPairMeta.fromLabel}`
+                  : accountPickerTarget === 'transferTo'
+                    ? `选择${transferPairMeta.toLabel}`
+                    : '选择账户'}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  setIsAccountPickerVisible(false);
+                  setAccountPickerTarget('sheet');
+                }}
+                style={styles.pickerModalCloseBtn}>
+                <MaterialIcons name="close" size={22} color={subtle} />
+              </Pressable>
+            </View>
+            <View style={styles.pickerModalBody}>
+              <ScrollView
+                style={styles.accountPickerScroll}
+                contentContainerStyle={styles.accountPickerList}
+                showsVerticalScrollIndicator={false}>
+                {financeAccounts.map((account) => {
+                  const selected =
+                    accountPickerTarget === 'transferFrom'
+                      ? account.id === transferFromAccountId
+                      : accountPickerTarget === 'transferTo'
+                        ? account.id === transferToAccountId
+                        : account.id === selectedAccount?.id;
+                  const transferPickBlocked =
+                    (accountPickerTarget === 'transferFrom' && account.id === transferToAccountId) ||
+                    (accountPickerTarget === 'transferTo' && account.id === transferFromAccountId);
+                  return (
+                    <Pressable
+                      key={account.id}
+                      disabled={transferPickBlocked}
+                      onPress={() => handleSelectAccount(account.id)}
+                      style={({ pressed }) => [
+                        styles.accountPickerItem,
+                        {
+                          backgroundColor: selected ? `${accent}18` : softSurface,
+                          borderColor: selected ? accent : ff.line,
+                        },
+                        transferPickBlocked ? { opacity: 0.45 } : null,
+                        pressed && !transferPickBlocked ? { opacity: 0.84 } : null,
+                      ]}>
+                      <MaterialIcons name={accountIcon(account)} size={18} color={selected ? accent : subtle} />
+                      <View style={styles.accountPickerTextCol}>
+                        <Text style={[styles.accountPickerName, { color: text }]}>{account.name}</Text>
+                        <Text style={[styles.accountPickerBalance, { color: subtle }]}>
+                          {formatCurrencyBalanceForAccount(account)}
+                        </Text>
+                      </View>
+                      {selected ? <MaterialIcons name="check" size={18} color={accent} /> : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </FinanceFoldSheetChrome>
   );
 }
 
@@ -887,7 +955,7 @@ function FinanceTransactionSheetModal({
   });
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={controller.closeSheet}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={controller.closeSheet}>
       <FinanceTransactionSheetBody c={controller} />
     </Modal>
   );

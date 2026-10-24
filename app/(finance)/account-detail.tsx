@@ -1,7 +1,13 @@
-import { CrudDetailScreen } from '@/components/crud';
-import { AppButton, AppCard, AppIconButton, AppInput } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+import { AppInput } from '@/components/ui';
+import {
+  FoldCountUpText,
+  FoldPopIn,
+  FoldRiseIn,
+  FOLD_MOTION_SPRING,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { Layout, Spacing } from '@/constants/design-tokens';
+import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
@@ -21,12 +27,14 @@ import {
 } from '@/lib/repositories/finance/finance-account-extra';
 import type { FinanceAccountBalanceRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
+  ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -37,47 +45,63 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type DetailItem = {
   id: string;
   time: string;
   tag: string;
-  emoji: string;
-  amount: string;
+  amount: number;
   flowLabel: string;
+  dayLabel: string;
 };
 
 type MonthSection = {
   id: string;
   monthLabel: string;
-  expense: string;
-  income: string;
+  count: number;
+  net: number;
   expanded: boolean;
-  details?: Array<{
-    dateLabel: string;
-    items: DetailItem[];
-  }>;
+  items: DetailItem[];
 };
 
-const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+const PAGE_API_KEY = 'account-detail';
 
-function SectionHeading({ title }: { title: string }) {
-  const { colors } = useAppTheme();
-  return <Text style={[styles.sectionTitle, { color: colors.text }]}>{title}</Text>;
+function formatMoney(amount: number) {
+  return `¥${Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-const PAGE_API_KEY = 'account-detail';
+function formatSignedMoney(amount: number) {
+  if (!Number.isFinite(amount) || Math.abs(amount) < 0.005) return '¥0.00';
+  const sign = amount > 0 ? '+' : '−';
+  return `${sign}${formatMoney(amount)}`;
+}
+
+function ledgerInitial(name: string) {
+  const t = name.trim();
+  if (!t) return '记';
+  return t.slice(0, 1);
+}
 
 export default function AccountDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ accountId?: string; accountName?: string; accountNo?: string }>();
   const insets = useSafeAreaInsets();
-  const { colors, isDark, shadows } = useAppTheme();
+  const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
-  /** 与 `finance-stats`、财务首页收支语义一致 */
-  const expenseColor = colors.primary;
-  const incomeColor = colors.tertiary;
+
+  const bg = ff.paper;
+  const card = isDark ? ff.paper2 : ff.card;
+  const text = ff.ink;
+  const subtle = ff.muted;
+  const faint = ff.faint;
+  const line = ff.line;
+  const pine = ff.pine;
+  const clay = ff.clay;
+  const income = ff.income;
+  const expense = ff.expense;
+  const headerScrim = isDark ? 'rgba(23,43,36,0.94)' : 'rgba(243,238,228,0.94)';
 
   const [account, setAccount] = React.useState<FinanceAccountBalanceRow | null>(null);
   const [transactions, setTransactions] = React.useState<FinanceTransactionRow[]>([]);
@@ -87,7 +111,6 @@ export default function AccountDetailScreen() {
   const [balanceModalOpen, setBalanceModalOpen] = React.useState(false);
   const [balanceDraft, setBalanceDraft] = React.useState('');
   const [savingBalance, setSavingBalance] = React.useState(false);
-  /** 切换「不计入总资产」写入中的防抖态，避免连点 */
   const [savingExcludeFromTotal, setSavingExcludeFromTotal] = React.useState(false);
   const routeAccountId = typeof params.accountId === 'string' ? params.accountId : '';
   const routeAccountName = typeof params.accountName === 'string' ? params.accountName.trim() : '';
@@ -97,7 +120,11 @@ export default function AccountDetailScreen() {
   const detailName = account?.name ?? (routeAccountName || '账户');
   const accountNo = account?.account_no?.trim() ?? '';
   const accountNote = account?.note?.trim() ?? '';
-  const detailSubtitle = accountNo || (accountNote ? '' : isLiabilityAccount ? '负债明细' : '账户余额');
+  const accountSubParts = [
+    accountNo ? (accountNo.length <= 6 ? accountNo : `尾号 ${accountNo.slice(-4)}`) : null,
+    accountNote || null,
+    isLiabilityAccount ? '负债账户' : null,
+  ].filter(Boolean);
 
   const accountIcon = React.useCallback(
     (acc: FinanceAccountBalanceRow | null): keyof typeof MaterialIcons.glyphMap => {
@@ -130,43 +157,41 @@ export default function AccountDetailScreen() {
     [],
   );
 
-  /** 与账本余额汇总 `computeTransactionLedgerEffect` 一致，负债初始余额等流水不再被错误翻成正数 */
   const getDisplayAmount = React.useCallback(
     (tx: FinanceTransactionRow) =>
       computeTransactionLedgerEffect(tx.transaction_type, tx.amount, tx.extra_data),
     [],
   );
 
-  const formatMoney = React.useCallback((amount: number) => {
-    return `¥${Math.abs(amount).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }, []);
-
   const loadAccountDetailSeqRef = React.useRef(0);
 
-  const loadAccountDetail = React.useCallback(async (forceRefresh = false) => {
-    const seq = ++loadAccountDetailSeqRef.current;
-    try {
-      setError(null);
-      const { account: target, transactions: txRows } = await fetchFinanceAccountDetail({
-        accountId: routeAccountId,
-        accountName: routeAccountName,
-        serverFallback: true,
-      });
-      if (seq !== loadAccountDetailSeqRef.current) return;
-      setAccount(target);
-      setTransactions(target ? txRows : []);
-    } catch (loadErr) {
-      if (seq !== loadAccountDetailSeqRef.current) return;
-      console.warn('Failed to load account detail:', loadErr);
-      setError('加载失败，请重试');
-      setAccount(null);
-      setTransactions([]);
-    } finally {
-      if (seq === loadAccountDetailSeqRef.current) {
-        setLoading(false);
+  const loadAccountDetail = React.useCallback(
+    async (forceRefresh = false) => {
+      const seq = ++loadAccountDetailSeqRef.current;
+      try {
+        setError(null);
+        const { account: target, transactions: txRows } = await fetchFinanceAccountDetail({
+          accountId: routeAccountId,
+          accountName: routeAccountName,
+          serverFallback: true,
+        });
+        if (seq !== loadAccountDetailSeqRef.current) return;
+        setAccount(target);
+        setTransactions(target ? txRows : []);
+      } catch (loadErr) {
+        if (seq !== loadAccountDetailSeqRef.current) return;
+        console.warn('Failed to load account detail:', loadErr);
+        setError('加载失败，请重试');
+        setAccount(null);
+        setTransactions([]);
+      } finally {
+        if (seq === loadAccountDetailSeqRef.current) {
+          setLoading(false);
+        }
       }
-    }
-  }, [routeAccountId, routeAccountName]);
+    },
+    [routeAccountId, routeAccountName],
+  );
 
   const reloadAccountDetail = React.useCallback(
     async (forceRefresh = false) => {
@@ -189,19 +214,19 @@ export default function AccountDetailScreen() {
     () => isFinanceAccountExcludedFromAggregates(account?.extra_data ?? null),
     [account?.extra_data],
   );
+  const includeInTotalAssets = !excludeFromTotalAssets;
 
-  const onToggleExcludeFromTotalAssets = React.useCallback(
-    async (nextExcluded: boolean) => {
+  const onToggleIncludeInTotalAssets = React.useCallback(
+    async (nextIncluded: boolean) => {
       const targetId = account?.id ?? routeAccountId;
       if (!targetId || savingExcludeFromTotal) return;
+      const nextExcluded = !nextIncluded;
       const prevExtra = account?.extra_data ?? null;
       const merged = mergeFinanceAccountExcludeFromTotalAssets(prevExtra, nextExcluded);
       try {
         setSavingExcludeFromTotal(true);
-        // 先乐观更新，避免受控 Switch 等 API 回读才翻转（点一次像没反应）
         setAccount((prev) => (prev ? { ...prev, extra_data: merged } : prev));
         await updateFinanceAccount(targetId, { extra_data: merged });
-        // 本地读回即可：API 详情可能仍是旧 extra_data，灌库后返回会把开关打回
         const { loadFinanceAccountDetail } = await import('@/lib/repositories/finance/finance');
         const local = await loadFinanceAccountDetail({
           accountId: routeAccountId || targetId,
@@ -212,27 +237,21 @@ export default function AccountDetailScreen() {
           setAccount(local.account);
           setTransactions(local.transactions);
         }
-      } catch (error) {
-        console.warn('Failed to update exclude_from_total_assets:', error);
+      } catch (err) {
+        console.warn('Failed to update exclude_from_total_assets:', err);
         setAccount((prev) => (prev ? { ...prev, extra_data: prevExtra } : prev));
-        toast.error(toUserMessage(error, '保存失败，请稍后重试'));
+        toast.error(toUserMessage(err, '保存失败，请稍后重试'));
       } finally {
         setSavingExcludeFromTotal(false);
       }
     },
-    [
-      account?.extra_data,
-      account?.id,
-      routeAccountId,
-      routeAccountName,
-      savingExcludeFromTotal,
-    ],
+    [account?.extra_data, account?.id, routeAccountId, routeAccountName, savingExcludeFromTotal],
   );
 
   const resolvedAccountId = account?.id ?? routeAccountId;
 
-  const handleBalanceDraftChange = React.useCallback((text: string) => {
-    let s = text.replace(/[^\d.-]/g, '');
+  const handleBalanceDraftChange = React.useCallback((raw: string) => {
+    let s = raw.replace(/[^\d.-]/g, '');
     const negative = s.startsWith('-');
     s = s.replace(/-/g, '');
     const dot = s.indexOf('.');
@@ -308,7 +327,6 @@ export default function AccountDetailScreen() {
       return;
     }
     if (isLiabilityAccount || accountSignRule !== 1) {
-      // 负债详情：打开转账并预填「还款账户」= 当前负债，扣款账户默认选资产
       openFinanceSheet({ kind: 'transfer', fromAccountId: null, toAccountId: resolvedAccountId });
       return;
     }
@@ -343,9 +361,9 @@ export default function AccountDetailScreen() {
             await clearFinanceLastUsedAccountIfDeleted(targetId);
             toast.success('已删除');
             router.back();
-          } catch (error) {
-            console.warn('Failed to delete finance account:', error);
-            toast.error(toUserMessage(error, '删除失败，请稍后重试'));
+          } catch (err) {
+            console.warn('Failed to delete finance account:', err);
+            toast.error(toUserMessage(err, '删除失败，请稍后重试'));
           } finally {
             setDeleting(false);
           }
@@ -387,91 +405,121 @@ export default function AccountDetailScreen() {
     return sortedMonthKeys.map((monthKey, monthIndex) => {
       const rows = monthMap.get(monthKey)!;
       const [year, month] = monthKey.split('-');
-      const incomeTotal = rows.reduce((sum, tx) => {
+      let net = 0;
+      const items: DetailItem[] = [];
+      const sortedRows = [...rows].sort((a, b) => b.happened_at.localeCompare(a.happened_at));
+      for (const tx of sortedRows) {
         const displayAmount = getDisplayAmount(tx);
-        return displayAmount > 0 ? sum + Math.abs(displayAmount) : sum;
-      }, 0);
-      const expenseTotal = rows.reduce((sum, tx) => {
-        const displayAmount = getDisplayAmount(tx);
-        return displayAmount < 0 ? sum + Math.abs(displayAmount) : sum;
-      }, 0);
-      const dayMap = new Map<string, FinanceTransactionRow[]>();
-      for (const tx of rows) {
-        const dayKey = tx.happened_at.slice(0, 10);
-        const dayRows = dayMap.get(dayKey);
-        if (dayRows) dayRows.push(tx);
-        else dayMap.set(dayKey, [tx]);
+        net += displayAmount;
+        const happenedDate = new Date(tx.happened_at);
+        const mm = Number.isNaN(happenedDate.getTime())
+          ? tx.happened_at.slice(5, 7)
+          : String(happenedDate.getMonth() + 1).padStart(2, '0');
+        const dd = Number.isNaN(happenedDate.getTime())
+          ? tx.happened_at.slice(8, 10)
+          : String(happenedDate.getDate()).padStart(2, '0');
+        const hour = Number.isNaN(happenedDate.getTime())
+          ? '00'
+          : String(happenedDate.getHours()).padStart(2, '0');
+        const minute = Number.isNaN(happenedDate.getTime())
+          ? '00'
+          : String(happenedDate.getMinutes()).padStart(2, '0');
+        const isIncome = displayAmount > 0;
+        const isExpense = displayAmount < 0;
+        items.push({
+          id: tx.id,
+          time: `${hour}:${minute}`,
+          tag: tx.name?.trim() || '交易',
+          amount: displayAmount,
+          flowLabel: tx.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : isExpense ? '支出' : '校正',
+          dayLabel: `${mm}.${dd}`,
+        });
       }
-
-      const details = Array.from(dayMap.entries())
-        .sort(([a], [b]) => b.localeCompare(a))
-        .map(([dayKey, dayRows]) => {
-        const dt = new Date(dayKey);
-        const dateLabel = Number.isNaN(dt.getTime())
-          ? dayKey
-          : `${dt.getMonth() + 1}月${dt.getDate()}日 (${WEEKDAY_LABELS[dt.getDay()]})`;
-        const seenItemIds = new Set<string>();
-        const items: DetailItem[] = [];
-        for (const tx of dayRows) {
-          if (seenItemIds.has(tx.id)) continue;
-          seenItemIds.add(tx.id);
-          const happenedDate = new Date(tx.happened_at);
-          const hour = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getHours()).padStart(2, '0');
-          const minute = Number.isNaN(happenedDate.getTime()) ? '00' : String(happenedDate.getMinutes()).padStart(2, '0');
-          const displayAmount = getDisplayAmount(tx);
-          const isIncome = displayAmount > 0;
-          const isExpense = displayAmount < 0;
-          items.push({
-            id: tx.id,
-            time: `${hour}:${minute}`,
-            tag: tx.name?.trim() || '交易',
-            emoji: isIncome ? '📈' : isExpense ? '💸' : '💳',
-            amount: `${isIncome ? '+' : isExpense ? '-' : ''} ${formatMoney(displayAmount)}`,
-            flowLabel: tx.transaction_type === 'transfer' ? '转账' : isIncome ? '收入' : '支出',
-          });
-        }
-        return { dateLabel, items };
-      });
 
       return {
         id: monthKey,
-        monthLabel: `${year}年${Number(month)}月`,
-        expense: formatMoney(expenseTotal),
-        income: formatMoney(incomeTotal),
+        monthLabel: `${year} 年 ${Number(month)} 月`,
+        count: items.length,
+        net,
         expanded: expandedMonthIds.size === 0 ? monthIndex === 0 : expandedMonthIds.has(monthKey),
-        details,
+        items,
       };
     });
-  }, [expandedMonthIds, formatMoney, getDisplayAmount, transactions]);
+  }, [expandedMonthIds, getDisplayAmount, transactions]);
 
   React.useEffect(() => {
     setExpandedMonthIds(new Set());
   }, [routeAccountId, routeAccountName]);
 
+  const rawBalance = account?.balance ?? 0;
+  const displayBalance = isLiabilityAccount ? Math.min(0, rawBalance) : Math.max(0, rawBalance);
+  const motionOn = foldAnimate && !loading && !!account;
+  const headerSub = accountNo
+    ? `ACCOUNT · ${accountNo.length > 8 ? accountNo.slice(-4) : accountNo}`
+    : isLiabilityAccount
+      ? 'ACCOUNT · LIABILITY'
+      : 'ACCOUNT · DETAIL';
+
+  const iconPressScale = React.useRef(new Animated.Value(1)).current;
+
   return (
-    <>
-      <CrudDetailScreen
-        title="账户详情"
-        onBack={() => router.back()}
-        headerRight={
-          <AppIconButton
-            icon="delete-outline"
+    <SafeAreaView style={[styles.container, { backgroundColor: bg }]} edges={['left', 'right']}>
+      <View style={[styles.header, { paddingTop: insets.top, backgroundColor: headerScrim, borderBottomColor: line }]}>
+        <View style={styles.headerInner}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              styles.foldIconBtn,
+              { borderColor: line, backgroundColor: card },
+              pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="返回">
+            <MaterialIcons name="arrow-back" size={16} color={ff.ink2} />
+          </Pressable>
+          <View style={styles.headerCenter}>
+            <Text style={[styles.headerTitle, { color: text, fontFamily: ffFonts.serif }]}>账户详情</Text>
+            <Text style={[styles.headerSub, { color: subtle }]} numberOfLines={1}>
+              {headerSub}
+            </Text>
+          </View>
+          <Pressable
             onPress={onDeleteAccount}
-            disabled={deleting}
-            color={colors.danger}
-            accessibilityLabel="删除账户"
-          />
-        }
-        loading={loading}
-        loadingHint="加载账户…"
-        error={error}
-        onRetryError={() => {
-          setLoading(true);
-          void reloadAccountDetail(true);
-        }}
-        missing={!loading && !error && !account}
-        missingMessage="未找到该账户"
-      >
+            disabled={deleting || !resolvedAccountId}
+            style={({ pressed }) => [
+              styles.foldIconBtn,
+              { borderColor: line, backgroundColor: card },
+              (pressed || deleting) && { opacity: 0.7, transform: [{ scale: 0.94 }] },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="删除账户">
+            <MaterialIcons name="delete-outline" size={16} color={clay} />
+          </Pressable>
+        </View>
+      </View>
+
+      {loading ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={pine} />
+          <Text style={{ color: subtle, marginTop: 10, fontSize: 13 }}>加载账户…</Text>
+        </View>
+      ) : error ? (
+        <View style={styles.loadingWrap}>
+          <Text style={{ color: clay, fontSize: 14 }}>{error}</Text>
+          <Pressable
+            onPress={() => {
+              setLoading(true);
+              void reloadAccountDetail(true);
+            }}
+            style={[styles.retryBtn, { backgroundColor: pine, marginTop: 14 }]}>
+            <Text style={{ color: ff.onPine, fontWeight: '700' }}>重试</Text>
+          </Pressable>
+        </View>
+      ) : !account ? (
+        <View style={styles.loadingWrap}>
+          <Text style={{ color: subtle, fontSize: 14 }}>未找到该账户</Text>
+        </View>
+      ) : (
         <ScrollView
           refreshControl={refreshControl}
           contentContainerStyle={[
@@ -485,570 +533,570 @@ export default function AccountDetailScreen() {
           ]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
-        <AppCard padded style={shadows.card}>
-          <Pressable
-            onPress={onPressEditAccountMeta}
-            disabled={!resolvedAccountId}
-            accessibilityRole="button"
-            accessibilityLabel="编辑账户名称、卡号、备注与图标"
-            style={({ pressed }) => [
-              styles.accountMetaPressable,
-              !resolvedAccountId && { opacity: 0.5 },
-              pressed && resolvedAccountId && { opacity: 0.82 },
-            ]}>
-            <View style={[styles.avatarOuter, { backgroundColor: colors.surface }]}>
-              <View style={[styles.avatarInner, { backgroundColor: colors.primaryMuted }]}>
-                <MaterialIcons name={accountIcon(account)} size={20} color={colors.primary} />
-                <View style={[styles.avatarBadge, { borderColor: colors.surface, backgroundColor: colors.accentIcon }]}>
-                  <Text style={[styles.avatarBadgeDot, { color: colors.text }]}>.</Text>
-                </View>
-              </View>
-            </View>
-            <View style={styles.accountTitleCol}>
-              <Text style={[Typography.title, { color: colors.text }]}>{detailName}</Text>
-              {detailSubtitle ? (
-                <Text style={[Typography.caption, styles.accountDesc, { color: colors.textSecondary }]}>
-                  {detailSubtitle}
-                </Text>
+          <FoldRiseIn animate={motionOn} index={0} fromY={11}>
+            <View style={styles.detailTop}>
+              <FoldPopIn animate={motionOn} delayMs={80}>
+                <Animated.View style={{ transform: [{ scale: iconPressScale }] }}>
+                  <Pressable
+                    onPress={onPressEditAccountMeta}
+                    onPressIn={() => {
+                      Animated.timing(iconPressScale, {
+                        toValue: 0.94,
+                        duration: 120,
+                        easing: FOLD_MOTION_SPRING,
+                        useNativeDriver: true,
+                      }).start();
+                    }}
+                    onPressOut={() => {
+                      Animated.timing(iconPressScale, {
+                        toValue: 1,
+                        duration: 220,
+                        easing: FOLD_MOTION_SPRING,
+                        useNativeDriver: true,
+                      }).start();
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="编辑账户"
+                    style={styles.accountIcon}>
+                    <MaterialIcons name={accountIcon(account)} size={26} color="#F3DDB8" />
+                    <View style={[styles.accountIconBadge, { backgroundColor: card, borderColor: isDark ? line : '#D8CCB9' }]}>
+                      <MaterialIcons name="edit" size={9} color="#68756C" />
+                    </View>
+                  </Pressable>
+                </Animated.View>
+              </FoldPopIn>
+              <Text style={[styles.accountName, { color: pine, fontFamily: ffFonts.serif }]}>{detailName}</Text>
+              {accountSubParts.length > 0 ? (
+                <Text style={[styles.accountSub, { color: faint }]}>{accountSubParts.join(' · ')}</Text>
               ) : null}
             </View>
-            <MaterialIcons name="chevron-right" size={22} color={colors.textMuted} style={styles.accountMetaChevron} />
-          </Pressable>
+          </FoldRiseIn>
 
-          {accountNote ? (
-            <View
-              style={[
-                styles.accountNoteBlock,
-                {
-                  backgroundColor: isDark ? colors.surfaceMuted : colors.input,
-                  borderColor: colors.outline,
-                },
-              ]}>
-              <Text style={[Typography.kicker, styles.accountNoteLabel, { color: colors.textSecondary }]}>备注</Text>
-              <Text style={[Typography.body, styles.accountNoteText, { color: colors.text }]}>{accountNote}</Text>
-            </View>
-          ) : null}
-
-          <View style={[styles.dashedDivider, { borderColor: colors.outline }]} />
-
-          <View style={styles.balanceBlock}>
-            <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-              {isLiabilityAccount ? '负债' : '余额'}
-            </Text>
-            <View style={styles.balanceRow}>
-              {(() => {
-                const rawBalance = account?.balance ?? 0;
-                const displayBalance = isLiabilityAccount ? Math.min(0, rawBalance) : Math.max(0, rawBalance);
-                const balancePrefix = displayBalance < 0 ? '-' : '';
-                return (
-                  <Text style={[Typography.display, styles.balanceAmount, { color: colors.text }]}>
-                    {`${balancePrefix}${formatMoney(displayBalance)}`}
-                  </Text>
-                );
-              })()}
-              <AppIconButton
-                icon="edit"
-                size={16}
-                color={colors.textSecondary}
-                onPress={openBalanceEditor}
-                accessibilityLabel="编辑余额"
-                style={styles.balanceEditBtn}
-              />
-            </View>
-          </View>
-
-          {/* 仅资产账户提供「不计入总资产」；负债本身就不计入总资产，排除开关无语义 */}
-          {account && !isLiabilityAccount ? (
-            <View style={[styles.optionRow, { borderTopColor: colors.outline }]}>
-              <View style={styles.optionTextCol}>
-                <Text style={[Typography.bodyStrong, { color: colors.text }]}>不计入总资产</Text>
-                <Text style={[Typography.caption, styles.optionHint, { color: colors.textSecondary }]}>
-                  开启后，该账户不参与首页净资产与资产页「总资产」汇总
-                </Text>
-              </View>
-              <Switch
-                value={excludeFromTotalAssets}
-                disabled={savingExcludeFromTotal}
-                onValueChange={(v) => void onToggleExcludeFromTotalAssets(v)}
-                trackColor={{ false: isDark ? colors.surfaceMuted : colors.outlineStrong, true: colors.successSwitch }}
-                thumbColor={excludeFromTotalAssets ? colors.success : isDark ? colors.textMuted : colors.surface}
-              />
-            </View>
-          ) : null}
-
-          <View style={styles.actionRow}>
-            <AppButton label="记账" variant="secondary" size="md" onPress={onPressBookkeeping} style={styles.actionBtn} />
-            <AppButton
-              label={isLiabilityAccount ? '还款' : '转账'}
-              variant="secondary"
-              size="md"
-              onPress={onPressTransfer}
-              style={styles.actionBtn}
-            />
-          </View>
-        </AppCard>
-
-        <View style={styles.detailsSection}>
-          <SectionHeading title="账户明细" />
-
-          {monthSections.map((section) => (
-            <View key={section.id} style={styles.monthSection}>
-              <Pressable
-                onPress={() => toggleMonthExpanded(section.id)}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: section.expanded }}
-                accessibilityLabel={`${section.monthLabel}，${section.expanded ? '收起' : '展开'}明细`}
-                style={({ pressed }) => [
-                  styles.monthHeaderRow,
+          <FoldRiseIn animate={motionOn} index={1} fromY={11}>
+            <View style={[styles.balanceCard, { backgroundColor: card, borderColor: line }]}>
+              <Text style={[styles.eyebrow, { color: faint }]}>
+                {isLiabilityAccount ? 'Current liability' : 'Current balance'}
+              </Text>
+              <FoldCountUpText
+                value={displayBalance}
+                animate={motionOn}
+                duration={760}
+                textStyle={[
+                  styles.balanceNum,
                   {
-                    borderBottomColor: colors.outline,
-                    borderBottomWidth: section.expanded ? StyleSheet.hairlineWidth : 0,
-                    paddingBottom: section.expanded ? Spacing['2xl'] : Spacing.lg,
-                    opacity: pressed ? 0.82 : 1,
+                    color: isLiabilityAccount && displayBalance < 0 ? clay : pine,
+                    fontFamily: ffFonts.mono,
                   },
-                ]}>
-                <View style={styles.monthHeaderTextCol}>
-                  <Text style={[Typography.title, { color: colors.text }]}>{section.monthLabel}</Text>
-                  {!isLiabilityAccount ? (
-                    <Text style={[Typography.caption, { color: colors.textSecondary }]}>
-                      流出 <Text style={{ color: expenseColor }}>{section.expense}</Text>
-                      <Text style={{ color: colors.textMuted }}> | </Text>
-                      流入 <Text style={{ color: incomeColor }}>{section.income}</Text>
-                    </Text>
-                  ) : null}
-                </View>
-                <MaterialIcons
-                  name={section.expanded ? 'keyboard-arrow-down' : 'keyboard-arrow-right'}
-                  size={22}
-                  color={colors.textMuted}
-                />
+                ]}
+                formatter={(n) => {
+                  const prefix = n < 0 ? '-' : '';
+                  return `${prefix}${formatMoney(n)}`;
+                }}
+              />
+              <Pressable
+                onPress={openBalanceEditor}
+                accessibilityRole="button"
+                accessibilityLabel="校正余额"
+                style={({ pressed }) => [styles.balanceEdit, pressed && { opacity: 0.7 }]}>
+                <MaterialIcons name="edit" size={12} color={subtle} />
+                <Text style={{ color: subtle, fontSize: 12 }}>校正余额</Text>
               </Pressable>
+              <Text style={[styles.miniNote, { color: faint }]}>
+                修改余额会生成一笔「余额校正」流水，不参与预算
+              </Text>
+            </View>
+          </FoldRiseIn>
 
-              {section.expanded && section.details && section.details.length > 0 ? (
-                <View style={styles.dayDetailBlock}>
-                  {section.details.map((day) => (
-                    <View
-                      key={`${section.id}-${day.dateLabel}`}
+          {!isLiabilityAccount ? (
+            <FoldRiseIn animate={motionOn} index={2} fromY={11}>
+              <View style={styles.countToggle}>
+                <View style={styles.countToggleLeft}>
+                  <MaterialIcons name="pie-chart-outline" size={16} color={subtle} />
+                  <Text style={[styles.countToggleLabel, { color: subtle }]}>计入总资产</Text>
+                  <Text style={[styles.countToggleTip, { color: faint }]}>关闭后净资产会同步减少</Text>
+                </View>
+                <Switch
+                  value={includeInTotalAssets}
+                  disabled={savingExcludeFromTotal}
+                  onValueChange={(v) => void onToggleIncludeInTotalAssets(v)}
+                  trackColor={{ false: isDark ? ff.line2 : '#D8D5CB', true: ff.sage }}
+                  thumbColor={card}
+                />
+              </View>
+            </FoldRiseIn>
+          ) : null}
+
+          <FoldRiseIn animate={motionOn} index={3} fromY={11}>
+            <View style={styles.accountActions}>
+              <Pressable
+                onPress={onPressBookkeeping}
+                style={({ pressed }) => [
+                  styles.actionPrimary,
+                  { backgroundColor: pine },
+                  pressed && { opacity: 0.9, transform: [{ scale: 0.985 }] },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="记账">
+                <MaterialIcons name="add" size={16} color={ff.onPine} />
+                <Text style={[styles.actionPrimaryText, { color: ff.onPine }]}>记账</Text>
+              </Pressable>
+              <Pressable
+                onPress={onPressTransfer}
+                style={({ pressed }) => [
+                  styles.actionGhost,
+                  {
+                    backgroundColor: isDark ? ff.paper2 : '#F7F2E7',
+                    borderColor: ff.line2,
+                  },
+                  pressed && { opacity: 0.9, transform: [{ scale: 0.985 }] },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={isLiabilityAccount ? '还款' : '转账 / 还款'}>
+                <MaterialIcons name="swap-horiz" size={16} color="#56645B" />
+                <Text style={styles.actionGhostText}>{isLiabilityAccount ? '还款' : '转账 / 还款'}</Text>
+              </Pressable>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={4} fromY={11}>
+            <View style={styles.sectionH}>
+              <Text style={[styles.sectionHT, { color: subtle }]}>Monthly ledger / 月流水</Text>
+              <Text style={[styles.sectionHA, { color: faint }]}>本页只读</Text>
+            </View>
+          </FoldRiseIn>
+
+          {monthSections.length === 0 ? (
+            <FoldRiseIn animate={motionOn} index={5} fromY={11}>
+              <View style={[styles.monthFold, { backgroundColor: card, borderColor: line, paddingVertical: 18 }]}>
+                <Text style={{ color: faint, textAlign: 'center', fontSize: 12 }}>暂无流水</Text>
+              </View>
+            </FoldRiseIn>
+          ) : (
+            monthSections.map((section, sIdx) => (
+              <FoldRiseIn key={section.id} animate={motionOn} index={5 + sIdx} fromY={11}>
+                <View style={[styles.monthFold, { backgroundColor: card, borderColor: line }]}>
+                  <Pressable
+                    onPress={() => toggleMonthExpanded(section.id)}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: section.expanded }}
+                    accessibilityLabel={`${section.monthLabel}，${section.expanded ? '收起' : '展开'}明细`}
+                    style={({ pressed }) => [styles.monthH, pressed && { opacity: 0.82 }]}>
+                    <MaterialIcons
+                      name="keyboard-arrow-down"
+                      size={18}
+                      color={subtle}
+                      style={{ transform: [{ rotate: section.expanded ? '0deg' : '-90deg' }] }}
+                    />
+                    <Text style={[styles.monthTitle, { color: '#3B4A41' }]}>{section.monthLabel}</Text>
+                    <Text style={[styles.monthCount, { color: faint, fontFamily: ffFonts.mono }]}>
+                      {section.count} 笔
+                    </Text>
+                    <Text
                       style={[
-                        styles.dayGroupCard,
+                        styles.monthSum,
                         {
-                          backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
-                          borderColor: colors.outline,
+                          color: section.net > 0.009 ? income : section.net < -0.009 ? expense : subtle,
+                          fontFamily: ffFonts.mono,
                         },
                       ]}>
-                      <View style={[styles.dayGroupHeader, { borderBottomColor: colors.outline }]}>
-                        <View style={[styles.dayGroupDot, { backgroundColor: colors.primary }]} />
-                        <Text style={[Typography.bodyStrong, { color: colors.text }]}>{day.dateLabel}</Text>
-                      </View>
-                      {day.items.map((item, itemIndex) => {
-                        const trimmed = item.amount.replace(/\s/g, '');
-                        const amountColor =
-                          trimmed.startsWith('+')
-                            ? colors.secondary
-                            : trimmed.startsWith('-')
-                              ? colors.danger
-                              : colors.text;
-                        const isLast = itemIndex === day.items.length - 1;
+                      {formatSignedMoney(section.net)}
+                    </Text>
+                    {!section.expanded ? <MaterialIcons name="chevron-right" size={16} color={faint} /> : null}
+                  </Pressable>
+
+                  {section.expanded ? (
+                    <View style={styles.monthBody}>
+                      {section.items.map((item, i) => {
+                        const amtColor =
+                          item.amount > 0.009 ? income : item.amount < -0.009 ? expense : text;
+                        const icBg =
+                          item.amount > 0.009
+                            ? isDark
+                              ? 'rgba(106,160,131,0.22)'
+                              : '#E7EFE9'
+                            : item.amount < -0.009
+                              ? isDark
+                                ? 'rgba(198,106,76,0.2)'
+                                : '#F4E4DC'
+                              : isDark
+                                ? 'rgba(255,255,255,0.08)'
+                                : '#F0EBE0';
+                        const icFg =
+                          item.amount > 0.009 ? income : item.amount < -0.009 ? expense : subtle;
                         return (
-                          <View
-                            key={item.id}
-                            style={[
-                              styles.detailEntry,
-                              !isLast && {
-                                borderBottomWidth: StyleSheet.hairlineWidth,
-                                borderBottomColor: colors.outline,
-                              },
-                            ]}>
-                            <View style={styles.detailItemRow}>
-                              <View style={styles.detailLeft}>
-                                <Text
-                                  style={[Typography.caption, styles.detailTime, { color: colors.textSecondary }]}
-                                  numberOfLines={1}>
-                                  {item.time}
-                                </Text>
-                                <View
-                                  style={[
-                                    styles.tagPill,
-                                    {
-                                      backgroundColor: isDark ? colors.primaryMuted : colors.capsule,
-                                      borderColor: colors.outline,
-                                    },
-                                  ]}>
-                                  <Text style={[Typography.bodyStrong, styles.tagText, { color: colors.text }]}>
-                                    {item.tag}
-                                  </Text>
-                                  <Text style={styles.tagEmoji}>{item.emoji}</Text>
-                                </View>
+                          <FoldRiseIn key={item.id} animate={motionOn} index={i} staggerMs={45} delayMs={40} fromY={8}>
+                            <View
+                              style={[
+                                styles.ledgerRow,
+                                i < section.items.length - 1
+                                  ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: isDark ? line : '#ECE4D6' }
+                                  : null,
+                              ]}>
+                              <View style={[styles.ledgerIc, { backgroundColor: icBg }]}>
+                                <Text style={[styles.ledgerIcText, { color: icFg }]}>{ledgerInitial(item.tag)}</Text>
                               </View>
-                              <Text style={[Typography.title, styles.detailAmount, { color: amountColor }]}>
-                                {item.amount}
+                              <View style={styles.ledgerMain}>
+                                <Text style={[styles.ledgerTitle, { color: text }]} numberOfLines={1}>
+                                  {item.tag}
+                                </Text>
+                                <Text style={[styles.ledgerMeta, { color: faint }]}>
+                                  {item.dayLabel} · {item.time} · {item.flowLabel}
+                                </Text>
+                              </View>
+                              <Text style={[styles.ledgerAmt, { color: amtColor, fontFamily: ffFonts.mono }]}>
+                                {formatSignedMoney(item.amount)}
                               </Text>
                             </View>
-                            <View style={styles.sourceRow}>
-                              <View
-                                style={[
-                                  styles.sourceIcon,
-                                  {
-                                    borderColor: colors.outline,
-                                    backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
-                                  },
-                                ]}>
-                                <View style={[styles.sourceIconLine, { backgroundColor: colors.textMuted }]} />
-                              </View>
-                              <Text style={[Typography.caption, { color: colors.textSecondary }]}>{item.flowLabel}</Text>
-                            </View>
-                          </View>
+                          </FoldRiseIn>
                         );
                       })}
                     </View>
-                  ))}
-                  <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
+                  ) : null}
                 </View>
-              ) : (
-                <View style={[styles.sectionDivider, { backgroundColor: colors.outline }]} />
-              )}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-      </CrudDetailScreen>
+              </FoldRiseIn>
+            ))
+          )}
+
+          <Text style={[styles.readOnlyNote, { color: faint }]}>
+            流水编辑请回到首页或财务日历 · 这里只负责核对
+          </Text>
+        </ScrollView>
+      )}
 
       <Modal
         transparent
         animationType="fade"
         visible={balanceModalOpen}
-        onRequestClose={() => !savingBalance && setBalanceModalOpen(false)}>
+        onRequestClose={() => {
+          if (!savingBalance) setBalanceModalOpen(false);
+        }}>
         <View style={styles.balanceModalRoot}>
           <Pressable
-            style={[styles.balanceModalBackdrop, { backgroundColor: colors.overlay }]}
-            onPress={() => !savingBalance && setBalanceModalOpen(false)}
+            style={[styles.balanceModalBackdrop, { backgroundColor: 'rgba(29,41,35,0.42)' }]}
+            onPress={() => {
+              if (!savingBalance) setBalanceModalOpen(false);
+            }}
           />
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.balanceModalCenter}
             pointerEvents="box-none">
-            <AppCard padded style={shadows.sheet}>
-              <Text style={[Typography.h3, { color: colors.text }]}>
-                调整{isLiabilityAccount ? '负债' : '余额'}
+            <View style={[styles.balanceModalCard, { backgroundColor: card, borderColor: line }]}>
+              <Text style={[styles.balanceModalTitle, { color: text, fontFamily: ffFonts.serif }]}>
+                校正{isLiabilityAccount ? '负债' : '余额'}
               </Text>
-              <Text style={[Typography.caption, styles.balanceModalHint, { color: colors.textSecondary }]}>
+              <Text style={[styles.balanceModalHint, { color: subtle }]}>
                 {isLiabilityAccount
                   ? '请输入负债金额（正数表示欠款规模）。保存后将记一笔「余额校正」流水。'
                   : '保存后将记一笔「余额校正」流水，与当前流水汇总对齐。'}
               </Text>
-              <View style={[styles.balanceModalInputRow, { borderColor: colors.outline, backgroundColor: colors.input }]}>
-                <Text style={[Typography.h2, { color: colors.text }]}>¥</Text>
+              <View
+                style={[
+                  styles.balanceModalInputRow,
+                  { borderColor: line, backgroundColor: isDark ? ff.paper2 : '#F7F2E7' },
+                ]}>
+                <Text style={[styles.balanceModalYuan, { color: text, fontFamily: ffFonts.mono }]}>¥</Text>
                 <AppInput
                   value={balanceDraft}
                   onChangeText={handleBalanceDraftChange}
                   placeholder="0.00"
                   keyboardType="decimal-pad"
                   editable={!savingBalance}
-                  inputStyle={[Typography.h2, styles.balanceModalInputText]}
-                  inputWrapStyle={[styles.balanceModalInputWrap, { flex: 1, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0 }]}
+                  inputStyle={[styles.balanceModalInputText, { color: text, fontFamily: ffFonts.mono }]}
+                  inputWrapStyle={[
+                    styles.balanceModalInputWrap,
+                    { flex: 1, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0 },
+                  ]}
                   containerStyle={styles.balanceModalInputContainerInline}
                 />
               </View>
               <View style={styles.balanceModalActions}>
-                <AppButton
-                  label="取消"
-                  variant="outline"
-                  size="md"
+                <Pressable
                   onPress={() => !savingBalance && setBalanceModalOpen(false)}
                   disabled={savingBalance}
-                  style={styles.balanceModalBtn}
-                />
-                <AppButton
-                  label={savingBalance ? '保存中…' : '保存'}
-                  variant="primary"
-                  size="md"
-                  loading={savingBalance}
+                  style={({ pressed }) => [
+                    styles.balanceModalBtnGhost,
+                    { borderColor: ff.line2, backgroundColor: isDark ? ff.paper2 : '#F7F2E7' },
+                    pressed && { opacity: 0.85 },
+                  ]}>
+                  <Text style={{ color: '#56645B', fontWeight: '700' }}>取消</Text>
+                </Pressable>
+                <Pressable
                   onPress={() => void onConfirmBalanceEdit()}
-                  style={styles.balanceModalBtn}
-                />
+                  disabled={savingBalance}
+                  style={({ pressed }) => [
+                    styles.balanceModalBtnPrimary,
+                    { backgroundColor: pine },
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <Text style={{ color: ff.onPine, fontWeight: '700' }}>
+                    {savingBalance ? '保存中…' : '保存'}
+                  </Text>
+                </Pressable>
               </View>
-            </AppCard>
+            </View>
           </KeyboardAvoidingView>
         </View>
       </Modal>
-    </>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollContent: {
-    paddingHorizontal: Spacing['5xl'],
-    paddingTop: Spacing['3xl'],
-    gap: Spacing['4xl'],
-  },
-  accountMetaPressable: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xl,
-    minWidth: 0,
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing.xs,
-    marginTop: -Spacing.xs,
-  },
-  accountTitleCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  accountDesc: {
-    marginTop: Spacing.xs,
-  },
-  accountNoteBlock: {
-    marginTop: Spacing.xl,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
-    gap: Spacing.sm,
-  },
-  accountNoteLabel: {
-    letterSpacing: 0.4,
-  },
-  accountNoteText: {
-    lineHeight: 22,
-  },
-  accountMetaChevron: {
-    flexShrink: 0,
-    opacity: 0.65,
-  },
-  avatarOuter: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.icon,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarInner: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-  },
-  avatarBadgeDot: {
-    fontSize: 8,
-    lineHeight: 8,
-    marginTop: -1,
-  },
-  dashedDivider: {
-    borderTopWidth: 1,
-    borderStyle: 'dashed',
-    marginVertical: Spacing['3xl'],
-  },
-  optionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.xl,
-    paddingTop: Spacing['2xl'],
-    marginTop: Spacing.xs,
-    marginBottom: Spacing.xl,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  optionTextCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  optionHint: {
-    marginTop: Spacing.xs,
-    lineHeight: 17,
-  },
-  balanceBlock: {
-    marginBottom: Spacing['3xl'],
-    gap: Spacing.xs,
-  },
-  balanceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  balanceAmount: {
-    fontSize: 32,
-    lineHeight: 36,
-  },
-  balanceEditBtn: {
-    width: 32,
-    height: 32,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    gap: Spacing.lg,
-  },
-  actionBtn: {
-    flex: 1,
-  },
-  detailsSection: {
-    gap: Spacing['2xl'],
-  },
-  sectionTitle: {
-    ...Typography.h2,
-    fontSize: 18,
-    marginBottom: Spacing['2xl'],
-  },
-  monthSection: {
-    marginBottom: Spacing['3xl'],
-  },
-  monthHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: Spacing.xl,
-  },
-  monthHeaderTextCol: {
-    flex: 1,
-    minWidth: 0,
-    marginRight: Spacing.md,
-    gap: Spacing.sm,
-  },
-  dayDetailBlock: {
-    marginTop: Spacing.xs,
-    gap: Spacing['2xl'],
-  },
-  dayGroupCard: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['2xl'],
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.xs,
-  },
-  dayGroupHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    marginBottom: Spacing.xl,
-    paddingBottom: Spacing.lg,
+  container: { flex: 1 },
+  header: {
     borderBottomWidth: StyleSheet.hairlineWidth,
+    zIndex: 60,
   },
-  dayGroupDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  detailEntry: {
-    paddingVertical: Spacing['2xl'],
-  },
-  detailItemRow: {
+  headerInner: {
+    minHeight: 54,
+    paddingHorizontal: 14,
+    paddingBottom: 6,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.xl,
+    gap: 10,
   },
-  detailLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.lg,
-    flex: 1,
-    minWidth: 0,
-  },
-  detailTime: {
-    width: 44,
-    flexShrink: 0,
-    textAlign: 'left',
-    fontVariant: ['tabular-nums'],
-  },
-  tagPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: Radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: Spacing.xl,
-    paddingRight: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    gap: Spacing.xs,
-    maxWidth: '68%',
-  },
-  tagText: {
-    flexShrink: 1,
-    fontSize: 13,
-  },
-  tagEmoji: {
-    fontSize: 16,
-  },
-  detailAmount: {
-    textAlign: 'right',
-    flexShrink: 0,
-    marginLeft: Spacing.md,
-    fontSize: 17,
-  },
-  sourceRow: {
-    marginTop: Spacing.lg,
-    marginLeft: 44 + Spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  sourceIcon: {
-    width: 14,
-    height: 14,
-    borderRadius: Radius.xs / 2,
+  headerCenter: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
+  headerTitle: { fontSize: 17, fontWeight: '600', letterSpacing: 0.2 },
+  headerSub: { fontSize: 10, fontWeight: '600', letterSpacing: 0.6 },
+  foldIconBtn: {
+    width: 31,
+    height: 31,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sourceIconLine: {
-    width: 7,
-    height: 1.5,
-  },
-  sectionDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginTop: Spacing['3xl'],
-  },
-  balanceModalRoot: {
+  loadingWrap: {
     flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
   },
-  balanceModalBackdrop: {
-    ...StyleSheet.absoluteFill,
+  retryBtn: {
+    height: 38,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    gap: 8,
+  },
+  detailTop: {
+    alignItems: 'center',
+    paddingTop: 4,
+    paddingBottom: 10,
+  },
+  accountIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: '#2C5647',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#1C372C',
+    shadowOffset: { width: 0, height: 9 },
+    shadowOpacity: 0.17,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  accountIconBadge: {
+    position: 'absolute',
+    right: -3,
+    bottom: -3,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountName: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 10,
+  },
+  accountSub: {
+    fontSize: 12,
+    marginTop: 3,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+  balanceCard: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    alignItems: 'center',
+  },
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  balanceNum: {
+    fontSize: 28,
+    fontWeight: '700',
+    marginTop: 4,
+    letterSpacing: -0.4,
+  },
+  balanceEdit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+  },
+  miniNote: {
+    fontSize: 11,
+    marginTop: 6,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  countToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+    gap: 10,
+  },
+  countToggleLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+    minWidth: 0,
+  },
+  countToggleLabel: { fontSize: 13, fontWeight: '600' },
+  countToggleTip: { fontSize: 11 },
+  accountActions: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 4,
+  },
+  actionPrimary: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  actionPrimaryText: { fontSize: 14, fontWeight: '700' },
+  actionGhost: {
+    flex: 1,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  actionGhostText: { fontSize: 14, fontWeight: '700', color: '#56645B' },
+  sectionH: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    marginBottom: 2,
+    paddingHorizontal: 2,
+  },
+  sectionHT: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
+  sectionHA: { fontSize: 10 },
+  monthFold: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    overflow: 'hidden',
+  },
+  monthH: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+  },
+  monthTitle: { fontSize: 14, fontWeight: '700', flexShrink: 1 },
+  monthCount: { fontSize: 12 },
+  monthSum: { marginLeft: 'auto', fontSize: 12, fontWeight: '600' },
+  monthBody: { paddingBottom: 4 },
+  ledgerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+  },
+  ledgerIc: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ledgerIcText: { fontSize: 12, fontWeight: '700' },
+  ledgerMain: { flex: 1, minWidth: 0, gap: 2 },
+  ledgerTitle: { fontSize: 14, fontWeight: '600' },
+  ledgerMeta: { fontSize: 11 },
+  ledgerAmt: { fontSize: 13, fontWeight: '700', textAlign: 'right' },
+  readOnlyNote: {
+    textAlign: 'center',
+    fontSize: 11,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+  balanceModalRoot: { flex: 1 },
+  balanceModalBackdrop: { ...StyleSheet.absoluteFill },
   balanceModalCenter: {
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: Spacing['5xl'],
+    paddingHorizontal: 22,
   },
+  balanceModalCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 18,
+  },
+  balanceModalTitle: { fontSize: 18, fontWeight: '600' },
   balanceModalHint: {
-    marginTop: Spacing.md,
-    marginBottom: Spacing['3xl'],
-    lineHeight: 19,
+    marginTop: 8,
+    marginBottom: 16,
+    fontSize: 12,
+    lineHeight: 18,
   },
   balanceModalInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
+    gap: 4,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.xl,
-    marginBottom: Spacing['3xl'],
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    marginBottom: 16,
   },
-  balanceModalInputContainerInline: {
+  balanceModalYuan: { fontSize: 22, fontWeight: '700' },
+  balanceModalInputContainerInline: { flex: 1, marginBottom: 0 },
+  balanceModalInputWrap: { minHeight: 48 },
+  balanceModalInputText: { fontSize: 22, fontWeight: '700' },
+  balanceModalActions: { flexDirection: 'row', gap: 8 },
+  balanceModalBtnGhost: {
     flex: 1,
-    marginBottom: 0,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  balanceModalInputWrap: {
-    minHeight: 48,
-  },
-  balanceModalInputText: {
-    fontSize: 22,
-    fontWeight: '800',
-  },
-  balanceModalActions: {
-    flexDirection: 'row',
-    gap: Spacing.lg,
-  },
-  balanceModalBtn: {
+  balanceModalBtnPrimary: {
     flex: 1,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

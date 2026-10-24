@@ -1,33 +1,35 @@
 import { AppInput } from '@/components/ui/app-input';
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { Colors } from '@/constants/theme';
+import { MotionPressable } from '@/components/ui/motion-pressable';
+import { Motion } from '@/constants/design-tokens';
+import { useFoldTheme, type FoldSemanticPalette } from '@/constants/review-fold-theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
-    DEFAULT_CLOUD_AUTH_TOKEN,
-    DEFAULT_CLOUD_SQL_API_URL,
-    clearCloudUserToken,
-    getCloudUserCustomToken,
-    hasCloudUserTokenSync,
-    loadCloudBackupTokenCache,
-    setCloudUserToken,
+  DEFAULT_CLOUD_AUTH_TOKEN,
+  DEFAULT_CLOUD_SQL_API_URL,
+  clearCloudUserToken,
+  getCloudUserCustomToken,
+  hasCloudUserTokenSync,
+  loadCloudBackupTokenCache,
+  setCloudUserToken,
 } from '@/lib/cloud-backup-config';
 import { getLastFullCloudBackupAtIso } from '@/lib/cloud-backup-meta';
 import {
-    triggerCloudFullBackup,
-    triggerCloudFullRestore,
-    type CloudSyncProgress,
+  triggerCloudFullBackup,
+  triggerCloudFullRestore,
+  type CloudSyncProgress,
 } from '@/lib/cloud-sql-sync';
 import { syncScheduleAxisEndWithDayBoundary } from '@/lib/schedule-service';
 import {
-    DAY_BOUNDARY_PAGE_OPTIONS,
-    DEFAULT_TASKS_DAY_BOUNDARY,
-    formatTasksDayBoundaryLabel,
-    getLogicalLocalYmd,
-    type DayBoundaryPageId,
-    type TasksDayBoundary,
+  DAY_BOUNDARY_PAGE_OPTIONS,
+  DEFAULT_TASKS_DAY_BOUNDARY,
+  formatTasksDayBoundaryLabel,
+  getLogicalLocalYmd,
+  type DayBoundaryPageId,
+  type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { ThemePreference } from '@/lib/theme-preference';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -35,20 +37,25 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    AppState,
-    Modal,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Switch,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  AppState,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
-import { Gesture, GestureDetector, ScrollView, type PanGesture } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import type { SettingsSection } from './settings-drawer-context';
 import { useSettingsDrawer } from './settings-drawer-context';
+
+type ScrollHandle = { scrollTo: (opts: { y: number; animated?: boolean }) => void };
+
 function formatZhFullBackupTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -94,28 +101,178 @@ function formatCloudBackupProgressLine(p: CloudSyncProgress | null): string | nu
   return null;
 }
 
+type IconTone = 'amber' | 'clay' | 'sage' | 'pine';
+
+function toneColors(palette: FoldSemanticPalette, tone: IconTone): { bg: string; fg: string } {
+  switch (tone) {
+    case 'amber':
+      return { bg: palette.amberSoft, fg: palette.amber };
+    case 'clay':
+      return { bg: palette.claySoft, fg: palette.clay };
+    case 'sage':
+      return { bg: palette.sageSoft, fg: palette.sageInk };
+    case 'pine':
+    default:
+      return { bg: palette.sageSoft, fg: palette.pine };
+  }
+}
+
+function IconWell({
+  name,
+  tone,
+  palette,
+}: {
+  name: React.ComponentProps<typeof MaterialIcons>['name'];
+  tone: IconTone;
+  palette: FoldSemanticPalette;
+}) {
+  const c = toneColors(palette, tone);
+  return (
+    <View style={[styles.iconWell, { backgroundColor: c.bg }]}>
+      <MaterialIcons name={name} size={20} color={c.fg} />
+    </View>
+  );
+}
+
+function SectionTitle({ title, color }: { title: string; color: string }) {
+  return <Text style={[styles.sectionTitle, { color }]}>{title}</Text>;
+}
+
+function GroupCard({
+  children,
+  palette,
+  style,
+}: {
+  children: React.ReactNode;
+  palette: FoldSemanticPalette;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View
+      style={[
+        styles.groupCard,
+        {
+          backgroundColor: palette.card,
+          borderColor: palette.lineStrong,
+          shadowColor: palette.shadow,
+        },
+        style,
+      ]}>
+      {children}
+    </View>
+  );
+}
+
+function NavRow({
+  icon,
+  tone,
+  title,
+  hint,
+  onPress,
+  palette,
+  showDivider,
+}: {
+  icon: React.ComponentProps<typeof MaterialIcons>['name'];
+  tone: IconTone;
+  title: string;
+  hint: string;
+  onPress: () => void;
+  palette: FoldSemanticPalette;
+  showDivider?: boolean;
+}) {
+  return (
+    <MotionPressable
+      onPress={onPress}
+      pressScale={Motion.pressScaleCard}
+      pressOpacity={1}
+      style={[styles.navRow, showDivider ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.line } : null]}>
+      <IconWell name={icon} tone={tone} palette={palette} />
+      <View style={styles.navText}>
+        <Text style={[styles.rowTitle, { color: palette.ink }]}>{title}</Text>
+        <Text style={[styles.rowHint, { color: palette.muted }]}>{hint}</Text>
+      </View>
+      <MaterialIcons name="chevron-right" size={22} color={palette.muted} />
+    </MotionPressable>
+  );
+}
+
+function ActionRow({
+  icon,
+  tone,
+  title,
+  hint,
+  status,
+  busy,
+  danger,
+  onPress,
+  disabled,
+  palette,
+  progressColor,
+}: {
+  icon: React.ComponentProps<typeof MaterialIcons>['name'];
+  tone: IconTone;
+  title: string;
+  hint: string;
+  status?: string | null;
+  busy?: boolean;
+  danger?: boolean;
+  onPress: () => void;
+  disabled?: boolean;
+  palette: FoldSemanticPalette;
+  progressColor?: string;
+}) {
+  return (
+    <MotionPressable
+      onPress={onPress}
+      disabled={disabled}
+      pressScale={Motion.pressScaleCard}
+      pressOpacity={1}
+      style={[
+        styles.actionRow,
+        {
+          backgroundColor: palette.card,
+          borderColor: danger ? `${palette.clay}59` : palette.lineStrong,
+          opacity: disabled ? 0.55 : 1,
+          shadowColor: palette.shadow,
+        },
+      ]}>
+      {busy ? (
+        <ActivityIndicator size="small" color={progressColor ?? palette.pine} />
+      ) : (
+        <IconWell name={icon} tone={danger ? 'clay' : tone} palette={palette} />
+      )}
+      <View style={styles.navText}>
+        <Text style={[styles.rowTitle, { color: palette.ink }]}>{title}</Text>
+        <Text style={[styles.rowHint, { color: palette.muted }]}>{hint}</Text>
+        {status ? (
+          <Text style={[styles.rowStatus, { color: busy ? progressColor ?? palette.pine : palette.muted }]}>
+            {status}
+          </Text>
+        ) : null}
+      </View>
+    </MotionPressable>
+  );
+}
+
 type Props = {
   initialSection: SettingsSection | null;
   onSectionScrolled?: () => void;
   /** 与列表滚动并行识别，用于面板内左滑收起 */
-  panCloseGesture?: PanGesture;
+  panCloseGesture?: ReturnType<typeof Gesture.Pan>;
 };
 
-export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panCloseGesture }: Props) {
+export function GlobalSettingsPanel({
+  initialSection,
+  onSectionScrolled,
+  panCloseGesture,
+}: Props) {
   const router = useRouter();
   const { close: closeSettingsDrawer } = useSettingsDrawer();
   const { preference, colorScheme, setPreference } = useThemePreference();
-  const isDark = colorScheme === 'dark';
-  const theme = Colors[colorScheme];
-  const text = theme.text;
-  const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const memoAccent = isDark ? '#fbbf24' : '#825100';
-  const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
+  const { palette, fold, isDark } = useFoldTheme();
+  const isNight = colorScheme === 'dark';
 
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollHandle | null>(null);
   const sectionOffsets = useRef<Partial<Record<SettingsSection, number>>>({});
   const pendingScroll = useRef(initialSection);
 
@@ -411,7 +568,7 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
         ? draftBoundary
         : { ...DEFAULT_TASKS_DAY_BOUNDARY };
       const logicalToday = getLogicalLocalYmd(new Date(), effective);
-      void syncScheduleAxisEndWithDayBoundary(effective, logicalToday).catch((err) => {
+      void syncScheduleAxisEndWithDayBoundary(effective, logicalToday).catch(err => {
         console.warn('[day-boundary] sync schedule axis end failed', err);
       });
       setDayBoundaryPickerVisible(false);
@@ -425,17 +582,15 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     (page: DayBoundaryPageId, enabled: boolean) => {
       const next = enabled
         ? [...new Set([...dayBoundaryPages, page])]
-        : dayBoundaryPages.filter((p) => p !== page);
+        : dayBoundaryPages.filter(p => p !== page);
       void persistDayBoundaryPages(next)
         .then(() => {
           if (page !== 'tasks') return;
-          const effective = next.includes('tasks')
-            ? dayBoundary
-            : { ...DEFAULT_TASKS_DAY_BOUNDARY };
+          const effective = next.includes('tasks') ? dayBoundary : { ...DEFAULT_TASKS_DAY_BOUNDARY };
           const logicalToday = getLogicalLocalYmd(new Date(), effective);
           return syncScheduleAxisEndWithDayBoundary(effective, logicalToday);
         })
-        .catch((e) => {
+        .catch(e => {
           toast.error(toUserMessage(e, '未能更新日界作用页面，请稍后重试。'));
         });
     },
@@ -456,176 +611,147 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
     [setPreference],
   );
 
-  const renderSectionHead = (title: string) => (
-    <View style={styles.sectionHead}>
-      <Text style={[styles.sectionTitle, { color: text }]}>{title}</Text>
-    </View>
+  const go = useCallback(
+    (href: string | { pathname: string; params?: Record<string, string> }) => {
+      closeSettingsDrawer();
+      // expo-router push 接受多种 href；此处收窄为常用形态
+      router.push(href as never);
+    },
+    [closeSettingsDrawer, router],
   );
 
   const scrollGesture = panCloseGesture
-    ? Gesture.Simultaneous(Gesture.Native(), panCloseGesture)
+    ? Gesture.Simultaneous(Gesture.Native(), panCloseGesture as never)
     : Gesture.Native();
+
+  const backupProgress = cloudBackupBusy ? formatCloudBackupProgressLine(cloudBackupProgress) : null;
+  const restoreProgress = cloudRestoreBusy ? formatCloudBackupProgressLine(cloudBackupProgress) : null;
 
   return (
     <>
       <GestureDetector gesture={scrollGesture}>
         <ScrollView
-          ref={scrollRef}
+          ref={node => {
+            scrollRef.current = node as ScrollHandle | null;
+          }}
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
-        <View style={styles.section}>
-          {renderSectionHead('个人管理')}
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/my-recipes');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="restaurant-menu" size={26} color={isDark ? '#fb923c' : '#c2410c'} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>我的菜谱</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  按分类管理拿手菜，支持食材/步骤分项录入与成品图。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
+          <View>
+            <SectionTitle title="个人管理" color={palette.inkSoft} />
+            <GroupCard palette={palette}>
+              <NavRow
+                icon="restaurant-menu"
+                tone="amber"
+                title="我的菜谱"
+                hint="按分类管理拿手菜，支持食材/步骤分项录入与成品图"
+                onPress={() => go('/my-recipes')}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
+                icon="description"
+                tone="amber"
+                title="备忘录"
+                hint="本地备忘 · 离线保存；支持标题与正文，左滑可转待办或删除"
+                onPress={() => go('/memo-list')}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
+                icon="favorite"
+                tone="clay"
+                title="心愿板"
+                hint="查看积分余额，用积分兑换心愿；支持新增与列表管理"
+                onPress={() => go('/wish-board')}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
+                icon="notifications-none"
+                tone="sage"
+                title="通知管理"
+                hint="总开关、各模块提醒与已预约列表"
+                onPress={() => go({ pathname: '/messages', params: { tab: 'settings' } })}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
+                icon="public"
+                tone="pine"
+                title="博客"
+                hint="站内阅读 www.jaxz.xyz，打不开时可用浏览器打开"
+                onPress={() => go('/blog')}
+                palette={palette}
+              />
+            </GroupCard>
+          </View>
 
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/memo-list');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="description" size={26} color={memoAccent} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>备忘录</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  本地备忘 · 离线保存；支持标题与正文，左滑可转待办或删除。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
+          <View>
+            <SectionTitle title="系统管理" color={palette.inkSoft} />
+            <GroupCard palette={palette}>
+              <NavRow
+                icon="bug-report"
+                tone="sage"
+                title="API 请求监控"
+                hint="实时查看本机发出的接口请求与返回，支持复制详情"
+                onPress={() => go('/api-request-monitor')}
+                palette={palette}
+              />
+            </GroupCard>
+          </View>
 
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/wish-board');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="card-giftcard" size={26} color={isDark ? '#f472b6' : '#be185d'} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>心愿板</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  查看积分余额，用积分兑换心愿；支持新增与列表管理。
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push({ pathname: '/messages', params: { tab: 'settings' } });
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="notifications-none" size={26} color={primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>通知管理</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  总开关、各模块提醒与已预约列表
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/blog');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="menu-book" size={26} color={isDark ? '#34d399' : '#047857'} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>博客</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  站内阅读 www.jaxz.xyz，打不开时可用浏览器打开
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-        </View>
-
-        <View style={styles.section}>
-          {renderSectionHead('系统管理')}
-          <Pressable
-            onPress={() => {
-              closeSettingsDrawer();
-              router.push('/api-request-monitor');
-            }}
-            style={({ pressed }) => [{ opacity: pressed ? 0.88 : 1 }]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <MaterialIcons name="bug-report" size={26} color={primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>API 请求监控</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  实时查看本机发出的接口请求与返回，支持复制详情
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
           <View onLayout={ev => onSectionLayout('appearance', ev.nativeEvent.layout.y)}>
-            <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              <View style={styles.rowBetween}>
-                <View style={{ flex: 1, paddingRight: 12 }}>
-                  <Text style={[styles.rowTitle, { color: text }]}>夜间模式</Text>
-                  <Text style={[styles.rowHint, { color: outline }]}>
+            <View
+              style={[
+                styles.blockCard,
+                {
+                  backgroundColor: palette.card,
+                  borderColor: palette.lineStrong,
+                  shadowColor: palette.shadow,
+                },
+              ]}>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={[styles.rowTitle, { color: palette.ink }]}>夜间模式</Text>
+                  <Text style={[styles.rowHint, { color: palette.muted }]}>
                     开启后使用深色界面；也可选择跟随系统。
                   </Text>
                 </View>
                 <Switch
-                  value={colorScheme === 'dark'}
+                  value={isNight}
                   onValueChange={onNightModeSwitch}
-                  trackColor={{ false: outlineVariant, true: primary }}
+                  trackColor={{ false: fold.line2, true: fold.pineButton }}
                   thumbColor="#ffffff"
+                  ios_backgroundColor={fold.line2}
                 />
               </View>
-              <View style={styles.themeModeRow}>
+              <View style={styles.chips}>
                 {(['light', 'dark', 'system'] as const).map(mode => {
                   const labels = { light: '浅色', dark: '深色', system: '跟随系统' };
                   const selected = preference === mode;
                   return (
-                    <Pressable
+                    <MotionPressable
                       key={mode}
                       onPress={() => setThemeMode(mode)}
-                      style={({ pressed }) => [
-                        styles.themeModeChip,
+                      pressScale={0.97}
+                      pressOpacity={1}
+                      style={[
+                        styles.chip,
                         {
-                          borderColor: selected ? primary : outlineVariant,
-                          backgroundColor: selected
-                            ? isDark
-                              ? 'rgba(96,165,250,0.15)'
-                              : 'rgba(0,88,190,0.08)'
-                            : 'transparent',
-                          opacity: pressed ? 0.85 : 1,
+                          borderColor: selected ? palette.pine : palette.lineStrong,
+                          backgroundColor: selected ? palette.sageSoft : fold.cardSoft,
                         },
                       ]}>
-                      <Text style={[styles.themeModeChipText, { color: text }]}>{labels[mode]}</Text>
-                    </Pressable>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          { color: selected ? palette.pine : palette.inkSoft },
+                        ]}>
+                        {labels[mode]}
+                      </Text>
+                    </MotionPressable>
                   );
                 })}
               </View>
@@ -633,223 +759,203 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
           </View>
 
           <View onLayout={ev => onSectionLayout('dayBoundary', ev.nativeEvent.layout.y)}>
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 10 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>日界线设置</Text>
-            <Text style={[styles.rowHint, { color: outline, lineHeight: 19 }]}>
-              自定义日界仅作用于下方勾选的页面：未到该时刻仍算「昨天」。未勾选的页面始终按凌晨
-              00:00 自然日划分。每月预算周期仍可在记账页单独设置「预算刷新日」。
-            </Text>
-            <Pressable
-              onPress={() => {
-                setDraftBoundary(dayBoundary);
-                setDayBoundaryPickerVisible(true);
-              }}
-              style={({ pressed }) => [
-                styles.dayBoundaryBtn,
-                { borderColor: cardBorder, opacity: pressed ? 0.88 : 1 },
-              ]}>
-              <MaterialIcons name="schedule" size={22} color={primary} />
-              <Text style={[styles.rowTitle, { color: text, flex: 1 }]}>
-                日界时刻 {formatTasksDayBoundaryLabel(dayBoundary)}
-              </Text>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </Pressable>
-            <Text style={[styles.rowTitle, { color: text, marginTop: 4 }]}>作用页面</Text>
-            <Text style={[styles.rowHint, { color: outline, lineHeight: 17 }]}>
-              关闭某页后，该页改回凌晨 00:00，不受上方时刻影响。
-            </Text>
-            {DAY_BOUNDARY_PAGE_OPTIONS.map((opt) => {
-              const enabled = dayBoundaryPages.includes(opt.id);
-              return (
-                <View key={opt.id} style={styles.pageScopeRow}>
-                  <View style={{ flex: 1, gap: 2, paddingRight: 12 }}>
-                    <Text style={[styles.rowTitle, { color: text, fontSize: 14 }]}>{opt.label}</Text>
-                    <Text style={[styles.rowHint, { color: outline }]}>{opt.hint}</Text>
-                  </View>
-                  <Switch
-                    value={enabled}
-                    onValueChange={(v) => toggleDayBoundaryPage(opt.id, v)}
-                    trackColor={{ false: outlineVariant, true: primary }}
-                    thumbColor="#ffffff"
-                  />
-                </View>
-              );
-            })}
-          </View>
-          </View>
-        </View>
-
-        <View
-          onLayout={ev => onSectionLayout('backup', ev.nativeEvent.layout.y)}
-          style={styles.section}>
-          {renderSectionHead('云备份与同步')}
-          <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder, gap: 12 }]}>
-            <Text style={[styles.rowTitle, { color: text }]}>云端 SQL 访问密钥</Text>
-            <Text style={[styles.rowHint, { color: outline, lineHeight: 18 }]}>
-              接口：{DEFAULT_CLOUD_SQL_API_URL}。本地表变更会自动增量同步；每 4 小时自动全表对齐。留空保存则使用内置默认密钥。
-            </Text>
-            <Text style={[styles.rowHint, { color: cloudTokenConfigured ? primary : outline, fontWeight: '700' }]}>
-              {cloudTokenConfigured ? '已就绪，可使用下方备份与同步' : '将使用内置默认密钥'}
-            </Text>
-            <AppInput
-              value={cloudTokenDraft}
-              onChangeText={setCloudTokenDraft}
-              placeholder={`留空则用内置密钥；默认 ${DEFAULT_CLOUD_AUTH_TOKEN.slice(0, 4)}…`}
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-            />
-            <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'flex-end' }}>
-              {cloudTokenConfigured ? (
-                <Pressable
-                  onPress={clearCloudToken}
-                  disabled={cloudTokenSaving}
-                  style={({ pressed }) => [{ opacity: pressed || cloudTokenSaving ? 0.7 : 1, paddingVertical: 8, paddingHorizontal: 4 }]}>
-                  <Text style={{ color: isDark ? '#f87171' : '#b91c1c', fontWeight: '700' }}>清除</Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={() => void saveCloudToken()}
-                disabled={cloudTokenSaving}
-                style={({ pressed }) => [
-                  styles.probeBtn,
-                  {
-                    borderColor: cardBorder,
-                    opacity: pressed || cloudTokenSaving ? 0.75 : 1,
-                    paddingHorizontal: 16,
-                    flex: 0,
-                  },
-                ]}>
-                {cloudTokenSaving ? (
-                  <ActivityIndicator size="small" color={primary} />
-                ) : (
-                  <Text style={[styles.rowTitle, { color: primary, fontSize: 14 }]}>保存密钥</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-          <Pressable
-            onPress={requestCloudBackup}
-            disabled={cloudOpBusy}
-            pointerEvents={cloudOpBusy ? 'none' : 'auto'}
-            style={({ pressed }) => [
-              { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
-            ]}>
-            <View style={[styles.card, styles.actionCard, { backgroundColor: cardBg, borderColor: cardBorder }]}>
-              {cloudBackupBusy ? (
-                <ActivityIndicator size="small" color={primary} />
-              ) : (
-                <MaterialIcons name="cloud-upload" size={26} color={primary} />
-              )}
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>一键全量备份到云端</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  将本机全部 SQLite 表上传至 Cloudflare D1（无表则先建表）。
-                </Text>
-                {cloudBackupBusy
-                  ? (() => {
-                      const line = formatCloudBackupProgressLine(cloudBackupProgress);
-                      return line ? (
-                        <Text style={[styles.rowHint, { color: primary, marginTop: 6, fontWeight: '700' }]}>
-                          {line}
-                        </Text>
-                      ) : null;
-                    })()
-                  : null}
-                <Text style={[styles.rowHint, { color: outline, marginTop: 6, fontSize: 11 }]}>
-                  {lastFullCloudBackupAtIso
-                    ? `上次全量备份：${formatZhFullBackupTime(lastFullCloudBackupAtIso)}`
-                    : '尚未在本机记录全量备份时间。'}
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-          <Pressable
-            onPress={requestCloudRestore}
-            disabled={cloudOpBusy}
-            pointerEvents={cloudOpBusy ? 'none' : 'auto'}
-            style={({ pressed }) => [
-              { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1 },
-            ]}>
             <View
               style={[
-                styles.card,
-                styles.actionCard,
+                styles.blockCard,
                 {
-                  backgroundColor: cardBg,
-                  borderColor: isDark ? 'rgba(248,113,113,0.35)' : 'rgba(185,28,28,0.25)',
-                  marginTop: 10,
+                  backgroundColor: palette.card,
+                  borderColor: palette.lineStrong,
+                  shadowColor: palette.shadow,
                 },
               ]}>
-              {cloudRestoreBusy ? (
-                <ActivityIndicator size="small" color={isDark ? '#f87171' : '#b91c1c'} />
-              ) : (
-                <MaterialIcons name="cloud-download" size={26} color={isDark ? '#f87171' : '#b91c1c'} />
-              )}
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: text }]}>从云同步到本机</Text>
-                <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                  从云端 D1 拉取全部表数据，覆盖本机 SQLite。
-                </Text>
-                {cloudRestoreBusy
-                  ? (() => {
-                      const line = formatCloudBackupProgressLine(cloudBackupProgress);
-                      return line ? (
-                        <Text style={[styles.rowHint, { color: isDark ? '#f87171' : '#b91c1c', marginTop: 6, fontWeight: '700' }]}>
-                          {line}
-                        </Text>
-                      ) : null;
-                    })()
-                  : null}
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={outline} />
-            </View>
-          </Pressable>
-
-          {Platform.OS !== 'web' ? (
-            <Pressable
-              onPress={requestLocalDatabaseClear}
-              disabled={cloudOpBusy}
-              pointerEvents={cloudOpBusy ? 'none' : 'auto'}
-              style={({ pressed }) => [
-                { opacity: cloudOpBusy ? 0.55 : pressed ? 0.88 : 1, marginTop: 10 },
-              ]}>
-              <View
+              <Text style={[styles.rowTitle, { color: palette.ink, marginBottom: 4 }]}>日界线设置</Text>
+              <Text style={[styles.rowHint, { color: palette.muted, lineHeight: 16, marginBottom: 10 }]}>
+                自定义日界只作用于下方勾选页；未到时刻仍算「昨天」；未勾选页按 00:00；记账预算刷新日在记账页单独设。
+              </Text>
+              <MotionPressable
+                onPress={() => {
+                  setDraftBoundary(dayBoundary);
+                  setDayBoundaryPickerVisible(true);
+                }}
+                pressScale={Motion.pressScaleCard}
+                pressOpacity={1}
                 style={[
-                  styles.card,
-                  styles.actionCard,
+                  styles.inlineAction,
+                  { borderColor: palette.line, backgroundColor: fold.cardSoft },
+                ]}>
+                <IconWell name="schedule" tone="sage" palette={palette} />
+                <View style={styles.navText}>
+                  <Text style={[styles.rowTitle, { color: palette.ink }]}>
+                    日界时刻 {formatTasksDayBoundaryLabel(dayBoundary)}
+                  </Text>
+                  <Text style={[styles.rowHint, { color: palette.muted }]}>点开选择时间</Text>
+                </View>
+                <MaterialIcons name="chevron-right" size={22} color={palette.muted} />
+              </MotionPressable>
+              <Text style={[styles.rowHint, { color: palette.muted, marginTop: 10, marginBottom: 6 }]}>
+                作用页面 · 关闭某页后，该页改回凌晨 00:00…
+              </Text>
+              <View style={styles.toggleList}>
+                {DAY_BOUNDARY_PAGE_OPTIONS.map(opt => {
+                  const enabled = dayBoundaryPages.includes(opt.id);
+                  return (
+                    <View
+                      key={opt.id}
+                      style={[
+                        styles.toggleItem,
+                        {
+                          borderColor: palette.line,
+                          backgroundColor: fold.cardSoft,
+                        },
+                      ]}>
+                      <View style={{ flex: 1, paddingRight: 10 }}>
+                        <Text style={[styles.toggleTitle, { color: palette.ink }]}>{opt.label}</Text>
+                        <Text style={[styles.toggleHint, { color: palette.muted }]}>{opt.hint}</Text>
+                      </View>
+                      <Switch
+                        value={enabled}
+                        onValueChange={v => toggleDayBoundaryPage(opt.id, v)}
+                        trackColor={{ false: fold.line2, true: fold.pineButton }}
+                        thumbColor="#ffffff"
+                        ios_backgroundColor={fold.line2}
+                      />
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          <View onLayout={ev => onSectionLayout('backup', ev.nativeEvent.layout.y)}>
+            <SectionTitle title="云备份与同步" color={palette.inkSoft} />
+            <View
+              style={[
+                styles.blockCard,
+                {
+                  backgroundColor: palette.card,
+                  borderColor: palette.lineStrong,
+                  shadowColor: palette.shadow,
+                  marginBottom: 8,
+                },
+              ]}>
+              <Text style={[styles.rowTitle, { color: palette.ink, marginBottom: 2 }]}>云端 SQL 访问密钥</Text>
+              <Text style={[styles.rowHint, { color: palette.muted, marginBottom: 8, lineHeight: 16 }]}>
+                接口：{DEFAULT_CLOUD_SQL_API_URL}。含自动增量同步、每 4 小时全表对齐；留空用内置密钥。
+              </Text>
+              <Text
+                style={[
+                  styles.rowHint,
                   {
-                    backgroundColor: cardBg,
-                    borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(185,28,28,0.35)',
+                    color: cloudTokenConfigured ? palette.pine : palette.muted,
+                    fontWeight: '700',
+                    marginBottom: 8,
                   },
                 ]}>
-                {localDbClearBusy ? (
-                  <ActivityIndicator size="small" color={isDark ? '#f87171' : '#b91c1c'} />
-                ) : (
-                  <MaterialIcons name="delete-forever" size={26} color={isDark ? '#f87171' : '#b91c1c'} />
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.rowTitle, { color: text }]}>清空本地数据库（调试）</Text>
-                  <Text style={[styles.rowHint, { color: outline, marginTop: 4 }]}>
-                    删除全部本地业务数据并重建空库，便于验证后端拉取逻辑。不可恢复。
-                  </Text>
-                </View>
-                <MaterialIcons name="chevron-right" size={22} color={outline} />
+                {cloudTokenConfigured ? '已就绪，可使用下方备份与同步' : '将使用内置默认密钥'}
+              </Text>
+              <AppInput
+                value={cloudTokenDraft}
+                onChangeText={setCloudTokenDraft}
+                placeholder={`可留空，使用内置默认密钥；默认 ${DEFAULT_CLOUD_AUTH_TOKEN.slice(0, 4)}…`}
+                autoCapitalize="none"
+                autoCorrect={false}
+                spellCheck={false}
+              />
+              <View style={styles.btnRow}>
+                <MotionPressable
+                  onPress={clearCloudToken}
+                  disabled={cloudTokenSaving}
+                  pressScale={0.97}
+                  style={[
+                    styles.btn,
+                    styles.btnGhost,
+                    { borderColor: palette.lineStrong, backgroundColor: fold.cardSoft },
+                  ]}>
+                  <Text style={[styles.btnText, { color: palette.inkSoft }]}>清除</Text>
+                </MotionPressable>
+                <MotionPressable
+                  onPress={() => void saveCloudToken()}
+                  disabled={cloudTokenSaving}
+                  pressScale={0.97}
+                  style={[
+                    styles.btn,
+                    styles.btnPrimary,
+                    { backgroundColor: fold.pineButton, shadowColor: fold.shadow },
+                  ]}>
+                  {cloudTokenSaving ? (
+                    <ActivityIndicator size="small" color={fold.onPineButton} />
+                  ) : (
+                    <Text style={[styles.btnText, { color: fold.onPineButton }]}>保存密钥</Text>
+                  )}
+                </MotionPressable>
               </View>
-            </Pressable>
-          ) : null}
+            </View>
 
-        </View>
+            <ActionRow
+              icon="cloud-upload"
+              tone="sage"
+              title="一键全量备份到云端"
+              hint="本机全部 SQLite 表上传至 Cloudflare D1"
+              status={
+                backupProgress ??
+                (lastFullCloudBackupAtIso
+                  ? `上次全量备份：${formatZhFullBackupTime(lastFullCloudBackupAtIso)}`
+                  : '尚未在本机记录全量备份时间')
+              }
+              busy={cloudBackupBusy}
+              onPress={requestCloudBackup}
+              disabled={cloudOpBusy}
+              palette={palette}
+              progressColor={palette.pine}
+            />
+            <ActionRow
+              icon="cloud-download"
+              tone="sage"
+              title="从云同步到本机"
+              hint="从云端 D1 拉取并覆盖本机 SQLite"
+              status={restoreProgress}
+              busy={cloudRestoreBusy}
+              onPress={requestCloudRestore}
+              disabled={cloudOpBusy}
+              palette={palette}
+              progressColor={palette.pine}
+            />
+            {Platform.OS !== 'web' ? (
+              <ActionRow
+                icon="delete-forever"
+                tone="clay"
+                title="清空本地数据库（调试）"
+                hint="删除全部本地业务数据并重建空库，不可恢复"
+                busy={localDbClearBusy}
+                danger
+                onPress={requestLocalDatabaseClear}
+                disabled={cloudOpBusy}
+                palette={palette}
+                progressColor={palette.clay}
+              />
+            ) : null}
+          </View>
         </ScrollView>
       </GestureDetector>
 
-      <Modal visible={dayBoundaryPickerVisible} transparent animationType="fade" onRequestClose={() => setDayBoundaryPickerVisible(false)}>
+      <Modal
+        visible={dayBoundaryPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDayBoundaryPickerVisible(false)}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setDayBoundaryPickerVisible(false)} />
-          <View style={[styles.modalCard, { backgroundColor: cardBg }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>日界时刻</Text>
+          <Pressable style={[styles.modalBackdrop, { backgroundColor: isDark ? 'rgba(18,26,22,0.55)' : 'rgba(32,42,37,0.45)' }]} onPress={() => setDayBoundaryPickerVisible(false)} />
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: palette.card,
+                borderColor: palette.line,
+                shadowColor: fold.shadow,
+              },
+            ]}>
+            <Text style={[styles.modalTitle, { color: palette.ink }]}>日界时刻</Text>
+            <Text style={[styles.rowHint, { color: palette.muted, marginBottom: 8 }]}>选择自定义日界时间</Text>
             <DateTimePicker
               value={new Date(2000, 0, 1, draftBoundary.hour, draftBoundary.minute)}
               mode="time"
@@ -860,37 +966,63 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
                 if (date) setDraftBoundary({ hour: date.getHours(), minute: date.getMinutes() });
               }}
             />
-            <View style={styles.modalActions}>
-              <Pressable onPress={() => setDraftBoundary({ ...DEFAULT_TASKS_DAY_BOUNDARY })}>
-                <Text style={{ color: outline, fontWeight: '700' }}>恢复默认</Text>
-              </Pressable>
-              <View style={{ flexDirection: 'row', gap: 16 }}>
-                <Pressable onPress={() => setDayBoundaryPickerVisible(false)}>
-                  <Text style={{ color: outline, fontWeight: '700' }}>取消</Text>
-                </Pressable>
-                <Pressable onPress={() => void saveDayBoundary()}>
-                  <Text style={{ color: primary, fontWeight: '800' }}>保存</Text>
-                </Pressable>
-              </View>
+            <View style={styles.btnRow}>
+              <MotionPressable
+                onPress={() => setDraftBoundary({ ...DEFAULT_TASKS_DAY_BOUNDARY })}
+                pressScale={0.97}
+                style={[styles.btn, styles.btnGhost, { borderColor: palette.lineStrong, backgroundColor: fold.cardSoft }]}>
+                <Text style={[styles.btnText, { color: palette.inkSoft }]}>恢复默认</Text>
+              </MotionPressable>
+              <MotionPressable
+                onPress={() => setDayBoundaryPickerVisible(false)}
+                pressScale={0.97}
+                style={[styles.btn, styles.btnGhost, { borderColor: palette.lineStrong, backgroundColor: fold.cardSoft }]}>
+                <Text style={[styles.btnText, { color: palette.inkSoft }]}>取消</Text>
+              </MotionPressable>
+              <MotionPressable
+                onPress={() => void saveDayBoundary()}
+                pressScale={0.97}
+                style={[styles.btn, styles.btnPrimary, { backgroundColor: fold.pineButton }]}>
+                <Text style={[styles.btnText, { color: fold.onPineButton }]}>保存</Text>
+              </MotionPressable>
             </View>
           </View>
         </View>
       </Modal>
 
-      <Modal visible={cloudDiagModal.visible} transparent animationType="fade" onRequestClose={() => setCloudDiagModal(m => ({ ...m, visible: false }))}>
+      <Modal
+        visible={cloudDiagModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCloudDiagModal(m => ({ ...m, visible: false }))}>
         <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))} />
-          <View style={[styles.modalCard, { backgroundColor: cardBg, maxHeight: '80%' }]}>
-            <Text style={[styles.sectionTitle, { color: text }]}>{cloudDiagModal.title}</Text>
-            <Text style={{ color: outline, marginTop: 6 }}>{cloudDiagModal.subtitle}</Text>
-            <ScrollView style={{ marginTop: 12, maxHeight: 320 }}>
-              <Text selectable style={{ fontSize: 11, fontFamily: 'monospace', color: text }}>
+          <Pressable
+            style={[styles.modalBackdrop, { backgroundColor: isDark ? 'rgba(18,26,22,0.55)' : 'rgba(32,42,37,0.45)' }]}
+            onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))}
+          />
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: palette.card,
+                borderColor: palette.line,
+                shadowColor: fold.shadow,
+                maxHeight: '80%',
+              },
+            ]}>
+            <Text style={[styles.modalTitle, { color: palette.ink }]}>{cloudDiagModal.title}</Text>
+            <Text style={[styles.rowHint, { color: palette.muted, marginTop: 4 }]}>{cloudDiagModal.subtitle}</Text>
+            <ScrollView style={[styles.diagBody, { backgroundColor: fold.ink, marginTop: 12 }]} nestedScrollEnabled>
+              <Text selectable style={{ fontSize: 11, fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }), color: fold.paper }}>
                 {cloudDiagModal.body}
               </Text>
             </ScrollView>
-            <Pressable onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))} style={{ marginTop: 16, alignSelf: 'flex-end' }}>
-              <Text style={{ color: primary, fontWeight: '800' }}>关闭</Text>
-            </Pressable>
+            <MotionPressable
+              onPress={() => setCloudDiagModal(m => ({ ...m, visible: false }))}
+              pressScale={0.97}
+              style={[styles.btn, styles.btnPrimary, { backgroundColor: fold.pineButton, marginTop: 14, alignSelf: 'stretch' }]}>
+              <Text style={[styles.btnText, { color: fold.onPineButton }]}>关闭</Text>
+            </MotionPressable>
           </View>
         </View>
       </Modal>
@@ -900,55 +1032,140 @@ export function GlobalSettingsPanel({ initialSection, onSectionScrolled, panClos
 
 const styles = StyleSheet.create({
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 18, paddingBottom: 32, gap: 8 },
-  section: { marginTop: 8, gap: 8 },
-  sectionHead: { marginBottom: 4 },
-  sectionTitle: { fontSize: 18, fontWeight: '800' },
-  card: { borderRadius: 12, borderWidth: 1, padding: 14 },
-  actionCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  rowTitle: { fontSize: 15, fontWeight: '800' },
-  rowHint: { fontSize: 12, lineHeight: 17 },
-  themeModeRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  themeModeChip: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 2,
-    alignItems: 'center',
+  scrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28, gap: 4 },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    marginTop: 12,
+    marginBottom: 8,
+    marginHorizontal: 4,
   },
-  themeModeChipText: { fontSize: 13, fontWeight: '700' },
-  dayBoundaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+  groupCard: {
+    borderRadius: 19,
     borderWidth: 1,
+    paddingVertical: 4,
+    marginBottom: 10,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.035,
+    shadowRadius: 16,
+    elevation: 1,
+    overflow: 'hidden',
   },
-  pageScopeRow: {
+  blockCard: {
+    borderRadius: 19,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 10,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.035,
+    shadowRadius: 16,
+    elevation: 1,
+  },
+  navRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
   },
-  probeBtn: {
-    flexDirection: 'row',
+  navText: { flex: 1, minWidth: 0 },
+  iconWell: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  rowTitle: { fontSize: 14, fontWeight: '700' },
+  rowHint: { fontSize: 11, lineHeight: 15, marginTop: 2 },
+  rowStatus: { fontSize: 10.5, marginTop: 4, fontWeight: '600' },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 10,
+  },
+  chips: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  chip: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+  },
+  chipText: { fontSize: 12, fontWeight: '700' },
+  inlineAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
     paddingVertical: 12,
-    borderRadius: 10,
+    paddingHorizontal: 14,
+    borderRadius: 19,
     borderWidth: 1,
   },
-  modalRoot: { flex: 1, justifyContent: 'center', padding: 24 },
-  modalBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.45)' },
-  modalCard: { borderRadius: 16, padding: 20, marginHorizontal: 8, zIndex: 1 },
-  modalActions: {
+  toggleList: { gap: 10 },
+  toggleItem: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 12,
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  toggleTitle: { fontSize: 13.5, fontWeight: '700' },
+  toggleHint: { fontSize: 10.5, marginTop: 2, lineHeight: 14 },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 19,
+    borderWidth: 1,
+    marginBottom: 8,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  btnRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  btn: {
+    flex: 1,
+    height: 36,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnGhost: { borderWidth: 1 },
+  btnPrimary: {
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  btnText: { fontSize: 13, fontWeight: '700' },
+  modalRoot: { flex: 1, justifyContent: 'center', padding: 20 },
+  modalBackdrop: { ...StyleSheet.absoluteFill },
+  modalCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    padding: 18,
+    marginHorizontal: 8,
+    zIndex: 1,
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 40,
+    elevation: 12,
+  },
+  modalTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
+  diagBody: {
+    borderRadius: 12,
+    padding: 10,
+    maxHeight: 160,
   },
 });
