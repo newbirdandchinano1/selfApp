@@ -1,6 +1,63 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+﻿import { ComposerTopBar, taskPriorityKeyToNumber, taskPriorityToKey, type TaskPriorityKey } from '@/components/composer';
+import { labelsFromPickerResult, extractDueDateFromDeadlineText } from '@/components/entity-form';
+import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
+import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
+import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
+import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
+import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
+import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import { useTaskFoldTheme } from '@/constants/task-fold-theme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { consumeAddTaskResult } from '@/lib/add-task-bridge';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { toast } from '@/lib/app-feedback';
+import {
+  beginCloudSqliteDirtyIgnoreBatch,
+  endCloudSqliteDirtyIgnoreBatch,
+} from '@/lib/cloud-sql-dirty-track';
+import {
+  DEFAULT_PROJECT_ICON,
+  DEFAULT_TODO_ICON,
+  mergeIconIntoExtraObject,
+  normalizeEntityIcon,
+  resolveProjectDisplayIcon,
+} from '@/lib/constants/entity-icon-choices';
+import { getDatabase } from '@/lib/database.native';
+import { formatWriteError } from '@/lib/format-write-error';
+import { addDaysToYmd } from '@/lib/date';
+import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
+import {
+  getIsLongTermProject,
+  mergeLongTermProjectIntoExtraData,
+  mergeLongTermTaskIntoExtraData,
+} from '@/lib/long-term-task';
+import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
+import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
+import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
+import {
+  mergePrerequisiteIdsIntoExtraData,
+  parsePrerequisiteProjectIds,
+  validatePrerequisiteSelection,
+} from '@/lib/repositories/projects/project-prerequisites';
+import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
+import {
+  getProjectTags,
+  getTagIdsByProjectId,
+  setProjectTagIds,
+} from '@/lib/repositories/projects/project-tag';
+import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  mergeRewardPointsIntoExtraObject,
+  normalizeRewardPoints,
+  parseRewardPointsFromExtraData,
+} from '@/lib/reward-points';
 import {
   dueDateFromScheduleMeta,
   hasDateLimitBounds,
@@ -10,63 +67,20 @@ import {
   scheduleMetaToDateLimit,
   toYmd,
 } from '@/lib/schedule-inherit';
-import { applyProjectScheduleToAllTasks } from '@/lib/tighten-task-schedules';
-import { consumeAddTaskResult } from '@/lib/add-task-bridge';
+import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 import {
   consumeSchedulePickerResult,
   normalizeRouteParam,
-  type SchedulePickerInitPayload,
   type PickedScheduleMeta,
+  type SchedulePickerInitPayload,
 } from '@/lib/schedule-picker-bridge';
-import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
-import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
-import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
-import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
-import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
-import {
-  ComposerPriorityMatrix,
-  taskPriorityKeyToNumber,
-  taskPriorityToKey,
-  type TaskPriorityKey,
-} from '@/components/composer';
-import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { getDatabase } from '@/lib/database.native';
-import { toast } from '@/lib/app-feedback';
-import { formatWriteError } from '@/lib/format-write-error';
-import {
-  getIsLongTermProject,
-  mergeLongTermProjectIntoExtraData,
-  mergeLongTermTaskIntoExtraData,
-} from '@/lib/long-term-task';
-import { clearProjectFrogFields } from '@/lib/frog-assignment';
-import {
-  mergeRewardPointsIntoExtraObject,
-  normalizeRewardPoints,
-  parseRewardPointsFromExtraData,
-} from '@/lib/reward-points';
-import {
-  mergePrerequisiteIdsIntoExtraData,
-  parsePrerequisiteProjectIds,
-  validatePrerequisiteSelection,
-} from '@/lib/repositories/projects/project-prerequisites';
-import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
-import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
-import {
-  beginCloudSqliteDirtyIgnoreBatch,
-  endCloudSqliteDirtyIgnoreBatch,
-} from '@/lib/cloud-sql-dirty-track';
-import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
-import {
-  getProjectTags,
-  getTagIdsByProjectId,
-  setProjectTagIds,
-} from '@/lib/repositories/projects/project-tag';
-import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import { setTaskTagIds } from '@/lib/repositories/tags/tag';
+import {
+  getRecentExecutionEventsForTaskIds,
+  type TaskExecutionEventWithTitle,
+} from '@/lib/repositories/tasks/task-execution-events';
+import { parseBoundHabitIdsFromExtraData } from '@/lib/repositories/tasks/task-habit-binding';
 import {
   countIncompleteTasksByProjectId,
   createTask,
@@ -75,8 +89,11 @@ import {
   type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
+import { applyProjectScheduleToAllTasks } from '@/lib/tighten-task-schedules';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -93,8 +110,134 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getHabits } from '@/lib/repositories/habits/habit';
-import { parseBoundHabitIdsFromExtraData } from '@/lib/repositories/tasks/task-habit-binding';
+
+function formatTaskPriorityShort(priority: number): string {
+  if (priority >= 4) return 'P1';
+  if (priority === 3) return 'P2';
+  if (priority === 2) return 'P3';
+  if (priority === 1) return 'P4';
+  return '';
+}
+
+function formatFrogAssignDayLabel(ymd: string, todayYmd: string): string {
+  if (ymd === todayYmd) return '今天';
+  try {
+    const d = new Date(`${ymd}T12:00:00`);
+    const week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()] ?? '';
+    return `周${week}`;
+  } catch {
+    return ymd.slice(5);
+  }
+}
+
+function getProjectTreeTaskProgress(nodes: TaskTreeNode[]): { total: number; done: number; ratio: number } {
+  let total = 0;
+  let done = 0;
+  const walk = (list: TaskTreeNode[]) => {
+    for (const n of list) {
+      total += 1;
+      if (n.status === 'done' || n.status === 'cancelled') done += 1;
+      const ch = Array.isArray(n.children) ? n.children : [];
+      if (ch.length > 0) walk(ch);
+    }
+  };
+  walk(nodes);
+  return { total, done, ratio: total > 0 ? done / total : 0 };
+}
+
+function countFrogLeaves(nodes: TaskTreeNode[]): number {
+  let n = 0;
+  const walk = (list: TaskTreeNode[]) => {
+    for (const node of list) {
+      const children = Array.isArray(node.children) ? node.children : [];
+      if (children.length === 0 && getFrogAssignedDates(node.extra_data).length > 0) n += 1;
+      if (children.length > 0) walk(children);
+    }
+  };
+  walk(nodes);
+  return n;
+}
+
+function collectTaskTreeIds(nodes: TaskTreeNode[]): string[] {
+  return nodes.flatMap((n) => [n.id, ...collectTaskTreeIds(n.children ?? [])]);
+}
+
+function collectLeafTasks(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  const leaves: TaskTreeNode[] = [];
+  const walk = (list: TaskTreeNode[]) => {
+    for (const node of list) {
+      const children = Array.isArray(node.children) ? node.children : [];
+      if (children.length === 0) leaves.push(node);
+      else walk(children);
+    }
+  };
+  walk(nodes);
+  return leaves;
+}
+
+function formatHmFromScheduleTime(raw: string | null | undefined): string {
+  const t = (raw ?? '').trim();
+  if (!t) return '';
+  const m = /(\d{1,2}):(\d{2})/.exec(t);
+  if (!m) return t.slice(0, 5);
+  return `${m[1]!.padStart(2, '0')}:${m[2]}`;
+}
+
+function formatActivityWhen(createdAt: string, todayYmd: string): string {
+  const trimmed = createdAt.trim();
+  const day = trimmed.slice(0, 10);
+  const timeMatch = /(\d{2}):(\d{2})/.exec(trimmed);
+  const hm = timeMatch ? `${timeMatch[1]}:${timeMatch[2]}` : '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    if (day === todayYmd) return hm || '今天';
+    try {
+      const d = new Date(`${day}T12:00:00`);
+      const t = new Date(`${todayYmd}T12:00:00`);
+      const diff = Math.round((t.getTime() - d.getTime()) / 86400000);
+      if (diff === 1) return '昨天';
+      if (diff > 1 && diff < 7) return `${diff} 天前`;
+    } catch {
+      /* ignore */
+    }
+    const [, m, dd] = day.split('-');
+    return `${Number(m)}/${Number(dd)}`;
+  }
+  return hm || trimmed.slice(5, 16);
+}
+
+function activityActionLabel(action: string): string {
+  if (action === 'completed') return '完成';
+  if (action === 'reopened') return '恢复为待办';
+  return action;
+}
+
+type WeekPlanItem = {
+  id: string;
+  title: string;
+  ymd: string;
+  dayLabel: string;
+  timeLabel: string;
+  inGrid: boolean;
+};
+
+function filterTreeHideCompleted(nodes: TaskTreeNode[]): TaskTreeNode[] {
+  return nodes
+    .filter((n) => n.status !== 'done' && n.status !== 'cancelled')
+    .map((n) => ({
+      ...n,
+      children: filterTreeHideCompleted(n.children ?? []),
+    }));
+}
+
+function markDoneInTaskTree(nodes: TaskTreeNode[], taskId: string, done: boolean): TaskTreeNode[] {
+  return nodes.map((n) => {
+    if (n.id === taskId) {
+      return { ...n, status: done ? 'done' : 'todo', completed_at: done ? new Date().toISOString() : null };
+    }
+    if (!n.children?.length) return n;
+    return { ...n, children: markDoneInTaskTree(n.children, taskId, done) };
+  });
+}
 
 type Subtask = {
   id: string;
@@ -114,6 +257,7 @@ type Subtask = {
   boundHabitIds?: string[];
   isLongTermTask?: boolean;
   autoPlaceIntoSchedule?: boolean;
+  icon?: string;
 };
 
 type SubtaskNode = Subtask & { children: SubtaskNode[] };
@@ -193,13 +337,57 @@ function parseTaskExtraData(raw: string | null): Record<string, unknown> {
   }
 }
 
-function toTaskPriority(value?: string): TaskPriority {
-  const text = (value ?? '').toLowerCase();
-  if (text.includes('不紧急不重要')) return 1;
-  if (text.includes('不紧急重要')) return 2;
-  if (text.includes('紧急不重要')) return 3;
-  if (text.includes('紧急重要')) return 4;
-  return 0;
+function buildWeekPlanItems(
+  nodes: TaskTreeNode[],
+  weekStartYmd: string,
+  weekEndYmd: string,
+  todayYmd: string,
+): WeekPlanItem[] {
+  const leaves = collectLeafTasks(nodes).filter(
+    (n) => n.status !== 'done' && n.status !== 'cancelled',
+  );
+  const items: WeekPlanItem[] = [];
+  for (const leaf of leaves) {
+    const frogInWeek = getFrogAssignedDates(leaf.extra_data).filter(
+      (d) => d >= weekStartYmd && d <= weekEndYmd,
+    );
+    const extra = parseTaskExtraData(leaf.extra_data);
+    const schedule =
+      extra.schedule && typeof extra.schedule === 'object' && !Array.isArray(extra.schedule)
+        ? (extra.schedule as ProjectScheduleMeta)
+        : null;
+    const dueYmd = leaf.due_date ? toYmd(leaf.due_date) : null;
+    const scheduleDate = schedule?.date ? toYmd(schedule.date) : null;
+    const rangeStart = schedule?.range?.start ? toYmd(schedule.range.start) : null;
+    const rangeEnd = schedule?.range?.end ? toYmd(schedule.range.end) : null;
+
+    let anchorYmd: string | null = null;
+    if (frogInWeek.length > 0) {
+      anchorYmd = frogInWeek[frogInWeek.length - 1]!;
+    } else if (dueYmd && dueYmd >= weekStartYmd && dueYmd <= weekEndYmd) {
+      anchorYmd = dueYmd;
+    } else if (scheduleDate && scheduleDate >= weekStartYmd && scheduleDate <= weekEndYmd) {
+      anchorYmd = scheduleDate;
+    } else if (rangeStart && rangeEnd && rangeStart <= weekEndYmd && rangeEnd >= weekStartYmd) {
+      anchorYmd = rangeStart >= weekStartYmd ? rangeStart : weekStartYmd;
+    }
+    if (!anchorYmd) continue;
+
+    const timeLabel = schedule?.hasExactTime
+      ? formatHmFromScheduleTime(schedule.startTime)
+      : schedule?.allDay
+        ? '全天'
+        : '';
+    items.push({
+      id: leaf.id,
+      title: leaf.title.trim() || '未命名任务',
+      ymd: anchorYmd,
+      dayLabel: formatFrogAssignDayLabel(anchorYmd, todayYmd),
+      timeLabel,
+      inGrid: frogInWeek.length > 0,
+    });
+  }
+  return items.sort((a, b) => a.ymd.localeCompare(b.ymd) || a.title.localeCompare(b.title));
 }
 
 function fromTaskPriority(value: TaskPriority): string {
@@ -267,20 +455,6 @@ function isProjectSubtaskUnchanged(
   );
 }
 
-function collectExpandableSubtaskIds(nodes: SubtaskNode[]): string[] {
-  const ids: string[] = [];
-  const walk = (list: SubtaskNode[]) => {
-    for (const n of list) {
-      if (n.children.length > 0) {
-        ids.push(n.id);
-        walk(n.children);
-      }
-    }
-  };
-  walk(nodes);
-  return ids;
-}
-
 function flattenSubtasksWithParents(
   nodes: SubtaskNode[],
   parentId: string | null,
@@ -294,53 +468,12 @@ function flattenSubtasksWithParents(
   return out;
 }
 
-function getPriorityColor(priorityText: string, isDark: boolean) {
-  const value = priorityText.trim();
-  if (!value) {
-    return {
-      tint: isDark ? '#94a3b8' : '#727785',
-      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-    };
-  }
-
-  if (value.includes('不紧急不重要')) {
-    return {
-      tint: isDark ? '#94a3b8' : '#727785',
-      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-    };
-  }
-
-  if (value.includes('不紧急重要')) {
-    return {
-      tint: isDark ? '#60a5fa' : '#0058be',
-      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
-      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
-    };
-  }
-
-  if (value.includes('紧急不重要')) {
-    return {
-      tint: isDark ? '#fbbf24' : '#9a5b00',
-      bg: isDark ? 'rgba(251,191,36,0.2)' : 'rgba(154,91,0,0.1)',
-      border: isDark ? 'rgba(251,191,36,0.42)' : 'rgba(154,91,0,0.24)',
-    };
-  }
-
-  if (value.includes('紧急重要')) {
-    return {
-      tint: isDark ? '#f87171' : '#ba1a1a',
-      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
-      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
-    };
-  }
-
-  return {
-    tint: isDark ? '#94a3b8' : '#727785',
-    bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-    border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-  };
+function markDoneInSubtaskTree(nodes: SubtaskNode[], taskId: string, done: boolean): SubtaskNode[] {
+  return nodes.map((n) => {
+    if (n.id === taskId) return { ...n, done };
+    if (n.children.length === 0) return n;
+    return { ...n, children: markDoneInSubtaskTree(n.children, taskId, done) };
+  });
 }
 
 function buildDeadlineTextFromSchedule(schedule: ProjectScheduleMeta | null) {
@@ -367,12 +500,13 @@ export default function EditProjectScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string; source?: string }>();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
+  const { tf, fonts } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
 
   const projectId = typeof params.id === 'string' ? params.id : '';
   const [title, setTitle] = React.useState('');
+  const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
@@ -380,7 +514,9 @@ export default function EditProjectScreen() {
   const [scheduleMeta, setScheduleMeta] = React.useState<ProjectScheduleMeta | null>(null);
   const [projectExtraData, setProjectExtraData] = React.useState<ProjectExtraData>({});
   const [subtasks, setSubtasks] = React.useState<SubtaskNode[]>([]);
-  const [expandedTaskIds, setExpandedTaskIds] = React.useState<Set<string>>(() => new Set());
+  const [taskTree, setTaskTree] = React.useState<TaskTreeNode[]>([]);
+  const [hideCompletedTasks, setHideCompletedTasks] = React.useState(false);
+  const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
   const [persistedTaskIds, setPersistedTaskIds] = React.useState<Set<string>>(new Set());
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
@@ -404,21 +540,44 @@ export default function EditProjectScreen() {
   const [lifeBetsLoading, setLifeBetsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
-  const [habitNameById, setHabitNameById] = React.useState<Map<string, string>>(() => new Map());
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const [activityEvents, setActivityEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
 
-  const primary = isDark ? '#60a5fa' : '#0058be';
   const scheduleSource =
     normalizeRouteParam(params.source as string | string[] | undefined) || `edit-project-${projectId || 'unknown'}`;
   const addTaskSource = `${scheduleSource}-add-task`;
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
-  const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
-  const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
-  const surfaceLowest = theme.surface;
-  const subtaskCardBg = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
-  const subtaskCardBorder = isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.55)';
-  const subtaskIndicatorBg = isDark ? 'rgba(30,41,59,0.72)' : 'rgba(226,232,240,0.85)';
+  const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
+  const foldCardBorder = tf.line2;
+  const outline = tf.muted;
+  const outlineVariant = tf.line;
+  const surfaceLow = isDark ? colors.input : '#F1EDE1';
+  const surfaceLowest = isDark ? colors.surface : tf.card;
+  const primary = tf.pond;
+  const logicalTodayYmd = React.useMemo(
+    () => getLogicalLocalYmd(new Date(), getDayBoundarySync()),
+    [],
+  );
+  const weekStartYmd = React.useMemo(() => getWeekStartMondayYmd(logicalTodayYmd), [logicalTodayYmd]);
+  const weekEndYmd = React.useMemo(() => addDaysToYmd(weekStartYmd, 6), [weekStartYmd]);
+  const frowBorder = {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.52)',
+  } as const;
+
+  const refreshActivityEvents = React.useCallback(async (tree: TaskTreeNode[]) => {
+    const ids = collectTaskTreeIds(tree);
+    if (ids.length === 0) {
+      setActivityEvents([]);
+      return;
+    }
+    try {
+      setActivityEvents(await getRecentExecutionEventsForTaskIds(ids, 5));
+    } catch (error) {
+      console.warn('加载项目活动失败', error);
+      setActivityEvents([]);
+    }
+  }, []);
 
   const readScheduleResult = React.useCallback((): boolean => {
     const picked = consumeSchedulePickerResult(scheduleSource);
@@ -466,6 +625,9 @@ export default function EditProjectScreen() {
             repeat: task.repeat || task.repeatText || '',
             schedule: taskSchedule,
             ...(task.autoPlaceIntoSchedule ? { autoPlaceIntoSchedule: true } : {}),
+            ...(task.icon?.trim()
+              ? { icon: normalizeEntityIcon(task.icon, DEFAULT_TODO_ICON) }
+              : {}),
           }),
           task.isLongTermTask === true,
         ),
@@ -480,8 +642,15 @@ export default function EditProjectScreen() {
           setProjectExtraData(parseProjectExtraData(cleared));
         }
       }
-      setSubtasks((prev) => [...prev, { ...task, children: [] }]);
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
+      try {
+        const projectTasks = await getTasksByProjectId(projectId);
+        setTaskTree(projectTasks);
+        setSubtasks(mapTaskTreeToSubtaskNodes(projectTasks));
+        await refreshActivityEvents(projectTasks);
+      } catch {
+        setSubtasks((prev) => [...prev, { ...task, children: [] }]);
+      }
       toast.success('已加入项目');
       return true;
     } catch (error) {
@@ -489,7 +658,7 @@ export default function EditProjectScreen() {
       toast.error(formatWriteError(error, '任务未能写入数据库，请返回重新添加或稍后重试。'));
       return true;
     }
-  }, [addTaskSource, priority, projectId]);
+  }, [addTaskSource, priority, projectId, refreshActivityEvents]);
 
   const loadProject = React.useCallback(async () => {
     if (!projectId) {
@@ -509,6 +678,7 @@ export default function EditProjectScreen() {
       projectSnapshotRef.current = project;
       categoryTouchedRef.current = false;
       setTitle(project.name);
+      setEntityIcon(resolveProjectDisplayIcon(project.name, project.extra_data));
       setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
       setPriority(taskPriorityToKey(project.priority ?? 0));
       setNotes(project.note ?? '');
@@ -530,16 +700,11 @@ export default function EditProjectScreen() {
       setSelectedLifeBetId(project.life_bet_id?.trim() ? project.life_bet_id : null);
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
+      setTaskTree(projectTasks);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
       setPersistedTaskIds(new Set(collectAllSubtaskIds(tree)));
-      try {
-        const habits = await getHabits();
-        setHabitNameById(new Map(habits.map((h) => [h.id, h.name])));
-      } catch (habitErr) {
-        console.warn('加载小习惯名称失败', habitErr);
-        setHabitNameById(new Map());
-      }
+      await refreshActivityEvents(projectTasks);
     } catch (error) {
       console.warn('加载项目详情失败', error);
       Alert.alert('加载失败', '无法读取项目详情，请稍后重试。');
@@ -547,7 +712,7 @@ export default function EditProjectScreen() {
     } finally {
       setLoading(false);
     }
-  }, [projectId, router]);
+  }, [projectId, refreshActivityEvents, router]);
 
   const reloadProjectPage = React.useCallback(
     async (forceRefresh = false) => {
@@ -607,13 +772,15 @@ export default function EditProjectScreen() {
     if (!projectId) return;
     try {
       const projectTasks = await getTasksByProjectId(projectId);
+      setTaskTree(projectTasks);
       const tree = mapTaskTreeToSubtaskNodes(projectTasks);
       setSubtasks(tree);
       setPersistedTaskIds(new Set(collectAllSubtaskIds(tree)));
+      await refreshActivityEvents(projectTasks);
     } catch (error) {
       console.warn('刷新项目任务失败', error);
     }
-  }, [projectId]);
+  }, [projectId, refreshActivityEvents]);
 
   /** 从子任务编辑页返回后刷新项目快照与分类展示，不重置 categoryTouched */
   const reloadProjectSnapshotOnly = React.useCallback(async () => {
@@ -707,37 +874,95 @@ export default function EditProjectScreen() {
     (taskId: string) => {
       if (!taskId) return;
       if (!persistedTaskIds.has(taskId)) {
-        Alert.alert('暂不可编辑', '该任务尚未保存到数据库，请先保存项目后再进入编辑。');
+        Alert.alert('暂不可打开', '该任务尚未保存到数据库，请先保存项目后再查看详情。');
         return;
       }
-      router.push({ pathname: '/edit-task', params: { id: taskId } });
+      router.push({ pathname: '/task/[id]', params: { id: taskId } });
     },
     [persistedTaskIds, router],
   );
 
-  const expandableSubtaskIds = React.useMemo(() => collectExpandableSubtaskIds(subtasks), [subtasks]);
-  const allSubtasksExpanded = React.useMemo(
-    () => expandableSubtaskIds.length > 0 && expandableSubtaskIds.every((id) => expandedTaskIds.has(id)),
-    [expandableSubtaskIds, expandedTaskIds],
+  const progress = React.useMemo(() => getProjectTreeTaskProgress(taskTree), [taskTree]);
+  const frogLeafCount = React.useMemo(() => countFrogLeaves(taskTree), [taskTree]);
+  const displayTaskTree = React.useMemo(
+    () => (hideCompletedTasks ? filterTreeHideCompleted(taskTree) : taskTree),
+    [hideCompletedTasks, taskTree],
   );
+  const weekPlanItems = React.useMemo(
+    () => buildWeekPlanItems(taskTree, weekStartYmd, weekEndYmd, logicalTodayYmd),
+    [logicalTodayYmd, taskTree, weekEndYmd, weekStartYmd],
+  );
+  const activityFeed = React.useMemo(() => {
+    type FeedRow = { key: string; title: string; detail: string; when: string; tone: 'frog' | 'amber' };
+    const rows: FeedRow[] = [];
+    for (const leaf of collectLeafTasks(taskTree)) {
+      const frogDates = getFrogAssignedDates(leaf.extra_data).filter(
+        (d) => d >= weekStartYmd && d <= weekEndYmd,
+      );
+      if (frogDates.length === 0) continue;
+      const ymd = frogDates[frogDates.length - 1]!;
+      const extra = parseTaskExtraData(leaf.extra_data);
+      const schedule =
+        extra.schedule && typeof extra.schedule === 'object' && !Array.isArray(extra.schedule)
+          ? (extra.schedule as ProjectScheduleMeta)
+          : null;
+      const time = schedule?.hasExactTime ? formatHmFromScheduleTime(schedule.startTime) : '';
+      const day = formatFrogAssignDayLabel(ymd, logicalTodayYmd);
+      rows.push({
+        key: `frog-${leaf.id}-${ymd}`,
+        title: leaf.title.trim() || '未命名任务',
+        detail: ` 指派为青蛙 · ${day}${time ? ` ${time}` : ''}`,
+        when: formatActivityWhen(`${ymd} 12:00:00`, logicalTodayYmd),
+        tone: 'frog',
+      });
+    }
+    for (const ev of activityEvents) {
+      const name = ev.task_title?.trim() || '任务';
+      const action = activityActionLabel(ev.action);
+      const progressHint =
+        ev.action === 'completed' && progress.total > 0
+          ? ` · ${progress.done} / ${progress.total}`
+          : '';
+      rows.push({
+        key: ev.id,
+        title: name,
+        detail: ` ${action}${progressHint}`,
+        when: formatActivityWhen(ev.created_at, logicalTodayYmd),
+        tone: ev.action === 'completed' ? 'frog' : 'amber',
+      });
+    }
+    return rows.slice(0, 4);
+  }, [activityEvents, logicalTodayYmd, progress.done, progress.total, taskTree, weekEndYmd, weekStartYmd]);
+  const rewardN = Math.round(Number(rewardPointsText) || 0);
+  const hasChildTasks = progress.total > 0;
 
-  const toggleSubtaskExpanded = React.useCallback((id: string) => {
-    setExpandedTaskIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const toggleTaskCollapse = React.useCallback((taskId: string) => {
+    setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   }, []);
 
-  const toggleExpandAllSubtasks = React.useCallback(() => {
-    setExpandedTaskIds((prev) => {
-      const ids = collectExpandableSubtaskIds(subtasks);
-      const allOpen = ids.length > 0 && ids.every((id) => prev.has(id));
-      if (allOpen) return new Set();
-      return new Set(ids);
-    });
-  }, [subtasks]);
+  const toggleTaskDone = React.useCallback(
+    async (task: TaskRow) => {
+      const nextDone = !(task.status === 'done' || task.status === 'cancelled');
+      try {
+        await updateTask(task.id, {
+          status: nextDone ? 'done' : 'todo',
+          completed_at: nextDone ? new Date().toISOString() : null,
+        });
+        setTaskTree((prev) => markDoneInTaskTree(prev, task.id, nextDone));
+        setSubtasks((prev) => markDoneInSubtaskTree(prev, task.id, nextDone));
+      } catch (error) {
+        console.warn('切换任务完成状态失败', error);
+        toast.error('无法更新任务状态');
+      }
+    },
+    [],
+  );
+
+  const bumpReward = React.useCallback((delta: number) => {
+    const cur = Number(rewardPointsText);
+    const base = Number.isFinite(cur) ? cur : 0;
+    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
+  }, [rewardPointsText]);
 
   const openSchedulePicker = React.useCallback(() => {
     const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
@@ -809,7 +1034,8 @@ export default function EditProjectScreen() {
         mergedExtra as Record<string, unknown>,
         normalizeRewardPoints(rewardPointsText),
       );
-      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withReward), isLongTermProject);
+      const withIcon = mergeIconIntoExtraObject(withReward, entityIcon, DEFAULT_PROJECT_ICON);
+      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withIcon), isLongTermProject);
       // 项目一旦有子任务，不再可作为青蛙实体
       const nextExtraAfterTasks =
         subtasks.length > 0 ? clearProjectFrogFields(withLongTerm) : withLongTerm;
@@ -936,9 +1162,7 @@ export default function EditProjectScreen() {
       toast.success('已保存');
     } catch (syncErr) {
       console.warn('项目保存后同步到服务器失败', syncErr);
-      toast.error(
-        formatWriteError(syncErr, '已保存到本机，但未能写入服务器。请检查网络后重试或下拉刷新。'),
-      );
+      toast.warn('已保存 · 同步失败，仅本机生效');
     }
 
     try {
@@ -961,6 +1185,7 @@ export default function EditProjectScreen() {
   }, [
     allProjects,
     deadlineText,
+    entityIcon,
     isLongTermProject,
     notes,
     prerequisiteProjectIds,
@@ -1038,429 +1263,540 @@ export default function EditProjectScreen() {
     })();
   }, [loading, notifyAncestorsDataChanged, projectId, router, saving]);
 
-  const renderSubtaskNodes = (nodes: SubtaskNode[], depth: number): React.ReactNode =>
-    nodes.map((s) => {
-      const hasChildren = s.children.length > 0;
-      const isExpanded = expandedTaskIds.has(s.id);
-      return (
-        <React.Fragment key={s.id}>
-          <View style={styles.subtaskTreeWrap}>
-            <View
-              style={[
-                styles.subtaskRow,
-                { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder },
-              ]}>
-              {hasChildren ? (
-                <Pressable
-                  onPress={() => toggleSubtaskExpanded(s.id)}
-                  hitSlop={6}
-                  style={({ pressed }) => [styles.subtaskExpandHit, pressed && { opacity: 0.75 }]}>
-                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={outline} />
-                </Pressable>
-              ) : (
-                <View style={styles.subtaskExpandPlaceholder} />
-              )}
-              <View style={styles.subtaskLevelMark} accessible accessibilityLabel={depth > 0 ? `第 ${depth} 层子任务` : undefined}>
-                {depth > 0 ? (
-                  <View
-                    style={[
-                      styles.subtaskLevelBadge,
-                      {
-                        borderColor: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.28)',
-                        backgroundColor: isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.08)',
-                      },
-                    ]}>
-                    <Text style={[styles.subtaskLevelText, { color: primary }]} numberOfLines={1}>
-                      {depth > 9 ? '9+' : String(depth)}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-              <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
-                <View style={[styles.checkbox, { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' }]}>
-                  {s.done && <MaterialIcons name="check" size={14} color="#fff" />}
-                </View>
-              </View>
-              <Pressable
-                onPress={() => openEditTask(s.id)}
-                style={({ pressed }) => [styles.subtaskRowMainPress, pressed && { opacity: 0.86 }]}>
-                <View style={styles.subtaskBody}>
-                  <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>
-                    {s.title}
-                  </Text>
-                  {!!(
-                    s.priority ||
-                    s.priorityLabel ||
-                    s.deadline ||
-                    s.deadlineText ||
-                    s.reminder ||
-                    s.reminderText ||
-                    s.repeat ||
-                    s.repeatText ||
-                    s.note ||
-                    (s.boundHabitIds?.length ?? 0) > 0
-                  ) && (
-                    <>
-                      <View style={styles.subtaskMetaRow}>
-                        {!!(s.priority || s.priorityLabel) &&
-                          (() => {
-                            const priorityText = s.priority || s.priorityLabel || '';
-                            const priorityColor = getPriorityColor(priorityText, isDark);
-                            return (
-                              <View style={[styles.metaTag, { backgroundColor: priorityColor.bg, borderColor: priorityColor.border }]}>
-                                <MaterialIcons name="flag" size={14} color={priorityColor.tint} />
-                                <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
-                              </View>
-                            );
-                          })()}
-                        {!!(s.deadline || s.deadlineText) && (
-                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                            <MaterialIcons name="event" size={14} color={primary} />
-                            <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
-                              {s.deadline || s.deadlineText}
-                            </Text>
-                          </View>
-                        )}
-                        {!!(s.reminder || s.reminderText) && (
-                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                            <MaterialIcons name="notifications-active" size={14} color={primary} />
-                            <Text style={[styles.metaTagText, { color: theme.text }]}>{s.reminder || s.reminderText}</Text>
-                          </View>
-                        )}
-                        {!!(s.repeat || s.repeatText) && (
-                          <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                            <MaterialIcons name="repeat" size={14} color={primary} />
-                            <Text style={[styles.metaTagText, { color: theme.text }]}>{s.repeat || s.repeatText}</Text>
-                          </View>
-                        )}
-                        {(s.boundHabitIds ?? []).map((habitId) => (
-                          <View
-                            key={habitId}
-                            style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                            <MaterialIcons name="repeat" size={14} color={primary} />
-                            <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
-                              {habitNameById.get(habitId)?.trim() || '已绑定习惯'}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
-                      {!!s.note && (
-                        <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
-                          {s.note}
-                        </Text>
-                      )}
-                    </>
-                  )}
-                </View>
-                <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
-                  <MaterialIcons name="chevron-right" size={18} color={outline} />
-                </View>
-              </Pressable>
-            </View>
-          </View>
-          {hasChildren && isExpanded ? renderSubtaskNodes(s.children, depth + 1) : null}
-        </React.Fragment>
-      );
-    });
 
-  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
-  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : '#ffffff';
-  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : 'rgba(241,243,255,0.72)';
-  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
+  const footPad = Math.max(insets.bottom, 12);
+  const formBusy = saving || loading;
+  const headerSub = [
+    selectedCategoryName || '未分类',
+    frogLeafCount > 0 ? `${frogLeafCount} 只青蛙` : null,
+    deadlineText ? deadlineText.split(/\s/)[0] : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const prereqLabels = prerequisiteProjectIds
+    .map((id) => allProjects.find((p) => p.id === id)?.name)
+    .filter(Boolean) as string[];
+
+  const openAddTask = () => {
+    router.push({
+      pathname: '/add-task',
+      params: {
+        source: addTaskSource,
+        dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
+        defaultSchedule: inheritedTaskSchedule ? JSON.stringify(inheritedTaskSchedule) : '',
+        lockSchedule:
+          scheduleMetaHasConcreteDates(scheduleMeta) || hasDateLimitBounds(taskDateLimit ?? {})
+            ? '1'
+            : '',
+      },
+    });
+  };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: Math.max(insets.top, 8),
-            backgroundColor: theme.background,
-            borderBottomColor: divider,
-          },
-        ]}>
-        <Pressable
-          onPress={() => router.back()}
-          disabled={saving}
-          hitSlop={10}
-          style={({ pressed }) => [styles.iconBtn, { opacity: saving ? 0.45 : pressed ? 0.75 : 1 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: theme.text }]}>{loading ? '加载中' : '项目详情'}</Text>
-        <Pressable
-          onPress={saveProject}
-          disabled={saving || loading}
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.headerActionBtn,
-            {
-              backgroundColor: saving || loading ? `${primary}55` : primary,
-              opacity: pressed ? 0.88 : 1,
-            },
-          ]}>
-          <Text style={styles.headerActionText}>{saving ? '保存中' : '保存'}</Text>
-        </Pressable>
-      </View>
-
+    <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <ComposerTopBar
+        title={loading ? '加载中' : '项目详情'}
+        subtitle={headerSub || '编辑项目'}
+        onBack={() => router.back()}
+        onSubmit={() => void saveProject()}
+        submitting={formBusy}
+        submitLabel="保存"
+      />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
           refreshControl={refreshControl}
-          contentContainerStyle={[styles.content, { paddingBottom: 120 + Math.max(insets.bottom, 12) }]}
+          contentContainerStyle={[styles.foldContent, { paddingBottom: 100 + footPad }]}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>概要</Text>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder="项目名称"
-              placeholderTextColor={outlineVariant}
-              multiline
-              editable={!loading && !saving}
-              maxLength={TITLE_MAX_LENGTH}
-              style={[styles.titleInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-            />
-            <Text style={[styles.charCounter, { color: outline }]}>
-              {title.length}/{TITLE_MAX_LENGTH}
-            </Text>
-
-            <View style={[styles.panelDivider, { backgroundColor: divider }]} />
-
-            <Pressable
-              onPress={() => setCategoryModalVisible(true)}
-              disabled={loading || saving}
-              style={({ pressed }) => [
-                styles.fieldRow,
-                { backgroundColor: fieldBg, opacity: loading ? 0.65 : pressed ? 0.82 : 1 },
-              ]}>
-              <View style={styles.fieldRowLeft}>
-                <MaterialIcons name="folder-open" size={18} color={primary} />
-                <View style={styles.fieldCopy}>
-                  <Text style={[styles.fieldLabel, { color: outline }]}>分类</Text>
-                  <Text style={[styles.fieldValue, { color: theme.text }]}>{selectedCategoryName || '未分类'}</Text>
-                </View>
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color={outline} />
-            </Pressable>
-
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>标签</Text>
-              <ProjectTagPickerField
-                selectedIds={selectedTagIds}
-                allTags={allTags}
-                loading={tagsLoading || loading}
-                disabled={loading || saving}
-                onChange={setSelectedTagIds}
-                textColor={theme.text}
-                outline={outline}
-                placeholderColor={outlineVariant}
-                primary={primary}
-                surfaceLow={surfaceLow}
-                surfaceLowest={surfaceLowest}
-                isDark={isDark}
-              />
+          {loading && !title ? (
+            <View style={styles.editLoading}>
+              <ActivityIndicator size="large" color={tf.frog} />
+              <Text style={{ fontSize: 13, color: tf.faint }}>加载项目…</Text>
             </View>
-          </View>
-
-          <View
-            style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder, opacity: loading ? 0.65 : 1 }]}
-            pointerEvents={loading || saving ? 'none' : 'auto'}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>优先级</Text>
-            <ComposerPriorityMatrix value={priority} onChange={setPriority} />
-          </View>
-
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>依赖与日程</Text>
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>前置项目</Text>
-              <PrerequisiteProjectPickerField
-                selectedIds={prerequisiteProjectIds}
-                allProjects={allProjects}
-                excludeProjectId={projectId}
-                loading={projectsLoading || loading}
-                disabled={loading || saving}
-                onChange={setPrerequisiteProjectIds}
-                textColor={theme.text}
-                outline={outline}
-                placeholderColor={outlineVariant}
-                primary={primary}
-                surfaceLow={surfaceLow}
-                surfaceLowest={surfaceLowest}
-                isDark={isDark}
-              />
-            </View>
-
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>属于哪条道路</Text>
-              <LifeBetPickerField
-                selectedId={selectedLifeBetId}
-                allBets={lifeBets}
-                loading={lifeBetsLoading || loading}
-                disabled={loading || saving}
-                onChange={setSelectedLifeBetId}
-                textColor={theme.text}
-                outline={outline}
-                placeholderColor={outlineVariant}
-                primary={primary}
-                surfaceLow={surfaceLow}
-                surfaceLowest={surfaceLowest}
-                isDark={isDark}
-              />
-            </View>
-
-            <EntityFormScheduleField
-              deadlineText={deadlineText}
-              reminderText={reminderText}
-              repeatText={repeatText}
-              onPress={openSchedulePicker}
-              label="时间限制"
-            />
-          </View>
-
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <View style={styles.subtaskHeader}>
-              <View>
-                <Text style={[styles.panelTitle, { color: theme.text }]}>任务拆解</Text>
-                <Text style={[styles.panelHint, { color: outline }]}>
-                  {subtasks.length > 0 ? `${subtasks.length} 项顶层任务` : '把项目拆成可执行任务'}
-                </Text>
-              </View>
-              <View style={styles.subtaskHeaderActions}>
-                {expandableSubtaskIds.length > 0 ? (
-                  <Pressable
-                    onPress={toggleExpandAllSubtasks}
-                    style={({ pressed }) => [styles.linkBtn, pressed && { opacity: 0.75 }]}>
-                    <Text style={[styles.linkBtnText, { color: primary }]}>
-                      {allSubtasksExpanded ? '收起' : '展开'}
+          ) : (
+            <>
+              <FoldRiseIn animate={foldAnimate} index={0} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <View style={styles.heroRow}>
+                    <EntityIconPickerField
+                      compact
+                      value={entityIcon}
+                      onChange={setEntityIcon}
+                      fallback={DEFAULT_PROJECT_ICON}
+                      disabled={formBusy}
+                      accessibilityLabel="选择项目图标"
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <TextInput
+                        value={title}
+                        onChangeText={(t) => setTitle(t.slice(0, TITLE_MAX_LENGTH))}
+                        placeholder="项目名称"
+                        placeholderTextColor={tf.faint}
+                        multiline
+                        editable={!formBusy}
+                        maxLength={TITLE_MAX_LENGTH}
+                        style={[
+                          styles.foldTitleInput,
+                          { color: tf.pond, fontFamily: fonts.serif, opacity: loading ? 0.65 : 1 },
+                        ]}
+                      />
+                      <Text style={{ fontSize: 11, color: tf.faint, marginTop: 2 }} numberOfLines={1}>
+                        {[
+                          selectedCategoryName || '未分类',
+                          formatTaskPriorityShort(taskPriorityKeyToNumber(priority)),
+                          deadlineText || null,
+                          prereqLabels[0] ? `前置：${prereqLabels[0]}${prereqLabels.length > 1 ? '…' : ''}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                    </View>
+                    {progress.total > 0 ? (
+                      <FoldProgressRing
+                        ratio={progress.ratio}
+                        size={38}
+                        strokeWidth={3}
+                        color={tf.rose}
+                      />
+                    ) : null}
+                  </View>
+                  {progress.total > 0 ? (
+                    <View style={{ marginTop: 8 }}>
+                      <FoldProgressBar
+                        ratio={progress.ratio}
+                        height={4}
+                        colorFrom="#E3B39C"
+                        colorTo={tf.rose}
+                      />
+                    </View>
+                  ) : null}
+                  <View style={styles.heroMeta}>
+                    <Text style={{ fontSize: 11, color: tf.faint }}>
+                      {progress.total > 0
+                        ? `${progress.done} / ${progress.total} 任务`
+                        : '暂无任务'}
                     </Text>
-                  </Pressable>
-                ) : null}
-                <Pressable
-                  onPress={() =>
-                    router.push({
-                      pathname: '/add-task',
-                      params: {
-                        source: addTaskSource,
-                        dateLimit: taskDateLimit ? JSON.stringify(taskDateLimit) : '',
-                        defaultSchedule: inheritedTaskSchedule ? JSON.stringify(inheritedTaskSchedule) : '',
-                        lockSchedule:
-                          scheduleMetaHasConcreteDates(scheduleMeta) || hasDateLimitBounds(taskDateLimit ?? {})
-                            ? '1'
-                            : '',
-                      },
-                    })
-                  }
-                  style={({ pressed }) => [
-                    styles.addTaskBtn,
-                    { backgroundColor: `${primary}14`, opacity: pressed ? 0.8 : 1 },
-                  ]}>
-                  <MaterialIcons name="add" size={16} color={primary} />
-                  <Text style={[styles.linkBtnText, { color: primary }]}>添加</Text>
-                </Pressable>
-              </View>
-            </View>
-            <View style={styles.subtaskList}>
-              {renderSubtaskNodes(subtasks, 0)}
-              {subtasks.length === 0 && (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
-                  <MaterialIcons name="playlist-add-check" size={18} color={outline} />
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无任务，点右上角添加</Text>
+                    <Text style={styles.dot}>·</Text>
+                    <Text style={{ fontSize: 11, color: tf.faint }}>
+                      {frogLeafCount > 0 ? `${frogLeafCount} 只青蛙已入格` : '未入格青蛙'}
+                    </Text>
+                    <Text style={styles.dot}>·</Text>
+                    <Text style={{ fontSize: 11, color: tf.faint, fontFamily: fonts.mono }}>
+                      {rewardN > 0 ? `+${rewardN}` : String(rewardN)} 积分
+                    </Text>
+                  </View>
                 </View>
-              )}
-            </View>
-          </View>
+              </FoldRiseIn>
 
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>更多</Text>
-            <Pressable
-              onPress={() => setIsLongTermProject((v) => !v)}
-              disabled={loading || saving}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: isLongTermProject }}
-              style={({ pressed }) => [
-                styles.longTermRow,
-                {
-                  backgroundColor: isLongTermProject ? `${primary}12` : fieldBg,
-                  borderColor: isLongTermProject ? primary : 'transparent',
-                  opacity: loading || saving ? 0.65 : pressed ? 0.88 : 1,
-                },
-              ]}>
-              <View style={styles.longTermTextWrap}>
-                <Text style={[styles.longTermTitle, { color: theme.text }]}>长期项目</Text>
-                <Text style={[styles.longTermHint, { color: outline }]}>
-                  完成时可只结束当天青蛙，不勾完成项目
-                </Text>
-              </View>
-              <MaterialIcons
-                name={isLongTermProject ? 'check-box' : 'check-box-outline-blank'}
-                size={22}
-                color={isLongTermProject ? primary : outline}
-              />
-            </Pressable>
+              <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <View style={styles.treeHead}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: tf.ink2 }}>任务树</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>可展开 / 勾选 / 进编辑</Text>
+                    <Pressable onPress={() => setHideCompletedTasks((v) => !v)} hitSlop={6}>
+                      <Text style={{ fontSize: 11, color: '#8C998E' }}>
+                        {hideCompletedTasks ? '显示已完成' : '隐藏已完成'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  {displayTaskTree.length === 0 ? (
+                    <View style={[styles.emptyTree, { borderColor: foldCardBorder }]}>
+                      <MaterialIcons name="playlist-add-check" size={16} color={tf.faint} />
+                      <Text style={{ flex: 1, fontSize: 12, color: tf.muted }}>
+                        {taskTree.length === 0
+                          ? '暂无任务，点下方加任务'
+                          : '已完成任务已隐藏'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <ProjectFoldTaskTree
+                      nodes={displayTaskTree}
+                      expanded
+                      locked={formBusy}
+                      logicalTodayYmd={logicalTodayYmd}
+                      collapsedTaskIds={collapsedTaskIds}
+                      formatDayLabel={formatFrogAssignDayLabel}
+                      priorityLabel={formatTaskPriorityShort}
+                      onToggleCollapse={toggleTaskCollapse}
+                      onToggleDone={(task) => {
+                        if (formBusy) return;
+                        void toggleTaskDone(task);
+                      }}
+                      onOpenTask={(id) => openEditTask(id)}
+                    />
+                  )}
+                  <View style={styles.treefoot}>
+                    <Pressable
+                      onPress={openAddTask}
+                      disabled={formBusy}
+                      style={({ pressed }) => [
+                        styles.treeAdd,
+                        { opacity: formBusy ? 0.5 : pressed ? 0.8 : 1 },
+                      ]}>
+                      <MaterialIcons name="add" size={12} color={tf.frog} />
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: tf.frog }}>加任务</Text>
+                    </Pressable>
+                    <Text style={{ fontSize: 10, color: tf.faint }}>未落库临时任务不能进编辑</Text>
+                  </View>
+                </View>
+              </FoldRiseIn>
 
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>奖励积分</Text>
-              <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
-                <TextInput
-                  value={rewardPointsText}
-                  onChangeText={setRewardPointsText}
-                  placeholder="0"
-                  placeholderTextColor={outline}
-                  keyboardType="numbers-and-punctuation"
-                  editable={!loading && !saving}
-                  style={[styles.rewardPointsInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
-                />
-              </View>
-              <Text style={[styles.longTermHint, { color: outline }]}>
-                完成整项后计入；负数扣除，可含小数；0 无变动
-              </Text>
-            </View>
+              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <View style={styles.frow}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>依赖</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <PrerequisiteProjectPickerField
+                        selectedIds={prerequisiteProjectIds}
+                        allProjects={allProjects}
+                        excludeProjectId={projectId}
+                        loading={projectsLoading || loading}
+                        disabled={formBusy}
+                        onChange={setPrerequisiteProjectIds}
+                        textColor={tf.ink}
+                        outline={outline}
+                        placeholderColor={tf.faint}
+                        primary={primary}
+                        surfaceLow={surfaceLow}
+                        surfaceLowest={surfaceLowest}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                  <Pressable
+                    onPress={openSchedulePicker}
+                    disabled={formBusy}
+                    style={({ pressed }) => [
+                      styles.frow,
+                      frowBorder,
+                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>日程</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                        {deadlineText || '未设置'}
+                      </Text>
+                      {reminderText || repeatText ? (
+                        <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                          {[reminderText, repeatText].filter(Boolean).join(' · ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                  </Pressable>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <ProjectTagPickerField
+                        selectedIds={selectedTagIds}
+                        allTags={allTags}
+                        loading={tagsLoading || loading}
+                        disabled={formBusy}
+                        onChange={setSelectedTagIds}
+                        textColor={tf.ink}
+                        outline={outline}
+                        placeholderColor={tf.faint}
+                        primary={primary}
+                        surfaceLow={surfaceLow}
+                        surfaceLowest={surfaceLowest}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收</Text>
+                    <TextInput
+                      value={notes}
+                      onChangeText={setNotes}
+                      placeholder="怎样算完成？（可选）"
+                      placeholderTextColor={tf.faint}
+                      editable={!formBusy}
+                      style={[styles.frowInput, { color: tf.ink2, flex: 1, opacity: formBusy ? 0.65 : 1 }]}
+                    />
+                    <MaterialIcons name="edit" size={14} color="#A4ADA3" />
+                  </View>
+                </View>
+              </FoldRiseIn>
 
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>验收标准</Text>
-              <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
-                <TextInput
-                  value={notes}
-                  onChangeText={setNotes}
-                  placeholder="怎样算完成？（可选）"
-                  placeholderTextColor={outline}
-                  multiline
-                  editable={!loading && !saving}
-                  style={[styles.notesInput, { color: theme.text, opacity: loading || saving ? 0.65 : 1 }]}
-                />
-              </View>
-            </View>
-          </View>
+              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <View style={styles.sectionHead}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>本周安排</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>
+                      {weekPlanItems.length > 0
+                        ? `${weekPlanItems.length} 个叶子待推进`
+                        : '暂无叶子'}
+                    </Text>
+                    <Pressable
+                      onPress={() => router.push('/tasks-calendar')}
+                      hitSlop={8}
+                      style={{ marginLeft: 'auto' }}>
+                      <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>日程 ›</Text>
+                    </Pressable>
+                  </View>
+                  {weekPlanItems.length === 0 ? (
+                    <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
+                      本周尚无入格或到期的叶子任务
+                    </Text>
+                  ) : (
+                    weekPlanItems.map((item, i) => (
+                      <Pressable
+                        key={item.id}
+                        onPress={() => openEditTask(item.id)}
+                        style={[styles.histrow, i === 0 ? { borderTopWidth: 0 } : null]}>
+                        <View
+                          style={[
+                            styles.hiBox,
+                            {
+                              backgroundColor: item.inGrid
+                                ? 'rgba(79,124,81,0.12)'
+                                : isDark
+                                  ? tf.mist
+                                  : '#F1EDE1',
+                            },
+                          ]}>
+                          {item.inGrid ? (
+                            <MaterialIcons name="eco" size={12} color={tf.frog} />
+                          ) : (
+                            <Text style={{ fontSize: 11 }}>·</Text>
+                          )}
+                        </View>
+                        <View style={styles.hc2}>
+                          <Text style={[styles.hcTitle, { color: tf.ink2 }]} numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                            {[item.dayLabel, item.timeLabel].filter(Boolean).join(' · ')}
+                            {' · '}
+                            {item.inGrid ? '已入格' : '尚未入格'}
+                          </Text>
+                        </View>
+                        <Text style={{ fontSize: 11, color: '#9DA69D', fontWeight: '600' }}>
+                          {item.dayLabel}
+                        </Text>
+                      </Pressable>
+                    ))
+                  )}
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <View style={styles.sectionHead}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>项目活动</Text>
+                    <Pressable
+                      onPress={() => router.push('/tasks-overview')}
+                      hitSlop={8}
+                      style={{ marginLeft: 'auto' }}>
+                      <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>全部 ›</Text>
+                    </Pressable>
+                  </View>
+                  {activityFeed.length === 0 ? (
+                    <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
+                      入格、完成或恢复任务后会出现在这里
+                    </Text>
+                  ) : (
+                    activityFeed.map((row, i) => (
+                      <View
+                        key={row.key}
+                        style={[styles.actrow, i === 0 ? { borderTopWidth: 0, paddingTop: 2 } : null]}>
+                        <View
+                          style={[
+                            styles.ad,
+                            { backgroundColor: row.tone === 'frog' ? tf.frog : tf.amber },
+                          ]}
+                        />
+                        <Text style={[styles.at, { color: tf.ink2 }]} numberOfLines={2}>
+                          <Text style={{ fontWeight: '700' }}>{row.title}</Text>
+                          {row.detail}
+                        </Text>
+                        <Text style={[styles.aw, { color: tf.faint }]}>{row.when}</Text>
+                      </View>
+                    ))
+                  )}
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <TaskFoldPriorityGrid
+                    value={priority}
+                    onChange={setPriority}
+                    subtitle="改判后下属任务同步移动"
+                  />
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={6} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={() => setCategoryModalVisible(true)}
+                    disabled={formBusy}
+                    style={({ pressed }) => [
+                      styles.frow,
+                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>分类</Text>
+                    <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]} numberOfLines={1}>
+                      {selectedCategoryName || '未分类'}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                  </Pressable>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>道路</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <LifeBetPickerField
+                        selectedId={selectedLifeBetId}
+                        allBets={lifeBets}
+                        loading={lifeBetsLoading || loading}
+                        disabled={formBusy}
+                        onChange={setSelectedLifeBetId}
+                        textColor={tf.ink}
+                        outline={outline}
+                        placeholderColor={tf.faint}
+                        primary={primary}
+                        surfaceLow={surfaceLow}
+                        surfaceLowest={surfaceLowest}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.frowValBold, { color: tf.ink2 }]}>
+                        {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                      </Text>
+                      <Text style={{ fontSize: 10, color: tf.faint }}>项目完成时结算</Text>
+                    </View>
+                    <View style={styles.stepper}>
+                      <Pressable
+                        onPress={() => bumpReward(-1)}
+                        disabled={formBusy}
+                        style={styles.stepperBtn}>
+                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
+                      </Pressable>
+                      <Text
+                        style={{
+                          fontFamily: fonts.mono,
+                          fontSize: 13,
+                          color: '#5C6D60',
+                          minWidth: 24,
+                          textAlign: 'center',
+                        }}>
+                        {rewardN}
+                      </Text>
+                      <Pressable
+                        onPress={() => bumpReward(1)}
+                        disabled={formBusy}
+                        style={styles.stepperBtn}>
+                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: tf.faint }}>
+                      无子任务时可指派青蛙
+                    </Text>
+                    <TaskFoldSwitch
+                      value={isLongTermProject}
+                      onValueChange={setIsLongTermProject}
+                      disabled={formBusy}
+                      accessibilityLabel="长期项目"
+                    />
+                  </View>
+                </View>
+              </FoldRiseIn>
+
+              {hasChildTasks ? (
+                <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                  <View
+                    style={[
+                      styles.lockBanner,
+                      {
+                        backgroundColor: isDark ? 'rgba(245,237,224,0.12)' : 'rgba(245,237,224,0.7)',
+                        borderColor: isDark ? tf.line2 : '#E4D3B9',
+                      },
+                    ]}>
+                    <View style={[styles.lockIcon, { backgroundColor: '#F1E3CC' }]}>
+                      <MaterialIcons name="lock-outline" size={14} color="#A87C3E" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#8B6B37' }}>
+                        项目暂不可直接指派青蛙
+                      </Text>
+                      <Text style={{ fontSize: 10, color: '#A38B63', marginTop: 2 }}>
+                        已有子任务；请把叶子任务放进日程
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={openAddTask}
+                      style={[styles.miniChip, { backgroundColor: '#EFE6D6' }]}>
+                      <Text style={{ fontSize: 11, color: '#A38B63', fontWeight: '600' }}>
+                        选择叶子 ›
+                      </Text>
+                    </Pressable>
+                  </View>
+                </FoldRiseIn>
+              ) : null}
+
+              <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                <View style={styles.hintline}>
+                  <MaterialIcons name="lightbulb-outline" size={13} color={tf.faint} />
+                  <Text style={{ flex: 1, fontSize: 11, color: tf.faint, lineHeight: 15 }}>
+                    项目标签会清空任务自有标签；下属任务继承项目日程。
+                  </Text>
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={9} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                <View style={styles.deleteRow}>
+                  <Pressable
+                    onPress={removeProject}
+                    disabled={formBusy}
+                    style={({ pressed }) => [
+                      styles.deleteGhost,
+                      {
+                        borderColor: isDark ? 'rgba(224,139,109,0.45)' : '#E2C5B9',
+                        backgroundColor: isDark ? 'rgba(247,230,222,0.12)' : 'rgba(247,230,222,0.45)',
+                        opacity: formBusy ? 0.5 : pressed ? 0.85 : 1,
+                      },
+                    ]}>
+                    <MaterialIcons name="delete-outline" size={16} color={tf.rose} />
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: tf.rose }}>删除项目</Text>
+                  </Pressable>
+                  <Text style={{ fontSize: 10, color: tf.faint, textAlign: 'right', lineHeight: 14 }}>
+                    同步失败时{'\n'}仅本机保存
+                  </Text>
+                </View>
+              </FoldRiseIn>
+            </>
+          )}
         </ScrollView>
-
-        <View
-          style={[
-            styles.bottomBar,
-            {
-              paddingBottom: Math.max(insets.bottom, 10),
-              backgroundColor: theme.background,
-              borderTopColor: divider,
-            },
-          ]}>
-          <Pressable
-            onPress={removeProject}
-            disabled={saving || loading}
-            style={({ pressed }) => [
-              styles.deleteBtn,
-              {
-                borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
-                opacity: saving || loading ? 0.55 : pressed ? 0.8 : 1,
-              },
-            ]}>
-            <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
-            <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除项目</Text>
-          </Pressable>
-        </View>
       </KeyboardAvoidingView>
 
-      <Modal transparent visible={categoryModalVisible} animationType="fade" onRequestClose={() => setCategoryModalVisible(false)}>
+      <Modal
+        transparent
+        visible={categoryModalVisible}
+        animationType="fade"
+        onRequestClose={() => setCategoryModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setCategoryModalVisible(false)}>
-          <Pressable onPress={() => {}} style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>选择项目分类</Text>
+          <Pressable
+            onPress={() => {}}
+            style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: outlineVariant }]}>
+            <Text style={[styles.modalTitle, { color: tf.ink }]}>选择项目分类</Text>
             <Pressable
               onPress={() => {
                 categoryTouchedRef.current = true;
@@ -1468,8 +1804,10 @@ export default function EditProjectScreen() {
                 setCategoryModalVisible(false);
               }}
               style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
-              <Text style={[styles.modalItemText, { color: theme.text }]}>未分类</Text>
-              {selectedCategoryId === null ? <MaterialIcons name="check" size={18} color={primary} /> : null}
+              <Text style={[styles.modalItemText, { color: tf.ink }]}>未分类</Text>
+              {selectedCategoryId === null ? (
+                <MaterialIcons name="check" size={18} color={primary} />
+              ) : null}
             </Pressable>
             {selectableProjectCategories.map((item) => (
               <Pressable
@@ -1480,8 +1818,10 @@ export default function EditProjectScreen() {
                   setCategoryModalVisible(false);
                 }}
                 style={({ pressed }) => [styles.modalItem, pressed && { opacity: 0.8 }]}>
-                <Text style={[styles.modalItemText, { color: theme.text }]}>{item.name}</Text>
-                {selectedCategoryId === item.id ? <MaterialIcons name="check" size={18} color={primary} /> : null}
+                <Text style={[styles.modalItemText, { color: tf.ink }]}>{item.name}</Text>
+                {selectedCategoryId === item.id ? (
+                  <MaterialIcons name="check" size={18} color={primary} />
+                ) : null}
               </Pressable>
             ))}
           </Pressable>
@@ -1489,9 +1829,14 @@ export default function EditProjectScreen() {
       </Modal>
 
       {saving ? (
-        <View style={[styles.savingOverlay, { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.72)' }]} pointerEvents="auto">
+        <View
+          style={[
+            styles.savingOverlay,
+            { backgroundColor: isDark ? 'rgba(15,23,42,0.55)' : 'rgba(255,252,245,0.72)' },
+          ]}
+          pointerEvents="auto">
           <ActivityIndicator size="large" color={primary} />
-          <Text style={[styles.savingOverlayText, { color: theme.text }]}>正在保存…</Text>
+          <Text style={{ fontSize: 15, fontWeight: '600', color: tf.ink }}>正在保存…</Text>
         </View>
       ) : null}
     </SafeAreaView>
@@ -1501,196 +1846,168 @@ export default function EditProjectScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  header: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  headerActionBtn: {
-    minWidth: 64,
-    height: 34,
+  foldContent: {
     paddingHorizontal: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingTop: 10,
+    gap: 8,
+    maxWidth: 560,
+    width: '100%',
+    alignSelf: 'center',
   },
-  headerActionText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  headerTitle: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
-  content: { paddingTop: 84, paddingHorizontal: 14, gap: 12 },
-  panel: {
+  editLoading: { paddingVertical: 48, alignItems: 'center', gap: 12 },
+  fcard: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    padding: 14,
-    gap: 12,
-  },
-  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
-  panelHint: { fontSize: 12, marginTop: 2, lineHeight: 16 },
-  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
-  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28 },
-  charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
-  fieldRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 10,
-  },
-  fieldRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
-  fieldCopy: { flex: 1, gap: 2, minWidth: 0 },
-  fieldBlock: { gap: 8 },
-  fieldLabel: { fontSize: 12, fontWeight: '600' },
-  fieldValue: { fontSize: 14, fontWeight: '600' },
-  scheduleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    borderRadius: 16,
+    paddingHorizontal: 10,
     paddingVertical: 10,
   },
-  scheduleIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  deadlineBody: { flex: 1, gap: 4, minWidth: 0 },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  metaTag: {
+  fcardTight: { paddingVertical: 8 },
+  extraCard: { paddingVertical: 9 },
+  sectionHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
+    gap: 6,
+    marginBottom: 4,
   },
-  metaTagText: { fontSize: 11, fontWeight: '600' },
-  subtaskHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
-  subtaskHeaderActions: {
+  histrow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    flexShrink: 1,
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
+    paddingVertical: 7,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.55)',
   },
-  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingHorizontal: 4 },
-  linkBtnText: { fontSize: 13, fontWeight: '600' },
-  addTaskBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  subtaskList: { gap: 8 },
-  subtaskTreeWrap: { width: '100%' },
-  subtaskRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  subtaskExpandHit: { width: 26, height: 32, alignItems: 'center', justifyContent: 'center' },
-  subtaskExpandPlaceholder: { width: 26, height: 32 },
-  subtaskLevelMark: { width: 24, alignItems: 'center', justifyContent: 'center' },
-  subtaskLevelBadge: {
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 4,
-    borderRadius: 6,
-    borderWidth: StyleSheet.hairlineWidth,
+  hiBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  subtaskLevelText: { fontSize: 10, fontWeight: '700' },
-  subtaskRowMainPress: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
-  subtaskIndicator: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  subtaskBody: { flex: 1, gap: 6, paddingRight: 2 },
-  subtaskText: { flex: 1, fontSize: 14, fontWeight: '600', lineHeight: 19 },
-  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
-  subtaskAction: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
-  emptySubtaskRow: {
+  hc2: { flex: 1, minWidth: 0 },
+  hcTitle: { fontSize: 13, fontWeight: '700' },
+  actrow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.55)',
+  },
+  ad: { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
+  at: { flex: 1, fontSize: 12, lineHeight: 17 },
+  aw: { fontSize: 10, marginTop: 2 },
+  heroRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  foldTitleInput: {
+    padding: 0,
+    fontSize: 20,
+    fontWeight: '600',
+    lineHeight: 26,
+    minHeight: 28,
+  },
+  heroMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    borderRadius: 10,
+    gap: 4,
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
+  dot: { fontSize: 11, color: '#98A197' },
+  treeHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  emptyTree: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     borderStyle: 'dashed',
   },
-  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '500' },
-  longTermRow: {
+  treefoot: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  longTermTextWrap: { flex: 1, gap: 3 },
-  longTermTitle: { fontSize: 14, fontWeight: '600' },
-  longTermHint: { fontSize: 12, lineHeight: 16 },
-  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
-  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
-  rewardPointsWrap: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  rewardPointsInput: {
-    padding: 0,
-    margin: 0,
-    fontSize: 15,
-    fontWeight: '600',
-    minHeight: 20,
-  },
-  bottomBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    gap: 10,
+    marginTop: 6,
+    paddingTop: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.5)',
   },
-  deleteBtn: {
-    width: '100%',
-    maxWidth: 520,
-    alignSelf: 'center',
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
+  treeAdd: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  frow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 40,
+  },
+  frowLab: { width: 52, fontSize: 12, flexShrink: 0 },
+  frowValBold: { fontSize: 13, fontWeight: '700' },
+  frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0, fontWeight: '600' },
+  miniChip: {
+    height: 22,
+    paddingHorizontal: 8,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  stepperBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: '#F0EBDE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lockBanner: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  lockIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hintline: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 5,
+    paddingHorizontal: 4,
+  },
+  deleteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  deleteGhost: {
+    flex: 1,
+    height: 40,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     gap: 6,
   },
-  deleteText: { fontSize: 14, fontWeight: '600' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.38)', justifyContent: 'center', paddingHorizontal: 18 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,23,42,0.38)',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
   modalCard: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 6 },
   modalTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
   modalItem: {
@@ -1709,5 +2026,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 14,
   },
-  savingOverlayText: { fontSize: 15, fontWeight: '600' },
 });

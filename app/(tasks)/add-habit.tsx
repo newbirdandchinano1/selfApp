@@ -1,6 +1,28 @@
-import { AppButton, AppCard, AppInput, ScreenHeader } from '@/components/ui';
+/**
+ * 新建 / 编辑习惯 — 对齐设计稿 shot 23
+ * 类型 morph 280ms · 折叠高度补间 · 积分预览随类型
+ */
+import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { AppButton, AppCard } from '@/components/ui';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import {
+  contextTone,
+  formatSignedPoints,
+  HabitAccordion,
+  HabitCard,
+  HabitNameCaret,
+  HabitScoreFade,
+  HabitSect,
+  HabitTile,
+  HabitTypeCard,
+  HBT_KIND_META,
+  HBT_PREVIEWS,
+  HBT_SUM,
+} from '@/components/tasks/habit-create-chrome';
+import { DEFAULT_HABIT_ICON } from '@/lib/constants/entity-icon-choices';
 import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
@@ -62,7 +84,19 @@ import { useFocusEffect } from "expo-router/react-navigation";
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Alert,
+  LayoutAnimation,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  UIManager,
+  View,
+} from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ExpectedGoalTab = 'none' | BuildHabitExpectedGoalType;
@@ -96,10 +130,12 @@ const DEFAULT_QUANTIFY_UNIT = '次';
 /** 小习惯简介（note）最大字数 */
 const HABIT_NOTE_MAX_LEN = 50;
 
-/** Habit kind accents — semantic (not global primary) */
-const HABIT_KIND_BUILD = '#14b8a6';
-const HABIT_KIND_BREAK_BORDER = '#ea580c';
-const HABIT_KIND_TASK = '#3b82f6';
+/** Habit kind accents — 对齐设计稿 typegrid / .hbt-type */
+const HABIT_KIND_BUILD = '#AFC38E';
+const HABIT_KIND_BREAK_BORDER = '#C47055';
+const HABIT_KIND_TASK = '#D6974B';
+
+type TileKey = 'sub' | 'expected' | 'reminder' | 'cycle' | null;
 
 function defaultReminderTime(): Date {
   const d = new Date();
@@ -110,49 +146,6 @@ function defaultReminderTime(): Date {
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
-
-/** 打卡图标备选（emoji，便于跨端一致显示） */
-const HABIT_ICON_CHOICES = [
-  '🥛',
-  '🏃',
-  '🧘',
-  '📖',
-  '✍️',
-  '💧',
-  '🍎',
-  '🥗',
-  '😴',
-  '🪥',
-  '🚶',
-  '🚴',
-  '🏋️',
-  '⏰',
-  '🎯',
-  '📝',
-  '📅',
-  '☀️',
-  '🌙',
-  '🍵',
-  '☕',
-  '🧴',
-  '💊',
-  '🎧',
-  '🌿',
-  '🧹',
-  '💪',
-  '🚿',
-  '🍽️',
-  '🦷',
-  '📵',
-  '🎵',
-  '🧠',
-  '❤️',
-  '🏊',
-  '🤸',
-  '🚭',
-  '🧊',
-  '🛏️',
-] as const;
 
 function pickParam(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
@@ -214,46 +207,6 @@ function NumberControl({
   );
 }
 
-/** 戒除奖励积分单行小输入框（破戒扣分 / 未破戒加分 / 达成加分） */
-function BreakRewardField({
-  label,
-  value,
-  onChangeText,
-  textColor,
-  mutedColor,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (t: string) => void;
-  textColor: string;
-  mutedColor: string;
-}) {
-  const { colors } = useAppTheme();
-  return (
-    <View style={styles.breakRewardField}>
-      <Text style={[styles.breakRewardFieldLabel, { color: mutedColor }]} numberOfLines={1}>
-        {label}
-      </Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder="0"
-        placeholderTextColor={mutedColor}
-        keyboardType="numbers-and-punctuation"
-        style={[
-          styles.breakRewardFieldInput,
-          Typography.body,
-          {
-            backgroundColor: colors.surfaceSubtle,
-            borderColor: colors.outline,
-            color: textColor,
-          },
-        ]}
-      />
-    </View>
-  );
-}
-
 const PAGE_API_KEY = 'add-habit';
 
 export default function AddHabitScreen() {
@@ -269,21 +222,26 @@ export default function AddHabitScreen() {
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark, scheme, shadows } = useAppTheme();
+  const { tf, fonts } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
   const { boundary: dayBoundary, logicalTodayYmd } = usePageDayBoundary('tasks');
 
   const isEditMode = pickParam(params.mode) === 'edit';
   const openedFromDetail = pickParam(params.from) === 'detail';
   const initialName = pickParam(params.name) ?? '';
-  const initialIcon = pickParam(params.icon) ?? '🥛';
+  const initialIcon = pickParam(params.icon) ?? DEFAULT_HABIT_ICON;
   const initialContext = pickParam(params.context);
   const habitId = pickParam(params.habitId);
 
   const [habitName, setHabitName] = React.useState(initialName);
   const [habitIcon, setHabitIcon] = React.useState(initialIcon);
   const [quantifyEnabled, setQuantifyEnabled] = React.useState(true);
-  const [contextOpen, setContextOpen] = React.useState(false);
-  const [quantifyOpen, setQuantifyOpen] = React.useState(false);
+  const [contextOpen, setContextOpen] = React.useState(true);
+  const [quantifyOpen, setQuantifyOpen] = React.useState(true);
   const [cycleOpen, setCycleOpen] = React.useState(false);
+  const [nameFocused, setNameFocused] = React.useState(false);
+  const [scoreFadeKey, setScoreFadeKey] = React.useState(0);
+  const [activeTile, setActiveTile] = React.useState<TileKey>(null);
   const [contextOptions, setContextOptions] = React.useState<string[]>([]);
   /** 新建时不预设情境；列表仅来自接口 habit_contexts */
   const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
@@ -307,10 +265,10 @@ export default function AddHabitScreen() {
   const [cleanRewardText, setCleanRewardText] = React.useState('0');
   const [goalRewardText, setGoalRewardText] = React.useState('0');
   const [habitKind, setHabitKind] = React.useState<HabitKind>('build');
-  const [iconPickerOpen, setIconPickerOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [reminderOpen, setReminderOpen] = React.useState(false);
+  // reminderOpen / expectedGoalOpen / subHabitsOpen / cycleOpen：磁贴展开时同步
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
@@ -1047,43 +1005,137 @@ export default function AddHabitScreen() {
     ]);
   }, [deleting, habitId, habitName, isEditMode, leaveAfterDelete]);
 
-  const renderSectionHeader = (
-    icon: React.ComponentProps<typeof MaterialIcons>['name'],
-    title: string,
-    isOpen: boolean,
-    onToggle: () => void
-  ) => (
-    <Pressable onPress={onToggle} style={({ pressed }) => [styles.sectionHeader, pressed && { opacity: 0.82 }]}>
-      <View style={styles.sectionHeaderLeft}>
-        <MaterialIcons name={icon} size={20} color={colors.text} />
-        <Text style={[Typography.bodyStrong, styles.sectionHeaderTitle, { color: colors.text }]}>{title}</Text>
-      </View>
-      <View style={styles.sectionHeaderRight}>
-        <Text style={[Typography.caption, styles.sectionHeaderHint, { color: colors.textSecondary }]}>
-          {isOpen ? '收起' : '展开'}
-        </Text>
-        <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={colors.textSecondary} />
-      </View>
-    </Pressable>
+  const runAccLayout = React.useCallback(() => {
+    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+    LayoutAnimation.configureNext(
+      LayoutAnimation.create(TaskFoldMotion.habitAccExpand, 'easeInEaseOut', 'opacity'),
+    );
+  }, []);
+
+  const toggleAccordion = React.useCallback(
+    (which: 'context' | 'quantify') => {
+      runAccLayout();
+      if (which === 'context') setContextOpen((v) => !v);
+      else setQuantifyOpen((v) => !v);
+    },
+    [runAccLayout],
   );
 
+  const toggleTile = React.useCallback(
+    (key: Exclude<TileKey, null>) => {
+      runAccLayout();
+      setActiveTile((prev) => {
+        const next = prev === key ? null : key;
+        setSubHabitsOpen(next === 'sub');
+        setExpectedGoalOpen(next === 'expected');
+        setReminderOpen(next === 'reminder');
+        setCycleOpen(next === 'cycle');
+        return next;
+      });
+    },
+    [runAccLayout],
+  );
+
+  const setKindWithMorph = (next: HabitKind) => {
+    if (next === habitKind) return;
+    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+    LayoutAnimation.configureNext(
+      LayoutAnimation.create(TaskFoldMotion.habitTypeMorph, 'easeInEaseOut', 'opacity'),
+    );
+    setHabitKind(next);
+    setScoreFadeKey((k) => k + 1);
+    toast.info(HBT_KIND_META[next].toast);
+    if (next !== 'build' && activeTile === 'expected') {
+      setActiveTile(null);
+      setExpectedGoalOpen(false);
+    }
+  };
+
+  const stepReward = (delta: number) => {
+    const cur = normalizeHabitRewardPoints(rewardPointsText);
+    const next = Math.round((cur + delta) * 100) / 100;
+    setRewardPointsText(String(next));
+  };
+
+  const rewardPts = normalizeHabitRewardPoints(rewardPointsText);
+  const breakPen = normalizeHabitRewardPoints(breakPenaltyText);
+  const breakClean = normalizeHabitRewardPoints(cleanRewardText);
+  const breakGoal = normalizeHabitRewardPoints(goalRewardText);
+  const kindMeta = HBT_KIND_META[habitKind];
+  const subLabel = habitSubItemsLabel(habitKind);
+  const cycleSummary =
+    habitKind === 'break'
+      ? '每天（固定）'
+      : habitKind === 'task'
+        ? String(activeTab)
+        : activeTab === '每周N天'
+          ? `每周${weeklyNDays}天`
+          : activeTab === '每月N天'
+            ? `每月${monthlyNDays}天`
+            : String(activeTab);
+  const expectedSummary =
+    habitKind === 'build'
+      ? expectedGoalTab === 'none'
+        ? '未设'
+        : expectedGoalTab === 'times'
+          ? `累计 ${expectedGoalValue} 次`
+          : expectedGoalTab === 'consecutive_days'
+            ? `连续 ${expectedGoalValue} 天`
+            : `累计 ${expectedGoalValue} 天`
+      : '';
+  const reminderSummary = reminderEnabled
+    ? `${pad2(reminderTime.getHours())}:${pad2(reminderTime.getMinutes())} · 可入格`
+    : '未开启';
+  const previewEms = (em: string): string => {
+    if (em === 'pts') return formatSignedPoints(rewardPts);
+    if (em === 'makeup')
+      return formatSignedPoints(
+        Math.max(0, Math.min(2, Math.round(Math.abs(rewardPts) * 0.4) || 0)),
+      );
+    if (em === 'pen') return breakPen === 0 ? '0' : `−${Math.abs(breakPen)}`;
+    if (em === 'clean') return formatSignedPoints(breakClean);
+    if (em === 'goal') return formatSignedPoints(breakGoal);
+    if (em === 'neg') return formatSignedPoints(-Math.abs(rewardPts));
+    return em;
+  };
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
-      <ScreenHeader
-        title={isEditMode ? '编辑习惯' : '新建习惯'}
-        onBack={() => router.back()}
-        right={
-          <Pressable
-            onPress={() => void handleSave()}
-            disabled={deleting || saving}
-            hitSlop={Layout.hitSlop}
-            style={({ pressed }) => [pressed && { opacity: 0.85 }, (deleting || saving) && { opacity: 0.5 }]}>
-            <Text style={[Typography.bodyStrong, styles.headerActionText, { color: colors.primary }]} numberOfLines={1}>
-              {isEditMode ? (saving ? '保存中…' : '保存') : saving ? '创建中…' : '创建打卡'}
-            </Text>
-          </Pressable>
-        }
-      />
+    <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <View style={[styles.appbar, { paddingTop: Math.max(insets.top, 8) }]}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={8}
+          style={({ pressed }) => [styles.iconbtn, pressed && { opacity: 0.75 }]}>
+          <MaterialIcons name="arrow-back" size={20} color={tf.ink2} />
+        </Pressable>
+        <View style={styles.appbarCenter}>
+          <Text style={[styles.appbarTitle, { color: tf.ink }]}>
+            {isEditMode ? '编辑习惯' : '新建习惯'}
+          </Text>
+          <Text style={[styles.appbarSub, { color: tf.muted }]} numberOfLines={1}>
+            类型决定积分与打卡逻辑
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => void handleSave()}
+          disabled={deleting || saving}
+          style={({ pressed }) => [
+            styles.pillbtn,
+            {
+              borderColor: tf.line2,
+              backgroundColor: isDark ? 'rgba(255,252,245,0.08)' : 'rgba(255,252,245,0.66)',
+              opacity: deleting || saving ? 0.5 : pressed ? 0.85 : 1,
+            },
+          ]}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: tf.ink2 }}>
+            {isEditMode ? (saving ? '保存中…' : '保存') : saving ? '创建中…' : '保存'}
+          </Text>
+        </Pressable>
+      </View>
 
       <ScrollView
         refreshControl={refreshControl}
@@ -1093,252 +1145,346 @@ export default function AddHabitScreen() {
         ]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.main}>
-          <View style={styles.nameRow}>
-            <Pressable
-              onPress={() => setIconPickerOpen(true)}
-              hitSlop={8}
-              style={({ pressed }) => [pressed && { opacity: 0.88 }]}>
-              <View
-                style={[
-                  styles.emojiWrap,
-                  {
-                    backgroundColor: colors.primaryMuted,
-                    borderColor: colors.outline,
-                  },
-                ]}>
-                <Text style={styles.emoji}>{habitIcon}</Text>
-                <View style={[styles.emojiEdit, { backgroundColor: colors.accentCard }]}>
-                  <MaterialIcons name="edit" size={10} color={colors.onAccent} />
-                </View>
-              </View>
-            </Pressable>
-            <AppInput
-              value={habitName}
-              onChangeText={setHabitName}
-              placeholder="输入打卡项目名称..."
-              containerStyle={styles.nameInputContainer}
-              inputWrapStyle={styles.nameInputWrap}
-              inputStyle={[
-                Typography.body,
-                styles.nameInputText,
-                Platform.OS === 'android' ? { textAlignVertical: 'center', includeFontPadding: false } : null,
-              ]}
-            />
-          </View>
-
-          <AppInput
-            label="简介"
-            value={habitNote}
-            onChangeText={(t) => setHabitNote(t.slice(0, HABIT_NOTE_MAX_LEN))}
-            placeholder="一句话说明这个习惯…（可选）"
-            multiline
-            maxLength={HABIT_NOTE_MAX_LEN}
-            textAlignVertical="top"
-            hint={`${habitNote.length}/${HABIT_NOTE_MAX_LEN}`}
-            inputWrapStyle={styles.noteInputWrap}
-            inputStyle={[Typography.body, styles.noteInputText]}
-          />
-
-          <View style={{ gap: Spacing.sm, marginTop: Spacing.md }}>
-            <Text style={[Typography.caption, { color: colors.textSecondary, fontWeight: '700' }]}>标签</Text>
-            <ProjectTagPickerField
-              selectedIds={selectedTagIds}
-              allTags={allTags}
-              loading={tagsLoading}
-              onChange={setSelectedTagIds}
-              textColor={colors.text}
-              outline={colors.textSecondary}
-              placeholderColor={colors.textMuted}
-              primary={colors.primary}
-              surfaceLow={colors.input}
-              // 弹层用实色 surface，避免夜间 surfaceSubtle 半透明发虚
-              surfaceLowest={colors.surface}
-              isDark={isDark}
-            />
-          </View>
-
-          {habitKind === 'break' ? (
-            <View style={styles.breakRewardsBlock}>
-              <Text style={[Typography.caption, styles.kindBlockLabel, { color: colors.textSecondary }]}>戒除奖励积分</Text>
-              <View style={styles.breakRewardsRow}>
-                <BreakRewardField
-                  label="破戒扣分"
-                  value={breakPenaltyText}
-                  onChangeText={setBreakPenaltyText}
-                  textColor={colors.text}
-                  mutedColor={colors.textSecondary}
+          {/* —— 身份卡 —— */}
+          <FoldRiseIn animate={foldAnimate} index={0} duration={420} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+            <HabitCard style={styles.identityCard}>
+              <View style={styles.identityRow}>
+                <EntityIconPickerField
+                  compact
+                  value={habitIcon}
+                  onChange={setHabitIcon}
+                  fallback={DEFAULT_HABIT_ICON}
+                  accessibilityLabel="选择习惯图标"
+                  style={[
+                    styles.hbtIcon,
+                    {
+                      backgroundColor: isDark ? tf.lily2 : undefined,
+                      borderColor: isDark ? tf.line2 : '#C6D6AE',
+                    },
+                  ]}
                 />
-                <BreakRewardField
-                  label="未破戒加分"
-                  value={cleanRewardText}
-                  onChangeText={setCleanRewardText}
-                  textColor={colors.text}
-                  mutedColor={colors.textSecondary}
-                />
-                <BreakRewardField
-                  label="达成加分"
-                  value={goalRewardText}
-                  onChangeText={setGoalRewardText}
-                  textColor={colors.text}
-                  mutedColor={colors.textSecondary}
-                />
-              </View>
-              <Text style={[Typography.caption, styles.breakRewardsHint, { color: colors.textSecondary }]}>
-                破戒扣分：当日记录达到/超过每日目标后，每多记一次才扣除；未破戒加分：确认保持戒除后计入；达成加分：达成连续目标后计入
-              </Text>
-            </View>
-          ) : null}
-          {habitKind !== 'break' ? (
-          <AppInput
-            label="奖励积分"
-            value={rewardPointsText}
-            onChangeText={setRewardPointsText}
-            placeholder="0"
-            keyboardType="numbers-and-punctuation"
-            hint={
-              habitKind === 'task'
-                ? '完成本周期任务目标后计入积分；负数表示扣除，可含小数；0 表示无变动'
-                : '达成当日目标后计入积分；负数表示扣除，可含小数；0 表示无变动'
-            }
-            inputWrapStyle={styles.rewardPointsWrap}
-          />
-          ) : null}
-
-          <View style={styles.kindBlock}>
-            <Text style={[Typography.caption, styles.kindBlockLabel, { color: colors.textSecondary }]}>打卡类型</Text>
-            <View style={styles.kindRow}>
-              <Pressable
-                onPress={() => setHabitKind('build')}
-                style={({ pressed }) => [
-                  styles.kindCard,
-                  {
-                    backgroundColor:
-                      habitKind === 'build'
-                        ? isDark
-                          ? 'rgba(20,184,166,0.22)'
-                          : 'rgba(20,184,166,0.12)'
-                        : colors.surfaceSubtle,
-                    borderColor: habitKind === 'build' ? HABIT_KIND_BUILD : colors.outline,
-                    borderWidth: habitKind === 'build' ? 2 : StyleSheet.hairlineWidth,
-                  },
-                  pressed && { opacity: 0.88 },
-                ]}>
-                <Text style={styles.kindCardEmoji}>✨</Text>
-                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>养成习惯</Text>
-                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>主动完成一件事</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setHabitKind('break')}
-                style={({ pressed }) => [
-                  styles.kindCard,
-                  {
-                    backgroundColor:
-                      habitKind === 'break'
-                        ? isDark
-                          ? 'rgba(251,146,60,0.2)'
-                          : 'rgba(251,146,60,0.12)'
-                        : colors.surfaceSubtle,
-                    borderColor: habitKind === 'break' ? HABIT_KIND_BREAK_BORDER : colors.outline,
-                    borderWidth: habitKind === 'break' ? 2 : StyleSheet.hairlineWidth,
-                  },
-                  pressed && { opacity: 0.88 },
-                ]}>
-                <Text style={styles.kindCardEmoji}>🛡️</Text>
-                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>戒坏习惯</Text>
-                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>坚持不去做某事</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setHabitKind('task')}
-                style={({ pressed }) => [
-                  styles.kindCard,
-                  {
-                    backgroundColor:
-                      habitKind === 'task'
-                        ? isDark
-                          ? 'rgba(59,130,246,0.22)'
-                          : 'rgba(59,130,246,0.12)'
-                        : colors.surfaceSubtle,
-                    borderColor: habitKind === 'task' ? HABIT_KIND_TASK : colors.outline,
-                    borderWidth: habitKind === 'task' ? 2 : StyleSheet.hairlineWidth,
-                  },
-                  pressed && { opacity: 0.88 },
-                ]}>
-                <Text style={styles.kindCardEmoji}>🎯</Text>
-                <Text style={[Typography.bodyStrong, styles.kindCardTitle, { color: colors.text }]}>完成任务</Text>
-                <Text style={[Typography.label, styles.kindCardSub, { color: colors.textSecondary }]}>周期内达成目标</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.dashedSplit}>
-            <View style={[styles.dashedLine, { borderColor: colors.outline }]} />
-            <Text style={[Typography.caption, styles.splitText, { color: colors.textSecondary }]}>下列为可选设置</Text>
-            <View style={[styles.dashedLine, { borderColor: colors.outline }]} />
-          </View>
-
-          <View>
-            {renderSectionHeader('schedule', '打卡情境', contextOpen, () => setContextOpen((v) => !v))}
-            {contextOpen ? (
-              <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
-                <View style={styles.contextGrid}>
-                  {contextOptions.map((ctx) => {
-                    const active = ctx === selectedContext;
-                    return (
-                      <Pressable
-                        key={ctx}
-                        onPress={() => setSelectedContext(ctx)}
-                        style={[
-                          styles.contextChip,
-                          active
-                            ? {
-                                backgroundColor: colors.primary,
-                                borderColor: colors.primary,
-                              }
-                            : {
-                                backgroundColor: colors.surface,
-                                borderColor: colors.outline,
-                              },
-                        ]}>
-                        <Text
-                          style={[
-                            Typography.bodyStrong,
-                            { color: active ? colors.onPrimary : colors.textSecondary, fontSize: 14 },
-                          ]}>
-                          {ctx}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </AppCard>
-            ) : null}
-          </View>
-
-          <View>
-            {renderSectionHeader('bar-chart', '量化记录', quantifyOpen, () => setQuantifyOpen((v) => !v))}
-            {quantifyOpen ? (
-              <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
-                <View style={styles.quantifyTop}>
-                  <View>
-                    <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>启用量化记录</Text>
-                    <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                      追踪喝水杯数、运动时长等数值
-                    </Text>
+                <View style={styles.idMain}>
+                  <View style={styles.nameLine}>
+                    <TextInput
+                      value={habitName}
+                      onChangeText={setHabitName}
+                      placeholder="输入习惯名称…"
+                      placeholderTextColor={tf.faint}
+                      maxLength={24}
+                      onFocus={() => setNameFocused(true)}
+                      onBlur={() => setNameFocused(false)}
+                      style={[
+                        styles.hbtName,
+                        { color: tf.ink, fontFamily: fonts.serif },
+                        Platform.OS === 'android' ? { includeFontPadding: false } : null,
+                      ]}
+                    />
+                    <HabitNameCaret visible={nameFocused} />
                   </View>
-                  <Pressable
-                    onPress={() => {
-                      if (habitKind === 'break') return;
-                      setQuantifyEnabled((v) => !v);
-                    }}
+                  <Text style={[styles.hbtMeta, { color: tf.faint }]}>衬线名称 · 最多 24 字</Text>
+                </View>
+                {!habitName.trim() ? (
+                  <Text style={styles.requiredBadge}>必填</Text>
+                ) : null}
+              </View>
+              <View style={[styles.descRow, { borderTopColor: tf.line }]}>
+                <Text style={{ fontSize: 11, color: tf.faint }}>
+                  简介 <Text style={{ color: '#B0B6AE' }}>可选</Text>
+                </Text>
+                <TextInput
+                  value={habitNote}
+                  onChangeText={(t) => setHabitNote(t.slice(0, HABIT_NOTE_MAX_LEN))}
+                  placeholder="一句话说明…"
+                  placeholderTextColor={tf.faint}
+                  maxLength={HABIT_NOTE_MAX_LEN}
+                  style={[styles.descInput, { color: tf.ink2 }]}
+                />
+                <Text style={{ fontSize: 10, fontFamily: fonts.mono, color: '#B0B7AE' }}>
+                  {habitNote.length}/{HABIT_NOTE_MAX_LEN}
+                </Text>
+              </View>
+              <View style={styles.tagsRow}>
+                <ProjectTagPickerField
+                  selectedIds={selectedTagIds}
+                  allTags={allTags}
+                  loading={tagsLoading}
+                  onChange={setSelectedTagIds}
+                  textColor={colors.text}
+                  outline={colors.textSecondary}
+                  placeholderColor={colors.textMuted}
+                  primary={colors.primary}
+                  surfaceLow={colors.input}
+                  surfaceLowest={colors.surface}
+                  isDark={isDark}
+                />
+              </View>
+            </HabitCard>
+          </FoldRiseIn>
+
+          {/* —— 打卡类型 —— */}
+          <FoldRiseIn animate={foldAnimate} index={1} duration={420} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+            <HabitCard>
+              <HabitSect title="打卡类型" hint="切换后字段形变" count="3 选 1" />
+              <View style={styles.typeRow}>
+                {(['build', 'break', 'task'] as HabitKind[]).map((k) => (
+                  <HabitTypeCard
+                    key={k}
+                    kind={k}
+                    selected={habitKind === k}
+                    onPress={() => setKindWithMorph(k)}
+                  />
+                ))}
+              </View>
+              <View style={[styles.typeNote, { backgroundColor: isDark ? tf.paper2 : 'rgba(241,237,225,0.7)' }]}>
+                <View
+                  style={[
+                    styles.typeDot,
+                    {
+                      backgroundColor:
+                        habitKind === 'break' ? HABIT_KIND_BREAK_BORDER : habitKind === 'task' ? HABIT_KIND_TASK : HABIT_KIND_BUILD,
+                    },
+                  ]}
+                />
+                <Text style={[styles.typeNoteText, { color: tf.ink2 }]} numberOfLines={1}>
+                  {kindMeta.note}
+                </Text>
+                <Text style={{ marginLeft: 'auto', fontSize: 10, color: tf.faint }}>{kindMeta.noteTag}</Text>
+              </View>
+            </HabitCard>
+          </FoldRiseIn>
+
+          {/* —— 积分配置 —— */}
+          <FoldRiseIn animate={foldAnimate} index={2} duration={420} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+            <HabitScoreFade animateKey={scoreFadeKey}>
+              <HabitCard style={styles.scoreCard}>
+                <HabitSect title="积分配置" hint="可为负 · 支持小数" count={kindMeta.badge} />
+                {habitKind === 'break' ? (
+                  <>
+                    <View style={styles.breakGrid}>
+                      <View style={styles.breakCell}>
+                        <Text style={styles.breakCellLabel}>破戒扣分</Text>
+                        <TextInput
+                          value={breakPenaltyText}
+                          onChangeText={setBreakPenaltyText}
+                          keyboardType="numbers-and-punctuation"
+                          style={[styles.breakCellInput, { color: '#A25740', fontFamily: fonts.mono }]}
+                        />
+                      </View>
+                      <View style={styles.breakCell}>
+                        <Text style={styles.breakCellLabel}>未破戒加分</Text>
+                        <TextInput
+                          value={cleanRewardText}
+                          onChangeText={setCleanRewardText}
+                          keyboardType="numbers-and-punctuation"
+                          style={[styles.breakCellInput, { color: '#4F7450', fontFamily: fonts.mono }]}
+                        />
+                      </View>
+                      <View style={styles.breakCell}>
+                        <Text style={styles.breakCellLabel}>达成加分</Text>
+                        <TextInput
+                          value={goalRewardText}
+                          onChangeText={setGoalRewardText}
+                          keyboardType="numbers-and-punctuation"
+                          style={[styles.breakCellInput, { color: '#4F7450', fontFamily: fonts.mono }]}
+                        />
+                      </View>
+                    </View>
+                    <Text style={[styles.breakNote, { color: '#A08377' }]}>
+                      连续目标{' '}
+                      <Text style={{ color: '#8E5A43', fontFamily: fonts.mono, fontWeight: '700' }}>
+                        {consecutiveTargetDays == null ? '无限' : `${consecutiveTargetDays} 天`}
+                      </Text>
+                      {' · '}破戒按当日次数累计扣分
+                    </Text>
+                  </>
+                ) : (
+                  <View
                     style={[
-                      styles.switchTrack,
+                      styles.scoreMain,
                       {
-                        backgroundColor: quantifyEnabled ? colors.successSwitch : colors.capsule,
+                        borderColor: habitKind === 'task' ? '#EBD4AE' : '#E1E6D4',
+                        backgroundColor:
+                          habitKind === 'task'
+                            ? isDark
+                              ? tf.scoreFrom
+                              : '#FAF0DF'
+                            : isDark
+                              ? tf.lily2
+                              : '#F2F5E9',
                       },
                     ]}>
-                    <View style={[styles.switchDot, quantifyEnabled && styles.switchDotOn]} />
-                  </Pressable>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: tf.ink2 }}>{kindMeta.scoreLabel}</Text>
+                      <Text style={{ fontSize: 10, color: tf.faint, marginTop: 2 }}>{kindMeta.scoreDesc}</Text>
+                    </View>
+                    <Pressable
+                      onPress={() =>
+                        openNumberEditor('奖励积分', Math.round(rewardPts) || 0, -999, 999, (v) =>
+                          setRewardPointsText(String(v)),
+                        )
+                      }
+                      hitSlop={6}>
+                      <View style={styles.scoreNum}>
+                        <Text
+                          style={{
+                            fontSize: 22,
+                            fontWeight: '700',
+                            fontFamily: fonts.mono,
+                            color: habitKind === 'task' ? '#9C6B2B' : '#355E45',
+                          }}>
+                          {formatSignedPoints(rewardPts)}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: tf.muted }}>分</Text>
+                      </View>
+                    </Pressable>
+                    <View style={styles.scoreStep}>
+                      <Pressable
+                        onPress={() => stepReward(-1)}
+                        style={({ pressed }) => [styles.scoreStepBtn, pressed && { opacity: 0.75 }]}>
+                        <Text style={{ color: tf.ink2, fontSize: 14 }}>−</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => stepReward(1)}
+                        style={({ pressed }) => [styles.scoreStepBtn, pressed && { opacity: 0.75 }]}>
+                        <Text style={{ color: tf.ink2, fontSize: 14 }}>＋</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
+                <View style={styles.previewGrid}>
+                  {HBT_PREVIEWS[habitKind].map((p) => (
+                    <View
+                      key={p.b}
+                      style={[styles.previewCell, { backgroundColor: isDark ? tf.paper2 : '#F4F0E6' }]}>
+                      <View
+                        style={[
+                          styles.previewIcon,
+                          p.tone === 'ok'
+                            ? { backgroundColor: '#E4ECDA' }
+                            : p.tone === 'cont'
+                              ? { backgroundColor: '#F3EAD8' }
+                              : p.tone === 'make'
+                                ? { backgroundColor: '#E8EEF0' }
+                                : p.tone === 'pen'
+                                  ? { backgroundColor: '#F5E1D9' }
+                                  : { backgroundColor: '#EEEAE0' },
+                        ]}>
+                        {p.icon === '0' ? (
+                          <Text style={{ fontSize: 10, fontFamily: fonts.mono, color: '#A5ABA3' }}>0</Text>
+                        ) : (
+                          <MaterialIcons
+                            name={p.icon}
+                            size={12}
+                            color={
+                              p.tone === 'ok'
+                                ? '#557048'
+                                : p.tone === 'cont'
+                                  ? '#9A6C2E'
+                                  : p.tone === 'make'
+                                    ? '#5E7478'
+                                    : p.tone === 'pen'
+                                      ? '#A25740'
+                                      : '#A5ABA3'
+                            }
+                          />
+                        )}
+                      </View>
+                      <Text style={{ fontSize: 10, color: tf.faint }} numberOfLines={1}>
+                        {p.b}
+                      </Text>
+                      <Text style={{ fontSize: 11, fontFamily: fonts.mono, color: tf.ink2, marginTop: 1 }}>
+                        {previewEms(p.em)}
+                      </Text>
+                    </View>
+                  ))}
                 </View>
+              </HabitCard>
+            </HabitScoreFade>
+          </FoldRiseIn>
+
+          <View style={styles.optDivider}>
+            <View style={[styles.optLine, { backgroundColor: tf.line }]} />
+            <Text style={[styles.optLabel, { color: tf.muted }]}>下列为可选设置</Text>
+            <View style={[styles.optLine, { backgroundColor: tf.line }]} />
+            <Text style={{ fontSize: 10, color: tf.faint }}>按需展开</Text>
+          </View>
+
+          <HabitAccordion
+            open={contextOpen}
+            onToggle={() => toggleAccordion('context')}
+            icon={<Text style={{ fontSize: 13 }}>🌅</Text>}
+            iconTone="rose"
+            title="打卡情境"
+            subtitle="会影响主屏分组与卡片底色"
+            summary={selectedContext || '未选'}>
+            <View style={styles.toneChips}>
+              {contextOptions.map((ctx, i) => {
+                const active = ctx === selectedContext;
+                const tone = contextTone(i);
+                return (
+                  <Pressable
+                    key={ctx}
+                    onPress={() => setSelectedContext(ctx)}
+                    style={[
+                      styles.toneChip,
+                      {
+                        backgroundColor: tone.bg,
+                        borderColor: active ? tf.frog : tone.border,
+                        borderWidth: active ? 1.5 : 1,
+                      },
+                    ]}>
+                    <Text style={{ fontSize: 12, color: tone.fg, fontWeight: active ? '700' : '500' }}>{ctx}</Text>
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                onPress={() => router.push('/habit-context')}
+                style={[styles.toneChipAdd, { borderColor: tf.line2 }]}>
+                <Text style={{ color: tf.muted, fontSize: 14 }}>＋</Text>
+              </Pressable>
+              <Pressable onPress={() => router.push('/habit-context')} hitSlop={6}>
+                <Text style={{ fontSize: 11, color: tf.muted }}>管理 ›</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.hbtHint, { color: tf.faint }]}>
+              新建时聚焦拉取 habit_contexts；选中项不在列表则回落到第一项。
+            </Text>
+          </HabitAccordion>
+
+          <HabitAccordion
+            open={quantifyOpen}
+            onToggle={() => toggleAccordion('quantify')}
+            icon={<MaterialIcons name="bar-chart" size={14} color="#5C7B54" />}
+            iconTone="green"
+            title="量化记录"
+            subtitle="关掉后仅记录「做过 / 没做」"
+            headerRight={
+              <Pressable
+                onPress={() => {
+                  if (habitKind === 'break') {
+                    toast.info('戒除类量化记录强制开启，不可关闭');
+                    return;
+                  }
+                  setQuantifyEnabled((v) => !v);
+                }}
+                style={[
+                  styles.switchTrack,
+                  habitKind === 'break' && styles.switchForced,
+                  {
+                    backgroundColor: quantifyEnabled ? colors.successSwitch : colors.capsule,
+                  },
+                ]}>
+                <View style={[styles.switchDot, quantifyEnabled && styles.switchDotOn]} />
+              </Pressable>
+            }>
+            <View style={styles.quantifyTop}>
+              <View>
+                <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>启用量化记录</Text>
+                <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
+                  追踪喝水杯数、运动时长等数值
+                </Text>
+              </View>
+            </View>
 
                 {quantifyEnabled ? (
                   <View style={[styles.quantifyBody, { borderTopColor: colors.outline }]}>
@@ -1510,17 +1656,74 @@ export default function AddHabitScreen() {
                     />
                   </View>
                 ) : null}
-              </AppCard>
-            ) : null}
+            <Text style={[styles.hbtHint, { color: tf.faint, marginTop: 6 }]}>
+              {habitKind === 'break'
+                ? '无记录 ≠ 达标；任一子习惯破戒，当日整体破戒。'
+                : habitKind === 'task'
+                  ? '周期内达标才发积分；达标次日隐藏，下周期再现。'
+                  : '次数达到目标即算达标；0 次时不发积分。'}
+            </Text>
+          </HabitAccordion>
+
+          {/* —— 2×2 磁贴 —— */}
+          <View style={[styles.tilesCard, { backgroundColor: tf.card, borderColor: tf.line2 }]}>
+            <View style={styles.tilesGrid}>
+              <HabitTile
+                icon={<Text style={{ fontSize: 11 }}>☑</Text>}
+                iconTone="green"
+                title={subLabel.section}
+                subtitle={
+                  habitKind === 'break'
+                    ? '任一项破戒即整日破'
+                    : habitKind === 'task'
+                      ? '进度按周期保留'
+                      : '全部完成才计父打卡'
+                }
+                trailing={subHabitsEnabled ? `${subHabits.length} 项 ›` : '关 ›'}
+                onPress={() => toggleTile('sub')}
+              />
+              {habitKind === 'build' ? (
+                <HabitTile
+                  icon={<MaterialIcons name="flag" size={12} color="#9C6B2B" />}
+                  iconTone="amber"
+                  title="预期目标"
+                  subtitle={expectedSummary}
+                  trailing={expectedGoalTab === 'none' ? '未设 ›' : '已设 ›'}
+                  onPress={() => toggleTile('expected')}
+                />
+              ) : null}
+              <HabitTile
+                icon={<MaterialIcons name="notifications-none" size={12} color="#5A7680" />}
+                iconTone="blue"
+                title="提醒并入格"
+                subtitle={reminderSummary}
+                trailing={reminderEnabled ? '开 ›' : '关 ›'}
+                onPress={() => toggleTile('reminder')}
+              />
+              <HabitTile
+                icon={<MaterialIcons name="repeat" size={12} color="#74627A" />}
+                iconTone="violet"
+                title="重复"
+                subtitle={
+                  habitKind === 'break'
+                    ? '每天（固定，不可改）'
+                    : `${cycleSummary} · 可改周期`
+                }
+                trailing={habitKind === 'break' ? '固定 ›' : `${cycleSummary} ›`}
+                wide={habitKind !== 'build'}
+                onPress={() => {
+                  if (habitKind === 'break') {
+                    toast.info('戒除坏习惯固定按每天记录');
+                    return;
+                  }
+                  toggleTile('cycle');
+                }}
+              />
+            </View>
           </View>
 
-          {(() => {
-            const subLabel = habitSubItemsLabel(habitKind);
-            return (
-            <View>
-              {renderSectionHeader('account-tree', subLabel.section, subHabitsOpen, () => setSubHabitsOpen((v) => !v))}
-              {subHabitsOpen ? (
-                <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
+          {activeTile === 'sub' ? (
+            <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                   <View style={styles.quantifyTop}>
                     <View style={{ flex: 1, paddingRight: Spacing.md }}>
                       <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>
@@ -1641,16 +1844,10 @@ export default function AddHabitScreen() {
                       </Pressable>
                     </View>
                   ) : null}
-                </AppCard>
-              ) : null}
-            </View>
-            );
-          })()}
+            </AppCard>
+          ) : null}
 
-          {habitKind === 'build' ? (
-            <View>
-              {renderSectionHeader('flag', '预期目标', expectedGoalOpen, () => setExpectedGoalOpen((v) => !v))}
-              {expectedGoalOpen ? (
+          {habitKind === 'build' && activeTile === 'expected' ? (
                 <AppCard variant="default" padded style={styles.sectionCardInner}>
                   <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>达成条件</Text>
                   <Text style={[Typography.caption, styles.expectedGoalHint, { color: colors.textSecondary }]}>
@@ -1706,13 +1903,9 @@ export default function AddHabitScreen() {
                     />
                   ) : null}
                 </AppCard>
-              ) : null}
-            </View>
           ) : null}
 
-          <View>
-            {renderSectionHeader('notifications-active', '打卡提醒 / 日程入格', reminderOpen, () => setReminderOpen((v) => !v))}
-            {reminderOpen ? (
+          {activeTile === 'reminder' ? (
               <AppCard variant="default" padded={false} style={styles.sectionCardInner}>
                 <View style={styles.quantifyTop}>
                   <View style={styles.reminderIntro}>
@@ -1772,34 +1965,9 @@ export default function AddHabitScreen() {
                   </View>
                 ) : null}
               </AppCard>
-            ) : null}
-          </View>
+          ) : null}
 
-          {habitKind === 'break' ? (
-            <View
-              style={[
-                styles.breakCycleFixedCard,
-                { backgroundColor: colors.surfaceSubtle, borderColor: colors.outline },
-              ]}>
-              <MaterialIcons name="calendar-month" size={18} color={colors.textSecondary} />
-              <View style={styles.breakCycleFixedTextWrap}>
-                <Text style={[Typography.bodyStrong, styles.breakCycleFixedTitle, { color: colors.text }]}>
-                  循环模式
-                </Text>
-                <Text style={[Typography.caption, styles.breakCycleFixedHint, { color: colors.textSecondary }]}>
-                  戒除坏习惯固定按每天记录，无需设置循环
-                </Text>
-              </View>
-            </View>
-          ) : (
-          <View>
-            {renderSectionHeader(
-              'calendar-month',
-              habitKind === 'task' ? '重复设置' : '循环模式',
-              cycleOpen,
-              () => setCycleOpen((v) => !v)
-            )}
-            {cycleOpen ? (
+          {activeTile === 'cycle' && habitKind !== 'break' ? (
               <AppCard variant="muted" padded={false} style={styles.cycleSectionOuter}>
                 <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
                   {(habitKind === 'task' ? TASK_CYCLE_TABS : CYCLE_TABS).map((tab) => {
@@ -2059,9 +2227,34 @@ export default function AddHabitScreen() {
                   ) : null}
                 </View>
               </AppCard>
-            ) : null}
-          </View>
-          )}
+          ) : null}
+
+          {/* —— 只读规则摘要 —— */}
+          <HabitCard style={[styles.summaryCard, { backgroundColor: isDark ? tf.card : 'rgba(245,241,231,0.92)' }]}>
+            <HabitSect title="当前类型会怎样计算" count="只读摘要" />
+            <View style={styles.sumGrid}>
+              {HBT_SUM[habitKind].cells.map((c) => (
+                <View
+                  key={c.b}
+                  style={[styles.sumCell, { backgroundColor: isDark ? tf.paper2 : '#F4F0E6' }]}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: tf.ink2 }} numberOfLines={1}>
+                    {c.b}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: tf.faint, marginTop: 2 }} numberOfLines={1}>
+                    {c.s}
+                  </Text>
+                </View>
+              ))}
+            </View>
+            <View style={styles.sumBadgeRow}>
+              <Text style={[styles.sumBadge, { backgroundColor: isDark ? tf.paper2 : '#F1EDE1', color: tf.muted }]}>
+                {HBT_SUM[habitKind].title}
+              </Text>
+            </View>
+          </HabitCard>
+          <Text style={[styles.footnote, { color: tf.faint }]}>
+            草稿实时写本机 · 保存失败只提示「仅本机」
+          </Text>
         </View>
       </ScrollView>
 
@@ -2089,7 +2282,7 @@ export default function AddHabitScreen() {
             variant="primary"
             size="lg"
             fullWidth
-            label="创建打卡"
+            label={saving ? '创建中…' : '创建习惯'}
             loading={saving}
             disabled={deleting || saving}
             onPress={() => void handleSave()}
@@ -2122,49 +2315,6 @@ export default function AddHabitScreen() {
               numberEditor.onSave(value);
               setNumberEditor((prev) => ({ ...prev, visible: false }));
             }} />
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={iconPickerOpen} transparent animationType="fade" onRequestClose={() => setIconPickerOpen(false)}>
-        <View style={styles.iconModalRoot}>
-          <Pressable style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]} onPress={() => setIconPickerOpen(false)} />
-          <View style={[styles.iconModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>选择图标</Text>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              style={styles.iconModalScroll}
-              contentContainerStyle={styles.iconModalScrollContent}>
-              <View style={styles.iconPickerGrid}>
-                {HABIT_ICON_CHOICES.map((ico) => {
-                  const selected = habitIcon === ico;
-                  return (
-                    <Pressable
-                      key={ico}
-                      onPress={() => {
-                        setHabitIcon(ico);
-                        setIconPickerOpen(false);
-                      }}
-                      style={({ pressed }) => [
-                        styles.iconPickerCell,
-                        {
-                          backgroundColor: selected ? colors.primaryMuted : colors.surfaceMuted,
-                          borderColor: selected ? colors.primary : 'transparent',
-                        },
-                        pressed && { opacity: 0.85 },
-                      ]}>
-                      <Text style={styles.iconPickerEmoji}>{ico}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
-            <Pressable
-              onPress={() => setIconPickerOpen(false)}
-              style={({ pressed }) => [styles.iconModalCloseBtn, pressed && { opacity: 0.8 }]}>
-              <Text style={[Typography.bodyStrong, styles.iconModalCloseText, { color: colors.textSecondary }]}>取消</Text>
-            </Pressable>
           </View>
         </View>
       </Modal>
@@ -2297,13 +2447,196 @@ export default function AddHabitScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  appbar: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  iconbtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appbarCenter: { flex: 1, minWidth: 0 },
+  appbarTitle: { fontSize: 15, fontWeight: '700' },
+  appbarSub: { fontSize: 10, marginTop: 2 },
+  pillbtn: {
+    height: 28,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   content: {
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingTop: Spacing.xl,
-    gap: Spacing['2xl'],
+    paddingHorizontal: 13,
+    paddingTop: 6,
+    gap: 0,
   },
   headerActionText: { fontSize: 15 },
-  main: { gap: Spacing['3xl'], maxWidth: Layout.contentMaxWidth, alignSelf: 'center', width: '100%' },
+  main: { gap: 4, maxWidth: Layout.contentMaxWidth, alignSelf: 'center', width: '100%' },
+  identityCard: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
+  identityRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  hbtIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  idMain: { flex: 1, minWidth: 0 },
+  nameLine: { flexDirection: 'row', alignItems: 'center' },
+  hbtName: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '600',
+    padding: 0,
+    margin: 0,
+    minHeight: 24,
+  },
+  hbtMeta: { fontSize: 10, marginTop: 4, letterSpacing: 0.3 },
+  requiredBadge: {
+    fontSize: 10,
+    color: '#9A6A30',
+    backgroundColor: '#F8ECD7',
+    borderWidth: 1,
+    borderColor: '#EBD3AB',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    alignSelf: 'flex-start',
+    marginTop: 2,
+    overflow: 'hidden',
+  },
+  descRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  descInput: { flex: 1, fontSize: 13, padding: 0, minWidth: 0 },
+  tagsRow: { marginTop: 6 },
+  typeRow: { flexDirection: 'row', gap: 5 },
+  typeNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 7,
+  },
+  typeDot: { width: 6, height: 6, borderRadius: 3 },
+  typeNoteText: { flex: 1, fontSize: 11, fontWeight: '600' },
+  scoreCard: { paddingBottom: 8 },
+  scoreMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  scoreNum: { flexDirection: 'row', alignItems: 'baseline', gap: 2 },
+  scoreStep: { gap: 3 },
+  scoreStepBtn: {
+    width: 20,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    borderWidth: 1,
+    borderColor: '#DCE2D2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  breakGrid: { flexDirection: 'row', gap: 5 },
+  breakCell: {
+    flex: 1,
+    backgroundColor: '#F8EDE8',
+    borderWidth: 1,
+    borderColor: '#EED8CF',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+  },
+  breakCellLabel: { fontSize: 10, color: '#A08377' },
+  breakCellInput: { fontSize: 15, fontWeight: '700', padding: 0, marginTop: 2 },
+  breakNote: { fontSize: 10, marginTop: 6, paddingHorizontal: 2 },
+  previewGrid: { flexDirection: 'row', gap: 4, marginTop: 6 },
+  previewCell: {
+    flex: 1,
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    alignItems: 'center',
+  },
+  previewIcon: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  optDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginVertical: 6,
+    paddingHorizontal: 2,
+  },
+  optLine: { flex: 1, height: StyleSheet.hairlineWidth },
+  optLabel: { fontSize: 11, fontWeight: '600' },
+  toneChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center' },
+  toneChip: {
+    height: 24,
+    paddingHorizontal: 8,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toneChipAdd: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hbtHint: { fontSize: 10, marginTop: 6, lineHeight: 14 },
+  switchForced: { shadowColor: '#C47055', shadowOpacity: 0.18, shadowRadius: 2, elevation: 1 },
+  tilesCard: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 7,
+    marginBottom: 4,
+  },
+  tilesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  summaryCard: { paddingHorizontal: 10, paddingVertical: 8 },
+  sumGrid: { flexDirection: 'row', gap: 4 },
+  sumCell: { flex: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 5 },
+  sumBadgeRow: { marginTop: 6, flexDirection: 'row' },
+  sumBadge: {
+    fontSize: 10,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    overflow: 'hidden',
+  },
+  footnote: {
+    textAlign: 'center',
+    fontSize: 10,
+    paddingVertical: 4,
+    marginBottom: 4,
+  },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
   nameInputContainer: { flex: 1, marginBottom: 0 },
   nameInputWrap: {
@@ -2435,20 +2768,40 @@ const styles = StyleSheet.create({
   },
   breakRewardsHint: { lineHeight: 16, paddingHorizontal: 2 },
   kindBlockLabel: { paddingLeft: Spacing.xs },
+  pointGridCard: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: Spacing.sm,
+  },
+  pointGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  pointCell: {
+    width: '48%',
+    flexGrow: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
   kindRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
   kindCard: {
     flexGrow: 1,
     flexBasis: '30%',
     minWidth: 96,
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing.xl,
-    paddingHorizontal: Spacing.lg,
-    alignItems: 'center',
-    gap: Spacing.xs,
+    borderRadius: 10,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    alignItems: 'flex-start',
+    gap: 2,
+    minHeight: 52,
   },
   kindCardEmoji: { fontSize: 22 },
-  kindCardTitle: { fontSize: 14 },
-  kindCardSub: { textAlign: 'center', lineHeight: 15 },
+  kindCardTitle: { fontSize: 13, fontWeight: '700' },
+  kindCardSub: { textAlign: 'left', lineHeight: 14, fontSize: 10 },
   dashedSplit: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   dashedLine: { flex: 1, borderTopWidth: StyleSheet.hairlineWidth, borderStyle: 'dashed' },
   splitText: { fontSize: 12 },

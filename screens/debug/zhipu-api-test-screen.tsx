@@ -1,4 +1,4 @@
-import { Colors } from '@/constants/theme';
+﻿import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   analyzeFoodNutritionFromImage,
@@ -47,13 +47,13 @@ export default function ZhipuApiTestScreen() {
           borderRadius: 12,
           paddingVertical: 14,
           alignItems: 'center',
-          backgroundColor: isDark ? '#2563eb' : '#0058be',
+          backgroundColor: isDark ? '#2D463F' : '#1E3932',
         },
         btnSecondary: {
-          backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(0,88,190,0.12)',
+          backgroundColor: isDark ? 'rgba(148,163,184,0.2)' : 'rgba(30,57,50,0.12)',
         },
         btnText: { color: '#fff', fontSize: 16, fontWeight: '800' },
-        btnTextSecondary: { color: isDark ? '#e2e8f0' : '#0058be', fontSize: 15, fontWeight: '800' },
+        btnTextSecondary: { color: isDark ? '#e2e8f0' : '#1E3932', fontSize: 15, fontWeight: '800' },
         logBox: {
           minHeight: 200,
           borderRadius: 12,
@@ -147,7 +147,7 @@ export default function ZhipuApiTestScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? theme.background : '#faf8ff' }} edges={['top']}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: isDark ? theme.background : '#F5F3E8' }} edges={['top']}>
       <View style={stylesMemo.header}>
         <Pressable onPress={() => router.back()} hitSlop={12} style={{ marginRight: 8 }}>
           <MaterialIcons name="arrow-back" size={24} color={theme.text} />

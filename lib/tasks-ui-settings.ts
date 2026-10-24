@@ -49,3 +49,50 @@ export async function loadTasksMainListView(): Promise<TasksMainListView | null>
 export async function saveTasksMainListView(view: TasksMainListView): Promise<void> {
   await setAppSetting(AppSettingKey.tasksMainListView, view);
 }
+
+async function loadBoolSetting(key: string, defaultValue: boolean): Promise<boolean> {
+  try {
+    const raw = await getAppSettingRaw(key);
+    if (raw === '1') return true;
+    if (raw === '0') return false;
+    return defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+async function saveBoolSetting(key: string, value: boolean): Promise<void> {
+  await setAppSetting(key, value ? '1' : '0');
+}
+
+export async function loadTasksFocusSync(): Promise<boolean> {
+  return loadBoolSetting(AppSettingKey.tasksFocusSync, true);
+}
+
+export async function saveTasksFocusSync(enabled: boolean): Promise<void> {
+  await saveBoolSetting(AppSettingKey.tasksFocusSync, enabled);
+}
+
+export async function loadTasksWifiOnlyAttachments(): Promise<boolean> {
+  return loadBoolSetting(AppSettingKey.tasksWifiOnlyAttachments, true);
+}
+
+export async function saveTasksWifiOnlyAttachments(enabled: boolean): Promise<void> {
+  await saveBoolSetting(AppSettingKey.tasksWifiOnlyAttachments, enabled);
+}
+
+export async function loadTasksLocalEncrypt(): Promise<boolean> {
+  return loadBoolSetting(AppSettingKey.tasksLocalEncrypt, true);
+}
+
+export async function saveTasksLocalEncrypt(enabled: boolean): Promise<void> {
+  await saveBoolSetting(AppSettingKey.tasksLocalEncrypt, enabled);
+}
+
+export async function loadTasksPreferReduceMotion(): Promise<boolean> {
+  return loadBoolSetting(AppSettingKey.tasksPreferReduceMotion, false);
+}
+
+export async function saveTasksPreferReduceMotion(enabled: boolean): Promise<void> {
+  await saveBoolSetting(AppSettingKey.tasksPreferReduceMotion, enabled);
+}

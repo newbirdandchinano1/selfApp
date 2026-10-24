@@ -1,13 +1,39 @@
+import {
+  FoldCountUpText,
+  FoldPopIn,
+  FoldRiseIn,
+  FOLD_MOTION_EASE,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { useTaskFoldTheme } from '@/constants/task-fold-theme';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { addDaysToYmd } from '@/lib/date';
+import { syncHabitDetailDataFromApi } from '@/lib/habit-detail-api';
+import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
+import { getHabitById } from '@/lib/repositories/habits/habit';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import {
+  isBreakHabitSucceeded,
+  parseBreakHabitCycle,
+  resolveBreakCycleStartYmd,
+  syncBreakHabitCompletions,
+  tryMarkBreakHabitCompleted,
+} from '@/lib/repositories/habits/habit-break-success';
+import {
+  isBuildHabitSucceeded,
+  syncBuildHabitCompletions,
+  tryMarkBuildHabitCompleted,
+} from '@/lib/repositories/habits/habit-build-success';
 import {
   decrementHabitCheckInForDay,
   getCheckInsMapByHabitId,
   hasHabitCheckInRecordForDay,
   incrementHabitCheckInForDay,
+  listHabitCheckInMetaByHabitId,
+  type HabitCheckInMetaRow,
 } from '@/lib/repositories/habits/habit-check-in';
-import { getHabitById } from '@/lib/repositories/habits/habit';
-import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
   computeBuildExpectedGoalProgress,
   computeConsecutiveGoalMetDays,
@@ -19,19 +45,6 @@ import {
   parseHabitDailyGoal,
   parseHabitIncrementCap,
 } from '@/lib/repositories/habits/habit-goal';
-import {
-  isBreakHabitSucceeded,
-  parseBreakHabitCycle,
-  resolveBreakCycleStartYmd,
-  syncBreakHabitCompletions,
-  tryMarkBreakHabitCompleted,
-} from '@/lib/repositories/habits/habit-break-success';
-import {
-  isBuildHabitSucceeded,
-  parseBuildHabitCycle,
-  syncBuildHabitCompletions,
-  tryMarkBuildHabitCompleted,
-} from '@/lib/repositories/habits/habit-build-success';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   applyBreakHabitReward,
@@ -39,6 +52,8 @@ import {
   syncBuildHabitDayPointsReward,
   syncTaskHabitPeriodPointsReward,
 } from '@/lib/repositories/habits/habit-points-grant';
+import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
+import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import {
   computeTaskPeriodGoalProgress,
@@ -46,24 +61,24 @@ import {
   parseTaskHabitExpectedGoal,
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
-import { syncHabitDetailDataFromApi } from '@/lib/habit-detail-api';
-import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
-import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
+import { getProjectById } from '@/lib/repositories/projects/project';
+import { getTasks } from '@/lib/repositories/tasks/task';
+import { taskHasBoundHabit } from '@/lib/repositories/tasks/task-habit-binding';
+import { isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
 import {
   logicalYmdToLocalDate,
   refreshYmdFocusAfterLogicalDayChange,
 } from '@/lib/tasks-logical-day';
-import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useFocusEffect } from "expo-router/react-navigation";
+import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
+  Animated,
   Modal,
   Platform,
   Pressable,
@@ -72,29 +87,116 @@ import {
   Text,
   View,
 } from 'react-native';
-import Svg, { Circle, Line, Path, Text as SvgText } from 'react-native-svg';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const BG = '#f5f6f8';
-const CARD = '#ffffff';
-const CARD_BORDER = '#e8ecf0';
-const TEXT_MAIN = '#111827';
-const TEXT_MUTED = '#64748b';
-const BLUE = '#2563eb';
-const GREEN_BG = '#ecfdf5';
-const GREEN_TEXT = '#059669';
-const ORANGE_BG = '#fff7ed';
-const ORANGE_TEXT = '#ea580c';
-const RED_BG = '#fef2f2';
-const RED_TEXT = '#dc2626';
-const CAL_DAY_EMPTY = '#eef2f6';
-/** 当年格子无记录（与月视图「无」区分可略浅） */
-const HEAT_DAY_EMPTY = '#e8ecf0';
-const HEAT_OUT_YEAR = '#f3f4f6';
-const CHART_GRID = '#e2e8f0';
+/** 设计稿 shot 24 月历热力色阶 */
+const HEAT0 = '#EFEADD';
+const HEAT_ON = '#B7CC9B';
+const HEAT_MID = '#83A473';
+const HEAT_DEEP = '#4D7550';
+const HEAT_MISS = '#F3E7DF';
+const HEAT_LEGEND = [HEAT0, HEAT_ON, HEAT_MID, HEAT_DEEP] as const;
 
-/** 与月视图左上角「少 → 多」三色块一致：次数越多越深 */
-const BLUE_LEGEND = ['#bfdbfe', '#60a5fa', '#2563eb'] as const;
+/** 折页纸感回退色（styles 静态表用；运行时优先 tf） */
+const BG = '#F4F0E8';
+const CARD = '#FFFCF5';
+const CARD_BORDER = '#D8CDBB';
+const TEXT_MAIN = '#202A25';
+const TEXT_MUTED = '#7A857D';
+const BLUE = '#4F7C51';
+const GREEN_TEXT = '#4F7450';
+const CAL_DAY_EMPTY = HEAT0;
+const SUN_RING = '#D6974B';
+
+type LinkedProjectInfo = {
+  projectId: string;
+  name: string;
+  done: number;
+  total: number;
+  subtitle: string;
+};
+
+/** 设计稿：14 根趋势柱自底部生长 */
+function SparkGrowBar({
+  pct,
+  hot,
+  animate,
+  index,
+}: {
+  pct: number;
+  hot: boolean;
+  animate: boolean;
+  index: number;
+}) {
+  const progress = React.useRef(new Animated.Value(animate ? 0 : 1)).current;
+  React.useEffect(() => {
+    if (!animate) {
+      progress.setValue(1);
+      return;
+    }
+    progress.setValue(0);
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: 520,
+      delay: 80 + index * 28,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: false,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [animate, index, progress]);
+  const height = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0%', `${Math.max(6, pct)}%`],
+  });
+  return (
+    <View style={styles.sparkCol}>
+      <Animated.View
+        style={[
+          styles.sparkBar,
+          {
+            height,
+            backgroundColor: hot ? '#D6974B' : '#8FAE76',
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
+/** 设计稿：月历格按周错峰淡入 */
+function HeatCellFade({
+  animate,
+  weekIndex,
+  dayIndex,
+  children,
+  style,
+}: {
+  animate: boolean;
+  weekIndex: number;
+  dayIndex: number;
+  children: React.ReactNode;
+  style?: object;
+}) {
+  const progress = React.useRef(new Animated.Value(animate ? 0 : 1)).current;
+  React.useEffect(() => {
+    if (!animate) {
+      progress.setValue(1);
+      return;
+    }
+    progress.setValue(0);
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: 360,
+      delay: weekIndex * 48 + dayIndex * 10,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [animate, dayIndex, progress, weekIndex]);
+  return <Animated.View style={[style, { opacity: progress }]}>{children}</Animated.View>;
+}
 
 function pickParam(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
@@ -156,96 +258,6 @@ function normalizeCheckIns(raw: unknown): Record<string, number> {
   return out;
 }
 
-function startOfWeekMonday(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  const day = x.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  x.setDate(x.getDate() + diff);
-  return x;
-}
-
-function countDistinctAchievedDays(
-  checkIns: Record<string, number>,
-  kind: HabitKind,
-  dailyGoal: number | null,
-  logicalTodayYmd?: string,
-): number {
-  if (kind === 'break') {
-    return Object.keys(checkIns).filter((ymd) =>
-      isHabitDayGoalMet({
-        kind,
-        todayCount: checkIns[ymd] ?? 0,
-        dailyGoal,
-        hasDayRecord: true,
-        ymd,
-        logicalTodayYmd,
-      }),
-    ).length;
-  }
-  return Object.values(checkIns).filter((c) =>
-    isHabitDayGoalMet({ kind, todayCount: c, dailyGoal }),
-  ).length;
-}
-
-function countAchievedInMonth(
-  checkIns: Record<string, number>,
-  year: number,
-  month0: number,
-  kind: HabitKind,
-  dailyGoal: number | null,
-  daysInMonth: number,
-  logicalTodayYmd?: string,
-): number {
-  let n = 0;
-  for (let day = 1; day <= daysInMonth; day++) {
-    const k = `${year}-${pad2(month0 + 1)}-${pad2(day)}`;
-    const hasDayRecord = kind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
-    if (
-      isHabitDayGoalMet({
-        kind,
-        todayCount: checkIns[k] ?? 0,
-        dailyGoal,
-        hasDayRecord,
-        ymd: k,
-        logicalTodayYmd,
-      })
-    ) {
-      n++;
-    }
-  }
-  return n;
-}
-
-function countAchievedInWeek(
-  checkIns: Record<string, number>,
-  weekStartMon: Date,
-  kind: HabitKind,
-  dailyGoal: number | null,
-  logicalTodayYmd?: string,
-): number {
-  let n = 0;
-  for (let i = 0; i < 7; i++) {
-    const dt = new Date(weekStartMon);
-    dt.setDate(weekStartMon.getDate() + i);
-    const k = toYMD(dt);
-    const hasDayRecord = kind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
-    if (
-      isHabitDayGoalMet({
-        kind,
-        todayCount: checkIns[k] ?? 0,
-        dailyGoal,
-        hasDayRecord,
-        ymd: k,
-        logicalTodayYmd,
-      })
-    ) {
-      n++;
-    }
-  }
-  return n;
-}
-
 function monthMatrix(year: number, month0: number): { leadingBlank: number; daysInMonth: number } {
   const first = new Date(year, month0, 1);
   const dow = first.getDay();
@@ -254,34 +266,16 @@ function monthMatrix(year: number, month0: number): { leadingBlank: number; days
   return { leadingBlank, daysInMonth };
 }
 
-function buildHeatmapWeeks(year: number): Date[][] {
-  const jan1 = new Date(year, 0, 1);
-  const start = new Date(jan1);
-  start.setDate(jan1.getDate() - jan1.getDay());
-  const weeks: Date[][] = [];
-  for (let w = 0; w < 54; w++) {
-    const col: Date[] = [];
-    for (let d = 0; d < 7; d++) {
-      const t = new Date(start);
-      t.setDate(start.getDate() + w * 7 + d);
-      col.push(t);
-    }
-    if (col[0] > new Date(year, 11, 31)) break;
-    weeks.push(col);
-  }
-  return weeks;
-}
-
 /** 有完成：1 次浅、2 次中、3 次及以上最深，与图例一致 */
-function completionBlue(count: number, emptyBackground: string): string {
+function completionHeat(count: number, emptyBackground: string): string {
   if (count <= 0) return emptyBackground;
-  if (count === 1) return BLUE_LEGEND[0];
-  if (count === 2) return BLUE_LEGEND[1];
-  return BLUE_LEGEND[2];
+  if (count === 1) return HEAT_ON;
+  if (count === 2) return HEAT_MID;
+  return HEAT_DEEP;
 }
 
-const BREAK_GOAL_MET = '#86efac';
-const BREAK_GOAL_FAIL = '#fecaca';
+const BREAK_GOAL_MET = HEAT_MID;
+const BREAK_GOAL_FAIL = HEAT_MISS;
 
 function completionBreakDay(
   count: number,
@@ -293,37 +287,80 @@ function completionBreakDay(
 ): string {
   if (!hasDayRecord) {
     if (ymd === logicalTodayYmd) return emptyBackground;
-    // 跨日未确认：视为未达标
     if (ymd < logicalTodayYmd) return BREAK_GOAL_FAIL;
     return emptyBackground;
   }
   if (isHabitDayGoalMet({ kind: 'break', todayCount: count, dailyGoal, hasDayRecord: true })) {
-    return count <= 0 ? BREAK_GOAL_MET : '#4ade80';
+    return count <= 0 ? BREAK_GOAL_MET : HEAT_DEEP;
   }
-  if (count <= 0) return BREAK_GOAL_FAIL;
   return BREAK_GOAL_FAIL;
 }
 
-function needsLightTextOnBlue(fill: string): boolean {
-  return fill === BLUE_LEGEND[1] || fill === BLUE_LEGEND[2];
+function needsLightTextOnHeat(fill: string): boolean {
+  return fill === HEAT_MID || fill === HEAT_DEEP;
 }
 
-/** 顶栏区内高度：上内边距 10 + 行高约 38 + 下内边距 10 */
-const TOP_BAR_BODY_H = 58;
+function formatRecentDayLabel(ymd: string, logicalTodayYmd: string): string {
+  if (ymd === logicalTodayYmd) return '今天';
+  if (ymd === addDaysToYmd(logicalTodayYmd, -1)) return '昨天';
+  return ymd.slice(5).replace('-', '/');
+}
+
+async function loadLinkedProjectForHabit(habitId: string): Promise<LinkedProjectInfo | null> {
+  const tasks = await getTasks();
+  const bound = tasks.filter((t) => taskHasBoundHabit(t.extra_data, habitId) && t.project_id);
+  if (bound.length === 0) return null;
+  const byProject = new Map<string, typeof bound>();
+  for (const t of bound) {
+    const pid = t.project_id!;
+    const arr = byProject.get(pid) ?? [];
+    arr.push(t);
+    byProject.set(pid, arr);
+  }
+  let bestId = '';
+  let bestLen = 0;
+  for (const [pid, ts] of byProject) {
+    if (ts.length > bestLen) {
+      bestId = pid;
+      bestLen = ts.length;
+    }
+  }
+  if (!bestId) return null;
+  const project = await getProjectById(bestId);
+  if (!project) return null;
+  const all = tasks.filter((t) => t.project_id === bestId);
+  const done = all.filter((t) => t.status === 'done').length;
+  const openBound = bound.filter((t) => t.project_id === bestId && !isTaskTerminalStatus(t.status)).length;
+  return {
+    projectId: bestId,
+    name: project.name,
+    done,
+    total: all.length,
+    subtitle: `${done} / ${all.length} 任务${openBound > 0 ? ` · ${openBound} 项绑定进行中` : ''}`,
+  };
+}
 
 const SCREEN_TITLE = '习惯详情';
 const PAGE_API_KEY = 'habit-detail';
 /** 详情页补卡/撤销连点防抖间隔（与任务页小习惯卡片一致） */
 const HABIT_DETAIL_PRESS_DEBOUNCE_MS = 500;
 
+function habitKindLabel(kind: HabitKind): string {
+  if (kind === 'break') return '戒除';
+  if (kind === 'task') return '完成任务';
+  return '养成';
+}
+
 export default function HabitDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { tf, fonts, isDark } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const { boundary, logicalTodayYmd, logicalTodayDate } = usePageDayBoundary('tasks');
-  const scrollTopPad = insets.top + TOP_BAR_BODY_H;
   const params = useLocalSearchParams<{ habitId?: string }>();
   const habitId = pickParam(params.habitId);
+  const cardBg = isDark ? 'rgba(255,252,245,0.06)' : 'rgba(255,252,245,0.9)';
 
   const [loading, setLoading] = React.useState(true);
   const [habit, setHabit] = React.useState<HabitRow | null>(null);
@@ -334,8 +371,9 @@ export default function HabitDetailScreen() {
     const t = new Date();
     return new Date(t.getFullYear(), t.getMonth(), 1);
   });
-  const [trendWeekStart, setTrendWeekStart] = React.useState(() => startOfWeekMonday(new Date()));
-  const [heatmapYear, setHeatmapYear] = React.useState(() => new Date().getFullYear());
+  const [checkInMeta, setCheckInMeta] = React.useState<HabitCheckInMetaRow[]>([]);
+  const [linkedProject, setLinkedProject] = React.useState<LinkedProjectInfo | null>(null);
+  const [recentExpanded, setRecentExpanded] = React.useState(false);
 
   const [datePickerOpen, setDatePickerOpen] = React.useState(false);
   const [makeUpSaving, setMakeUpSaving] = React.useState(false);
@@ -365,11 +403,30 @@ export default function HabitDetailScreen() {
     setCheckIns((prev) => (checkInsMapsEqual(prev, nextCheckIns) ? prev : nextCheckIns));
   }, []);
 
+  const refreshSidePanels = React.useCallback(async (id: string, generation: number) => {
+    try {
+      const [meta, linked] = await Promise.all([
+        listHabitCheckInMetaByHabitId(id),
+        loadLinkedProjectForHabit(id),
+      ]);
+      if (generation !== habitLoadGenerationRef.current) return;
+      setCheckInMeta(meta);
+      setLinkedProject(linked);
+    } catch (e) {
+      console.warn('习惯详情：侧栏数据加载失败', e);
+      if (generation !== habitLoadGenerationRef.current) return;
+      setCheckInMeta([]);
+      setLinkedProject(null);
+    }
+  }, []);
+
   const loadHabitOverview = React.useCallback(async (opts?: { awaitRemote?: boolean }) => {
     const awaitRemote = opts?.awaitRemote === true;
     const generation = ++habitLoadGenerationRef.current;
     if (!habitId) {
       applyHabitOverviewState(null, {});
+      setCheckInMeta([]);
+      setLinkedProject(null);
       return;
     }
     // 先读本地，保证长按进详情立刻有内容；REST 软同步失败不挡页面
@@ -385,6 +442,7 @@ export default function HabitDetailScreen() {
       }
       applyHabitOverviewState(row, mergedLocal);
       setLoading(false);
+      void refreshSidePanels(row.id, generation);
     }
 
     const runRemoteSync = async () => {
@@ -404,6 +462,8 @@ export default function HabitDetailScreen() {
       if (generation !== habitLoadGenerationRef.current) return;
       if (!row) {
         applyHabitOverviewState(null, {});
+        setCheckInMeta([]);
+        setLinkedProject(null);
         return;
       }
       const fromDb = await getCheckInsMapByHabitId(row.id);
@@ -414,6 +474,7 @@ export default function HabitDetailScreen() {
         if (merged[k] === undefined) merged[k] = v;
       }
       applyHabitOverviewState(row, merged);
+      void refreshSidePanels(row.id, generation);
     };
 
     // 本地已有数据：软同步放后台，避免二三级页干等 REST；下拉刷新仍可 await
@@ -422,13 +483,16 @@ export default function HabitDetailScreen() {
       return;
     }
     await runRemoteSync();
-  }, [applyHabitOverviewState, habitId]);
+  }, [applyHabitOverviewState, habitId, refreshSidePanels]);
 
   React.useEffect(() => {
     habitLoadGenerationRef.current += 1;
     setLoading(true);
     setHabit(null);
     setCheckIns({});
+    setCheckInMeta([]);
+    setLinkedProject(null);
+    setRecentExpanded(false);
   }, [habitId]);
 
   const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
@@ -441,7 +505,6 @@ export default function HabitDetailScreen() {
       const nextYmd = refreshYmdFocusAfterLogicalDayChange(toYMD(focusPrev), logicalTodayYmd, prev);
       return nextYmd === toYMD(focusPrev) ? focusPrev : logicalYmdToLocalDate(nextYmd);
     });
-    setTrendWeekStart(startOfWeekMonday(todayDate));
     setCalendarMonth(new Date(todayDate.getFullYear(), todayDate.getMonth(), 1));
     if (habitId) void loadHabitOverview();
   }, [habitId, logicalTodayYmd, loadHabitOverview]);
@@ -496,14 +559,6 @@ export default function HabitDetailScreen() {
   );
   const habitReminderClock = formatHabitReminderClock(habitReminder);
   const quantify = extraParsed.quantify as { unit?: string; dailyGoal?: number | null } | undefined;
-  const quoteText =
-    habit?.note && habit.note.trim()
-      ? habit.note.trim()
-      : typeof quantify?.unit === 'string' && quantify.unit.trim()
-        ? quantify.unit.trim()
-        : habit?.tag && habit.tag.trim()
-          ? habit.tag.trim()
-          : '暂无备注';
 
   const habitKind = habit ? parseHabitKind(habit.extra_data) : 'build';
   const dailyGoal = habit ? parseHabitDailyGoal(habit.extra_data, habitKind) : null;
@@ -514,27 +569,8 @@ export default function HabitDetailScreen() {
 
   const { leadingBlank, daysInMonth } = monthMatrix(calendarMonth.getFullYear(), calendarMonth.getMonth());
 
-  const totalAchieved = countDistinctAchievedDays(checkIns, habitKind, dailyGoal, logicalTodayYmd);
-  const weekAchieved = countAchievedInWeek(
-    checkIns,
-    startOfWeekMonday(focusDate),
-    habitKind,
-    dailyGoal,
-    logicalTodayYmd,
-  );
-  const monthAchieved = countAchievedInMonth(
-    checkIns,
-    focusDate.getFullYear(),
-    focusDate.getMonth(),
-    habitKind,
-    dailyGoal,
-    daysInMonth,
-    logicalTodayYmd,
-  );
-
   const breakCycle = habit ? parseBreakHabitCycle(habit.extra_data) : null;
   const breakSucceeded = habit ? isBreakHabitSucceeded(habit.extra_data) : false;
-  const buildCycle = habit ? parseBuildHabitCycle(habit.extra_data) : null;
   const buildSucceeded = habit ? isBuildHabitSucceeded(habit.extra_data) : false;
   const buildExpectedGoal = habit ? parseBuildHabitExpectedGoal(habit.extra_data) : null;
   const buildExpectedProgress =
@@ -580,78 +616,167 @@ export default function HabitDetailScreen() {
     [breakCycle, checkIns, focusYmd, habit, habitKind, dailyGoal, logicalTodayYmd]
   );
 
-  const trendCounts = React.useMemo(() => {
-    const arr: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const dt = new Date(trendWeekStart);
-      dt.setDate(trendWeekStart.getDate() + i);
-      arr.push(checkIns[toYMD(dt)] ?? 0);
-    }
-    return arr;
-  }, [checkIns, trendWeekStart]);
-
-  const trendMax = Math.max(
-    habitKind === 'break' ? (dailyGoal ?? 1) + 1 : (dailyGoal ?? 1),
-    ...trendCounts,
-    1
-  );
-
-  const trendEnd = React.useMemo(() => {
-    const t = new Date(trendWeekStart);
-    t.setDate(trendWeekStart.getDate() + 6);
-    return t;
-  }, [trendWeekStart]);
-
-  const heatWeeks = React.useMemo(() => buildHeatmapWeeks(heatmapYear), [heatmapYear]);
-
-  const monthHitCount = React.useMemo(() => {
-    let n = 0;
+  const monthStats = React.useMemo(() => {
     const y = calendarMonth.getFullYear();
     const m = calendarMonth.getMonth();
+    const monthPrefix = `${y}-${pad2(m + 1)}-`;
+    let hit = 0;
+    let miss = 0;
+    const makeupSet = new Set(
+      checkInMeta.filter((r) => r.isMakeup && r.record_date.startsWith(monthPrefix)).map((r) => r.record_date),
+    );
     for (let day = 1; day <= daysInMonth; day++) {
-      const k = `${y}-${pad2(m + 1)}-${pad2(day)}`;
+      const k = `${monthPrefix}${pad2(day)}`;
+      if (k > logicalTodayYmd) continue;
       const hasDayRecord =
         habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, k) : undefined;
+      const met = isHabitDayGoalMet({
+        kind: habitKind,
+        todayCount: checkIns[k] ?? 0,
+        dailyGoal,
+        hasDayRecord,
+        ymd: k,
+        logicalTodayYmd,
+      });
+      if (met) hit += 1;
+      else miss += 1;
+    }
+    const elapsed = hit + miss;
+    const pct = elapsed > 0 ? Math.round((hit / elapsed) * 100) : 0;
+    return { hit, miss, makeup: makeupSet.size, pct, elapsed };
+  }, [calendarMonth, checkInMeta, checkIns, dailyGoal, daysInMonth, habitKind, logicalTodayYmd]);
+
+  const spark14 = React.useMemo(() => {
+    const arr: number[] = [];
+    for (let i = 13; i >= 0; i -= 1) {
+      arr.push(checkIns[addDaysToYmd(logicalTodayYmd, -i)] ?? 0);
+    }
+    return arr;
+  }, [checkIns, logicalTodayYmd]);
+  const sparkMax = Math.max(1, ...spark14, dailyGoal ?? 1);
+
+  const rate30 = React.useMemo(() => {
+    let hit = 0;
+    for (let i = 0; i < 30; i += 1) {
+      const ymd = addDaysToYmd(logicalTodayYmd, -i);
+      const hasDayRecord = Object.prototype.hasOwnProperty.call(checkIns, ymd);
       if (
         isHabitDayGoalMet({
           kind: habitKind,
-          todayCount: checkIns[k] ?? 0,
+          todayCount: checkIns[ymd] ?? 0,
           dailyGoal,
-          hasDayRecord,
-          ymd: k,
+          hasDayRecord: habitKind === 'break' ? hasDayRecord : undefined,
+          ymd: habitKind === 'break' ? ymd : undefined,
           logicalTodayYmd,
         })
       ) {
-        n++;
+        hit += 1;
       }
     }
-    return n;
-  }, [calendarMonth, checkIns, daysInMonth, habitKind, dailyGoal, logicalTodayYmd]);
+    return Math.round((hit / 30) * 100);
+  }, [checkIns, dailyGoal, habitKind, logicalTodayYmd]);
 
-  const chartW = Math.min(Dimensions.get('window').width - 32, 440);
+  const rewardPts = habit ? parseHabitRewardPoints(habit.extra_data) : 0;
+  const todayDone = isHabitDayGoalMet({
+    kind: habitKind,
+    todayCount: checkIns[logicalTodayYmd] ?? 0,
+    dailyGoal,
+    hasDayRecord:
+      habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, logicalTodayYmd) : undefined,
+    ymd: logicalTodayYmd,
+    logicalTodayYmd,
+  });
 
-  const pathD = React.useMemo(() => {
-    const w = 300;
-    const h = 110;
-    const padL = 28;
-    const padR = 8;
-    const padB = 18;
-    const padT = 10;
-    const innerW = w - padL - padR;
-    const innerH = h - padT - padB;
-    const pts = trendCounts.map((cnt, i) => {
-      const x = padL + (innerW * i) / 6;
-      const yn = trendMax > 0 ? cnt / trendMax : 0;
-      const y = padT + innerH * (1 - yn);
-      return { x, y: Math.max(padT, Math.min(padT + innerH, y)), cnt };
-    });
-    if (pts.length === 0) return { d: '', pts: [] as { x: number; y: number; cnt: number }[] };
-    let d = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 1; i < pts.length; i++) {
-      d += ` L ${pts[i].x} ${pts[i].y}`;
+  const recentRows = React.useMemo(() => {
+    const limit = recentExpanded ? 12 : 3;
+    return checkInMeta
+      .filter((r) => habitKind === 'break' || r.count > 0)
+      .slice(0, limit)
+      .map((r) => {
+        const met = isHabitDayGoalMet({
+          kind: habitKind,
+          todayCount: r.count,
+          dailyGoal,
+          hasDayRecord: true,
+          ymd: r.record_date,
+          logicalTodayYmd,
+        });
+        const dayLabel = formatRecentDayLabel(r.record_date, logicalTodayYmd);
+        let status = met ? '目标达成' : '未达标';
+        if (r.isMakeup) status = met ? `补卡 · 目标达成` : `补卡 · 未达标`;
+        const unit =
+          typeof quantify?.unit === 'string' && quantify.unit.trim() ? quantify.unit.trim() : '次';
+        const title =
+          habitKind === 'break'
+            ? r.count <= 0
+              ? habit?.name ?? '保持戒除'
+              : `${habit?.name ?? '习惯'} · 破戒 ${r.count}`
+            : dailyGoal != null && r.count !== dailyGoal
+              ? `${habit?.name ?? '习惯'} ${r.count} ${unit}`
+              : habit?.name ?? '习惯';
+        const pts = met ? rewardPts : r.isMakeup && rewardPts > 0 ? Math.max(1, Math.min(2, Math.round(rewardPts * 0.4))) : 0;
+        return {
+          key: r.record_date,
+          title,
+          meta: `${dayLabel} · ${status}`,
+          pts,
+          icon: habit?.icon || '📖',
+        };
+      });
+  }, [
+    checkInMeta,
+    dailyGoal,
+    habit?.icon,
+    habit?.name,
+    habitKind,
+    logicalTodayYmd,
+    quantify?.unit,
+    recentExpanded,
+    rewardPts,
+  ]);
+
+  const goalBarLabel = React.useMemo(() => {
+    const monthLabel = `${calendarMonth.getMonth() + 1}月目标`;
+    if (habitKind === 'task' && taskExpectedGoal != null) {
+      return {
+        title: monthLabel,
+        sub: `本${taskRepeatPeriod.replace('每', '')} ${taskPeriodProgress} / ${taskExpectedGoal.value} ${formatBuildExpectedGoalProgressUnit(taskExpectedGoal.type)}`,
+        pct: taskExpectedGoal.value > 0 ? Math.min(100, Math.round((taskPeriodProgress / taskExpectedGoal.value) * 100)) : 0,
+      };
     }
-    return { d, pts };
-  }, [trendCounts, trendMax]);
+    if (habitKind === 'build' && buildExpectedGoal != null) {
+      return {
+        title: monthLabel,
+        sub: `${formatBuildExpectedGoalShort(buildExpectedGoal)} · 进度 ${buildExpectedProgress}`,
+        pct: buildExpectedGoal.value > 0 ? Math.min(100, Math.round((buildExpectedProgress / buildExpectedGoal.value) * 100)) : 0,
+      };
+    }
+    const unit =
+      typeof quantify?.unit === 'string' && quantify.unit.trim() ? quantify.unit.trim() : '次';
+    return {
+      title: monthLabel,
+      sub: dailyGoal != null ? `${dailyGoal} ${unit} / 天 · ${monthStats.elapsed} 天` : `本月已过 ${monthStats.elapsed} 天`,
+      pct: monthStats.pct,
+    };
+  }, [
+    buildExpectedGoal,
+    buildExpectedProgress,
+    calendarMonth,
+    dailyGoal,
+    habitKind,
+    monthStats.elapsed,
+    monthStats.pct,
+    quantify?.unit,
+    taskExpectedGoal,
+    taskPeriodProgress,
+    taskRepeatPeriod,
+  ]);
+
+  const subtitleParts = [
+    habitKindLabel(habitKind),
+    habit?.context,
+    dailyGoal != null ? `每天 ${dailyGoal} 次` : habit?.tag,
+  ].filter(Boolean);
 
   const goEdit = () => {
     if (!habit) return;
@@ -878,428 +1003,483 @@ export default function HabitDetailScreen() {
     reload,
   ]);
 
+  const renderAppBar = (showEdit: boolean) => (
+    <View style={[styles.appbar, { paddingTop: Math.max(insets.top, 8) }]}>
+      <Pressable
+        onPress={() => router.back()}
+        hitSlop={8}
+        style={({ pressed }) => [styles.iconbtn, pressed && { opacity: 0.75 }]}>
+        <MaterialIcons name="arrow-back" size={20} color={tf.ink2} />
+      </Pressable>
+      <View style={styles.appbarCenter}>
+        <Text style={[styles.appbarTitle, { color: tf.ink }]}>{SCREEN_TITLE}</Text>
+        <Text style={[styles.appbarSub, { color: tf.muted }]} numberOfLines={1}>
+          {habit ? subtitleParts.join(' · ') : '…'}
+        </Text>
+      </View>
+      {showEdit ? (
+        <Pressable
+          onPress={goEdit}
+          style={({ pressed }) => [
+            styles.pillbtn,
+            {
+              borderColor: tf.line2,
+              backgroundColor: isDark ? 'rgba(255,252,245,0.08)' : 'rgba(255,252,245,0.66)',
+              opacity: pressed ? 0.85 : 1,
+            },
+          ]}>
+          <MaterialIcons name="edit" size={12} color={tf.ink2} />
+          <Text style={{ fontSize: 12, fontWeight: '700', color: tf.ink2 }}>编辑</Text>
+        </Pressable>
+      ) : (
+        <View style={{ width: 28 }} />
+      )}
+    </View>
+  );
+
   if (!habitId) {
     return (
-      <View style={styles.safe}>
-        <View style={[styles.topBar, styles.topBarFixed, { paddingTop: insets.top + 10 }]}>
-          <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-            <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
-          </Pressable>
-          <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
-          <View style={{ width: 38 }} />
+      <SafeAreaView style={[styles.safe, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+        {renderAppBar(false)}
+        <View style={styles.centerMsg}>
+          <Text style={[styles.muted, { color: tf.muted }]}>缺少习惯参数</Text>
         </View>
-        <View style={[styles.centerMsg, { paddingTop: scrollTopPad }]}>
-          <Text style={styles.muted}>缺少习惯参数</Text>
-        </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (loading || !habit) {
     return (
-      <View style={styles.safe}>
-        <View style={[styles.topBar, styles.topBarFixed, { paddingTop: insets.top + 10 }]}>
-          <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-            <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
-          </Pressable>
-          <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
-          <View style={{ width: 38 }} />
+      <SafeAreaView style={[styles.safe, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+        {renderAppBar(false)}
+        <View style={styles.centerMsg}>
+          {loading ? (
+            <ActivityIndicator color={tf.frog} />
+          ) : (
+            <Text style={[styles.muted, { color: tf.muted }]}>未找到该习惯</Text>
+          )}
         </View>
-        <View style={[styles.centerMsg, { paddingTop: scrollTopPad }]}>
-          {loading ? <ActivityIndicator color={BLUE} /> : <Text style={styles.muted}>未找到该习惯</Text>}
-        </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.safe}>
-      <View style={[styles.topBar, styles.topBarFixed, { paddingTop: insets.top + 10 }]}>
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-          <MaterialIcons name="arrow-back" size={22} color={TEXT_MAIN} />
-        </Pressable>
-        <Text style={styles.topTitle}>{SCREEN_TITLE}</Text>
-        <Pressable onPress={goEdit} style={styles.iconBtn}>
-          <MaterialIcons name="edit" size={20} color={TEXT_MUTED} />
-        </Pressable>
-      </View>
+    <SafeAreaView style={[styles.safe, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      {renderAppBar(true)}
 
       <ScrollView
         refreshControl={refreshControl}
         style={styles.scrollFlex}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingTop: scrollTopPad, paddingBottom: 28 + insets.bottom },
+          { paddingBottom: 28 + Math.max(insets.bottom, 12) },
         ]}
         showsVerticalScrollIndicator={false}>
-        <View style={styles.card}>
-          <Text style={styles.titleText}>{habit.name}</Text>
-          {habitReminder.enabled && habitReminderClock ? (
-            <View style={styles.reminderBadgeRow} accessibilityLabel={`已开启每日提醒 ${habitReminderClock}`}>
-              <MaterialIcons name="notifications-active" size={16} color={BLUE} />
-              <Text style={styles.reminderBadgeText}>每日提醒 · {habitReminderClock}</Text>
+        <FoldRiseIn animate={foldAnimate} index={0} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+          <View style={[styles.hhero, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+            <View style={styles.hhtop}>
+              <View style={[styles.bigicon, { backgroundColor: tf.lily2 }]}>
+                <Text style={styles.bigiconEmoji}>{habit.icon || '📖'}</Text>
+              </View>
+              <View style={styles.hhc}>
+                <Text style={[styles.heroName, { color: tf.pond, fontFamily: fonts.serif }]} numberOfLines={2}>
+                  {habit.name}
+                </Text>
+                <View style={styles.heroMetaRow}>
+                  <View
+                    style={[
+                      styles.todayTag,
+                      {
+                        backgroundColor: todayDone ? tf.lily2 : isDark ? tf.paper2 : '#F1EDE1',
+                      },
+                    ]}>
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: todayDone ? '#42613E' : tf.muted }}>
+                      {todayDone ? '今日已打卡' : '今日未打卡'}
+                    </Text>
+                  </View>
+                  {habitReminder.enabled && habitReminderClock ? (
+                    <Text style={{ fontSize: 11, color: tf.faint }}>
+                      {habitReminderClock} 提醒 · 已入格
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+              <FoldPopIn animate={foldAnimate} index={0} delayMs={120} duration={380}>
+                <View style={styles.streakbig}>
+                  <View style={styles.streakNumRow}>
+                    <MaterialIcons name="local-fire-department" size={16} color="#D6974B" />
+                    <FoldCountUpText
+                      value={consecutiveStreak}
+                      animate={foldAnimate}
+                      delayMs={160}
+                      duration={700}
+                      textStyle={[styles.streakNum, { color: '#4F7450', fontFamily: fonts.mono }]}
+                    />
+                  </View>
+                  <Text style={{ fontSize: 10, color: tf.faint }}>连续天数</Text>
+                </View>
+              </FoldPopIn>
             </View>
-          ) : null}
-        </View>
+            <View style={styles.hhstats}>
+              <View style={[styles.hhstat, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.hhstatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>
+                  {monthStats.hit} / {daysInMonth}
+                </Text>
+                <Text style={[styles.hhstatLabel, { color: tf.faint }]}>本月达标</Text>
+              </View>
+              <View style={[styles.hhstat, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.hhstatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>
+                  ¥ {rewardPts}
+                </Text>
+                <Text style={[styles.hhstatLabel, { color: tf.faint }]}>累计积分</Text>
+              </View>
+              <View style={[styles.hhstat, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.hhstatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>
+                  {rate30}%
+                </Text>
+                <Text style={[styles.hhstatLabel, { color: tf.faint }]}>近 30 天完成率</Text>
+              </View>
+            </View>
+          </View>
+        </FoldRiseIn>
 
-        <View style={styles.quoteCard}>
-          <Text style={styles.quoteIconTL}>❝</Text>
-          <Text style={styles.quoteBody}>{quoteText}</Text>
-          <Text style={styles.quoteIconBR}>❞</Text>
-        </View>
-
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>概览</Text>
-          <Pressable onPress={() => setDatePickerOpen(true)} style={styles.dateChip}>
-            <Text style={styles.dateChipText}>{focusYmd}</Text>
-            <MaterialIcons name="chevron-right" size={14} color={BLUE} />
-          </Pressable>
-        </View>
-
-        <View style={styles.makeUpBlock}>
-          <Text style={styles.makeUpHint}>
-            {focusYmd} 已记 <Text style={styles.makeUpHintStrong}>{checkIns[focusYmd] ?? 0}</Text> 次
-            {habitKind === 'break'
-              ? dailyGoal != null
-                ? ` / 每日阈值 ${dailyGoal}（低于即达标）`
-                : ''
-              : habitKind === 'task'
-                ? ''
-                : dailyGoal != null
-                  ? ` / 日目标 ${dailyGoal}`
-                  : ''}
-          </Text>
-          {habitKind === 'break' ? (
-            breakSucceeded ? (
-              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
-                已连续 {breakCycle?.completedStreak ?? consecutiveTargetDays ?? '—'} 天达标
-                {breakCycle?.completedAt ? ` · ${breakCycle.completedAt} 戒除成功` : ' · 戒除成功'}
+        <FoldRiseIn animate={foldAnimate} index={1} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+            <View style={styles.hmhead2}>
+              <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>
+                {calendarMonth.getMonth() + 1}月热力
               </Text>
-            ) : (
-              <Text style={styles.makeUpSub}>
-                须在当日确认状态；未确认且超过日界视为未达标
+              <Text style={{ fontSize: 11, color: tf.faint, fontFamily: fonts.mono, marginLeft: 6 }}>
+                {calendarMonth.getFullYear()}
+              </Text>
+              <View style={styles.legendInline}>
+                {HEAT_LEGEND.map((c) => (
+                  <View key={c} style={[styles.legendSq, { backgroundColor: c }]} />
+                ))}
+              </View>
+            </View>
+            <View style={styles.monthNav}>
+              <Pressable
+                onPress={() =>
+                  setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+                }
+                hitSlop={8}>
+                <MaterialIcons name="chevron-left" size={22} color={TEXT_MUTED} />
+              </Pressable>
+              <Pressable onPress={() => setDatePickerOpen(true)} hitSlop={6}>
+                <Text style={[styles.monthTitle, { color: tf.ink2 }]}>
+                  {focusYmd} · 选日补卡
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+                }
+                hitSlop={8}>
+                <MaterialIcons name="chevron-right" size={22} color={TEXT_MUTED} />
+              </Pressable>
+            </View>
+            <View style={styles.weekdayRow}>
+              {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
+                <Text key={w} style={[styles.weekdayCell, { color: tf.faint }]}>
+                  {w}
+                </Text>
+              ))}
+            </View>
+            <View style={styles.calGrid}>
+              {Array.from({ length: leadingBlank }).map((_, i) => (
+                <View key={`b-${i}`} style={styles.calCell} />
+              ))}
+              {Array.from({ length: daysInMonth }).map((_, idx) => {
+                const day = idx + 1;
+                const y = calendarMonth.getFullYear();
+                const m = calendarMonth.getMonth();
+                const ymd = `${y}-${pad2(m + 1)}-${pad2(day)}`;
+                const cnt = checkIns[ymd] ?? 0;
+                const hasDayRecord =
+                  habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, ymd) : false;
+                const isSel = ymd === focusYmd;
+                const isToday = ymd === logicalTodayYmd;
+                const fill =
+                  habitKind === 'break'
+                    ? completionBreakDay(cnt, dailyGoal, CAL_DAY_EMPTY, hasDayRecord, ymd, logicalTodayYmd)
+                    : completionHeat(cnt, CAL_DAY_EMPTY);
+                const showLightText =
+                  habitKind === 'break'
+                    ? hasDayRecord &&
+                      !isHabitDayGoalMet({
+                        kind: 'break',
+                        todayCount: cnt,
+                        dailyGoal,
+                        hasDayRecord: true,
+                      }) &&
+                      cnt > 0
+                    : cnt > 0 && needsLightTextOnHeat(fill);
+                const weekIndex = Math.floor((leadingBlank + idx) / 7);
+                const dayIndex = (leadingBlank + idx) % 7;
+                return (
+                  <HeatCellFade
+                    key={ymd}
+                    animate={foldAnimate}
+                    weekIndex={weekIndex}
+                    dayIndex={dayIndex}
+                    style={styles.calCell}>
+                    <Pressable onPress={() => selectCalendarDay(y, m, day)} style={styles.calCellPress}>
+                      <View
+                        style={[
+                          styles.calDayInner,
+                          { backgroundColor: fill },
+                          isToday && styles.calDayToday,
+                          isSel && styles.calDaySelected,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.calDayText,
+                            !isSel && showLightText && { color: '#ffffff' },
+                            isSel && showLightText && { color: '#ffffff', fontWeight: '700' },
+                            isSel && !showLightText && { color: BLUE, fontWeight: '700' },
+                          ]}>
+                          {day}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  </HeatCellFade>
+                );
+              })}
+            </View>
+            <View style={styles.heatFoot}>
+              <View style={[styles.dot, { backgroundColor: HEAT_ON }]} />
+              <Text style={{ flex: 1, fontSize: 11, color: tf.faint }}>
+                已打卡 {monthStats.hit} 天 · 漏 {monthStats.miss} 天 · 补卡 {monthStats.makeup} 天
+              </Text>
+              <Text style={{ fontSize: 11, color: '#6F856B' }}>月历格可点 ›</Text>
+            </View>
+          </View>
+        </FoldRiseIn>
+
+        <FoldRiseIn animate={foldAnimate} index={2} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+            <View style={styles.sparkHead}>
+              <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>近 14 天</Text>
+              <Text style={{ fontSize: 11, color: tf.faint, marginLeft: 6 }}>
+                {dailyGoal != null
+                  ? `目标 ${dailyGoal}${typeof quantify?.unit === 'string' && quantify.unit.trim() ? ` ${quantify.unit.trim()}` : ''} / 天`
+                  : '次数趋势'}
+              </Text>
+              <Text style={{ marginLeft: 'auto', fontSize: 11, color: '#6F856B' }}>趋势 ›</Text>
+            </View>
+            <View style={styles.spark}>
+              {spark14.map((v, i) => {
+                const pct = Math.max(6, Math.round((v / sparkMax) * 100));
+                return (
+                  <SparkGrowBar
+                    key={i}
+                    pct={pct}
+                    hot={i === spark14.length - 1}
+                    animate={foldAnimate}
+                    index={i}
+                  />
+                );
+              })}
+            </View>
+            <View style={styles.sparkX}>
+              <Text style={{ fontSize: 10, color: tf.faint }}>{addDaysToYmd(logicalTodayYmd, -13).slice(5)}</Text>
+              <Text style={{ fontSize: 10, color: tf.faint }}>{addDaysToYmd(logicalTodayYmd, -7).slice(5)}</Text>
+              <Text style={{ fontSize: 10, color: tf.faint }}>今天</Text>
+            </View>
+          </View>
+        </FoldRiseIn>
+
+        <FoldRiseIn animate={foldAnimate} index={3} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+          <View style={[styles.card, styles.extraCard, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+            <View style={styles.goalHead}>
+              <Text style={[styles.sectionTitle, { color: tf.ink2, fontSize: 13 }]}>{goalBarLabel.title}</Text>
+              <Text style={{ fontSize: 11, color: tf.faint, marginLeft: 6, flex: 1 }} numberOfLines={1}>
+                {goalBarLabel.sub}
+              </Text>
+              <Text style={{ fontSize: 11, color: '#6F856B', fontFamily: fonts.mono }}>{goalBarLabel.pct}%</Text>
+            </View>
+            <View style={[styles.pcprog, { backgroundColor: isDark ? tf.paper2 : '#EFEADD' }]}>
+              <View
+                style={[
+                  styles.pcprogFill,
+                  { width: `${Math.max(0, Math.min(100, goalBarLabel.pct))}%` },
+                ]}
+              />
+            </View>
+            <View style={styles.miniStat3}>
+              <View style={[styles.miniStatCell, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.miniStatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>{monthStats.hit}</Text>
+                <Text style={[styles.miniStatLabel, { color: tf.faint }]}>达标天数</Text>
+              </View>
+              <View style={[styles.miniStatCell, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.miniStatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>{monthStats.miss}</Text>
+                <Text style={[styles.miniStatLabel, { color: tf.faint }]}>漏卡</Text>
+              </View>
+              <View style={[styles.miniStatCell, { backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.62)' }]}>
+                <Text style={[styles.miniStatNum, { color: '#4E6552', fontFamily: fonts.mono }]}>{monthStats.makeup}</Text>
+                <Text style={[styles.miniStatLabel, { color: tf.faint }]}>补卡</Text>
+              </View>
+            </View>
+            {habitKind === 'break' && !breakSucceeded ? (
+              <Text style={[styles.makeUpSub, { marginTop: 6 }]}>
                 {consecutiveTargetDays != null
-                  ? ` · 已连续 ${consecutiveStreak} / ${consecutiveTargetDays} 天`
-                  : ` · 已连续 ${consecutiveStreak} 天`}
+                  ? `连续挑战 ${consecutiveStreak} / ${consecutiveTargetDays} 天`
+                  : `已连续 ${consecutiveStreak} 天`}
               </Text>
-            )
-          ) : habitKind === 'task' && taskExpectedGoal != null ? (
-            taskPeriodMet ? (
-              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
-                本{taskRepeatPeriod.replace('每', '')}已达成 {taskExpectedGoal.value}{' '}
-                {taskExpectedGoal.type === 'days' ? '天' : '次'}，任务页本周期内不再展示
-              </Text>
-            ) : (
-              <Text style={styles.makeUpSub}>
-                本{taskRepeatPeriod.replace('每', '')}进度 {taskPeriodProgress} / {taskExpectedGoal.value}{' '}
-                {taskExpectedGoal.type === 'days' ? '天' : '次'}
-              </Text>
-            )
-          ) : buildExpectedGoal != null ? (
-            buildSucceeded ? (
-              <Text style={[styles.makeUpSub, { color: GREEN_TEXT }]}>
-                已达成预期目标 {formatBuildExpectedGoalShort(buildExpectedGoal)}
-                {buildCycle?.completedAt ? ` · ${buildCycle.completedAt} 养成完成` : ' · 养成完成'}
-              </Text>
-            ) : (
-              <Text style={styles.makeUpSub}>
+            ) : null}
+            {habitKind === 'build' && buildExpectedGoal != null && !buildSucceeded ? (
+              <Text style={[styles.makeUpSub, { marginTop: 6 }]}>
                 预期目标进度 {buildExpectedProgress} / {buildExpectedGoal.value}{' '}
                 {formatBuildExpectedGoalProgressUnit(buildExpectedGoal.type)}
               </Text>
-            )
-          ) : null}
-          {focusYmd < logicalTodayYmd && !buildSucceeded ? (
-            <Text style={styles.makeUpSub}>补卡、取消补卡仅针对「逻辑日」之前的日期（与任务与习惯日界设置一致）。</Text>
-          ) : null}
-          {focusYmd === logicalTodayYmd && !buildSucceeded ? (
-            <Text style={styles.makeUpSub}>
-              {habitKind === 'break'
-                ? '今日在任务页确认戒除或记录破戒；再次点击继续记破戒。撤销破戒请点下方「今日撤销一次」。'
-                : '今日可在下方撤销一次；任务页也可点击图标角标数字（或完成勾）撤销。'}
-            </Text>
-          ) : null}
-          <View style={styles.makeUpBtnRow}>
-            <Pressable
-              style={[
-                styles.makeUpBtn,
-                styles.makeUpBtnPrimary,
-                (makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded) && styles.makeUpBtnDisabled,
-              ]}
-              disabled={makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded}
-              onPress={() => void handleMakeUpCheckIn()}>
-              {makeUpSaving ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <>
-                  <MaterialIcons name="event-available" size={18} color="#fff" />
-                  <Text style={styles.makeUpBtnText}>补卡</Text>
-                </>
-              )}
-            </Pressable>
-            <Pressable
-              style={[
-                styles.makeUpBtn,
-                styles.makeUpBtnCancel,
-                (cancelMakeUpSaving ||
-                  buildSucceeded ||
-                  focusYmd > logicalTodayYmd ||
-                  !focusHasRecord) &&
-                  styles.makeUpBtnCancelDisabled,
-              ]}
-              disabled={
-                cancelMakeUpSaving ||
-                buildSucceeded ||
-                focusYmd > logicalTodayYmd ||
-                !focusHasRecord
-              }
-              onPress={() => void handleDecrementFocusDayCheckIn()}>
-              {cancelMakeUpSaving ? (
-                <ActivityIndicator color={RED_TEXT} size="small" />
-              ) : (
-                <>
-                  <MaterialIcons name="undo" size={18} color={RED_TEXT} />
-                  <Text style={styles.makeUpBtnCancelText}>
-                    {focusYmd === logicalTodayYmd ? '今日撤销一次' : '取消补卡'}
-                  </Text>
-                </>
-              )}
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.statsRow}>
-          <View style={[styles.statCard, { backgroundColor: GREEN_BG }]}>
-            <Text style={styles.statValue}>
-              {totalAchieved} <Text style={styles.statUnit}>天</Text>
-            </Text>
-            <Text style={[styles.statLabel, { color: GREEN_TEXT }]}>总达成</Text>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: ORANGE_BG }]}>
-            <Text style={[styles.statValue, { color: ORANGE_TEXT }]}>
-              {weekAchieved} <Text style={[styles.statUnit, { color: ORANGE_TEXT }]}>天</Text>
-            </Text>
-            <Text style={[styles.statLabel, { color: ORANGE_TEXT }]}>周达成</Text>
-          </View>
-        </View>
-        <View style={[styles.statCard, { backgroundColor: RED_BG, marginBottom: 6 }]}>
-          <Text style={[styles.statValue, { color: RED_TEXT }]}>
-            {monthAchieved} <Text style={[styles.statUnit, { color: RED_TEXT }]}>天</Text>
-          </Text>
-          <Text style={[styles.statLabel, { color: RED_TEXT }]}>月达成</Text>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.calTitleRow}>
-            <MaterialIcons name="calendar-today" size={16} color={TEXT_MUTED} />
-            <Text style={styles.calTitle}>月视图</Text>
-          </View>
-          <View style={styles.monthNav}>
-            <Pressable
-              onPress={() =>
-                setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
-              }
-              hitSlop={8}>
-              <MaterialIcons name="chevron-left" size={22} color={TEXT_MUTED} />
-            </Pressable>
-            <Text style={styles.monthTitle}>
-              {calendarMonth.getFullYear()}年{pad2(calendarMonth.getMonth() + 1)}月
-            </Text>
-            <Pressable
-              onPress={() =>
-                setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
-              }
-              hitSlop={8}>
-              <MaterialIcons name="chevron-right" size={22} color={TEXT_MUTED} />
-            </Pressable>
-          </View>
-
-          <View style={styles.legendRow}>
-            <View style={styles.legendGrad}>
-              <Text style={styles.legendTxt}>少</Text>
-              <View style={[styles.legendSq, { backgroundColor: BLUE_LEGEND[0] }]} />
-              <View style={[styles.legendSq, { backgroundColor: BLUE_LEGEND[1] }]} />
-              <View style={[styles.legendSq, { backgroundColor: BLUE_LEGEND[2] }]} />
-              <Text style={styles.legendTxt}>多</Text>
-            </View>
-            <Text style={styles.legendItalic}>
-              {habitKind === 'break' ? `${monthHitCount} 天达标` : `${monthHitCount} 天有记录`}
-            </Text>
-          </View>
-
-          <View style={styles.weekdayRow}>
-            {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
-              <Text key={w} style={styles.weekdayCell}>
-                {w}
+            ) : null}
+            {habitKind === 'task' && taskExpectedGoal != null ? (
+              <Text style={[styles.makeUpSub, { marginTop: 6, color: taskPeriodMet ? GREEN_TEXT : TEXT_MUTED }]}>
+                {taskPeriodMet
+                  ? `本${taskRepeatPeriod.replace('每', '')}已达成`
+                  : `本${taskRepeatPeriod.replace('每', '')}进度 ${taskPeriodProgress} / ${taskExpectedGoal.value}`}
               </Text>
-            ))}
+            ) : null}
           </View>
+        </FoldRiseIn>
 
-          <View style={styles.calGrid}>
-            {Array.from({ length: leadingBlank }).map((_, i) => (
-              <View key={`b-${i}`} style={styles.calCell} />
-            ))}
-            {Array.from({ length: daysInMonth }).map((_, idx) => {
-              const day = idx + 1;
-              const y = calendarMonth.getFullYear();
-              const m = calendarMonth.getMonth();
-              const ymd = `${y}-${pad2(m + 1)}-${pad2(day)}`;
-              const cnt = checkIns[ymd] ?? 0;
-              const hasDayRecord =
-                habitKind === 'break' ? Object.prototype.hasOwnProperty.call(checkIns, ymd) : false;
-              const isSel = ymd === focusYmd;
-              const fill =
-                habitKind === 'break'
-                  ? completionBreakDay(cnt, dailyGoal, CAL_DAY_EMPTY, hasDayRecord, ymd, logicalTodayYmd)
-                  : completionBlue(cnt, CAL_DAY_EMPTY);
-              const showLightText =
-                habitKind === 'break'
-                  ? hasDayRecord &&
-                    !isHabitDayGoalMet({
-                      kind: 'break',
-                      todayCount: cnt,
-                      dailyGoal,
-                      hasDayRecord: true,
-                    }) &&
-                    cnt > 0
-                  : cnt > 0 && needsLightTextOnBlue(fill);
-              return (
-                <Pressable key={ymd} onPress={() => selectCalendarDay(y, m, day)} style={styles.calCell}>
-                  <View
-                    style={[
-                      styles.calDayInner,
-                      { backgroundColor: fill },
-                      isSel && styles.calDaySelected,
-                    ]}>
-                    <Text
-                      style={[
-                        styles.calDayText,
-                        !isSel && showLightText && { color: '#ffffff' },
-                        isSel && showLightText && { color: '#ffffff', fontWeight: '700' },
-                        isSel && !showLightText && { color: BLUE, fontWeight: '700' },
-                      ]}>
-                      {day}
+        <FoldRiseIn animate={foldAnimate} index={4} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+          <View style={[styles.card, styles.extraCardTight, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+            <View style={styles.goalHead}>
+              <Text style={[styles.sectionTitle, { color: tf.ink2, fontSize: 13 }]}>最近打卡</Text>
+              <Text style={{ fontSize: 11, color: tf.faint, marginLeft: 6 }}>
+                {Math.min(recentExpanded ? 12 : 3, checkInMeta.filter((r) => habitKind === 'break' || r.count > 0).length)} 条
+              </Text>
+              <Pressable
+                onPress={() => setRecentExpanded((v) => !v)}
+                hitSlop={8}
+                style={{ marginLeft: 'auto' }}>
+                <Text style={{ fontSize: 11, color: '#6F856B' }}>{recentExpanded ? '收起 ›' : '全部 ›'}</Text>
+              </Pressable>
+            </View>
+            {recentRows.length === 0 ? (
+              <Text style={[styles.makeUpSub, { paddingVertical: 8 }]}>暂无打卡记录</Text>
+            ) : (
+              recentRows.map((row, i) => (
+                <View key={row.key} style={[styles.histrow, i === 0 && { borderTopWidth: 0 }]}>
+                  <View style={styles.histIcon}>
+                    <Text style={{ fontSize: 14 }}>{row.icon}</Text>
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[styles.histTitle, { color: tf.ink2 }]} numberOfLines={1}>
+                      {row.title}
+                    </Text>
+                    <Text style={[styles.histMeta, { color: tf.faint }]} numberOfLines={1}>
+                      {row.meta}
                     </Text>
                   </View>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.trendHead}>
-            <View style={styles.trendTitleRow}>
-              <MaterialIcons name="show-chart" size={16} color={BLUE} />
-              <Text style={styles.trendTitle}>目标趋势</Text>
-            </View>
-            <View style={styles.trendArrows}>
-              <Pressable
-                onPress={() =>
-                  setTrendWeekStart((prev) => {
-                    const n = new Date(prev);
-                    n.setDate(prev.getDate() - 7);
-                    return n;
-                  })
-                }
-                hitSlop={8}>
-                <MaterialIcons name="chevron-left" size={20} color={TEXT_MUTED} />
-              </Pressable>
-              <Pressable
-                onPress={() =>
-                  setTrendWeekStart((prev) => {
-                    const n = new Date(prev);
-                    n.setDate(prev.getDate() + 7);
-                    return n;
-                  })
-                }
-                hitSlop={8}>
-                <MaterialIcons name="chevron-right" size={20} color={TEXT_MUTED} />
-              </Pressable>
-            </View>
-          </View>
-          <Text style={styles.trendRange}>
-            {toYMD(trendWeekStart).replace(/-/g, '.')} - {toYMD(trendEnd).replace(/-/g, '.')}
-          </Text>
-
-          <View style={[styles.chartWrap, { width: chartW }]}>
-            <Svg width={chartW} height={130} viewBox="0 0 300 120" preserveAspectRatio="none">
-              <SvgText x="8" y="118" fill={BLUE} fontSize="10">
-                0
-              </SvgText>
-              <SvgText x="8" y="62" fill={BLUE} fontSize="10">
-                {Math.max(1, Math.round(trendMax / 2))}
-              </SvgText>
-              <SvgText x="8" y="14" fill={BLUE} fontSize="10">
-                {trendMax}
-              </SvgText>
-              <Line x1="28" y1="110" x2="292" y2="110" stroke={CHART_GRID} strokeWidth="1" strokeDasharray="4 4" />
-              <Line x1="28" y1="60" x2="292" y2="60" stroke={CHART_GRID} strokeWidth="1" strokeDasharray="4 4" />
-              {pathD.d ? <Path d={pathD.d} fill="none" stroke={BLUE} strokeWidth="2" /> : null}
-              {pathD.pts.map((p, i) => (
-                <React.Fragment key={i}>
-                  <Circle cx={p.x} cy={p.y} r={3.5} fill={CARD} stroke={BLUE} strokeWidth="2" />
-                  <SvgText x={p.x} y={p.y - 10} fill={BLUE} fontSize="9" textAnchor="middle">
-                    {p.cnt}次
-                  </SvgText>
-                </React.Fragment>
-              ))}
-            </Svg>
-            <View style={styles.chartXLabels}>
-              {['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((label) => (
-                <Text key={label} style={styles.chartXText}>
-                  {label}
-                </Text>
-              ))}
-            </View>
-          </View>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.trendHead}>
-            <Text style={styles.heatYearTitle}>{heatmapYear}年</Text>
-            <View style={styles.trendArrows}>
-              <Pressable onPress={() => setHeatmapYear((y) => y - 1)} hitSlop={8}>
-                <MaterialIcons name="chevron-left" size={20} color={TEXT_MUTED} />
-              </Pressable>
-              <Pressable onPress={() => setHeatmapYear((y) => y + 1)} hitSlop={8}>
-                <MaterialIcons name="chevron-right" size={20} color={TEXT_MUTED} />
-              </Pressable>
-            </View>
-          </View>
-          <Text style={styles.heatSub}>年度完成热力图</Text>
-
-          <View style={styles.heatRow}>
-            <View style={styles.heatYLabels}>
-              {['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((lb) => (
-                <Text key={lb} style={styles.heatYText}>
-                  {lb}
-                </Text>
-              ))}
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.heatScroll}>
-              {heatWeeks.map((col, wi) => (
-                <View key={wi} style={styles.heatCol}>
-                  {col.map((dt, di) => {
-                    const inYear = dt.getFullYear() === heatmapYear;
-                    const ymd = toYMD(dt);
-                    const cnt = inYear ? checkIns[ymd] ?? 0 : 0;
-                    const hasDayRecord =
-                      habitKind === 'break' && inYear
-                        ? Object.prototype.hasOwnProperty.call(checkIns, ymd)
-                        : false;
-                    const bg = !inYear
-                      ? HEAT_OUT_YEAR
-                      : habitKind === 'break'
-                        ? completionBreakDay(cnt, dailyGoal, HEAT_DAY_EMPTY, hasDayRecord, ymd, logicalTodayYmd)
-                        : completionBlue(cnt, HEAT_DAY_EMPTY);
-                    return (
-                      <View key={`${wi}-${di}`} style={[styles.heatCell, { backgroundColor: bg }]} />
-                    );
-                  })}
+                  <Text
+                    style={[
+                      styles.histPts,
+                      { color: row.pts > 0 ? '#5D8457' : tf.faint, fontFamily: fonts.mono },
+                    ]}>
+                    {row.pts > 0 ? `+${row.pts}` : '0'}
+                  </Text>
                 </View>
-              ))}
-            </ScrollView>
+              ))
+            )}
           </View>
+        </FoldRiseIn>
+
+        {linkedProject ? (
+          <FoldRiseIn animate={foldAnimate} index={5} duration={460} staggerMs={36} fromY={8} holdHidden={foldAnimate}>
+            <Pressable
+              onPress={() =>
+                router.push({ pathname: '/edit-project', params: { id: linkedProject.projectId } })
+              }
+              style={[styles.linkedCard, { backgroundColor: cardBg, borderColor: tf.line2 }]}>
+              <View style={[styles.frogmark, { backgroundColor: tf.lily2 }]}>
+                <MaterialIcons name="spa" size={16} color={tf.frog} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#536155' }} numberOfLines={1}>
+                  关联项目：{linkedProject.name}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#9CA59C', marginTop: 2 }} numberOfLines={1}>
+                  {linkedProject.subtitle}
+                </Text>
+              </View>
+              <Text style={{ fontSize: 11, color: '#6F856B' }}>查看 ›</Text>
+            </Pressable>
+          </FoldRiseIn>
+        ) : null}
+
+        <View style={[styles.hnote, { backgroundColor: isDark ? tf.sun2 : '#F8F1E2', borderColor: '#EBD7B7' }]}>
+          <MaterialIcons name="lightbulb-outline" size={14} color={tf.sun} />
+          <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: '#8B6B37' }}>
+            <Text style={{ fontWeight: '800' }}>补卡规则</Text>
+            {' · '}仅支持逻辑日之前；今天请回任务页打卡。带子习惯时必须在清单逐项勾选；撤销会同步扣回积分。
+            {focusYmd < logicalTodayYmd
+              ? ` 当前选中 ${focusYmd}，已记 ${checkIns[focusYmd] ?? 0} 次。`
+              : ''}
+          </Text>
+        </View>
+
+        <View style={styles.ghostBtnRow}>
+          <Pressable
+            onPress={() => {
+              if (focusYmd === logicalTodayYmd) {
+                toast.info(todayDone ? '今天已在任务页打卡 · 可在此撤销一次' : '今天请回任务页打卡');
+                router.push('/(tabs)/tasks');
+                return;
+              }
+              void handleDecrementFocusDayCheckIn();
+            }}
+            disabled={cancelMakeUpSaving || (focusYmd !== logicalTodayYmd && !focusHasRecord)}
+            style={({ pressed }) => [
+              styles.ghostBtn,
+              {
+                borderColor: tf.line2,
+                backgroundColor: isDark ? 'rgba(255,252,245,0.06)' : 'rgba(255,252,245,0.7)',
+                opacity: pressed || cancelMakeUpSaving ? 0.75 : 1,
+              },
+            ]}>
+            {cancelMakeUpSaving ? (
+              <ActivityIndicator size="small" color={tf.frog} />
+            ) : (
+              <>
+                <MaterialIcons
+                  name={focusYmd === logicalTodayYmd ? 'spa' : 'undo'}
+                  size={14}
+                  color={tf.ink2}
+                />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: tf.ink2 }}>
+                  {focusYmd === logicalTodayYmd ? '今日打卡记录' : '撤销补卡'}
+                </Text>
+              </>
+            )}
+          </Pressable>
+          <Pressable
+            onPress={() => void handleMakeUpCheckIn()}
+            disabled={makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded}
+            style={({ pressed }) => [
+              styles.ghostBtn,
+              {
+                borderColor: tf.line2,
+                backgroundColor: isDark ? 'rgba(255,252,245,0.06)' : 'rgba(255,252,245,0.7)',
+                opacity:
+                  makeUpSaving || focusYmd >= logicalTodayYmd || buildSucceeded
+                    ? 0.45
+                    : pressed
+                      ? 0.75
+                      : 1,
+              },
+            ]}>
+            {makeUpSaving ? (
+              <ActivityIndicator size="small" color={tf.frog} />
+            ) : (
+              <>
+                <MaterialIcons name="event-available" size={14} color={tf.ink2} />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: tf.ink2 }}>补卡</Text>
+              </>
+            )}
+          </Pressable>
         </View>
       </ScrollView>
 
@@ -1318,209 +1498,212 @@ export default function HabitDetailScreen() {
                 n.setHours(0, 0, 0, 0);
                 setFocusDate(n);
                 setCalendarMonth(new Date(n.getFullYear(), n.getMonth(), 1));
-                setTrendWeekStart(startOfWeekMonday(n));
                 if (Platform.OS !== 'ios') setDatePickerOpen(false);
               }}
             />
             {Platform.OS === 'ios' ? (
-              <Pressable style={styles.pickerOk} onPress={() => setDatePickerOpen(false)}>
+              <Pressable style={[styles.pickerOk, { backgroundColor: BLUE }]} onPress={() => setDatePickerOpen(false)}>
                 <Text style={styles.pickerOkText}>完成</Text>
               </Pressable>
             ) : null}
           </View>
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
   scrollFlex: { flex: 1 },
-  topBar: {
+  appbar: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingBottom: 10,
-    backgroundColor: CARD,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: CARD_BORDER,
+    gap: 10,
   },
-  topBarFixed: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 100,
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-  },
-  iconBtn: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
-  topTitle: { fontSize: 17, fontWeight: '600', color: TEXT_MAIN },
-  scrollContent: { paddingHorizontal: 16, gap: 14, paddingTop: 6 },
-  card: {
-    backgroundColor: CARD,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: CARD_BORDER,
-  },
-  titleText: { fontSize: 18, fontWeight: '600', color: TEXT_MAIN },
-  reminderBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 10,
-  },
-  reminderBadgeText: { fontSize: 13, fontWeight: '600', color: BLUE },
-  quoteCard: {
-    backgroundColor: CARD,
-    borderRadius: 12,
-    paddingVertical: 18,
-    paddingHorizontal: 20,
-    position: 'relative',
-    justifyContent: 'center',
-    minHeight: 56,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: CARD_BORDER,
-  },
-  quoteIconTL: {
-    position: 'absolute',
-    top: 10,
-    left: 10,
-    opacity: 0.45,
-    fontSize: 11,
-    color: '#6b7280',
-    fontWeight: '700',
-  },
-  quoteIconBR: {
-    position: 'absolute',
-    bottom: 10,
-    right: 10,
-    opacity: 0.45,
-    fontSize: 11,
-    color: '#6b7280',
-    fontWeight: '700',
-  },
-  quoteBody: { fontSize: 14, color: TEXT_MUTED, paddingHorizontal: 12, lineHeight: 20 },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  sectionTitle: { fontSize: 16, fontWeight: '600', color: TEXT_MAIN },
-  dateChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(37,99,235,0.10)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  dateChipText: { fontSize: 12, color: BLUE, fontWeight: '600' },
-  makeUpBlock: { gap: 8, paddingVertical: 2 },
-  makeUpHint: { fontSize: 13, color: TEXT_MUTED },
-  makeUpHintStrong: { fontWeight: '700', color: TEXT_MAIN },
-  makeUpSub: { fontSize: 11, color: TEXT_MUTED, lineHeight: 16 },
-  makeUpBtnRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-  makeUpBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderRadius: 12,
-    minHeight: 44,
-  },
-  makeUpBtnPrimary: { backgroundColor: BLUE },
-  makeUpBtnDisabled: { backgroundColor: '#94a3b8', opacity: 0.85 },
-  makeUpBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  makeUpBtnCancel: {
-    backgroundColor: RED_BG,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: RED_TEXT,
-  },
-  makeUpBtnCancelDisabled: { opacity: 0.45 },
-  makeUpBtnCancelText: { color: RED_TEXT, fontWeight: '700', fontSize: 14 },
-  statsRow: { flexDirection: 'row', gap: 10 },
-  statCard: { flex: 1, borderRadius: 12, padding: 14 },
-  statValue: { fontSize: 26, fontWeight: '600', color: GREEN_TEXT, marginBottom: 4 },
-  statUnit: { fontSize: 14, fontWeight: '400' },
-  statLabel: { fontSize: 12, opacity: 0.85 },
-  calTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  calTitle: { fontSize: 14, color: TEXT_MUTED },
-  monthNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 16, marginBottom: 10 },
-  monthTitle: { fontSize: 18, fontWeight: '600', color: TEXT_MAIN },
-  legendRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  legendGrad: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  legendTxt: { fontSize: 11, color: '#6b7280' },
-  legendSq: { width: 10, height: 10, borderRadius: 2 },
-  legendItalic: { fontSize: 11, color: TEXT_MUTED, fontStyle: 'italic' },
-  weekdayRow: { flexDirection: 'row', marginBottom: 8 },
-  weekdayCell: { flex: 1, textAlign: 'center', fontSize: 11, color: '#6b7280' },
-  calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  calCell: {
-    width: '14.2857%',
-    paddingVertical: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 40,
-  },
-  calDayInner: {
+  iconbtn: {
     width: 32,
     height: 32,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  calDaySelected: {
-    borderWidth: 2,
-    borderColor: BLUE,
-  },
-  calDayText: { fontSize: 13, color: '#374151' },
-  trendHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  trendTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  trendTitle: { fontSize: 14, fontWeight: '600', color: BLUE },
-  trendArrows: {
+  appbarCenter: { flex: 1, minWidth: 0 },
+  appbarTitle: { fontSize: 15, fontWeight: '700' },
+  appbarSub: { fontSize: 10, marginTop: 2 },
+  pillbtn: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
-    gap: 12,
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
+    alignItems: 'center',
+    gap: 3,
+  },
+  scrollContent: { paddingHorizontal: 14, gap: 10, paddingTop: 4 },
+  hhero: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    overflow: 'hidden',
+  },
+  hhtop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  bigicon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bigiconEmoji: { fontSize: 24 },
+  hhc: { flex: 1, minWidth: 0 },
+  heroName: { fontSize: 22, fontWeight: '600' },
+  heroMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' },
+  todayTag: {
+    height: 18,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  streakbig: { alignItems: 'flex-end' },
+  streakNumRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  streakNum: { fontSize: 24, fontWeight: '700', lineHeight: 28 },
+  hhstats: { flexDirection: 'row', gap: 6, marginTop: 12 },
+  hhstat: { flex: 1, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 6 },
+  hhstatNum: { fontSize: 13, fontWeight: '700' },
+  hhstatLabel: { fontSize: 10, marginTop: 2 },
+  card: {
+    backgroundColor: CARD,
+    borderRadius: 12,
+    padding: 12,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: CARD_BORDER,
   },
-  trendRange: { fontSize: 11, color: '#6b7280', marginBottom: 12 },
-  chartWrap: { alignSelf: 'center', marginTop: 8 },
-  chartXLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: '4%',
-    marginTop: 8,
+  extraCard: { paddingHorizontal: 12, paddingVertical: 10 },
+  extraCardTight: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 },
+  sectionTitle: { fontSize: 14, fontWeight: '700', color: TEXT_MAIN },
+  makeUpSub: { fontSize: 11, color: TEXT_MUTED, lineHeight: 16, marginTop: 4 },
+  hmhead2: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  legendInline: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 3 },
+  legendSq: { width: 10, height: 10, borderRadius: 2 },
+  monthNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 8 },
+  monthTitle: { fontSize: 13, fontWeight: '600', color: TEXT_MAIN },
+  weekdayRow: { flexDirection: 'row', marginBottom: 4 },
+  weekdayCell: { flex: 1, textAlign: 'center', fontSize: 11 },
+  calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  calCell: {
+    width: '14.2857%',
+    paddingVertical: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 34,
   },
-  chartXText: { fontSize: 10, color: BLUE, flex: 1, textAlign: 'center' },
-  heatYearTitle: { fontSize: 18, fontWeight: '700', color: BLUE },
-  heatSub: { fontSize: 11, color: '#6b7280', marginBottom: 10 },
-  heatRow: { flexDirection: 'row' },
-  heatYLabels: { justifyContent: 'space-between', paddingVertical: 2, marginRight: 8, height: 7 * 15 },
-  heatYText: { fontSize: 10, color: TEXT_MUTED, lineHeight: 15 },
-  heatScroll: { flexDirection: 'row', gap: 4, paddingBottom: 4 },
-  heatCol: { flexDirection: 'column', gap: 4 },
-  heatCell: { width: 11, height: 11, borderRadius: 2 },
+  calCellPress: { width: '100%', alignItems: 'center', justifyContent: 'center' },
+  calDayInner: {
+    width: '88%',
+    aspectRatio: 1,
+    maxWidth: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calDayToday: {
+    borderWidth: 1.5,
+    borderColor: SUN_RING,
+  },
+  calDaySelected: {
+    borderWidth: 1.5,
+    borderColor: BLUE,
+  },
+  calDayText: { fontSize: 11, color: '#374151' },
+  heatFoot: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8 },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  sparkHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  spark: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 3,
+    height: 44,
+    paddingTop: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(226,218,203,0.6)',
+  },
+  sparkCol: { flex: 1, height: '100%', justifyContent: 'flex-end' },
+  sparkBar: { width: '100%', borderTopLeftRadius: 3, borderTopRightRadius: 3, minHeight: 3 },
+  sparkX: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
+  goalHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 4 },
+  pcprog: { height: 5, borderRadius: 3, overflow: 'hidden' },
+  pcprogFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: '#6F9565',
+  },
+  miniStat3: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  miniStatCell: { flex: 1, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 6 },
+  miniStatNum: { fontSize: 14, fontWeight: '700' },
+  miniStatLabel: { fontSize: 10, marginTop: 2 },
+  histrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.55)',
+  },
+  histIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#E7EEE0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  histTitle: { fontSize: 13, fontWeight: '600' },
+  histMeta: { fontSize: 11, marginTop: 2 },
+  histPts: { fontSize: 12, fontWeight: '700', minWidth: 28, textAlign: 'right' },
+  linkedCard: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  frogmark: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hnote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: 2,
+  },
+  ghostBtnRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  ghostBtn: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+  },
   centerMsg: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   muted: { color: TEXT_MUTED, fontSize: 14 },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
@@ -1536,11 +1719,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: CARD_BORDER,
     zIndex: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 8,
   },
   pickerTitle: { fontSize: 16, fontWeight: '700', color: TEXT_MAIN, marginBottom: 10 },
   pickerOk: {

@@ -1,4 +1,4 @@
-import { ApiDebugLogViewer } from '@/components/api-debug-log-viewer';
+﻿import { ApiDebugLogViewer } from '@/components/api-debug-log-viewer';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
@@ -24,9 +24,9 @@ export default function ApiRequestMonitorScreen() {
   const muted = isDark ? 'rgba(148,163,184,0.85)' : '#64748b';
   const outline = isDark ? 'rgba(148,163,184,0.8)' : '#727785';
   const outlineVariant = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(194,198,214,0.35)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
+  const primary = isDark ? '#A9C7B9' : '#1E3932';
   const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
+  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(30,57,50,0.12)';
   const pageBg = theme.background;
 
   const [ready, setReady] = useState(false);

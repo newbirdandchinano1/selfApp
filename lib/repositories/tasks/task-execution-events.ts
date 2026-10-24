@@ -157,6 +157,37 @@ export async function getRecentTaskExecutionEvents(limit: number): Promise<TaskE
   return getRecentTaskExecutionEventsPage(limit, 0);
 }
 
+/**
+ * 某任务及其子孙的最近执行事件（完成 / 恢复），按时间倒序。
+ * 直查本地 SQLite，不限 overview 独立待办口径。
+ */
+export async function getRecentExecutionEventsForTaskIds(
+  taskIds: string[],
+  limit = 3,
+): Promise<TaskExecutionEventWithTitle[]> {
+  const ids = [...new Set(taskIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0 || limit <= 0) return [];
+  const db = await getDatabase();
+  if (!db) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync<EventRowLite>(
+    `SELECT id, task_id, action, created_at, task_title
+       FROM task_execution_events
+      WHERE sync_status != 'pending_delete'
+        AND task_id IN (${placeholders})
+      ORDER BY created_at DESC
+      LIMIT ?`,
+    [...ids, limit],
+  );
+  return (rows ?? []).map((e) => ({
+    id: e.id,
+    task_id: e.task_id,
+    action: e.action,
+    created_at: e.created_at,
+    task_title: e.task_title?.trim() || null,
+  }));
+}
+
 export async function getRecentTaskExecutionEventsPage(
   limit: number,
   offset: number

@@ -4,6 +4,11 @@ export {
   EntityFormScheduleField,
   type EntityFormScheduleFieldProps,
 } from './EntityFormScheduleField';
+export {
+  AddSubtaskSheet,
+  type AddSubtaskDraft,
+  type AddSubtaskSheetProps,
+} from './AddSubtaskSheet';
 export { TaskFormScreen, type TaskFormMode } from './TaskFormScreen';
 export {
   EMPTY_COMPOSER_SCHEDULE_LABELS,

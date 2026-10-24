@@ -3162,11 +3162,11 @@ export default function HealthScreen() {
               }}
               style={styles.quickAddManageBtn}
               accessibilityRole="button"
-              accessibilityLabel={quickAddEmpty ? '管理快捷卡' : '编辑快捷卡'}
+              accessibilityLabel="快捷卡管理"
             >
-              <MaterialIcons name="edit" size={14} color={intakeParseLocked ? hh.faint : hh.pine} />
+              <MaterialIcons name="tune" size={14} color={intakeParseLocked ? hh.faint : hh.pine} />
               <Text style={[styles.editBtn, { color: intakeParseLocked ? hh.faint : hh.pine, marginTop: 0 }]}>
-                {quickAddEmpty ? '管理' : '编辑'}
+                快捷卡管理
               </Text>
             </TouchableOpacity>
           </View>

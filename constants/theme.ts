@@ -1,6 +1,6 @@
 /**
- * 应用主题色 — 与财务页设计规范对齐。
- * 完整令牌见 `constants/design-tokens.ts`，运行时语义色见 `useAppTheme`。
+ * 应用主题色 — 与健康页设计规范对齐（奶油纸 / 松墨绿 / sage）。
+ * 完整令牌见 `constants/design-tokens.ts` 与 `health-home-theme.ts`，运行时语义色见 `useAppTheme`。
  */
 
 import { Platform } from 'react-native';

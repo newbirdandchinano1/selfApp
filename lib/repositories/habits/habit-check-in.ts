@@ -123,6 +123,55 @@ export async function getCheckInsMapByHabitId(habitId: string): Promise<Record<s
   return readLocalCheckInsForHabit(habitId);
 }
 
+export type HabitCheckInMetaRow = {
+  record_date: string;
+  count: number;
+  created_at: string;
+  updated_at: string;
+  /** 写入日晚于记录日 → 视为补卡 */
+  isMakeup: boolean;
+};
+
+/** 习惯打卡行元数据（含补卡判定），按 record_date 降序 */
+export async function listHabitCheckInMetaByHabitId(habitId: string): Promise<HabitCheckInMetaRow[]> {
+  const db = await getDatabase();
+  if (!db) return [];
+  const rows = await db.getAllAsync<{
+    record_date: string;
+    count: number;
+    created_at: string;
+    updated_at: string;
+    sync_status: string;
+  }>(
+    `SELECT record_date, count, created_at, updated_at, sync_status
+       FROM habit_check_ins WHERE habit_id = ?
+       ORDER BY record_date DESC`,
+    [habitId],
+  );
+  const byDate = new Map<string, HabitCheckInMetaRow>();
+  for (const r of rows ?? []) {
+    if (r.sync_status === 'pending_delete') continue;
+    const ymd = ymdPrefix(String(r.record_date ?? '')) ?? String(r.record_date ?? '').trim();
+    if (!ymd) continue;
+    const count = Math.max(0, Math.floor(Number(r.count) || 0));
+    const createdYmd = ymdPrefix(String(r.created_at ?? '')) ?? '';
+    const updatedYmd = ymdPrefix(String(r.updated_at ?? '')) ?? '';
+    const writeYmd = updatedYmd || createdYmd;
+    const isMakeup = Boolean(writeYmd && writeYmd > ymd);
+    const prev = byDate.get(ymd);
+    if (!prev || count >= prev.count) {
+      byDate.set(ymd, {
+        record_date: ymd,
+        count,
+        created_at: String(r.created_at ?? ''),
+        updated_at: String(r.updated_at ?? ''),
+        isMakeup: prev ? prev.isMakeup || isMakeup : isMakeup,
+      });
+    }
+  }
+  return Array.from(byDate.values()).sort((a, b) => b.record_date.localeCompare(a.record_date));
+}
+
 /**
  * 写入某日次数：count<=0 时删除该日记录（未同步过的行直接物理删除）。
  * `keepZeroRecord` 为 true 时写入 count=0（戒除习惯「保持戒除」确认）。

@@ -1,4 +1,4 @@
-import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
+﻿import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
 import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
@@ -377,7 +377,7 @@ export function formatTasksCalendarPriority(priority: number): string {
 export function getTasksCalendarPriorityColor(priority: number, isDark: boolean): string {
   if (priority >= 4) return isDark ? '#f87171' : '#ba1a1a';
   if (priority === 3) return isDark ? '#fbbf24' : '#9a5b00';
-  if (priority === 2) return isDark ? '#60a5fa' : '#0058be';
+  if (priority === 2) return isDark ? '#A9C7B9' : '#1E3932';
   if (priority === 1) return isDark ? '#94a3b8' : '#727785';
   return isDark ? '#94a3b8' : '#727785';
 }

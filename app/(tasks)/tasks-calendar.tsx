@@ -1,15 +1,24 @@
-import { AppIconButton } from '@/components/ui';
-import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
+/**
+ * 任务日历 — 对齐设计稿 shot 09 / motion 09
+ * 换月横移 · 点日展开 · 圆点语义色（蛙/办/习/项）
+ */
+import {
+  FoldCountUpText,
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { ScreenHeader, ScreenHeaderIconAction } from '@/components/ui';
+import { Layout, Spacing } from '@/constants/design-tokens';
+import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { useTasksCalendarSummaries } from '@/hooks/use-tasks-calendar-summaries';
+import { formatYmd } from '@/lib/date';
+import { openTaskById } from '@/lib/open-task-by-id';
 import { isHabitDayGoalMet } from '@/lib/repositories/habits/habit-goal';
-import type { HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   emptyCalendarDay,
-  formatTasksCalendarPriority,
-  getTasksCalendarPriorityColor,
   type FrogCalendarDayStatus,
   type TasksCalendarDaySummary,
   type TasksCalendarGridDay,
@@ -17,12 +26,12 @@ import {
   type TasksCalendarProjectItem,
   type TasksCalendarTaskItem,
 } from '@/lib/tasks-calendar-data';
-import { formatYmd } from '@/lib/date';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   PixelRatio,
   Pressable,
@@ -30,17 +39,23 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-const WEEK_TITLES = ['一', '二', '三', '四', '五', '六', '日'];
+const WEEK_TITLES = ['一', '二', '三', '四', '五', '六', '日'] as const;
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
-const GRID_GAP = 5;
-/** 固定边框宽度，避免选中/今日态改变 borderWidth 导致格子总宽度变化、与星期列错位 */
-const DAY_CELL_BORDER = 2;
+const GRID_GAP = 2;
 const MONTH_PAGE_SPAN = 121;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
+const PAGE_RISE_MS = 520;
+const PAGE_STAGGER_MS = 42;
+
+const DOT = {
+  frog: '#4F7C51',
+  todo: '#D6974B',
+  habit: '#A8BE8C',
+  project: '#C47055',
+} as const;
 
 function roundCalendarWidth(width: number): number {
   return PixelRatio.roundToNearestPixel(width);
@@ -72,8 +87,20 @@ function buildGridCellsForMonth(monthDate: Date) {
   });
 }
 
+function chunkWeeks<T>(cells: T[]): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < cells.length; i += 7) {
+    rows.push(cells.slice(i, i + 7));
+  }
+  return rows;
+}
+
 function formatTopDate(d: Date) {
-  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+function formatWeekday(d: Date) {
+  return WEEKDAY_LABELS[d.getDay()];
 }
 
 function formatTaskStatus(status: string) {
@@ -93,42 +120,14 @@ function formatPriority(p: number) {
   return '';
 }
 
-/** 低饱和热力色，贴近任务页青蛙热力图，避免刺眼纯蓝 */
-const HEAT_LEVELS_LIGHT = ['#f4f5f8', '#e8ecef', '#d9e2e8', '#c5d4de', '#b0c4d4'] as const;
-const HEAT_LEVELS_DARK = [
-  'rgba(51,65,85,0.35)',
-  'rgba(71,85,105,0.45)',
-  'rgba(100,116,139,0.38)',
-  'rgba(148,163,184,0.32)',
-  'rgba(148,163,184,0.48)',
-] as const;
-
-function chunkWeeks<T>(cells: T[]): T[][] {
-  const rows: T[][] = [];
-  for (let i = 0; i < cells.length; i += 7) {
-    rows.push(cells.slice(i, i + 7));
-  }
-  return rows;
-}
-
-function formatWeekday(d: Date) {
-  return WEEKDAY_LABELS[d.getDay()];
-}
-
-function habitKindCornerBadge(kind: HabitKind, isDark: boolean): { text: string; color: string } {
-  if (kind === 'break') {
-    return { text: '戒', color: isDark ? '#ea580c' : '#ea580c' };
-  }
-  if (kind === 'task') {
-    return { text: '任', color: isDark ? '#3b82f6' : '#2563eb' };
-  }
-  return { text: '习', color: isDark ? '#059669' : '#047857' };
+function formatFrogDayStatus(status: FrogCalendarDayStatus | undefined) {
+  if (status === 'completed' || status === 'partial') return '已完成';
+  if (status === 'incomplete') return '未完成';
+  return null;
 }
 
 function daySummaryCounts(summary: TasksCalendarDaySummary | undefined) {
-  if (!summary) {
-    return { frogs: 0, todos: 0, habits: 0, projects: 0, total: 0 };
-  }
+  if (!summary) return { frogs: 0, todos: 0, habits: 0, projects: 0, total: 0 };
   const todos = summary.standaloneTodos.length;
   const frogs = summary.frogs.length;
   const habits = summary.habits.length;
@@ -136,661 +135,447 @@ function daySummaryCounts(summary: TasksCalendarDaySummary | undefined) {
   return { frogs, todos, habits, projects, total: frogs + todos + habits + projects };
 }
 
-function FrogTaskRowItem({
-  item,
-  onPress,
-  text,
-  muted,
-  success,
-  danger,
-  rowBg,
-  borderColor,
-  isDark,
+type GridCell = ReturnType<typeof buildGridCellsForMonth>[number];
+
+function MonthDayCell({
+  cell,
+  cellGrid,
+  selected,
+  isToday,
+  onSelect,
+  fonts,
+  tf,
 }: {
-  item: TasksCalendarTaskItem;
-  onPress: () => void;
-  text: string;
-  muted: string;
-  success: string;
-  danger: string;
-  rowBg: string;
-  borderColor: string;
-  isDark: boolean;
+  cell: GridCell;
+  cellGrid: TasksCalendarGridDay | undefined;
+  selected: boolean;
+  isToday: boolean;
+  onSelect: (d: Date) => void;
+  fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
+  tf: ReturnType<typeof useTaskFoldTheme>['tf'];
 }) {
-  const frogStatus = item.frogDayStatus ?? 'pending';
-  const visualDone = frogStatus === 'completed' || frogStatus === 'partial';
-  const isIncomplete = frogStatus === 'incomplete';
-  const isPartial = frogStatus === 'partial';
-  const pri = formatPriority(item.priority);
-  const frogStatusLabel = formatFrogDayStatus(frogStatus);
-  const partialBadgeBg = isDark ? 'rgba(59,130,246,0.18)' : 'rgba(59,130,246,0.12)';
-  const partialBadgeColor = isDark ? '#93c5fd' : '#2563eb';
-  const incompleteBg = isDark ? 'rgba(248,113,113,0.12)' : 'rgba(254,226,226,0.72)';
-  const incompleteBorder = isDark ? 'rgba(248,113,113,0.72)' : 'rgba(220,38,38,0.55)';
+  const frogN = cellGrid?.frogs ?? 0;
+  const habitN = cellGrid?.habits ?? 0;
+  const openN = cellGrid?.openTodos ?? 0;
+  const projN = cellGrid?.projectsDue ?? 0;
+  const inMonth = cell.inCurrentMonth;
+
+  let bg = 'transparent';
+  let color = inMonth ? '#5C6A5F' : '#D2D6CC';
+  if (selected && inMonth) {
+    bg = tf.pond;
+    color = tf.onPond;
+  } else if (isToday && inMonth) {
+    bg = 'rgba(201,217,163,0.32)';
+    color = '#36563C';
+  }
+
+  const showDots = inMonth && (frogN > 0 || openN > 0 || habitN > 0 || projN > 0);
+  const dotColor = selected ? '#C9D9A3' : undefined;
 
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onSelect(cell.date)}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${cell.ymd}，青蛙 ${frogN}，待办 ${openN}，习惯 ${habitN}，项目 ${projN}`}
       style={({ pressed }) => [
-        styles.listRow,
+        styles.mcell,
         {
-          backgroundColor: isIncomplete ? incompleteBg : rowBg,
-          borderColor: isIncomplete ? incompleteBorder : borderColor,
-          borderWidth: isIncomplete ? 1.5 : StyleSheet.hairlineWidth,
+          backgroundColor: bg,
+          opacity: pressed ? 0.88 : 1,
+          shadowColor: selected ? tf.shadow : 'transparent',
+          shadowOpacity: selected ? 0.18 : 0,
+          shadowRadius: selected ? 6 : 0,
+          shadowOffset: { width: 0, height: 3 },
+          elevation: selected ? 3 : 0,
         },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button">
-      <View
+      ]}>
+      <Text
         style={[
-          styles.listDot,
+          styles.mcellNum,
           {
-            backgroundColor: isIncomplete ? danger : visualDone ? muted : success,
-            width: isIncomplete ? 8 : 7,
-            height: isIncomplete ? 8 : 7,
+            color,
+            fontFamily: fonts.mono,
+            fontWeight: selected || isToday ? '800' : '600',
           },
-        ]}
-      />
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text
-          style={[
-            styles.listTitle,
-            { color: isIncomplete ? danger : text },
-            visualDone && styles.listTitleDone,
-          ]}
-          numberOfLines={2}>
-          {item.title}
-        </Text>
-        <Text style={[styles.listMeta, { color: isIncomplete ? danger : visualDone ? success : muted }]}>
-          {frogStatusLabel ?? formatTaskStatus(item.status)}
-          {pri && frogStatus === 'pending' ? ` · ${pri}` : ''}
-          {visualDone && pri ? ` · ${pri}` : ''}
-        </Text>
-      </View>
-      {isPartial ? (
-        <View style={[styles.frogPartialBadge, { backgroundColor: partialBadgeBg }]}>
-          <Text style={[styles.frogPartialBadgeText, { color: partialBadgeColor }]}>部分完成</Text>
-        </View>
-      ) : null}
-      {isIncomplete ? (
-        <View style={[styles.frogPartialBadge, { backgroundColor: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(254,202,202,0.85)' }]}>
-          <Text style={[styles.frogPartialBadgeText, { color: danger }]}>未完成</Text>
-        </View>
-      ) : null}
-      <MaterialIcons name="chevron-right" size={18} color={muted} />
-    </Pressable>
-  );
-}
-
-function formatFrogDayStatus(status: FrogCalendarDayStatus | undefined) {
-  if (status === 'completed') return '已完成';
-  if (status === 'partial') return '已完成';
-  if (status === 'incomplete') return '未完成';
-  return null;
-}
-
-function StandaloneTodoRowItem({
-  item,
-  onPress,
-  text,
-  muted,
-  success,
-  rowBg,
-  borderColor,
-  isDark,
-}: {
-  item: TasksCalendarTaskItem;
-  onPress: () => void;
-  text: string;
-  muted: string;
-  success: string;
-  rowBg: string;
-  borderColor: string;
-  isDark: boolean;
-}) {
-  const reason = item.todoDayReason;
-  const completedOnDay = reason === 'completed' || reason === 'completed-and-due';
-  const dueOnDay = reason === 'due' || reason === 'completed-and-due';
-  const priorityColor = getTasksCalendarPriorityColor(item.priority, isDark);
-  const pri = formatTasksCalendarPriority(item.priority);
-  const dueBadgeBg = isDark ? 'rgba(251,191,36,0.18)' : 'rgba(254,243,199,0.95)';
-  const dueBadgeColor = isDark ? '#fcd34d' : '#92400e';
-
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.listRow,
-        { backgroundColor: rowBg, borderColor },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button">
-      <View style={[styles.listDot, { backgroundColor: completedOnDay ? muted : priorityColor }]} />
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text
-          style={[styles.listTitle, { color: text }, completedOnDay && styles.listTitleDone]}
-          numberOfLines={2}>
-          {item.title}
-        </Text>
-        <Text style={[styles.listMeta, { color: completedOnDay ? success : priorityColor }]}>
-          {completedOnDay ? '已完成' : formatTaskStatus(item.status)}
-          {pri ? ` · ${pri}` : ''}
-        </Text>
-      </View>
-      {dueOnDay ? (
-        <View style={[styles.frogPartialBadge, { backgroundColor: dueBadgeBg }]}>
-          <Text style={[styles.frogPartialBadgeText, { color: dueBadgeColor }]}>截止日</Text>
-        </View>
-      ) : null}
-      <MaterialIcons name="chevron-right" size={18} color={muted} />
-    </Pressable>
-  );
-}
-
-function TaskRowItem({
-  item,
-  onPress,
-  text,
-  muted,
-  accent,
-  rowBg,
-  borderColor,
-}: {
-  item: TasksCalendarTaskItem;
-  onPress: () => void;
-  text: string;
-  muted: string;
-  accent: string;
-  rowBg: string;
-  borderColor: string;
-}) {
-  const done = item.status === 'done' || item.status === 'cancelled';
-  const pri = formatPriority(item.priority);
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.listRow,
-        { backgroundColor: rowBg, borderColor },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button">
-      <View style={[styles.listDot, { backgroundColor: done ? muted : accent }]} />
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={[styles.listTitle, { color: text }, done && styles.listTitleDone]} numberOfLines={2}>
-          {item.title}
-        </Text>
-        <Text style={[styles.listMeta, { color: muted }]}>
-          {formatTaskStatus(item.status)}
-          {pri ? ` · ${pri}` : ''}
-        </Text>
-      </View>
-      <MaterialIcons name="chevron-right" size={18} color={muted} />
-    </Pressable>
-  );
-}
-
-function HabitRowItem({
-  item,
-  dayYmd,
-  logicalTodayYmd,
-  onPress,
-  text,
-  muted,
-  success,
-  rowBg,
-  borderColor,
-  isDark,
-}: {
-  item: TasksCalendarHabitItem;
-  dayYmd: string;
-  logicalTodayYmd: string;
-  onPress: () => void;
-  text: string;
-  muted: string;
-  success: string;
-  rowBg: string;
-  borderColor: string;
-  isDark: boolean;
-}) {
-  const goal = item.dailyGoal;
-  const isTask = item.kind === 'task';
-  const taskPeriodProgress = item.periodProgress ?? 0;
-  const met = isTask
-    ? !!item.taskShowPeriodCheck
-    : isHabitDayGoalMet({
-        kind: item.kind,
-        todayCount: item.todayCount,
-        dailyGoal: goal,
-        hasDayRecord: item.kind === 'break' ? item.hasDayRecord : undefined,
-        ymd: dayYmd,
-        logicalTodayYmd,
-      });
-  const isBreak = item.kind === 'break';
-  const cornerBadge = habitKindCornerBadge(item.kind, isDark);
-  const progressLabel =
-    isTask && item.periodGoal != null
-      ? `本周期 ${taskPeriodProgress} / ${item.periodGoal}`
-      : isBreak && !item.hasDayRecord && dayYmd === logicalTodayYmd
-        ? '待确认今日状态'
-        : `${isBreak ? '记录' : '打卡'} ${item.todayCount}${goal != null ? ` / 阈值 ${goal}` : ''}`;
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.listRow,
-        { backgroundColor: rowBg, borderColor },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button">
-      <View style={[styles.listIconBadge, { backgroundColor: `${success}18` }]}>
-        <Text style={{ fontSize: 18 }}>{item.icon || '✓'}</Text>
-        <View style={[styles.habitKindCornerBadge, { backgroundColor: cornerBadge.color, borderColor: rowBg }]}>
-          <Text style={styles.habitKindCornerBadgeText}>{cornerBadge.text}</Text>
-        </View>
-      </View>
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={[styles.listTitle, { color: text }]} numberOfLines={1}>
-          {item.name}
-        </Text>
-        <Text style={[styles.listMeta, { color: met ? success : muted }]}>
-          {progressLabel}
-          {isBreak ? (met ? ' · 达标' : ' · 未达标') : isTask && met ? ' · 已完成' : ''}
-        </Text>
-      </View>
-      <MaterialIcons name="chevron-right" size={18} color={muted} />
-    </Pressable>
-  );
-}
-
-function ProjectRowItem({
-  item,
-  onPress,
-  text,
-  muted,
-  rowBg,
-  borderColor,
-}: {
-  item: TasksCalendarProjectItem;
-  onPress: () => void;
-  text: string;
-  muted: string;
-  rowBg: string;
-  borderColor: string;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.listRow,
-        { backgroundColor: rowBg, borderColor },
-        pressed && { opacity: 0.88 },
-      ]}
-      accessibilityRole="button">
-      <View style={[styles.listIconBadge, { backgroundColor: `${muted}14` }]}>
-        <MaterialIcons name="folder" size={18} color={muted} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.listTitle, { color: text }]} numberOfLines={1}>
-          {item.name}
-        </Text>
-        <Text style={[styles.listMeta, { color: muted }]}>项目截止</Text>
-      </View>
-      <MaterialIcons name="chevron-right" size={18} color={muted} />
-    </Pressable>
-  );
-}
-
-function SummaryChip({ label, value, color, bg }: { label: string; value: number; color: string; bg: string }) {
-  if (value <= 0) return null;
-  return (
-    <View style={[styles.summaryChip, { backgroundColor: bg }]}>
-      <Text style={[styles.summaryChipVal, { color }]}>{value}</Text>
-      <Text style={[styles.summaryChipLbl, { color }]}>{label}</Text>
-    </View>
-  );
-}
-
-function DayDetailSections({
-  summary,
-  selectedDate,
-  logicalTodayYmd,
-  router,
-  text,
-  muted,
-  accent,
-  success,
-  danger,
-  sectionBg,
-  rowBg,
-  borderColor,
-  isDark,
-}: {
-  summary: TasksCalendarDaySummary;
-  selectedDate: Date;
-  logicalTodayYmd: string;
-  router: ReturnType<typeof useRouter>;
-  text: string;
-  muted: string;
-  accent: string;
-  success: string;
-  danger: string;
-  sectionBg: string;
-  rowBg: string;
-  borderColor: string;
-  isDark: boolean;
-}) {
-  const openTask = (id: string) => router.push(`/task/${id}`);
-  const openHabit = (id: string) => router.push({ pathname: '/habit-detail', params: { habitId: id } });
-  const openProject = (id: string) => router.push({ pathname: '/edit-project', params: { id } });
-
-  const counts = daySummaryCounts(summary);
-  const hasAny = counts.total > 0;
-  const selectedYmd = formatYmd(selectedDate);
-  const frogSectionTitle = '青蛙';
-  const frogIncompleteCount = summary.frogs.filter((f) => f.frogDayStatus === 'incomplete').length;
-
-  const renderSection = (
-    title: string,
-    icon: React.ComponentProps<typeof MaterialIcons>['name'],
-    color: string,
-    count: number,
-    children: React.ReactNode
-  ) => {
-    if (!children || count <= 0) return null;
-    return (
-      <View style={[styles.detailSection, { backgroundColor: sectionBg, borderColor }]}>
-        <View style={styles.detailSectionHead}>
-          <View style={[styles.detailSectionIcon, { backgroundColor: `${color}16` }]}>
-            <MaterialIcons name={icon} size={15} color={color} />
-          </View>
-          <Text style={[styles.detailSectionTitle, { color: text }]}>{title}</Text>
-          <View style={[styles.detailSectionBadge, { backgroundColor: `${color}14` }]}>
-            <Text style={[styles.detailSectionBadgeText, { color }]}>{count}</Text>
-          </View>
-        </View>
-        <View style={styles.detailSectionBody}>{children}</View>
-      </View>
-    );
-  };
-
-  const dueOnly = summary.dueTasks.filter(
-    (d) => !summary.matrixTasks.some((m) => m.id === d.id) && !summary.frogs.some((f) => f.id === d.id)
-  );
-
-  return (
-    <View style={{ gap: Spacing.md }}>
-      <View style={styles.detailHeader}>
-        <View style={{ flex: 1, gap: 4 }}>
-          <Text style={[styles.detailDate, { color: text }]}>{formatTopDate(selectedDate)}</Text>
-          <Text style={[styles.detailWeekday, { color: muted }]}>{formatWeekday(selectedDate)}</Text>
-        </View>
-        {hasAny ? (
-          <View style={[styles.detailTotalBadge, { backgroundColor: `${accent}12`, borderColor: `${accent}30` }]}>
-            <Text style={[styles.detailTotalText, { color: accent }]}>{counts.total} 项</Text>
-          </View>
-        ) : null}
-      </View>
-
-      {hasAny ? (
-        <View style={styles.summaryChipRow}>
-          <SummaryChip label="青蛙" value={counts.frogs} color={success} bg={`${success}12`} />
-          <SummaryChip label="待办" value={counts.todos} color={accent} bg={`${accent}12`} />
-          <SummaryChip label="习惯" value={counts.habits} color={success} bg={`${success}10`} />
-          <SummaryChip label="项目" value={counts.projects} color={muted} bg={`${muted}14`} />
-        </View>
-      ) : null}
-
-      {!hasAny ? (
-        <View style={[styles.emptyDayWrap, { backgroundColor: sectionBg, borderColor }]}>
-          <View style={[styles.emptyDayIcon, { backgroundColor: `${muted}12` }]}>
-            <MaterialIcons name="event-available" size={28} color={muted} />
-          </View>
-          <Text style={[styles.emptyDayTitle, { color: text }]}>暂无安排</Text>
-          <Text style={[styles.emptyDay, { color: muted }]}>这一天没有青蛙、待办、习惯或项目截止。</Text>
+        ]}>
+        {cell.date.getDate()}
+      </Text>
+      {showDots ? (
+        <View style={styles.dots}>
+          {frogN > 0 ? <View style={[styles.dot, { backgroundColor: dotColor ?? DOT.frog }]} /> : null}
+          {openN > 0 ? <View style={[styles.dot, { backgroundColor: dotColor ?? DOT.todo }]} /> : null}
+          {habitN > 0 ? <View style={[styles.dot, { backgroundColor: dotColor ?? DOT.habit }]} /> : null}
+          {projN > 0 ? <View style={[styles.dot, { backgroundColor: dotColor ?? DOT.project }]} /> : null}
         </View>
       ) : (
-        <>
-          {renderSection(
-            frogSectionTitle,
-            'eco',
-            frogIncompleteCount > 0 ? danger : success,
-            summary.frogs.length,
-            summary.frogs.map((t) => (
-              <FrogTaskRowItem
-                key={t.id}
-                item={t}
-                onPress={() => openTask(t.id)}
-                text={text}
-                muted={muted}
-                success={success}
-                danger={danger}
-                rowBg={rowBg}
-                borderColor={borderColor}
-                isDark={isDark}
-              />
-            ))
-          )}
-          {renderSection(
-            '待办',
-            'check-circle-outline',
-            accent,
-            summary.standaloneTodos.length,
-            summary.standaloneTodos.map((t) => (
-              <StandaloneTodoRowItem
-                key={t.id}
-                item={t}
-                onPress={() => openTask(t.id)}
-                text={text}
-                muted={muted}
-                success={success}
-                rowBg={rowBg}
-                borderColor={borderColor}
-                isDark={isDark}
-              />
-            ))
-          )}
-          {renderSection(
-            '截止任务',
-            'event',
-            accent,
-            dueOnly.length,
-            dueOnly.map((t) => (
-              <TaskRowItem
-                key={t.id}
-                item={t}
-                onPress={() => openTask(t.id)}
-                text={text}
-                muted={muted}
-                accent={accent}
-                rowBg={rowBg}
-                borderColor={borderColor}
-              />
-            ))
-          )}
-          {renderSection(
-            '小习惯',
-            'favorite',
-            success,
-            summary.habits.length,
-            summary.habits.map((h) => (
-              <HabitRowItem
-                key={h.id}
-                item={h}
-                dayYmd={summary.ymd}
-                logicalTodayYmd={logicalTodayYmd}
-                onPress={() => openHabit(h.id)}
-                text={text}
-                muted={muted}
-                success={success}
-                rowBg={rowBg}
-                borderColor={borderColor}
-                isDark={isDark}
-              />
-            ))
-          )}
-          {renderSection(
-            '项目截止',
-            'folder',
-            muted,
-            summary.projectsDue.length,
-            summary.projectsDue.map((p) => (
-              <ProjectRowItem
-                key={p.id}
-                item={p}
-                onPress={() => openProject(p.id)}
-                text={text}
-                muted={muted}
-                rowBg={rowBg}
-                borderColor={borderColor}
-              />
-            ))
-          )}
-        </>
+        <View style={styles.dotsPlaceholder} />
       )}
-    </View>
+      {isToday && !selected ? <Text style={[styles.fire, { color: tf.sun }]}>●</Text> : null}
+    </Pressable>
   );
 }
-
-type GridCell = ReturnType<typeof buildGridCellsForMonth>[number];
 
 const TasksCalendarMonthPage = React.memo(function TasksCalendarMonthPage({
   offset,
   todayMonthStart,
   logicalTodayYmd,
   pageWidth,
-  dayCellSize,
   selectedYmd,
   onSelectDate,
   grid,
   loading,
-  heatLevels,
-  heatEmpty,
-  textColor,
-  textMuted,
-  primary,
-  secondary,
-  tertiary,
 }: {
   offset: number;
   todayMonthStart: Date;
   logicalTodayYmd: string;
   pageWidth: number;
-  dayCellSize: number;
   selectedYmd: string;
   onSelectDate: (d: Date) => void;
   grid: Map<string, TasksCalendarGridDay> | undefined;
   loading: boolean;
-  heatLevels: readonly string[];
-  heatEmpty: string;
-  textColor: string;
-  textMuted: string;
-  primary: string;
-  secondary: string;
-  tertiary: string;
 }) {
+  const { tf, fonts } = useTaskFoldTheme();
   const monthDate = React.useMemo(() => addMonths(todayMonthStart, offset), [offset, todayMonthStart]);
   const gridCells = React.useMemo(() => buildGridCellsForMonth(monthDate), [monthDate]);
   const gridWeeks = React.useMemo(() => chunkWeeks(gridCells), [gridCells]);
 
-  const gridTrackWidth = dayCellSize * 7 + GRID_GAP * 6;
-
-  if ((loading && !grid) || dayCellSize <= 0) {
+  if ((loading && !grid) || pageWidth <= 0) {
     return (
-      <View style={{ width: pageWidth, minHeight: pageWidth * 0.72, justifyContent: 'center' }}>
-        <ActivityIndicator color={primary} />
+      <View style={{ width: pageWidth, minHeight: 220, justifyContent: 'center' }}>
+        <ActivityIndicator color={tf.frog} />
       </View>
     );
   }
 
   return (
-    <View style={{ width: pageWidth }}>
-      <View style={{ width: gridTrackWidth, gap: GRID_GAP }}>
-        <View style={[styles.weekRow, { gap: GRID_GAP, marginBottom: GRID_GAP }]}>
-          {WEEK_TITLES.map((w) => (
-            <View key={w} style={[styles.weekCell, { width: dayCellSize }]}>
-              <Text style={[styles.weekText, { color: textMuted }]}>{w}</Text>
-            </View>
-          ))}
-        </View>
-      {gridWeeks.map((week, wi) => (
-        <View key={`week-${offset}-${wi}`} style={[styles.weekRow, { gap: GRID_GAP }]}>
-          {week.map((cell: GridCell) => {
-            const cellGrid = grid?.get(cell.ymd);
-            const level = cellGrid?.level ?? 0;
-            const bg = level === 0 ? heatEmpty : heatLevels[level];
-            const selected = cell.ymd === selectedYmd;
-            const isToday = cell.ymd === logicalTodayYmd;
-            const frogN = cellGrid?.frogs ?? 0;
-            const habitN = cellGrid?.habits ?? 0;
-            const openN = cellGrid?.openTodos ?? 0;
-
-            return (
-              <Pressable
-                key={cell.key}
-                onPress={() => onSelectDate(cell.date)}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                accessibilityLabel={`${cell.ymd}，青蛙 ${frogN}，待办 ${openN}，习惯 ${habitN}`}
-                style={({ pressed }) => [
-                  styles.dayCell,
-                  {
-                    width: dayCellSize,
-                    height: dayCellSize,
-                    backgroundColor: bg,
-                    borderColor: selected ? primary : isToday ? `${secondary}88` : 'transparent',
-                    borderWidth: DAY_CELL_BORDER,
-                    opacity: cell.inCurrentMonth ? (pressed ? 0.9 : 1) : 0.42,
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.dayNum,
-                    {
-                      color: cell.inCurrentMonth ? textColor : textMuted,
-                      fontWeight: selected || isToday ? '900' : '600',
-                      opacity: cell.inCurrentMonth ? 1 : 0.75,
-                    },
-                  ]}>
-                  {cell.date.getDate()}
-                </Text>
-                {level > 0 && cell.inCurrentMonth ? (
-                  <View style={styles.microDots}>
-                    {frogN > 0 ? <View style={[styles.microDot, { backgroundColor: secondary }]} /> : null}
-                    {openN > 0 ? <View style={[styles.microDot, { backgroundColor: primary }]} /> : null}
-                    {habitN > 0 ? <View style={[styles.microDot, { backgroundColor: tertiary }]} /> : null}
-                  </View>
-                ) : null}
-              </Pressable>
-            );
-          })}
-        </View>
-      ))}
+    <View style={{ width: pageWidth, paddingHorizontal: 2 }}>
+      <View style={styles.weeklabel}>
+        {WEEK_TITLES.map((w, i) => (
+          <Text
+            key={w}
+            style={[
+              styles.weeklabelText,
+              { color: i === 5 || i === 6 ? '#BD8F78' : '#9CA69D' },
+            ]}>
+            {w}
+          </Text>
+        ))}
+      </View>
+      <View style={[styles.monthgrid, { borderColor: 'rgba(216,205,187,0.72)', backgroundColor: 'rgba(255,252,245,0.55)' }]}>
+        {gridWeeks.map((week, wi) => (
+          <View key={`week-${offset}-${wi}`} style={styles.weekRow}>
+            {week.map((cell) => (
+              <View key={cell.key} style={styles.mcellSlot}>
+                <MonthDayCell
+                  cell={cell}
+                  cellGrid={grid?.get(cell.ymd)}
+                  selected={cell.ymd === selectedYmd}
+                  isToday={cell.ymd === logicalTodayYmd}
+                  onSelect={onSelectDate}
+                  fonts={fonts}
+                  tf={tf}
+                />
+              </View>
+            ))}
+          </View>
+        ))}
       </View>
     </View>
   );
 });
+
+function DdRow({
+  icon,
+  iconBg,
+  title,
+  meta,
+  when,
+  onPress,
+  ink2,
+  faint,
+}: {
+  icon: React.ReactNode;
+  iconBg: string;
+  title: string;
+  meta: string;
+  when: string;
+  onPress: () => void;
+  ink2: string;
+  faint: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => [styles.ddrow, pressed && { opacity: 0.85 }]}>
+      <View style={[styles.di2, { backgroundColor: iconBg }]}>{icon}</View>
+      <View style={styles.dt}>
+        <Text style={[styles.dtTitle, { color: ink2 }]} numberOfLines={1}>
+          {title}
+        </Text>
+        <Text style={[styles.dtMeta, { color: faint }]} numberOfLines={1}>
+          {meta}
+        </Text>
+      </View>
+      <Text style={[styles.when, { color: '#859385' }]}>{when}</Text>
+    </Pressable>
+  );
+}
+
+function DayDetailBody({
+  summary,
+  selectedDate,
+  logicalTodayYmd,
+  riseAnimate,
+  riseDuration,
+  riseStagger,
+  riseFromY,
+}: {
+  summary: TasksCalendarDaySummary;
+  selectedDate: Date;
+  logicalTodayYmd: string;
+  riseAnimate: boolean;
+  riseDuration: number;
+  riseStagger: number;
+  riseFromY: number;
+}) {
+  const { tf, fonts } = useTaskFoldTheme();
+  const router = useRouter();
+  const counts = daySummaryCounts(summary);
+  const hasAny = counts.total > 0;
+  const selectedYmd = formatYmd(selectedDate);
+  const isToday = selectedYmd === logicalTodayYmd;
+  let riseIndex = 0;
+
+  const openTask = (id: string) => {
+    void openTaskById(router, id);
+  };
+  const openHabit = (id: string) =>
+    router.push({ pathname: '/habit-detail', params: { habitId: id } });
+  const openProject = (id: string) =>
+    router.push({ pathname: '/edit-project', params: { id } });
+
+  const habitMeta = (h: TasksCalendarHabitItem) => {
+    const goal = h.dailyGoal;
+    const isTask = h.kind === 'task';
+    const met = isTask
+      ? !!h.taskShowPeriodCheck
+      : isHabitDayGoalMet({
+          kind: h.kind,
+          todayCount: h.todayCount,
+          dailyGoal: goal,
+          hasDayRecord: h.kind === 'break' ? h.hasDayRecord : undefined,
+          ymd: summary.ymd,
+          logicalTodayYmd,
+        });
+    if (isTask && h.periodGoal != null) return `习惯 · 本周期 ${h.periodProgress ?? 0} / ${h.periodGoal}`;
+    if (h.kind === 'break') return `习惯 · ${met ? '达标' : '未达标'} · 记录 ${h.todayCount}`;
+    return `习惯 · 打卡 ${h.todayCount}${goal != null ? ` / ${goal}` : ''}${met ? ' · 已完成' : ''}`;
+  };
+
+  const frogWhen = (t: TasksCalendarTaskItem) => {
+    const s = formatFrogDayStatus(t.frogDayStatus);
+    if (s) return s;
+    if (t.status === 'doing') return '进行中';
+    return formatTaskStatus(t.status);
+  };
+
+  const frogMeta = (t: TasksCalendarTaskItem) => {
+    const bits = ['青蛙'];
+    const st = formatFrogDayStatus(t.frogDayStatus) ?? formatTaskStatus(t.status);
+    bits.push(st);
+    const pri = formatPriority(t.priority);
+    if (pri) bits.push(pri);
+    return bits.join(' · ');
+  };
+
+  const todoMeta = (t: TasksCalendarTaskItem) => {
+    const bits = ['独立待办'];
+    const reason = t.todoDayReason;
+    if (reason === 'completed' || reason === 'completed-and-due') bits.push('已完成');
+    else bits.push(formatTaskStatus(t.status));
+    const pri = formatPriority(t.priority);
+    if (pri) bits.push(pri);
+    return bits.join(' · ');
+  };
+
+  return (
+    <View>
+      <View style={styles.ddhead}>
+        <Text style={[styles.ddheadTitle, { color: tf.pond, fontFamily: fonts.serif }]}>
+          {formatTopDate(selectedDate)}
+        </Text>
+        <Text style={[styles.ddheadSub, { color: tf.faint }]}>
+          {formatWeekday(selectedDate)} · {isToday ? '今日' : selectedYmd < logicalTodayYmd ? '已过' : '未来'}
+        </Text>
+        {hasAny ? (
+          <View style={styles.chips}>
+            {counts.frogs > 0 ? (
+              <Text style={[styles.chip, { backgroundColor: '#EDF1E5', color: '#5F765B' }]}>
+                青蛙 {counts.frogs}
+              </Text>
+            ) : null}
+            {counts.todos > 0 ? (
+              <Text style={[styles.chip, { backgroundColor: '#EDF1E5', color: '#5F765B' }]}>
+                待办 {counts.todos}
+              </Text>
+            ) : null}
+            {counts.habits > 0 ? (
+              <Text style={[styles.chip, { backgroundColor: '#EDF1E5', color: '#5F765B' }]}>
+                习惯 {counts.habits}
+              </Text>
+            ) : null}
+            {counts.projects > 0 ? (
+              <Text style={[styles.chip, { backgroundColor: '#EDF1E5', color: '#5F765B' }]}>
+                项目 {counts.projects}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+
+      {!hasAny ? (
+        <FoldRiseIn
+          animate={riseAnimate}
+          index={riseIndex++}
+          duration={riseDuration}
+          staggerMs={riseStagger}
+          fromY={riseFromY}
+          holdHidden={riseAnimate}>
+          <View style={styles.empty}>
+            <View style={[styles.emptyIcon, { backgroundColor: '#EDF1E5' }]}>
+              <MaterialIcons name="event-available" size={20} color="#8FA487" />
+            </View>
+            <Text style={[styles.emptyTitle, { color: '#7C8C7E' }]}>这一天很清静</Text>
+            <Text style={[styles.emptySub, { color: tf.faint }]}>没有青蛙、待办、习惯或项目截止</Text>
+          </View>
+        </FoldRiseIn>
+      ) : (
+        <>
+          {summary.frogs.map((t) => (
+            <FoldRiseIn
+              key={`f-${t.id}`}
+              animate={riseAnimate}
+              index={riseIndex++}
+              duration={riseDuration}
+              staggerMs={riseStagger}
+              fromY={riseFromY}
+              holdHidden={riseAnimate}>
+              <DdRow
+                icon={<MaterialIcons name="spa" size={14} color="#4F7450" />}
+                iconBg="#E7EEE0"
+                title={t.title}
+                meta={frogMeta(t)}
+                when={frogWhen(t)}
+                onPress={() => openTask(t.id)}
+                ink2={tf.ink2}
+                faint={tf.faint}
+              />
+            </FoldRiseIn>
+          ))}
+          {summary.standaloneTodos.map((t) => {
+            const done =
+              t.todoDayReason === 'completed' || t.todoDayReason === 'completed-and-due';
+            return (
+              <FoldRiseIn
+                key={`t-${t.id}`}
+                animate={riseAnimate}
+                index={riseIndex++}
+                duration={riseDuration}
+                staggerMs={riseStagger}
+                fromY={riseFromY}
+                holdHidden={riseAnimate}>
+                <DdRow
+                  icon={<MaterialIcons name="check" size={14} color="#9B6B2C" />}
+                  iconBg="#F7E9D5"
+                  title={t.title}
+                  meta={todoMeta(t)}
+                  when={done ? '完成' : '待办'}
+                  onPress={() => openTask(t.id)}
+                  ink2={tf.ink2}
+                  faint={tf.faint}
+                />
+              </FoldRiseIn>
+            );
+          })}
+          {summary.habits.map((h) => (
+            <FoldRiseIn
+              key={`h-${h.id}`}
+              animate={riseAnimate}
+              index={riseIndex++}
+              duration={riseDuration}
+              staggerMs={riseStagger}
+              fromY={riseFromY}
+              holdHidden={riseAnimate}>
+              <DdRow
+                icon={<Text style={{ fontSize: 12 }}>{h.icon || '✓'}</Text>}
+                iconBg="#E8EFD9"
+                title={h.name}
+                meta={habitMeta(h)}
+                when={h.kind === 'break' ? '戒除' : h.kind === 'task' ? '任务' : '习惯'}
+                onPress={() => openHabit(h.id)}
+                ink2={tf.ink2}
+                faint={tf.faint}
+              />
+            </FoldRiseIn>
+          ))}
+          {summary.projectsDue.map((p: TasksCalendarProjectItem) => (
+            <FoldRiseIn
+              key={`p-${p.id}`}
+              animate={riseAnimate}
+              index={riseIndex++}
+              duration={riseDuration}
+              staggerMs={riseStagger}
+              fromY={riseFromY}
+              holdHidden={riseAnimate}>
+              <DdRow
+                icon={<MaterialIcons name="folder" size={14} color="#A25A62" />}
+                iconBg="#F4E7EA"
+                title={p.name}
+                meta={`项目 · ${p.status === 'done' ? '已完成' : '进行中'}`}
+                when="项目"
+                onPress={() => openProject(p.id)}
+                ink2={tf.ink2}
+                faint={tf.faint}
+              />
+            </FoldRiseIn>
+          ))}
+        </>
+      )}
+    </View>
+  );
+}
 
 const PAGE_API_KEY = 'tasks-calendar';
 
 export default function TasksCalendarScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
-  const { colors, isDark, shadows } = useAppTheme();
-  const { logicalTodayYmd, boundary } = usePageDayBoundary('tasks');
+  const { colors, isDark } = useAppTheme();
+  const { tf, fonts } = useTaskFoldTheme();
+  const { animate, ready: motionReady } = useFoldMotionGate();
+  const { logicalTodayYmd, logicalTodayDate, boundary } = usePageDayBoundary('tasks');
+
   const today = React.useMemo(() => {
+    if (logicalTodayDate && !Number.isNaN(logicalTodayDate.getTime())) return logicalTodayDate;
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(logicalTodayYmd);
     if (!m) return new Date();
     return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  }, [logicalTodayYmd]);
+  }, [logicalTodayDate, logicalTodayYmd]);
 
   const todayMonthStart = React.useMemo(() => monthStart(today), [today]);
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
-  const [selectedDate, setSelectedDate] = React.useState<Date>(() => today);
-  const selectedYmd = formatYmd(selectedDate);
+  /** null = 跟随逻辑今日，保证首屏默认选中当日 */
+  const [selectedYmdOverride, setSelectedYmdOverride] = React.useState<string | null>(null);
+  const selectedYmd = selectedYmdOverride ?? (logicalTodayYmd || formatYmd(today));
+  const selectedDate = React.useMemo(() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(selectedYmd);
+    if (!m) return today;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }, [selectedYmd, today]);
 
   const { monthGrid, selectedSummary, detailLoading, cacheVersion, getMonthPageData, refreshControl } =
     useTasksCalendarSummaries({
@@ -802,28 +587,22 @@ export default function TasksCalendarScreen() {
       wrapLoad,
     });
 
-  const initialCalendarWidth = React.useMemo(
-    () => Math.max(1, roundCalendarWidth(windowWidth - Layout.pagePaddingX * 2 - Spacing.md * 2)),
-    [windowWidth]
-  );
-
   const pagerRef = React.useRef<FlatList<number>>(null);
   const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
-  const pagerWidthReadyRef = React.useRef(false);
-  const calendarWidthRef = React.useRef(initialCalendarWidth);
+  /** 测量完成且已滚到当月中心后，才允许滚动回调改 monthOffset */
+  const pagerSettledRef = React.useRef(false);
+  const calendarWidthRef = React.useRef(0);
   const pagerData = React.useMemo(
     () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
-    []
+    [],
   );
 
-  const [calendarWidth, setCalendarWidth] = React.useState(initialCalendarWidth);
-  const dayCellSize = React.useMemo(() => {
-    if (calendarWidth <= 0) return 0;
-    return Math.floor((calendarWidth - GRID_GAP * 6) / 7);
-  }, [calendarWidth]);
+  /** 先测容器宽，再挂 FlatList，避免 initialScrollIndex 用错宽度滚到别的月 */
+  const [calendarWidth, setCalendarWidth] = React.useState(0);
+  const [pagerMountKey, setPagerMountKey] = React.useState(0);
   const pagerExtraData = React.useMemo(
-    () => `${calendarWidth}:${dayCellSize}:${cacheVersion}`,
-    [calendarWidth, dayCellSize, cacheVersion]
+    () => `${calendarWidth}:${cacheVersion}:${selectedYmd}:${monthOffset}`,
+    [calendarWidth, cacheVersion, selectedYmd, monthOffset],
   );
 
   React.useEffect(() => {
@@ -831,6 +610,7 @@ export default function TasksCalendarScreen() {
   }, [calendarWidth]);
 
   const commitPagerIndex = React.useCallback((nextIndex: number) => {
+    if (!pagerSettledRef.current) return;
     const clamped = Math.max(0, Math.min(MONTH_PAGE_SPAN - 1, nextIndex));
     pagerCurrentIndexRef.current = clamped;
     const nextOffset = clamped - MONTH_PAGE_CENTER_INDEX;
@@ -839,308 +619,440 @@ export default function TasksCalendarScreen() {
   }, []);
 
   const snapPagerToOffset = React.useCallback(
-    (contentOffsetX: number, animated: boolean) => {
+    (contentOffsetX: number, animatedScroll: boolean) => {
+      if (!pagerSettledRef.current) return;
       const w = calendarWidthRef.current;
       if (w <= 0) return;
       const nextIndex = Math.round(contentOffsetX / w);
       const targetOffset = nextIndex * w;
       if (Math.abs(contentOffsetX - targetOffset) > 0.5) {
-        pagerRef.current?.scrollToOffset({ offset: targetOffset, animated });
+        pagerRef.current?.scrollToOffset({ offset: targetOffset, animated: animatedScroll });
       }
       commitPagerIndex(nextIndex);
     },
-    [commitPagerIndex]
+    [commitPagerIndex],
   );
 
-  const heatLevels = isDark ? HEAT_LEVELS_DARK : HEAT_LEVELS_LIGHT;
-  const heatEmpty = isDark ? 'rgba(30,41,59,0.28)' : colors.surfaceMuted;
-  const sectionBg = isDark ? 'rgba(15,23,42,0.45)' : colors.surfaceMuted;
-  const rowBg = isDark ? 'rgba(30,41,59,0.55)' : colors.background;
+  const scrollPagerToMonthOffset = React.useCallback((offset: number, animated: boolean) => {
+    const w = calendarWidthRef.current;
+    if (w <= 0) return;
+    const nextIndex = offset + MONTH_PAGE_CENTER_INDEX;
+    pagerCurrentIndexRef.current = nextIndex;
+    pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated });
+  }, []);
 
   const visibleMonth = React.useMemo(
     () => addMonths(todayMonthStart, monthOffset),
-    [todayMonthStart, monthOffset]
+    [todayMonthStart, monthOffset],
   );
   const headerMonth = React.useMemo(
     () => addMonths(todayMonthStart, visibleMonthOffset),
-    [todayMonthStart, visibleMonthOffset]
+    [todayMonthStart, visibleMonthOffset],
   );
 
+  /** 换月标题淡出 120ms */
+  const monthTitleOpacity = React.useRef(new Animated.Value(1)).current;
+  const lastHeaderKey = React.useRef(`${headerMonth.getFullYear()}-${headerMonth.getMonth()}`);
   React.useEffect(() => {
-    setVisibleMonthOffset(monthOffset);
-    if (calendarWidth <= 0) return;
-
-    const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
-    const w = calendarWidthRef.current;
-    if (!pagerWidthReadyRef.current) {
-      pagerWidthReadyRef.current = true;
-      pagerCurrentIndexRef.current = nextIndex;
-      requestAnimationFrame(() => {
-        pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated: false });
-      });
+    const key = `${headerMonth.getFullYear()}-${headerMonth.getMonth()}`;
+    if (key === lastHeaderKey.current) return;
+    lastHeaderKey.current = key;
+    if (!animate) {
+      monthTitleOpacity.setValue(1);
       return;
     }
+    monthTitleOpacity.setValue(0);
+    Animated.timing(monthTitleOpacity, {
+      toValue: 1,
+      duration: TaskFoldMotion.calMonthFade,
+      useNativeDriver: true,
+    }).start();
+  }, [animate, headerMonth, monthTitleOpacity]);
 
-    if (nextIndex === pagerCurrentIndexRef.current) return;
-    pagerCurrentIndexRef.current = nextIndex;
+  /** 按钮换月：同步标题预览并滚到对应页（滑动回调已同步 index 时跳过，避免打架） */
+  React.useEffect(() => {
+    setVisibleMonthOffset(monthOffset);
+    if (!pagerSettledRef.current || calendarWidth <= 0) return;
+    const expectedIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
+    if (expectedIndex === pagerCurrentIndexRef.current) return;
+    scrollPagerToMonthOffset(monthOffset, true);
+  }, [calendarWidth, monthOffset, scrollPagerToMonthOffset]);
+
+  const goPrevMonth = React.useCallback(() => setMonthOffset((p) => p - 1), []);
+  const goNextMonth = React.useCallback(() => setMonthOffset((p) => p + 1), []);
+  const goToday = React.useCallback(() => {
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
+    setSelectedYmdOverride(logicalTodayYmd || formatYmd(today));
+    if (pagerSettledRef.current) {
+      scrollPagerToMonthOffset(0, true);
+    }
+  }, [logicalTodayYmd, scrollPagerToMonthOffset, today]);
+
+  const onPagerContainerLayout = React.useCallback((e: { nativeEvent: { layout: { width: number } } }) => {
+    const width = roundCalendarWidth(e.nativeEvent.layout.width);
+    if (width <= 0) return;
+    const prev = calendarWidthRef.current;
+    if (Math.abs(prev - width) < 0.5) return;
+    pagerSettledRef.current = false;
+    calendarWidthRef.current = width;
+    setCalendarWidth(width);
+    setPagerMountKey((k) => k + 1);
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
+  }, []);
+
+  const onPagerListLoad = React.useCallback(() => {
+    if (pagerSettledRef.current) return;
+    const w = calendarWidthRef.current;
+    if (w <= 0) return;
+    const targetIndex = MONTH_PAGE_CENTER_INDEX + monthOffset;
+    pagerCurrentIndexRef.current = targetIndex;
     requestAnimationFrame(() => {
-      pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated: true });
+      pagerRef.current?.scrollToOffset({ offset: targetIndex * w, animated: false });
+      requestAnimationFrame(() => {
+        pagerSettledRef.current = true;
+        setVisibleMonthOffset(monthOffset);
+      });
     });
-  }, [calendarWidth, monthOffset]);
-
-  const goPrevMonth = React.useCallback(() => {
-    setMonthOffset((prev) => prev - 1);
-  }, []);
-
-  const goNextMonth = React.useCallback(() => {
-    setMonthOffset((prev) => prev + 1);
-  }, []);
+  }, [monthOffset]);
 
   const monthStats = React.useMemo(() => {
-    let frogDays = 0;
-    let habitDays = 0;
-    let dueDays = 0;
+    let frogDone = 0;
+    let todoDays = 0;
+    let habitDone = 0;
+    let habitDue = 0;
     const y = visibleMonth.getFullYear();
     const m = visibleMonth.getMonth();
     const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const dayScores: number[] = [];
+    let peakScore = 0;
     for (let day = 1; day <= daysInMonth; day += 1) {
       const ymd = formatYmd(new Date(y, m, day));
       const cell = monthGrid.get(ymd);
+      const score = cell
+        ? cell.frogs + cell.openTodos + cell.habits + cell.projectsDue + (cell.frogDone ? 1 : 0)
+        : 0;
+      dayScores.push(score);
+      if (score > peakScore) peakScore = score;
       if (!cell) continue;
-      if (cell.frogDone) frogDays += 1;
-      if (cell.habitChecked) habitDays += 1;
-      if (cell.dueCount > 0) dueDays += 1;
+      if (cell.frogDone) frogDone += 1;
+      if (cell.openTodos > 0 || cell.dueCount > 0) todoDays += 1;
+      if (cell.habits > 0) {
+        habitDue += 1;
+        if (cell.habitChecked) habitDone += 1;
+      }
     }
-    return { frogDays, habitDays, dueDays };
+    const habitRate = habitDue > 0 ? Math.round((habitDone / habitDue) * 100) : 0;
+    const bars = dayScores.map((score) => {
+      if (score <= 0) return { heightPct: 12, kind: 'dim' as const };
+      const pct = peakScore > 0 ? Math.max(18, Math.round((score / peakScore) * 100)) : 18;
+      return {
+        heightPct: pct,
+        kind: (score === peakScore && peakScore > 0 ? 'hot' : 'normal') as 'hot' | 'normal' | 'dim',
+      };
+    });
+    return { frogDone, todoDays, habitRate, daysInMonth, bars };
   }, [visibleMonth, monthGrid]);
 
+  /** 点日展开：明细高度 / 透明度 */
+  const detailH = React.useRef(new Animated.Value(1)).current;
+  const [detailEntranceKey, setDetailEntranceKey] = React.useState(0);
+  const selectDate = React.useCallback(
+    (d: Date) => {
+      const ymd = formatYmd(d);
+      if (ymd === selectedYmd) return;
+      setSelectedYmdOverride(ymd);
+      setDetailEntranceKey((k) => k + 1);
+      if (!animate) {
+        detailH.setValue(1);
+        return;
+      }
+      detailH.setValue(0);
+      Animated.timing(detailH, {
+        toValue: 1,
+        duration: TaskFoldMotion.calDetailExpand,
+        useNativeDriver: true,
+      }).start();
+    },
+    [animate, detailH, selectedYmd],
+  );
+
+  const enterReady = motionReady && !detailLoading;
+  const fullMotion = animate;
+  const riseDuration = fullMotion ? PAGE_RISE_MS : 120;
+  const riseFromY = fullMotion ? 10 : 0;
+  const riseStagger = fullMotion ? PAGE_STAGGER_MS : 0;
+  const pageEnterAnimate = enterReady;
+
+  const summary = selectedSummary ?? emptyCalendarDay(selectedYmd);
+  const headerSub = `按逻辑日归档 · ${today.getMonth() + 1}月${today.getDate()}日 ${formatWeekday(today)}`;
+
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['left', 'right']}>
-      <View
-        style={[
-          styles.topBar,
-          {
-            paddingTop: insets.top,
-            backgroundColor: colors.headerScrim,
-            borderBottomColor: colors.outline,
-          },
-        ]}>
-        <AppIconButton icon="arrow-back" onPress={() => router.back()} accessibilityLabel="返回" />
-        <Text style={[Typography.title, { color: colors.primary, flex: 1, textAlign: 'center' }]}>任务日历</Text>
-        <View style={styles.topBarSpacer} />
-      </View>
+    <SafeAreaView style={[styles.safe, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <ScreenHeader
+        title="任务日历"
+        subtitle={headerSub}
+        onBack={() => router.back()}
+        right={
+          <ScreenHeaderIconAction
+            icon="my-location"
+            accessibilityLabel="回到今天"
+            onPress={goToday}
+          />
+        }
+        style={{ backgroundColor: isDark ? colors.headerScrim : tf.paper, borderBottomColor: tf.line }}
+      />
 
       <ScrollView
         refreshControl={refreshControl}
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled>
-        <View style={styles.monthHeader}>
-          <View>
-            <Text style={[Typography.kicker, { color: colors.textMuted }]}>{headerMonth.getFullYear()}</Text>
-            <Text style={[Typography.h1, { color: colors.text }]}>{headerMonth.getMonth() + 1}月总览</Text>
-          </View>
-          <View style={styles.monthNav}>
-            <Pressable
-              onPress={goPrevMonth}
-              style={({ pressed }) => [
-                styles.navBtn,
-                shadows.card,
-                { backgroundColor: colors.surface, borderColor: colors.outline },
-                pressed && { opacity: 0.75 },
-              ]}>
-              <MaterialIcons name="chevron-left" size={22} color={colors.textMuted} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                setMonthOffset(0);
-                setSelectedDate(today);
-              }}
-              style={({ pressed }) => [pressed && { opacity: 0.75 }]}>
-              <Text style={{ fontSize: 13, fontWeight: '800', color: colors.primary }}>今天</Text>
-            </Pressable>
-            <Pressable
-              onPress={goNextMonth}
-              style={({ pressed }) => [
-                styles.navBtn,
-                shadows.card,
-                { backgroundColor: colors.surface, borderColor: colors.outline },
-                pressed && { opacity: 0.75 },
-              ]}>
-              <MaterialIcons name="chevron-right" size={22} color={colors.textMuted} />
-            </Pressable>
-          </View>
-        </View>
+        <FoldRiseIn
+          animate={pageEnterAnimate}
+          index={0}
+          fromY={riseFromY}
+          duration={riseDuration}
+          staggerMs={riseStagger}
+          holdHidden={pageEnterAnimate}>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.92)',
+                borderColor: tf.line2,
+              },
+            ]}>
+            <View style={styles.calhead}>
+              <Animated.View style={{ opacity: monthTitleOpacity, flexDirection: 'row', alignItems: 'baseline', gap: 7 }}>
+                <Text style={[styles.calMonth, { color: tf.pond, fontFamily: fonts.serif }]}>
+                  {headerMonth.getMonth() + 1}月
+                </Text>
+                <Text style={[styles.calYear, { color: tf.faint, fontFamily: fonts.mono }]}>
+                  {headerMonth.getFullYear()}
+                </Text>
+              </Animated.View>
+              <View style={styles.calNav}>
+                <Pressable
+                  onPress={goPrevMonth}
+                  accessibilityLabel="上一月"
+                  style={({ pressed }) => [styles.navBtn, { backgroundColor: '#F1EDE1', opacity: pressed ? 0.75 : 1 }]}>
+                  <MaterialIcons name="chevron-left" size={18} color="#77857A" />
+                </Pressable>
+                <Pressable
+                  onPress={goNextMonth}
+                  accessibilityLabel="下一月"
+                  style={({ pressed }) => [styles.navBtn, { backgroundColor: '#F1EDE1', opacity: pressed ? 0.75 : 1 }]}>
+                  <MaterialIcons name="chevron-right" size={18} color="#77857A" />
+                </Pressable>
+              </View>
+            </View>
 
-        <View style={[styles.statsRow, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-          <View style={styles.statChip}>
-            <View style={[styles.statIconWrap, { backgroundColor: `${colors.secondary}14` }]}>
-              <MaterialIcons name="eco" size={16} color={colors.secondary} />
+            <View style={styles.pagerClip} onLayout={onPagerContainerLayout}>
+              {calendarWidth > 0 ? (
+                <FlatList
+                  key={`tasks-cal-pager-${pagerMountKey}-${calendarWidth}`}
+                  ref={pagerRef}
+                  data={pagerData}
+                  horizontal
+                  nestedScrollEnabled
+                  directionalLockEnabled
+                  decelerationRate="fast"
+                  bounces={false}
+                  overScrollMode="never"
+                  snapToInterval={calendarWidth}
+                  snapToAlignment="start"
+                  disableIntervalMomentum
+                  showsHorizontalScrollIndicator={false}
+                  keyExtractor={(offset) => `tasks-cal-month-${offset}`}
+                  initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+                  contentOffset={{ x: MONTH_PAGE_CENTER_INDEX * calendarWidth, y: 0 }}
+                  extraData={pagerExtraData}
+                  style={{ width: calendarWidth }}
+                  onLayout={onPagerListLoad}
+                  getItemLayout={(_, index) => ({
+                    length: calendarWidth,
+                    offset: calendarWidth * index,
+                    index,
+                  })}
+                  windowSize={5}
+                  maxToRenderPerBatch={3}
+                  initialNumToRender={3}
+                  updateCellsBatchingPeriod={16}
+                  removeClippedSubviews={false}
+                  onScroll={(e) => {
+                    if (!pagerSettledRef.current) return;
+                    const w = calendarWidthRef.current;
+                    if (w <= 0) return;
+                    const rawIndex = e.nativeEvent.contentOffset.x / w;
+                    const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
+                    setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
+                  }}
+                  scrollEventThrottle={16}
+                  onScrollEndDrag={(e) => {
+                    if (!pagerSettledRef.current) return;
+                    const velocityX = e.nativeEvent.velocity?.x ?? 0;
+                    if (Math.abs(velocityX) > 0.2) return;
+                    snapPagerToOffset(e.nativeEvent.contentOffset.x, true);
+                  }}
+                  onMomentumScrollEnd={(e) => {
+                    if (!pagerSettledRef.current) return;
+                    snapPagerToOffset(e.nativeEvent.contentOffset.x, false);
+                  }}
+                  onScrollToIndexFailed={(info) => {
+                    const w = calendarWidthRef.current;
+                    if (w <= 0) return;
+                    requestAnimationFrame(() => {
+                      pagerRef.current?.scrollToOffset({ offset: info.index * w, animated: false });
+                      requestAnimationFrame(() => {
+                        pagerSettledRef.current = true;
+                      });
+                    });
+                  }}
+                  renderItem={({ item: offset }) => {
+                    const { grid: monthGridPage, loading: monthLoading } = getMonthPageData(offset);
+                    return (
+                      <TasksCalendarMonthPage
+                        key={`tasks-cal-page-${offset}`}
+                        offset={offset}
+                        todayMonthStart={todayMonthStart}
+                        logicalTodayYmd={logicalTodayYmd || formatYmd(today)}
+                        pageWidth={calendarWidth}
+                        selectedYmd={selectedYmd}
+                        onSelectDate={selectDate}
+                        grid={monthGridPage}
+                        loading={monthLoading}
+                      />
+                    );
+                  }}
+                />
+              ) : (
+                <View style={{ minHeight: 160, alignItems: 'center', justifyContent: 'center' }}>
+                  <ActivityIndicator color={tf.frog} />
+                </View>
+              )}
             </View>
-            <Text style={[styles.statVal, { color: colors.text }]}>{monthStats.frogDays}</Text>
-            <Text style={[styles.statLbl, { color: colors.textMuted }]}>青蛙完成日</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.outline }]} />
-          <View style={styles.statChip}>
-            <View style={[styles.statIconWrap, { backgroundColor: `${colors.primary}12` }]}>
-              <MaterialIcons name="favorite" size={16} color={colors.primary} />
-            </View>
-            <Text style={[styles.statVal, { color: colors.text }]}>{monthStats.habitDays}</Text>
-            <Text style={[styles.statLbl, { color: colors.textMuted }]}>习惯打卡日</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.outline }]} />
-          <View style={styles.statChip}>
-            <View style={[styles.statIconWrap, { backgroundColor: `${colors.textMuted}12` }]}>
-              <MaterialIcons name="event" size={16} color={colors.textMuted} />
-            </View>
-            <Text style={[styles.statVal, { color: colors.text }]}>{monthStats.dueDays}</Text>
-            <Text style={[styles.statLbl, { color: colors.textMuted }]}>有截止日</Text>
-          </View>
-        </View>
 
-        <View style={[styles.calendarCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-          <View style={styles.legendRow}>
-            <Text style={[styles.legend, { color: colors.textMuted }]}>
-              左右滑动切换月份 · 颜色深浅表示密度
-            </Text>
-            <View style={styles.legendDots}>
-              <View style={[styles.legendDot, { backgroundColor: colors.secondary }]} />
-              <Text style={[styles.legendDotLbl, { color: colors.textMuted }]}>蛙</Text>
-              <View style={[styles.legendDot, { backgroundColor: colors.primary }]} />
-              <Text style={[styles.legendDotLbl, { color: colors.textMuted }]}>办</Text>
-              <View style={[styles.legendDot, { backgroundColor: colors.tertiary }]} />
-              <Text style={[styles.legendDotLbl, { color: colors.textMuted }]}>习</Text>
+            <View style={styles.callegend}>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: DOT.frog }]} />
+                <Text style={styles.legendText}>青蛙</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: DOT.todo }]} />
+                <Text style={styles.legendText}>待办</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: DOT.habit }]} />
+                <Text style={styles.legendText}>习惯</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: DOT.project }]} />
+                <Text style={styles.legendText}>项目</Text>
+              </View>
+              <Text style={[styles.legendHint, { marginLeft: 'auto' }]}>横滑换月 →</Text>
             </View>
           </View>
+        </FoldRiseIn>
 
-          {dayCellSize > 0 ? (
-          <View style={styles.calendarPagerClip}>
-          <FlatList
-            ref={pagerRef}
-            data={pagerData}
-            horizontal
-            nestedScrollEnabled
-            directionalLockEnabled
-            decelerationRate="fast"
-            bounces={false}
-            overScrollMode="never"
-            snapToInterval={calendarWidth}
-            snapToAlignment="start"
-            disableIntervalMomentum
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(offset) => `tasks-cal-month-${offset}`}
-            initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
-            extraData={pagerExtraData}
-            style={styles.calendarPager}
-            onLayout={(e) => {
-              const width = roundCalendarWidth(e.nativeEvent.layout.width);
-              calendarWidthRef.current = width;
-              setCalendarWidth((prev) => (Math.abs(prev - width) < 0.5 ? prev : Math.max(1, width)));
-            }}
-            getItemLayout={(_, index) => {
-              const w = calendarWidthRef.current;
-              return { length: w, offset: w * index, index };
-            }}
-            windowSize={3}
-            maxToRenderPerBatch={1}
-            initialNumToRender={1}
-            updateCellsBatchingPeriod={16}
-            removeClippedSubviews={false}
-            onScroll={(e) => {
-              const w = calendarWidthRef.current;
-              if (w <= 0) return;
-              const rawIndex = e.nativeEvent.contentOffset.x / w;
-              const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
-              setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
-            }}
-            scrollEventThrottle={16}
-            onScrollEndDrag={(e) => {
-              const velocityX = e.nativeEvent.velocity?.x ?? 0;
-              if (Math.abs(velocityX) > 0.2) return;
-              snapPagerToOffset(e.nativeEvent.contentOffset.x, true);
-            }}
-            onMomentumScrollEnd={(e) => {
-              snapPagerToOffset(e.nativeEvent.contentOffset.x, false);
-            }}
-            onScrollToIndexFailed={(info) => {
-              const w = calendarWidthRef.current;
-              if (w <= 0) return;
-              requestAnimationFrame(() => {
-                pagerRef.current?.scrollToOffset({ offset: info.index * w, animated: false });
-              });
-            }}
-            renderItem={({ item: offset }) => {
-              const { grid: monthGridPage, loading: monthLoading } = getMonthPageData(offset);
-              return (
-              <TasksCalendarMonthPage
-                key={`tasks-cal-page-${offset}`}
-                offset={offset}
-                todayMonthStart={todayMonthStart}
-                logicalTodayYmd={logicalTodayYmd}
-                pageWidth={calendarWidth}
-                dayCellSize={dayCellSize}
-                selectedYmd={selectedYmd}
-                onSelectDate={setSelectedDate}
-                grid={monthGridPage}
-                loading={monthLoading}
-                heatLevels={heatLevels}
-                heatEmpty={heatEmpty}
-                textColor={colors.text}
-                textMuted={colors.textMuted}
-                primary={colors.primary}
-                secondary={colors.secondary}
-                tertiary={colors.tertiary}
-              />
-              );
-            }}
-          />
+        <FoldRiseIn
+          animate={pageEnterAnimate}
+          index={1}
+          fromY={riseFromY}
+          duration={riseDuration}
+          staggerMs={riseStagger}
+          holdHidden={pageEnterAnimate}>
+          <View
+            style={[
+              styles.daydetail,
+              {
+                borderTopColor: 'rgba(216,205,187,0.62)',
+                backgroundColor: isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.72)',
+                borderColor: tf.line2,
+              },
+            ]}>
+            {detailLoading && !selectedSummary ? (
+              <ActivityIndicator color={tf.frog} style={{ marginVertical: 24 }} />
+            ) : (
+              <Animated.View style={{ opacity: detailH }} key={`detail-${detailEntranceKey}`}>
+                <DayDetailBody
+                  summary={summary}
+                  selectedDate={selectedDate}
+                  logicalTodayYmd={logicalTodayYmd}
+                  riseAnimate={fullMotion && detailEntranceKey > 0}
+                  riseDuration={fullMotion ? 320 : 120}
+                  riseStagger={fullMotion ? 36 : 0}
+                  riseFromY={fullMotion ? 8 : 0}
+                />
+              </Animated.View>
+            )}
           </View>
-          ) : (
-            <View style={{ minHeight: 120, alignItems: 'center', justifyContent: 'center' }}>
-              <ActivityIndicator color={colors.primary} />
-            </View>
-          )}
-        </View>
+        </FoldRiseIn>
 
-        <View style={[styles.detailCard, shadows.card, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
-          {detailLoading ? (
-            <View style={{ alignItems: 'center', paddingVertical: Spacing['3xl'] }}>
-              <ActivityIndicator color={colors.primary} />
+        <FoldRiseIn
+          animate={pageEnterAnimate}
+          index={2}
+          fromY={riseFromY}
+          duration={riseDuration}
+          staggerMs={riseStagger}
+          holdHidden={pageEnterAnimate}>
+          <View
+            style={[
+              styles.card,
+              styles.overviewCard,
+              {
+                backgroundColor: isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.92)',
+                borderColor: tf.line2,
+              },
+            ]}>
+            <View style={styles.overviewHead}>
+              <Text style={[styles.overviewTitle, { color: tf.ink2 }]}>本月概览</Text>
+              <Text style={[styles.overviewSub, { color: tf.faint }]}>
+                {visibleMonth.getMonth() + 1}月 · {monthStats.daysInMonth} 天
+              </Text>
             </View>
-          ) : selectedSummary ? (
-            <DayDetailSections
-              summary={selectedSummary}
-              selectedDate={selectedDate}
-              logicalTodayYmd={logicalTodayYmd}
-              router={router}
-              text={colors.text}
-              muted={colors.textMuted}
-              accent={colors.primary}
-              success={colors.secondary}
-              danger={colors.danger}
-              sectionBg={sectionBg}
-              rowBg={rowBg}
-              borderColor={colors.outline}
-              isDark={isDark}
-            />
-          ) : (
-            <DayDetailSections
-              summary={emptyCalendarDay(selectedYmd)}
-              selectedDate={selectedDate}
-              logicalTodayYmd={logicalTodayYmd}
-              router={router}
-              text={colors.text}
-              muted={colors.textMuted}
-              accent={colors.primary}
-              success={colors.secondary}
-              danger={colors.danger}
-              sectionBg={sectionBg}
-              rowBg={rowBg}
-              borderColor={colors.outline}
-              isDark={isDark}
-            />
-          )}
-        </View>
+            <View style={styles.miniStat3}>
+              <View style={styles.miniStat}>
+                <FoldCountUpText
+                  value={monthStats.frogDone}
+                  animate={pageEnterAnimate && fullMotion}
+                  textStyle={[styles.miniStatVal, { color: tf.pond, fontFamily: fonts.mono }]}
+                />
+                <Text style={[styles.miniStatLbl, { color: tf.faint }]}>完成青蛙</Text>
+              </View>
+              <View style={styles.miniStat}>
+                <FoldCountUpText
+                  value={monthStats.todoDays}
+                  animate={pageEnterAnimate && fullMotion}
+                  textStyle={[styles.miniStatVal, { color: tf.pond, fontFamily: fonts.mono }]}
+                />
+                <Text style={[styles.miniStatLbl, { color: tf.faint }]}>有待办日</Text>
+              </View>
+              <View style={styles.miniStat}>
+                <Text style={[styles.miniStatVal, { color: tf.pond, fontFamily: fonts.mono }]}>
+                  {monthStats.habitRate}%
+                </Text>
+                <Text style={[styles.miniStatLbl, { color: tf.faint }]}>习惯达成</Text>
+              </View>
+            </View>
+            <View style={styles.tinybars}>
+              {monthStats.bars.map((bar, i) => (
+                <View
+                  key={`bar-${visibleMonth.getFullYear()}-${visibleMonth.getMonth()}-${i}`}
+                  style={[
+                    styles.tinybar,
+                    {
+                      height: Math.max(3, Math.round((28 * bar.heightPct) / 100)),
+                      backgroundColor:
+                        bar.kind === 'hot' ? tf.sun : bar.kind === 'dim' ? '#E6E1D4' : tf.lily,
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+          </View>
+        </FoldRiseIn>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1148,197 +1060,166 @@ export default function TasksCalendarScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingBottom: Spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  topBarSpacer: { width: 40 },
   scroll: {
-    paddingHorizontal: Layout.pagePaddingX,
+    paddingHorizontal: 13,
+    paddingTop: 8,
     paddingBottom: Spacing['4xl'],
-    gap: Spacing.lg,
+    gap: 8,
   },
-  monthHeader: {
+  card: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 9,
+    paddingTop: 8,
+    paddingBottom: 6,
+  },
+  calhead: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    marginTop: Spacing.lg,
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 3,
+    paddingBottom: 8,
   },
-  monthNav: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  calMonth: { fontSize: 22, fontWeight: '600', letterSpacing: 0.3 },
+  calYear: { fontSize: 11 },
+  calNav: { marginLeft: 'auto', flexDirection: 'row', gap: 5 },
   navBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    borderRadius: Radius['2xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.sm,
-  },
-  statChip: { flex: 1, alignItems: 'center', gap: 6 },
-  statIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: Radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statVal: { fontSize: 20, fontWeight: '900', letterSpacing: -0.4 },
-  statLbl: { fontSize: 10, fontWeight: '700' },
-  statDivider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', marginVertical: 4 },
-  calendarCard: {
-    width: '100%',
-    borderRadius: Radius['2xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing.md,
-    gap: Spacing.md,
-  },
-  calendarPagerClip: { width: '100%', overflow: 'hidden' },
-  calendarPager: { width: '100%' },
-  legendRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-    paddingHorizontal: 2,
-  },
-  legend: { fontSize: 11, fontWeight: '600', flex: 1 },
-  legendDots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  legendDot: { width: 5, height: 5, borderRadius: 3 },
-  legendDotLbl: { fontSize: 10, fontWeight: '700', marginRight: 4 },
-  weekRow: { flexDirection: 'row' },
-  weekCell: { alignItems: 'center' },
-  weekText: { fontSize: 11, fontWeight: '800' },
-  dayCell: {
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  dayNum: { fontSize: 13 },
-  microDots: { flexDirection: 'row', gap: 2, position: 'absolute', bottom: 4 },
-  microDot: { width: 4, height: 4, borderRadius: 2, opacity: 0.85 },
-  detailCard: {
-    borderRadius: Radius['2xl'],
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing.lg,
-    marginTop: Spacing.xs,
-  },
-  detailHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-  },
-  detailDate: { fontSize: 18, fontWeight: '900', letterSpacing: -0.3 },
-  detailWeekday: { fontSize: 13, fontWeight: '600' },
-  detailTotalBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-  },
-  detailTotalText: { fontSize: 12, fontWeight: '800' },
-  summaryChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  summaryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Radius.pill,
-  },
-  summaryChipVal: { fontSize: 13, fontWeight: '900' },
-  summaryChipLbl: { fontSize: 11, fontWeight: '700', opacity: 0.85 },
-  detailSection: {
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: Spacing.md,
-    gap: Spacing.sm,
-  },
-  detailSectionHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  detailSectionIcon: {
     width: 28,
     height: 28,
-    borderRadius: Radius.sm,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  detailSectionTitle: { flex: 1, fontSize: 14, fontWeight: '800' },
-  detailSectionBadge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: Radius.pill,
+  pagerClip: { width: '100%', overflow: 'hidden' },
+  weeklabel: {
+    flexDirection: 'row',
+    paddingHorizontal: 1,
+    paddingBottom: 4,
+  },
+  weeklabelText: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: '650',
+  },
+  monthgrid: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 5,
+    gap: GRID_GAP,
+  },
+  weekRow: { flexDirection: 'row', gap: 0 },
+  mcellSlot: { flex: 1 },
+  mcell: {
+    height: 42,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
+    gap: 2,
+    position: 'relative',
   },
-  detailSectionBadgeText: { fontSize: 11, fontWeight: '900' },
-  detailSectionBody: { gap: 8 },
-  listRow: {
+  mcellNum: { fontSize: 13, lineHeight: 16 },
+  dots: { flexDirection: 'row', gap: 1.5, height: 4, alignItems: 'center' },
+  dotsPlaceholder: { height: 4 },
+  dot: { width: 3.5, height: 3.5, borderRadius: 2 },
+  fire: { position: 'absolute', right: 3, top: 2, fontSize: 7 },
+  callegend: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  listDot: { width: 7, height: 7, borderRadius: 4 },
-  listIconBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  habitKindCornerBadge: {
-    position: 'absolute',
-    left: -4,
-    top: -4,
-    minWidth: 16,
-    height: 16,
     paddingHorizontal: 3,
-    borderRadius: 6,
-    borderWidth: 1.5,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  legendDot: { width: 5, height: 5, borderRadius: 3 },
+  legendText: { fontSize: 10, color: '#9CA59C' },
+  legendHint: { fontSize: 10, color: '#9CA59C' },
+  daydetail: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  ddhead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    paddingHorizontal: 2,
+    paddingBottom: 6,
+    flexWrap: 'wrap',
+  },
+  ddheadTitle: { fontSize: 17, fontWeight: '600' },
+  ddheadSub: { fontSize: 11 },
+  chips: { marginLeft: 'auto', flexDirection: 'row', gap: 3, flexWrap: 'wrap' },
+  chip: {
+    fontSize: 10,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+    fontWeight: '700',
+  },
+  ddrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 3,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.45)',
+  },
+  di2: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  habitKindCornerBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900', lineHeight: 11 },
-  listTitle: { fontSize: 14, fontWeight: '700' },
-  listTitleDone: { textDecorationLine: 'line-through', opacity: 0.6 },
-  listMeta: { fontSize: 11, fontWeight: '600' },
-  frogPartialBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: Radius.pill,
-  },
-  frogPartialBadgeText: { fontSize: 10, fontWeight: '800' },
-  emptyDayWrap: {
+  dt: { flex: 1, minWidth: 0 },
+  dtTitle: { fontSize: 13, fontWeight: '700' },
+  dtMeta: { fontSize: 10, marginTop: 2 },
+  when: { fontSize: 11, fontVariant: ['tabular-nums'] },
+  empty: {
     alignItems: 'center',
-    paddingVertical: Spacing['3xl'],
-    paddingHorizontal: Spacing.lg,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    gap: Spacing.sm,
+    paddingVertical: 28,
+    gap: 6,
   },
-  emptyDayIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: Radius.pill,
+  emptyIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
   },
-  emptyDayTitle: { fontSize: 15, fontWeight: '800' },
-  emptyDay: { fontSize: 13, fontWeight: '600', lineHeight: 19, textAlign: 'center' },
+  emptyTitle: { fontSize: 13, fontWeight: '700' },
+  emptySub: { fontSize: 11 },
+  overviewCard: { marginTop: 2, paddingBottom: 12 },
+  overviewHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 10,
+  },
+  overviewTitle: { fontSize: 13, fontWeight: '800' },
+  overviewSub: { fontSize: 11 },
+  miniStat3: { flexDirection: 'row' },
+  miniStat: { flex: 1, alignItems: 'center', gap: 2 },
+  miniStatVal: { fontSize: 22, fontWeight: '700' },
+  miniStatLbl: { fontSize: 10 },
+  tinybars: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 2,
+    height: 28,
+    marginTop: 8,
+  },
+  tinybar: {
+    flex: 1,
+    minHeight: 3,
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 2,
+  },
 });

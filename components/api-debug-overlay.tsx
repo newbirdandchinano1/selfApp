@@ -1,4 +1,4 @@
-import { MaterialIcons } from '@expo/vector-icons';
+﻿import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -14,8 +14,8 @@ export function ApiDebugOverlay() {
   const text = isDark ? '#e2e8f0' : '#1f2937';
   const muted = isDark ? 'rgba(148,163,184,0.85)' : '#64748b';
   const cardBg = isDark ? '#0f172a' : '#ffffff';
-  const border = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(0,88,190,0.14)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
+  const border = isDark ? 'rgba(148,163,184,0.25)' : 'rgba(30,57,50,0.14)';
+  const primary = isDark ? '#A9C7B9' : '#1E3932';
 
   const [enabled, setEnabled] = React.useState(false);
   const [panelOpen, setPanelOpen] = React.useState(false);
@@ -42,7 +42,7 @@ export function ApiDebugOverlay() {
             top: Math.max(insets.top, 8) + 8,
             right: 12,
             backgroundColor: isDark ? '#1e3a5f' : primary,
-            borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(255,255,255,0.35)',
+            borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(255,255,255,0.35)',
           },
         ]}>
         <MaterialIcons name="bug-report" size={18} color="#fff" />

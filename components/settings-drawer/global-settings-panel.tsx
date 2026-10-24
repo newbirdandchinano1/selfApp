@@ -22,12 +22,10 @@ import {
   triggerCloudFullRestore,
   type CloudSyncProgress,
 } from '@/lib/cloud-sql-sync';
-import { syncScheduleAxisEndWithDayBoundary } from '@/lib/schedule-service';
 import {
   DAY_BOUNDARY_PAGE_OPTIONS,
   DEFAULT_TASKS_DAY_BOUNDARY,
   formatTasksDayBoundaryLabel,
-  getLogicalLocalYmd,
   type DayBoundaryPageId,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
@@ -564,37 +562,23 @@ export function GlobalSettingsPanel({
   const saveDayBoundary = useCallback(async () => {
     try {
       await persistDayBoundary(draftBoundary);
-      const effective = dayBoundaryPages.includes('tasks')
-        ? draftBoundary
-        : { ...DEFAULT_TASKS_DAY_BOUNDARY };
-      const logicalToday = getLogicalLocalYmd(new Date(), effective);
-      void syncScheduleAxisEndWithDayBoundary(effective, logicalToday).catch(err => {
-        console.warn('[day-boundary] sync schedule axis end failed', err);
-      });
       setDayBoundaryPickerVisible(false);
       toast.success('已保存');
     } catch (e) {
       toast.error(toUserMessage(e, '未能保存日界设置，请稍后重试。'));
     }
-  }, [draftBoundary, persistDayBoundary, dayBoundaryPages]);
+  }, [draftBoundary, persistDayBoundary]);
 
   const toggleDayBoundaryPage = useCallback(
     (page: DayBoundaryPageId, enabled: boolean) => {
       const next = enabled
         ? [...new Set([...dayBoundaryPages, page])]
         : dayBoundaryPages.filter(p => p !== page);
-      void persistDayBoundaryPages(next)
-        .then(() => {
-          if (page !== 'tasks') return;
-          const effective = next.includes('tasks') ? dayBoundary : { ...DEFAULT_TASKS_DAY_BOUNDARY };
-          const logicalToday = getLogicalLocalYmd(new Date(), effective);
-          return syncScheduleAxisEndWithDayBoundary(effective, logicalToday);
-        })
-        .catch(e => {
-          toast.error(toUserMessage(e, '未能更新日界作用页面，请稍后重试。'));
-        });
+      void persistDayBoundaryPages(next).catch(e => {
+        toast.error(toUserMessage(e, '未能更新日界作用页面，请稍后重试。'));
+      });
     },
-    [dayBoundaryPages, persistDayBoundaryPages, dayBoundary],
+    [dayBoundaryPages, persistDayBoundaryPages],
   );
 
   const onNightModeSwitch = useCallback(

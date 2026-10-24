@@ -395,7 +395,7 @@ function RootLayoutInner() {
               options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
             />
             <Stack.Screen name="add-project" />
-            <Stack.Screen name="add-subtask" />
+            <Stack.Screen name="add-subtask" options={{ animation: 'fade' }} />
             <Stack.Screen name="pick-parent-task" />
             <Stack.Screen name="add-account" />
             <Stack.Screen name="account-detail" />
@@ -412,13 +412,18 @@ function RootLayoutInner() {
             <Stack.Screen name="scheduled-expenses" />
             <Stack.Screen name="add-scheduled-expense" />
             <Stack.Screen name="tasks-calendar" />
+            <Stack.Screen name="completion-heatmap" />
             <Stack.Screen name="tasks-overview" />
             <Stack.Screen name="edit-finance-transaction/[id]" />
             <Stack.Screen name="cash-flow" />
             <Stack.Screen name="schedule-picker" />
             <Stack.Screen name="edit-profile" />
             <Stack.Screen name="quick-add-edit" />
+            <Stack.Screen name="task-settings" />
             <Stack.Screen name="habit-detail" />
+            <Stack.Screen name="habit-manage" />
+            <Stack.Screen name="habit-context" />
+            <Stack.Screen name="add-habit" />
             <Stack.Screen name="add-item" />
             <Stack.Screen name="points-ledger" />
             <Stack.Screen name="project-completion-logs" />

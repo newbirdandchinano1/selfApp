@@ -1,4 +1,10 @@
-﻿import {
+﻿import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
+import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
+import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
+import { TaskCompletionHeatmap } from '@/components/tasks/TaskCompletionHeatmap';
+import { TaskListFilterBar } from '@/components/tasks/TaskListFilterBar';
+import { TasksWeekStrip } from '@/components/tasks/TasksWeekStrip';
+import {
   WeeklyFrogSchedule,
   type ScheduleChangedDetail,
   type SchedulePendingPlace,
@@ -16,7 +22,6 @@ import {
   TasksStandaloneSectionSkeleton,
 } from '@/components/skeletons/tasks';
 import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
-import { AppIconButton } from '@/components/ui';
 import {
   Layout,
   Radius,
@@ -29,6 +34,16 @@ import {
   getTaskPriorityTone,
   getTaskUiColors,
 } from '@/constants/design-tokens';
+import {
+  TaskFoldMotion,
+  useTaskFoldTheme,
+} from '@/constants/task-fold-theme';
+import {
+  FOLD_MOTION_EASE,
+  FOLD_MOTION_SPRING,
+  FoldRiseIn,
+  FoldStampPop,
+} from '@/components/review/fold-motion';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
@@ -78,6 +93,12 @@ import {
   reconcileProjectTaskTreeMapsForTab,
 } from '@/lib/projects-list-api';
 import { formatPoints, getRewardBadgeBackgroundColor, normalizeRewardPoints, parseRewardPointsFromExtraData } from '@/lib/reward-points';
+import {
+  DEFAULT_TODO_ICON,
+  mergeIconIntoExtraData,
+  resolveProjectDisplayIcon,
+  resolveTaskDisplayIcon,
+} from '@/lib/constants/entity-icon-choices';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import {
   isBreakHabitSucceeded,
@@ -205,6 +226,15 @@ import {
 } from '@/lib/repositories/tasks/task.types';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
+import {
+  applyProjectListFilter,
+  applyTaskListFilter,
+  EMPTY_TASK_LIST_FILTER,
+  filterProjectTaskTreeForListFilter,
+  isTaskListFilterActive,
+  projectPassesListFilter,
+  type TaskListFilterState,
+} from '@/lib/task-list-filter';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import {
   formatScheduleDateToYMD,
@@ -227,15 +257,6 @@ import {
   patchExtraDataOnRepeatTaskReopen,
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
-import {
-  fetchCompletionHeatmap,
-  fetchCompletionHeatmapDayDetail,
-} from '@/lib/tasks-completion-heatmap-api';
-import { openFrogHeatmapItem } from '@/lib/open-frog-heatmap-item';
-import {
-  computeMonthlyAverageMap,
-  heatmapLevelFromMonthlyAverage,
-} from '@/lib/tasks-global-heatmap';
 import {
   maxTagWeight,
   sortHabitGridSectionsByTagWeight,
@@ -311,32 +332,39 @@ function habitKindLabel(kind: HabitKind): string {
   return '养成';
 }
 
+/** 设计稿 `.hdots`：3px 点阵，用于行尾进度 */
 function HabitProgressDots({
   current,
   total,
   activeColor,
   idleColor,
+  nowColor,
 }: {
   current: number;
   total: number;
   activeColor: string;
   idleColor: string;
+  nowColor?: string;
 }) {
   const cur = Math.max(0, Math.floor(current));
   const tot = Math.max(1, Math.floor(total));
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-      {Array.from({ length: tot }).map((_, i) => (
-        <View
-          key={i}
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 4,
-            backgroundColor: i < cur ? activeColor : idleColor,
-          }}
-        />
-      ))}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1.5 }}>
+      {Array.from({ length: tot }).map((_, i) => {
+        const filled = i < cur;
+        const isNow = i === cur && cur < tot;
+        return (
+          <View
+            key={i}
+            style={{
+              width: 3,
+              height: 3,
+              borderRadius: 1.5,
+              backgroundColor: filled ? activeColor : isNow && nowColor ? nowColor : idleColor,
+            }}
+          />
+        );
+      })}
     </View>
   );
 }
@@ -995,11 +1023,25 @@ function formatTasksHeaderDate(ymd: string) {
   return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAY_LABELS[d.getDay()]}`;
 }
 
+/** 项目卡头像：优先 extra_data.icon，否则名称首 emoji / 默认 */
+function projectAvatarEmoji(name: string, extraData?: string | null): string {
+  return resolveProjectDisplayIcon(name, extraData);
+}
+
 function formatTaskPriority(priority: number): string {
   if (priority >= 4) return '紧急重要';
   if (priority === 3) return '紧急不重要';
   if (priority === 2) return '不紧急重要';
   if (priority === 1) return '不紧急不重要';
+  return '';
+}
+
+/** 项目树叶子旁的短优先级（设计稿 `.tp`：P1–P4） */
+function formatTaskPriorityShort(priority: number): string {
+  if (priority >= 4) return 'P1';
+  if (priority === 3) return 'P2';
+  if (priority === 2) return 'P3';
+  if (priority === 1) return 'P4';
   return '';
 }
 
@@ -1087,21 +1129,6 @@ function ymdToLocalDate(ymd: string): Date | null {
   return parseYmd(ymd);
 }
 
-function startOfLocalDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-function addLocalDays(d: Date, n: number): Date {
-  return addDays(startOfLocalDay(d), n);
-}
-
-/** 含 `d` 的周的周一（本地 0:00） */
-function mondayOfWeekContaining(d: Date): Date {
-  const sod = startOfLocalDay(d);
-  const dow = sod.getDay();
-  const deltaMon = dow === 0 ? -6 : 1 - dow;
-  return addLocalDays(sod, deltaMon);
-}
 
 /** 勾选/打卡后延迟静默对齐本地库，避免乐观更新后立刻整表替换导致列表跳动 */
 const POST_MUTATION_SYNC_DELAY_MS = 1500;
@@ -1110,394 +1137,6 @@ const HEATMAP_RELOAD_DEBOUNCE_MS = 800;
 /** 习惯区防抖重载：避免打卡后立刻被接口旧数据覆盖 */
 const HABITS_RELOAD_DEBOUNCE_MS = 1200;
 
-/** 完成热力图：列=周（周一至周日自上而下），色阶按当月日均完成量相对映射 */
-const COMPLETION_HEATMAP_WEEKS = 15;
-const COMPLETION_HEAT_CELL = 22;
-const COMPLETION_HEAT_GAP = 8;
-const COMPLETION_HEAT_MONTH_ROW_H = 24;
-
-type CompletionHeatCell = { level: number | null; ymd: string | null; count: number };
-
-function mergeDailyCountMaps(...maps: Map<string, number>[]): Map<string, number> {
-  const merged = new Map<string, number>();
-  for (const map of maps) {
-    for (const [ymd, count] of map) {
-      merged.set(ymd, (merged.get(ymd) ?? 0) + count);
-    }
-  }
-  return merged;
-}
-
-function TaskCompletionHeatmap({
-  logicalTodayYmd,
-  dayBoundary,
-  textMain,
-  textMuted,
-  accentColor,
-  todoAccentColor,
-  innerCardBg,
-  innerBorderColor,
-  isDark,
-  reloadToken,
-  projects,
-}: {
-  logicalTodayYmd: string;
-  dayBoundary: TasksDayBoundary;
-  textMain: string;
-  textMuted: string;
-  accentColor: string;
-  todoAccentColor: string;
-  innerCardBg: string;
-  innerBorderColor: string;
-  isDark: boolean;
-  /** 任务勾选变更后递增，触发热力图从服务端重载 */
-  reloadToken: number;
-  /** 用于识别/打开项目青蛙 */
-  projects: Array<{ id: string; name: string }>;
-}) {
-  const router = useRouter();
-  const scrollRef = React.useRef<ScrollView>(null);
-  const taskUi = getTaskUiColors(isDark);
-  const heatColors = taskUi.heatmapLevels;
-  const [selectedYmd, setSelectedYmd] = React.useState<string | null>(null);
-  const [frogCountByYmd, setFrogCountByYmd] = React.useState<Map<string, number>>(new Map());
-  const [todoCountByYmd, setTodoCountByYmd] = React.useState<Map<string, number>>(new Map());
-  const [selectedFrogItems, setSelectedFrogItems] = React.useState<FrogCompletionDayItem[]>([]);
-  const [selectedTodoItems, setSelectedTodoItems] = React.useState<TaskExecutionEventWithTitle[]>([]);
-  const [dayItemsLoading, setDayItemsLoading] = React.useState(false);
-
-  const combinedCountByYmd = React.useMemo(
-    () => mergeDailyCountMaps(frogCountByYmd, todoCountByYmd),
-    [frogCountByYmd, todoCountByYmd],
-  );
-
-  const heatmapRange = React.useMemo(() => {
-    const todayCal = startOfLocalDay(new Date());
-    const thisMonday = mondayOfWeekContaining(todayCal);
-    const gridStartMonday = addLocalDays(thisMonday, -(COMPLETION_HEATMAP_WEEKS - 1) * 7);
-    return { startYmd: formatLocalYmd(gridStartMonday), endYmd: logicalTodayYmd };
-  }, [logicalTodayYmd]);
-
-  const loadCompletionHeatmap = React.useCallback(async () => {
-    try {
-      const data = await fetchCompletionHeatmap({
-        boundary: dayBoundary,
-        heatmapStart: heatmapRange.startYmd,
-        heatmapEnd: heatmapRange.endYmd,
-      });
-      setFrogCountByYmd(data.frogCountByYmd);
-      setTodoCountByYmd(data.todoCountByYmd);
-    } catch (e) {
-      console.warn('加载完成热力图失败', e);
-      setFrogCountByYmd(new Map());
-      setTodoCountByYmd(new Map());
-    }
-  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd]);
-
-  // 仅随父页 reloadToken 加载：首屏等 reloadPage  bump；勿再挂 useFocusEffect（会与父页 focus 重载叠打）
-  React.useEffect(() => {
-    if (reloadToken <= 0) return;
-    const idleId = requestIdleCallback(() => {
-      void loadCompletionHeatmap();
-    });
-    return () => cancelIdleCallback(idleId);
-  }, [loadCompletionHeatmap, reloadToken]);
-
-  const { weekColumns, monthTickColIndexes } = React.useMemo(() => {
-    const todayCal = startOfLocalDay(new Date());
-    const thisMonday = mondayOfWeekContaining(todayCal);
-    const gridStartMonday = addLocalDays(thisMonday, -(COMPLETION_HEATMAP_WEEKS - 1) * 7);
-
-    type Col = { cells: CompletionHeatCell[]; monday: Date };
-    const weekColumns: Col[] = [];
-    const monthTickColIndexes: number[] = [];
-    const validDayYmds: string[] = [];
-
-    for (let c = 0; c < COMPLETION_HEATMAP_WEEKS; c++) {
-      const monday = addLocalDays(gridStartMonday, c * 7);
-      const cells: CompletionHeatCell[] = [];
-      for (let r = 0; r < 7; r++) {
-        const day = addLocalDays(monday, r);
-        const ymd = formatLocalYmd(day);
-        if (ymd > logicalTodayYmd) {
-          cells.push({ level: null, ymd: null, count: 0 });
-        } else {
-          validDayYmds.push(ymd);
-          const n = combinedCountByYmd.get(ymd) ?? 0;
-          cells.push({ level: 0, ymd, count: n });
-        }
-      }
-      weekColumns.push({ cells, monday });
-    }
-
-    const monthAvgMap = computeMonthlyAverageMap(validDayYmds, combinedCountByYmd);
-    for (const col of weekColumns) {
-      for (const cell of col.cells) {
-        if (!cell.ymd) continue;
-        cell.level = heatmapLevelFromMonthlyAverage(cell.count, cell.ymd.slice(0, 7), monthAvgMap);
-      }
-    }
-
-    let prevKey = '';
-    for (let c = 0; c < weekColumns.length; c++) {
-      const m = weekColumns[c].monday;
-      const key = `${m.getFullYear()}-${m.getMonth()}`;
-      if (key !== prevKey) {
-        monthTickColIndexes.push(c);
-        prevKey = key;
-      }
-    }
-
-    return { weekColumns, monthTickColIndexes };
-  }, [combinedCountByYmd, logicalTodayYmd]);
-
-  React.useEffect(() => {
-    if (!selectedYmd) {
-      setSelectedFrogItems([]);
-      setSelectedTodoItems([]);
-      return;
-    }
-    let cancelled = false;
-    setDayItemsLoading(true);
-    void (async () => {
-      try {
-        const detail = await fetchCompletionHeatmapDayDetail({
-          day: selectedYmd,
-          boundary: dayBoundary,
-          heatmapStart: heatmapRange.startYmd,
-          heatmapEnd: heatmapRange.endYmd,
-          projects,
-        });
-        if (!cancelled) {
-          setSelectedFrogItems(detail.frogItems);
-          setSelectedTodoItems(detail.todoItems);
-        }
-      } catch (e) {
-        console.warn('加载完成明细失败', e);
-        if (!cancelled) {
-          setSelectedFrogItems([]);
-          setSelectedTodoItems([]);
-        }
-      } finally {
-        if (!cancelled) setDayItemsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, selectedYmd, reloadToken, projects]);
-
-  const onHeatCellPress = React.useCallback((cell: CompletionHeatCell) => {
-    if (!cell.ymd) return;
-    setSelectedYmd((prev) => (prev === cell.ymd ? null : cell.ymd));
-  }, []);
-
-  const colStride = COMPLETION_HEAT_CELL + COMPLETION_HEAT_GAP;
-  const selectedFrogCount =
-    selectedYmd == null
-      ? 0
-      : dayItemsLoading
-        ? frogCountByYmd.get(selectedYmd) ?? 0
-        : selectedFrogItems.length;
-  const selectedTodoCount =
-    selectedYmd == null
-      ? 0
-      : dayItemsLoading
-        ? todoCountByYmd.get(selectedYmd) ?? 0
-        : selectedTodoItems.length;
-  const hasSelectedDayItems = selectedFrogItems.length > 0 || selectedTodoItems.length > 0;
-
-  React.useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      scrollRef.current?.scrollToEnd({ animated: false });
-    });
-    return () => cancelAnimationFrame(id);
-  }, [weekColumns]);
-
-  const weekdayLeftLabels = ['一', '二', '三', '四', '五', '六', '日'];
-
-  return (
-    <View style={styles.frogHeatmapOuter}>
-      <View
-        style={[
-          styles.frogHeatmapCard,
-          styles.frogHeatmapCardQuiet,
-          { backgroundColor: innerCardBg, borderColor: innerBorderColor },
-        ]}>
-        <View style={styles.frogHeatmapBodyRow}>
-          <View style={styles.frogHeatmapYAxis}>
-            <View style={{ height: COMPLETION_HEAT_MONTH_ROW_H }} />
-            {weekdayLeftLabels.map((lb) => (
-              <View key={lb} style={[styles.frogHeatmapYCell, { height: COMPLETION_HEAT_CELL + COMPLETION_HEAT_GAP }]}>
-                <Text style={[styles.frogHeatmapYLabel, { color: textMuted }]}>{lb}</Text>
-              </View>
-            ))}
-          </View>
-
-          <ScrollView
-            ref={scrollRef}
-            horizontal
-            nestedScrollEnabled
-            showsHorizontalScrollIndicator={false}
-            style={{ flex: 1 }}
-            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}>
-            <View>
-              <View style={[styles.frogHeatmapMonthRow, { height: COMPLETION_HEAT_MONTH_ROW_H }]}>
-                {weekColumns.map((col, c) => {
-                  const show = monthTickColIndexes.includes(c);
-                  const m = col.monday.getMonth() + 1;
-                  return (
-                    <View key={`m-${c}`} style={{ width: colStride, alignItems: 'center' }}>
-                      {show ? (
-                        <Text style={[styles.frogHeatmapMonthText, { color: textMuted }]}>{m}月</Text>
-                      ) : null}
-                    </View>
-                  );
-                })}
-              </View>
-
-              <View style={[styles.frogHeatmapGridRow, { gap: COMPLETION_HEAT_GAP }]}>
-                {weekColumns.map((col, c) => (
-                  <View key={`w-${c}`} style={{ gap: COMPLETION_HEAT_GAP }}>
-                    {col.cells.map((cell, r) => {
-                      const isFuture = cell.level === null || !cell.ymd;
-                      const selected = !isFuture && cell.ymd === selectedYmd;
-                      return (
-                        <Pressable
-                          key={`c-${c}-r-${r}`}
-                          disabled={isFuture}
-                          onPress={() => onHeatCellPress(cell)}
-                          hitSlop={isFuture ? 0 : 4}
-                          style={({ pressed }) => [
-                            styles.frogHeatmapCellHit,
-                            !isFuture && pressed && { opacity: 0.82 },
-                          ]}>
-                          <View
-                            style={[
-                              styles.frogHeatmapDataCell,
-                              {
-                                width: COMPLETION_HEAT_CELL,
-                                height: COMPLETION_HEAT_CELL,
-                                backgroundColor: isFuture ? 'transparent' : heatColors[cell.level!],
-                                borderWidth: selected ? 2 : 0,
-                                borderColor: selected ? accentColor : 'transparent',
-                              },
-                            ]}
-                          />
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                ))}
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-
-        {selectedYmd ? (
-          <View
-            style={[
-              styles.frogHeatmapDetail,
-              { borderTopColor: taskUi.hairlineStrong },
-            ]}>
-            <View style={styles.frogHeatmapDetailHead}>
-              <Text style={[styles.frogHeatmapDetailDate, { color: textMain }]} numberOfLines={1}>
-                {formatYmdCN(selectedYmd)}
-              </Text>
-              <Text style={[styles.frogHeatmapDetailFrogCount, { color: textMain }]}>
-                青蛙✖{selectedFrogCount} · 待办✖{selectedTodoCount}
-              </Text>
-            </View>
-            {dayItemsLoading ? (
-              <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>加载中…</Text>
-            ) : !hasSelectedDayItems ? (
-              <Text style={[styles.frogHeatmapDetailEmpty, { color: textMuted }]}>该日暂无已完成记录</Text>
-            ) : (
-              <View style={styles.frogHeatmapDetailList}>
-                {selectedFrogItems.length > 0 ? (
-                  <>
-                    <Text style={[styles.completionHeatmapDetailSectionLabel, { color: textMuted }]}>青蛙</Text>
-                    {selectedFrogItems.map((item, idx) => {
-                      const title = (item.task_title ?? '').trim() || '（无标题）';
-                      const canOpen = Boolean(item.task_id?.trim());
-                      const isProjectFrog = item.subject === 'project';
-                      const isLast = idx === selectedFrogItems.length - 1 && selectedTodoItems.length === 0;
-                      return (
-                        <Pressable
-                          key={item.id}
-                          disabled={!canOpen}
-                          onPress={() => {
-                            void openFrogHeatmapItem(router, item, projects);
-                          }}
-                          style={({ pressed }) => [
-                            styles.frogHeatmapDetailRow,
-                            {
-                              borderBottomColor: taskUi.hairlineSoft,
-                              opacity: pressed && canOpen ? 0.85 : 1,
-                            },
-                            isLast && { borderBottomWidth: 0 },
-                          ]}>
-                          <MaterialIcons
-                            name={isProjectFrog ? 'folder-special' : 'eco'}
-                            size={16}
-                            color={accentColor}
-                            style={{ marginTop: 1 }}
-                          />
-                          <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
-                            {title}
-                          </Text>
-                          {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
-                        </Pressable>
-                      );
-                    })}
-                  </>
-                ) : null}
-                {selectedTodoItems.length > 0 ? (
-                  <>
-                    <Text
-                      style={[
-                        styles.completionHeatmapDetailSectionLabel,
-                        { color: textMuted },
-                        selectedFrogItems.length > 0 && { marginTop: 10 },
-                      ]}>
-                      待办
-                    </Text>
-                    {selectedTodoItems.map((item, idx) => {
-                      const title = (item.task_title ?? '').trim() || '（无标题）';
-                      const canOpen = Boolean(item.task_id?.trim());
-                      return (
-                        <Pressable
-                          key={item.id}
-                          disabled={!canOpen}
-                          onPress={() => {
-                            if (item.task_id) router.push({ pathname: '/task/[id]', params: { id: item.task_id } });
-                          }}
-                          style={({ pressed }) => [
-                            styles.frogHeatmapDetailRow,
-                            {
-                              borderBottomColor: taskUi.hairlineSoft,
-                              opacity: pressed && canOpen ? 0.85 : 1,
-                            },
-                            idx === selectedTodoItems.length - 1 && { borderBottomWidth: 0 },
-                          ]}>
-                          <MaterialIcons name="check-circle" size={16} color={todoAccentColor} style={{ marginTop: 1 }} />
-                          <Text style={[styles.frogHeatmapDetailTitle, { color: textMain }]} numberOfLines={2}>
-                            {title}
-                          </Text>
-                          {canOpen ? <MaterialIcons name="chevron-right" size={18} color={textMuted} /> : null}
-                        </Pressable>
-                      );
-                    })}
-                  </>
-                ) : null}
-              </View>
-            )}
-          </View>
-        ) : null}
-      </View>
-    </View>
-  );
-}
 
 function formatProjectDueText(dueYmd: string, todayYmd: string): string {
   const due = ymdToLocalDate(dueYmd);
@@ -1952,8 +1591,14 @@ export default function TasksScreen() {
 
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
+  const { tf, fonts: foldFonts } = useTaskFoldTheme();
   const taskUi = getTaskUiColors(isDark);
   const habitBreakSuccess = taskUi.habitBreakSuccess;
+  /** level 0..4 对应 5 档；图例多一格 heat5 表示「多」顶端 */
+  const livePulse = React.useRef(new Animated.Value(0)).current;
+  /** 默认「待办」= index 1；与 secondaryPane 初值对齐 */
+  const paneInd = React.useRef(new Animated.Value(1)).current;
+  const [paneTrackW, setPaneTrackW] = React.useState(0);
   const touchTarget = getMinTouchTarget(Platform.OS);
   const insets = useSafeAreaInsets();
   const TASK_INDENT = 18;
@@ -1977,8 +1622,15 @@ export default function TasksScreen() {
     () => new Map(),
   );
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
+  const [todoListFilter, setTodoListFilter] =
+    React.useState<TaskListFilterState>(EMPTY_TASK_LIST_FILTER);
+  const [projectListFilter, setProjectListFilter] =
+    React.useState<TaskListFilterState>(EMPTY_TASK_LIST_FILTER);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
+  /** 周条选中日 → 驱动日程跳转到含该日的三天窗 */
+  const [weekStripSelectedYmd, setWeekStripSelectedYmd] = React.useState<string | null>(null);
+  const [scheduleJumpYmd, setScheduleJumpYmd] = React.useState<string | null>(null);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [expandedProjectIds, setExpandedProjectIds] = React.useState<Record<string, boolean>>({});
   const [hideCompletedProjectTasks, setHideCompletedProjectTasks] = React.useState(false);
@@ -2024,6 +1676,10 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  /** 设计稿 shot 06：行下操作抽屉 / 新建行高亮 */
+  const [todoDrawerId, setTodoDrawerId] = React.useState<string | null>(null);
+  const [highlightTodoId, setHighlightTodoId] = React.useState<string | null>(null);
+  const quickInputCollapse = React.useRef(new Animated.Value(1)).current;
   const [mutationOverlayLabel, setMutationOverlayLabel] = React.useState<string | null>(null);
   const mutationInFlightRef = React.useRef(false);
   const postMutationSyncTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2162,7 +1818,29 @@ export default function TasksScreen() {
     return map;
   }, [standaloneTagsByTaskId]);
 
-  const projectsShownInList = React.useMemo(() => {
+  const projectTagIdsByProjectId = React.useMemo(() => {
+    const map = new Map<string, string[]>();
+    projectTagsByProjectId.forEach((tags, projectId) => {
+      map.set(
+        projectId,
+        tags.map((t) => t.id),
+      );
+    });
+    return map;
+  }, [projectTagsByProjectId]);
+
+  const projectFilterTags = React.useMemo(() => {
+    const byId = new Map<string, TagRow>();
+    projectTagsByProjectId.forEach((tags) => {
+      for (const tag of tags) byId.set(tag.id, tag as TagRow);
+    });
+    return [...byId.values()].sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    });
+  }, [projectTagsByProjectId]);
+
+  const projectsInActiveTab = React.useMemo(() => {
     const base =
       projectTab === 'all'
         ? projects.filter((p) => !isProjectInInboxCategory(p.category_id))
@@ -2171,6 +1849,40 @@ export default function TasksScreen() {
           : projects.filter((p) => p.category_id === projectTab);
     return sortProjectsForList(base, lockedProjectIds, projectTagWeightById);
   }, [lockedProjectIds, projectTagWeightById, projects, projectTab]);
+
+  const projectListTasksByProjectId = React.useMemo(() => {
+    const map: Record<string, TaskRow[]> = {};
+    for (const project of projectsInActiveTab) {
+      const nodes = projectTaskTreeMap[project.id] ?? [];
+      const rows: TaskRow[] = [];
+      const walk = (list: TaskTreeNode[]) => {
+        for (const node of list) {
+          const { children, ...rest } = node;
+          rows.push(rest as TaskRow);
+          if (Array.isArray(children) && children.length > 0) walk(children);
+        }
+      };
+      walk(nodes);
+      map[project.id] = rows;
+    }
+    return map;
+  }, [projectTaskTreeMap, projectsInActiveTab]);
+
+  const projectsShownInList = React.useMemo(
+    () =>
+      applyProjectListFilter(projectsInActiveTab, projectListFilter, {
+        logicalTodayYmd,
+        tagIdsByProjectId: projectTagIdsByProjectId,
+        tasksByProjectId: projectListTasksByProjectId,
+      }),
+    [
+      logicalTodayYmd,
+      projectListFilter,
+      projectListTasksByProjectId,
+      projectTagIdsByProjectId,
+      projectsInActiveTab,
+    ],
+  );
 
   const [orphanCompletionLogs, setOrphanCompletionLogs] = React.useState<ProjectCompletionLogRow[]>([]);
   const [expandedInboxMonths, setExpandedInboxMonths] = React.useState<Set<string>>(
@@ -3169,14 +2881,58 @@ export default function TasksScreen() {
   }, [standaloneTodos, matrixWeekTasks]);
 
   // 标签就绪后终排：结构层 + 标签权重等业务键（对齐项目列表）
-  const standaloneTodosShown = React.useMemo(
+  const standaloneTodosSorted = React.useMemo(
     () => sortStandaloneTodosLocally(standaloneTodos, logicalTodayYmd, standaloneTodoTagWeightById),
     [logicalTodayYmd, standaloneTodoTagWeightById, standaloneTodos],
   );
 
+  const standaloneTodoTagIdsByTaskId = React.useMemo(() => {
+    const map = new Map<string, string[]>();
+    standaloneTagsByTaskId.forEach((tags, taskId) => {
+      map.set(
+        taskId,
+        tags.map((t) => t.id),
+      );
+    });
+    return map;
+  }, [standaloneTagsByTaskId]);
+
+  const standaloneFilterTags = React.useMemo(() => {
+    const byId = new Map<string, TagRow>();
+    standaloneTagsByTaskId.forEach((tags) => {
+      for (const tag of tags) byId.set(tag.id, tag);
+    });
+    return [...byId.values()].sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    });
+  }, [standaloneTagsByTaskId]);
+
+  const standaloneTodosShown = React.useMemo(
+    () =>
+      applyTaskListFilter(standaloneTodosSorted, todoListFilter, {
+        logicalTodayYmd,
+        tagIdsByTaskId: standaloneTodoTagIdsByTaskId,
+      }),
+    [logicalTodayYmd, standaloneTodoTagIdsByTaskId, standaloneTodosSorted, todoListFilter],
+  );
+
   const standaloneTodoOpenCount = React.useMemo(
-    () => standaloneTodosShown.filter((t) => isStandaloneTodoOpen(t)).length,
-    [standaloneTodosShown],
+    () => standaloneTodosSorted.filter((t) => isStandaloneTodoOpen(t)).length,
+    [standaloneTodosSorted],
+  );
+  const standaloneTodoTodayCount = React.useMemo(
+    () =>
+      standaloneTodosSorted.filter((t) => {
+        if (!isStandaloneTodoOpen(t)) return false;
+        const due = t.due_date?.slice(0, 10) ?? '';
+        return !due || due === logicalTodayYmd;
+      }).length,
+    [logicalTodayYmd, standaloneTodosSorted],
+  );
+  const standaloneTodoShelvedCount = React.useMemo(
+    () => standaloneTodosSorted.filter((t) => isTaskShelvedStatus(t.status)).length,
+    [standaloneTodosSorted],
   );
 
   const matrixGroups = React.useMemo(() => {
@@ -4455,6 +4211,7 @@ export default function TasksScreen() {
     setQuickTodoSaving(true);
     const id = makeTimestampEntityId('tsk_', 8);
     const now = formatTaskAuditDatetimeLocal();
+    const quickExtra = mergeIconIntoExtraData(null, DEFAULT_TODO_ICON, DEFAULT_TODO_ICON);
     const optimisticTask: TaskRow = {
       id,
       project_id: null,
@@ -4470,12 +4227,27 @@ export default function TasksScreen() {
       created_at: now,
       updated_at: now,
       sync_status: 'pending_create',
-      extra_data: null,
+      extra_data: quickExtra,
       sort_order: 0,
     };
     try {
       await runExclusiveMutation('正在保存待办...', async () => {
         markPageDirty();
+        // 设计稿：输入行收拢 180ms，新行顶部插入并高亮 1 次
+        Animated.sequence([
+          Animated.timing(quickInputCollapse, {
+            toValue: 0.92,
+            duration: TaskFoldMotion.quickInputCollapse / 2,
+            easing: FOLD_MOTION_EASE,
+            useNativeDriver: true,
+          }),
+          Animated.timing(quickInputCollapse, {
+            toValue: 1,
+            duration: TaskFoldMotion.quickInputCollapse / 2,
+            easing: FOLD_MOTION_SPRING,
+            useNativeDriver: true,
+          }),
+        ]).start();
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setStandaloneTodos((prev) =>
           sortStandaloneTodosLocally(
@@ -4485,6 +4257,9 @@ export default function TasksScreen() {
           ),
         );
         setQuickTodoDraft('');
+        setHighlightTodoId(id);
+        setTodoDrawerId(null);
+        setTimeout(() => setHighlightTodoId((cur) => (cur === id ? null : cur)), 1600);
         await createTask({
           id,
           project_id: null,
@@ -4495,7 +4270,7 @@ export default function TasksScreen() {
           status: 'todo',
           priority: 0,
           due_date: null,
-          extra_data: null,
+          extra_data: quickExtra,
         });
         schedulePostMutationSync({ tasks: true });
       }, '待办已保存');
@@ -4508,6 +4283,7 @@ export default function TasksScreen() {
   }, [
     logicalTodayYmd,
     markPageDirty,
+    quickInputCollapse,
     quickTodoDraft,
     quickTodoSaving,
     runExclusiveMutation,
@@ -5263,17 +5039,31 @@ export default function TasksScreen() {
     setCategoryModalVisible(false);
   };
 
-  const bg = colors.background;
-  const card = colors.surface;
+  const bg = tf.paper;
+  const card = isDark ? tf.paper2 : tf.card;
   const modalCardBg = isDark ? colors.accentCard : card;
   const soft = colors.input;
-  const outline = colors.textSecondary;
-  const outlineVariant = colors.outline;
-  const primary = colors.primary;
-  const secondary = colors.secondary;
+  const outline = tf.muted;
+  const outlineVariant = tf.line;
+  const primary = tf.pond;
+  const secondary = tf.frog;
   const tertiary = colors.tertiary;
   const error = colors.danger;
-  const success = colors.success;
+  const success = tf.frog;
+  const dayBoundaryLabel = `${String(dayBoundary.hour).padStart(2, '0')}:${String(dayBoundary.minute).padStart(2, '0')}`;
+  const paneSlotW = paneTrackW > 0 ? (paneTrackW - 4) / 3 : 0;
+  const paneIndTranslateX = paneInd.interpolate({
+    inputRange: [0, 1, 2],
+    outputRange: [0, paneSlotW, paneSlotW * 2],
+  });
+  const livePulseScale = livePulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.55],
+  });
+  const livePulseOpacity = livePulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.35, 0.08],
+  });
   const projectDoneSurface = isDark ? colors.surfaceMuted : colors.capsule;
 
   const sectionCardStyle = React.useMemo(
@@ -5289,6 +5079,22 @@ export default function TasksScreen() {
   const stackedSectionStyle = React.useMemo(
     () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
     [colors.outline],
+  );
+  /** 设计稿 `.card.panes`：三窗格统一暖纸卡片（强制无阴影） */
+  const panesCardStyle = React.useMemo(
+    () => [
+      styles.panesCard,
+      {
+        backgroundColor: isDark ? tf.card : 'rgba(255,252,245,0.92)',
+        borderColor: isDark ? tf.line : 'rgba(216,205,187,0.75)',
+        shadowColor: 'transparent',
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 0,
+      },
+    ],
+    [isDark, tf.card, tf.line],
   );
 
   /**
@@ -5339,6 +5145,51 @@ export default function TasksScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSecondaryPane(pane);
   }, []);
+
+  React.useEffect(() => {
+    if (reduceMotion || !motionReady) {
+      livePulse.setValue(1);
+      return;
+    }
+    livePulse.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(livePulse, {
+          toValue: 1,
+          duration: TaskFoldMotion.livePulse / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(livePulse, {
+          toValue: 0,
+          duration: TaskFoldMotion.livePulse / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      livePulse.stopAnimation();
+    };
+  }, [livePulse, motionReady, reduceMotion]);
+
+  React.useEffect(() => {
+    const idx = secondaryPane === 'habits' ? 0 : secondaryPane === 'todos' ? 1 : 2;
+    if (reduceMotion || !motionReady) {
+      paneInd.setValue(idx);
+      return;
+    }
+    const anim = Animated.timing(paneInd, {
+      toValue: idx,
+      duration: TaskFoldMotion.paneInd,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [motionReady, paneInd, reduceMotion, secondaryPane]);
 
   const scheduleSubjects = React.useMemo(() => {
     const map = new Map<string, TaskRow>();
@@ -5612,75 +5463,98 @@ export default function TasksScreen() {
     );
   };
 
-  /** 两栏布局共用的左列：日程表 + 完成热力图（宽屏放左列，窄屏留在列表头部） */
+  const onWeekStripSelectDay = React.useCallback((ymd: string) => {
+    setWeekStripSelectedYmd(ymd === logicalTodayYmd ? null : ymd);
+    setScheduleJumpYmd(ymd);
+  }, [logicalTodayYmd]);
+
+  const todayFrogCount = React.useMemo(() => {
+    let n = 0;
+    for (const t of scheduleSubjects.tasks) {
+      if (isFrogAssignedOn(t.extra_data, logicalTodayYmd)) n += 1;
+    }
+    for (const p of scheduleSubjects.projects) {
+      if (isFrogAssignedOn(p.extra_data, logicalTodayYmd)) n += 1;
+    }
+    return n;
+  }, [logicalTodayYmd, scheduleSubjects]);
+
+  const weekStripBlock = (
+    <TasksWeekStrip
+      logicalTodayYmd={logicalTodayYmd}
+      dayBoundary={dayBoundary}
+      selectedYmd={weekStripSelectedYmd}
+      onSelectDay={onWeekStripSelectDay}
+      reloadToken={completionHeatmapReloadToken}
+      todayFrogLabel={todayFrogCount > 0 ? `今日 ${todayFrogCount} 只青蛙` : '今日暂无青蛙'}
+      todayMeta={`待办 ${standaloneTodoOpenCount} · 习惯 ${habitSections.reduce((n, s) => n + s.items.length, 0)}`}
+      syncLabel={null}
+    />
+  );
+
+  const heatmapBlock = (
+    <View style={stackedSectionStyle}>
+      <TaskCompletionHeatmap
+        logicalTodayYmd={logicalTodayYmd}
+        dayBoundary={dayBoundary}
+        textMain={colors.text}
+        textMuted={outline}
+        accentColor={primary}
+        todoAccentColor={secondary}
+        innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+        innerBorderColor={colors.outlineStrong}
+        isDark={isDark}
+        reloadToken={completionHeatmapReloadToken}
+        projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+        onOpenDetail={() => router.push('/completion-heatmap')}
+      />
+    </View>
+  );
+
+  const scheduleSharedProps = {
+    logicalTodayYmd,
+    sectionCardStyle,
+    lockedProjectIds,
+    subjects: scheduleSubjects,
+    pendingPlace: pendingSchedulePlace,
+    onClearPendingPlace: () => setPendingSchedulePlace(null),
+    onChanged: onScheduleChanged,
+    jumpToYmd: scheduleJumpYmd,
+    onJumpToYmdConsumed: () => setScheduleJumpYmd(null),
+    onOpenSubject: (kind: 'task' | 'project', id: string) => {
+      if (kind === 'project') openProject(id);
+      else openTask(id);
+    },
+    onToggleDone: ({ id, assignYmd }: { id: string; assignYmd: string }) => {
+      toggleFrogDone(id, assignYmd);
+      notifyFrogScheduleChanged();
+    },
+    onHabitCheckIn: (habitId: string) => {
+      const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+      if (!item) return;
+      if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+        openSubHabitModal(item);
+        return;
+      }
+      void handleHabitIncrement(item);
+    },
+    onHabitUndo: (habitId: string) => {
+      const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
+      if (!item) return;
+      if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
+        openSubHabitModal(item);
+        return;
+      }
+      void handleHabitUndoOnce(item);
+    },
+  } as const;
+
+  /** 两栏布局共用的左列：周条 + 日程表 + 完成热力（宽屏放左列，窄屏留在列表头部） */
   const schedulePane = (
     <>
-      <WeeklyFrogSchedule
-        logicalTodayYmd={logicalTodayYmd}
-        sectionCardStyle={sectionCardStyle}
-        lockedProjectIds={lockedProjectIds}
-        subjects={scheduleSubjects}
-        pendingPlace={pendingSchedulePlace}
-        onClearPendingPlace={() => setPendingSchedulePlace(null)}
-        onChanged={onScheduleChanged}
-        onOpenSubject={(kind, id) => {
-          if (kind === 'project') openProject(id);
-          else openTask(id);
-        }}
-        onToggleDone={({ id, assignYmd }) => {
-          toggleFrogDone(id, assignYmd);
-          notifyFrogScheduleChanged();
-        }}
-        onHabitCheckIn={(habitId) => {
-          const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
-          if (!item) return;
-          // 带子习惯：打开清单；日程刷新由打卡副作用统一触发
-          if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
-            openSubHabitModal(item);
-            return;
-          }
-          void handleHabitIncrement(item);
-        }}
-        onHabitUndo={(habitId) => {
-          const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
-          if (!item) return;
-          if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
-            openSubHabitModal(item);
-            return;
-          }
-          void handleHabitUndoOnce(item);
-        }}
-      />
-
-      <View style={stackedSectionStyle}>
-        <View style={styles.heatmapFixedHead}>
-          <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>
-            完成热力图
-          </Text>
-          <View style={styles.frogHeatmapLegend}>
-            <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>少</Text>
-            <View style={styles.frogHeatmapLegendSwatches}>
-              {taskUi.heatmapLevels.map((bg, i) => (
-                <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
-              ))}
-            </View>
-            <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>多</Text>
-          </View>
-        </View>
-        <TaskCompletionHeatmap
-          logicalTodayYmd={logicalTodayYmd}
-          dayBoundary={dayBoundary}
-          textMain={colors.text}
-          textMuted={outline}
-          accentColor={primary}
-          todoAccentColor={secondary}
-          innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
-          innerBorderColor={colors.outlineStrong}
-          isDark={isDark}
-          reloadToken={completionHeatmapReloadToken}
-          projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-        />
-      </View>
+      {weekStripBlock}
+      <WeeklyFrogSchedule {...scheduleSharedProps} />
+      {heatmapBlock}
     </>
   );
 
@@ -5740,8 +5614,8 @@ export default function TasksScreen() {
           styles.pageHeader,
           {
             paddingTop: insets.top,
-            borderBottomColor: taskUi.headerBorder,
-            backgroundColor: taskUi.headerScrim,
+            borderBottomColor: tf.line,
+            backgroundColor: isDark ? 'rgba(20,28,24,0.92)' : 'rgba(244,240,232,0.92)',
           },
         ]}>
         <View style={styles.pageHeaderRow}>
@@ -5754,33 +5628,77 @@ export default function TasksScreen() {
               style={({ pressed }) => [
                 styles.pointsBalanceChip,
                 {
-                  minHeight: touchTarget,
-                  backgroundColor: taskUi.pointsChipBg,
-                  borderColor: taskUi.pointsChipBorder,
+                  minHeight: 32,
+                  backgroundColor: isDark ? tf.scoreFrom : undefined,
+                  borderColor: tf.scoreBorder,
                   opacity: pressed ? 0.82 : 1,
                 },
+                !isDark && styles.scorechipLight,
               ]}>
-              <MaterialIcons name="stars" size={15} color={taskUi.pointsAccent} />
-              <Text
-                style={[styles.pointsBalanceValue, { color: colors.text }]}
-                maxFontSizeMultiplier={maxFontScale}
-                numberOfLines={1}>
-                {formatPoints(pointsBalance)}
-              </Text>
+              <View style={[styles.scoreCoin, { backgroundColor: tf.sun }]}>
+                <Text style={styles.scoreCoinGlyph}>✦</Text>
+              </View>
+              <View style={styles.scorechipCopy}>
+                <Text
+                  style={[
+                    styles.pointsBalanceValue,
+                    { color: tf.scoreInk, fontFamily: foldFonts.mono },
+                  ]}
+                  maxFontSizeMultiplier={maxFontScale}
+                  numberOfLines={1}>
+                  {formatPoints(pointsBalance)}
+                </Text>
+                <Text style={[styles.scorechipSub, { color: tf.scoreMuted }]}>积分筹码 ›</Text>
+              </View>
             </Pressable>
           </View>
-          <Text
-            style={[styles.pageHeaderTitle, { color: colors.text }]}
-            maxFontSizeMultiplier={maxFontScale}
-            numberOfLines={1}>
-            {formatTasksHeaderDate(logicalTodayYmd)}
-          </Text>
+          <Pressable
+            style={styles.daymid}
+            onPress={() => router.push('/task-settings')}
+            accessibilityRole="button"
+            accessibilityLabel={`逻辑日设置，当前日界 ${dayBoundaryLabel}`}>
+            <Text
+              style={[styles.pageHeaderTitle, { color: tf.pond }]}
+              maxFontSizeMultiplier={maxFontScale}
+              numberOfLines={1}>
+              {formatTasksHeaderDate(logicalTodayYmd)}
+            </Text>
+            <View style={styles.daymidSubRow}>
+              <View style={styles.liveDotWrap}>
+                <View style={[styles.liveDotCore, { backgroundColor: tf.sun }]} />
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.liveDotRing,
+                    {
+                      backgroundColor: tf.sun,
+                      opacity: livePulseOpacity,
+                      transform: [{ scale: livePulseScale }],
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.daymidSub, { color: tf.faint }]}>
+                逻辑日 · {dayBoundaryLabel} 日界 ›
+              </Text>
+            </View>
+          </Pressable>
           <View style={[styles.pageHeaderSide, styles.pageHeaderSideRight]}>
-            <AppIconButton
-              icon="calendar-today"
+            <Pressable
               onPress={() => router.push('/tasks-calendar')}
+              accessibilityRole="button"
               accessibilityLabel="任务日历"
-            />
+              style={({ pressed }) => [
+                styles.calBtn,
+                {
+                  backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.7)',
+                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.7)',
+                  opacity: pressed ? 0.85 : 1,
+                },
+              ]}>
+              <MaterialIcons name="calendar-today" size={18} color={tf.ink2} />
+              <View style={[styles.calBtnDot, { backgroundColor: tf.rose }]} />
+            </Pressable>
           </View>
         </View>
       </View>
@@ -5856,222 +5774,141 @@ export default function TasksScreen() {
           <>
           {isWideTwoPane ? null : (
           <>
-          <WeeklyFrogSchedule
-            logicalTodayYmd={logicalTodayYmd}
-            sectionCardStyle={sectionCardStyle}
-            lockedProjectIds={lockedProjectIds}
-            subjects={scheduleSubjects}
-            pendingPlace={pendingSchedulePlace}
-            onClearPendingPlace={() => setPendingSchedulePlace(null)}
-            onChanged={onScheduleChanged}
-            onOpenSubject={(kind, id) => {
-              if (kind === 'project') openProject(id);
-              else openTask(id);
-            }}
-            onToggleDone={({ id, assignYmd }) => {
-              toggleFrogDone(id, assignYmd);
-              notifyFrogScheduleChanged();
-            }}
-            onHabitCheckIn={(habitId) => {
-              const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
-              if (!item) return;
-              // 带子习惯：打开清单；日程刷新由打卡副作用统一触发
-              if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
-                openSubHabitModal(item);
-                return;
-              }
-              void handleHabitIncrement(item);
-            }}
-            onHabitUndo={(habitId) => {
-              const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
-              if (!item) return;
-              if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
-                openSubHabitModal(item);
-                return;
-              }
-              void handleHabitUndoOnce(item);
-            }}
-          />
-
-          <View style={stackedSectionStyle}>
-            <View style={styles.heatmapFixedHead}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>
-                完成热力图
-              </Text>
-              <View style={styles.frogHeatmapLegend}>
-                <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>少</Text>
-                <View style={styles.frogHeatmapLegendSwatches}>
-                  {taskUi.heatmapLevels.map((bg, i) => (
-                    <View key={i} style={[styles.frogHeatmapLegendCell, { backgroundColor: bg }]} />
-                  ))}
-                </View>
-                <Text style={[styles.frogHeatmapLegendText, { color: outline }]}>多</Text>
-              </View>
-            </View>
-            <TaskCompletionHeatmap
-              logicalTodayYmd={logicalTodayYmd}
-              dayBoundary={dayBoundary}
-              textMain={colors.text}
-              textMuted={outline}
-              accentColor={primary}
-              todoAccentColor={secondary}
-              innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
-              innerBorderColor={colors.outlineStrong}
-              isDark={isDark}
-              reloadToken={completionHeatmapReloadToken}
-              projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-            />
-          </View>
+          {weekStripBlock}
+          <WeeklyFrogSchedule {...scheduleSharedProps} />
+          {heatmapBlock}
           </>
           )}
 
           <View style={stackedSectionStyle}>
+            <View style={panesCardStyle}>
             <View
               style={[
                 styles.secondaryTabTrack,
                 {
-                  backgroundColor: isDark ? colors.surfaceMuted : colors.capsule,
-                  borderColor: colors.outline,
+                  backgroundColor: tf.track,
+                  borderColor: 'transparent',
                 },
               ]}
+              onLayout={(e) => {
+                const w = e.nativeEvent.layout.width;
+                setPaneTrackW((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+              }}
               accessibilityRole="tablist">
-              <Pressable
-                onPress={() => selectSecondaryPane('habits')}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: secondaryPane === 'habits' }}
-                accessibilityLabel={`小习惯，${habitsCollapseSummary}`}
-                style={({ pressed }) => [
-                  styles.secondaryTabItem,
-                  secondaryPane === 'habits' && [
-                    styles.secondaryTabItemActive,
+              {paneSlotW > 0 ? (
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.secondaryTabInd,
                     {
-                      backgroundColor: card,
-                      borderColor: taskUi.primaryWashBorder,
+                      width: paneSlotW,
+                      backgroundColor: tf.cream,
+                      transform: [{ translateX: paneIndTranslateX }],
                     },
-                  ],
-                  pressed && { opacity: 0.9 },
-                ]}>
-                <MaterialIcons
-                  name="self-improvement"
-                  size={16}
-                  color={secondaryPane === 'habits' ? primary : outline}
+                  ]}
                 />
-                <View style={styles.secondaryTabTextCol}>
-                  <Text
-                    style={[
-                      styles.secondaryTabLabel,
-                      { color: secondaryPane === 'habits' ? colors.text : outline },
-                    ]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    小习惯
-                  </Text>
-                  <Text
-                    style={[styles.secondaryTabMeta, { color: outline }]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    {habitsCollapseSummary}
-                  </Text>
-                </View>
-              </Pressable>
-              <Pressable
-                onPress={() => selectSecondaryPane('todos')}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: secondaryPane === 'todos' }}
-                accessibilityLabel={`待办，进行中 ${standaloneTodoOpenCount}`}
-                style={({ pressed }) => [
-                  styles.secondaryTabItem,
-                  secondaryPane === 'todos' && [
-                    styles.secondaryTabItemActive,
-                    {
-                      backgroundColor: card,
-                      borderColor: taskUi.primaryWashBorder,
-                    },
-                  ],
-                  pressed && { opacity: 0.9 },
-                ]}>
-                <MaterialIcons
-                  name="checklist"
-                  size={16}
-                  color={secondaryPane === 'todos' ? primary : outline}
-                />
-                <View style={styles.secondaryTabTextCol}>
-                  <Text
-                    style={[
-                      styles.secondaryTabLabel,
-                      { color: secondaryPane === 'todos' ? colors.text : outline },
-                    ]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    待办
-                  </Text>
-                  <Text
-                    style={[styles.secondaryTabMeta, { color: outline }]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    进行中 {standaloneTodoOpenCount}
-                  </Text>
-                </View>
-              </Pressable>
-              <Pressable
-                onPress={() => selectSecondaryPane('projects')}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: secondaryPane === 'projects' }}
-                accessibilityLabel={`项目，${projectsShownInList.length} 个`}
-                style={({ pressed }) => [
-                  styles.secondaryTabItem,
-                  secondaryPane === 'projects' && [
-                    styles.secondaryTabItemActive,
-                    {
-                      backgroundColor: card,
-                      borderColor: taskUi.primaryWashBorder,
-                    },
-                  ],
-                  pressed && { opacity: 0.9 },
-                ]}>
-                <MaterialIcons
-                  name="folder-special"
-                  size={16}
-                  color={secondaryPane === 'projects' ? primary : outline}
-                />
-                <View style={styles.secondaryTabTextCol}>
-                  <Text
-                    style={[
-                      styles.secondaryTabLabel,
-                      { color: secondaryPane === 'projects' ? colors.text : outline },
-                    ]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    项目
-                  </Text>
-                  <Text
-                    style={[styles.secondaryTabMeta, { color: outline }]}
-                    maxFontSizeMultiplier={maxFontScale}
-                    numberOfLines={1}>
-                    {projectsShownInList.length} 个
-                  </Text>
-                </View>
-              </Pressable>
+              ) : null}
+              {(
+                [
+                  {
+                    key: 'habits' as const,
+                    label: '小习惯',
+                    meta: habitsCollapseSummary,
+                    a11y: `小习惯，${habitsCollapseSummary}`,
+                  },
+                  {
+                    key: 'todos' as const,
+                    label: '待办',
+                    meta: `进行中 ${standaloneTodoOpenCount}`,
+                    a11y: `待办，进行中 ${standaloneTodoOpenCount}`,
+                  },
+                  {
+                    key: 'projects' as const,
+                    label: '项目',
+                    meta: `${projectsShownInList.length}`,
+                    a11y: `项目，${projectsShownInList.length} 个`,
+                  },
+                ] as const
+              ).map((tab) => {
+                const on = secondaryPane === tab.key;
+                return (
+                  <Pressable
+                    key={tab.key}
+                    onPress={() => selectSecondaryPane(tab.key)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={tab.a11y}
+                    style={({ pressed }) => [
+                      styles.secondaryTabItem,
+                      pressed && { opacity: 0.9 },
+                    ]}>
+                    <Text
+                      style={[
+                        styles.secondaryTabLabel,
+                        { color: on ? tf.pond : tf.muted },
+                      ]}
+                      maxFontSizeMultiplier={maxFontScale}
+                      numberOfLines={1}>
+                      {tab.label}
+                    </Text>
+                    <View
+                      style={[
+                        styles.secondaryTabCount,
+                        { backgroundColor: on ? tf.lily2 : isDark ? tf.paper3 : '#DCE5D2' },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.secondaryTabMeta,
+                          { color: on ? tf.frog : '#53704E', fontFamily: foldFonts.mono },
+                        ]}
+                        maxFontSizeMultiplier={maxFontScale}
+                        numberOfLines={1}>
+                        {tab.key === 'habits'
+                          ? habitSections.reduce((n, s) => n + s.items.length, 0)
+                          : tab.key === 'todos'
+                            ? standaloneTodoOpenCount
+                            : projectsShownInList.length}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
             </View>
 
             {secondaryPane === 'habits' ? (
-            <View style={styles.habitsBodyQuiet}>
+            <FoldRiseIn
+              animate={motionReady && !reduceMotion}
+              index={0}
+              staggerMs={0}
+              fromY={0}
+              duration={TaskFoldMotion.paneFade}
+              style={styles.habitsBodyQuiet}>
               <View style={styles.habitHeaderRow}>
-                <View style={{ flex: 1 }} />
-                <ScalePressable
-                  onPress={() => router.push('/habit-manage')}
-                  accessibilityRole="button"
-                  accessibilityLabel="管理习惯"
-                  style={({ pressed }) => [
-                    styles.ghostBtn,
-                    { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
-                    pressed && { opacity: 0.8 },
-                  ]}>
-                  <MaterialIcons name="dashboard" size={14} color={primary} />
-                  <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
-                    管理习惯
-                  </Text>
-                </ScalePressable>
+                <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                  按情境分组 · 点行打卡
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  <ScalePressable
+                    onPress={() => router.push('/add-habit')}
+                    accessibilityRole="button"
+                    accessibilityLabel="添加打卡"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <MaterialIcons name="add" size={14} color={tf.frog} />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>添加</Text>
+                  </ScalePressable>
+                  <ScalePressable
+                    onPress={() => router.push('/habit-manage')}
+                    accessibilityRole="button"
+                    accessibilityLabel="打卡管理"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 2, opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>打卡管理</Text>
+                    <MaterialIcons name="chevron-right" size={14} color={tf.frog} />
+                  </ScalePressable>
+                </View>
               </View>
               {displayHabitSections.map((section) => {
                 const isOpen = expandedHabitSections[section.id] ?? true;
@@ -6087,18 +5924,19 @@ export default function TasksScreen() {
                       accessibilityLabel={`${isOpen ? '收起' : '展开'}习惯分组 ${section.title}`}
                       style={({ pressed }) => [
                         styles.habitSectionToggle,
-                        {
-                          minHeight: touchTarget,
-                          backgroundColor: isDark ? colors.surfaceMuted : colors.capsule,
-                        },
                         pressed && { opacity: 0.8 },
                       ]}>
                       <Text
-                        style={[styles.habitSectionToggleText, { color: outline }]}
+                        style={[styles.habitSectionToggleText, { color: tf.muted }]}
                         maxFontSizeMultiplier={maxFontScale}>
-                        {section.title}・{visibleHabitItems.length}
+                        {section.title} · {visibleHabitItems.length}
                       </Text>
-                      <MaterialIcons name={isOpen ? 'expand-less' : 'expand-more'} size={16} color={outline} />
+                      <View style={[styles.habitSectionLine, { backgroundColor: isDark ? tf.line : 'rgba(226,218,203,0.6)' }]} />
+                      <MaterialIcons
+                        name={isOpen ? 'expand-less' : 'expand-more'}
+                        size={14}
+                        color={tf.faint}
+                      />
                     </Pressable>
 
                     {isOpen ? (
@@ -6151,7 +5989,6 @@ export default function TasksScreen() {
                             !breakChallengeDone &&
                             item.todayCount > 0 &&
                             (breakUi === 'slipping' || breakUi === 'failed');
-                          const goalFailed = isBreak && scheduleAllowsToday && breakUi === 'failed';
                           const hasSubs = Boolean(
                             item.hasSubHabits || hasActiveSubHabits(item.extraData),
                           );
@@ -6175,12 +6012,10 @@ export default function TasksScreen() {
                             progressTotal =
                               item.dailyGoal != null && item.dailyGoal > 0 ? item.dailyGoal : null;
                           }
-                          const showPeriodBadge = hasSubs && subTotal > 0 && isTask && hasPeriodGoal;
                           const taskCompletionCount = isTask
                             ? Math.max(0, Math.floor(item.taskCompletionCount ?? 0))
                             : 0;
                           const rewardPoints = normalizeRewardPoints(item.rewardPoints);
-                          const rewardBadgeBg = getRewardBadgeBackgroundColor(rewardPoints, isDark);
                           const kindTone =
                             item.kind === 'break'
                               ? taskUi.habitKindBreak
@@ -6188,18 +6023,61 @@ export default function TasksScreen() {
                                 ? taskUi.habitKindTask
                                 : secondary;
                           const useProgressDots =
-                            progressTotal != null && progressTotal > 0 && progressTotal < 5;
-                          const useProgressBar =
-                            progressTotal != null && progressTotal > 0 && !useProgressDots;
-                          const progressRatio = useProgressBar
-                            ? Math.min(1, Math.max(0, progressCurrent / progressTotal))
+                            progressTotal != null && progressTotal > 0 && progressTotal <= 5;
+                          const dotsTotal = useProgressDots
+                            ? Math.min(5, Math.max(1, Math.floor(progressTotal!)))
                             : 0;
+
+                          /** 设计稿 `.hcopy small`：单行副文案，避免标签/徽章横排重叠 */
+                          const metaParts: string[] = [];
+                          if (!scheduleAllowsToday) {
+                            metaParts.push('今日不可打卡');
+                          } else if (breakChallengeDone) {
+                            metaParts.push('挑战已完成');
+                          } else if (brokeToday) {
+                            metaParts.push(`破戒 ${Math.floor(item.todayCount)}`);
+                          } else if (hasSubs && subTotal > 0) {
+                            metaParts.push(`子习惯 ${subDone} / ${subTotal}`);
+                            if (isTask && hasPeriodGoal) {
+                              metaParts.push(
+                                `${taskPeriodShortLabel(item.extraData)} ${Math.max(0, Math.floor(taskPeriodProgress))}/${item.periodGoal}`,
+                              );
+                            }
+                          } else if (isTask && hasPeriodGoal) {
+                            metaParts.push(
+                              `${taskPeriodShortLabel(item.extraData)} ${Math.max(0, Math.floor(taskPeriodProgress))}/${item.periodGoal}`,
+                            );
+                            if (taskCompletionCount > 0) metaParts.push(`累计 ${taskCompletionCount}`);
+                          } else if (goalMet) {
+                            metaParts.push('今日已打卡');
+                          } else if (progressTotal != null && progressTotal > 0) {
+                            metaParts.push(
+                              `${Math.max(0, Math.floor(progressCurrent))}/${progressTotal}`,
+                            );
+                          } else if (Math.max(0, Math.floor(progressCurrent)) > 0) {
+                            metaParts.push(`${Math.floor(progressCurrent)} 次`);
+                          } else {
+                            metaParts.push(habitKindLabel(item.kind));
+                          }
+                          if (rewardPoints !== 0) {
+                            metaParts.push(
+                              `${rewardPoints > 0 ? '+' : ''}${formatPoints(rewardPoints)}`,
+                            );
+                          }
+                          const metaLine = metaParts.join(' · ');
+                          const habitTags = (habitTagsByHabitId.get(item.id) ?? []).slice(0, 2);
 
                           const openHabitDetail = () =>
                             router.push({
                               pathname: '/habit-detail',
                               params: { habitId: item.id },
                             });
+
+                          const tickOn = goalMet || breakChallengeDone;
+                          const tickPart =
+                            hasSubs && subTotal > 0 && !goalMet && subDone > 0
+                              ? `${subDone}/${subTotal}`
+                              : null;
 
                           return (
                             <Pressable
@@ -6222,13 +6100,11 @@ export default function TasksScreen() {
                               }`}
                               onPress={() => {
                                 if (breakChallengeDone) {
-                                  // 挑战已完成：点击进入详情查看成绩，不再记录/撤销
                                   openHabitDetail();
                                   return;
                                 }
                                 if (!scheduleAllowsToday) return;
                                 if (goalMet) {
-                                  // 已完成：子习惯进弹窗；戒除已破戒再点继续破戒；养成/任务直接撤销
                                   if (item.hasSubHabits || hasActiveSubHabits(item.extraData)) {
                                     openSubHabitModal(item);
                                     return;
@@ -6247,21 +6123,7 @@ export default function TasksScreen() {
                               style={({ pressed }) => [
                                 styles.habitCard,
                                 {
-                                  width: habitGridItemWidth,
-                                  backgroundColor: colors.surface,
-                                  borderColor: breakChallengeDone
-                                    ? habitBreakSuccess
-                                    : goalMet
-                                      ? secondary
-                                      : brokeToday
-                                        ? breakSlipBorderColor(
-                                            item.todayCount,
-                                            item.dailyGoal,
-                                            isDark,
-                                          )
-                                      : goalFailed
-                                        ? colors.dangerSoft
-                                      : colors.outlineStrong,
+                                  borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.52)',
                                   opacity: scheduleAllowsToday
                                     ? pressed
                                       ? 0.9
@@ -6271,416 +6133,304 @@ export default function TasksScreen() {
                                     : 0.55,
                                 },
                               ]}>
-                              {rewardPoints !== 0 ? (
-                                <View style={[styles.habitRewardBadge, { backgroundColor: rewardBadgeBg }]}>
-                                  <Text style={styles.habitRewardBadgeText}>
-                                    {rewardPoints > 0 ? '+' : ''}
-                                    {formatPoints(rewardPoints)}
-                                  </Text>
+                              <View
+                                style={[
+                                  styles.habitCardIconWrap,
+                                  {
+                                    backgroundColor:
+                                      item.kind === 'break'
+                                        ? tf.rose2
+                                        : item.kind === 'task'
+                                          ? tf.sun2
+                                          : tf.lily2,
+                                  },
+                                ]}>
+                                <Text style={styles.habitCardIcon}>{item.icon}</Text>
+                                {!scheduleAllowsToday ? (
+                                  <View style={styles.habitCardLockMark} pointerEvents="none">
+                                    <MaterialIcons name="lock" size={12} color={colors.textSecondary} />
+                                  </View>
+                                ) : null}
+                              </View>
+
+                              <View style={styles.habitCardBody}>
+                                <Text
+                                  style={[
+                                    styles.habitCardTitle,
+                                    {
+                                      color: colors.text,
+                                      textDecorationLine: goalMet ? 'line-through' : 'none',
+                                      opacity: goalMet ? 0.55 : 1,
+                                    },
+                                  ]}
+                                  numberOfLines={1}>
+                                  {item.name}
+                                </Text>
+                                <Text
+                                  style={[styles.habitCardMeta, { color: tf.faint }]}
+                                  numberOfLines={1}>
+                                  {metaLine}
+                                </Text>
+                                {habitTags.length > 0 ? (
+                                  <View style={styles.habitTagChipRow}>
+                                    {habitTags.map((tag) => (
+                                      <View
+                                        key={tag.id}
+                                        style={[
+                                          styles.habitTagChip,
+                                          {
+                                            backgroundColor: `${tag.color}18`,
+                                            borderColor: `${tag.color}44`,
+                                          },
+                                        ]}>
+                                        <View
+                                          style={{
+                                            width: 4,
+                                            height: 4,
+                                            borderRadius: 2,
+                                            backgroundColor: tag.color,
+                                          }}
+                                        />
+                                        <Text
+                                          style={[styles.habitTagChipText, { color: tag.color }]}
+                                          numberOfLines={1}>
+                                          {tag.name}
+                                        </Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                ) : null}
+                              </View>
+
+                              {useProgressDots ? (
+                                <View style={styles.habitDotsWrap}>
+                                  <HabitProgressDots
+                                    current={progressCurrent}
+                                    total={dotsTotal}
+                                    activeColor={
+                                      brokeToday
+                                        ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark)
+                                        : kindTone
+                                    }
+                                    idleColor={isDark ? '#3A4540' : '#D4DCCD'}
+                                    nowColor={tf.sun}
+                                  />
                                 </View>
                               ) : null}
 
-                              <View style={styles.habitCardMain}>
+                              <FoldStampPop active={tickOn && !brokeToday} durationMs={TaskFoldMotion.stampPop}>
                                 <View
                                   style={[
-                                    styles.habitCardIconWrap,
-                                    {
-                                      width: touchTarget,
-                                      height: touchTarget,
-                                      backgroundColor: taskUi.hairlineFaint,
-                                    },
-                                  ]}>
-                                  <Text style={styles.habitCardIcon}>{item.icon}</Text>
-                                  {brokeToday ? (
-                                    <View style={styles.habitCardDoneMark} pointerEvents="none">
-                                      <MaterialIcons
-                                        name="cancel"
-                                        size={15}
-                                        color={breakSlipBadgeColor(
-                                          item.todayCount,
-                                          item.dailyGoal,
-                                          isDark,
-                                        )}
-                                      />
-                                    </View>
-                                  ) : goalMet || breakChallengeDone ? (
-                                    <View style={styles.habitCardDoneMark} pointerEvents="none">
-                                      <MaterialIcons
-                                        name="check-circle"
-                                        size={15}
-                                        color={breakChallengeDone ? habitBreakSuccess : secondary}
-                                      />
-                                    </View>
-                                  ) : null}
-                                  {!scheduleAllowsToday ? (
-                                    <View style={styles.habitCardLockMark} pointerEvents="none">
-                                      <MaterialIcons name="lock" size={13} color={colors.textSecondary} />
-                                    </View>
-                                  ) : null}
-                                </View>
-
-                                <View style={styles.habitCardBody}>
-                                  <Text
-                                    style={[
-                                      styles.habitCardTitle,
-                                      {
-                                        color: colors.text,
-                                        textDecorationLine: goalMet ? 'line-through' : 'none',
-                                        opacity: goalMet ? 0.55 : 1,
-                                      },
-                                    ]}>
-                                    {item.name}
-                                  </Text>
-                                  {(habitTagsByHabitId.get(item.id) ?? []).length > 0 ? (
-                                    <View style={styles.habitTagChipRow}>
-                                      {(habitTagsByHabitId.get(item.id) ?? []).slice(0, 2).map((tag) => (
-                                        <View
-                                          key={tag.id}
-                                          style={[
-                                            styles.habitTagChip,
-                                            {
-                                              backgroundColor: `${tag.color}18`,
-                                              borderColor: `${tag.color}44`,
-                                            },
-                                          ]}>
-                                          <View
-                                            style={{
-                                              width: 6,
-                                              height: 6,
-                                              borderRadius: 3,
-                                              backgroundColor: tag.color,
-                                            }}
-                                          />
-                                          <Text
-                                            style={[styles.habitTagChipText, { color: tag.color }]}
-                                            numberOfLines={1}>
-                                            {tag.name}
-                                          </Text>
-                                        </View>
-                                      ))}
-                                    </View>
-                                  ) : null}
-                                  {item.note ? (
-                                    <Text
-                                      style={[
-                                        styles.habitCardNote,
-                                        {
-                                          color: outline,
-                                          textDecorationLine: goalMet ? 'line-through' : 'none',
-                                          opacity: goalMet ? 0.58 : 1,
-                                        },
-                                      ]}
-                                      numberOfLines={3}>
-                                      {item.note.trim().slice(0, 50)}
-                                    </Text>
-                                  ) : null}
-                                </View>
-
-                                <View style={styles.habitTypeRow}>
-                                  <View
-                                    style={[
-                                      styles.habitTypeChip,
-                                      {
-                                        backgroundColor: isDark ? `${kindTone}24` : `${kindTone}18`,
-                                        borderColor: isDark ? `${kindTone}40` : `${kindTone}30`,
-                                      },
-                                    ]}>
-                                    <Text style={[styles.habitTypeChipText, { color: kindTone }]}>
-                                      {habitKindLabel(item.kind)}
-                                    </Text>
-                                  </View>
-                                  {brokeToday ? (
-                                    <View
-                                      style={[
-                                        styles.habitTaskCompletionBadge,
-                                        {
-                                          backgroundColor: taskUi.dangerSlipBadgeBg,
-                                          borderColor: taskUi.dangerSlipBadgeBorder,
-                                        },
-                                      ]}
-                                      accessibilityLabel={`今日破戒 ${Math.floor(item.todayCount)} 次`}>
-                                      <Text
-                                        style={[
-                                          styles.habitTaskCompletionBadgeText,
-                                          { color: taskUi.dangerSlipText },
-                                        ]}>
-                                        破戒 {Math.floor(item.todayCount)}
-                                      </Text>
-                                    </View>
-                                  ) : null}
-                                  {showPeriodBadge ? (
-                                    <View
-                                      style={[
-                                        styles.habitTaskCompletionBadge,
-                                        {
-                                          backgroundColor: isDark ? `${kindTone}28` : `${kindTone}14`,
-                                          borderColor: isDark ? `${kindTone}55` : `${kindTone}40`,
-                                        },
-                                      ]}
-                                      accessibilityLabel={`${taskPeriodShortLabel(item.extraData)}进度 ${Math.max(0, Math.floor(taskPeriodProgress))}/${item.periodGoal}`}>
-                                      <Text style={[styles.habitTaskCompletionBadgeText, { color: kindTone }]}>
-                                        {taskPeriodShortLabel(item.extraData)}{' '}
-                                        {Math.max(0, Math.floor(taskPeriodProgress))}/{item.periodGoal}
-                                      </Text>
-                                    </View>
-                                  ) : null}
-                                  {isTask && taskCompletionCount > 0 ? (
-                                    <View
-                                      style={[
-                                        styles.habitTaskCompletionBadge,
-                                        {
-                                          backgroundColor: isDark ? `${kindTone}28` : `${kindTone}14`,
-                                          borderColor: isDark ? `${kindTone}55` : `${kindTone}40`,
-                                        },
-                                      ]}
-                                      accessibilityLabel={`累计完成 ${taskCompletionCount} 次`}>
-                                      <Text style={[styles.habitTaskCompletionBadgeText, { color: kindTone }]}>
-                                        累计 {taskCompletionCount}
-                                      </Text>
-                                    </View>
-                                  ) : null}
-                                </View>
-
-                                <View style={styles.habitProgressBlock}>
-                                  {useProgressDots ? (
-                                    <View style={styles.habitProgressMeta}>
-                                      <HabitProgressDots
-                                        current={progressCurrent}
-                                        total={progressTotal!}
-                                        activeColor={brokeToday ? breakSlipBadgeColor(item.todayCount, item.dailyGoal, isDark) : kindTone}
-                                        idleColor={
-                                          isDark
-                                            ? taskUi.hairlineStrong
-                                            : taskUi.hairlineStrong
-                                        }
-                                      />
-                                    </View>
-                                  ) : useProgressBar ? (
-                                    <>
-                                      <View
-                                        style={[
-                                          styles.habitProgressTrack,
-                                          {
-                                            backgroundColor: isDark
-                                              ? taskUi.hairline
-                                              : taskUi.hairlineStrong,
-                                          },
-                                        ]}>
-                                        <View
-                                          style={[
-                                            styles.habitProgressFill,
-                                            {
-                                              width: `${Math.round(progressRatio * 100)}%`,
-                                              backgroundColor: brokeToday
-                                                ? breakSlipBadgeColor(
-                                                    item.todayCount,
-                                                    item.dailyGoal,
-                                                    isDark,
-                                                  )
-                                                : kindTone,
-                                            },
-                                          ]}
-                                        />
-                                      </View>
-                                      <Text style={[styles.habitProgressText, { color: outline }]}>
-                                        {Math.max(0, Math.floor(progressCurrent))}/{progressTotal}
-                                      </Text>
-                                    </>
-                                  ) : (
-                                    <View style={styles.habitProgressMeta}>
-                                      <Text
-                                        style={[
-                                          styles.habitProgressText,
-                                          {
-                                            color: breakChallengeDone
+                                    styles.habitTick,
+                                    tickOn
+                                      ? {
+                                          backgroundColor: brokeToday
+                                            ? breakSlipBadgeColor(
+                                                item.todayCount,
+                                                item.dailyGoal,
+                                                isDark,
+                                              )
+                                            : breakChallengeDone
                                               ? habitBreakSuccess
-                                              : brokeToday
-                                                ? breakSlipBadgeColor(
-                                                    item.todayCount,
-                                                    item.dailyGoal,
-                                                    isDark,
-                                                  )
-                                              : outline,
-                                          },
-                                        ]}>
-                                        {breakChallengeDone
-                                          ? '已完成'
-                                          : goalMet
-                                            ? '已完成'
-                                            : brokeToday
-                                              ? `${Math.floor(progressCurrent)} 次`
-                                            : Math.max(0, Math.floor(progressCurrent)) > 0
-                                              ? `${Math.floor(progressCurrent)} 次`
-                                              : '未开始'}
-                                      </Text>
-                                    </View>
+                                              : tf.frog,
+                                          borderColor: brokeToday
+                                            ? breakSlipBadgeColor(
+                                                item.todayCount,
+                                                item.dailyGoal,
+                                                isDark,
+                                              )
+                                            : breakChallengeDone
+                                              ? habitBreakSuccess
+                                              : tf.frog,
+                                        }
+                                      : tickPart
+                                        ? { borderColor: '#B7CAA0' }
+                                        : { borderColor: isDark ? tf.line : '#C9D2C2' },
+                                  ]}
+                                  pointerEvents="none">
+                                  {tickPart && !tickOn ? (
+                                    <Text style={[styles.habitTickPartText, { color: '#7C9869' }]}>
+                                      {tickPart}
+                                    </Text>
+                                  ) : (
+                                    <MaterialIcons
+                                      name={brokeToday ? 'close' : 'check'}
+                                      size={12}
+                                      color={tickOn ? '#fff' : isDark ? tf.muted : '#C9D2C2'}
+                                    />
                                   )}
                                 </View>
-                              </View>
+                              </FoldStampPop>
                             </Pressable>
                           );
                         })}
-                        <Pressable
-                          onPress={() => router.push('/add-habit')}
-                          accessibilityRole="button"
-                          accessibilityLabel="添加打卡"
-                          style={({ pressed }) => [
-                            styles.habitAddCard,
-                            {
-                              width: habitGridItemWidth,
-                              borderColor: colors.outlineStrong,
-                              backgroundColor: isDark ? colors.surfaceMuted : colors.surfaceSubtle,
-                              opacity: pressed ? 0.86 : 1,
-                            },
-                          ]}>
-                          <View style={[styles.habitAddIconWrap, { borderColor: outlineVariant }]}>
-                            <MaterialIcons name="add" size={20} color={colors.textMuted} />
-                          </View>
-                          <Text style={[styles.habitAddText, { color: colors.textMuted }]}>添加打卡</Text>
-                        </Pressable>
                       </View>
                     ) : null}
                   </View>
                 );
               })}
-            </View>
+              <View style={[styles.paneFoot, { borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.6)' }]}>
+                <Text style={[styles.paneFootLeft, { color: tf.faint }]} numberOfLines={1}>
+                  {habitsCollapseSummary}
+                </Text>
+                <ScalePressable
+                  onPress={() => router.push('/habit-manage')}
+                  accessibilityRole="button"
+                  accessibilityLabel="打卡管理"
+                  style={({ pressed }) => [
+                    styles.paneFootGo,
+                    { opacity: pressed ? 0.75 : 1 },
+                  ]}>
+                  <Text style={[styles.paneFootGoText, { color: '#6C8567' }]}>打卡管理</Text>
+                  <MaterialIcons name="chevron-right" size={14} color="#6C8567" />
+                </ScalePressable>
+              </View>
+            </FoldRiseIn>
             ) : secondaryPane === 'todos' ? (
-            <View style={[sectionCardQuietStyle, styles.secondaryPaneBody]}>
-              <View style={{ gap: 6 }}>
-                <View style={styles.habitHeaderRow}>
-                  <Text style={[styles.sectionTitle, { color: colors.text, flex: 1, minWidth: 0 }]} maxFontSizeMultiplier={maxFontScale}>
-                    待办
-                  </Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                    <ScalePressable
-                      onPress={() => router.push('/tasks-overview')}
-                      accessibilityRole="button"
-                      accessibilityLabel="待办总览"
-                      style={({ pressed }) => [
-                        styles.ghostBtn,
-                        { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
-                        pressed && { opacity: 0.8 },
-                      ]}>
-                      <MaterialIcons name="insights" size={14} color={primary} />
-                      <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
-                        待办总览
-                      </Text>
-                    </ScalePressable>
-                    <ScalePressable
-                      onPress={openStandaloneTaskComposer}
-                      accessibilityRole="button"
-                      accessibilityLabel="详细新建待办"
-                      style={({ pressed }) => [
-                        styles.ghostBtn,
-                        { minHeight: touchTarget, borderColor: taskUi.pointsChipBorder },
-                        pressed && { opacity: 0.8 },
-                      ]}>
-                      <MaterialIcons name="playlist-add" size={14} color={tertiary} />
-                      <Text style={[styles.ghostBtnText, { color: tertiary }]} maxFontSizeMultiplier={maxFontScale}>
-                        详细新建
-                      </Text>
-                    </ScalePressable>
-                  </View>
-                </View>
-                <View style={styles.standaloneTodoMetaRow}>
-                  <View
-                    style={[
-                      styles.standaloneTodoCountChip,
-                      { backgroundColor: isDark ? `${secondary}28` : `${secondary}16` },
+            <FoldRiseIn
+              animate={motionReady && !reduceMotion}
+              index={0}
+              staggerMs={0}
+              fromY={0}
+              duration={TaskFoldMotion.paneFade}
+              style={styles.secondaryPaneBody}>
+              <View style={styles.habitHeaderRow}>
+                <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                  独立待办 · 左滑升级 / 搁置
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  <ScalePressable
+                    onPress={openStandaloneTaskComposer}
+                    accessibilityRole="button"
+                    accessibilityLabel="详细新建待办"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
                     ]}>
-                    <View style={[styles.standaloneTodoCountDot, { backgroundColor: secondary }]} />
-                    <Text style={[styles.standaloneTodoCountChipText, { color: secondary }]}>进行中</Text>
-                    <Text style={[styles.standaloneTodoCountChipNum, { color: secondary }]}>
-                      {standaloneTodoOpenCount}
-                    </Text>
-                  </View>
-                  {standaloneTodosShown.length > 0 ? (
-                    <View
-                      style={[
-                        styles.standaloneTodoHintChip,
-                        {
-                          backgroundColor: taskUi.hairlineFaint,
-                        },
-                      ]}>
-                      <MaterialIcons name="swipe" size={13} color={outline} />
-                      <Text style={[styles.standaloneTodoHintChipText, { color: outline }]}>
-                        左滑升级 / 删除
-                      </Text>
-                    </View>
-                  ) : null}
+                    <MaterialIcons name="add" size={14} color={tf.frog} />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>详细新建</Text>
+                  </ScalePressable>
+                  <ScalePressable
+                    onPress={() => router.push('/tasks-overview')}
+                    accessibilityRole="button"
+                    accessibilityLabel="待办总览"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 2, opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>总览</Text>
+                    <MaterialIcons name="chevron-right" size={14} color={tf.frog} />
+                  </ScalePressable>
                 </View>
               </View>
 
-              {/* 快捷输入：胶囊容器 + 左侧图标区 + 圆形发送，与上方「详细新建」表单区分 */}
+              {/* 快捷输入：设计稿一句话添加 · 提交收拢 180ms */}
               <View ref={quickTodoAnchorRef} collapsable={false}>
-                <View
+                <Animated.View
                   style={[
                     styles.quickTodoShell,
-                    shadows.composer,
                     {
-                      backgroundColor: card,
-                      borderColor: colors.outlineStrong,
+                      backgroundColor: isDark ? 'rgba(232,239,217,0.18)' : 'rgba(232,239,217,0.4)',
+                      borderColor: isDark ? 'rgba(175,195,142,0.45)' : 'rgba(175,195,142,0.8)',
+                      transform: [{ scale: quickInputCollapse }],
                     },
                   ]}>
-                  <View style={[styles.quickTodoIconBadge, { backgroundColor: isDark ? `${secondary}22` : `${secondary}14` }]}>
-                    <MaterialIcons name="bolt" size={18} color={secondary} />
+                  <View
+                    style={[
+                      styles.quickTodoFrogMark,
+                      { backgroundColor: isDark ? tf.lily2 : tf.lily2 },
+                    ]}>
+                    <MaterialIcons name="cruelty-free" size={15} color={tf.frog} />
                   </View>
-                  <TextInput
-                    value={quickTodoDraft}
-                    onChangeText={(t) => setQuickTodoDraft(t.slice(0, STANDALONE_TODO_TITLE_MAX))}
-                    placeholder="快速记一条…"
-                    placeholderTextColor={outline}
-                    returnKeyType="done"
-                    blurOnSubmit={false}
-                    multiline={false}
-                    {...(Platform.OS === 'android'
-                      ? ({ textAlignVertical: 'center', includeFontPadding: false } as const)
-                      : {})}
-                    onSubmitEditing={() => void submitQuickStandaloneTodo()}
-                    onFocus={() => {
-                      quickTodoInputFocusedRef.current = true;
-                      const delay = Platform.OS === 'ios' ? 90 : 180;
-                      setTimeout(() => {
-                        scrollQuickTodoAboveKeyboard();
-                      }, delay);
-                    }}
-                    onBlur={() => {
-                      quickTodoInputFocusedRef.current = false;
-                    }}
-                    style={[styles.quickTodoInput, { color: colors.text }]}
-                  />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <TextInput
+                      value={quickTodoDraft}
+                      onChangeText={(t) => setQuickTodoDraft(t.slice(0, STANDALONE_TODO_TITLE_MAX))}
+                      placeholder="一句话记下杂事…"
+                      placeholderTextColor={tf.faint}
+                      returnKeyType="done"
+                      blurOnSubmit={false}
+                      multiline={false}
+                      {...(Platform.OS === 'android'
+                        ? ({ textAlignVertical: 'center', includeFontPadding: false } as const)
+                        : {})}
+                      onSubmitEditing={() => void submitQuickStandaloneTodo()}
+                      onFocus={() => {
+                        quickTodoInputFocusedRef.current = true;
+                        const delay = Platform.OS === 'ios' ? 90 : 180;
+                        setTimeout(() => {
+                          scrollQuickTodoAboveKeyboard();
+                        }, delay);
+                      }}
+                      onBlur={() => {
+                        quickTodoInputFocusedRef.current = false;
+                      }}
+                      style={[styles.quickTodoInput, { color: colors.text, fontSize: 13, paddingVertical: 0 }]}
+                    />
+                    <Text style={{ fontSize: 9, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                      回车保存 · 稍后再整理
+                    </Text>
+                  </View>
                   <Pressable
                     onPress={() => void submitQuickStandaloneTodo()}
                     disabled={quickTodoSaving}
                     accessibilityRole="button"
                     accessibilityLabel="添加待办"
                     style={({ pressed }) => [
-                      styles.quickTodoSendBtn,
+                      styles.quickTodoSendBtnCompact,
                       {
-                        width: touchTarget,
-                        height: touchTarget,
-                        borderRadius: touchTarget / 2,
-                        backgroundColor: secondary,
+                        backgroundColor: tf.pond,
                         opacity: quickTodoSaving ? 0.5 : pressed ? 0.88 : 1,
                       },
                     ]}>
                     {quickTodoSaving ? (
-                      <Text style={[styles.quickTodoSendBtnDots, { color: taskUi.onAccent }]} maxFontSizeMultiplier={1.2}>
-                        …
-                      </Text>
+                      <ActivityIndicator color="#fff" size="small" />
                     ) : (
-                      <MaterialIcons name="arrow-upward" size={22} color={colors.onPrimary} />
+                      <MaterialIcons name="add" size={16} color={tf.onPond} />
                     )}
                   </Pressable>
-                </View>
-                <Text style={[styles.quickTodoHint, { color: outline }]}>回车或点右侧按钮即可保存 · 最多 {STANDALONE_TODO_TITLE_MAX} 字</Text>
+                </Animated.View>
               </View>
 
-              {standaloneTodosShown.length === 0 ? (
+              <View style={styles.todoStatRow}>
+                <View style={[styles.todoStatTag, { backgroundColor: tf.sage2 }]}>
+                  <Text style={[styles.todoStatTagText, { color: '#36594D' }]}>
+                    未完成 {standaloneTodoOpenCount}
+                  </Text>
+                </View>
+                <View style={[styles.todoStatTag, { backgroundColor: tf.amber2 }]}>
+                  <Text style={[styles.todoStatTagText, { color: tf.amberInk }]}>
+                    今天 {standaloneTodoTodayCount}
+                  </Text>
+                </View>
+                <View style={[styles.todoStatTag, { backgroundColor: isDark ? tf.paper3 : '#EAE6DC' }]}>
+                  <Text style={[styles.todoStatTagText, { color: '#777B75' }]}>
+                    搁置 {standaloneTodoShelvedCount}
+                  </Text>
+                </View>
+              </View>
+
+              {standaloneTodosSorted.length > 0 ? (
+                <TaskListFilterBar
+                  value={todoListFilter}
+                  onChange={setTodoListFilter}
+                  tags={standaloneFilterTags}
+                  resultCount={standaloneTodosShown.length}
+                />
+              ) : null}
+
+              {standaloneTodosSorted.length === 0 ? (
                 <EmptyPlaceholder
                   icon="task-alt"
                   title="还没有待办"
                   subtitle="杂事、灵感先记在这里，需要时再关联到项目。"
+                  color={primary}
+                  muted={outline}
+                  cardBg={emptyCardBg}
+                />
+              ) : standaloneTodosShown.length === 0 ? (
+                <EmptyPlaceholder
+                  icon="filter-list-off"
+                  title="没有匹配的待办"
+                  subtitle="试试换个日期、标签或紧急程度，或清除筛选。"
                   color={primary}
                   muted={outline}
                   cardBg={emptyCardBg}
@@ -6724,7 +6474,15 @@ export default function TasksScreen() {
                           }}
                           overshootRight={false}
                           friction={2}
-                          childrenContainerStyle={{ backgroundColor: bg }}
+                          /** 与窗格同色实底盖住侧滑钮；elevation 0 避免行阴影 */
+                          childrenContainerStyle={[
+                            styles.standaloneTodoSwipeChild,
+                            {
+                              backgroundColor: isDark
+                                ? tf.card
+                                : 'rgba(255,252,245,0.92)',
+                            },
+                          ]}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
                               {isShelved ? (
@@ -6813,281 +6571,308 @@ export default function TasksScreen() {
                               </Pressable>
                             </View>
                           )}>
+                          {(() => {
+                            const todoMetaParts: string[] = [];
+                            if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
+                            else if (isRepeatWaiting) todoMetaParts.push('未到执行日');
+                            else if (hasFrogAssignment) todoMetaParts.push(frogAssignedBadgeText);
+                            else if (overdue) todoMetaParts.push('已过期');
+                            else if (dueDisplayYmd)
+                              todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
+                            else todoMetaParts.push('今天');
+                            if (repeat) todoMetaParts.push(repeat);
+                            else if (reminder) todoMetaParts.push(reminder);
+                            else if (noteText) todoMetaParts.push(noteText.slice(0, 24));
+                            else if (acceptanceText) todoMetaParts.push(acceptanceText.slice(0, 24));
+                            if (rewardPoints !== 0) {
+                              todoMetaParts.push(
+                                `${rewardPoints > 0 ? '+' : ''}${formatPoints(rewardPoints)}`,
+                              );
+                            }
+                            const prioLabel = formatTaskPriority(effectivePriority);
+                            const prioColor = getTaskPriorityColor(effectivePriority, isDark);
+                            const statusTag = isShelved
+                              ? { label: '搁置', bg: isDark ? tf.paper3 : '#EAE6DC', fg: '#777B75' }
+                              : isDone
+                                ? { label: '已完成', bg: tf.sage2, fg: '#36594D' }
+                                : hasFrogAssignment
+                                  ? { label: '已入格', bg: tf.sage2, fg: '#36594D' }
+                                  : { label: '未入格', bg: tf.amber2, fg: tf.amberInk };
+                            const drawerOpen = todoDrawerId === t.id;
+                            const highlighted = highlightTodoId === t.id;
+                            const todoIcon = resolveTaskDisplayIcon(t.extra_data);
+                            /** 与设计稿 `.hicon` / 项目头像色阶一致：过期·高优 rose，紧急 amber，其余 lily */
+                            const todoIconBg = isShelved
+                              ? isDark
+                                ? tf.paper3
+                                : '#EAE6DC'
+                              : overdue && !isDone
+                                ? tf.rose2
+                                : effectivePriority >= 4
+                                  ? tf.rose2
+                                  : effectivePriority >= 3
+                                    ? tf.sun2
+                                    : tf.lily2;
+                            return (
+                          <View>
                           <View
                             style={[
                               styles.standaloneTodoCard,
                               {
-                                backgroundColor: isShelved && !isDone
-                                  ? standaloneShelvedCardBg
-                                  : overdue && !isDone
-                                    ? standaloneOverdueCardBg
-                                    : card,
-                                borderColor:
-                                  isShelved && !isDone
-                                    ? outlineVariant
-                                    : overdue && !isDone
-                                      ? error
-                                      : outlineVariant,
-                                borderWidth: overdue && !isDone && !isShelved ? 1.5 : StyleSheet.hairlineWidth,
-                                ...((isShelved || isRepeatWaiting) && !isDone
-                                  ? { shadowOpacity: 0.03, elevation: 0 }
-                                  : null),
-                                opacity: isRepeatWaiting || hasFrogAssignment ? 0.55 : 1,
+                                backgroundColor: highlighted
+                                  ? isDark
+                                    ? 'rgba(248,236,215,0.22)'
+                                    : 'rgba(248,236,215,0.55)'
+                                  : hasFrogAssignment && !isDone
+                                  ? isDark
+                                    ? 'rgba(248,236,215,0.14)'
+                                    : 'rgba(248,236,215,0.38)'
+                                  : isDark
+                                    ? tf.card
+                                    : 'rgba(255,252,245,0.92)',
+                                borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.52)',
+                                opacity: isRepeatWaiting ? 0.55 : 1,
+                                minHeight: 39,
                               },
                             ]}>
                           {isShelved ? (
-                            <View style={styles.shelvedStatusIcon} accessibilityLabel="暂时搁置">
-                              <MaterialIcons name="inventory-2" size={22} color={colors.textMuted} />
-                            </View>
+                            <Pressable
+                              onPress={() => confirmActivateShelvedTodo(t.id, t.title)}
+                              disabled={swipeBusy}
+                              hitSlop={8}
+                              accessibilityRole="button"
+                              accessibilityLabel={`激活 ${t.title}`}
+                              style={({ pressed }) => [
+                                styles.habitTick,
+                                {
+                                  backgroundColor: tf.pond,
+                                  borderColor: tf.pond,
+                                  opacity: isActivating ? 0.55 : pressed ? 0.88 : 1,
+                                },
+                              ]}>
+                              {isActivating ? (
+                                <ActivityIndicator color="#fff" size="small" />
+                              ) : (
+                                <MaterialIcons name="play-arrow" size={14} color="#fff" />
+                              )}
+                            </Pressable>
                           ) : (
                             <Pressable
                               hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                               onPress={() => void toggleTaskDone(t.id)}
+                              disabled={isShelved}
                               accessibilityRole="button"
                               accessibilityLabel={isDone ? '标记为未完成' : '标记为已完成'}>
-                              <MaterialIcons
-                                name={isDone ? 'check-circle' : 'radio-button-unchecked'}
-                                size={22}
-                                color={checkColor}
-                              />
+                              <FoldStampPop active={isDone} durationMs={TaskFoldMotion.stampPop}>
+                                <View
+                                  style={[
+                                    styles.habitTick,
+                                    isDone
+                                      ? { backgroundColor: checkColor, borderColor: checkColor }
+                                      : { borderColor: isDark ? tf.line : '#C9D2C2' },
+                                  ]}>
+                                  <MaterialIcons
+                                    name="check"
+                                    size={12}
+                                    color={isDone ? '#fff' : isDark ? tf.muted : '#C9D2C2'}
+                                  />
+                                </View>
+                              </FoldStampPop>
                             </Pressable>
                           )}
+                          <View
+                            style={[styles.habitCardIconWrap, { backgroundColor: todoIconBg }]}
+                            accessibilityElementsHidden
+                            importantForAccessibility="no-hide-descendants">
+                            <Text style={styles.habitCardIcon}>{todoIcon}</Text>
+                          </View>
                           <Pressable
-                            style={[
-                              styles.taskBody,
-                              (isShelved || isRepeatWaiting || hasFrogAssignment) &&
-                                !isDone &&
-                                styles.shelvedTodoBodyMuted,
-                            ]}
+                            style={[styles.habitCardBody, { flex: 1 }]}
                             onPress={() => openTask(t.id)}
-                            onLongPress={() => beginSchedulePlaceForTask(t)}
-                            delayLongPress={380}
-                            accessibilityHint={getFrogAssignedHint(t.extra_data, logicalTodayYmd)}>
-                            <View style={styles.standaloneTodoTitleRow}>
-                              <Text
-                                style={[
-                                  styles.taskText,
-                                  styles.standaloneTodoTitleText,
-                                  {
-                                    color:
-                                      isShelved || isRepeatWaiting || hasFrogAssignment
-                                        ? colors.textSecondary
-                                        : overdue
-                                          ? error
-                                          : colors.text,
-                                    fontWeight: overdue && !isShelved && !isRepeatWaiting ? '800' : '600',
-                                    textDecorationLine: isDone ? 'line-through' : 'none',
-                                    opacity: isDone
-                                      ? 0.45
-                                      : isShelved || isRepeatWaiting || hasFrogAssignment
-                                        ? 0.82
-                                        : 1,
-                                  },
-                                ]}
-                                numberOfLines={2}>
-                                {t.title}
-                              </Text>
-                              {rewardPoints !== 0 ? (
-                                <View
-                                  style={[styles.todoRewardBadge, { backgroundColor: rewardBadgeBg }]}
-                                  accessibilityLabel={
-                                    rewardPoints > 0
-                                      ? `完成可获得 ${formatPoints(rewardPoints)} 积分`
-                                      : `完成将扣除 ${formatPoints(Math.abs(rewardPoints))} 积分`
-                                  }>
-                                  <Text style={styles.habitRewardBadgeText}>
-                                    {rewardPoints > 0 ? '+' : ''}
-                                    {formatPoints(rewardPoints)}
-                                  </Text>
-                                </View>
+                            onLongPress={() => {
+                              if (!isDone && !isShelved) beginSchedulePlaceForTask(t);
+                            }}
+                            delayLongPress={TaskFoldMotion.todoLongPress}
+                            accessibilityHint={
+                              !isDone && !isShelved
+                                ? '长按可预选入格'
+                                : getFrogAssignedHint(t.extra_data, logicalTodayYmd)
+                            }>
+                            <Text
+                              style={[
+                                styles.habitCardTitle,
+                                {
+                                  color: overdue && !isShelved && !isDone ? error : tf.ink2,
+                                  textDecorationLine: isDone ? 'line-through' : 'none',
+                                  opacity: isDone ? 0.55 : isShelved ? 0.82 : 1,
+                                },
+                              ]}
+                              numberOfLines={1}>
+                              {t.title}
+                            </Text>
+                            <Text style={[styles.habitCardMeta, { color: tf.faint }]} numberOfLines={1}>
+                              {prioLabel ? (
+                                <>
+                                  <Text style={{ color: prioColor, fontWeight: '700' }}>P {prioLabel}</Text>
+                                  {todoMetaParts.length > 0 ? ' · ' : ''}
+                                </>
                               ) : null}
-                            </View>
-                            {(standaloneTagsByTaskId.get(t.id) ?? []).length > 0 ? (
-                              <View style={styles.standaloneTagChipRow}>
-                                {(standaloneTagsByTaskId.get(t.id) ?? []).slice(0, 3).map((tag) => (
-                                  <View
-                                    key={tag.id}
-                                    style={[
-                                      styles.projectMetaChip,
-                                      {
-                                        backgroundColor: isDone ? taskUi.hairlineMuted : `${tag.color}18`,
-                                        borderColor: isDone
-                                          ? taskUi.hairlineMutedBorder
-                                          : `${tag.color}44`,
-                                      },
-                                    ]}>
-                                    <View
-                                      style={{
-                                        width: 7,
-                                        height: 7,
-                                        borderRadius: 3.5,
-                                        backgroundColor: isDone ? colors.textMuted : tag.color,
-                                      }}
-                                    />
-                                    <Text
-                                      style={[
-                                        styles.projectMetaChipText,
-                                        { color: isDone ? colors.textMuted : tag.color },
-                                      ]}
-                                      numberOfLines={1}>
-                                      {tag.name}
-                                    </Text>
-                                  </View>
-                                ))}
-                              </View>
-                            ) : null}
-                            {hasFrogAssignment && !isDone ? (
-                              <View style={[styles.shelvedPill, { backgroundColor: `${primary}18` }]}>
-                                <MaterialIcons name="event-available" size={12} color={primary} />
-                                <Text style={[styles.shelvedPillText, { color: primary }]}>
-                                  {frogAssignedBadgeText}
-                                </Text>
-                              </View>
-                            ) : null}
-                            {isShelved ? (
-                              <View style={[styles.shelvedPill, { backgroundColor: `${outline}18` }]}>
-                                <MaterialIcons name="inventory-2" size={12} color={outline} />
-                                <Text style={[styles.shelvedPillText, { color: outline }]}>暂时搁置</Text>
-                              </View>
-                            ) : isRepeatWaiting ? (
-                              <View style={[styles.shelvedPill, { backgroundColor: `${outline}14` }]}>
-                                <MaterialIcons name="event-busy" size={12} color={outline} />
-                                <Text style={[styles.shelvedPillText, { color: outline }]}>未到执行日</Text>
-                              </View>
-                            ) : null}
-                            {!!acceptanceText ? (
-                              <View style={styles.standaloneTodoAcceptanceRow}>
-                                <MaterialIcons name="fact-check" size={13} color={outline} />
-                                <Text
-                                  style={[
-                                    styles.standaloneTodoAcceptance,
-                                    {
-                                      color: colors.textSecondary,
-                                      textDecorationLine: isDone ? 'line-through' : 'none',
-                                      opacity: isDone ? 0.42 : 1,
-                                    },
-                                  ]}
-                                  numberOfLines={3}>
-                                  {acceptanceText}
-                                </Text>
-                              </View>
-                            ) : null}
-                            {!!noteText ? (
-                              <Text
-                                style={[
-                                  styles.standaloneTodoNote,
-                                  {
-                                    color: colors.textSecondary,
-                                    textDecorationLine: isDone ? 'line-through' : 'none',
-                                    opacity: isDone ? 0.42 : 1,
-                                  },
-                                ]}>
-                                {noteText}
-                              </Text>
-                            ) : null}
-                            {!!dueDisplayYmd ? (
-                              <View style={styles.deadlineRow}>
-                                <View
-                                  style={[
-                                    styles.deadlineBadge,
-                                    { backgroundColor: overdue ? `${error}22` : `${primary}14` },
-                                  ]}>
-                                  <Text style={[styles.deadlineText, { color: overdue ? error : primary }]}>
-                                    {formatTaskDueText(dueDisplayYmd, logicalTodayYmd)}
-                                  </Text>
-                                </View>
-                                {overdue ? (
-                                  <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                    <MaterialIcons name="report-problem" size={12} color={error} />
-                                    <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                  </View>
-                                ) : null}
-                              </View>
-                            ) : overdue ? (
-                              <View style={styles.deadlineRow}>
-                                <View style={[styles.overduePill, { backgroundColor: `${error}1a` }]}>
-                                  <MaterialIcons name="report-problem" size={12} color={error} />
-                                  <Text style={[styles.overduePillText, { color: error }]}>已过期</Text>
-                                </View>
-                              </View>
-                            ) : null}
-                            {!!repeat || !!reminder ? (
-                              <View style={styles.metaRow}>
-                                {!!repeat ? (
-                                  <>
-                                    <MaterialIcons name="refresh" size={12} color={outline} />
-                                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                      {repeat}
-                                    </Text>
-                                  </>
-                                ) : null}
-                                {!!reminder ? (
-                                  <>
-                                    <MaterialIcons name="notifications-active" size={12} color={outline} />
-                                    <Text style={[styles.metaHint, { color: outline }]} numberOfLines={1}>
-                                      {reminder}
-                                    </Text>
-                                  </>
-                                ) : null}
-                              </View>
-                            ) : null}
+                              {todoMetaParts.join(' · ')}
+                            </Text>
                           </Pressable>
-                          {isShelved ? (
-                            <View style={styles.shelvedActivateAside}>
+                          <View style={[styles.todoStatTag, { backgroundColor: statusTag.bg, height: 18, paddingHorizontal: 6 }]}>
+                            <Text style={[styles.todoStatTagText, { color: statusTag.fg, fontSize: 9 }]}>
+                              {statusTag.label}
+                            </Text>
+                          </View>
+                          <Pressable
+                            hitSlop={8}
+                            onPress={() =>
+                              setTodoDrawerId((cur) => (cur === t.id ? null : t.id))
+                            }
+                            accessibilityRole="button"
+                            accessibilityLabel={`更多操作 ${t.title}`}
+                            style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, padding: 2 }]}>
+                            <MaterialIcons name="more-horiz" size={18} color={tf.muted} />
+                          </Pressable>
+                          </View>
+                          {drawerOpen ? (
+                            <View style={styles.todoActionDrawer}>
+                              {!isDone && !isShelved ? (
+                                <Pressable
+                                  onPress={() => {
+                                    setTodoDrawerId(null);
+                                    void handleUpgradeStandaloneTodo(t.id);
+                                  }}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.todoActionChip,
+                                    {
+                                      backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                                      opacity: isUpgrading ? 0.55 : pressed ? 0.85 : 1,
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="north-east" size={12} color={tf.muted} />
+                                  <Text style={[styles.todoActionChipText, { color: '#7E8B81' }]}>
+                                    升级为项目
+                                  </Text>
+                                </Pressable>
+                              ) : null}
+                              {isShelved ? (
+                                <Pressable
+                                  onPress={() => {
+                                    setTodoDrawerId(null);
+                                    confirmActivateShelvedTodo(t.id, t.title);
+                                  }}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.todoActionChip,
+                                    {
+                                      backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                                      opacity: isActivating ? 0.55 : pressed ? 0.85 : 1,
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="play-arrow" size={12} color={tf.muted} />
+                                  <Text style={[styles.todoActionChipText, { color: '#7E8B81' }]}>
+                                    激活
+                                  </Text>
+                                </Pressable>
+                              ) : !isDone ? (
+                                <Pressable
+                                  onPress={() => {
+                                    setTodoDrawerId(null);
+                                    confirmShelveStandaloneTodo(t.id, t.title);
+                                  }}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.todoActionChip,
+                                    {
+                                      backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                                      opacity: isShelving ? 0.55 : pressed ? 0.85 : 1,
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="schedule" size={12} color={tf.muted} />
+                                  <Text style={[styles.todoActionChipText, { color: '#7E8B81' }]}>
+                                    搁置
+                                  </Text>
+                                </Pressable>
+                              ) : null}
                               <Pressable
-                                onPress={() => confirmActivateShelvedTodo(t.id, t.title)}
+                                onPress={() => {
+                                  setTodoDrawerId(null);
+                                  confirmDeleteStandaloneTodo(t.id, t.title);
+                                }}
                                 disabled={swipeBusy}
-                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                accessibilityRole="button"
-                                accessibilityLabel={`激活 ${t.title} 为正常待办`}
                                 style={({ pressed }) => [
-                                  styles.shelvedActivateBtn,
+                                  styles.todoActionChip,
                                   {
-                                    backgroundColor: primary,
-                                    opacity: isActivating ? 0.55 : pressed ? 0.88 : 1,
+                                    backgroundColor: tf.clay2,
+                                    opacity: pressed ? 0.85 : 1,
                                   },
                                 ]}>
-                                {isActivating ? (
-                                  <ActivityIndicator color={colors.onPrimary} size="small" />
-                                ) : (
-                                  <MaterialIcons name="play-arrow" size={22} color={colors.onPrimary} />
-                                )}
+                                <MaterialIcons name="delete-outline" size={12} color={tf.clay} />
+                                <Text style={[styles.todoActionChipText, { color: '#A56547' }]}>
+                                  删除
+                                </Text>
                               </Pressable>
+                              <Text
+                                style={{
+                                  marginLeft: 'auto',
+                                  fontSize: 9,
+                                  color: tf.faint,
+                                  alignSelf: 'center',
+                                }}>
+                                长按行可入格
+                              </Text>
                             </View>
                           ) : null}
                           </View>
+                            );
+                          })()}
                         </Swipeable>
                       </View>
                     );
                   })}
                 </View>
               )}
-            </View>
+              <View style={[styles.paneFoot, { borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.6)' }]}>
+                <Text style={[styles.paneFootLeft, { color: tf.faint }]} numberOfLines={1}>
+                  未完成 {standaloneTodoOpenCount} · 长按可入格
+                </Text>
+                <ScalePressable
+                  onPress={() => router.push('/tasks-overview')}
+                  accessibilityRole="button"
+                  accessibilityLabel="待办总览"
+                  style={({ pressed }) => [styles.paneFootGo, { opacity: pressed ? 0.75 : 1 }]}>
+                  <Text style={[styles.paneFootGoText, { color: '#6C8567' }]}>待办总览</Text>
+                  <MaterialIcons name="chevron-right" size={14} color="#6C8567" />
+                </ScalePressable>
+              </View>
+            </FoldRiseIn>
             ) : (
-            <Animated.View style={[styles.secondaryPaneBody, { opacity: projectAnim, transform: [{ translateY: projectAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }]}>
-              <View style={sectionCardQuietStyle}>
-                <View style={styles.headerRow}>
-                  <View style={styles.projectListTitleCol}>
-                    <Text style={[styles.sectionTitle, { color: colors.text }]} maxFontSizeMultiplier={maxFontScale}>项目列表</Text>
-                    <Text style={[styles.sectionMeta, { color: outline }]} numberOfLines={3}>
-                      {projectTab === INBOX_PROJECT_CATEGORY_ID
-                        ? `归档 ${projectsShownInList.length} 项 · 完整细节保留 ${INBOX_PROJECT_FULL_RETENTION_DAYS} 天 · 左滑可删细节（履历保留）`
-                        : `共 ${projectsShownInList.length} 个活跃项目`}
-                    </Text>
-                    {projectTab === INBOX_PROJECT_CATEGORY_ID ? (
-                      <ScalePressable
-                        onPress={() => router.push('/project-completion-logs' as never)}
-                        accessibilityRole="button"
-                        accessibilityLabel="查看完成履历"
-                        style={({ pressed }) => [
-                          { marginTop: 6, alignSelf: 'flex-start', opacity: pressed ? 0.75 : 1 },
-                        ]}>
-                        <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
-                          查看全部完成履历 →
-                        </Text>
-                      </ScalePressable>
-                    ) : null}
-                  </View>
+            <Animated.View
+              style={[
+                styles.secondaryPaneBody,
+                {
+                  opacity: projectAnim,
+                  transform: [
+                    {
+                      translateY: projectAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [6, 0],
+                      }),
+                    },
+                  ],
+                },
+              ]}>
+                <View style={styles.habitHeaderRow}>
+                  <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                    {projectTab === INBOX_PROJECT_CATEGORY_ID
+                      ? `收集箱 · 保留 ${INBOX_PROJECT_FULL_RETENTION_DAYS} 天`
+                      : projectsShownInList.length !== projectsInActiveTab.length
+                        ? `${projectsShownInList.length}/${projectsInActiveTab.length} 个`
+                        : `${projectsShownInList.length} 个进行中`}
+                  </Text>
                   <ScalePressable
                     onPress={() =>
                       router.push(
@@ -7099,16 +6884,25 @@ export default function TasksScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="新建项目"
                     style={({ pressed }) => [
-                      styles.ghostBtn,
-                      { minHeight: touchTarget, borderColor: taskUi.primaryWashBorder },
-                      pressed && { opacity: 0.8 },
+                      { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
                     ]}>
-                    <MaterialIcons name="add-circle" size={14} color={primary} />
-                    <Text style={[styles.ghostBtnText, { color: primary }]} maxFontSizeMultiplier={maxFontScale}>
-                      新建项目
-                    </Text>
+                    <MaterialIcons name="add" size={14} color={tf.frog} />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>新建</Text>
                   </ScalePressable>
                 </View>
+                {projectTab === INBOX_PROJECT_CATEGORY_ID ? (
+                  <ScalePressable
+                    onPress={() => router.push('/project-completion-logs' as never)}
+                    accessibilityRole="button"
+                    accessibilityLabel="查看完成履历"
+                    style={({ pressed }) => [
+                      { marginBottom: 4, alignSelf: 'flex-start', opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>
+                      查看全部完成履历 →
+                    </Text>
+                  </ScalePressable>
+                ) : null}
                 <SegmentTabs
                   tabs={projectTabs}
                   active={projectTab}
@@ -7117,6 +6911,16 @@ export default function TasksScreen() {
                   color={primary}
                   muted={outline}
                 />
+                {projectsInActiveTab.length > 0 ? (
+                  <TaskListFilterBar
+                    value={projectListFilter}
+                    onChange={setProjectListFilter}
+                    tags={projectFilterTags}
+                    resultCount={projectsShownInList.length}
+                    searchPlaceholder="搜索项目名称或备注…"
+                    longTermSectionLabel="长期项目"
+                  />
+                ) : null}
                 <View style={styles.projectListFilterRow}>
                   <ProjectListTaskFilterChip
                     active={hideCompletedProjectTasks}
@@ -7127,27 +6931,37 @@ export default function TasksScreen() {
                     isDark={isDark}
                   />
                 </View>
-              </View>
             </Animated.View>
             )}
+            </View>
           </View>
           </>
         }
         ListEmptyComponent={
           secondaryPane === 'projects' && projectListFlatItems.length === 0 ? (
-<View style={styles.projectSwipeWrap}>
-                  <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
-                    <View style={[styles.projectHead, { borderLeftColor: outline }]}> 
-                      <View style={styles.projectHeadLeft}>
-                        <MaterialIcons name="folder-open" size={22} color={outline} />
-                        <View style={styles.projectHeadMainColumn}>
-                          <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>暂无项目</Text>
-                          <Text style={[styles.projectSub, { color: outline }]}>可点击右上角“新建项目”添加</Text>
-                        </View>
-                      </View>
+            <View style={styles.projectSwipeWrap}>
+              <View style={[styles.projectCard, { backgroundColor: soft, opacity: 0.86 }]}>
+                <View style={[styles.projectHead, { borderLeftColor: outline }]}>
+                  <View style={styles.projectHeadLeft}>
+                    <MaterialIcons
+                      name={projectsInActiveTab.length > 0 ? 'filter-list-off' : 'folder-open'}
+                      size={22}
+                      color={outline}
+                    />
+                    <View style={styles.projectHeadMainColumn}>
+                      <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>
+                        {projectsInActiveTab.length > 0 ? '没有匹配的项目' : '暂无项目'}
+                      </Text>
+                      <Text style={[styles.projectSub, { color: outline }]}>
+                        {projectsInActiveTab.length > 0
+                          ? '试试换个日期、标签或紧急程度，或清除筛选'
+                          : '可点击右上角“新建项目”添加'}
+                      </Text>
                     </View>
                   </View>
-                  </View>
+                </View>
+              </View>
+            </View>
           ) : null
         }
         ListFooterComponent={<View style={{ height: glassTabBarContentInset(insets.bottom) + mainScrollKeyboardPad }} />}
@@ -7268,375 +7082,24 @@ export default function TasksScreen() {
                   const projectRewardPoints = parseRewardPointsFromExtraData(project.extra_data);
                   const projectRewardBadgeBg = getRewardBadgeBackgroundColor(projectRewardPoints, isDark);
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
-                  const displayTaskTree = filterProjectListTaskTree(taskTree, hideCompletedProjectTasks);
-                  const taskNodeById = buildProjectTaskNodeById(taskTree);
+                  const projectMatchedByFilter =
+                    !isTaskListFilterActive(projectListFilter) ||
+                    projectPassesListFilter(project, projectListFilter, {
+                      logicalTodayYmd,
+                      tagIdsByProjectId: projectTagIdsByProjectId,
+                    });
+                  const listFilteredTaskTree = filterProjectTaskTreeForListFilter(
+                    taskTree,
+                    projectListFilter,
+                    { logicalTodayYmd },
+                    projectMatchedByFilter,
+                  );
+                  const displayTaskTree = filterProjectListTaskTree(
+                    listFilteredTaskTree,
+                    hideCompletedProjectTasks,
+                  );
                   const isExpanded = !!expandedProjectIds[project.id];
                   const progress = getProjectTreeTaskProgress(taskTree);
-
-                  const openEditTask = (id: string) => {
-                    router.push({ pathname: '/edit-task', params: { id } });
-                  };
-
-                  const renderTaskLevel = (nodes: TaskTreeNode[], level: number): React.ReactNode => {
-                    if (nodes.length === 0 || level > 3) return null;
-                    const childAccent = taskUi.primaryWashLine;
-                    const hairlineColor = taskUi.treeLine;
-                    return nodes.map((node) => {
-                      const isDone = node.status === 'done' || node.status === 'cancelled';
-                      const frogAssignedDates = getFrogAssignedDates(node.extra_data);
-                      const hasFrogAssignment = frogAssignedDates.length > 0;
-                      const frogAssignedBadgeText = formatFrogAssignedBadgeText(
-                        node.extra_data,
-                        logicalTodayYmd,
-                      );
-                      const fullNode = taskNodeById.get(node.id) ?? node;
-                      const childrenAll = Array.isArray(fullNode.children) ? fullNode.children : [];
-                      const displayChildren =
-                        level < 3 ? (Array.isArray(node.children) ? node.children : []) : [];
-                      const hasAnyChildren = childrenAll.length > 0;
-                      const hasChildrenToRender = displayChildren.length > 0;
-                      const hasDeeperLevels = level === 3 && hasAnyChildren;
-                      const canToggleCollapse = hasAnyChildren;
-                      const isCollapsed = canToggleCollapse ? !!collapsedTaskIds[node.id] : false;
-                      const isExpandedTask = canToggleCollapse ? !isCollapsed : true;
-                      const isChildRow = level > 1;
-                      const noteText = (node.note ?? '').trim();
-                      const acceptanceText = trimTaskAcceptanceCriteria(node);
-                      const dueDate = node.due_date?.slice(0, 10) ?? '';
-                      const dueOverdue = isTaskDueOverdue(dueDate, isDone, logicalTodayYmd);
-                      const effectivePriority = getEffectiveTaskPriority(node, logicalTodayYmd);
-                      const hintPaddingLeft = 10 + 22 + 8 + (isChildRow ? 28 : 0) + 14 + 8;
-                      const boundHabitIds = parseBoundHabitIdsFromExtraData(node.extra_data);
-                      const boundHabits = boundHabitIds
-                        .map((id) => habitLookupById.get(id))
-                        .filter((h): h is { name: string; icon: string } => !!h);
-                      const boundHabitLabel = boundHabitIds
-                        .map((id) => habitLookupById.get(id)?.name?.trim() || '已删除')
-                        .join('、');
-                      const taskRewardPoints = parseRewardPointsFromExtraData(node.extra_data);
-                      return (
-                        <View key={node.id}>
-                          <View
-                            style={[
-                              styles.projectTaskRow,
-                              styles.projectTaskRowFlat,
-                              {
-                                paddingLeft: 10,
-                                paddingVertical: isChildRow ? 6 : 8,
-                                borderBottomWidth: StyleSheet.hairlineWidth,
-                                borderBottomColor: hairlineColor,
-                              },
-                            ]}>
-                            {canToggleCollapse ? (
-                              <Pressable
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  toggleTaskCollapse(node.id);
-                                }}
-                                hitSlop={8}
-                                accessibilityRole="button"
-                                accessibilityLabel={isExpandedTask ? '收起子任务' : '展开子任务'}
-                                accessibilityState={{ expanded: isExpandedTask }}
-                                style={({ pressed }) => [
-                                  styles.taskExpandBtn,
-                                  { backgroundColor: taskUi.primaryWash },
-                                  pressed && { opacity: 0.75 },
-                                ]}>
-                                <MaterialIcons
-                                  name={isExpandedTask ? 'expand-less' : 'expand-more'}
-                                  size={20}
-                                  color={primary}
-                                />
-                              </Pressable>
-                            ) : (
-                              <View style={styles.taskExpandBtnPlaceholder} />
-                            )}
-                            {isChildRow ? (
-                              <View style={styles.taskChildMark} accessible accessibilityLabel={`第 ${level} 层子任务`}>
-                                <MaterialIcons name="subdirectory-arrow-right" size={16} color={childAccent} />
-                              </View>
-                            ) : null}
-                            <Pressable
-                              onPress={(e) => {
-                                e.stopPropagation?.();
-                                if (isLocked) {
-                                  alertProjectTaskLocked(lockInfo);
-                                  return;
-                                }
-                                void toggleTaskDone(node.id);
-                              }}
-                              hitSlop={10}
-                              accessibilityRole="button"
-                              accessibilityLabel={
-                                isLocked
-                                  ? '项目已锁定，暂不可完成任务'
-                                  : isDone
-                                    ? '标记为未完成'
-                                    : '标记为已完成'
-                              }
-                              accessibilityState={{ disabled: isLocked }}>
-                              <View
-                                style={[
-                                  styles.statusCircle,
-                                  isLocked
-                                    ? {
-                                        borderColor: outline,
-                                        backgroundColor: taskUi.hairlineFaint,
-                                        opacity: 0.72,
-                                      }
-                                    : { borderColor: primary, backgroundColor: isDone ? primary : 'transparent' },
-                                ]}>
-                                {isLocked ? (
-                                  <MaterialIcons name="lock" size={11} color={outline} />
-                                ) : isDone ? (
-                                  <MaterialIcons name="check" size={12} color={colors.onPrimary} />
-                                ) : null}
-                              </View>
-                            </Pressable>
-                            <Pressable
-                              onPress={() => openEditTask(node.id)}
-                              onLongPress={() => {
-                                if (isLocked) {
-                                  alertProjectTaskLocked(lockInfo);
-                                  return;
-                                }
-                                beginSchedulePlaceForTask(fullNode, project.name);
-                              }}
-                              delayLongPress={380}
-                              hitSlop={8}
-                              accessibilityHint={getFrogAssignedHint(
-                                node.extra_data,
-                                logicalTodayYmd,
-                                '长按可将任务指派到日程表格子',
-                              )}
-                              style={({ pressed }) => [
-                                { flex: 1, minWidth: 0, opacity: hasFrogAssignment && !isDone ? 0.55 : 1 },
-                                pressed && { opacity: 0.85 },
-                              ]}>
-                              <View style={styles.projectTaskMain}>
-                              {hasAnyChildren ? (
-                                <View
-                                  style={[
-                                    styles.projectTaskParentTag,
-                                    {
-                                      alignSelf: 'flex-start',
-                                      backgroundColor: taskUi.primaryWashStrong,
-                                      borderColor: taskUi.primaryWashBorder,
-                                    },
-                                  ]}>
-                                  <MaterialIcons name="account-tree" size={12} color={primary} />
-                                  <Text style={[styles.projectTaskParentTagText, { color: primary }]}>
-                                    {childrenAll.length} 项子任务
-                                  </Text>
-                                </View>
-                              ) : null}
-                              <View style={styles.taskTitleRow}>
-                                <View style={styles.projectTaskTitleMain}>
-                                  {boundHabits.length === 1 ? (
-                                    <Text
-                                      style={styles.projectTaskHabitBindEmoji}
-                                      accessibilityLabel={`已绑定小习惯：${boundHabits[0].name}`}>
-                                      {boundHabits[0].icon}
-                                    </Text>
-                                  ) : boundHabits.length > 1 ? (
-                                    <Text
-                                      style={styles.projectTaskHabitBindEmoji}
-                                      accessibilityLabel={`已绑定 ${boundHabits.length} 个小习惯`}>
-                                      {boundHabits
-                                        .slice(0, 2)
-                                        .map((h) => h.icon)
-                                        .join('')}
-                                    </Text>
-                                  ) : null}
-                                  <Text
-                                    style={[
-                                      styles.projectTaskText,
-                                      level > 1 && styles.projectTaskTextChild,
-                                      {
-                                        color: isDone
-                                          ? colors.textMuted
-                                          : hasFrogAssignment
-                                            ? colors.textSecondary
-                                            : dueOverdue
-                                              ? error
-                                              : colors.text,
-                                        fontWeight: dueOverdue && !isDone ? '800' : level > 1 ? '600' : '700',
-                                        textDecorationLine: isDone ? 'line-through' : 'none',
-                                        opacity: isDone ? 0.85 : 1,
-                                      },
-                                    ]}
-                                    numberOfLines={1}>
-                                    {node.title}
-                                  </Text>
-                                </View>
-                                <View style={styles.projectTaskTitleTags}>
-                                  {hasFrogAssignment && !isDone ? (
-                                    <Text style={[styles.taskDoneTag, { color: primary }]}>
-                                      {frogAssignedBadgeText}
-                                    </Text>
-                                  ) : null}
-                                  {taskRewardPoints !== 0 ? (
-                                    <View
-                                      style={[
-                                        styles.todoRewardBadge,
-                                        {
-                                          backgroundColor: getRewardBadgeBackgroundColor(
-                                            taskRewardPoints,
-                                            isDark,
-                                          ),
-                                        },
-                                      ]}
-                                      accessibilityLabel={
-                                        taskRewardPoints > 0
-                                          ? `完成可获得 ${formatPoints(taskRewardPoints)} 积分`
-                                          : `完成将扣除 ${formatPoints(Math.abs(taskRewardPoints))} 积分`
-                                      }>
-                                      <Text style={styles.habitRewardBadgeText}>
-                                        {taskRewardPoints > 0 ? '+' : ''}
-                                        {formatPoints(taskRewardPoints)}
-                                      </Text>
-                                    </View>
-                                  ) : null}
-                                  {boundHabitIds.length > 0 ? (
-                                    <Text style={[styles.projectTaskHabitBindPillText, { color: outline }]}>
-                                      {boundHabitIds.length > 1 ? `${boundHabitIds.length}项习惯` : '习惯'}
-                                    </Text>
-                                  ) : null}
-                                  {isDone ? <Text style={[styles.taskDoneTag, { color: colors.textMuted }]}>已完成</Text> : null}
-                                </View>
-                              </View>
-                              {(() => {
-                                const meta = parseTaskMeta(node.extra_data);
-                                const priorityLabel = formatTaskPriority(effectivePriority);
-                                const priorityColor = getTaskPriorityColor(effectivePriority, isDark);
-                                const reminder = (meta.reminder ?? '').trim();
-                                const repeat = (meta.repeat ?? '').trim();
-                                return (
-                                  <View style={styles.projectTaskMetaRow}>
-                                    {boundHabitIds.length > 0 ? (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="repeat" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]} numberOfLines={2}>
-                                          {boundHabitIds.length > 1
-                                            ? `绑定「${boundHabitLabel}」· 全部达成即完成`
-                                            : boundHabits.length === 1
-                                              ? `绑定「${boundHabits[0].name}」· 达成即完成`
-                                              : '绑定习惯（已删除）'}
-                                        </Text>
-                                      </View>
-                                    ) : null}
-                                    {!!priorityLabel && (
-                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${priorityColor}14`, borderColor: `${priorityColor}40` }]}>
-                                        <MaterialIcons name="flag" size={11} color={priorityColor} />
-                                        <Text style={[styles.projectTaskMetaText, { color: priorityColor }]}>{priorityLabel}</Text>
-                                      </View>
-                                    )}
-                                    {!!dueDate && (
-                                      <View
-                                        style={[
-                                          styles.projectTaskMetaChip,
-                                          { borderColor: outlineVariant },
-                                          dueOverdue && { backgroundColor: `${error}14`, borderColor: `${error}44` },
-                                        ]}>
-                                        <MaterialIcons name="event" size={11} color={dueOverdue ? error : outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: dueOverdue ? error : outline }]}>{formatTaskDueText(dueDate, logicalTodayYmd)}</Text>
-                                      </View>
-                                    )}
-                                    {dueOverdue ? (
-                                      <View style={[styles.projectTaskMetaChip, { backgroundColor: `${error}18`, borderColor: `${error}55` }]}>
-                                        <MaterialIcons name="report-problem" size={11} color={error} />
-                                        <Text style={[styles.projectTaskMetaText, { color: error }]}>已过期</Text>
-                                      </View>
-                                    ) : null}
-                                    {!!repeat && (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="repeat" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{repeat}</Text>
-                                      </View>
-                                    )}
-                                    {!!reminder && (
-                                      <View style={[styles.projectTaskMetaChip, { borderColor: outlineVariant }]}>
-                                        <MaterialIcons name="notifications-active" size={11} color={outline} />
-                                        <Text style={[styles.projectTaskMetaText, { color: outline }]}>{reminder}</Text>
-                                      </View>
-                                    )}
-                                  </View>
-                                );
-                              })()}
-                              {hasAnyChildren ? (() => {
-                                const { total: directTotal, done: directDone, ratio } =
-                                  getDirectChildTaskProgress(childrenAll);
-                                if (directTotal <= 0) return null;
-                                return (
-                                  <>
-                                    <View style={styles.projectTaskProgressRow}>
-                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
-                                        进度 {directDone}/{directTotal}
-                                      </Text>
-                                      <Text style={[styles.projectTaskProgressLabel, { color: outline }]}>
-                                        {Math.round(ratio * 100)}%
-                                      </Text>
-                                    </View>
-                                    <View
-                                      style={[
-                                        styles.projectTaskProgressTrack,
-                                        { backgroundColor: taskUi.tagWash },
-                                      ]}>
-                                      <View
-                                        style={[
-                                          styles.projectTaskProgressFill,
-                                          { backgroundColor: primary, width: `${Math.round(ratio * 100)}%` },
-                                        ]}
-                                      />
-                                    </View>
-                                  </>
-                                );
-                              })() : null}
-                              {!!acceptanceText && (
-                                <View style={[styles.projectTaskNoteRow, { borderTopColor: hairlineColor }]}>
-                                  <MaterialIcons name="fact-check" size={13} color={secondary} style={styles.projectTaskNoteIcon} />
-                                  <Text
-                                    style={[styles.projectTaskAcceptanceText, { color: colors.textSecondary }]}
-                                    numberOfLines={3}>
-                                    {acceptanceText}
-                                  </Text>
-                                </View>
-                              )}
-                              {!!noteText && (
-                                <View style={[styles.projectTaskNoteRow, { borderTopColor: hairlineColor }]}>
-                                  <MaterialIcons name="sticky-note-2" size={13} color={outline} style={styles.projectTaskNoteIcon} />
-                                  <Text
-                                    style={[styles.projectTaskNoteText, { color: colors.textSecondary }]}
-                                    numberOfLines={3}>
-                                    {noteText}
-                                  </Text>
-                                </View>
-                              )}
-                              {canToggleCollapse && isCollapsed ? (
-                                <Text style={[styles.projectTaskCollapsedHint, { color: outline }]}>
-                                  已收起 {childrenAll.length} 项子任务，点击左侧箭头展开
-                                </Text>
-                              ) : null}
-                            </View>
-                            </Pressable>
-                          </View>
-                          {hasChildrenToRender && isExpandedTask ? renderTaskLevel(displayChildren, level + 1) : null}
-                          {hasDeeperLevels && isExpandedTask ? (
-                            <Text
-                              style={[
-                                styles.projectTaskEllipsisInline,
-                                {
-                                  color: taskUi.doneText,
-                                  paddingLeft: hintPaddingLeft,
-                                },
-                              ]}>
-                              还有更深层级任务
-                            </Text>
-                          ) : null}
-                        </View>
-                      );
-                    });
-                  };
 
                   const hasAnyTasks = taskTree.length > 0;
                   const isInInbox = isProjectInInboxCategory(project.category_id);
@@ -7701,6 +7164,23 @@ export default function TasksScreen() {
                               opacity: hasFrogAssignment && !isCompleted ? 0.72 : 1,
                             },
                           ]}>
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.projectAccentBar,
+                          {
+                            backgroundColor: isScheduleExpired
+                              ? tf.rose
+                              : isCompleted
+                                ? tf.sage
+                                : (project.priority ?? 0) >= 4
+                                  ? tf.rose
+                                  : (project.priority ?? 0) >= 2
+                                    ? tf.sun
+                                    : tf.frog,
+                          },
+                        ]}
+                      />
                       <ScalePressable
                         onPress={() => openProject(project.id)}
                         onLongPress={() => handleProjectLongPressForSchedule(project)}
@@ -7741,18 +7221,31 @@ export default function TasksScreen() {
                               },
                               pressed && { opacity: 0.75 },
                             ]}>
-                            <MaterialIcons
-                              name={
-                                isLocked && !isCompleted
-                                  ? 'lock'
-                                  : isCompleted
-                                    ? 'check-circle'
-                                    : 'radio-button-unchecked'
-                              }
-                              size={20}
-                              color={projectAccent}
-                            />
+                            {isLocked && !isCompleted ? (
+                              <MaterialIcons name="lock" size={16} color={projectAccent} />
+                            ) : isCompleted ? (
+                              <MaterialIcons name="check" size={16} color={projectAccent} />
+                            ) : (
+                              <MaterialIcons name="check" size={14} color={outline} style={{ opacity: 0.35 }} />
+                            )}
                           </Pressable>
+                          <View
+                            style={[
+                              styles.projectAvatar,
+                              {
+                                backgroundColor: isScheduleExpired
+                                  ? tf.rose2
+                                  : isCompleted
+                                    ? tf.lily2
+                                    : (project.priority ?? 0) >= 3
+                                      ? tf.sun2
+                                      : tf.lily2,
+                              },
+                            ]}>
+                            <Text style={styles.projectAvatarEmoji}>
+                              {projectAvatarEmoji(project.name, project.extra_data)}
+                            </Text>
+                          </View>
                           <View style={styles.projectHeadMainColumn}>
                             <View style={styles.projectTitleRow}>
                               <Text
@@ -7770,7 +7263,7 @@ export default function TasksScreen() {
                                   isCompleted && styles.projectTitleDone,
                                   isCompleted && Platform.OS === 'android' ? styles.projectTitleDoneAndroid : null,
                                 ]}
-                                numberOfLines={2}>
+                                numberOfLines={1}>
                                 {project.name}
                               </Text>
                               {hasFrogAssignment && !isCompleted ? (
@@ -8171,74 +7664,59 @@ export default function TasksScreen() {
                               ) : null}
                             </View>
                             {progress.total > 0 ? (
-                              <>
-                                <View style={styles.projectProgressRow}>
-                                  <Text
-                                    style={[
-                                      styles.projectProgressLabel,
-                                      { color: isCompleted ? doneMuted : outline },
-                                    ]}>
-                                    进度 {progress.done}/{progress.total}
-                                  </Text>
-                                  <Text
-                                    style={[
-                                      styles.projectProgressLabel,
-                                      { color: isCompleted ? success : outline },
-                                    ]}>
-                                    {Math.round(progress.ratio * 100)}%
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.projectProgressTrack,
-                                    {
-                                      backgroundColor: isCompleted
-                                        ? taskUi.successWash
-                                        : taskUi.tagWash,
-                                    },
-                                  ]}>
-                                  <View
-                                    style={[
-                                      styles.projectProgressFill,
-                                      {
-                                        backgroundColor: isCompleted ? success : primary,
-                                        width: `${Math.round(progress.ratio * 100)}%`,
-                                      },
-                                    ]}
-                                  />
-                                </View>
-                              </>
+                              <View style={{ marginTop: 6 }}>
+                                <FoldProgressBar
+                                  ratio={progress.ratio}
+                                  colorFrom={isScheduleExpired ? '#E3B39C' : '#A9C184'}
+                                  colorTo={
+                                    isScheduleExpired ? tf.rose : isCompleted ? tf.sage : tf.frog
+                                  }
+                                />
+                              </View>
                             ) : null}
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
-                          {projectRewardPoints !== 0 || hasAnyTasks ? (
-                            <View style={styles.projectHeadRightTop}>
-                              {projectRewardPoints !== 0 ? (
-                                <View
-                                  style={[styles.projectRewardBadge, { backgroundColor: projectRewardBadgeBg }]}
-                                  accessibilityLabel={
-                                    projectRewardPoints > 0
-                                      ? `完成项目可获得 ${formatPoints(projectRewardPoints)} 积分`
-                                      : `完成项目将扣除 ${formatPoints(Math.abs(projectRewardPoints))} 积分`
-                                  }>
-                                  <Text style={styles.habitRewardBadgeText}>
-                                    {projectRewardPoints > 0 ? '+' : ''}
-                                    {formatPoints(projectRewardPoints)}
-                                  </Text>
-                                </View>
-                              ) : null}
-                              {hasAnyTasks ? (
-                                <Pressable
-                                  onPress={(e) => {
-                                    e.stopPropagation();
-                                    toggleProjectExpand(project.id);
-                                  }}
-                                  hitSlop={8}
-                                  style={({ pressed }) => [styles.projectExpandBtn, pressed && { opacity: 0.75 }]}>
-                                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={20} color={outline} />
-                                </Pressable>
-                              ) : null}
+                          {progress.total > 0 ? (
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                if (hasAnyTasks) toggleProjectExpand(project.id);
+                              }}
+                              hitSlop={6}
+                              accessibilityRole="button"
+                              accessibilityLabel={
+                                hasAnyTasks
+                                  ? isExpanded
+                                    ? '收起任务树'
+                                    : '展开任务树'
+                                  : `进度 ${Math.round(progress.ratio * 100)}%`
+                              }>
+                              <FoldProgressRing
+                                ratio={progress.ratio}
+                                size={28}
+                                color={
+                                  isScheduleExpired
+                                    ? tf.rose
+                                    : isCompleted
+                                      ? tf.sage
+                                      : tf.frog
+                                }
+                              />
+                            </Pressable>
+                          ) : null}
+                          {projectRewardPoints !== 0 ? (
+                            <View
+                              style={[styles.projectRewardBadge, { backgroundColor: projectRewardBadgeBg }]}
+                              accessibilityLabel={
+                                projectRewardPoints > 0
+                                  ? `完成项目可获得 ${formatPoints(projectRewardPoints)} 积分`
+                                  : `完成项目将扣除 ${formatPoints(Math.abs(projectRewardPoints))} 积分`
+                              }>
+                              <Text style={styles.habitRewardBadgeText}>
+                                {projectRewardPoints > 0 ? '+' : ''}
+                                {formatPoints(projectRewardPoints)}
+                              </Text>
                             </View>
                           ) : null}
                           <Pressable
@@ -8260,7 +7738,103 @@ export default function TasksScreen() {
                         </View>
                       </View>
                       </ScalePressable>
-                      {(!hasAnyTasks || isExpanded) && (
+                      {hasAnyTasks ? (
+                        <View style={styles.projectFoldTreeWrap}>
+                          {displayTaskTree.length === 0 ? (
+                            isExpanded ? (
+                              <Text style={[styles.projectTaskEmpty, { color: outline }]}>
+                                已完成任务已隐藏，取消勾选「隐藏已完成任务」可查看
+                              </Text>
+                            ) : null
+                          ) : (
+                            <ProjectFoldTaskTree
+                              nodes={displayTaskTree}
+                              expanded={isExpanded}
+                              locked={isLocked}
+                              logicalTodayYmd={logicalTodayYmd}
+                              collapsedTaskIds={collapsedTaskIds}
+                              formatDayLabel={formatFrogAssignDayLabel}
+                              priorityLabel={formatTaskPriorityShort}
+                              onToggleCollapse={toggleTaskCollapse}
+                              onToggleDone={(task) => {
+                                if (isLocked) {
+                                  alertProjectTaskLocked(lockInfo);
+                                  return;
+                                }
+                                void toggleTaskDone(task.id);
+                              }}
+                              onOpenTask={(id) => openTask(id)}
+                              onLongPressTask={(task) => {
+                                if (isLocked) {
+                                  alertProjectTaskLocked(lockInfo);
+                                  return;
+                                }
+                                beginSchedulePlaceForTask(task, project.name);
+                              }}
+                            />
+                          )}
+                          {isExpanded ? (
+                            <View style={styles.projectTreeFoot}>
+                              <Pressable
+                                onPress={() => openQuickAddTaskForProject(project)}
+                                hitSlop={6}
+                                style={({ pressed }) => [
+                                  styles.projectTreeFootAdd,
+                                  pressed && { opacity: 0.75 },
+                                ]}>
+                                <MaterialIcons name="add" size={12} color={tf.frog} />
+                                <Text style={[styles.projectTreeFootAddText, { color: tf.frog }]}>
+                                  加任务
+                                </Text>
+                              </Pressable>
+                              <Pressable
+                                onPress={() =>
+                                  onHideCompletedProjectTasksChange(!hideCompletedProjectTasks)
+                                }
+                                hitSlop={6}>
+                                <Text style={{ fontSize: 11, color: tf.muted }}>
+                                  {hideCompletedProjectTasks ? '显示已完成' : '隐藏已完成'}
+                                </Text>
+                              </Pressable>
+                              <Pressable
+                                onPress={() => openProject(project.id)}
+                                hitSlop={6}
+                                style={{ marginLeft: 'auto' }}>
+                                <Text style={{ fontSize: 11, color: tf.faint }}>
+                                  指派青蛙 · 详情 ›
+                                </Text>
+                              </Pressable>
+                            </View>
+                          ) : null}
+                          <View style={[styles.projectFoldFoot, { borderTopColor: tf.line }]}>
+                            {hasFrogAssignment && !isCompleted ? (
+                              <View style={[styles.projectFrogChip, { backgroundColor: tf.lily2 }]}>
+                                <MaterialIcons name="eco" size={11} color={tf.frog} />
+                                <Text style={{ fontSize: 10, color: '#557A51', fontWeight: '700' }}>
+                                  {frogAssignedBadgeText}
+                                </Text>
+                              </View>
+                            ) : null}
+                            <Text style={{ fontSize: 11, color: tf.faint }}>
+                              {progress.done} / {progress.total} 任务
+                            </Text>
+                            <View style={{ marginLeft: 'auto', flexDirection: 'row', gap: 8 }}>
+                              {(project.priority ?? 0) >= 1 ? (
+                                <Text style={{ fontSize: 11, color: tf.muted }}>
+                                  {formatTaskPriorityShort(project.priority ?? 0)}
+                                </Text>
+                              ) : null}
+                              {dueDateLabel ? (
+                                <Text style={{ fontSize: 11, color: isScheduleExpired ? tf.rose : tf.muted }}>
+                                  {dueYmd
+                                    ? `${Number(dueYmd.slice(5, 7))}/${Number(dueYmd.slice(8, 10))}`
+                                    : dueDateLabel}
+                                </Text>
+                              ) : null}
+                            </View>
+                          </View>
+                        </View>
+                      ) : (
                         <View
                           style={[
                             styles.projectTaskBody,
@@ -8269,17 +7843,7 @@ export default function TasksScreen() {
                               backgroundColor: taskUi.surfaceFrost,
                             },
                           ]}>
-                          {!hasAnyTasks ? (
-                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
-                          ) : displayTaskTree.length === 0 ? (
-                            <Text style={[styles.projectTaskEmpty, { color: outline }]}>
-                              已完成任务已隐藏，取消勾选「隐藏已完成任务」可查看
-                            </Text>
-                          ) : (
-                            <>
-                              {renderTaskLevel(displayTaskTree, 1)}
-                            </>
-                          )}
+                          <Text style={[styles.projectTaskEmpty, { color: outline }]}>暂无任务</Text>
                         </View>
                       )}
                         </View>
@@ -8603,22 +8167,99 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    minHeight: Layout.minTouchTarget,
-    paddingHorizontal: 10,
-    borderRadius: Radius.pill,
+    gap: 5,
+    minHeight: 32,
+    paddingLeft: 5,
+    paddingRight: 10,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  scorechipLight: {
+    backgroundColor: '#F8F0DF',
+  },
+  scoreCoin: {
+    width: 19,
+    height: 19,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scoreCoinGlyph: {
+    fontSize: 9,
+    color: '#6F4A15',
+    fontWeight: '700',
+  },
+  scorechipCopy: {
+    minWidth: 0,
+  },
+  scorechipSub: {
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 1,
   },
   pointsBalanceValue: {
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
     letterSpacing: -0.2,
-    maxWidth: 72,
+    maxWidth: 88,
+  },
+  daymid: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  daymidSubRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 3,
+  },
+  daymidSub: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  liveDotWrap: {
+    width: 8,
+    height: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveDotCore: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    zIndex: 1,
+  },
+  liveDotRing: {
+    position: 'absolute',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  calBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  /** 设计稿 `.calbtn .nd` 角标 */
+  calBtnDot: {
+    position: 'absolute',
+    right: 5,
+    top: 4,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   pageHeaderTitle: {
-    ...Typography.title,
-    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
     textAlign: 'center',
+    letterSpacing: 0.1,
   },
   scroll: { flex: 1 },
   content: {
@@ -8709,32 +8350,78 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
     marginBottom: Spacing.md,
   },
+  /** 设计稿 `.card.panes`：扁平描边，强制无阴影 */
+  panesCard: {
+    borderRadius: 19,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingTop: 7,
+    paddingBottom: 8,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  paneFoot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    paddingTop: 6,
+    paddingHorizontal: 3,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  paneFootLeft: { fontSize: 11, fontWeight: '500', flex: 1, minWidth: 0 },
+  paneFootGo: { flexDirection: 'row', alignItems: 'center', gap: 2, flexShrink: 0 },
+  paneFootGoText: { fontSize: 11, fontWeight: '700' },
   secondaryTabTrack: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'stretch',
-    gap: Spacing.sm,
-    padding: Spacing.sm,
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
+    height: 32,
+    padding: 2,
+    borderRadius: 9,
+    borderWidth: 0,
+    overflow: 'hidden',
+  },
+  /** 分段指示：无阴影，靠底色区分选中 */
+  secondaryTabInd: {
+    position: 'absolute',
+    left: 2,
+    top: 2,
+    height: 28,
+    borderRadius: 7,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   secondaryTabItem: {
     flex: 1,
+    zIndex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
-    gap: Spacing.xs,
-    minHeight: 48,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    justifyContent: 'center',
+    gap: 3,
+    minHeight: 28,
+    paddingHorizontal: 4,
+    borderRadius: 7,
+    borderWidth: 0,
     borderColor: 'transparent',
   },
   secondaryTabItemActive: {},
   secondaryTabTextCol: { flex: 1, minWidth: 0, gap: 1 },
-  secondaryTabLabel: { ...Typography.caption, fontWeight: '800' },
-  secondaryTabMeta: { fontSize: 10, fontWeight: '600' },
-  secondaryPaneBody: { marginTop: Spacing.xl, gap: Spacing.md },
+  secondaryTabLabel: { fontSize: 12, fontWeight: '700' },
+  secondaryTabCount: {
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    minWidth: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryTabMeta: { fontSize: 10, fontWeight: '700', lineHeight: 14, fontVariant: ['tabular-nums'] },
+  secondaryPaneBody: { marginTop: 6, gap: 6 },
   /** 桌面端两栏：左列日程表固定宽度独立滚动，右列 Tab 窗格自适应 */
   wideLeftPane: { width: 400, flexGrow: 0, flexShrink: 0 },
   wideLeftPaneContent: {
@@ -8743,7 +8430,7 @@ const styles = StyleSheet.create({
     paddingRight: Spacing.xl,
     paddingBottom: 48,
   },
-  habitsBodyQuiet: { gap: Spacing.xl, marginTop: Spacing.md },
+  habitsBodyQuiet: { gap: 6, marginTop: 6 },
   completionHeatmapDetailSectionLabel: { fontSize: 12, fontWeight: '800', marginBottom: 4, letterSpacing: 0.2 },
   frogHeatmapHeading: {
     flexDirection: 'row',
@@ -8968,17 +8655,79 @@ const styles = StyleSheet.create({
   pulseCenter: { width: 7, height: 7, borderRadius: 999 },
 
   projectCard: {
-    borderRadius: Radius.xl,
+    borderRadius: 15,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    ...Shadows.card,
+    position: 'relative',
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 1,
   },
-  /** 项目卡片列表：右侧留白，避免卡片与区块右缘贴齐 */
+  /** 设计稿 `.projcard:before` 左侧色条 */
+  projectAccentBar: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 3,
+    opacity: 0.72,
+    zIndex: 1,
+  },
+  /** 项目列表头像 emoji */
+  projectAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  projectAvatarEmoji: { fontSize: 22 },
+  projectFoldTreeWrap: {
+    paddingHorizontal: 8,
+    paddingBottom: 6,
+  },
+  projectTreeFoot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingLeft: 15,
+    paddingTop: 4,
+    paddingBottom: 2,
+  },
+  projectTreeFootAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  projectTreeFootAddText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  projectFoldFoot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  projectFrogChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  /** 项目卡片列表：覆盖 content 的大 gap，避免卡片间距被拉得过开 */
   projectList: {
     paddingRight: Spacing.xl,
+    gap: 4,
   },
   /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
-  projectSwipeWrap: { marginBottom: Spacing.lg },
+  projectSwipeWrap: { marginBottom: 0 },
   projectSwipeActions: {
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -9022,20 +8771,22 @@ const styles = StyleSheet.create({
   projectHeadPressable: { alignSelf: 'stretch' },
   projectHead: {
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing['2xl'],
+    paddingHorizontal: 8,
+    paddingVertical: 8,
   },
   projectIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#D8CDBB',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
-  projectHeadLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, flex: 1, paddingRight: 10 },
+  projectHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, paddingRight: 8 },
   projectHeadMainColumn: { flex: 1, minWidth: 0 },
   projectHeadRight: {
     alignSelf: 'stretch',
@@ -9346,165 +9097,124 @@ const styles = StyleSheet.create({
   editorPrimaryText: { fontSize: 14, fontWeight: '800', color: TaskUiColors.light.onAccent },
 
   habitHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  habitSection: { gap: 10 },
+  habitSection: { gap: 2 },
+  /** 设计稿 `.pgroup`：情境分组 + 分割线 */
   habitSectionToggle: {
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: Layout.minTouchTarget,
+    borderRadius: 0,
+    paddingHorizontal: 3,
+    paddingTop: 6,
+    paddingBottom: 4,
+    minHeight: 28,
+    backgroundColor: 'transparent',
   },
-  habitSectionToggleText: { ...Typography.body, fontWeight: '800' },
-  habitItemsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: HABIT_CARD_GAP },
+  habitSectionToggleText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    color: '#879487',
+  },
+  habitSectionLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(226,218,203,0.6)',
+    marginHorizontal: 4,
+  },
+  /** 设计稿 `.hrow`：icon | copy | dots | tick */
+  habitItemsRow: { flexDirection: 'column', gap: 0 },
   habitCard: {
-    position: 'relative',
-    borderWidth: 1,
-    borderRadius: Radius['2xl'],
-    paddingHorizontal: Spacing.xl,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.lg,
-  },
-  habitCardMain: {
+    borderWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderRadius: 0,
+    paddingHorizontal: 3,
+    paddingVertical: 8,
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.md,
+    gap: 7,
+    width: '100%',
   },
   habitCardIconWrap: {
-    width: Layout.minTouchTarget,
-    height: Layout.minTouchTarget,
-    borderRadius: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
-  habitCardIcon: { fontSize: 23 },
-  habitCardDoneMark: {
-    position: 'absolute',
-    right: -5,
-    bottom: -5,
-  },
+  habitCardIcon: { fontSize: 22 },
   habitCardLockMark: {
     ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: TaskUiColors.dark.overlayDim,
   },
-  habitCardBody: { alignSelf: 'stretch', gap: 3, minWidth: 0 },
+  habitCardBody: { flex: 1, gap: 1, minWidth: 0 },
   habitCardTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    lineHeight: 19,
-    letterSpacing: -0.2,
-    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 17,
+    letterSpacing: -0.1,
+    textAlign: 'left',
+  },
+  habitCardMeta: {
+    fontSize: 10,
+    fontWeight: '500',
+    lineHeight: 14,
+    textAlign: 'left',
   },
   habitTagChipRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     gap: 4,
     marginTop: 2,
-    justifyContent: 'center',
+    overflow: 'hidden',
   },
   habitTagChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    maxWidth: 88,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    maxWidth: 72,
+    flexShrink: 1,
   },
   habitTagChipText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
+    flexShrink: 1,
   },
+  habitDotsWrap: {
+    flexShrink: 0,
+    paddingHorizontal: 2,
+  },
+  /** 设计稿 `.htick` */
+  habitTick: {
+    width: 21,
+    height: 21,
+    borderRadius: 11,
+    borderWidth: 1.2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  habitTickPartText: {
+    fontSize: 8,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  habitRewardBadgeText: { color: TaskUiColors.light.onAccent, fontSize: 10, fontWeight: '800' },
   standaloneTagChipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
     marginTop: 4,
   },
-  habitCardNote: {
-    fontSize: 11,
-    fontWeight: '500',
-    lineHeight: 15,
-    textAlign: 'center',
-  },
-  habitTypeRow: {
-    alignSelf: 'stretch',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  habitTypeChip: {
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  habitTypeChipText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.2 },
-  habitProgressBlock: { alignSelf: 'stretch', gap: 6, alignItems: 'center' },
-  habitProgressTrack: {
-    alignSelf: 'stretch',
-    height: 5,
-    borderRadius: 999,
-    overflow: 'hidden',
-  },
-  habitProgressFill: {
-    height: '100%',
-    borderRadius: 999,
-  },
-  habitProgressMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  habitProgressText: { fontSize: 11, fontWeight: '700', textAlign: 'center' },
-  habitRewardBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    zIndex: 2,
-    minWidth: 26,
-    borderRadius: 999,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    alignItems: 'center',
-  },
-  habitRewardBadgeText: { color: TaskUiColors.light.onAccent, fontSize: 10, fontWeight: '800' },
-  habitTaskCompletionBadge: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    alignItems: 'center',
-  },
-  habitTaskCompletionBadgeText: { fontSize: 10, fontWeight: '800' },
-  habitAddCard: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: Radius['2xl'],
-    paddingVertical: Spacing['4xl'],
-    minHeight: 126,
-  },
-  habitAddIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: TaskUiColors.light.hairlineFaint,
-  },
-  habitAddText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
 
   standaloneTodoMetaRow: {
     flexDirection: 'row',
@@ -9608,19 +9318,107 @@ const styles = StyleSheet.create({
   quickTodoHint: { ...Typography.label, fontWeight: '600', marginTop: 6, marginLeft: 8 },
   standaloneTodoListContent: { paddingTop: 2, paddingBottom: 6, gap: 0 },
   /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
-  standaloneTodoSwipeWrap: { marginBottom: 10 },
-  /** 待办卡片：圆角 + 描边，与四象限内扁平列表区分 */
+  standaloneTodoSwipeWrap: {
+    marginBottom: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  /** Swipeable 子容器：实底遮住侧滑操作，禁 elevation 浮影 */
+  standaloneTodoSwipeChild: {
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  /** 设计稿 `.hrow`：扁平分隔行，非厚卡片、无阴影 */
   standaloneTodoCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.lg,
-    borderRadius: Radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+    gap: 7,
+    borderRadius: 0,
+    borderWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 3,
+    paddingVertical: 8,
     overflow: 'hidden',
-    ...Shadows.card,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
+  quickTodoFrogMark: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  todoStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+    marginBottom: 4,
+    paddingHorizontal: 2,
+  },
+  todoStatTag: {
+    height: 18,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  todoStatTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  todoActionDrawer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    paddingLeft: 28,
+    paddingRight: 4,
+    paddingTop: 4,
+    paddingBottom: 6,
+  },
+  todoActionChip: {
+    height: 24,
+    paddingHorizontal: 8,
+    borderRadius: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  todoActionChipText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  quickTodoSendBtnCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 2,
+  },
+  shelvedActivateBtnCompact: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  todoStatusTag: {
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    flexShrink: 0,
+  },
+  todoStatusTagText: { fontSize: 10, fontWeight: '700' },
   /**
    * 与卡片等高；负 margin 让操作条向左压住卡片右缘；内层 overflow 裁切，两钮无缝拼接。
    */
@@ -9628,7 +9426,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'stretch',
     marginLeft: -10,
-    borderRadius: Radius.xl,
+    borderRadius: 12,
     overflow: 'hidden',
   },
   standaloneSwipeUpgrade: {

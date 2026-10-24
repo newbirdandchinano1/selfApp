@@ -104,6 +104,49 @@ export async function deleteHabitContexts(ids: string[]) {
   await pushHabitContextChangesToApi();
 }
 
+/** 改名：保持 id 稳定，并同步更新仍引用旧名的习惯 */
+export async function renameHabitContext(id: string, newName: string) {
+  const db = await getDatabase();
+  if (!db) {
+    throw new Error('本地数据库不可用，无法重命名情境');
+  }
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error('情境名称不能为空');
+
+  const current = await db.getFirstAsync<{ id: string; name: string }>(
+    `SELECT id, name FROM habit_contexts WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  if (!current) throw new Error('情境不存在');
+  if (current.name === trimmed) return;
+
+  const clash = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM habit_contexts WHERE name = ? AND id != ? LIMIT 1`,
+    [trimmed, id],
+  );
+  if (clash) throw new Error('该情境已存在');
+
+  await db.runAsync(
+    `UPDATE habits
+     SET context = ?,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE context = ?`,
+    [trimmed, current.name],
+  );
+  await db.runAsync(
+    `UPDATE habit_contexts
+     SET name = ?,
+         updated_at = datetime('now'),
+         sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
+     WHERE id = ?`,
+    [trimmed, id],
+  );
+  invalidateInflightApiTableFetch('habit_contexts');
+  invalidateInflightApiTableFetch('habits');
+  await pushHabitContextChangesToApi();
+}
+
 export async function updateHabitContextsSortOrder(contextIdsInOrder: string[]) {
   const db = await getDatabase();
   if (!db) {

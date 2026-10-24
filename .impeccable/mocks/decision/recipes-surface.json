@@ -1,4 +1,4 @@
-{
+﻿{
   "title": "菜谱页结构",
   "question": "三种版式，选一个作为改版方向（视觉仍用现有 design-tokens，只改布局）。",
   "options": [
@@ -8,9 +8,9 @@
       "kicker": "THE ROLL",
       "thesis": "分类仍是章节；每道菜一行，成品图加大成主视觉，去掉统计卡噪音。",
       "palette": [
-        "#faf8ff",
+        "#F5F3E8",
         "#ffffff",
-        "#0058be",
+        "#1E3932",
         "#131b2e"
       ],
       "materials": [
@@ -91,9 +91,9 @@
       "label": "分类下的通栏成品卡",
       "thesis": "每道菜一张通栏图卡，标题压在图下；分类名当章节标题。",
       "palette": [
-        "#faf8ff",
+        "#F5F3E8",
         "#ffffff",
-        "#0058be",
+        "#1E3932",
         "#131b2e"
       ],
       "materials": [
@@ -160,9 +160,9 @@
       "label": "菜谱本章节双列格",
       "thesis": "每个分类像一章：大标题 + 双列成品图格，最像实体菜谱本。",
       "palette": [
-        "#faf8ff",
+        "#F5F3E8",
         "#ffffff",
-        "#0058be",
+        "#1E3932",
         "#131b2e"
       ],
       "materials": [

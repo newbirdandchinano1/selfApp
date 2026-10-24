@@ -122,6 +122,57 @@ type PopInProps = {
   children: React.ReactNode;
 };
 
+type StampPopProps = {
+  /** 变为 true 时播放盖章弹跳 */
+  active: boolean;
+  durationMs?: number;
+  style?: StyleProp<ViewStyle>;
+  children: React.ReactNode;
+};
+
+/**
+ * 完成盖章：scale 0.55 → 1.2 → 1（设计稿 `@keyframes stampPop` 340ms spring）
+ * 仅在 inactive→active 边沿触发；减少动态效果时瞬切。
+ */
+export function FoldStampPop({
+  active,
+  durationMs = 340,
+  style,
+  children,
+}: StampPopProps) {
+  const { animate } = useFoldMotionGate();
+  const progress = React.useRef(new Animated.Value(1)).current;
+  const prevActive = React.useRef(active);
+
+  React.useEffect(() => {
+    const rising = active && !prevActive.current;
+    prevActive.current = active;
+    if (!rising) return;
+    if (!animate) {
+      progress.setValue(1);
+      return;
+    }
+    progress.setValue(0);
+    const anim = Animated.timing(progress, {
+      toValue: 1,
+      duration: durationMs,
+      easing: FOLD_MOTION_SPRING,
+      useNativeDriver: true,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [active, animate, durationMs, progress]);
+
+  const scale = progress.interpolate({
+    inputRange: [0, 0.62, 1],
+    outputRange: [0.55, 1.2, 1],
+  });
+
+  return (
+    <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+  );
+}
+
 /** 弹入：scale .86 → 1.03 → 1（设计稿 popIn / 时间线节点） */
 export function FoldPopIn({
   animate,

@@ -584,10 +584,10 @@ export default function MemoListScreen() {
         onRefresh={() => {
           void onRefresh();
         }}
-        paper={isDark ? '#2C261F' : '#E3D5C3'}
-        cavity={isDark ? '#241F1B' : '#E9DFD1'}
-        searchBg={isDark ? 'rgba(255,248,236,0.1)' : '#EFE4D4'}
-        chipBg={isDark ? 'rgba(255,248,236,0.08)' : 'rgba(90,70,40,0.08)'}
+        paper={wall.drawerPaper}
+        cavity={wall.drawerCavity}
+        searchBg={wall.searchBg}
+        chipBg={wall.chipBg}
         ink={wall.ink}
         muted={wall.muted}
         line={wall.line}

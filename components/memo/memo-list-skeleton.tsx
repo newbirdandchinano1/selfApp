@@ -4,7 +4,8 @@ import { StyleSheet, View } from 'react-native';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spacing } from '@/constants/design-tokens';
 
-const PAPERS = ['#F7A1A1', '#9ED9A8', '#9EC5F5', '#F7C57A', '#CDB4F0'];
+/** 与 memo-paper 便利贴色同系：奶油 / sage / 琥珀浅洗 */
+const PAPERS = ['#E4EDE7', '#F3EBD8', '#DDE6DF', '#EFE6D4', '#E8F0EB'];
 const HEIGHTS = [128, 168, 112, 148, 136, 156];
 
 /**

@@ -1,17 +1,23 @@
 import {
-    ComposerPriorityMatrix,
     ComposerTopBar,
+    taskPriorityKeyToNumber,
     taskPriorityLabel,
+    taskPriorityToKey,
     type TaskPriorityKey,
 } from '@/components/composer';
 import {
   clampTitle,
-  EntityFormScheduleField,
   ENTITY_TITLE_MAX,
   useComposerSchedule,
   validateRequiredTitle,
 } from '@/components/entity-form';
-import { Layout, Radius, Spacing } from '@/constants/design-tokens';
+import {
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
+import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { setAddTaskResult } from '@/lib/add-task-bridge';
@@ -33,6 +39,12 @@ import {
   parseAutoPlaceIntoSchedule,
 } from '@/lib/schedule/task-virtual-placement';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import {
+  DEFAULT_TODO_ICON,
+  mergeIconIntoExtraData,
+  parseIconFromExtraData,
+} from '@/lib/constants/entity-icon-choices';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
@@ -63,8 +75,8 @@ import React from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     KeyboardAvoidingView,
-    Modal,
     Platform,
     Pressable,
     ScrollView,
@@ -74,26 +86,6 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-
-type Subtask = {
-  id: string;
-  title: string;
-  done: boolean;
-  priority?: string;
-  priorityLabel?: string;
-  deadline?: string;
-  deadlineText?: string;
-  reminder?: string;
-  reminderText?: string;
-  repeat?: string;
-  repeatText?: string;
-  note?: string | null;
-  acceptanceCriteria?: string;
-  schedule?: TaskScheduleMeta | null;
-  isLongTermTask?: boolean;
-  autoPlaceIntoSchedule?: boolean;
-};
-type MainTask = { id: string; title: string; due: string };
 
 type TaskScheduleMeta = PickedScheduleMeta;
 const STANDALONE_SCHEDULE_SOURCE = 'add-standalone-todo';
@@ -127,13 +119,6 @@ function extractDueYmdFromSchedulePick(picked: SchedulePickerResult): string | n
 function isDueYmdToday(dueYmd: string | null): boolean {
   if (!dueYmd) return false;
   return dueYmd === getLogicalLocalYmd(new Date(), getDayBoundarySync());
-}
-
-function taskPriorityToKey(priority: number): TaskPriorityKey {
-  if (priority >= 4) return 'urgent-important';
-  if (priority === 3) return 'urgent-not-important';
-  if (priority === 2) return 'not-urgent-important';
-  return 'not-urgent-not-important';
 }
 
 function parseStandaloneTaskScheduleMeta(extraData: string | null): TaskScheduleMeta | null {
@@ -174,20 +159,21 @@ export default function AddTaskScreen() {
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
+  const { tf, fonts } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
+  const titleInputRef = React.useRef<React.ElementRef<typeof TextInput>>(null);
 
   const [title, setTitle] = React.useState('');
+  const [entityIcon, setEntityIcon] = React.useState(DEFAULT_TODO_ICON);
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
+  const [note, setNote] = React.useState('');
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
-  const [mainTaskOpen, setMainTaskOpen] = React.useState(false);
-  const [mainTaskQuery, setMainTaskQuery] = React.useState('');
-  const [selectedMainTaskId, setSelectedMainTaskId] = React.useState<string | null>(null);
-  const [subtasks, setSubtasks] = React.useState<Subtask[]>([]);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
+  const [switchBounceToken, setSwitchBounceToken] = React.useState(0);
   const [projectName, setProjectName] = React.useState<string | null>(null);
-  const [projectPriority, setProjectPriority] = React.useState<TaskPriority>(0);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
   const [loadingEdit, setLoadingEdit] = React.useState(false);
@@ -258,6 +244,7 @@ export default function AddTaskScreen() {
     }
     const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
     if (!gate.ok) {
+      setSwitchBounceToken((n) => n + 1);
       if (gate.reason === 'no-repeat') {
         Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
           { text: '取消', style: 'cancel' },
@@ -273,6 +260,19 @@ export default function AddTaskScreen() {
     }
     setAutoPlaceIntoSchedule(true);
   }, [autoPlaceIntoSchedule, openSchedulePicker, repeatText, scheduleMeta]);
+
+  const autoPlaceGate = React.useMemo(
+    () => canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText),
+    [repeatText, scheduleMeta],
+  );
+  const autoPlaceExpand = React.useRef(new Animated.Value(0)).current;
+  React.useEffect(() => {
+    Animated.timing(autoPlaceExpand, {
+      toValue: autoPlaceIntoSchedule ? 1 : 0,
+      duration: foldAnimate ? TaskFoldMotion.fieldExpand : 120,
+      useNativeDriver: false,
+    }).start();
+  }, [autoPlaceExpand, autoPlaceIntoSchedule, foldAnimate]);
 
   React.useEffect(() => {
     if (lockScheduleFromParam) setInheritsProjectSchedule(true);
@@ -300,7 +300,7 @@ export default function AddTaskScreen() {
         const project = await getProjectById(quickProjectId);
         if (!project || cancelled) return;
         setProjectName(project.name?.trim() || null);
-        setProjectPriority(project.priority ?? 0);
+        setPriority(taskPriorityToKey(project.priority ?? 0));
         const limit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
         const inheritsSchedule = projectDefinesSchedule(project.extra_data, project.due_date);
         setInheritsProjectSchedule(inheritsSchedule);
@@ -365,6 +365,7 @@ export default function AddTaskScreen() {
 
   const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
     setTitle(task.title ?? '');
+    setEntityIcon(parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON));
     setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
@@ -440,10 +441,9 @@ export default function AddTaskScreen() {
         if (quickProjectId) {
           const project = await getProjectById(quickProjectId);
           setProjectName(project?.name?.trim() || null);
-          setProjectPriority(project?.priority ?? 0);
+          if (project) setPriority(taskPriorityToKey(project.priority ?? 0));
         } else {
           setProjectName(null);
-          setProjectPriority(0);
         }
       }, forceRefresh);
     },
@@ -451,23 +451,6 @@ export default function AddTaskScreen() {
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadAddTaskData);
-
-  const mainTaskOptions: MainTask[] = [
-    { id: 'm1', title: 'Q4 品牌战略规划', due: '截止日期: 12月31日' },
-    { id: 'm2', title: '移动端应用 2.0 重构', due: '截止日期: 11月15日' },
-    { id: 'm3', title: '新员工入职培训手册', due: '进行中' },
-    { id: 'm4', title: '年度开发者大会筹备', due: '截止日期: 10月20日' },
-  ];
-  const filteredMainTasks = mainTaskOptions.filter((item) =>
-    `${item.title}${item.due}`.toLowerCase().includes(mainTaskQuery.trim().toLowerCase()),
-  );
-  const toggleSubtask = (id: string) => {
-    setSubtasks((prev) => prev.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
-  };
-
-  const removeSubtask = (id: string) => {
-    setSubtasks((prev) => prev.filter((s) => s.id !== id));
-  };
 
   const handleTitleChange = (text: string) => {
     setTitle(clampTitle(text, titleMaxLength));
@@ -482,7 +465,8 @@ export default function AddTaskScreen() {
       emptyMessage: isStandalone ? '请先填写待办标题。' : '请输入任务名称后再创建。',
     });
     if (!titleCheck.ok) {
-      Alert.alert(isStandalone ? '无法保存' : '无法创建任务', titleCheck.message);
+      titleInputRef.current?.focus?.();
+      toast.error(isStandalone ? '请输入标题' : '请输入任务名称');
       return;
     }
     const trimmedTitle = titleCheck.title;
@@ -505,16 +489,20 @@ export default function AddTaskScreen() {
         setIsSubmitting(true);
         const shelved = standaloneIntent === 'shelved';
         const dueDate = shelved ? null : resolveDueDate();
-        const extraPayload = mergeRewardPointsIntoExtraData(
-          shelved
-            ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
-            : JSON.stringify({
-                reminder: reminderText || '',
-                repeat: repeatText || '',
-                schedule: scheduleMeta,
-                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
-              }),
-          normalizeRewardPoints(rewardPointsText),
+        const extraPayload = mergeIconIntoExtraData(
+          mergeRewardPointsIntoExtraData(
+            shelved
+              ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
+              : JSON.stringify({
+                  reminder: reminderText || '',
+                  repeat: repeatText || '',
+                  schedule: scheduleMeta,
+                  ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
+                }),
+            normalizeRewardPoints(rewardPointsText),
+          ),
+          entityIcon,
+          DEFAULT_TODO_ICON,
         );
         const trimmedAcceptanceCriteria = acceptanceCriteria.trim() || null;
         if (isEditStandalone) {
@@ -574,21 +562,25 @@ export default function AddTaskScreen() {
           parent_task_id: null,
           title: trimmedTitle,
           description: acceptanceCriteria.trim() || null,
-          note: null,
+          note: note.trim() || null,
           status: 'todo',
-          priority: projectPriority,
+          priority: taskPriorityKeyToNumber(priority),
           due_date: resolveDueDate(),
-          extra_data: mergeRewardPointsIntoExtraData(
-            mergeLongTermTaskIntoExtraData(
-              JSON.stringify({
-                reminder: reminderText || '',
-                repeat: repeatText || '',
-                schedule: scheduleMeta,
-                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
-              }),
-              isLongTermTask,
+          extra_data: mergeIconIntoExtraData(
+            mergeRewardPointsIntoExtraData(
+              mergeLongTermTaskIntoExtraData(
+                JSON.stringify({
+                  reminder: reminderText || '',
+                  repeat: repeatText || '',
+                  schedule: scheduleMeta,
+                  ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
+                }),
+                isLongTermTask,
+              ),
+              normalizeRewardPoints(rewardPointsText),
             ),
-            normalizeRewardPoints(rewardPointsText),
+            entityIcon,
+            DEFAULT_TODO_ICON,
           ),
         });
         // 项目未贴标签时才保存任务自有标签
@@ -635,23 +627,36 @@ export default function AddTaskScreen() {
         reminderText: reminderText,
         repeat: repeatText,
         repeatText: repeatText,
-        note: null,
+        note: note.trim() || null,
         acceptanceCriteria: acceptanceCriteria.trim(),
         schedule: scheduleMeta,
         isLongTermTask,
         autoPlaceIntoSchedule: wantAutoPlace,
+        icon: entityIcon,
       },
     });
     router.back();
   };
 
   const topSubtitle = isStandalone
-    ? '不挂项目 · 仍可与日程、提醒同步'
+    ? '独立待办 · 不属于项目 · 稍后可升级'
     : projectName
-      ? `归属 · ${projectName}`
-      : undefined;
+      ? `${projectName} / 新增`
+      : inheritsProjectSchedule
+        ? '继承项目日程 · 叶子可入格'
+        : '项目任务 · 叶子可入格';
   const screenTitle = isEditStandalone ? '编辑待办' : isStandalone ? '新建待办' : '新建任务';
   const formBusy = isSubmitting || loadingEdit;
+  const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
+  const foldCardBorder = tf.line2;
+  const scheduleSummary = [deadlineText || '未设置日程', reminderText, repeatText]
+    .filter(Boolean)
+    .join(' · ');
+  const autoPlacePreviewH = autoPlaceExpand.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 56],
+  });
+  const rewardN = Math.round(Number(rewardPointsText) || 0);
 
   const removeStandaloneTodo = React.useCallback(() => {
     if (!editTaskId || formBusy) return;
@@ -684,80 +689,77 @@ export default function AddTaskScreen() {
     ]);
   }, [editTaskId, formBusy, notifyAncestorsDataChanged, router, title]);
 
-  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
-  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : colors.surface;
-  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : colors.input;
-  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
+  const bumpReward = (delta: number) => {
+    const cur = Number(rewardPointsText);
+    const base = Number.isFinite(cur) ? cur : 0;
+    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
+  };
 
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
-      <ComposerTopBar
-        title={screenTitle}
-        subtitle={topSubtitle}
-        onBack={() => router.back()}
-        onSubmit={() => void handleCreateTask()}
-        submitting={formBusy}
-        submitLabel={isStandalone ? '保存' : '创建'}
-      />
-
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-        <ScrollView
-          refreshControl={refreshControl}
-          contentContainerStyle={[
-            styles.content,
-            { paddingBottom: 48 + Math.max(insets.bottom, 12) },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
-          {loadingEdit ? (
-            <View style={styles.editLoading}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>加载待办…</Text>
-            </View>
-          ) : (
-            <>
-              <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-                <Text style={[styles.panelTitle, { color: colors.text }]}>概要</Text>
-                <TextInput
-                  value={title}
-                  onChangeText={handleTitleChange}
-                  placeholder={isStandalone ? '写下待办名称…' : '写下任务名称…'}
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  maxLength={titleMaxLength}
-                  style={[styles.titleInput, { color: colors.text }]}
-                />
-                <Text style={[styles.charCounter, { color: colors.textSecondary }]}>
-                  {title.length}/{titleMaxLength}
-                </Text>
-
-                {isStandalone ? (
-                  <>
-                    <View style={[styles.panelDivider, { backgroundColor: divider }]} />
-                    <View style={styles.standaloneIntentRow}>
+  if (isStandalone) {
+    const footPad = Math.max(insets.bottom, 12);
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+        <ComposerTopBar
+          title={screenTitle}
+          subtitle={topSubtitle}
+          onBack={() => router.back()}
+          onSubmit={() => void handleCreateTask()}
+          submitting={formBusy}
+          submitLabel="保存"
+        />
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+          <ScrollView
+            refreshControl={refreshControl}
+            contentContainerStyle={[styles.foldContent, { paddingBottom: 96 + footPad }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            {loadingEdit ? (
+              <View style={styles.editLoading}>
+                <ActivityIndicator size="large" color={tf.frog} />
+                <Text style={[styles.loadingText, { color: tf.faint }]}>加载待办…</Text>
+              </View>
+            ) : (
+              <>
+                <FoldRiseIn animate={foldAnimate} index={0} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                  <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                    <View style={styles.titleRow}>
+                      <EntityIconPickerField
+                        compact
+                        value={entityIcon}
+                        onChange={setEntityIcon}
+                        fallback={DEFAULT_TODO_ICON}
+                        disabled={formBusy}
+                        accessibilityLabel="选择待办图标"
+                      />
+                      <View style={{ flex: 1 }}>
+                        <TextInput
+                          ref={titleInputRef}
+                          value={title}
+                          onChangeText={handleTitleChange}
+                          placeholder="写下待办名称…"
+                          placeholderTextColor={tf.faint}
+                          multiline
+                          maxLength={titleMaxLength}
+                          style={[styles.foldTitleInput, { color: tf.ink, fontFamily: fonts.serif }]}
+                        />
+                        <Text style={[styles.charCounter, { color: tf.faint }]}>
+                          {title.length}/{titleMaxLength} · 标题必填
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.foldChipRow}>
                       <Pressable
                         onPress={() => setStandaloneIntent('active')}
                         accessibilityRole="button"
                         accessibilityState={{ selected: standaloneIntent === 'active' }}
-                        style={({ pressed }) => [
-                          styles.standaloneIntentChip,
-                          {
-                            backgroundColor:
-                              standaloneIntent === 'active' ? `${colors.primary}18` : fieldBg,
-                            borderColor:
-                              standaloneIntent === 'active' ? colors.primary : 'transparent',
-                            opacity: pressed ? 0.88 : 1,
-                          },
+                        style={[
+                          styles.fchip,
+                          standaloneIntent === 'active' && { backgroundColor: tf.pond, borderColor: tf.pond },
                         ]}>
-                        <MaterialIcons
-                          name="radio-button-checked"
-                          size={18}
-                          color={standaloneIntent === 'active' ? colors.primary : colors.textSecondary}
-                        />
                         <Text
                           style={[
-                            styles.standaloneIntentChipText,
-                            { color: standaloneIntent === 'active' ? colors.primary : colors.text },
+                            styles.fchipText,
+                            { color: standaloneIntent === 'active' ? tf.onPond : '#7C897E' },
                           ]}>
                           正常待办
                         </Text>
@@ -766,269 +768,678 @@ export default function AddTaskScreen() {
                         onPress={() => setStandaloneIntent('shelved')}
                         accessibilityRole="button"
                         accessibilityState={{ selected: standaloneIntent === 'shelved' }}
-                        style={({ pressed }) => [
-                          styles.standaloneIntentChip,
-                          {
-                            backgroundColor:
-                              standaloneIntent === 'shelved' ? `${colors.secondary}22` : fieldBg,
-                            borderColor:
-                              standaloneIntent === 'shelved' ? colors.secondary : 'transparent',
-                            opacity: pressed ? 0.88 : 1,
-                          },
+                        style={[
+                          styles.fchip,
+                          standaloneIntent === 'shelved' && { backgroundColor: tf.pond, borderColor: tf.pond },
                         ]}>
-                        <MaterialIcons
-                          name="inventory-2"
-                          size={18}
-                          color={
-                            standaloneIntent === 'shelved' ? colors.secondary : colors.textSecondary
-                          }
-                        />
                         <Text
                           style={[
-                            styles.standaloneIntentChipText,
-                            {
-                              color: standaloneIntent === 'shelved' ? colors.secondary : colors.text,
-                            },
+                            styles.fchipText,
+                            { color: standaloneIntent === 'shelved' ? tf.onPond : '#7C897E' },
                           ]}>
                           暂时搁置
                         </Text>
                       </Pressable>
                     </View>
                     {standaloneIntent === 'shelved' ? (
-                      <Text style={[styles.standaloneShelvedHint, { color: colors.textSecondary }]}>
-                        搁置项会留在待办栏，不能勾选完成；需要时在卡片右侧点「激活」并确认后变为正常待办。
+                      <Text style={[styles.standaloneShelvedHint, { color: tf.faint }]}>
+                        搁置项会留在待办栏，不能勾选完成；需要时点「激活」变为正常待办。
                       </Text>
                     ) : null}
-                  </>
+                    <View style={{ marginTop: 8 }}>
+                      <ProjectTagPickerField
+                        selectedIds={selectedTagIds}
+                        allTags={allTags}
+                        loading={tagsLoading}
+                        locked={false}
+                        onChange={setSelectedTagIds}
+                        textColor={tf.ink2}
+                        outline={tf.muted}
+                        placeholderColor={tf.faint}
+                        primary={tf.frog}
+                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                </FoldRiseIn>
+
+                <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                  <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                    <TaskFoldPriorityGrid value={priority} onChange={setPriority} />
+                  </View>
+                </FoldRiseIn>
+
+                {standaloneIntent === 'active' ? (
+                  <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                    <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                      <Pressable
+                        onPress={openSchedulePicker}
+                        accessibilityRole="button"
+                        accessibilityLabel="修改日程"
+                        style={({ pressed }) => [
+                          styles.calendarbtn,
+                          {
+                            borderColor: 'rgba(216,205,187,0.8)',
+                            backgroundColor: isDark ? colors.input : 'rgba(255,255,255,0.55)',
+                            opacity: pressed ? 0.88 : 1,
+                          },
+                        ]}>
+                        <View style={[styles.calic, { backgroundColor: tf.lily2 }]}>
+                          <MaterialIcons name="event" size={16} color="#64805D" />
+                        </View>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[styles.calMain, { color: '#59685E' }]} numberOfLines={1}>
+                            {deadlineText || '设置日期 / 时间'}
+                          </Text>
+                          <Text style={[styles.calSub, { color: tf.faint }]} numberOfLines={1}>
+                            {[reminderText, repeatText].filter(Boolean).join(' · ') || '提醒 / 重复可选'}
+                          </Text>
+                        </View>
+                        <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
+                      </Pressable>
+
+                      <View style={styles.frow}>
+                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 11, color: tf.faint }}>
+                            {autoPlaceGate.ok ? '重复 + 具体时间已满足' : '需同时有重复与具体时间'}
+                          </Text>
+                        </View>
+                        <TaskFoldSwitch
+                          value={autoPlaceIntoSchedule}
+                          onValueChange={() => toggleAutoPlaceIntoSchedule()}
+                          bounceToken={switchBounceToken}
+                          accessibilityLabel="自动入格"
+                        />
+                      </View>
+
+                      <Animated.View style={{ height: autoPlacePreviewH, overflow: 'hidden' }}>
+                        <View
+                          style={[
+                            styles.fbox,
+                            {
+                              backgroundColor: 'rgba(232,239,217,0.4)',
+                              borderColor: '#C8D8B1',
+                            },
+                          ]}>
+                          <Text style={{ fontSize: 11, color: '#607A5C', lineHeight: 16 }}>
+                            <Text style={{ fontWeight: '700' }}>自动入格预览 </Text>
+                            {repeatText || '重复日'} {deadlineText || ''} → 冲突时顺延到下一空档。
+                          </Text>
+                        </View>
+                      </Animated.View>
+
+                      {!autoPlaceGate.ok ? (
+                        <View style={styles.hintline}>
+                          <MaterialIcons name="lightbulb-outline" size={12} color="#8A5F25" />
+                          <Text style={{ fontSize: 10, color: '#8A5F25', flex: 1 }}>
+                            缺少重复或具体时间时，开关会弹回并保持关闭。
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </FoldRiseIn>
                 ) : null}
 
-                {isStandalone || quickProjectId ? (
-                  <View style={styles.fieldBlock}>
-                    <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>标签</Text>
+                <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                  <View style={[styles.fcard, styles.fcardTight, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                    <View style={styles.frow}>
+                      <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Text style={{ fontSize: 14, fontWeight: '700', color: tf.ink2, fontFamily: fonts.mono }}>
+                          {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: tf.faint }}>完成时结算</Text>
+                      </View>
+                      <View style={styles.stepper}>
+                        <Pressable onPress={() => bumpReward(-1)} style={styles.stepperBtn} accessibilityLabel="减少积分">
+                          <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
+                        </Pressable>
+                        <Text style={{ fontFamily: fonts.mono, color: '#5C6D60', minWidth: 18, textAlign: 'center' }}>
+                          {rewardN}
+                        </Text>
+                        <Pressable onPress={() => bumpReward(1)} style={styles.stepperBtn} accessibilityLabel="增加积分">
+                          <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                    <View
+                      style={[
+                        styles.frow,
+                        { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
+                      ]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
+                      <TextInput
+                        value={acceptanceCriteria}
+                        onChangeText={setAcceptanceCriteria}
+                        placeholder="怎样算完成？（可选）"
+                        placeholderTextColor={tf.faint}
+                        style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
+                      />
+                    </View>
+                  </View>
+                </FoldRiseIn>
+
+                <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                  <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>更多设置</Text>
+                      <Text style={{ fontSize: 10, color: tf.faint }}>可稍后补</Text>
+                    </View>
+                    <View style={styles.frow}>
+                      <Text style={[styles.frowLab, { color: '#8A968C' }]}>提醒</Text>
+                      <Text style={[styles.frowVal, { color: tf.ink2 }]} numberOfLines={1}>
+                        {reminderText || '未设置'}
+                      </Text>
+                      <Pressable onPress={openSchedulePicker}>
+                        <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
+                      </Pressable>
+                    </View>
+                    <View
+                      style={[
+                        styles.frow,
+                        { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
+                      ]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C' }]}>重复</Text>
+                      <Text style={[styles.frowVal, { color: tf.ink2 }]} numberOfLines={1}>
+                        {repeatText || '不重复'}
+                      </Text>
+                    </View>
+                    {isEditStandalone ? (
+                      <Pressable
+                        onPress={removeStandaloneTodo}
+                        disabled={formBusy}
+                        accessibilityRole="button"
+                        style={({ pressed }) => [
+                          styles.deleteBtn,
+                          {
+                            marginTop: 10,
+                            borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
+                            opacity: formBusy ? 0.55 : pressed ? 0.8 : 1,
+                          },
+                        ]}>
+                        <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
+                        <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除待办</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </FoldRiseIn>
+
+                {autoPlaceIntoSchedule && standaloneIntent === 'active' ? (
+                  <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                    <View
+                      style={[
+                        styles.fcard,
+                        styles.fcardTight,
+                        {
+                          backgroundColor: 'rgba(232,239,217,0.36)',
+                          borderColor: '#C8D8B1',
+                        },
+                      ]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <View style={[styles.frogmark, { backgroundColor: tf.pond }]}>
+                          <MaterialIcons name="spa" size={14} color={tf.sun} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#4F6152' }}>
+                            创建后 · {repeatText || '按重复'} 自动入格
+                          </Text>
+                          <Text style={{ fontSize: 10, color: '#7F947B', marginTop: 2 }}>{scheduleSummary}</Text>
+                        </View>
+                        <View style={[styles.autoTag, { backgroundColor: tf.lily2 }]}>
+                          <Text style={{ fontSize: 10, color: tf.frog, fontWeight: '700' }}>自动</Text>
+                        </View>
+                      </View>
+                    </View>
+                  </FoldRiseIn>
+                ) : null}
+              </>
+            )}
+          </ScrollView>
+
+          <View style={[styles.foldFoot, { paddingBottom: footPad }]}>
+            <Pressable
+              onPress={() => void handleCreateTask()}
+              disabled={formBusy}
+              style={({ pressed }) => [
+                styles.foldPrimary,
+                {
+                  backgroundColor: tf.pond,
+                  opacity: formBusy ? 0.65 : pressed ? 0.9 : 1,
+                },
+              ]}>
+              {formBusy ? (
+                <ActivityIndicator color={tf.onPond} />
+              ) : (
+                <>
+                  <MaterialIcons name="check" size={16} color={tf.onPond} />
+                  <Text style={[styles.foldPrimaryText, { color: tf.onPond }]}>
+                    {isEditStandalone ? '保存待办' : '创建待办'}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+            <View style={[styles.hintline, { justifyContent: 'center', marginTop: 6 }]}>
+              <View style={[styles.dotLive, { backgroundColor: tf.sage }]} />
+              <Text style={{ fontSize: 10, color: '#99A199' }}>本机草稿已保存 · 联网后同步</Text>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+
+  const footPad = Math.max(insets.bottom, 12);
+  const inheritBannerBg = isDark ? 'rgba(232,239,217,0.12)' : 'rgba(232,239,217,0.36)';
+  const inheritBannerBorder = isDark ? tf.line2 : '#C8D8B1';
+  const scheduleLocked = inheritsProjectSchedule;
+
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <ComposerTopBar
+        title={screenTitle}
+        subtitle={topSubtitle}
+        onBack={() => router.back()}
+        onSubmit={() => void handleCreateTask()}
+        submitting={formBusy}
+        submitLabel="创建"
+      />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+        <ScrollView
+          refreshControl={refreshControl}
+          contentContainerStyle={[styles.foldContent, { paddingBottom: 96 + footPad }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          {projectName ? (
+            <FoldRiseIn animate={foldAnimate} index={0} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+              <View
+                style={[
+                  styles.fcard,
+                  styles.fcardTight,
+                  { backgroundColor: inheritBannerBg, borderColor: inheritBannerBorder, paddingVertical: 9 },
+                ]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={[styles.projectAvatar, { backgroundColor: tf.lily2 }]}>
+                    <Text style={{ fontSize: 13 }}>{entityIcon || '📁'}</Text>
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#4F6152' }} numberOfLines={1}>
+                      {projectName}
+                    </Text>
+                    <Text style={{ fontSize: 10, color: '#8A988C', marginTop: 2 }} numberOfLines={1}>
+                      {inheritsProjectSchedule
+                        ? `继承项目日程${deadlineText ? ` · ${deadlineText}` : ''}`
+                        : '叶子任务 · 可被指派青蛙'}
+                    </Text>
+                  </View>
+                  <View style={[styles.leafTag, { backgroundColor: tf.lily2 }]}>
+                    <Text style={{ fontSize: 10, color: tf.frog, fontWeight: '700' }}>叶子任务</Text>
+                  </View>
+                </View>
+              </View>
+            </FoldRiseIn>
+          ) : null}
+
+          <FoldRiseIn
+            animate={foldAnimate}
+            index={projectName ? 1 : 0}
+            duration={520}
+            staggerMs={42}
+            fromY={10}
+            holdHidden={foldAnimate}>
+            <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+              <View style={styles.titleRow}>
+                <EntityIconPickerField
+                  compact
+                  value={entityIcon}
+                  onChange={setEntityIcon}
+                  fallback={DEFAULT_TODO_ICON}
+                  disabled={formBusy}
+                  accessibilityLabel="选择任务图标"
+                />
+                <View style={{ flex: 1 }}>
+                  <TextInput
+                    ref={titleInputRef}
+                    value={title}
+                    onChangeText={handleTitleChange}
+                    placeholder="写下任务名称…"
+                    placeholderTextColor={tf.faint}
+                    multiline
+                    maxLength={titleMaxLength}
+                    style={[styles.foldTitleInput, { color: tf.ink, fontFamily: fonts.serif }]}
+                  />
+                  <Text style={[styles.charCounter, { color: tf.faint }]}>
+                    {title.length}/{titleMaxLength} · 标题必填
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.foldChipRow}>
+                <View style={[styles.fchip, { backgroundColor: tf.pond, borderColor: tf.pond }]}>
+                  <Text style={[styles.fchipText, { color: tf.onPond }]}>叶子任务</Text>
+                </View>
+                <Pressable
+                  onPress={() => setIsLongTermTask((v) => !v)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isLongTermTask }}
+                  style={[
+                    styles.fchip,
+                    isLongTermTask && { backgroundColor: tf.pond, borderColor: tf.pond },
+                  ]}>
+                  <MaterialIcons
+                    name="timer"
+                    size={12}
+                    color={isLongTermTask ? tf.onPond : '#7C897E'}
+                    style={{ marginRight: 3 }}
+                  />
+                  <Text
+                    style={[
+                      styles.fchipText,
+                      { color: isLongTermTask ? tf.onPond : '#7C897E' },
+                    ]}>
+                    长期任务
+                  </Text>
+                </Pressable>
+                <Text style={{ marginLeft: 'auto', fontSize: 10, color: '#A2AAA1', alignSelf: 'center' }}>
+                  {isLongTermTask ? '完成可仅结束今日会话' : '可被指派青蛙'}
+                </Text>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          {quickProjectId ? (
+            <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+              <View style={[styles.fcard, styles.fcardTight, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                <View style={styles.frow}>
+                  <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <ProjectTagPickerField
                       selectedIds={selectedTagIds}
                       allTags={allTags}
                       loading={tagsLoading}
-                      locked={!isStandalone && inheritsProjectTags}
+                      locked={inheritsProjectTags}
                       onChange={setSelectedTagIds}
-                      textColor={colors.text}
-                      outline={colors.textSecondary}
-                      placeholderColor={colors.textMuted}
-                      primary={colors.primary}
-                      surfaceLow={colors.input}
-                      surfaceLowest={colors.surfaceSubtle}
+                      textColor={tf.ink2}
+                      outline={tf.muted}
+                      placeholderColor={tf.faint}
+                      primary={tf.frog}
+                      surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                      surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
                       isDark={isDark}
                     />
                   </View>
+                  {inheritsProjectTags ? (
+                    <MaterialIcons name="lock-outline" size={14} color={tf.faint} />
+                  ) : null}
+                </View>
+                {inheritsProjectTags ? (
+                  <View style={styles.hintline}>
+                    <MaterialIcons name="lock-outline" size={12} color="#8A5F25" />
+                    <Text style={{ fontSize: 10, color: '#8A5F25', flex: 1 }}>
+                      项目标签与任务自有标签互斥，创建后继承项目标签。
+                    </Text>
+                  </View>
                 ) : null}
               </View>
+            </FoldRiseIn>
+          ) : null}
 
-              {isStandalone ? (
-                <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-                  <Text style={[styles.panelTitle, { color: colors.text }]}>优先级</Text>
-                  <ComposerPriorityMatrix value={priority} onChange={setPriority} />
+          <FoldRiseIn
+            animate={foldAnimate}
+            index={quickProjectId ? 3 : 2}
+            duration={520}
+            staggerMs={42}
+            fromY={10}
+            holdHidden={foldAnimate}>
+            <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+              <TaskFoldPriorityGrid
+                value={priority}
+                onChange={setPriority}
+                subtitle={projectName ? '从项目继承，可改' : '四象限优先级'}
+              />
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn
+            animate={foldAnimate}
+            index={quickProjectId ? 4 : 3}
+            duration={520}
+            staggerMs={42}
+            fromY={10}
+            holdHidden={foldAnimate}>
+            <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+              <Pressable
+                onPress={scheduleLocked ? undefined : openSchedulePicker}
+                disabled={scheduleLocked}
+                accessibilityRole="button"
+                accessibilityLabel={scheduleLocked ? '日程已继承项目，不可修改' : '修改日程'}
+                style={({ pressed }) => [
+                  styles.calendarbtn,
+                  {
+                    borderColor: 'rgba(216,205,187,0.8)',
+                    backgroundColor: isDark ? colors.input : 'rgba(255,255,255,0.55)',
+                    opacity: scheduleLocked ? 0.72 : pressed ? 0.88 : 1,
+                  },
+                ]}>
+                <View style={[styles.calic, { backgroundColor: tf.lily2 }]}>
+                  <MaterialIcons name="event" size={16} color="#64805D" />
                 </View>
-              ) : null}
-
-              {!isStandalone || standaloneIntent === 'active' ? (
-                <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-                  <Text style={[styles.panelTitle, { color: colors.text }]}>日程</Text>
-                  <EntityFormScheduleField
-                    deadlineText={deadlineText}
-                    reminderText={reminderText}
-                    repeatText={repeatText}
-                    onPress={openSchedulePicker}
-                    locked={inheritsProjectSchedule}
-                  />
-                  <Pressable
-                    onPress={toggleAutoPlaceIntoSchedule}
-                    accessibilityRole="switch"
-                    accessibilityState={{ checked: autoPlaceIntoSchedule }}
-                    style={({ pressed }) => [
-                      styles.longTermRow,
-                      {
-                        backgroundColor: autoPlaceIntoSchedule ? `${colors.primary}12` : fieldBg,
-                        borderColor: autoPlaceIntoSchedule ? colors.primary : 'transparent',
-                        opacity: pressed ? 0.88 : 1,
-                        marginTop: Spacing.md,
-                      },
-                    ]}>
-                    <View style={styles.longTermTextWrap}>
-                      <Text style={[styles.longTermTitle, { color: colors.text }]}>自动入格</Text>
-                      <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
-                        按重复日自动叠到日程表对应格子；需先设置重复与具体时间
-                      </Text>
-                    </View>
-                    <MaterialIcons
-                      name={autoPlaceIntoSchedule ? 'check-box' : 'check-box-outline-blank'}
-                      size={22}
-                      color={autoPlaceIntoSchedule ? colors.primary : colors.textSecondary}
-                    />
-                  </Pressable>
-                </View>
-              ) : null}
-
-              <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-                <Text style={[styles.panelTitle, { color: colors.text }]}>更多</Text>
-                {!isStandalone ? (
-                  <Pressable
-                    onPress={() => setIsLongTermTask((v) => !v)}
-                    accessibilityRole="switch"
-                    accessibilityState={{ checked: isLongTermTask }}
-                    style={({ pressed }) => [
-                      styles.longTermRow,
-                      {
-                        backgroundColor: isLongTermTask ? `${colors.primary}12` : fieldBg,
-                        borderColor: isLongTermTask ? colors.primary : 'transparent',
-                        opacity: pressed ? 0.88 : 1,
-                      },
-                    ]}>
-                    <View style={styles.longTermTextWrap}>
-                      <Text style={[styles.longTermTitle, { color: colors.text }]}>长期任务</Text>
-                      <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
-                        指派为青蛙后，完成时可仅结束今日会话
-                      </Text>
-                    </View>
-                    <MaterialIcons
-                      name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
-                      size={22}
-                      color={isLongTermTask ? colors.primary : colors.textSecondary}
-                    />
-                  </Pressable>
-                ) : null}
-
-                <View style={styles.fieldBlock}>
-                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>奖励积分</Text>
-                  <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
-                    <TextInput
-                      value={rewardPointsText}
-                      onChangeText={setRewardPointsText}
-                      placeholder="0"
-                      placeholderTextColor={colors.textMuted}
-                      keyboardType="numbers-and-punctuation"
-                      style={[styles.rewardPointsInput, { color: colors.text }]}
-                    />
-                  </View>
-                  <Text style={[styles.longTermHint, { color: colors.textSecondary }]}>
-                    完成后计入；负数扣除，可含小数；0 无变动
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.calMain, { color: '#59685E' }]} numberOfLines={1}>
+                    {deadlineText || '设置日期 / 时间'}
+                  </Text>
+                  <Text style={[styles.calSub, { color: tf.faint }]} numberOfLines={1}>
+                    {scheduleLocked
+                      ? `继承项目${deadlineText ? ` · ${deadlineText}` : ''}`
+                      : [reminderText, repeatText].filter(Boolean).join(' · ') || '提醒 / 重复可选'}
                   </Text>
                 </View>
+                {scheduleLocked ? (
+                  <MaterialIcons name="lock-outline" size={14} color={tf.faint} />
+                ) : (
+                  <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
+                )}
+              </Pressable>
 
-                <View style={styles.fieldBlock}>
-                  <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>验收标准</Text>
-                  <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
-                    <TextInput
-                      value={acceptanceCriteria}
-                      onChangeText={setAcceptanceCriteria}
-                      placeholder="怎样算完成？（可选）"
-                      placeholderTextColor={colors.textMuted}
-                      multiline
-                      textAlignVertical="top"
-                      style={[styles.notesInput, { color: colors.text }]}
-                    />
-                  </View>
+              <View style={styles.frow}>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 11, color: tf.faint }}>
+                    {autoPlaceGate.ok
+                      ? inheritsProjectSchedule
+                        ? '与项目日程一致 · 可开启'
+                        : '重复 + 具体时间已满足'
+                      : '需同时有重复与具体时间'}
+                  </Text>
                 </View>
-
-                {isEditStandalone ? (
-                  <Pressable
-                    onPress={removeStandaloneTodo}
-                    disabled={formBusy}
-                    accessibilityRole="button"
-                    accessibilityLabel="删除待办"
-                    style={({ pressed }) => [
-                      styles.deleteBtn,
-                      {
-                        borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
-                        opacity: formBusy ? 0.55 : pressed ? 0.8 : 1,
-                      },
-                    ]}>
-                    <MaterialIcons
-                      name="delete-outline"
-                      size={18}
-                      color={isDark ? '#f87171' : '#ba1a1a'}
-                    />
-                    <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>
-                      删除待办
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            </>
-          )}
-        </ScrollView>
-
-        <Modal transparent visible={mainTaskOpen} animationType="fade" onRequestClose={() => setMainTaskOpen(false)}>
-          <Pressable style={styles.mainTaskOverlay} onPress={() => setMainTaskOpen(false)}>
-            <Pressable
-              onPress={() => {}}
-              style={[
-                styles.mainTaskSheet,
-                {
-                  backgroundColor: colors.background,
-                  borderColor: colors.outline,
-                },
-              ]}>
-              <View style={[styles.mainTaskHandle, { backgroundColor: colors.outline }]} />
-
-              <View style={styles.mainTaskHead}>
-                <Text style={[styles.mainTaskHeadTitle, { color: colors.text }]}>关联主任务</Text>
-                <Pressable
-                  onPress={() => setMainTaskOpen(false)}
-                  style={[styles.mainTaskCloseBtn, { backgroundColor: colors.surfaceMuted }]}>
-                  <MaterialIcons name="close" size={16} color={colors.textSecondary} />
-                </Pressable>
-              </View>
-
-              <View style={[styles.mainTaskSearchWrap, { backgroundColor: colors.input }]}>
-                <MaterialIcons name="search" size={20} color={colors.textSecondary} />
-                <TextInput
-                  value={mainTaskQuery}
-                  onChangeText={setMainTaskQuery}
-                  placeholder="搜索已有主任务..."
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.mainTaskSearchInput, { color: colors.text }]}
+                <TaskFoldSwitch
+                  value={autoPlaceIntoSchedule}
+                  onValueChange={() => toggleAutoPlaceIntoSchedule()}
+                  bounceToken={switchBounceToken}
+                  accessibilityLabel="自动入格"
                 />
               </View>
 
-              <ScrollView style={styles.mainTaskList} contentContainerStyle={{ gap: 10 }} showsVerticalScrollIndicator={false}>
-                {filteredMainTasks.map((item) => {
-                  const active = selectedMainTaskId === item.id;
-                  return (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => setSelectedMainTaskId(item.id)}
-                      style={({ pressed }) => [
-                        styles.mainTaskItem,
-                        {
-                          backgroundColor: colors.surface,
-                          borderColor: active ? `${colors.primary}44` : colors.outline,
-                        },
-                        pressed && { opacity: 0.86 },
-                      ]}>
-                      <View style={[styles.mainTaskRadio, { borderColor: active ? colors.primary : colors.outline }]}>
-                        {active ? <View style={[styles.mainTaskRadioInner, { backgroundColor: colors.primary }]} /> : null}
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.mainTaskItemTitle, { color: colors.text }]}>{item.title}</Text>
-                        <Text style={[styles.mainTaskItemDue, { color: colors.textSecondary }]}>{item.due}</Text>
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
+              <Animated.View style={{ height: autoPlacePreviewH, overflow: 'hidden' }}>
+                <View
+                  style={[
+                    styles.fbox,
+                    {
+                      backgroundColor: 'rgba(232,239,217,0.4)',
+                      borderColor: '#C8D8B1',
+                    },
+                  ]}>
+                  <Text style={{ fontSize: 11, color: '#607A5C', lineHeight: 16 }}>
+                    <Text style={{ fontWeight: '700' }}>自动入格预览 </Text>
+                    {repeatText || '重复日'} {deadlineText || ''} → 冲突时顺延到下一空档。
+                  </Text>
+                </View>
+              </Animated.View>
 
-              <Pressable
-                onPress={() => setMainTaskOpen(false)}
-                style={({ pressed }) => [
-                  styles.mainTaskConfirmBtn,
-                  { backgroundColor: colors.primary },
-                  pressed && { opacity: 0.9 },
+              <View
+                style={[
+                  styles.frow,
+                  { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
                 ]}>
-                <Text style={[styles.mainTaskConfirmText, { color: colors.onPrimary }]}>确认关联</Text>
-              </Pressable>
-            </Pressable>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: tf.ink2, fontFamily: fonts.mono }}>
+                    {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: tf.faint }}>完成时结算</Text>
+                </View>
+                <View style={styles.stepper}>
+                  <Pressable onPress={() => bumpReward(-1)} style={styles.stepperBtn} accessibilityLabel="减少积分">
+                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
+                  </Pressable>
+                  <Text style={{ fontFamily: fonts.mono, color: '#5C6D60', minWidth: 18, textAlign: 'center' }}>
+                    {rewardN}
+                  </Text>
+                  <Pressable onPress={() => bumpReward(1)} style={styles.stepperBtn} accessibilityLabel="增加积分">
+                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn
+            animate={foldAnimate}
+            index={quickProjectId ? 5 : 4}
+            duration={520}
+            staggerMs={42}
+            fromY={10}
+            holdHidden={foldAnimate}>
+            <View style={[styles.fcard, styles.fcardTight, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+              <View style={styles.frow}>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
+                <TextInput
+                  value={acceptanceCriteria}
+                  onChangeText={setAcceptanceCriteria}
+                  placeholder="怎样算完成？（可选）"
+                  placeholderTextColor={tf.faint}
+                  style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
+                />
+                <MaterialIcons name="edit" size={14} color={tf.faint} />
+              </View>
+              <View style={styles.hintline}>
+                <MaterialIcons name="cruelty-free" size={12} color={tf.frog} />
+                <Text style={{ fontSize: 10, color: '#6F856B', flex: 1 }}>
+                  保存后可长按任务，放入今日或本周空档。
+                </Text>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn
+            animate={foldAnimate}
+            index={quickProjectId ? 6 : 5}
+            duration={520}
+            staggerMs={42}
+            fromY={10}
+            holdHidden={foldAnimate}>
+            <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>更多</Text>
+                <Text style={{ fontSize: 10, color: tf.faint }}>叶子任务默认继承项目设置</Text>
+              </View>
+              <View style={styles.frow}>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>提醒</Text>
+                <Text style={[styles.frowVal, { color: tf.ink2 }]} numberOfLines={1}>
+                  {reminderText || '未设置'}
+                </Text>
+                <Pressable onPress={scheduleLocked ? undefined : openSchedulePicker} disabled={scheduleLocked}>
+                  <Text style={{ fontSize: 11, color: scheduleLocked ? tf.faint : '#8C998E' }}>
+                    {scheduleLocked ? '锁定' : '修改 ›'}
+                  </Text>
+                </Pressable>
+              </View>
+              <View
+                style={[
+                  styles.frow,
+                  { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
+                ]}>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>重复</Text>
+                <Text style={[styles.frowVal, { color: tf.ink2 }]} numberOfLines={1}>
+                  {repeatText || '不重复'}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.frow,
+                  { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
+                ]}>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>备注</Text>
+                <TextInput
+                  value={note}
+                  onChangeText={setNote}
+                  placeholder="可选补充说明"
+                  placeholderTextColor={tf.faint}
+                  style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
+                />
+                <MaterialIcons name="edit" size={14} color={tf.faint} />
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          {autoPlaceIntoSchedule ? (
+            <FoldRiseIn
+              animate={foldAnimate}
+              index={quickProjectId ? 7 : 6}
+              duration={520}
+              staggerMs={42}
+              fromY={10}
+              holdHidden={foldAnimate}>
+              <View
+                style={[
+                  styles.fcard,
+                  styles.fcardTight,
+                  {
+                    backgroundColor: 'rgba(232,239,217,0.36)',
+                    borderColor: '#C8D8B1',
+                  },
+                ]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={[styles.frogmark, { backgroundColor: tf.pond }]}>
+                    <MaterialIcons name="spa" size={14} color={tf.sun} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#4F6152' }}>
+                      创建后 · {repeatText || '按重复'} 自动入格
+                    </Text>
+                    <Text style={{ fontSize: 10, color: '#7F947B', marginTop: 2 }}>{scheduleSummary}</Text>
+                  </View>
+                  <View style={[styles.autoTag, { backgroundColor: tf.lily2 }]}>
+                    <Text style={{ fontSize: 10, color: tf.frog, fontWeight: '700' }}>自动</Text>
+                  </View>
+                </View>
+              </View>
+            </FoldRiseIn>
+          ) : null}
+        </ScrollView>
+
+        <View style={[styles.foldFoot, { paddingBottom: footPad }]}>
+          <Pressable
+            onPress={() => void handleCreateTask()}
+            disabled={formBusy}
+            style={({ pressed }) => [
+              styles.foldPrimary,
+              {
+                backgroundColor: tf.pond,
+                opacity: formBusy ? 0.65 : pressed ? 0.9 : 1,
+              },
+            ]}>
+            {formBusy ? (
+              <ActivityIndicator color={tf.onPond} />
+            ) : (
+              <>
+                <MaterialIcons name="cruelty-free" size={16} color={tf.onPond} />
+                <Text style={[styles.foldPrimaryText, { color: tf.onPond }]}>创建任务</Text>
+              </>
+            )}
           </Pressable>
-        </Modal>
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1037,54 +1448,18 @@ export default function AddTaskScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  content: {
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    gap: 12,
-    maxWidth: 560,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  panel: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    padding: 14,
-    gap: 12,
-  },
-  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
-  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
-  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28, minHeight: 56 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
-  fieldBlock: { gap: 8 },
-  fieldLabel: { fontSize: 12, fontWeight: '600' },
   editLoading: {
-    paddingVertical: Spacing['6xl'],
+    paddingVertical: 48,
     alignItems: 'center',
-    gap: Spacing.xl,
+    gap: 12,
   },
   loadingText: { fontSize: 12, fontWeight: '500' },
-  standaloneIntentRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  standaloneIntentChip: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  standaloneIntentChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
   standaloneShelvedHint: {
     fontSize: 12,
     lineHeight: 17,
+    marginTop: 6,
   },
   deleteBtn: {
     width: '100%',
@@ -1098,123 +1473,132 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   deleteText: { fontSize: 14, fontWeight: '600' },
-  longTermRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  longTermTextWrap: {
-    flex: 1,
-    gap: 3,
-  },
-  longTermTitle: { fontSize: 14, fontWeight: '600' },
-  longTermHint: { fontSize: 12, lineHeight: 16 },
-  rewardPointsWrap: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  rewardPointsInput: {
-    padding: 0,
-    margin: 0,
-    fontSize: 15,
-    fontWeight: '600',
-    minHeight: 20,
-  },
-  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
-  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
-  mainTaskOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  mainTaskSheet: {
-    borderTopLeftRadius: Radius.sheet,
-    borderTopRightRadius: Radius.sheet,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderBottomWidth: 0,
-    paddingHorizontal: Layout.pagePaddingX,
-    paddingBottom: Spacing['4xl'],
-    maxHeight: '85%',
-    gap: Spacing.lg,
-  },
-  mainTaskHandle: {
-    width: 32,
-    height: 4,
-    borderRadius: 2,
+  foldContent: {
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    gap: 8,
+    maxWidth: 560,
+    width: '100%',
     alignSelf: 'center',
-    marginTop: Spacing.xl,
   },
-  mainTaskHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  mainTaskHeadTitle: { fontSize: 17, fontWeight: '700' },
-  mainTaskCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.icon,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mainTaskSearchWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
-  },
-  mainTaskSearchInput: {
-    flex: 1,
-    paddingVertical: 0,
-    fontSize: 15,
-  },
-  mainTaskList: {
-    maxHeight: 320,
-  },
-  mainTaskItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xl,
-    borderRadius: Radius.lg,
+  fcard: {
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['2xl'],
-    paddingVertical: Spacing['2xl'],
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 0,
   },
-  mainTaskRadio: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mainTaskRadioInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  mainTaskItemTitle: {
-    marginBottom: 2,
-    fontSize: 15,
+  fcardTight: { paddingVertical: 8 },
+  foldTitleInput: {
+    padding: 0,
+    fontSize: 18,
     fontWeight: '600',
+    lineHeight: 24,
+    minHeight: 40,
   },
-  mainTaskItemDue: { fontSize: 12 },
-  mainTaskConfirmBtn: {
-    marginTop: Spacing.sm,
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing['2xl'],
+  foldChipRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' },
+  fchip: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#F1EDE1',
+    borderWidth: 1,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+  },
+  fchipText: { fontSize: 12, fontWeight: '600' },
+  projectAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  mainTaskConfirmText: { fontSize: 15, fontWeight: '700' },
+  leafTag: {
+    height: 18,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarbtn: {
+    height: 44,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    marginBottom: 6,
+  },
+  calic: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calMain: { fontSize: 13, fontWeight: '600' },
+  calSub: { fontSize: 10, marginTop: 2 },
+  frow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 36,
+  },
+  frowLab: { width: 64, fontSize: 12, flexShrink: 0 },
+  frowVal: { flex: 1, fontSize: 13, fontWeight: '600' },
+  frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0 },
+  fbox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginTop: 4,
+  },
+  hintline: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  stepperBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: '#F0EBDE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  frogmark: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  autoTag: {
+    height: 18,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  foldFoot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+  },
+  foldPrimary: {
+    height: 46,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  foldPrimaryText: { fontSize: 14, fontWeight: '700' },
+  dotLive: { width: 5, height: 5, borderRadius: 3 },
 });
 

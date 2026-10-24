@@ -10,7 +10,17 @@ import { plainTextFromBody } from '@/lib/memo-richdoc/plain-text';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 
-import { MEMO_INK, MEMO_INK_SOFT, MEMO_RULE, MemoTape, PaperCurl, Thumbtack, memoPaperColor, shiftPaper } from './memo-paper';
+import {
+  MEMO_INK,
+  MEMO_INK_SOFT,
+  MEMO_RULE,
+  MEMO_WASH,
+  MemoTape,
+  PaperCurl,
+  Thumbtack,
+  memoPaperColor,
+  shiftPaper,
+} from './memo-paper';
 import { hasMemoExpanded, markMemoExpanded } from './use-memo-list-motion';
 
 const INK = MEMO_INK;
@@ -212,7 +222,7 @@ export function MemoListRow({
               {tags.slice(0, wide ? 4 : 3).map(t => {
                 const tagStyle = memoTagStyle(t.color, false);
                 return (
-                  <View key={t.id} style={[styles.miniTag, { backgroundColor: 'rgba(58,42,26,0.08)' }]}>
+                  <View key={t.id} style={[styles.miniTag, { backgroundColor: MEMO_WASH }]}>
                     <View style={[styles.tagDot, { backgroundColor: tagStyle.color }]} />
                     <Text style={styles.miniTagText} numberOfLines={1}>
                       {t.name}
@@ -306,7 +316,7 @@ const styles = StyleSheet.create({
     top: 14,
     bottom: 0,
     borderRadius: 3,
-    backgroundColor: 'rgba(62, 40, 18, 0.22)',
+    backgroundColor: 'rgba(42, 50, 44, 0.18)',
     transform: [{ translateX: 3 }, { translateY: 8 }],
   },
   note: {
@@ -317,7 +327,7 @@ const styles = StyleSheet.create({
     paddingBottom: 36,
     minHeight: 132,
     overflow: 'hidden',
-    shadowColor: '#3E2814',
+    shadowColor: '#2A322C',
     shadowOffset: { width: 2, height: 7 },
     shadowOpacity: 0.28,
     shadowRadius: 7,

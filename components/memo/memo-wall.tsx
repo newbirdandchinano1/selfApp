@@ -1,4 +1,4 @@
-import { getPalette } from '@/constants/design-tokens';
+import { HEALTH_HOME_DARK, HEALTH_HOME_LIGHT } from '@/constants/health-home-theme';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 
@@ -11,28 +11,44 @@ export type MemoWallTone = {
   line: string;
   ink: string;
   muted: string;
+  /** 筛选抽屉面板 */
+  drawerPaper: string;
+  drawerCavity: string;
+  searchBg: string;
+  chipBg: string;
 };
 
-/** 粉刷墙的底色和贴在墙上的控件色。浅色是暖灰泥，深色是夜里的同一堵墙。 */
+/**
+ * 备忘录墙面色 — 对齐健康页奶油纸 / 松墨绿（不再用牛皮纸棕）。
+ * 浅色：略深一档的奶油墙，贴便利贴；深色：同一套松墨夜色。
+ */
 export function memoWallTone(isDark: boolean): MemoWallTone {
+  const h = isDark ? HEALTH_HOME_DARK : HEALTH_HOME_LIGHT;
   if (isDark) {
-    const palette = getPalette('dark');
     return {
-      base: palette.background,
-      chip: palette.surfaceMuted,
-      search: palette.surfaceSubtle,
-      line: palette.outlineStrong,
-      ink: palette.text,
-      muted: palette.textSecondary,
+      base: h.paper,
+      chip: h.cardMuted,
+      search: h.card,
+      line: h.lineStrong,
+      ink: h.ink,
+      muted: h.muted,
+      drawerPaper: h.card,
+      drawerCavity: h.paperAlt,
+      searchBg: 'rgba(242,238,228,0.1)',
+      chipBg: 'rgba(169,199,185,0.14)',
     };
   }
   return {
-    base: '#E6DDD0',
-    chip: 'rgba(255,252,246,0.78)',
-    search: 'rgba(255,252,246,0.92)',
-    line: 'rgba(90,70,40,0.18)',
-    ink: '#3A2E22',
-    muted: '#6E5F4E',
+    base: h.paperAlt,
+    chip: 'rgba(255,254,248,0.82)',
+    search: 'rgba(255,254,248,0.94)',
+    line: h.lineStrong,
+    ink: h.ink,
+    muted: h.muted,
+    drawerPaper: h.paper,
+    drawerCavity: h.cardMuted,
+    searchBg: h.sageSoft,
+    chipBg: h.track,
   };
 }
 
@@ -41,10 +57,12 @@ export function memoWallTone(isDark: boolean): MemoWallTone {
  */
 export function MemoWall() {
   const { isDark } = useAppTheme();
-  const palette = getPalette(isDark ? 'dark' : 'light');
-  const patch = isDark ? 'rgba(148,163,184,0.06)' : 'rgba(255,252,246,0.55)';
-  const shade = isDark ? 'rgba(0,0,0,0.16)' : 'rgba(90,70,40,0.08)';
-  const seam = isDark ? 'rgba(148,163,184,0.12)' : 'rgba(120,98,70,0.16)';
+  const h = isDark ? HEALTH_HOME_DARK : HEALTH_HOME_LIGHT;
+  const patch = isDark ? 'rgba(169,199,185,0.06)' : 'rgba(255,254,248,0.55)';
+  const shade = isDark ? 'rgba(0,0,0,0.16)' : 'rgba(30,57,50,0.06)';
+  const seam = isDark ? 'rgba(230,221,206,0.12)' : 'rgba(30,57,50,0.1)';
+  const baseboard = isDark ? h.paperAlt : '#D8D6C4';
+  const lip = isDark ? h.lineStrong : 'rgba(255,254,248,0.78)';
 
   return (
     <View pointerEvents="none" style={styles.fill} accessibilityElementsHidden>
@@ -55,8 +73,8 @@ export function MemoWall() {
       <View style={[styles.seam, { left: '37%', backgroundColor: seam }]} />
       <View style={[styles.seam, { left: '61%', backgroundColor: seam }]} />
       <View style={[styles.seam, { left: '84%', backgroundColor: seam }]} />
-      <View style={[styles.baseboard, { backgroundColor: isDark ? palette.background : '#CABBAA' }]} />
-      <View style={[styles.baseboardLip, { backgroundColor: isDark ? palette.outline : 'rgba(255,252,246,0.75)' }]} />
+      <View style={[styles.baseboard, { backgroundColor: baseboard }]} />
+      <View style={[styles.baseboardLip, { backgroundColor: lip }]} />
     </View>
   );
 }

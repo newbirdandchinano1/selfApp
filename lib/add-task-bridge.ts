@@ -21,6 +21,8 @@ export type AddTaskBridgePayload = {
     schedule?: Record<string, unknown> | null;
     isLongTermTask?: boolean;
     autoPlaceIntoSchedule?: boolean;
+    /** emoji 图标，与习惯同源 */
+    icon?: string;
   };
 };
 

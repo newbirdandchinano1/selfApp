@@ -137,14 +137,14 @@ export function useFinanceTransactionSheetController({
   const baseTheme = Colors[themeKey];
   const isDark = themeKey === 'dark';
 
-  const bg = isDark ? baseTheme.background : '#faf8ff';
-  const surface = isDark ? baseTheme.surface : '#ffffff';
-  const text = isDark ? baseTheme.text : '#131b2e';
-  const subtle = isDark ? baseTheme.textSecondary : '#424754';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(194,198,214,0.26)';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const secondary = isDark ? '#34d399' : '#006c49';
-  const tertiary = isDark ? '#fbbf24' : '#825100';
+  const bg = baseTheme.background;
+  const surface = baseTheme.surface;
+  const text = baseTheme.text;
+  const subtle = baseTheme.textSecondary;
+  const outlineVariant = baseTheme.outline;
+  const primary = baseTheme.primary;
+  const secondary = baseTheme.secondary;
+  const tertiary = baseTheme.tertiary;
 
   const [activeSheetTab, setActiveSheetTab] = React.useState<SheetTab>('sentence');
   const [sheetAmount, setSheetAmount] = React.useState('');

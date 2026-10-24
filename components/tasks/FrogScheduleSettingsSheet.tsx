@@ -1,4 +1,4 @@
-import { FrogScheduleSettingsCard } from '@/components/settings-drawer/frog-schedule-settings-card';
+﻿import { FrogScheduleSettingsCard } from '@/components/settings-drawer/frog-schedule-settings-card';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -21,7 +21,7 @@ export function FrogScheduleSettingsSheet({ visible, onClose }: Props) {
   const text = theme.text;
   const surface = isDark ? '#1e293b' : '#fff';
   const cardBg = isDark ? 'rgba(30,41,59,0.55)' : '#ffffff';
-  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(0,88,190,0.12)';
+  const cardBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(30,57,50,0.12)';
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>

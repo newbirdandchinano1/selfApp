@@ -1,6 +1,9 @@
-import { PaletteDark, PaletteLight } from '@/constants/design-tokens';
+import { HEALTH_HOME_DARK, HEALTH_HOME_LIGHT } from '@/constants/health-home-theme';
 
-/** 菜谱模块色：跟 App 主色一致，背景/强调略偏暖 */
+/**
+ * 菜谱模块色 — 直接消费健康页令牌（奶油纸底 / 松墨绿 / sage）。
+ * 菜谱挂在健康域下，不再走旧财务蓝。
+ */
 export type RecipePalette = {
   bg: string;
   text: string;
@@ -25,52 +28,27 @@ export function getRecipePalette(
   colorScheme: 'light' | 'dark' | null | undefined,
 ): RecipePalette {
   const isDark = (colorScheme ?? 'light') === 'dark';
+  const h = isDark ? HEALTH_HOME_DARK : HEALTH_HOME_LIGHT;
 
-  if (isDark) {
-    const t = PaletteDark;
-    return {
-      bg: t.background,
-      text: t.text,
-      textSecondary: t.textSecondary,
-      outline: 'rgba(148,163,184,0.85)',
-      outlineMuted: 'rgba(148,163,184,0.55)',
-      primary: t.primary,
-      primarySoft: t.primaryMuted,
-      // 略暖：用 tertiary 琥珀作章节/标签点缀
-      accent: t.tertiary,
-      accentSoft: 'rgba(251,191,36,0.14)',
-      border: t.outline,
-      card: t.surface,
-      header: t.headerScrim,
-      inputBg: t.input,
-      placeholderBg: 'rgba(251,191,36,0.1)',
-      danger: t.dangerSoft,
-      overlay: t.overlay,
-      isDark: true,
-    };
-  }
-
-  const t = PaletteLight;
   return {
-    // 主色同 App；底比 #faf8ff 略暖一丁点（仍偏冷白）
-    bg: '#faf8f6',
-    text: t.text,
-    textSecondary: t.textSecondary,
-    outline: '#5c6370',
-    outlineMuted: '#8b92a0',
-    primary: t.primary,
-    primarySoft: t.primaryMuted,
-    // tertiary 棕金，只作轻点缀
-    accent: t.tertiary,
-    accentSoft: 'rgba(130,81,0,0.08)',
-    border: 'rgba(0,88,190,0.08)',
-    card: t.surface,
-    header: 'rgba(250,248,246,0.94)',
-    inputBg: t.input,
-    placeholderBg: 'rgba(130,81,0,0.06)',
-    danger: '#b91c1c',
-    overlay: t.overlay,
-    isDark: false,
+    bg: h.paper,
+    text: h.ink,
+    textSecondary: h.inkSoft,
+    outline: h.inkSoft,
+    outlineMuted: h.muted,
+    primary: h.pine,
+    // 选中底：sageSoft，比 track 更实，筛选/入篮状态清楚
+    primarySoft: h.sageSoft,
+    accent: h.sage,
+    accentSoft: isDark ? h.sageSoft : 'rgba(127,166,149,0.28)',
+    border: h.lineStrong,
+    card: h.card,
+    header: isDark ? h.paper : 'rgba(245,243,232,0.94)',
+    inputBg: h.cardMuted,
+    placeholderBg: h.track,
+    danger: isDark ? '#ef4444' : '#b91c1c',
+    overlay: isDark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.25)',
+    isDark,
   };
 }
 

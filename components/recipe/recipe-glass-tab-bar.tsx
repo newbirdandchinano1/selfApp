@@ -151,11 +151,11 @@ const ICON_SIZE = 22;
 const ICON_BOX = Math.ceil(ICON_SIZE * RECIPE_TAB_MOTION.selectPop) + 2;
 const LABEL_BOX_H = 14;
 
-/** 选中深绿 / 未选中黑（浅色模式验收色） */
-const ICON_ACTIVE_LIGHT = '#0F5C38';
-const ICON_IDLE_LIGHT = '#111111';
-const ICON_ACTIVE_DARK = '#6EE7A8';
-const ICON_IDLE_DARK = 'rgba(230,234,240,0.78)';
+/** 选中松墨绿 / 未选中墨色（对齐健康页 pine） */
+const ICON_ACTIVE_LIGHT = '#1E3932';
+const ICON_IDLE_LIGHT = '#1E2A24';
+const ICON_ACTIVE_DARK = '#A9C7B9';
+const ICON_IDLE_DARK = 'rgba(242,238,228,0.72)';
 
 function springTo(shared: SharedValue<number>, to: number, reduceMotion: boolean, cfg: SpringCfg) {
   if (reduceMotion) {
@@ -182,15 +182,15 @@ function shellTokens(isDark: boolean) {
     };
   }
   return {
-    shellBorder: 'rgba(15,23,42,0.12)',
-    shellTint: 'rgba(240,242,247,0.78)',
-    innerStroke: 'rgba(255,255,255,0.65)',
-    specular: 'rgba(255,255,255,0.9)',
-    bevel: 'rgba(0,0,0,0.05)',
+    shellBorder: 'rgba(30,57,50,0.12)',
+    shellTint: 'rgba(245,243,232,0.82)',
+    innerStroke: 'rgba(255,254,248,0.7)',
+    specular: 'rgba(255,254,248,0.9)',
+    bevel: 'rgba(30,57,50,0.06)',
     shadowOpacity: 0.16,
     blurIntensity: Platform.OS === 'ios' ? 42 : 58,
     blurTint: 'systemThinMaterialLight' as const,
-    webBg: 'rgba(240,242,247,0.82)',
+    webBg: 'rgba(245,243,232,0.86)',
   };
 }
 

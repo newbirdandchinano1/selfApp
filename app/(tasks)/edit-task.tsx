@@ -1,6 +1,70 @@
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+﻿import { ComposerTopBar, type TaskPriorityKey } from '@/components/composer';
+import {
+  AddSubtaskSheet,
+  labelsFromPickerResult,
+  extractDueDateFromDeadlineText,
+  type AddSubtaskDraft,
+} from '@/components/entity-form';
+import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import {
+  FoldRiseIn,
+  useFoldMotionGate,
+} from '@/components/review/fold-motion';
+import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
+import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
+import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import { useTaskFoldTheme } from '@/constants/task-fold-theme';
+import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
+import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
+import { toast } from '@/lib/app-feedback';
+import {
+  DEFAULT_TODO_ICON,
+  mergeIconIntoExtraData,
+  normalizeEntityIcon,
+  parseIconFromExtraData,
+} from '@/lib/constants/entity-icon-choices';
+import { formatWriteError } from '@/lib/format-write-error';
+import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import { notifyPageDataChanged } from '@/lib/page-api-session';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import { getProjectById } from '@/lib/repositories/projects/project';
+import {
+  getTagIdsByEntity,
+  getProjectTags,
+  getTagsByProjectId,
+  getTagIdsByProjectId,
+  setTaskTagIds,
+} from '@/lib/repositories/tags/tag';
+import type { TagRow } from '@/lib/repositories/tags/tag.types';
+import {
+  mergeBoundHabitIdsIntoExtraData,
+  parseBoundHabitIdsFromExtraData,
+  tryCompleteTaskByBoundHabits,
+} from '@/lib/repositories/tasks/task-habit-binding';
+import {
+  countIncompleteDescendantTasks,
+  createTask,
+  deleteTask,
+  getChildTasksByParentTaskId,
+  getTaskById,
+  updateTask,
+} from '@/lib/repositories/tasks/task';
+import {
+  normalizeTaskPriority,
+  type TaskPriority,
+  type TaskRow,
+  type TaskStatus,
+} from '@/lib/repositories/tasks/task.types';
+import {
+  mergeRewardPointsIntoExtraData,
+  normalizeRewardPoints,
+  parseRewardPointsFromExtraData,
+} from '@/lib/reward-points';
 import {
   applyScheduleMetaToLabels,
   buildDeadlineTextFromSchedule,
@@ -16,37 +80,29 @@ import {
   type DateLimitYmd,
   type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
-import { labelsFromPickerResult, EntityFormScheduleField, extractDueDateFromDeadlineText } from '@/components/entity-form';
-import { requestPush } from '@/lib/sync-manager';
-import { toast } from '@/lib/app-feedback';
-import { formatWriteError } from '@/lib/format-write-error';
-import { notifyPageDataChanged } from '@/lib/page-api-session';
-import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
-import {
-  consumeSchedulePickerResult, normalizeRouteParam, type SchedulePickerInitPayload, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
 import {
   canEnableAutoPlaceIntoSchedule,
   parseAutoPlaceIntoSchedule,
 } from '@/lib/schedule/task-virtual-placement';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
-import { getProjectById } from '@/lib/repositories/projects/project';
 import {
-  countIncompleteDescendantTasks,
-  createTask,
-  deleteTask,
-  getChildTasksByParentTaskId,
-  getTaskById,
-  updateTask,
-} from '@/lib/repositories/tasks/task';
-import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
+  consumeSchedulePickerResult,
+  normalizeRouteParam,
+  type SchedulePickerInitPayload,
+  type PickedScheduleMeta,
+} from '@/lib/schedule-picker-bridge';
+import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
+import { requestPush } from '@/lib/sync-manager';
+import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from "expo-router/react-navigation";
+import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -56,39 +112,31 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
-import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
-import {
-  getTagIdsByEntity,
-  getProjectTags,
-  getTagsByProjectId,
-  getTagIdsByProjectId,
-  setTaskTagIds,
-} from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
-import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import {
-  mergeRewardPointsIntoExtraData,
-  normalizeRewardPoints,
-  parseRewardPointsFromExtraData,
-} from '@/lib/reward-points';
-import { getHabits } from '@/lib/repositories/habits/habit';
-import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
-import type { HabitRow } from '@/lib/repositories/habits/habit.types';
-import {
-  mergeBoundHabitIdsIntoExtraData,
-  parseBoundHabitIdsFromExtraData,
-  tryCompleteTaskByBoundHabits,
-} from '@/lib/repositories/tasks/task-habit-binding';
-import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
-import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 
-type PriorityKey =
-  | 'urgent-important'
-  | 'urgent-not-important'
-  | 'not-urgent-important'
-  | 'not-urgent-not-important';
+type PriorityKey = TaskPriorityKey;
+
+/** 设计稿状态芯片（不含已完成；done 仍可在快照中保留） */
+const STATUS_CHIPS: Array<{ key: Exclude<TaskStatus, 'done'>; label: string }> = [
+  { key: 'doing', label: '进行中' },
+  { key: 'todo', label: '待办' },
+  { key: 'blocked', label: '受阻' },
+  { key: 'cancelled', label: '已取消' },
+  { key: 'shelved', label: '暂时搁置' },
+];
+
+function normalizeEditTaskStatus(raw: string | null | undefined): TaskStatus {
+  if (
+    raw === 'doing' ||
+    raw === 'done' ||
+    raw === 'blocked' ||
+    raw === 'cancelled' ||
+    raw === 'shelved' ||
+    raw === 'todo'
+  ) {
+    return raw;
+  }
+  return 'todo';
+}
 
 type TaskScheduleMeta = PickedScheduleMeta;
 
@@ -104,8 +152,11 @@ type SubtaskDraft = {
   reminderText?: string;
   repeat?: string;
   repeatText?: string;
-  note?: string;
+  note?: string | null;
   schedule?: TaskScheduleMeta | null;
+  /** Sheet 回传的数值优先级（1–4）；列表草稿仍用字符串 priority */
+  priorityValue?: number;
+  estimatedMinutes?: number;
 };
 
 function parseTaskExtraData(raw: string | null): Record<string, unknown> {
@@ -136,53 +187,13 @@ function fromTaskPriority(value: TaskPriority): string {
   return '';
 }
 
-function getPriorityColor(priorityText: string, isDark: boolean) {
-  const value = priorityText.trim();
-  if (!value) {
-    return {
-      tint: isDark ? '#94a3b8' : '#727785',
-      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-    };
-  }
-
-  if (value.includes('不紧急不重要')) {
-    return {
-      tint: isDark ? '#94a3b8' : '#727785',
-      bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-      border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-    };
-  }
-
-  if (value.includes('不紧急重要')) {
-    return {
-      tint: isDark ? '#60a5fa' : '#0058be',
-      bg: isDark ? 'rgba(96,165,250,0.2)' : 'rgba(0,88,190,0.1)',
-      border: isDark ? 'rgba(96,165,250,0.4)' : 'rgba(0,88,190,0.24)',
-    };
-  }
-
-  if (value.includes('紧急不重要')) {
-    return {
-      tint: isDark ? '#fbbf24' : '#9a5b00',
-      bg: isDark ? 'rgba(251,191,36,0.2)' : 'rgba(154,91,0,0.1)',
-      border: isDark ? 'rgba(251,191,36,0.42)' : 'rgba(154,91,0,0.24)',
-    };
-  }
-
-  if (value.includes('紧急重要')) {
-    return {
-      tint: isDark ? '#f87171' : '#ba1a1a',
-      bg: isDark ? 'rgba(248,113,113,0.18)' : 'rgba(186,26,26,0.1)',
-      border: isDark ? 'rgba(248,113,113,0.4)' : 'rgba(186,26,26,0.25)',
-    };
-  }
-
-  return {
-    tint: isDark ? '#94a3b8' : '#727785',
-    bg: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(114,119,133,0.12)',
-    border: isDark ? 'rgba(148,163,184,0.34)' : 'rgba(114,119,133,0.25)',
-  };
+function priorityShortLabel(priorityText?: string): string {
+  const value = (priorityText ?? '').trim();
+  if (value.includes('紧急重要') && !value.includes('不')) return 'P1';
+  if (value.includes('紧急不重要')) return 'P2';
+  if (value.includes('不紧急重要')) return 'P3';
+  if (value.includes('不紧急不重要')) return 'P4';
+  return '';
 }
 
 function mapTaskRowToSubtask(task: TaskRow): SubtaskDraft {
@@ -223,6 +234,8 @@ function priorityKeyToLabel(key: PriorityKey): string {
 
 type EditTaskFormSnapshot = {
   title: string;
+  entityIcon: string;
+  status: TaskStatus;
   acceptanceCriteria: string;
   priority: PriorityKey;
   deadlineText: string;
@@ -257,6 +270,8 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 
   return {
     title: (task.title ?? '').trim(),
+    entityIcon: parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON),
+    status: normalizeEditTaskStatus(task.status),
     acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
     priority: mapPriorityTextToKey(priorityLabel),
     deadlineText,
@@ -272,6 +287,8 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 
 function buildFormSnapshotFromFields(input: {
   title: string;
+  entityIcon: string;
+  status: TaskStatus;
   acceptanceCriteria: string;
   priority: PriorityKey;
   deadlineText: string;
@@ -285,6 +302,8 @@ function buildFormSnapshotFromFields(input: {
 }): EditTaskFormSnapshot {
   return {
     title: input.title.trim(),
+    entityIcon: normalizeEntityIcon(input.entityIcon, DEFAULT_TODO_ICON),
+    status: input.status,
     acceptanceCriteria: input.acceptanceCriteria.trim(),
     priority: input.priority,
     deadlineText: input.deadlineText,
@@ -313,9 +332,9 @@ export default function EditTaskScreen() {
   const isFocused = useIsFocused();
   const params = useLocalSearchParams<{ id?: string; source?: string; from?: string | string[] }>();
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const theme = Colors[colorScheme ?? 'light'];
-  const isDark = colorScheme === 'dark';
+  const { colors, isDark } = useAppTheme();
+  const { tf, fonts } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
 
   const taskId = typeof params.id === 'string' ? params.id : '';
   /** 从任务详情进入编辑时，保存/删除后需跳过详情页，直接回到任务 Tab */
@@ -327,10 +346,12 @@ export default function EditTaskScreen() {
   const pickParentTaskSource = `${scheduleSource}-pick-parent`;
 
   const [title, setTitle] = React.useState('');
+  const [entityIcon, setEntityIcon] = React.useState(DEFAULT_TODO_ICON);
+  const [status, setStatus] = React.useState<TaskStatus>('todo');
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
-  const [priorityOpen, setPriorityOpen] = React.useState(false);
   const [projectPriorityLabel, setProjectPriorityLabel] = React.useState('');
+  const [projectName, setProjectName] = React.useState('');
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
@@ -340,6 +361,7 @@ export default function EditTaskScreen() {
   const [taskSnapshot, setTaskSnapshot] = React.useState<TaskRow | null>(null);
   const [loadedFormSnapshot, setLoadedFormSnapshot] = React.useState<EditTaskFormSnapshot | null>(null);
   const [subtasks, setSubtasks] = React.useState<SubtaskDraft[]>([]);
+  const [addSubtaskOpen, setAddSubtaskOpen] = React.useState(false);
   const [parentTask, setParentTask] = React.useState<SubtaskDraft | null>(null);
   const [parentDateLimit, setParentDateLimit] = React.useState<DateLimitYmd>({});
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
@@ -349,6 +371,7 @@ export default function EditTaskScreen() {
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
+  const [switchBounceToken, setSwitchBounceToken] = React.useState(0);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<TagRow[]>([]);
@@ -362,7 +385,10 @@ export default function EditTaskScreen() {
   const exitingAfterSaveRef = React.useRef(false);
   const creatingSubtaskIdRef = React.useRef<string | null>(null);
   const [skipRemoveGuard, setSkipRemoveGuard] = React.useState(false);
+  const dirtyOpacity = React.useRef(new Animated.Value(0)).current;
   const titleRef = React.useRef(title);
+  const entityIconRef = React.useRef(entityIcon);
+  const statusRef = React.useRef(status);
   const acceptanceCriteriaRef = React.useRef(acceptanceCriteria);
   const priorityRef = React.useRef(priority);
   const deadlineTextRef = React.useRef(deadlineText);
@@ -376,6 +402,8 @@ export default function EditTaskScreen() {
   const rewardPointsTextRef = React.useRef(rewardPointsText);
   const selectedTagIdsRef = React.useRef(selectedTagIds);
   titleRef.current = title;
+  entityIconRef.current = entityIcon;
+  statusRef.current = status;
   acceptanceCriteriaRef.current = acceptanceCriteria;
   priorityRef.current = priority;
   deadlineTextRef.current = deadlineText;
@@ -403,6 +431,7 @@ export default function EditTaskScreen() {
     }
     const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
     if (!gate.ok) {
+      setSwitchBounceToken((n) => n + 1);
       if (gate.reason === 'no-repeat') {
         Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
           { text: '取消', style: 'cancel' },
@@ -450,31 +479,24 @@ export default function EditTaskScreen() {
     subtaskDateLimit,
   ]);
 
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const outlineVariant = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.7)';
-  const outline = isDark ? 'rgba(148,163,184,0.65)' : 'rgba(114,119,133,0.8)';
-  const surfaceLow = isDark ? 'rgba(30,41,59,0.35)' : 'rgba(241,243,255,0.9)';
-  const surfaceLowest = theme.surface;
-  const subtaskCardBg = isDark ? 'rgba(15,23,42,0.72)' : '#ffffff';
-  const subtaskCardBorder = isDark ? 'rgba(148,163,184,0.3)' : 'rgba(194,198,214,0.55)';
-  const subtaskIndicatorBg = isDark ? 'rgba(30,41,59,0.72)' : 'rgba(226,232,240,0.85)';
-  const panelBorder = isDark ? 'rgba(148,163,184,0.22)' : 'rgba(194,198,214,0.65)';
-  const panelBg = isDark ? 'rgba(30,41,59,0.45)' : '#ffffff';
-  const fieldBg = isDark ? 'rgba(15,23,42,0.45)' : 'rgba(241,243,255,0.72)';
-  const divider = isDark ? 'rgba(148,163,184,0.16)' : 'rgba(226,232,240,0.95)';
-
-  const priorityOptions: Array<{ key: PriorityKey; label: string; color: string }> = [
-    { key: 'urgent-important', label: '紧急重要', color: isDark ? '#f87171' : '#ba1a1a' },
-    { key: 'urgent-not-important', label: '紧急不重要', color: isDark ? '#fbbf24' : '#825100' },
-    { key: 'not-urgent-important', label: '不紧急重要', color: isDark ? '#60a5fa' : '#0058be' },
-    { key: 'not-urgent-not-important', label: '不紧急不重要', color: isDark ? '#94a3b8' : '#727785' },
-  ];
-  const currentPriority = priorityOptions.find((p) => p.key === priority) ?? priorityOptions[0];
+  const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
+  const foldCardBorder = tf.line2;
+  const autoPlaceGate = React.useMemo(
+    () => canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText),
+    [repeatText, scheduleMeta],
+  );
+  const rewardN = Math.round(Number(rewardPointsText) || 0);
+  const incompleteSubtaskCount = React.useMemo(
+    () => subtasks.filter((s) => !s.done).length,
+    [subtasks],
+  );
 
   const isDirty = React.useMemo(() => {
     if (!loadedFormSnapshot || loading) return false;
     const current = buildFormSnapshotFromFields({
       title,
+      entityIcon,
+      status,
       acceptanceCriteria,
       priority,
       deadlineText,
@@ -487,7 +509,37 @@ export default function EditTaskScreen() {
       rewardPointsText,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
-  }, [acceptanceCriteria, autoPlaceIntoSchedule, boundHabitIds, deadlineText, isLongTermTask, loadedFormSnapshot, loading, priority, reminderText, repeatText, rewardPointsText, scheduleMeta, title]);
+  }, [
+    acceptanceCriteria,
+    autoPlaceIntoSchedule,
+    boundHabitIds,
+    deadlineText,
+    entityIcon,
+    isLongTermTask,
+    loadedFormSnapshot,
+    loading,
+    priority,
+    reminderText,
+    repeatText,
+    rewardPointsText,
+    scheduleMeta,
+    status,
+    title,
+  ]);
+
+  React.useEffect(() => {
+    Animated.timing(dirtyOpacity, {
+      toValue: isDirty ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [dirtyOpacity, isDirty]);
+
+  const bumpReward = React.useCallback((delta: number) => {
+    const cur = Number(rewardPointsText);
+    const base = Number.isFinite(cur) ? cur : 0;
+    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
+  }, [rewardPointsText]);
 
   const reload = React.useCallback(async (forceRefresh = false) => {
     if (!taskId) return;
@@ -549,58 +601,69 @@ export default function EditTaskScreen() {
   }, [inheritsProjectSchedule, router, scheduleMeta, scheduleSource, taskDateLimit]);
   openSchedulePickerRef.current = openSchedulePicker;
 
-  const readAddSubtaskResult = React.useCallback(async () => {
-    const payload = globalThis.__addSubtaskResult as { source: string; task: SubtaskDraft } | undefined;
-    if (!payload || payload.source !== addSubtaskSource) return;
-    if (creatingSubtaskIdRef.current === payload.task.id) return;
-
-    const parentTask = taskSnapshotRef.current;
-    if (!parentTask) {
-      toast.error('父任务尚未加载完成，请稍后重试。');
-      return;
-    }
-
-    creatingSubtaskIdRef.current = payload.task.id;
-    globalThis.__addSubtaskResult = undefined;
-
-    try {
-      const subtaskSchedule = payload.task.schedule ?? null;
-      const dueDate = dueDateFromScheduleMeta(
-        subtaskSchedule,
-        extractDueDateFromDeadlineText(payload.task.deadline || payload.task.deadlineText || ''),
-      );
-      let subtaskPriority = parentTask.priority;
-      if (parentTask.project_id) {
-        const project = await getProjectById(parentTask.project_id);
-        if (project) subtaskPriority = project.priority ?? 0;
+  const createSubtaskFromDraft = React.useCallback(
+    async (draft: AddSubtaskDraft) => {
+      if (creatingSubtaskIdRef.current === draft.id) return;
+      const parent = taskSnapshotRef.current;
+      if (!parent) {
+        toast.error('父任务尚未加载完成，请稍后重试。');
+        throw new Error('父任务尚未加载');
       }
-      await createTask({
-        id: payload.task.id,
-        project_id: parentTask.project_id,
-        category_id: parentTask.category_id,
-        parent_task_id: taskId,
-        title: payload.task.title.trim() || '未命名任务',
-        note: null,
-        status: 'todo',
-        priority: subtaskPriority,
-        due_date: dueDate,
-        extra_data: JSON.stringify({
-          reminder: payload.task.reminder || payload.task.reminderText || '',
-          repeat: payload.task.repeat || payload.task.repeatText || '',
-          schedule: subtaskSchedule,
-        }),
-      });
-      toast.success('子任务已创建');
-      await reload();
-    } catch (error) {
-      console.warn('创建子任务失败', error);
-      toast.error(formatWriteError(error, '子任务创建失败，请稍后重试。'));
-    } finally {
-      if (creatingSubtaskIdRef.current === payload.task.id) {
-        creatingSubtaskIdRef.current = null;
+
+      creatingSubtaskIdRef.current = draft.id;
+      try {
+        const subtaskSchedule = draft.schedule ?? null;
+        const dueDate = dueDateFromScheduleMeta(
+          subtaskSchedule,
+          extractDueDateFromDeadlineText(draft.deadline || draft.deadlineText || ''),
+        );
+        const payloadPriority = typeof draft.priority === 'number' ? draft.priority : 0;
+        let subtaskPriority = normalizeTaskPriority(
+          payloadPriority > 0 ? payloadPriority : parent.priority,
+        );
+        if (!(payloadPriority > 0) && parent.project_id) {
+          const project = await getProjectById(parent.project_id);
+          if (project) subtaskPriority = normalizeTaskPriority(project.priority ?? 0);
+        }
+        const doneCount = subtasks.filter((s) => s.done).length;
+        const totalCount = subtasks.length;
+        await createTask({
+          id: draft.id,
+          project_id: parent.project_id,
+          category_id: parent.category_id,
+          parent_task_id: taskId,
+          title: draft.title.trim() || '未命名任务',
+          note: draft.note?.trim() || null,
+          status: 'todo',
+          priority: subtaskPriority,
+          due_date: dueDate,
+          extra_data: JSON.stringify({
+            reminder: draft.reminder || draft.reminderText || '',
+            repeat: draft.repeat || draft.repeatText || '',
+            schedule: subtaskSchedule,
+            ...(typeof draft.estimatedMinutes === 'number'
+              ? { estimatedMinutes: draft.estimatedMinutes }
+              : {}),
+          }),
+        });
+        toast.success(
+          totalCount > 0
+            ? `子任务已添加 · 父任务进度 ${Math.round((doneCount / totalCount) * 100)}% → ${Math.round((doneCount / (totalCount + 1)) * 100)}%`
+            : '子任务已添加',
+        );
+        await reload();
+      } catch (error) {
+        console.warn('创建子任务失败', error);
+        toast.error(formatWriteError(error, '子任务创建失败，请稍后重试。'));
+        throw error;
+      } finally {
+        if (creatingSubtaskIdRef.current === draft.id) {
+          creatingSubtaskIdRef.current = null;
+        }
       }
-    }
-  }, [addSubtaskSource, reload, taskId]);
+    },
+    [reload, subtasks, taskId],
+  );
 
   const readPickParentTaskResult = React.useCallback(async () => {
     const payload = globalThis.__pickParentTaskResult as
@@ -674,6 +737,8 @@ export default function EditTaskScreen() {
       setTaskSnapshot(task);
       setLoadedFormSnapshot(buildFormSnapshotFromTask(task));
       setTitle(task.title ?? '');
+      setEntityIcon(parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON));
+      setStatus(normalizeEditTaskStatus(task.status));
       setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
@@ -761,6 +826,7 @@ export default function EditTaskScreen() {
       if (task.project_id) {
         const project = await getProjectById(task.project_id);
         if (project) {
+          setProjectName(project.name ?? '');
           projectLimit = extractScheduleLimitFromExtra(project.extra_data, project.due_date);
           nextInheritsSchedule = projectDefinesSchedule(project.extra_data, project.due_date);
           try {
@@ -800,6 +866,7 @@ export default function EditTaskScreen() {
             prev
               ? {
                   ...prev,
+                  status: normalizeEditTaskStatus(task.status),
                   priority: mapPriorityTextToKey(inheritedPriorityLabel),
                   acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
                 }
@@ -825,6 +892,7 @@ export default function EditTaskScreen() {
         }
       }
       setProjectPriorityLabel(inheritedPriorityLabel);
+      if (!task.project_id) setProjectName('');
       setParentDateLimit(parentLimit);
       setProjectDateLimit(projectLimit);
       setProjectScheduleMeta(nextProjectSchedule);
@@ -853,12 +921,11 @@ export default function EditTaskScreen() {
   useFocusEffect(
     React.useCallback(() => {
       const consumedSchedule = readScheduleResult();
-      void readAddSubtaskResult();
       void readPickParentTaskResult();
       if (!consumedSchedule) {
         void reload();
       }
-    }, [readPickParentTaskResult, readAddSubtaskResult, readScheduleResult, reload])
+    }, [readPickParentTaskResult, readScheduleResult, reload])
   );
 
   const openEditSubtask = React.useCallback(
@@ -960,22 +1027,27 @@ export default function EditTaskScreen() {
       } else {
         delete parsedExtra.autoPlaceIntoSchedule;
       }
-      const mergedExtra = mergeRewardPointsIntoExtraData(
-        mergeLongTermTaskIntoExtraData(
-          mergeBoundHabitIdsIntoExtraData(
-            JSON.stringify({
-              ...parsedExtra,
-              reminder: reminderForExtra,
-              repeat: repeatForExtra,
-              schedule: meta,
-            }),
-            boundHabitIdsRef.current,
+      const mergedExtra = mergeIconIntoExtraData(
+        mergeRewardPointsIntoExtraData(
+          mergeLongTermTaskIntoExtraData(
+            mergeBoundHabitIdsIntoExtraData(
+              JSON.stringify({
+                ...parsedExtra,
+                reminder: reminderForExtra,
+                repeat: repeatForExtra,
+                schedule: meta,
+              }),
+              boundHabitIdsRef.current,
+            ),
+            isLongTermTaskRef.current,
           ),
-          isLongTermTaskRef.current,
+          normalizeRewardPoints(rewardPointsTextRef.current),
         ),
-        normalizeRewardPoints(rewardPointsTextRef.current),
+        entityIconRef.current,
+        DEFAULT_TODO_ICON,
       );
       const acceptance = acceptanceCriteriaRef.current.trim() || null;
+      const nextStatus = statusRef.current;
       let nextPriority = toTaskPriority(priorityKeyToLabel(priorityRef.current));
       if (snapshot.project_id) {
         const project = await getProjectById(snapshot.project_id);
@@ -986,12 +1058,20 @@ export default function EditTaskScreen() {
           setPriority(mapPriorityTextToKey(label));
         }
       }
+      const nextCompletedAt =
+        nextStatus === 'done'
+          ? snapshot.completed_at
+          : snapshot.status === 'done'
+            ? null
+            : undefined;
       await updateTask(taskId, {
         title: trimmedTitle,
         description: acceptance,
         note: null,
+        status: nextStatus,
         priority: nextPriority,
         due_date: dueDate,
+        completed_at: nextCompletedAt,
         extra_data: mergedExtra,
       });
       if (!snapshot.parent_task_id) {
@@ -1011,6 +1091,8 @@ export default function EditTaskScreen() {
 
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,
+        entityIcon: entityIconRef.current,
+        status: nextStatus,
         acceptanceCriteria: acceptanceCriteriaRef.current,
         priority: mapPriorityTextToKey(fromTaskPriority(nextPriority)),
         deadlineText: deadlineForDue,
@@ -1037,8 +1119,11 @@ export default function EditTaskScreen() {
               title: trimmedTitle,
               description: acceptance,
               note: null,
+              status: nextStatus,
               priority: nextPriority,
               due_date: dueDate,
+              completed_at:
+                nextCompletedAt !== undefined ? nextCompletedAt : prev.completed_at,
               extra_data: mergedExtra,
             }
           : prev,
@@ -1199,533 +1284,489 @@ export default function EditTaskScreen() {
     })();
   }, [loading, navigateAfterDeleteTask, saving, taskId]);
 
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: Math.max(insets.top, 8),
-            backgroundColor: theme.background,
-            borderBottomColor: divider,
-          },
-        ]}>
-        <Pressable
-          onPress={handleBackPress}
-          disabled={saving || loading}
-          hitSlop={10}
-          style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
-          <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: theme.text }]}>{loading ? '加载中' : '编辑任务'}</Text>
-        <Pressable
-          onPress={handleSavePress}
-          disabled={saving || loading}
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.headerActionBtn,
-            {
-              backgroundColor: saving || loading ? `${primary}55` : primary,
-              opacity: pressed ? 0.88 : 1,
-            },
-          ]}>
-          <Text style={styles.headerActionText}>{saving ? '保存中' : '保存'}</Text>
-        </Pressable>
-      </View>
+  const footPad = Math.max(insets.bottom, 12);
+  const formBusy = saving || loading;
+  const frowBorder = {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.52)',
+  } as const;
+  const projectScheduleHint = inheritsProjectSchedule
+    ? deadlineText || (projectDateLimit.end ? `日程继承 ${projectDateLimit.end}` : '继承项目日程')
+    : '';
 
+  return (
+    <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <ComposerTopBar
+        title={loading ? '加载中' : '编辑任务'}
+        subtitle="修改会影响项目进度与自动入格"
+        onBack={handleBackPress}
+        onSubmit={handleSavePress}
+        submitting={formBusy}
+        submitLabel="保存"
+      />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView
           refreshControl={refreshControl}
-          contentContainerStyle={[styles.content, { paddingBottom: 120 + Math.max(insets.bottom, 12) }]}
+          contentContainerStyle={[styles.foldContent, { paddingBottom: 96 + footPad }]}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>概要</Text>
-            <TextInput
-              value={title}
-              onChangeText={(t) => setTitle(t.slice(0, TITLE_MAX_LENGTH))}
-              placeholder="任务名称"
-              placeholderTextColor={outlineVariant}
-              maxLength={TITLE_MAX_LENGTH}
-              multiline
-              editable={!loading}
-              style={[styles.titleInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-            />
-            <Text style={[styles.charCounter, { color: outline }]}>
-              {title.length}/{TITLE_MAX_LENGTH}
-            </Text>
-
-            <View style={[styles.panelDivider, { backgroundColor: divider }]} />
-
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>优先级</Text>
-              {inheritsProjectPriority ? (
-                <View style={[styles.prioritySelect, { backgroundColor: fieldBg, opacity: loading ? 0.65 : 1 }]}>
-                  <View style={styles.priorityLeft}>
-                    <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                    <Text style={[styles.priorityValue, { color: theme.text }]}>
-                      {`与项目一致：${projectPriorityLabel || currentPriority.label || '未设置'}`}
-                    </Text>
-                  </View>
-                </View>
-              ) : (
-                <Pressable
-                  onPress={() => setPriorityOpen(true)}
-                  disabled={loading}
-                  style={({ pressed }) => [
-                    styles.prioritySelect,
-                    {
-                      backgroundColor: fieldBg,
-                      opacity: loading ? 0.65 : pressed ? 0.85 : 1,
-                    },
-                  ]}>
-                  <View style={styles.priorityLeft}>
-                    <View style={[styles.priorityDot, { backgroundColor: currentPriority.color }]} />
-                    <Text style={[styles.priorityValue, { color: theme.text }]}>{currentPriority.label}</Text>
-                  </View>
-                  <MaterialIcons name="chevron-right" size={20} color={outline} />
-                </Pressable>
-              )}
+          {loading && !taskSnapshot ? (
+            <View style={styles.editLoading}>
+              <ActivityIndicator size="large" color={tf.frog} />
+              <Text style={[styles.loadingText, { color: tf.faint }]}>加载任务…</Text>
             </View>
-
-            {showTagField ? (
-              <View style={styles.fieldBlock}>
-                <Text style={[styles.fieldLabel, { color: outline }]}>标签</Text>
-                <ProjectTagPickerField
-                  selectedIds={selectedTagIds}
-                  allTags={allTags}
-                  loading={tagsLoading}
-                  disabled={loading}
-                  locked={inheritsProjectTags}
-                  onChange={setSelectedTagIds}
-                  textColor={theme.text}
-                  outline={outline}
-                  placeholderColor={outlineVariant}
-                  primary={primary}
-                  surfaceLow={surfaceLow}
-                  surfaceLowest={surfaceLowest}
-                  isDark={isDark}
-                />
-              </View>
-            ) : null}
-          </View>
-
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>日程</Text>
-            <EntityFormScheduleField
-              deadlineText={deadlineText}
-              reminderText={reminderText}
-              repeatText={repeatText}
-              onPress={openSchedulePicker}
-              locked={inheritsProjectSchedule}
-              label="时间限制"
-            />
-            <Pressable
-              onPress={toggleAutoPlaceIntoSchedule}
-              disabled={loading}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: autoPlaceIntoSchedule }}
-              style={({ pressed }) => [
-                styles.longTermRow,
-                {
-                  backgroundColor: autoPlaceIntoSchedule ? `${primary}12` : fieldBg,
-                  borderColor: autoPlaceIntoSchedule ? primary : 'transparent',
-                  opacity: loading ? 0.65 : pressed ? 0.88 : 1,
-                  marginTop: 10,
-                },
-              ]}>
-              <View style={styles.longTermTextWrap}>
-                <Text style={[styles.longTermTitle, { color: theme.text }]}>自动入格</Text>
-                <Text style={[styles.longTermHint, { color: outline }]}>
-                  按重复日自动叠到日程表对应格子；需先设置重复与具体时间
-                </Text>
-              </View>
-              <MaterialIcons
-                name={autoPlaceIntoSchedule ? 'check-box' : 'check-box-outline-blank'}
-                size={22}
-                color={autoPlaceIntoSchedule ? primary : outline}
-              />
-            </Pressable>
-          </View>
-
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <View style={styles.subtaskHeader}>
-              <View>
-                <Text style={[styles.panelTitle, { color: theme.text }]}>父任务</Text>
-                <Text style={[styles.panelHint, { color: outline }]}>
-                  {parentTask ? '已关联上级任务' : '可选，用于任务层级'}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() =>
-                  router.push({
-                    pathname: '/pick-parent-task',
-                    params: {
-                      taskId,
-                      source: pickParentTaskSource,
-                      currentParentId: parentTask?.id ?? taskSnapshot?.parent_task_id ?? '',
-                    },
-                  })
-                }
-                disabled={loading}
-                style={({ pressed }) => [
-                  styles.addTaskBtn,
-                  { backgroundColor: `${primary}14`, opacity: pressed || loading ? 0.75 : 1 },
+          ) : (
+            <>
+              <Animated.View
+                pointerEvents={isDirty ? 'auto' : 'none'}
+                style={[
+                  styles.dirtyBar,
+                  {
+                    opacity: dirtyOpacity,
+                    backgroundColor: isDark ? tf.amber2 : '#F8ECD7',
+                    borderColor: isDark ? tf.scoreBorder : '#E8CDA2',
+                  },
                 ]}>
-                <MaterialIcons name="add" size={16} color={primary} />
-                <Text style={[styles.linkBtnText, { color: primary }]}>
-                  {parentTask ? '更换' : '添加'}
-                </Text>
-              </Pressable>
-            </View>
-            <View style={styles.subtaskList}>
-              {parentTask ? (
-                <Pressable
-                  onPress={() => openEditSubtask(parentTask.id)}
-                  style={({ pressed }) => [
-                    styles.subtaskRow,
-                    { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder, opacity: pressed ? 0.86 : 1 },
-                  ]}>
-                  <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="account-tree" size={18} color={primary} />
-                  </View>
-                  <View style={styles.subtaskBody}>
-                    <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>
-                      {parentTask.title}
-                    </Text>
-                    {!!(
-                      parentTask.priority ||
-                      parentTask.priorityLabel ||
-                      parentTask.deadline ||
-                      parentTask.deadlineText ||
-                      parentTask.reminder ||
-                      parentTask.reminderText ||
-                      parentTask.repeat ||
-                      parentTask.repeatText ||
-                      parentTask.note
-                    ) && (
-                      <>
-                        <View style={styles.subtaskMetaRow}>
-                          {!!(parentTask.priority || parentTask.priorityLabel) &&
-                            (() => {
-                              const priorityText = parentTask.priority || parentTask.priorityLabel || '';
-                              const priorityColor = getPriorityColor(priorityText, isDark);
-                              return (
-                                <View
-                                  style={[
-                                    styles.metaTag,
-                                    { backgroundColor: priorityColor.bg, borderColor: priorityColor.border },
-                                  ]}>
-                                  <MaterialIcons name="flag" size={13} color={priorityColor.tint} />
-                                  <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
-                                </View>
-                              );
-                            })()}
-                          {!!(parentTask.deadline || parentTask.deadlineText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="event" size={13} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
-                                {parentTask.deadline || parentTask.deadlineText}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                        {!!parentTask.note && (
-                          <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
-                            {parentTask.note}
-                          </Text>
-                        )}
-                      </>
-                    )}
-                  </View>
-                  <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="chevron-right" size={18} color={outline} />
-                  </View>
-                </Pressable>
-              ) : (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
-                  <MaterialIcons name="device-hub" size={18} color={outline} />
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无父任务</Text>
-                </View>
-              )}
-            </View>
-          </View>
+                <View style={[styles.dirtyDot, { backgroundColor: tf.amber }]} />
+                <Text style={[styles.dirtyText, { color: tf.amberInk }]}>有未保存的修改 · 返回会询问</Text>
+              </Animated.View>
 
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <View style={styles.subtaskHeader}>
-              <View>
-                <Text style={[styles.panelTitle, { color: theme.text }]}>子任务</Text>
-                <Text style={[styles.panelHint, { color: outline }]}>
-                  {subtasks.length > 0 ? `${subtasks.length} 项` : '拆成更小可执行步骤'}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() =>
-                  router.push({
-                    pathname: '/add-subtask',
-                    params: {
-                      source: addSubtaskSource,
-                      dateLimit: subtaskDateLimit ? JSON.stringify(subtaskDateLimit) : '',
-                      defaultSchedule: inheritedSubtaskSchedule
-                        ? JSON.stringify(inheritedSubtaskSchedule)
-                        : '',
-                      lockSchedule: inheritsProjectSchedule ? '1' : '',
-                    },
-                  })
-                }
-                disabled={loading}
-                style={({ pressed }) => [
-                  styles.addTaskBtn,
-                  { backgroundColor: `${primary}14`, opacity: pressed || loading ? 0.75 : 1 },
-                ]}>
-                <MaterialIcons name="add" size={16} color={primary} />
-                <Text style={[styles.linkBtnText, { color: primary }]}>添加</Text>
-              </Pressable>
-            </View>
-            <View style={styles.subtaskList}>
-              {subtasks.map((s) => (
-                <Pressable
-                  key={s.id}
-                  onPress={() => openEditSubtask(s.id)}
-                  style={({ pressed }) => [
-                    styles.subtaskRow,
-                    { backgroundColor: subtaskCardBg, borderColor: subtaskCardBorder, opacity: pressed ? 0.86 : 1 },
-                  ]}>
-                  <View style={[styles.subtaskIndicator, { backgroundColor: subtaskIndicatorBg }]}>
-                    <View
-                      style={[
-                        styles.checkbox,
-                        { borderColor: outlineVariant, backgroundColor: s.done ? primary : 'transparent' },
-                      ]}>
-                      {s.done && <MaterialIcons name="check" size={14} color="#fff" />}
+              <FoldRiseIn animate={foldAnimate} index={0} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <View style={styles.titleRow}>
+                    <EntityIconPickerField
+                      compact
+                      value={entityIcon}
+                      onChange={setEntityIcon}
+                      fallback={DEFAULT_TODO_ICON}
+                      disabled={formBusy}
+                      accessibilityLabel="选择任务图标"
+                    />
+                    <View style={{ flex: 1 }}>
+                      <TextInput
+                        value={title}
+                        onChangeText={(t) => setTitle(t.slice(0, TITLE_MAX_LENGTH))}
+                        placeholder="任务名称"
+                        placeholderTextColor={tf.faint}
+                        maxLength={TITLE_MAX_LENGTH}
+                        multiline
+                        editable={!loading}
+                        style={[
+                          styles.foldTitleInput,
+                          { color: tf.ink, fontFamily: fonts.serif, opacity: loading ? 0.65 : 1 },
+                        ]}
+                      />
+                      <Text style={[styles.charCounter, { color: tf.faint }]}>
+                        {title.length}/{TITLE_MAX_LENGTH}
+                      </Text>
                     </View>
                   </View>
-                  <View style={styles.subtaskBody}>
-                    <Text style={[styles.subtaskText, { color: theme.text }]} numberOfLines={1}>
-                      {s.title}
-                    </Text>
-                    {!!(
-                      s.priority ||
-                      s.priorityLabel ||
-                      s.deadline ||
-                      s.deadlineText ||
-                      s.reminder ||
-                      s.reminderText ||
-                      s.repeat ||
-                      s.repeatText ||
-                      s.note
-                    ) && (
-                      <>
-                        <View style={styles.subtaskMetaRow}>
-                          {!!(s.priority || s.priorityLabel) &&
-                            (() => {
-                              const priorityText = s.priority || s.priorityLabel || '';
-                              const priorityColor = getPriorityColor(priorityText, isDark);
-                              return (
-                                <View
-                                  style={[
-                                    styles.metaTag,
-                                    { backgroundColor: priorityColor.bg, borderColor: priorityColor.border },
-                                  ]}>
-                                  <MaterialIcons name="flag" size={13} color={priorityColor.tint} />
-                                  <Text style={[styles.metaTagText, { color: priorityColor.tint }]}>{priorityText}</Text>
-                                </View>
-                              );
-                            })()}
-                          {!!(s.deadline || s.deadlineText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="event" size={13} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]} numberOfLines={1}>
-                                {s.deadline || s.deadlineText}
-                              </Text>
-                            </View>
-                          )}
-                          {!!(s.reminder || s.reminderText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="notifications-active" size={13} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>
-                                {s.reminder || s.reminderText}
-                              </Text>
-                            </View>
-                          )}
-                          {!!(s.repeat || s.repeatText) && (
-                            <View style={[styles.metaTag, { backgroundColor: surfaceLow, borderColor: outlineVariant }]}>
-                              <MaterialIcons name="repeat" size={13} color={primary} />
-                              <Text style={[styles.metaTagText, { color: theme.text }]}>
-                                {s.repeat || s.repeatText}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                        {!!s.note && (
-                          <Text style={[styles.subtaskNote, { color: outline }]} numberOfLines={2}>
-                            {s.note}
+                  <View style={styles.foldChipRow}>
+                    {STATUS_CHIPS.map((chip) => {
+                      const active = status === chip.key;
+                      return (
+                        <Pressable
+                          key={chip.key}
+                          onPress={() => setStatus(chip.key)}
+                          disabled={loading}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={[
+                            styles.fchip,
+                            active && { backgroundColor: tf.pond, borderColor: tf.pond },
+                            loading && { opacity: 0.65 },
+                          ]}>
+                          <Text
+                            style={[
+                              styles.fchipText,
+                              { color: active ? tf.onPond : '#7C897E' },
+                            ]}>
+                            {chip.label}
                           </Text>
-                        )}
-                      </>
-                    )}
+                        </Pressable>
+                      );
+                    })}
+                    {status === 'done' ? (
+                      <View style={[styles.fchip, { backgroundColor: tf.lily2, borderColor: tf.lily }]}>
+                        <Text style={[styles.fchipText, { color: tf.frog }]}>已完成</Text>
+                      </View>
+                    ) : null}
                   </View>
-                  <View style={[styles.subtaskAction, { backgroundColor: subtaskIndicatorBg }]}>
-                    <MaterialIcons name="chevron-right" size={18} color={outline} />
-                  </View>
-                </Pressable>
-              ))}
-              {subtasks.length === 0 && (
-                <View style={[styles.emptySubtaskRow, { backgroundColor: fieldBg, borderColor: panelBorder }]}>
-                  <MaterialIcons name="playlist-add-check" size={18} color={outline} />
-                  <Text style={[styles.emptySubtaskText, { color: outline }]}>暂无子任务</Text>
                 </View>
-              )}
-            </View>
-          </View>
+              </FoldRiseIn>
 
-          <View style={[styles.panel, { backgroundColor: panelBg, borderColor: panelBorder }]}>
-            <Text style={[styles.panelTitle, { color: theme.text }]}>更多</Text>
-            <Pressable
-              onPress={() => setIsLongTermTask((v) => !v)}
-              disabled={loading}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: isLongTermTask }}
-              style={({ pressed }) => [
-                styles.longTermRow,
-                {
-                  backgroundColor: isLongTermTask ? `${primary}12` : fieldBg,
-                  borderColor: isLongTermTask ? primary : 'transparent',
-                  opacity: loading ? 0.65 : pressed ? 0.88 : 1,
-                },
-              ]}>
-              <View style={styles.longTermTextWrap}>
-                <Text style={[styles.longTermTitle, { color: theme.text }]}>长期任务</Text>
-                <Text style={[styles.longTermHint, { color: outline }]}>
-                  指派为青蛙后，完成时确认是否结束整项
-                </Text>
-              </View>
-              <MaterialIcons
-                name={isLongTermTask ? 'check-box' : 'check-box-outline-blank'}
-                size={22}
-                color={isLongTermTask ? primary : outline}
-              />
-            </Pressable>
+              <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={() =>
+                      router.push({
+                        pathname: '/pick-parent-task',
+                        params: {
+                          taskId,
+                          source: pickParentTaskSource,
+                          currentParentId: parentTask?.id ?? taskSnapshot?.parent_task_id ?? '',
+                        },
+                      })
+                    }
+                    disabled={loading}
+                    style={({ pressed }) => [
+                      styles.frow,
+                      { opacity: loading ? 0.65 : pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>父任务</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      {parentTask ? (
+                        <>
+                          <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                            {parentTask.title}
+                          </Text>
+                          {parentTask.deadline || parentTask.deadlineText ? (
+                            <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                              {parentTask.deadline || parentTask.deadlineText}
+                            </Text>
+                          ) : null}
+                        </>
+                      ) : (
+                        <Text style={[styles.frowVal, { color: tf.faint }]}>未关联 · 可选</Text>
+                      )}
+                    </View>
+                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                  </Pressable>
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>项目</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                        {projectName || '未关联项目'}
+                      </Text>
+                      {projectScheduleHint ? (
+                        <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                          {projectScheduleHint}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
+                  </View>
+                </View>
+              </FoldRiseIn>
 
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>绑定小习惯</Text>
-              <BoundHabitPickerField
-                selectedHabitIds={boundHabitIds}
-                sections={habitSections}
-                loading={habitsLoading}
-                disabled={loading}
-                onChange={setBoundHabitIds}
-                textColor={theme.text}
-                outline={outline}
-                placeholderColor={outlineVariant}
-                primary={primary}
-                surfaceLow={surfaceLow}
-                surfaceLowest={surfaceLowest}
-                isDark={isDark}
-              />
-            </View>
+              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  {inheritsProjectPriority ? (
+                    <>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>优先级</Text>
+                        <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>与项目一致，不可单独改判</Text>
+                      </View>
+                      <View style={[styles.frow, { minHeight: 32 }]}>
+                        <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]}>
+                          {projectPriorityLabel || priorityKeyToLabel(priority) || '未设置'}
+                        </Text>
+                        <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
+                      </View>
+                    </>
+                  ) : (
+                    <TaskFoldPriorityGrid
+                      value={priority}
+                      onChange={setPriority}
+                      subtitle="改判后本周四象限同步移动"
+                    />
+                  )}
+                </View>
+              </FoldRiseIn>
 
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>奖励积分</Text>
-              <View style={[styles.rewardPointsWrap, { backgroundColor: fieldBg }]}>
-                <TextInput
-                  value={rewardPointsText}
-                  onChangeText={setRewardPointsText}
-                  placeholder="0"
-                  placeholderTextColor={outline}
-                  keyboardType="numbers-and-punctuation"
-                  editable={!loading}
-                  style={[styles.rewardPointsInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-                />
-              </View>
-              <Text style={[styles.longTermHint, { color: outline }]}>
-                完成后计入；负数扣除，可含小数；0 无变动
-              </Text>
-            </View>
+              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={openSchedulePicker}
+                    disabled={loading || inheritsProjectSchedule}
+                    accessibilityRole="button"
+                    accessibilityLabel="修改日程"
+                    style={({ pressed }) => [
+                      styles.calendarbtn,
+                      {
+                        borderColor: 'rgba(216,205,187,0.8)',
+                        backgroundColor: isDark ? colors.input : 'rgba(255,255,255,0.55)',
+                        opacity: loading ? 0.65 : pressed && !inheritsProjectSchedule ? 0.88 : 1,
+                      },
+                    ]}>
+                    <View style={[styles.calic, { backgroundColor: tf.lily2 }]}>
+                      <MaterialIcons name="event" size={16} color="#64805D" />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.calMain, { color: '#59685E' }]} numberOfLines={1}>
+                        {deadlineText || '设置日期 / 时间'}
+                      </Text>
+                      <Text style={[styles.calSub, { color: tf.faint }]} numberOfLines={1}>
+                        {[reminderText, repeatText].filter(Boolean).join(' · ') ||
+                          (inheritsProjectSchedule ? '继承项目日程' : '提醒 / 重复可选')}
+                      </Text>
+                    </View>
+                    {inheritsProjectSchedule ? (
+                      <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
+                    ) : (
+                      <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
+                    )}
+                  </Pressable>
 
-            <View style={styles.fieldBlock}>
-              <Text style={[styles.fieldLabel, { color: outline }]}>验收标准</Text>
-              <View style={[styles.notesWrap, { backgroundColor: fieldBg }]}>
-                <TextInput
-                  value={acceptanceCriteria}
-                  onChangeText={setAcceptanceCriteria}
-                  placeholder="怎样算完成？（可选）"
-                  placeholderTextColor={outline}
-                  multiline
-                  editable={!loading}
-                  style={[styles.notesInput, { color: theme.text, opacity: loading ? 0.65 : 1 }]}
-                />
-              </View>
-            </View>
-          </View>
+                  <View style={styles.frow}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 11, color: tf.faint }}>
+                        {autoPlaceGate.ok
+                          ? autoPlaceIntoSchedule
+                            ? '重复 + 具体时间已满足 · 当前已占用'
+                            : '重复 + 具体时间已满足'
+                          : '需同时有重复与具体时间'}
+                      </Text>
+                    </View>
+                    <TaskFoldSwitch
+                      value={autoPlaceIntoSchedule}
+                      onValueChange={() => toggleAutoPlaceIntoSchedule()}
+                      disabled={loading}
+                      bounceToken={switchBounceToken}
+                      accessibilityLabel="自动入格"
+                    />
+                  </View>
+
+                  {showTagField ? (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <ProjectTagPickerField
+                          selectedIds={selectedTagIds}
+                          allTags={allTags}
+                          loading={tagsLoading}
+                          disabled={loading}
+                          locked={inheritsProjectTags}
+                          onChange={setSelectedTagIds}
+                          textColor={tf.ink2}
+                          outline={tf.muted}
+                          placeholderColor={tf.faint}
+                          primary={tf.frog}
+                          surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                          surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                          isDark={isDark}
+                        />
+                      </View>
+                      {inheritsProjectTags ? (
+                        <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" style={{ marginTop: 8 }} />
+                      ) : null}
+                    </View>
+                  ) : null}
+
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Text style={{ fontSize: 14, fontWeight: '700', color: tf.ink2, fontFamily: fonts.mono }}>
+                        {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                      </Text>
+                    </View>
+                    <View style={styles.stepper}>
+                      <Pressable
+                        onPress={() => bumpReward(-1)}
+                        disabled={loading}
+                        style={styles.stepperBtn}
+                        accessibilityLabel="减少积分">
+                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
+                      </Pressable>
+                      <Text
+                        style={{
+                          fontFamily: fonts.mono,
+                          color: '#5C6D60',
+                          minWidth: 18,
+                          textAlign: 'center',
+                        }}>
+                        {rewardN}
+                      </Text>
+                      <Pressable
+                        onPress={() => bumpReward(1)}
+                        disabled={loading}
+                        style={styles.stepperBtn}
+                        accessibilityLabel="增加积分">
+                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View style={[styles.frow, frowBorder]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
+                    <TextInput
+                      value={acceptanceCriteria}
+                      onChangeText={setAcceptanceCriteria}
+                      placeholder="怎样算完成？（可选）"
+                      placeholderTextColor={tf.faint}
+                      editable={!loading}
+                      style={[styles.frowInput, { color: tf.ink2, flex: 1, opacity: loading ? 0.65 : 1 }]}
+                    />
+                  </View>
+
+                  <View style={[styles.frow, frowBorder, { opacity: loading ? 0.65 : 1 }]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期任务</Text>
+                    <Text style={{ flex: 1, fontSize: 11, color: tf.faint }}>完成时确认是否结束整项</Text>
+                    <TaskFoldSwitch
+                      value={isLongTermTask}
+                      onValueChange={setIsLongTermTask}
+                      disabled={loading}
+                      accessibilityLabel="长期任务"
+                    />
+                  </View>
+
+                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>绑定习惯</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <BoundHabitPickerField
+                        selectedHabitIds={boundHabitIds}
+                        sections={habitSections}
+                        loading={habitsLoading}
+                        disabled={loading}
+                        onChange={setBoundHabitIds}
+                        textColor={tf.ink2}
+                        outline={tf.muted}
+                        placeholderColor={tf.faint}
+                        primary={tf.frog}
+                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>子任务</Text>
+                    <Text style={{ fontSize: 10, color: '#9AA49B' }}>
+                      {subtasks.length > 0 ? `${incompleteSubtaskCount} 未完成` : '可拆成更小步骤'}
+                    </Text>
+                    <Pressable
+                      onPress={() => setAddSubtaskOpen(true)}
+                      disabled={loading}
+                      hitSlop={8}
+                      style={{ marginLeft: 'auto', opacity: loading ? 0.55 : 1 }}>
+                      <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>＋ 新建</Text>
+                    </Pressable>
+                  </View>
+
+                  {subtasks.map((s) => {
+                    const tp = priorityShortLabel(s.priority || s.priorityLabel);
+                    return (
+                      <Pressable
+                        key={s.id}
+                        onPress={() => openEditSubtask(s.id)}
+                        style={({ pressed }) => [styles.trow, { opacity: pressed ? 0.86 : 1 }]}>
+                        <View
+                          style={[
+                            styles.cb,
+                            {
+                              borderColor: s.done ? tf.frog : '#C8D1C0',
+                              backgroundColor: s.done ? tf.frog : 'rgba(255,255,255,0.5)',
+                            },
+                          ]}>
+                          {s.done ? <MaterialIcons name="check" size={10} color={tf.onPond} /> : null}
+                        </View>
+                        <Text
+                          style={[
+                            styles.tn,
+                            {
+                              color: s.done ? '#A8AFA6' : tf.ink2,
+                              textDecorationLine: s.done ? 'line-through' : 'none',
+                            },
+                          ]}
+                          numberOfLines={1}>
+                          {s.title}
+                        </Text>
+                        {tp ? (
+                          <Text style={[styles.tp, { color: tf.faint, fontFamily: fonts.mono }]}>{tp}</Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+
+                  {subtasks.length === 0 ? (
+                    <View style={[styles.emptySubtaskRow, { borderColor: foldCardBorder }]}>
+                      <MaterialIcons name="playlist-add-check" size={16} color={tf.faint} />
+                      <Text style={{ fontSize: 12, color: tf.faint, flex: 1 }}>暂无子任务</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <Pressable
+                  onPress={removeTask}
+                  disabled={formBusy}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.deleteGhost,
+                    {
+                      borderColor: isDark ? 'rgba(224,139,109,0.45)' : '#E2C5B9',
+                      backgroundColor: isDark ? tf.clay2 : 'rgba(247,230,222,0.5)',
+                      opacity: formBusy ? 0.55 : pressed ? 0.82 : 1,
+                    },
+                  ]}>
+                  <MaterialIcons name="delete-outline" size={16} color={isDark ? tf.clay : '#A56547'} />
+                  <Text style={[styles.deleteGhostText, { color: isDark ? tf.clay : '#A56547' }]}>
+                    删除任务
+                  </Text>
+                </Pressable>
+              </FoldRiseIn>
+            </>
+          )}
         </ScrollView>
 
-        <View
-          style={[
-            styles.bottomBar,
-            {
-              paddingBottom: Math.max(insets.bottom, 10),
-              backgroundColor: theme.background,
-              borderTopColor: divider,
-            },
-          ]}>
+        <View style={[styles.foldFoot, { paddingBottom: footPad }]}>
           <Pressable
-            onPress={removeTask}
-            disabled={saving || loading}
+            onPress={handleSavePress}
+            disabled={formBusy}
             style={({ pressed }) => [
-              styles.deleteBtn,
+              styles.foldPrimary,
               {
-                borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
-                opacity: saving || loading ? 0.55 : pressed ? 0.8 : 1,
+                backgroundColor: tf.pond,
+                opacity: formBusy ? 0.65 : pressed ? 0.9 : 1,
               },
             ]}>
-            <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
-            <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除任务</Text>
+            {saving ? (
+              <ActivityIndicator color={tf.onPond} />
+            ) : (
+              <>
+                <MaterialIcons name="check" size={16} color={tf.onPond} />
+                <Text style={[styles.foldPrimaryText, { color: tf.onPond }]}>保存修改</Text>
+              </>
+            )}
           </Pressable>
         </View>
-
-        <Modal
-          transparent
-          visible={!inheritsProjectPriority && priorityOpen}
-          animationType="fade"
-          onRequestClose={() => setPriorityOpen(false)}>
-          <Pressable style={styles.priorityOverlay} onPress={() => setPriorityOpen(false)}>
-            <Pressable
-              onPress={() => {}}
-              style={[
-                styles.prioritySheet,
-                {
-                  backgroundColor: surfaceLowest,
-                  borderColor: panelBorder,
-                },
-              ]}>
-              <Text style={[styles.prioritySheetTitle, { color: theme.text }]}>选择优先级</Text>
-              {priorityOptions.map((item) => {
-                const active = item.key === priority;
-                return (
-                  <Pressable
-                    key={item.key}
-                    onPress={() => {
-                      setPriority(item.key);
-                      setPriorityOpen(false);
-                    }}
-                    style={({ pressed }) => [
-                      styles.priorityItem,
-                      {
-                        backgroundColor: active ? `${item.color}14` : fieldBg,
-                        borderColor: active ? `${item.color}44` : 'transparent',
-                      },
-                      pressed && { opacity: 0.85 },
-                    ]}>
-                    <View style={[styles.priorityDot, { backgroundColor: item.color }]} />
-                    <Text style={[styles.priorityItemText, { color: theme.text }]}>{item.label}</Text>
-                    {active ? <MaterialIcons name="check" size={18} color={item.color} /> : null}
-                  </Pressable>
-                );
-              })}
-            </Pressable>
-          </Pressable>
-        </Modal>
       </KeyboardAvoidingView>
+
+      <AddSubtaskSheet
+        visible={addSubtaskOpen}
+        onClose={() => setAddSubtaskOpen(false)}
+        onSubmit={createSubtaskFromDraft}
+        parentTitle={title}
+        parentPriority={taskSnapshot?.priority ?? 0}
+        progressDone={subtasks.filter((s) => s.done).length}
+        progressTotal={subtasks.length}
+        dateLimit={subtaskDateLimit}
+        defaultSchedule={inheritedSubtaskSchedule}
+        lockSchedule={inheritsProjectSchedule}
+        scheduleSource={addSubtaskSource}
+      />
     </SafeAreaView>
   );
 }
@@ -1733,183 +1774,153 @@ export default function EditTaskScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  header: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { fontSize: 17, fontWeight: '700', letterSpacing: -0.2 },
-  headerActionBtn: {
-    minWidth: 64,
-    height: 34,
+  foldContent: {
     paddingHorizontal: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingTop: 10,
+    gap: 8,
+    maxWidth: 560,
+    width: '100%',
+    alignSelf: 'center',
   },
-  headerActionText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  content: { paddingTop: 84, paddingHorizontal: 14, gap: 12 },
-  panel: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    padding: 14,
+  editLoading: {
+    paddingVertical: 48,
+    alignItems: 'center',
     gap: 12,
   },
-  panelTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
-  panelHint: { fontSize: 12, marginTop: 2, lineHeight: 16 },
-  panelDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
-  titleInput: { padding: 0, fontSize: 22, fontWeight: '700', lineHeight: 28 },
+  loadingText: { fontSize: 13, fontWeight: '500' },
+  dirtyBar: {
+    height: 28,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 2,
+  },
+  dirtyDot: { width: 6, height: 6, borderRadius: 3 },
+  dirtyText: { fontSize: 11, fontWeight: '600' },
+  fcard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 0,
+  },
+  fcardTight: { paddingVertical: 8 },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  foldTitleInput: {
+    padding: 0,
+    fontSize: 18,
+    fontWeight: '600',
+    lineHeight: 24,
+    minHeight: 40,
+  },
   charCounter: { alignSelf: 'flex-end', fontSize: 11, fontWeight: '500' },
-  fieldBlock: { gap: 8 },
-  fieldLabel: { fontSize: 12, fontWeight: '600' },
-  fieldValue: { fontSize: 14, fontWeight: '600' },
-  longTermRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  longTermTextWrap: { flex: 1, gap: 3 },
-  longTermTitle: { fontSize: 14, fontWeight: '600' },
-  longTermHint: { fontSize: 12, lineHeight: 16 },
-  prioritySelect: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  priorityLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
-  priorityDot: { width: 8, height: 8, borderRadius: 4 },
-  priorityValue: { fontSize: 14, fontWeight: '600', flex: 1 },
-  scheduleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  scheduleIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+  foldChipRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' },
+  fchip: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#F1EDE1',
+    borderWidth: 1,
+    borderColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  deadlineBody: { flex: 1, gap: 4, minWidth: 0 },
-  tagRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  metaTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  metaTagText: { fontSize: 11, fontWeight: '600' },
-  subtaskHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
-  linkBtnText: { fontSize: 13, fontWeight: '600' },
-  addTaskBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  subtaskList: { gap: 8 },
-  subtaskRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+  fchipText: { fontSize: 12, fontWeight: '600' },
+  calendarbtn: {
+    height: 44,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    marginBottom: 6,
   },
-  subtaskIndicator: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  checkbox: { width: 18, height: 18, borderRadius: 5, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  subtaskBody: { flex: 1, gap: 6, paddingRight: 2 },
-  subtaskText: { flex: 1, fontSize: 14, fontWeight: '600', lineHeight: 19 },
-  subtaskMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  subtaskNote: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
-  subtaskAction: { width: 26, height: 26, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  calic: {
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calMain: { fontSize: 13, fontWeight: '600' },
+  calSub: { fontSize: 10, marginTop: 2 },
+  frow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 36,
+  },
+  frowLab: { width: 64, fontSize: 12, flexShrink: 0 },
+  frowVal: { flex: 1, fontSize: 13, fontWeight: '600' },
+  frowValBold: { fontSize: 13, fontWeight: '700' },
+  frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  stepperBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    backgroundColor: '#F0EBDE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  trow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 2,
+  },
+  cb: {
+    width: 16,
+    height: 16,
+    borderRadius: 5,
+    borderWidth: 1.2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tn: { flex: 1, fontSize: 13, fontWeight: '600', lineHeight: 18 },
+  tp: { fontSize: 10, fontWeight: '600' },
   emptySubtaskRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    borderRadius: 10,
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     borderStyle: 'dashed',
   },
-  emptySubtaskText: { flex: 1, fontSize: 13, fontWeight: '500' },
-  notesWrap: { borderRadius: 10, padding: 12, minHeight: 100 },
-  notesInput: { minHeight: 76, fontSize: 14, fontWeight: '500', lineHeight: 20 },
-  rewardPointsWrap: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  rewardPointsInput: {
-    padding: 0,
-    margin: 0,
-    fontSize: 15,
-    fontWeight: '600',
-    minHeight: 20,
-  },
-  bottomBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  deleteBtn: {
+  deleteGhost: {
     width: '100%',
-    maxWidth: 520,
-    alignSelf: 'center',
+    marginTop: 2,
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 6,
   },
-  deleteText: { fontSize: 14, fontWeight: '600' },
-  priorityOverlay: { flex: 1, backgroundColor: 'rgba(15,23,42,0.35)', justifyContent: 'flex-end', padding: 14 },
-  prioritySheet: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 8 },
-  prioritySheetTitle: { fontSize: 15, fontWeight: '700', marginBottom: 2 },
-  priorityItem: {
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+  deleteGhostText: { fontSize: 13, fontWeight: '600' },
+  foldFoot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+  },
+  foldPrimary: {
+    height: 46,
+    borderRadius: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
+    gap: 7,
   },
-  priorityItemText: { flex: 1, fontSize: 14, fontWeight: '600' },
+  foldPrimaryText: { fontSize: 14, fontWeight: '700' },
 });
-

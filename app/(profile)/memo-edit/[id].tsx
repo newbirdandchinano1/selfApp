@@ -361,10 +361,10 @@ export default function MemoEditScreen() {
                 onChange={setSelectedTagIds}
                 textColor={MEMO_INK}
                 outline={MEMO_INK_SOFT}
-                placeholderColor="rgba(58,42,26,0.28)"
+                placeholderColor="rgba(30,57,50,0.28)"
                 primary={MEMO_INK}
                 surfaceLow={MEMO_WASH}
-                surfaceLowest="#F7F3EC"
+                surfaceLowest="#FFFEF8"
                 isDark={false}
               />
 
@@ -378,16 +378,16 @@ export default function MemoEditScreen() {
                 placeholderTextColor={MEMO_INK_SOFT}
                 style={[
                   styles.titleInput,
-                  { borderBottomColor: titleFocused ? MEMO_INK : 'rgba(58,42,26,0.2)' },
+                  { borderBottomColor: titleFocused ? MEMO_INK : 'rgba(30,57,50,0.2)' },
                 ]}
               />
 
               <MemoFormatToolbar
                 onAction={a => void onFormatAction(a)}
                 primary={MEMO_INK}
-                borderColor="rgba(58,42,26,0.16)"
-                backgroundColor="rgba(255,252,246,0.45)"
-                pressedBackgroundColor="rgba(58,42,26,0.1)"
+                borderColor="rgba(30,57,50,0.16)"
+                backgroundColor="rgba(255,254,248,0.45)"
+                pressedBackgroundColor="rgba(30,57,50,0.1)"
               />
               <Text style={[styles.formatHint, overLimit ? { color: colors.danger } : null]}>
                 {overLimit

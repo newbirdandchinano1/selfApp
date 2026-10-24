@@ -27,8 +27,8 @@ export type AppTheme = {
 };
 
 /**
- * 全局语义主题 — 与财务页 `FinanceScreen` 内联色值一致。
- * 新页面与 `components/ui/*` 应优先使用此 hook。
+ * 全局语义主题 — 与健康页 `health-home-theme`（松墨绿品牌）一致。
+ * 新页面与 `components/ui/*` 应优先使用此 hook；财务折页另见 `finance-fold-theme`。
  */
 export function useAppTheme(): AppTheme {
   const scheme: ColorScheme = useColorScheme() === 'dark' ? 'dark' : 'light';

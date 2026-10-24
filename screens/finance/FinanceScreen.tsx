@@ -1,4 +1,4 @@
-import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
+﻿import { FinanceCategoryPicker } from '@/components/finance/finance-category-picker';
 import { FinanceFoldBudgetSheet } from '@/components/finance/finance-fold-budget-sheet';
 import {
   FinanceFoldAlbumScanPanel,
@@ -4154,6 +4154,7 @@ export default function FinanceScreen() {
         bottom={baseBottomAnim}
         disabled={!hasAccounts}
         busy={isPickingImage}
+        isDark={isDark}
         onPress={() => {
           void handleOpenComposer();
         }}
@@ -4657,7 +4658,7 @@ export default function FinanceScreen() {
                 <View
                   style={[
                     styles.budgetHintIconWrap,
-                    { backgroundColor: isDark ? 'rgba(96, 165, 250, 0.14)' : 'rgba(0, 88, 190, 0.09)' },
+                    { backgroundColor: isDark ? 'rgba(169,199,185, 0.14)' : 'rgba(30,57,50, 0.09)' },
                   ]}>
                   <MaterialIcons name="account-balance-wallet" size={22} color={primary} />
                 </View>
@@ -4706,7 +4707,7 @@ export default function FinanceScreen() {
                               ? 'rgba(248,113,113,0.14)'
                               : '#fef2f2'
                             : isDark
-                              ? 'rgba(96,165,250,0.14)'
+                              ? 'rgba(169,199,185,0.14)'
                               : '#eef2fb',
                         },
                       ]}>

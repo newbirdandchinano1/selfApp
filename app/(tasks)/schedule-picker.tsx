@@ -1,5 +1,11 @@
-import { Layout, Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
-import { useAppTheme } from '@/hooks/use-app-theme';
+/**
+ * 日程选择器 — 对齐设计稿 shot 21
+ * 日期/时刻 Tab 指示器 · 快捷芯片 · 月历 · 全天开关 · 提醒/重复 · 越界 toast+钳制
+ */
+import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
+import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import { Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
+import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { toast } from '@/lib/app-feedback';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
 import { addDays } from '@/lib/date';
@@ -13,8 +19,21 @@ import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as React from 'react';
-import { Alert, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  FlatList,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type TabMode = 'date' | 'time';
 type TimeRangeKey = '本周' | '下周' | '本月' | '下月' | '未来半年';
@@ -58,6 +77,8 @@ const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_PAGE_SPAN = 481;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
+/** content 左右 14 + minical padding 8；估错会导致 initialScrollIndex 错位到别的月份 */
+const CALENDAR_H_INSET = 14 * 2 + 8 * 2;
 const REMINDER_OPTIONS: ReminderOption[] = TASK_REMINDER_OPTIONS;
 const REPEAT_OPTIONS: RepeatOption[] = ['不重复', '每天', '每周', '每月', '每年'];
 const WEEKDAY_OPTIONS = [
@@ -170,14 +191,18 @@ function formatRepeatSummary(option: RepeatOption, weeklyDays: number[], monthly
 }
 
 function parseDateFromYMD(value: string | undefined): Date | null {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const [yearText, monthText, dayText] = value.split('-');
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
+  if (!value) return null;
+  // 接受 YYYY-MM-DD 或带时刻的 ISO（scheduleMeta.date 常为 `2026-10-25T12:00:00`）
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
   const date = new Date(year, month - 1, day);
   if (Number.isNaN(date.getTime())) return null;
+  // 拒绝 Date 自动进位（如 2026-02-31 → 3 月）
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
   return startOfDay(date);
 }
 
@@ -279,14 +304,63 @@ function buildCalendarCells(current: MonthInfo, previous: MonthInfo, next: Month
   return cells;
 }
 
+function formatLimitLabel(d: Date): string {
+  return `${d.getMonth() + 1}/${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatSelectedDayLabel(d: Date | null): string {
+  if (!d) return '未选日期';
+  const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+  return `${d.getMonth() + 1}月${d.getDate()}日 周${wd}`;
+}
+
+/** 设计稿 anim-item：520ms / 42ms 错峰 */
+const PICK_RISE_MS = 520;
+const PICK_RISE_STAGGER = TaskFoldMotion.schedBlockStagger;
+/** 月历按周错峰（6 行，避免 42 格同时驱动被 FlatList 冲掉） */
+const PICK_CAL_WEEK_STAGGER = 52;
+const PICK_CAL_WEEK_DURATION = TaskFoldMotion.habitCalFade;
+
 export default function SchedulePickerScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<SchedulePickerReturnParams>();
   const sourceKey = React.useMemo(
     () => normalizeRouteParam(params.source as string | string[] | undefined),
     [params.source],
   );
-  const { colors } = useAppTheme();
+  const { tf, fonts, isDark } = useTaskFoldTheme();
+  const { animate: foldAnimate, motionReduced, motionReady } = useFoldMotionGate();
+  const enterReady = motionReady;
+  const showContent = enterReady || (motionReady && motionReduced);
+  const enterAnimate = foldAnimate && enterReady;
+  const holdEntrance = !motionReduced;
+  /** 只给入场时那一页月历播周错峰，换月/邻页不重播 */
+  const calBloomMonthRef = React.useRef<number | null>(null);
+  /** FlatList 量宽/定位完成后再解锁，否则入场动画会被 scrollToIndex 打断成「瞬出」 */
+  const [calBloomArmed, setCalBloomArmed] = React.useState(false);
+  const tabSlide = React.useRef(new Animated.Value(0)).current;
+  const [pickTabWidth, setPickTabWidth] = React.useState(0);
+  /** 折页令牌 → 旧 colors 形状，弹层与月历格子复用 */
+  const colors = React.useMemo(
+    () => ({
+      background: tf.paper,
+      headerScrim: tf.paper,
+      surface: isDark ? 'rgba(255,252,245,0.08)' : tf.card,
+      capsule: tf.track,
+      primary: tf.pond,
+      onPrimary: tf.onPond,
+      text: tf.ink,
+      textSecondary: tf.muted,
+      outline: tf.line2,
+      input: isDark ? tf.paper2 : 'rgba(255,252,245,0.72)',
+      primaryMuted: tf.lily2,
+      primaryRing: tf.sage,
+      danger: tf.clay,
+      overlay: tf.dim,
+    }),
+    [isDark, tf],
+  );
 
   const today = React.useMemo(() => new Date(), []);
   const todayStart = React.useMemo(() => startOfDay(today), [today]);
@@ -299,6 +373,14 @@ export default function SchedulePickerScreen() {
     return dateLimit.start.getTime() === dateLimit.end.getTime();
   }, [dateLimit]);
   const [tab, setTab] = React.useState<TabMode>('date');
+  React.useEffect(() => {
+    Animated.timing(tabSlide, {
+      toValue: tab === 'time' ? 1 : 0,
+      duration: foldAnimate ? TaskFoldMotion.pickTabInd : 120,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: true,
+    }).start();
+  }, [foldAnimate, tab, tabSlide]);
   const [selectedDate, setSelectedDate] = React.useState<Date | null>(null);
   const [selectedQuickChip, setSelectedQuickChip] = React.useState<string>('');
   const [timeRangeKey, setTimeRangeKey] = React.useState<TimeRangeKey | null>(null);
@@ -352,10 +434,11 @@ export default function SchedulePickerScreen() {
   const hasAppliedInitialRef = React.useRef(false);
 
   const { width: windowWidth } = useWindowDimensions();
-  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - Spacing['3xl'] * 2));
+  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - CALENDAR_H_INSET));
   const pagerRef = React.useRef<FlatList<number>>(null);
   const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
   const pagerWidthReadyRef = React.useRef(false);
+  const pagerLaidOutWidthRef = React.useRef(0);
   const pagerData = React.useMemo(
     () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
     []
@@ -809,7 +892,7 @@ export default function SchedulePickerScreen() {
   }, [yearlyDate]);
 
   React.useEffect(() => {
-    const nextWidth = Math.max(1, windowWidth - Spacing['3xl'] * 2);
+    const nextWidth = Math.max(1, windowWidth - CALENDAR_H_INSET);
     setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
   }, [windowWidth]);
 
@@ -827,13 +910,29 @@ export default function SchedulePickerScreen() {
     });
   };
 
+  const applyDefaultSelectedDate = React.useCallback(() => {
+    const target = clampDateInLimit(todayStart, dateLimit);
+    setSelectedDate(target);
+    setMonthOffset(getMonthDiff(todayStart, target));
+    setSelectedQuickChip(target.getTime() === todayStart.getTime() ? '今天' : '');
+    setTimeRangeKey(null);
+    setTimeRange(null);
+    setTimeSelectingEnd(false);
+  }, [dateLimit, todayStart]);
+
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
     if (calendarWidth <= 0) return;
 
     const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
-    // Width is measured after first paint; force-align once to avoid wrong initial offset/year.
-    if (!pagerWidthReadyRef.current) {
+    // 宽度从估算值变为 onLayout 实测值时必须重对齐，否则 contentOffset 按旧宽算会偏到错误月份
+    const widthChanged =
+      pagerLaidOutWidthRef.current > 0 &&
+      Math.abs(pagerLaidOutWidthRef.current - calendarWidth) >= 1;
+    const needsForceAlign = !pagerWidthReadyRef.current || widthChanged;
+    pagerLaidOutWidthRef.current = calendarWidth;
+
+    if (needsForceAlign) {
       pagerWidthReadyRef.current = true;
       pagerCurrentIndexRef.current = nextIndex;
       requestAnimationFrame(() => {
@@ -853,7 +952,10 @@ export default function SchedulePickerScreen() {
     if (hasAppliedInitialRef.current) return;
     hasAppliedInitialRef.current = true;
     const raw = typeof params.initial === 'string' ? params.initial : '';
-    if (!raw) return;
+    if (!raw) {
+      applyDefaultSelectedDate();
+      return;
+    }
 
     try {
       const parsed = JSON.parse(raw) as Partial<SchedulePickerInitialValue>;
@@ -937,457 +1039,675 @@ export default function SchedulePickerScreen() {
       if (dateBase) {
         setSelectedDate(dateBase);
         setMonthOffset(getMonthDiff(todayStart, dateBase));
+        if (!parsed.quickChip) {
+          if (dateBase.getTime() === todayStart.getTime()) setSelectedQuickChip('今天');
+          else if (dateBase.getTime() === addDays(todayStart, 1).getTime()) setSelectedQuickChip('明天');
+        }
       } else {
-        setSelectedDate(null);
-        setMonthOffset(0);
+        applyDefaultSelectedDate();
       }
       setTimeRangeKey(null);
       setTimeRange(null);
       setTimeSelectingEnd(false);
     } catch {
-      // ignore invalid external initial payload
+      applyDefaultSelectedDate();
     }
-  }, [dateLimit, params.initial, todayStart]);
+  }, [applyDefaultSelectedDate, dateLimit, params.initial, todayStart]);
 
+
+  const switchToTimeTab = React.useCallback(() => {
+    if (isSingleDayLimit) return;
+    if (!timeRange) {
+      const base = clampDateInLimit(startOfDay(selectedDate ?? todayStart), dateLimit);
+      const forward = clampRangeInLimit({ start: base, end: addDays(base, 1) }, dateLimit);
+      const backward = clampRangeInLimit({ start: addDays(base, -1), end: base }, dateLimit);
+      const proposed =
+        forward.start.getTime() !== forward.end.getTime()
+          ? forward
+          : backward.start.getTime() !== backward.end.getTime()
+            ? backward
+            : null;
+      if (!proposed) {
+        showToast('当前父任务/项目时间范围不足以设置“时刻”区间');
+        setTab('date');
+        return;
+      }
+      setTimeRange(proposed);
+      setTimeSelectingEnd(false);
+    }
+    setTab('time');
+  }, [dateLimit, isSingleDayLimit, selectedDate, showToast, timeRange, todayStart]);
+
+  const confirmAndBack = React.useCallback(() => {
+    setSchedulePickerResult(buildReturnPayload());
+    toast.success(
+      selectedDate
+        ? `日程已更新：${formatLimitLabel(selectedDate)}${hasExactTime ? ` ${formatTime(startTime)}` : ''}`
+        : '日程已更新',
+    );
+    router.back();
+  }, [buildReturnPayload, hasExactTime, router, selectedDate, startTime]);
+
+  const dateLimitSub =
+    dateLimit?.end
+      ? `日期与时刻 · 受项目截止 ${formatLimitLabel(dateLimit.end)} 限制`
+      : dateLimit?.start
+        ? `日期与时刻 · 不早于 ${formatLimitLabel(dateLimit.start)}`
+        : '日期与时刻 · 快捷芯片与月历同步';
+  const foldCardBg = isDark ? 'rgba(255,252,245,0.06)' : 'rgba(255,252,245,0.86)';
+  const footPad = Math.max(insets.bottom, 12);
+  const canAutoPlace = repeatOption !== '不重复' && hasExactTime;
+  /** 首帧冻结入场月，避免 FlatList 先以「无绽放」挂载再切真 */
+  if (showContent && calBloomMonthRef.current == null) {
+    calBloomMonthRef.current = monthOffset;
+  }
+
+  React.useEffect(() => {
+    if (!showContent) {
+      setCalBloomArmed(false);
+      return;
+    }
+    if (!enterAnimate) {
+      setCalBloomArmed(true);
+      return;
+    }
+    setCalBloomArmed(false);
+    let cancelled = false;
+    const armBloom = () => {
+      // 再等两帧，避开 pager 首次 scrollToIndex / onLayout
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!cancelled) setCalBloomArmed(true);
+        });
+      });
+    };
+    // RN 0.88+ 已移除 InteractionManager，改用 requestIdleCallback
+    let idleId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (typeof requestIdleCallback === 'function') {
+      idleId = requestIdleCallback(armBloom);
+    } else {
+      timeoutId = setTimeout(armBloom, 0);
+    }
+    return () => {
+      cancelled = true;
+      if (idleId != null && typeof cancelIdleCallback === 'function') {
+        cancelIdleCallback(idleId);
+      }
+      if (timeoutId != null) clearTimeout(timeoutId);
+    };
+  }, [showContent, enterAnimate]);
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.headerScrim }]}>
-        <Pressable onPress={() => router.back()} style={styles.iconBtn}>
-          <MaterialIcons name="close" size={22} color={colors.outline} />
-        </Pressable>
-
-        <View style={[styles.tabSwitch, { backgroundColor: colors.capsule }]}>
-          <Pressable onPress={() => setTab('date')} style={[styles.tabBtn, tab === 'date' && { backgroundColor: colors.surface }]}>
-            <Text style={[styles.tabText, { color: tab === 'date' ? colors.primary : colors.textSecondary, fontWeight: tab === 'date' ? '700' : '500' }]}>日期</Text>
-          </Pressable>
-          <Pressable
-            disabled={isSingleDayLimit}
-            onPress={() => {
-              if (isSingleDayLimit) return;
-              if (!timeRange) {
-                const base = clampDateInLimit(startOfDay(selectedDate ?? todayStart), dateLimit);
-                const forward = clampRangeInLimit({ start: base, end: addDays(base, 1) }, dateLimit);
-                const backward = clampRangeInLimit({ start: addDays(base, -1), end: base }, dateLimit);
-                const proposed =
-                  forward.start.getTime() !== forward.end.getTime()
-                    ? forward
-                    : backward.start.getTime() !== backward.end.getTime()
-                      ? backward
-                      : null;
-                if (!proposed) {
-                  showToast('当前父任务/项目时间范围不足以设置“时刻”区间');
-                  setTab('date');
-                  return;
-                }
-                setTimeRange(proposed);
-                setTimeSelectingEnd(false);
-              }
-              setTab('time');
-            }}
-            style={[
-              styles.tabBtn,
-              tab === 'time' && { backgroundColor: colors.surface },
-              isSingleDayLimit && { opacity: 0.45 },
-            ]}
-          >
-            <Text
-              style={[
-                styles.tabText,
-                {
-                  color: tab === 'time' ? colors.primary : colors.textSecondary,
-                  fontWeight: tab === 'time' ? '700' : '500',
-                },
-              ]}>
-              时刻
-            </Text>
-          </Pressable>
-        </View>
-
+    <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
+      <View style={[styles.appbar, { paddingTop: Math.max(insets.top, 8) }]}>
         <Pressable
-          onPress={() => {
-            setSchedulePickerResult(buildReturnPayload());
-            router.back();
-          }}
-          style={styles.iconBtn}>
-          <MaterialIcons name={tab === 'time' ? 'done' : 'check'} size={22} color={colors.primary} />
+          onPress={() => router.back()}
+          hitSlop={8}
+          style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.75 }]}>
+          <MaterialIcons name="close" size={20} color={tf.ink2} />
+        </Pressable>
+        <View style={styles.appbarCenter}>
+          <Text style={[styles.appbarTitle, { color: tf.ink }]}>日程</Text>
+          <Text style={[styles.appbarSub, { color: tf.muted }]} numberOfLines={1}>
+            {dateLimitSub}
+          </Text>
+        </View>
+        <Pressable
+          onPress={confirmClearSchedule}
+          style={({ pressed }) => [
+            styles.pillbtn,
+            {
+              borderColor: tf.line2,
+              backgroundColor: isDark ? 'rgba(255,252,245,0.08)' : 'rgba(255,252,245,0.66)',
+              opacity: pressed ? 0.85 : 1,
+            },
+          ]}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: '#A56547' }}>清除</Text>
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} nestedScrollEnabled>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-          {(tab === 'date' ? dateQuickChips : timeQuickChips).map((chip) => {
-            const isActive = selectedQuickChip === chip;
-            return (
-              <Pressable
-                key={chip}
-                onPress={() => handleQuickChipPress(chip)}
+      {!showContent ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator color={tf.frog} />
+        </View>
+      ) : (
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: 88 + footPad }]}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled>
+        <FoldRiseIn
+          animate={enterAnimate}
+          index={0}
+          duration={PICK_RISE_MS}
+          staggerMs={PICK_RISE_STAGGER}
+          fromY={10}
+          fromScale={0.985}
+          holdHidden={holdEntrance}>
+          <View
+            style={[styles.pickTabs, { backgroundColor: tf.track }]}
+            onLayout={(e) => {
+              const w = e.nativeEvent.layout.width;
+              if (w > 0) setPickTabWidth(w);
+            }}>
+            {pickTabWidth > 0 ? (
+              <Animated.View
                 style={[
-                  styles.chip,
+                  styles.pickTabInd,
                   {
-                    backgroundColor: isActive ? colors.primary : colors.surface,
-                    borderColor: isActive ? colors.primary : colors.outline,
+                    backgroundColor: isDark ? tf.cream : '#FFFCF4',
+                    width: (pickTabWidth - 6) / 2,
+                    transform: [
+                      {
+                        translateX: tabSlide.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, (pickTabWidth - 6) / 2],
+                        }),
+                      },
+                    ],
                   },
                 ]}
-              >
-                <Text style={[styles.chipText, { color: isActive ? colors.onPrimary : colors.text }]}>{chip}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
-        <View style={styles.calendarHead}>
-          <Text style={[styles.monthTitle, { color: colors.text }]}>{visibleMonthTitle}</Text>
-          <View style={styles.monthActions}>
-            <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev - 1)}>
-              <MaterialIcons name="chevron-left" size={22} color={colors.outline} />
+              />
+            ) : null}
+            <Pressable onPress={() => setTab('date')} style={styles.pickTabBtn}>
+              <Text
+                style={[
+                  styles.pickTabText,
+                  { color: tab === 'date' ? tf.pond : tf.muted, fontWeight: tab === 'date' ? '700' : '600' },
+                ]}>
+                日期
+              </Text>
             </Pressable>
-            <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev + 1)}>
-              <MaterialIcons name="chevron-right" size={22} color={colors.outline} />
+            <Pressable
+              disabled={isSingleDayLimit}
+              onPress={switchToTimeTab}
+              style={[styles.pickTabBtn, isSingleDayLimit && { opacity: 0.45 }]}>
+              <Text
+                style={[
+                  styles.pickTabText,
+                  { color: tab === 'time' ? tf.pond : tf.muted, fontWeight: tab === 'time' ? '700' : '600' },
+                ]}>
+                时刻
+              </Text>
             </Pressable>
           </View>
+        </FoldRiseIn>
+
+        <FoldRiseIn
+          animate={enterAnimate}
+          index={1}
+          duration={PICK_RISE_MS}
+          staggerMs={PICK_RISE_STAGGER}
+          fromY={10}
+          fromScale={0.985}
+          holdHidden={holdEntrance}>
+          <View style={styles.chipsWrap}>
+            {(tab === 'date' ? dateQuickChips : timeQuickChips).map((chip) => {
+              const isActive = selectedQuickChip === chip;
+              return (
+                <Pressable
+                  key={chip}
+                  onPress={() => handleQuickChipPress(chip)}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: isActive ? tf.lily2 : isDark ? tf.paper2 : '#F1EDE1',
+                      borderColor: isActive ? '#B7CA9C' : 'transparent',
+                      borderWidth: isActive ? 1 : 0,
+                    },
+                  ]}>
+                  <Text style={[styles.chipText, { color: isActive ? '#42613E' : tf.muted }]}>{chip}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </FoldRiseIn>
+
+        <View style={[styles.minical, { backgroundColor: foldCardBg, borderColor: tf.line2 }]}>
+          <FoldRiseIn
+            animate={enterAnimate}
+            index={2}
+            duration={PICK_RISE_MS}
+            staggerMs={PICK_RISE_STAGGER}
+            fromY={8}
+            fromScale={0.98}
+            holdHidden={holdEntrance}>
+            <View style={styles.calendarHead}>
+              <Text style={[styles.monthTitle, { color: tf.pond, fontFamily: fonts.serif }]}>{visibleMonthTitle}</Text>
+              <View style={styles.monthActions}>
+                <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev - 1)}>
+                  <MaterialIcons name="chevron-left" size={20} color={tf.faint} />
+                </Pressable>
+                <Pressable style={styles.iconBtn} onPress={() => setMonthOffset((prev) => prev + 1)}>
+                  <MaterialIcons name="chevron-right" size={20} color={tf.faint} />
+                </Pressable>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          <FlatList
+            ref={pagerRef}
+            data={pagerData}
+            horizontal
+            pagingEnabled
+            nestedScrollEnabled
+            directionalLockEnabled
+            decelerationRate="fast"
+            initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+            getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(offset) => `month-${offset}`}
+            windowSize={5}
+            maxToRenderPerBatch={3}
+            updateCellsBatchingPeriod={16}
+            removeClippedSubviews={false}
+            onLayout={(e) => {
+              const width = e.nativeEvent.layout.width;
+              setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+            }}
+            onScroll={(e) => {
+              if (calendarWidth <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
+              setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
+            }}
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={(e) => {
+              if (calendarWidth <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              const nextIndex = Math.round(rawIndex);
+              const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
+              pagerCurrentIndexRef.current = nextIndex;
+              setVisibleMonthOffset(nextOffset);
+              setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+            }}
+            onScrollToIndexFailed={(info) => {
+              if (calendarWidth <= 0) return;
+              requestAnimationFrame(() => {
+                pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
+              });
+            }}
+            contentContainerStyle={styles.calendarPager}
+            renderItem={({ item: offset }) => {
+              const monthDate = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+              const currentMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth());
+              const prevMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() - 1);
+              const nextMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() + 1);
+              const days = buildCalendarCells(currentMonthInfo, prevMonthInfo, nextMonthInfo);
+              const weeks: CalendarCell[][] = [];
+              for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
+              const isEntranceMonth =
+                calBloomMonthRef.current != null && offset === calBloomMonthRef.current;
+              /** 入场月：解锁前先藏住；解锁后按周升起。邻页直接显示 */
+              const calBloomHold = holdEntrance && enterAnimate && isEntranceMonth;
+              const calBloomPlay = enterAnimate && isEntranceMonth && calBloomArmed;
+
+              return (
+                <View style={[styles.calendarPage, { width: calendarWidth || '100%' }]}>
+                  <FoldRiseIn
+                    animate={calBloomPlay}
+                    index={0}
+                    delayMs={0}
+                    duration={PICK_CAL_WEEK_DURATION}
+                    staggerMs={0}
+                    fromY={4}
+                    holdHidden={calBloomHold}>
+                    <View style={styles.weekRow}>
+                      {WEEK_LABELS.map((w) => (
+                        <Text key={w} style={[styles.weekText, { color: colors.textSecondary }]}>
+                          {w}
+                        </Text>
+                      ))}
+                    </View>
+                  </FoldRiseIn>
+
+                  <View style={styles.grid}>
+                    {weeks.map((week, weekIndex) => (
+                      <FoldRiseIn
+                        key={`week-${currentMonthInfo.year}-${currentMonthInfo.month}-${weekIndex}`}
+                        animate={calBloomPlay}
+                        index={weekIndex}
+                        delayMs={28}
+                        duration={PICK_CAL_WEEK_DURATION}
+                        staggerMs={PICK_CAL_WEEK_STAGGER}
+                        fromY={12}
+                        fromScale={0.96}
+                        holdHidden={calBloomHold}
+                        style={styles.calWeekRise}>
+                        <View style={styles.calWeekInner}>
+                          {week.map((cell, dayIndex) => {
+                            const index = weekIndex * 7 + dayIndex;
+                            const day = cell.day;
+                            const lunar = getCalendarLunarLabel(cell.year, cell.month + 1, day);
+                            const cellDate = new Date(cell.year, cell.month, day);
+                            const isPastDate =
+                              cell.inCurrentMonth && cellDate.getTime() < todayStart.getTime();
+                            const isOutOfLimit =
+                              cell.inCurrentMonth && !isDateInLimit(cellDate, dateLimit);
+                            const isSelected =
+                              cell.inCurrentMonth &&
+                              tab === 'date' &&
+                              selectedDate !== null &&
+                              selectedDate.getFullYear() === cellDate.getFullYear() &&
+                              selectedDate.getMonth() === cellDate.getMonth() &&
+                              selectedDate.getDate() === cellDate.getDate();
+                            const isToday =
+                              cell.inCurrentMonth &&
+                              todayStart.getFullYear() === cellDate.getFullYear() &&
+                              todayStart.getMonth() === cellDate.getMonth() &&
+                              todayStart.getDate() === cellDate.getDate();
+                            const inRange =
+                              !!activeRange &&
+                              cell.inCurrentMonth &&
+                              cellDate >= activeRange.start &&
+                              cellDate <= activeRange.end;
+                            const start =
+                              !!activeRange &&
+                              cell.inCurrentMonth &&
+                              cellDate.getFullYear() === activeRange.start.getFullYear() &&
+                              cellDate.getMonth() === activeRange.start.getMonth() &&
+                              cellDate.getDate() === activeRange.start.getDate();
+                            const end =
+                              !!activeRange &&
+                              cell.inCurrentMonth &&
+                              cellDate.getFullYear() === activeRange.end.getFullYear() &&
+                              cellDate.getMonth() === activeRange.end.getMonth() &&
+                              cellDate.getDate() === activeRange.end.getDate();
+                            const weekDayIndex = index % 7;
+                            const isRangeStartOrEnd = start || end;
+                            const showRangeLine = inRange && !isRangeStartOrEnd;
+
+                            return (
+                              <Pressable
+                                key={cell.key}
+                                onPress={() =>
+                                  cell.inCurrentMonth &&
+                                  !isPastDate &&
+                                  !isOutOfLimit &&
+                                  handleDayPress(
+                                    currentMonthInfo.year,
+                                    currentMonthInfo.month,
+                                    day,
+                                  )
+                                }
+                                style={styles.dayCell}>
+                                {cell.inCurrentMonth ? (
+                                  <View style={styles.rangeWrap}>
+                                    {inRange && weekDayIndex !== 0 ? (
+                                      <View
+                                        style={[
+                                          styles.rangeLeftFill,
+                                          { backgroundColor: colors.primaryMuted },
+                                        ]}
+                                      />
+                                    ) : null}
+                                    {inRange && weekDayIndex !== 6 ? (
+                                      <View
+                                        style={[
+                                          styles.rangeRightFill,
+                                          { backgroundColor: colors.primaryMuted },
+                                        ]}
+                                      />
+                                    ) : null}
+
+                                    {showRangeLine ? (
+                                      <View
+                                        style={[
+                                          styles.dayCircle,
+                                          styles.rangeMiddleCircle,
+                                          { backgroundColor: colors.primaryMuted },
+                                        ]}>
+                                        <Text style={[styles.dayNum, { color: colors.primary }]}>
+                                          {day}
+                                        </Text>
+                                        <Text style={[styles.dayLunar, { color: colors.primary }]}>
+                                          {lunar}
+                                        </Text>
+                                      </View>
+                                    ) : (
+                                      <View
+                                        style={[
+                                          styles.dayCircle,
+                                          isSelected && { backgroundColor: colors.primary },
+                                          isToday &&
+                                            !isSelected && { backgroundColor: colors.primaryMuted },
+                                          isRangeStartOrEnd && { backgroundColor: colors.primary },
+                                          inRange &&
+                                            !isRangeStartOrEnd && {
+                                              backgroundColor: colors.primaryMuted,
+                                            },
+                                          isRangeStartOrEnd && styles.rangeEndpoint,
+                                          isToday &&
+                                            !isSelected &&
+                                            !isRangeStartOrEnd && [
+                                              styles.todayCircle,
+                                              { borderColor: colors.primaryRing },
+                                            ],
+                                          isPastDate && styles.pastDayCircle,
+                                          isOutOfLimit && styles.pastDayCircle,
+                                        ]}>
+                                        <Text
+                                          style={[
+                                            styles.dayNum,
+                                            {
+                                              color:
+                                                isSelected || isRangeStartOrEnd
+                                                  ? colors.onPrimary
+                                                  : isToday
+                                                    ? colors.primary
+                                                    : colors.text,
+                                            },
+                                            isPastDate && styles.pastDayText,
+                                            isOutOfLimit && styles.pastDayText,
+                                          ]}>
+                                          {day}
+                                        </Text>
+                                        <Text
+                                          style={[
+                                            styles.dayLunar,
+                                            {
+                                              color:
+                                                isSelected || isRangeStartOrEnd
+                                                  ? colors.onPrimary
+                                                  : isToday
+                                                    ? colors.primary
+                                                    : colors.textSecondary,
+                                            },
+                                            isPastDate && styles.pastDayText,
+                                            isOutOfLimit && styles.pastDayText,
+                                          ]}>
+                                          {lunar}
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                ) : (
+                                  <View style={[styles.dayCircle, styles.outOfMonthCircle]}>
+                                    <Text
+                                      style={[
+                                        styles.dayNum,
+                                        { color: colors.textSecondary, opacity: 0.4 },
+                                      ]}>
+                                      {day}
+                                    </Text>
+                                    <Text
+                                      style={[
+                                        styles.dayLunar,
+                                        { color: colors.textSecondary, opacity: 0.35 },
+                                      ]}>
+                                      {lunar}
+                                    </Text>
+                                  </View>
+                                )}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      </FoldRiseIn>
+                    ))}
+                  </View>
+                </View>
+              );
+            }}
+          />
         </View>
 
-        <FlatList
-          ref={pagerRef}
-          data={pagerData}
-          horizontal
-          pagingEnabled
-          nestedScrollEnabled
-          directionalLockEnabled
-          decelerationRate="fast"
-          initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
-          getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
-          showsHorizontalScrollIndicator={false}
-          keyExtractor={(offset) => `month-${offset}`}
-          windowSize={5}
-          maxToRenderPerBatch={3}
-          updateCellsBatchingPeriod={16}
-          removeClippedSubviews
-          onLayout={(e) => {
-            const width = e.nativeEvent.layout.width;
-            setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
-          }}
-          onScroll={(e) => {
-            if (calendarWidth <= 0) return;
-            const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
-            const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
-            setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
-          }}
-          scrollEventThrottle={16}
-          onMomentumScrollEnd={(e) => {
-            if (calendarWidth <= 0) return;
-            const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
-            const nextIndex = Math.round(rawIndex);
-            const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
-            pagerCurrentIndexRef.current = nextIndex;
-            setVisibleMonthOffset(nextOffset);
-            setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
-          }}
-          onScrollToIndexFailed={(info) => {
-            if (calendarWidth <= 0) return;
-            requestAnimationFrame(() => {
-              pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
-            });
-          }}
-          contentContainerStyle={styles.calendarPager}
-          renderItem={({ item: offset }) => {
-            const monthDate = new Date(today.getFullYear(), today.getMonth() + offset, 1);
-            const currentMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth());
-            const prevMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() - 1);
-            const nextMonthInfo = getMonthInfo(monthDate.getFullYear(), monthDate.getMonth() + 1);
-            const days = buildCalendarCells(currentMonthInfo, prevMonthInfo, nextMonthInfo);
+        <FoldRiseIn
+          animate={enterAnimate}
+          index={3}
+          duration={PICK_RISE_MS}
+          staggerMs={PICK_RISE_STAGGER}
+          fromY={10}
+          fromScale={0.985}
+          holdHidden={holdEntrance}>
+          <View style={styles.alltog}>
+            <View style={[styles.dot, { backgroundColor: tf.sage }]} />
+            <Text style={{ fontSize: 13, color: tf.ink2, fontWeight: '600' }}>
+              {tab === 'date' ? '具体时间' : '全天'}
+            </Text>
+            <TaskFoldSwitch
+              value={tab === 'date' ? hasExactTime : allDay}
+              onValueChange={(next) => {
+                if (tab === 'date') {
+                  setHasExactTime(next);
+                  setAllDay(!next);
+                } else {
+                  setAllDay(next);
+                  if (next) setHasExactTime(false);
+                  else setHasExactTime(true);
+                }
+              }}
+              accessibilityLabel={tab === 'date' ? '具体时间' : '全天'}
+            />
+            <Text style={{ marginLeft: 'auto', fontSize: 11, color: tf.faint }}>
+              {formatSelectedDayLabel(selectedDate)}
+            </Text>
+          </View>
 
-            return (
-              <View style={[styles.calendarPage, { width: calendarWidth || '100%' }]}>
-                <View style={styles.weekRow}>
-                  {WEEK_LABELS.map((w) => (
-                    <Text key={w} style={[styles.weekText, { color: colors.textSecondary }]}>
-                      {w}
-                    </Text>
-                  ))}
+          {(tab === 'date' ? hasExactTime : !allDay) ? (
+            <View style={styles.timerow}>
+              <Pressable
+                onPress={() => openTimePicker('start')}
+                style={[styles.timebox, { borderColor: tf.line2, backgroundColor: foldCardBg }]}>
+                <View>
+                  <Text style={styles.timeboxSmall}>开始</Text>
+                  <Text style={[styles.timeboxBig, { color: tf.ink2, fontFamily: fonts.mono }]}>{startTimeLabel}</Text>
                 </View>
-
-                <View style={styles.grid}>
-                  {days.map((cell, index) => {
-                    const day = cell.day;
-                    const lunar = getCalendarLunarLabel(cell.year, cell.month + 1, day);
-                    const cellDate = new Date(cell.year, cell.month, day);
-                    const isPastDate = cell.inCurrentMonth && cellDate.getTime() < todayStart.getTime();
-                    const isOutOfLimit = cell.inCurrentMonth && !isDateInLimit(cellDate, dateLimit);
-                    const isSelected =
-                      cell.inCurrentMonth &&
-                      tab === 'date' &&
-                      selectedDate !== null &&
-                      selectedDate.getFullYear() === cellDate.getFullYear() &&
-                      selectedDate.getMonth() === cellDate.getMonth() &&
-                      selectedDate.getDate() === cellDate.getDate();
-                    const isToday =
-                      cell.inCurrentMonth &&
-                      todayStart.getFullYear() === cellDate.getFullYear() &&
-                      todayStart.getMonth() === cellDate.getMonth() &&
-                      todayStart.getDate() === cellDate.getDate();
-                    const inRange = !!activeRange && cell.inCurrentMonth && cellDate >= activeRange.start && cellDate <= activeRange.end;
-                    const start =
-                      !!activeRange &&
-                      cell.inCurrentMonth &&
-                      cellDate.getFullYear() === activeRange.start.getFullYear() &&
-                      cellDate.getMonth() === activeRange.start.getMonth() &&
-                      cellDate.getDate() === activeRange.start.getDate();
-                    const end =
-                      !!activeRange &&
-                      cell.inCurrentMonth &&
-                      cellDate.getFullYear() === activeRange.end.getFullYear() &&
-                      cellDate.getMonth() === activeRange.end.getMonth() &&
-                      cellDate.getDate() === activeRange.end.getDate();
-                    const weekDayIndex = index % 7;
-                    const isRangeStartOrEnd = start || end;
-                    const showRangeLine = inRange && !isRangeStartOrEnd;
-
-                    return (
-                      <Pressable
-                        key={cell.key}
-                        onPress={() =>
-                          cell.inCurrentMonth && !isPastDate && !isOutOfLimit && handleDayPress(currentMonthInfo.year, currentMonthInfo.month, day)
-                        }
-                        style={styles.dayCell}
-                      >
-                        {cell.inCurrentMonth ? (
-                          <View style={styles.rangeWrap}>
-                            {inRange && weekDayIndex !== 0 ? <View style={[styles.rangeLeftFill, { backgroundColor: colors.primaryMuted }]} /> : null}
-                            {inRange && weekDayIndex !== 6 ? <View style={[styles.rangeRightFill, { backgroundColor: colors.primaryMuted }]} /> : null}
-
-                            {showRangeLine ? (
-                              <View style={[styles.dayCircle, styles.rangeMiddleCircle, { backgroundColor: colors.primaryMuted }]}>
-                                <Text style={[styles.dayNum, { color: colors.primary }]}>{day}</Text>
-                                <Text style={[styles.dayLunar, { color: colors.primary }]}>{lunar}</Text>
-                              </View>
-                            ) : (
-                              <View
-                                style={[
-                                  styles.dayCircle,
-                                  isSelected && { backgroundColor: colors.primary },
-                                  isToday && !isSelected && { backgroundColor: colors.primaryMuted },
-                                  isRangeStartOrEnd && { backgroundColor: colors.primary },
-                                  inRange && !isRangeStartOrEnd && { backgroundColor: colors.primaryMuted },
-                                  isRangeStartOrEnd && styles.rangeEndpoint,
-                                  isToday && !isSelected && !isRangeStartOrEnd && [styles.todayCircle, { borderColor: colors.primaryRing }],
-                                  isPastDate && styles.pastDayCircle,
-                                  isOutOfLimit && styles.pastDayCircle,
-                                ]}
-                              >
-                                <Text
-                                  style={[
-                                    styles.dayNum,
-                                    {
-                                      color:
-                                        isSelected || isRangeStartOrEnd ? colors.onPrimary : isToday ? colors.primary : colors.text,
-                                    },
-                                    isPastDate && styles.pastDayText,
-                                    isOutOfLimit && styles.pastDayText,
-                                  ]}
-                                >
-                                  {day}
-                                </Text>
-                                <Text
-                                  style={[
-                                    styles.dayLunar,
-                                    {
-                                      color:
-                                        isSelected || isRangeStartOrEnd ? colors.onPrimary : isToday ? colors.primary : colors.textSecondary,
-                                    },
-                                    isPastDate && styles.pastDayText,
-                                    isOutOfLimit && styles.pastDayText,
-                                  ]}
-                                >
-                                  {lunar}
-                                </Text>
-                              </View>
-                            )}
-                          </View>
-                        ) : (
-                          <View style={[styles.dayCircle, styles.outOfMonthCircle]}>
-                            <Text style={[styles.dayNum, { color: colors.textSecondary, opacity: 0.4 }]}>{day}</Text>
-                            <Text style={[styles.dayLunar, { color: colors.textSecondary, opacity: 0.35 }]}>{lunar}</Text>
-                          </View>
-                        )}
-                      </Pressable>
-                    );
-                  })}
+                <Text style={{ marginLeft: 'auto', color: tf.faint }}>⌄</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => openTimePicker('end')}
+                style={[styles.timebox, { borderColor: tf.line2, backgroundColor: foldCardBg }]}>
+                <View>
+                  <Text style={styles.timeboxSmall}>结束</Text>
+                  <Text style={[styles.timeboxBig, { color: tf.ink2, fontFamily: fonts.mono }]}>{endTimeLabel}</Text>
                 </View>
+                <Text style={{ marginLeft: 'auto', color: tf.faint }}>⌄</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={() => openSettingPicker('reminder')}>
+            <Text style={[styles.pl, { color: tf.muted }]}>提醒</Text>
+            <View style={styles.pv}>
+              <MaterialIcons name="notifications-none" size={14} color={tf.muted} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: tf.ink2 }} numberOfLines={1}>
+                {reminderSettingHint}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 11, color: tf.muted }}>修改 ›</Text>
+          </Pressable>
+          {reminderOption !== '不提前' ? (
+            <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={openReminderTimePicker}>
+              <Text style={[styles.pl, { color: tf.muted }]}>提醒时刻</Text>
+              <View style={styles.pv}>
+                <MaterialIcons name="access-time" size={14} color={tf.muted} />
+                <Text style={{ fontSize: 13, fontWeight: '600', color: tf.ink2 }}>{reminderTimeLabel}</Text>
               </View>
-            );
-          }}
-        />
-
-        {tab === 'date' ? (
-          <>
-            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
-              <Pressable style={[styles.settingRow, !hasExactTime && styles.disabledRow]} onPress={() => openTimePicker('start')}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="schedule" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>具体时间</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingValue, { color: hasExactTime ? colors.primary : colors.textSecondary }]}>{exactTimeLabel}</Text>
-                  <Switch
-                    value={hasExactTime}
-                    onValueChange={(next) => {
-                      setHasExactTime(next);
-                      // “具体时间”一旦启用，就不应再被视为“全天”。
-                      setAllDay(!next);
-                    }}
-                  />
-                </View>
-              </Pressable>
-              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="notifications" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>提醒设置</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
-                    {reminderSettingHint}
-                  </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                </View>
-              </Pressable>
-              {reminderOption !== '不提前' ? (
-                <Pressable style={styles.settingRow} onPress={openReminderTimePicker}>
-                  <View style={styles.settingLeft}>
-                    <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name="access-time" size={20} color={colors.primary} />
-                    </View>
-                    <Text style={[styles.settingLabel, { color: colors.text }]}>提醒时间</Text>
-                  </View>
-                  <View style={styles.settingRight}>
-                    <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{reminderTimeLabel}</Text>
-                    <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                  </View>
-                </Pressable>
-              ) : null}
-              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="repeat" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>重复设置</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
-                    {repeatSummary}
-                  </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                </View>
-              </Pressable>
-            </View>
-
-            <Pressable
-              style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]}
-              onPress={confirmClearSchedule}
-            >
-              <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
+              <Text style={{ fontSize: 11, color: tf.muted }}>›</Text>
             </Pressable>
-          </>
-        ) : (
-          <>
-            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
-              <View style={styles.settingRow}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="brightness-7" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>全天</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Switch value={allDay} onValueChange={setAllDay} />
-                </View>
+          ) : null}
+          <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={() => openSettingPicker('repeat')}>
+            <Text style={[styles.pl, { color: tf.muted }]}>重复</Text>
+            <View style={styles.pv}>
+              <MaterialIcons name="repeat" size={14} color={tf.muted} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: tf.ink2 }} numberOfLines={1}>
+                {repeatSummary}
+              </Text>
+            </View>
+            {canAutoPlace ? (
+              <View style={[styles.autoTag, { backgroundColor: tf.sage2 }]}>
+                <Text style={{ fontSize: 10, fontWeight: '700', color: '#36594D' }}>可自动入格</Text>
               </View>
-              {!allDay && (
-                <>
-                  <Pressable style={styles.settingRow} onPress={() => openTimePicker('start')}>
-                    <View style={styles.settingLeft}>
-                      <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                        <MaterialIcons name="schedule" size={20} color={colors.primary} />
-                      </View>
-                      <Text style={[styles.settingLabel, { color: colors.text }]}>开始</Text>
-                    </View>
-                    <Pressable style={styles.settingRight} onPress={() => openTimePicker('start')}>
-                      <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{startTimeLabel}</Text>
-                      <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                    </Pressable>
-                  </Pressable>
-                  <Pressable style={styles.settingRow} onPress={() => openTimePicker('end')}>
-                    <View style={styles.settingLeft}>
-                      <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                        <MaterialIcons name="timer-off" size={20} color={colors.primary} />
-                      </View>
-                      <Text style={[styles.settingLabel, { color: colors.text }]}>结束</Text>
-                    </View>
-                    <Pressable style={styles.settingRight} onPress={() => openTimePicker('end')}>
-                      <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{endTimeLabel}</Text>
-                      <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                    </Pressable>
-                  </Pressable>
-                </>
-              )}
-            </View>
+            ) : null}
+            <Text style={{ fontSize: 11, color: tf.muted, marginLeft: 2 }}>›</Text>
+          </Pressable>
+        </FoldRiseIn>
 
-            <View style={[styles.settingList, { backgroundColor: colors.input }]}>
-              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('reminder')}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="notifications" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>提醒设置</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: colors.textSecondary }]}>{reminderSettingHint}</Text>
-                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                </View>
-              </Pressable>
-              {reminderOption !== '不提前' ? (
-                <Pressable style={styles.settingRow} onPress={openReminderTimePicker}>
-                  <View style={styles.settingLeft}>
-                    <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                      <MaterialIcons name="access-time" size={20} color={colors.primary} />
-                    </View>
-                    <Text style={[styles.settingLabel, { color: colors.text }]}>提醒时间</Text>
-                  </View>
-                  <View style={styles.settingRight}>
-                    <Text style={[styles.settingValueSmall, { color: colors.primary }]}>{reminderTimeLabel}</Text>
-                    <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                  </View>
-                </Pressable>
-              ) : null}
-              <Pressable style={styles.settingRow} onPress={() => openSettingPicker('repeat')}>
-                <View style={styles.settingLeft}>
-                  <View style={[styles.settingIcon, { backgroundColor: colors.surface }]}>
-                    <MaterialIcons name="repeat" size={20} color={colors.primary} />
-                  </View>
-                  <Text style={[styles.settingLabel, { color: colors.text }]}>重复设置</Text>
-                </View>
-                <View style={styles.settingRight}>
-                  <Text style={[styles.settingHint, { color: colors.textSecondary }]} numberOfLines={1} ellipsizeMode="tail">
-                    {repeatSummary}
-                  </Text>
-                  <MaterialIcons name="chevron-right" size={20} color={colors.outline} />
-                </View>
-              </Pressable>
+        {dateLimit?.end || dateLimit?.start ? (
+          <FoldRiseIn
+            animate={enterAnimate}
+            index={4}
+            duration={PICK_RISE_MS}
+            staggerMs={PICK_RISE_STAGGER}
+            fromY={8}
+            fromScale={0.985}
+            holdHidden={holdEntrance}>
+            <View
+              style={[
+                styles.boundHint,
+                {
+                  backgroundColor: isDark ? tf.amber2 : '#F8ECD7',
+                  borderColor: isDark ? tf.scoreBorder : '#E8CDA2',
+                },
+              ]}>
+              <Text style={{ fontSize: 11, color: tf.amberInk, lineHeight: 16 }}>
+                {dateLimit.end
+                  ? `父项目截止 ${formatLimitLabel(dateLimit.end)} · 超出范围的日期会被钳制并提示。`
+                  : `不早于 ${formatLimitLabel(dateLimit.start!)} · 超出范围的日期会被钳制并提示。`}
+              </Text>
             </View>
+          </FoldRiseIn>
+        ) : null}
 
-            <Pressable style={[styles.clearBtn, { borderColor: colors.outline, backgroundColor: colors.surface }]} onPress={confirmClearSchedule}>
-              <Text style={[styles.clearText, { color: colors.danger }]}>清除</Text>
-            </Pressable>
-          </>
-        )}
+        <FoldRiseIn
+          animate={enterAnimate}
+          index={5}
+          duration={PICK_RISE_MS}
+          staggerMs={PICK_RISE_STAGGER}
+          fromY={6}
+          fromScale={0.99}
+          holdHidden={holdEntrance}>
+          <View style={styles.hintline}>
+            <MaterialIcons name="lightbulb-outline" size={14} color={tf.faint} />
+            <Text style={{ flex: 1, fontSize: 11, color: tf.faint, lineHeight: 16 }}>
+              确认后结果回传调用方；日期与时刻两个 Tab 共享同一份草稿。
+            </Text>
+          </View>
+        </FoldRiseIn>
       </ScrollView>
+      )}
 
-      
+      <View style={[styles.foldFoot, { paddingBottom: footPad, backgroundColor: tf.paper }]}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [
+            styles.ghostBtn,
+            { borderColor: tf.line2, backgroundColor: foldCardBg, opacity: pressed ? 0.88 : 1, flex: 1 },
+          ]}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: tf.ink2 }}>取消</Text>
+        </Pressable>
+        <Pressable
+          onPress={confirmAndBack}
+          style={({ pressed }) => [
+            styles.foldPrimary,
+            { backgroundColor: tf.pond, opacity: pressed ? 0.9 : 1, flex: 1.5 },
+          ]}>
+          <Text style={{ fontSize: 14, fontWeight: '700', color: tf.onPond }}>确定</Text>
+        </Pressable>
+      </View>
+
+     
       <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
         <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
           <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
@@ -1636,70 +1956,188 @@ export default function SchedulePickerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
+  appbar: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing['3xl'],
-    paddingVertical: Spacing.lg,
+    gap: 10,
   },
-  iconBtn: {
-    width: Layout.iconButtonSize,
-    height: Layout.iconButtonSize,
-    borderRadius: Radius.icon,
+  appbarCenter: { flex: 1, minWidth: 0 },
+  appbarTitle: { fontSize: 15, fontWeight: '700' },
+  appbarSub: { fontSize: 10, marginTop: 2 },
+  pillbtn: {
+    height: 28,
+    paddingHorizontal: 11,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tabSwitch: { flexDirection: 'row', borderRadius: Radius.md, padding: Spacing.xs, gap: Spacing.xs },
-  tabBtn: { paddingHorizontal: Spacing['6xl'], paddingVertical: Spacing.sm, borderRadius: Radius.sm },
-  tabText: Typography.body,
-  content: { padding: Spacing['3xl'], gap: Spacing['5xl'], paddingBottom: Spacing['7xl'] },
-  chipsRow: { gap: Spacing.lg },
-  chip: { borderWidth: StyleSheet.hairlineWidth, borderRadius: Radius.md, paddingHorizontal: Spacing['3xl'], paddingVertical: Spacing.lg },
-  chipText: { fontSize: 14, fontWeight: '500' },
-  calendarHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  iconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  content: { paddingHorizontal: 14, paddingTop: 4, gap: 10 },
+  pickTabs: {
+    height: 34,
+    borderRadius: 10,
+    padding: 3,
+    flexDirection: 'row',
+    position: 'relative',
+  },
+  pickTabInd: {
+    position: 'absolute',
+    top: 3,
+    left: 3,
+    bottom: 3,
+    borderRadius: 8,
+    shadowColor: '#20382F',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  pickTabBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', zIndex: 1 },
+  pickTabText: { fontSize: 12 },
+  chipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chip: {
+    height: 28,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chipText: { fontSize: 12, fontWeight: '600' },
+  minical: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 8,
+  },
+  calendarHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+    paddingBottom: 4,
+  },
   calendarPager: { alignItems: 'stretch' },
-  monthTitle: { ...Typography.h1, fontSize: 28 },
-  monthActions: { flexDirection: 'row', gap: Spacing.md },
+  monthTitle: { fontSize: 16, fontWeight: '600' },
+  monthActions: { flexDirection: 'row', gap: 4 },
   calendarPage: { width: '100%' },
-  weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: Spacing.md },
-  weekText: { width: '14.28%', textAlign: 'center', ...Typography.label },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  dayCell: { width: '14.28%', alignItems: 'center', paddingVertical: Spacing.md },
+  weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, paddingBottom: 2 },
+  weekText: { width: '14.28%', textAlign: 'center', fontSize: 10, fontWeight: '600' },
+  grid: { width: '100%' },
+  dayCell: { width: '14.28%', alignItems: 'center', paddingVertical: 3 },
+  calWeekRise: { width: '100%' },
+  calWeekInner: { flexDirection: 'row', width: '100%' },
   rangeWrap: { width: '100%', alignItems: 'center', justifyContent: 'center' },
-  rangeLeftFill: { position: 'absolute', left: 0, right: '50%', top: Spacing.sm, bottom: Spacing.sm },
-  rangeRightFill: { position: 'absolute', left: '50%', right: 0, top: Spacing.sm, bottom: Spacing.sm },
-  dayCircle: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', zIndex: 1 },
-  todayCircle: { borderWidth: 2 },
+  rangeLeftFill: { position: 'absolute', left: 0, right: '50%', top: 2, bottom: 2 },
+  rangeRightFill: { position: 'absolute', left: '50%', right: 0, top: 2, bottom: 2 },
+  dayCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  todayCircle: { borderWidth: 1.5 },
   rangeMiddleCircle: { opacity: 0.95 },
   rangeEndpoint: { zIndex: 2 },
   outOfMonthCircle: { opacity: 0.5 },
   pastDayCircle: { opacity: 0.35 },
   pastDayText: { textDecorationLine: 'line-through' },
-  dayNum: { fontSize: 18, fontWeight: '700', lineHeight: 20 },
-  dayLunar: { fontSize: 9, fontWeight: '600' },
-  settingList: { borderRadius: Radius.lg, overflow: 'hidden' },
-  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing['2xl'] },
-  disabledRow: { opacity: 0.6 },
-  settingLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
-  settingIcon: { width: 40, height: 40, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
-  settingLabel: { fontSize: 16, fontWeight: '500' },
-  settingRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, flexShrink: 1, minWidth: 0 },
-  settingValue: { fontSize: 22, fontWeight: '800' },
-  settingValueSmall: { fontSize: 22, fontWeight: '700' },
-  settingHint: { fontSize: 14, fontWeight: '500' },
-  clearBtn: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.md,
-    paddingVertical: Spacing['2xl'],
+  dayNum: { fontSize: 14, fontWeight: '700', lineHeight: 17 },
+  dayLunar: { fontSize: 8, fontWeight: '600' },
+  alltog: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
   },
-  clearText: { fontSize: 16, fontWeight: '600' },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  timerow: { flexDirection: 'row', gap: 8, marginBottom: 4 },
+  timebox: {
+    flex: 1,
+    height: 42,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  timeboxSmall: { fontSize: 10, color: '#9DA69D' },
+  timeboxBig: { fontSize: 15, fontWeight: '700', marginTop: 1 },
+  pickrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 40,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  pl: { width: 52, fontSize: 12 },
+  pv: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
+  autoTag: {
+    height: 18,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  boundHint: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  hintline: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+  },
+  foldFoot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  ghostBtn: {
+    height: 46,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  foldPrimary: {
+    height: 46,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingLabel: { fontSize: 15, fontWeight: '500' },
   pickerBackdrop: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['6xl'] },
   pickerCard: { borderRadius: Radius.xl, padding: Spacing['3xl'], gap: Spacing.xl, ...Shadows.sheet },
   pickerTitle: { ...Typography.title, textAlign: 'center' },
   pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.lg },
-  pickerBtn: { borderRadius: Radius.sm, paddingHorizontal: Spacing['3xl'], paddingVertical: Spacing.lg, minWidth: 72, alignItems: 'center' },
+  pickerBtn: {
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing['3xl'],
+    paddingVertical: Spacing.lg,
+    minWidth: 72,
+    alignItems: 'center',
+  },
   pickerBtnText: { fontSize: 14, fontWeight: '600' },
   optionList: { gap: Spacing.md },
   optionRow: {
@@ -1713,7 +2151,12 @@ const styles = StyleSheet.create({
   },
   optionText: { fontSize: 15, fontWeight: '500' },
   tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  tagItem: { borderWidth: StyleSheet.hairlineWidth, borderRadius: Radius.sm, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md },
+  tagItem: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+  },
   tagText: { fontSize: 14, fontWeight: '500' },
   yearlyWrap: { gap: Spacing.lg },
   yearlyDateBtn: {

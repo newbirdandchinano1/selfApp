@@ -1,4 +1,4 @@
-import { Colors } from '@/constants/theme';
+﻿import { Colors } from '@/constants/theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -603,12 +603,12 @@ export default function TasksOverviewScreen() {
 
   const showClearSelection = !!selectedHeatYmd || !!selectedStatKey;
 
-  const bg = isDark ? theme.background : '#faf8ff';
+  const bg = isDark ? theme.background : '#F5F3E8';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';
   const surfaceLow = isDark ? 'rgba(15, 23, 42, 0.55)' : '#f2f3ff';
   const border = isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.55)';
   const outline = isDark ? 'rgba(148,163,184,0.7)' : '#727785';
-  const primary = isDark ? '#60a5fa' : '#0058be';
+  const primary = isDark ? '#A9C7B9' : '#1E3932';
   const secondary = isDark ? '#34d399' : '#006c49';
 
   return (
@@ -649,7 +649,7 @@ export default function TasksOverviewScreen() {
                     style={({ pressed }) => [
                       styles.statBox,
                       {
-                        backgroundColor: selected ? (isDark ? 'rgba(96,165,250,0.14)' : 'rgba(0,88,190,0.08)') : surfaceLow,
+                        backgroundColor: selected ? (isDark ? 'rgba(169,199,185,0.14)' : 'rgba(30,57,50,0.08)') : surfaceLow,
                         borderColor: selected ? primary : border,
                         borderWidth: selected ? 2 : 1,
                         opacity: pressed ? 0.88 : 1,

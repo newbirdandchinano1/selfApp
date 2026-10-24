@@ -2,42 +2,42 @@ import React, { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
-/** 便利贴上的墨水色。纸始终是浅色，深色模式也不改成白字。 */
-export const MEMO_INK = '#3A2A1A';
-export const MEMO_INK_SOFT = '#5C4636';
-export const MEMO_RULE = 'rgba(58,42,26,0.12)';
-export const MEMO_WASH = 'rgba(58,42,26,0.08)';
+/** 便利贴上的墨水色 — 对齐健康页 ink。纸始终是浅色，深色模式也不改成白字。 */
+export const MEMO_INK = '#1E2A24';
+export const MEMO_INK_SOFT = '#4E5A54';
+export const MEMO_RULE = 'rgba(30,57,50,0.1)';
+export const MEMO_WASH = 'rgba(30,57,50,0.08)';
+
+/**
+ * 便利贴纸色：奶油 / sage / 琥珀浅洗，贴近健康页品牌，避免彩虹与牛皮纸棕。
+ * 按 id 哈希取色，列表与详情一致且跨会话稳定。
+ */
+const MEMO_STICKY_PAPERS = [
+  '#E4EDE7',
+  '#F3EBD8',
+  '#DDE6DF',
+  '#EFE6D4',
+  '#E8F0EB',
+  '#F5EFE0',
+  '#E2E9E4',
+  '#F0E8D6',
+] as const;
 
 /** 同一条备忘在本次打开里保持同一张纸色，列表和详情共用。 */
 const paperByMemoId = new Map<string, string>();
 
-function hslToHex(h: number, s: number, l: number): string {
-  const sat = s / 100;
-  const lig = l / 100;
-  const c = (1 - Math.abs(2 * lig - 1)) * sat;
-  const hp = h / 60;
-  const x = c * (1 - Math.abs((hp % 2) - 1));
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  if (hp < 1) [r, g, b] = [c, x, 0];
-  else if (hp < 2) [r, g, b] = [x, c, 0];
-  else if (hp < 3) [r, g, b] = [0, c, x];
-  else if (hp < 4) [r, g, b] = [0, x, c];
-  else if (hp < 5) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  const m = lig - c / 2;
-  const channel = (value: number) => Math.round((value + m) * 255).toString(16).padStart(2, '0');
-  return `#${channel(r)}${channel(g)}${channel(b)}`;
+function stickyPaperIndex(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 33 + id.charCodeAt(i)) >>> 0;
+  }
+  return hash % MEMO_STICKY_PAPERS.length;
 }
 
 export function memoPaperColor(id: string): string {
   const cached = paperByMemoId.get(id);
   if (cached) return cached;
-  const hue = Math.floor(Math.random() * 360);
-  const saturation = 48 + Math.floor(Math.random() * 22);
-  const lightness = 74 + Math.floor(Math.random() * 10);
-  const paper = hslToHex(hue, saturation, lightness);
+  const paper = MEMO_STICKY_PAPERS[stickyPaperIndex(id)]!;
   paperByMemoId.set(id, paper);
   return paper;
 }
@@ -49,8 +49,8 @@ export function shiftPaper(hex: string, amount: number): string {
   return `#${channel((n >> 16) & 255)}${channel((n >> 8) & 255)}${channel(n & 255)}`;
 }
 
-/** 整页阅读纸。列表便利贴可以很鲜，铺开后只留一点原色，其余靠近暖白。 */
-const PAGE_CREAM = '#F4EFE6';
+/** 整页阅读纸。列表便利贴可略有色相，铺开后溶入健康页奶油纸。 */
+const PAGE_CREAM = '#F5F3E8';
 
 function mixToward(hex: string, target: string, amount: number): string {
   const parse = (value: string) => {
@@ -100,7 +100,7 @@ export function PaperCurl({ size, paper }: { size: number; paper: string }) {
     <Svg width={size} height={size} style={styles.curl} pointerEvents="none">
       <Path
         d={`M${size} ${size * 0.42} C ${size * 0.78} ${size * 0.58}, ${size * 0.58} ${size * 0.78}, ${size * 0.34} ${size} L ${size} ${size} Z`}
-        fill="rgba(48,32,18,0.34)"
+        fill="rgba(30,57,50,0.28)"
       />
       <Path
         d={`M${size} ${size * 0.16} C ${size * 0.66} ${size * 0.34}, ${size * 0.4} ${size * 0.62}, ${size * 0.08} ${size} L ${size} ${size} Z`}
@@ -112,7 +112,7 @@ export function PaperCurl({ size, paper }: { size: number; paper: string }) {
       />
       <Path
         d={`M${size * 0.96} ${size * 0.14} C ${size * 0.68} ${size * 0.34}, ${size * 0.42} ${size * 0.58}, ${size * 0.12} ${size * 0.9}`}
-        stroke="rgba(255,255,255,0.72)"
+        stroke="rgba(255,254,248,0.72)"
         strokeWidth={1.4}
         fill="none"
       />
@@ -195,7 +195,7 @@ const styles = StyleSheet.create({
     top: 22,
     bottom: 0,
     borderRadius: 3,
-    backgroundColor: 'rgba(62, 40, 18, 0.12)',
+    backgroundColor: 'rgba(42, 50, 44, 0.1)',
     transform: [{ translateX: 3 }, { translateY: 8 }],
   },
   page: {
@@ -205,7 +205,7 @@ const styles = StyleSheet.create({
     paddingTop: 28,
     paddingHorizontal: 22,
     paddingBottom: 64,
-    shadowColor: '#3E2814',
+    shadowColor: '#2A322C',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.12,
     shadowRadius: 10,
@@ -256,7 +256,7 @@ const styles = StyleSheet.create({
     width: 12,
     height: 7,
     borderRadius: 6,
-    backgroundColor: 'rgba(42,24,12,0.38)',
+    backgroundColor: 'rgba(30,57,50,0.36)',
   },
   tackHoleWide: {
     top: 18,
@@ -270,7 +270,7 @@ const styles = StyleSheet.create({
     borderColor: '#8C261E',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#3E2814',
+    shadowColor: '#2A322C',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 2,

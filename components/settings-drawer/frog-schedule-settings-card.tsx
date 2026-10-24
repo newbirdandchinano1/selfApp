@@ -2,10 +2,11 @@ import { toast, toUserMessage } from '@/lib/app-feedback';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import {
-  formatMinutesAsHm,
   formatMinuteRangeLabel,
+  formatScheduleAxisTimeLabel,
   scheduleEndMinutesFromDayBoundary,
   snapToHourMinutes,
+  SCHEDULE_DAY_END_MAX_MINUTES,
 } from '@/lib/schedule/axis';
 import type { ScheduleBreak, ScheduleSlotHours } from '@/lib/schedule/types';
 import {
@@ -21,7 +22,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -49,19 +49,37 @@ type PickerTarget =
   | { kind: 'breakStart'; index: number }
   | { kind: 'breakEnd'; index: number };
 
-/** 日开始 / 断开起止：整点；日结束由日界锁定。跨午夜时选项可到 dayEndMinutes。 */
-function hourOptionsFor(target: PickerTarget, dayEndMinutes: number): number[] {
+/**
+ * 日开始：任意整点（独立于日界）。
+ * 日结束：从 start+1h 到日界上限（可跨午夜，分钟可 >1440）。
+ */
+function hourOptionsFor(
+  target: PickerTarget,
+  opts: { startMinutes: number; maxEndMinutes: number },
+): number[] {
+  const { startMinutes, maxEndMinutes } = opts;
+  const overnight = maxEndMinutes > SCHEDULE_DAY_END_MAX_MINUTES;
+
   if (target === 'start') {
     return Array.from({ length: 24 }, (_, h) => h * 60);
   }
-  if (typeof target === 'object' && target.kind === 'breakStart') {
-    const maxStart = Math.max(0, dayEndMinutes - 60);
+  if (target === 'end') {
     const out: number[] = [];
-    for (let m = 0; m <= maxStart; m += 60) out.push(m);
+    const minEnd = startMinutes + 60;
+    for (let m = minEnd; m <= maxEndMinutes; m += 60) out.push(m);
+    return out;
+  }
+  if (typeof target === 'object' && target.kind === 'breakStart') {
+    const maxStart = Math.max(0, maxEndMinutes - 60);
+    const out: number[] = [];
+    for (let m = 0; m <= maxStart; m += 60) {
+      if (!overnight && m >= SCHEDULE_DAY_END_MAX_MINUTES) break;
+      out.push(m);
+    }
     return out;
   }
   const out: number[] = [];
-  for (let m = 60; m <= dayEndMinutes; m += 60) out.push(m);
+  for (let m = 60; m <= maxEndMinutes; m += 60) out.push(m);
   return out;
 }
 
@@ -76,9 +94,11 @@ export function FrogScheduleSettingsCard({
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const { logicalTodayYmd, boundary: dayBoundary } = usePageDayBoundary('tasks');
-  const syncedEndMinutes = scheduleEndMinutesFromDayBoundary(dayBoundary);
+  const maxEndMinutes = scheduleEndMinutesFromDayBoundary(dayBoundary);
+  const allowOvernight = maxEndMinutes > SCHEDULE_DAY_END_MAX_MINUTES;
 
   const [startMinutes, setStartMinutes] = React.useState(8 * 60);
+  const [endMinutes, setEndMinutes] = React.useState(22 * 60);
   const [slotHours, setSlotHours] = React.useState<ScheduleSlotHours>(2);
   const [breaks, setBreaks] = React.useState<ScheduleBreak[]>([]);
   const [orphanedCount, setOrphanedCount] = React.useState(0);
@@ -89,12 +109,20 @@ export function FrogScheduleSettingsCard({
 
   const reload = React.useCallback(async () => {
     const axis = await getScheduleAxisSettings();
-    setStartMinutes(axis.startMinutes);
+    const start = axis.startMinutes;
+    let end = Math.min(axis.endMinutes, maxEndMinutes);
+    // 旧数据可能把「次日 04:00」存成同日 04:00，导致 end < start；自动抬到合法跨午夜终点
+    if (end <= start) {
+      end = Math.min(Math.max(start + 60, end + SCHEDULE_DAY_END_MAX_MINUTES), maxEndMinutes);
+      if (end <= start) end = maxEndMinutes;
+    }
+    setStartMinutes(start);
+    setEndMinutes(end);
     setSlotHours(axis.slotHours);
     setBreaks(axis.breaks ?? []);
     setOrphanedCount(await getOrphanedPlacementCount());
     setLoaded(true);
-  }, [dayBoundary]);
+  }, [maxEndMinutes]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -102,15 +130,32 @@ export function FrogScheduleSettingsCard({
     void reload();
   }, [active, reload]);
 
+  // 日界变更后：若当前结束超出新上限则钳回
+  React.useEffect(() => {
+    setEndMinutes((prev) => (prev > maxEndMinutes ? maxEndMinutes : prev));
+  }, [maxEndMinutes]);
+
   const openPicker = (target: PickerTarget) => {
     setPickerTarget(target);
   };
 
   const pickHour = (mins: number) => {
     if (pickerTarget === 'start') {
-      setStartMinutes(snapToHourMinutes(mins, { allow24: false }));
+      const nextStart = snapToHourMinutes(mins, { allow24: false });
+      setStartMinutes(nextStart);
+      // 开始变晚后，若结束不再晚于开始，自动抬到合法下限（仍不超过日界）
+      setEndMinutes((prev) => {
+        const minEnd = nextStart + 60;
+        if (prev > nextStart) return Math.min(prev, maxEndMinutes);
+        return Math.min(Math.max(minEnd, prev), maxEndMinutes);
+      });
     } else if (pickerTarget === 'end') {
-      // 日结束与日界线同步，不可手改
+      setEndMinutes(
+        snapToHourMinutes(mins, {
+          allow24: true,
+          allowOvernight,
+        }),
+      );
     } else if (pickerTarget && typeof pickerTarget === 'object') {
       const { kind, index } = pickerTarget;
       setBreaks((prev) =>
@@ -121,7 +166,7 @@ export function FrogScheduleSettingsCard({
               ...b,
               startMinutes: snapToHourMinutes(mins, {
                 allow24: false,
-                allowOvernight: syncedEndMinutes > 24 * 60,
+                allowOvernight,
               }),
             };
           }
@@ -129,7 +174,7 @@ export function FrogScheduleSettingsCard({
             ...b,
             endMinutes: snapToHourMinutes(mins, {
               allow24: true,
-              allowOvernight: syncedEndMinutes > 24 * 60,
+              allowOvernight,
             }),
           };
         }),
@@ -144,8 +189,8 @@ export function FrogScheduleSettingsCard({
       return;
     }
     const noon = 12 * 60;
-    const defaultStart = Math.max(startMinutes, Math.min(noon, syncedEndMinutes - 60));
-    const defaultEnd = Math.min(syncedEndMinutes, defaultStart + 2 * 60);
+    const defaultStart = Math.max(startMinutes, Math.min(noon, endMinutes - 60));
+    const defaultEnd = Math.min(endMinutes, defaultStart + 2 * 60);
     setBreaks((prev) => [
       ...prev,
       { startMinutes: defaultStart, endMinutes: defaultEnd, label: '午休' },
@@ -159,29 +204,31 @@ export function FrogScheduleSettingsCard({
   const onSave = React.useCallback(async () => {
     setSaving(true);
     try {
+      const nextStart = snapToHourMinutes(startMinutes, { allow24: false });
+      const nextEnd = Math.min(
+        snapToHourMinutes(endMinutes, { allow24: true, allowOvernight }),
+        maxEndMinutes,
+      );
+      if (nextEnd <= nextStart) {
+        toast.error('日结束须晚于日开始；跨午夜请选择「次日」时刻（最晚至日界）。');
+        return;
+      }
       const result = await saveScheduleAxisWithRemap(
         {
-          startMinutes: snapToHourMinutes(startMinutes, { allow24: false }),
-          endMinutes: syncedEndMinutes,
+          startMinutes: nextStart,
+          endMinutes: nextEnd,
           slotHours,
           breaks,
         },
         logicalTodayYmd,
-        { dayBoundary },
       );
       if (!result.ok) {
-        const detail =
-          result.conflicts && result.conflicts.length > 0
-            ? `\n\n冲突示例：\n${result.conflicts
-                .slice(0, 3)
-                .map((c) => c.reason)
-                .join('\n')}`
-            : '';
-        toast.error(`${result.error}${detail}`.trim());
+        toast.error(result.error);
         return;
       }
       setOrphanedCount(result.orphanedCount);
       setStartMinutes(result.axis.startMinutes);
+      setEndMinutes(Math.min(result.axis.endMinutes, maxEndMinutes));
       setSlotHours(result.axis.slotHours);
       setBreaks(result.axis.breaks ?? []);
       const remapHint = result.remappedCount > 0 ? `，已重映射 ${result.remappedCount} 条` : '';
@@ -194,11 +241,20 @@ export function FrogScheduleSettingsCard({
     } finally {
       setSaving(false);
     }
-  }, [startMinutes, syncedEndMinutes, slotHours, breaks, logicalTodayYmd, dayBoundary, reload]);
+  }, [
+    startMinutes,
+    endMinutes,
+    slotHours,
+    breaks,
+    logicalTodayYmd,
+    reload,
+    maxEndMinutes,
+    allowOvernight,
+  ]);
 
   const pickerCardBg = isDark ? '#1e293b' : '#ffffff';
   const selectedMinutes = (() => {
-    if (pickerTarget === 'end') return syncedEndMinutes;
+    if (pickerTarget === 'end') return endMinutes;
     if (pickerTarget === 'start') return startMinutes;
     if (pickerTarget && typeof pickerTarget === 'object') {
       const b = breaks[pickerTarget.index];
@@ -207,7 +263,9 @@ export function FrogScheduleSettingsCard({
     }
     return null;
   })();
-  const hourChoices = pickerTarget ? hourOptionsFor(pickerTarget, syncedEndMinutes) : [];
+  const hourChoices = pickerTarget
+    ? hourOptionsFor(pickerTarget, { startMinutes, maxEndMinutes })
+    : [];
   const pickerTitle =
     pickerTarget === 'end'
       ? '日结束（整点）'
@@ -216,12 +274,18 @@ export function FrogScheduleSettingsCard({
         : pickerTarget && typeof pickerTarget === 'object' && pickerTarget.kind === 'breakEnd'
           ? '断开结束（整点）'
           : '断开开始（整点）';
+  const pickerHint =
+    pickerTarget === 'end'
+      ? allowOvernight
+        ? `可跨午夜，最晚至日界（${formatScheduleAxisTimeLabel(maxEndMinutes)}）`
+        : '最晚至 24:00（日界为 0:00）'
+      : '仅可选整点';
 
   return (
     <View style={[styles.card, { backgroundColor: cardBg, borderColor: cardBorder }]}>
       <Text style={[styles.hint, { color: outline }]}>
-        日开始仅可选整点。日结束与「日界线」同步（日界非 0:00
-        时会跨过午夜到次日日界）。可添加断开时段（如午休），日程表中对应行呈灰色不可入格；格宽遇上断开会自动截断。落入断开的占用会标为「未入格」。
+        日开始可任意选择。日结束从属于日界：可跨午夜，最晚到「
+        {formatScheduleAxisTimeLabel(maxEndMinutes)}」。落入断开或新范围外的占用会标为「未入格」。
       </Text>
 
       {!loaded ? (
@@ -240,27 +304,34 @@ export function FrogScheduleSettingsCard({
             ]}>
             <MaterialIcons name="schedule" size={20} color={primary} />
             <Text style={[styles.timeLabel, { color: text }]}>日开始</Text>
-            <Text style={[styles.timeValue, { color: text }]}>{formatMinutesAsHm(startMinutes)}</Text>
+            <Text style={[styles.timeValue, { color: text }]}>
+              {formatScheduleAxisTimeLabel(startMinutes)}
+            </Text>
             <MaterialIcons name="chevron-right" size={20} color={outline} />
           </Pressable>
 
-          <View
-            style={[
+          <Pressable
+            onPress={() => openPicker('end')}
+            style={({ pressed }) => [
               styles.timeBtn,
               {
                 borderColor: cardBorder,
                 backgroundColor: isDark ? 'rgba(15,23,42,0.45)' : '#f8fafc',
+                opacity: pressed ? 0.88 : 1,
               },
             ]}>
             <MaterialIcons name="schedule" size={20} color={primary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.timeLabel, { color: text, flex: 0 }]}>日结束</Text>
-              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>与日界线同步</Text>
+              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
+                最晚至日界 · {formatScheduleAxisTimeLabel(maxEndMinutes)}
+              </Text>
             </View>
             <Text style={[styles.timeValue, { color: text }]}>
-              {formatMinutesAsHm(syncedEndMinutes)}
+              {formatScheduleAxisTimeLabel(endMinutes)}
             </Text>
-          </View>
+            <MaterialIcons name="chevron-right" size={20} color={outline} />
+          </Pressable>
 
           <Text style={[styles.sectionLabel, { color: text }]}>格宽（小时）</Text>
           <View style={styles.slotRow}>
@@ -316,7 +387,10 @@ export function FrogScheduleSettingsCard({
                     setBreaks((prev) =>
                       prev.map((x, i) =>
                         i === index
-                          ? { ...x, label: t.replace(/\s+/g, '').slice(0, SCHEDULE_BREAK_LABEL_MAX_LEN) }
+                          ? {
+                              ...x,
+                              label: t.replace(/\s+/g, '').slice(0, SCHEDULE_BREAK_LABEL_MAX_LEN),
+                            }
                           : x,
                       ),
                     )
@@ -330,7 +404,7 @@ export function FrogScheduleSettingsCard({
                     onPress={() => openPicker({ kind: 'breakStart', index })}
                     style={[styles.breakTimeBtn, { borderColor: cardBorder }]}>
                     <Text style={{ color: text, fontWeight: '700' }}>
-                      {formatMinutesAsHm(b.startMinutes)}
+                      {formatScheduleAxisTimeLabel(b.startMinutes)}
                     </Text>
                   </Pressable>
                   <Text style={{ color: outline }}>–</Text>
@@ -338,7 +412,7 @@ export function FrogScheduleSettingsCard({
                     onPress={() => openPicker({ kind: 'breakEnd', index })}
                     style={[styles.breakTimeBtn, { borderColor: cardBorder }]}>
                     <Text style={{ color: text, fontWeight: '700' }}>
-                      {formatMinutesAsHm(b.endMinutes)}
+                      {formatScheduleAxisTimeLabel(b.endMinutes)}
                     </Text>
                   </Pressable>
                   <Text style={{ color: outline, fontSize: 12, flex: 1 }}>
@@ -390,7 +464,7 @@ export function FrogScheduleSettingsCard({
           <Pressable style={styles.modalBackdrop} onPress={() => setPickerTarget(null)} />
           <View style={[styles.modalCard, { backgroundColor: pickerCardBg }]}>
             <Text style={[styles.modalTitle, { color: text }]}>{pickerTitle}</Text>
-            <Text style={[styles.modalHint, { color: outline }]}>仅可选整点</Text>
+            <Text style={[styles.modalHint, { color: outline }]}>{pickerHint}</Text>
             <ScrollView
               style={styles.hourScroll}
               contentContainerStyle={styles.hourGrid}
@@ -406,6 +480,7 @@ export function FrogScheduleSettingsCard({
                       {
                         borderColor: on ? primary : cardBorder,
                         backgroundColor: on ? `${primary}18` : 'transparent',
+                        minWidth: mins > SCHEDULE_DAY_END_MAX_MINUTES ? 88 : 64,
                       },
                     ]}>
                     <Text
@@ -413,8 +488,9 @@ export function FrogScheduleSettingsCard({
                         color: on ? primary : text,
                         fontWeight: '800',
                         fontVariant: ['tabular-nums'],
+                        fontSize: mins > SCHEDULE_DAY_END_MAX_MINUTES ? 12 : 14,
                       }}>
-                      {formatMinutesAsHm(mins)}
+                      {formatScheduleAxisTimeLabel(mins)}
                     </Text>
                   </Pressable>
                 );

@@ -48,3 +48,8 @@ export function useSettingsDrawer(): SettingsDrawerContextValue {
   }
   return ctx;
 }
+
+/** Stack 子页（如 task-settings）可能不在 Provider 内，返回 null 供可选打开抽屉 */
+export function useSettingsDrawerOptional(): SettingsDrawerContextValue | null {
+  return useContext(SettingsDrawerContext);
+}

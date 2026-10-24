@@ -87,8 +87,8 @@ function ApiLoadingOverlay() {
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const isDark = colorScheme === 'dark';
-  const primary = isDark ? '#60a5fa' : '#0058be';
-  const textColor = isDark ? '#e5e7eb' : '#131b2e';
+  const primary = isDark ? '#A9C7B9' : '#1E3932';
+  const textColor = isDark ? '#F2EEE4' : '#1E2A24';
 
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const slide = useRef(new Animated.Value(0)).current;
@@ -164,7 +164,7 @@ function ApiLoadingOverlay() {
       accessibilityRole="progressbar"
       accessibilityLabel="加载中"
     >
-      <View style={[styles.track, { backgroundColor: isDark ? 'rgba(96,165,250,0.22)' : 'rgba(0,88,190,0.16)' }]}>
+      <View style={[styles.track, { backgroundColor: isDark ? 'rgba(169,199,185,0.22)' : 'rgba(30,57,50,0.14)' }]}>
         <Animated.View
           style={[
             styles.bar,
@@ -203,7 +203,7 @@ function ApiLoadingOverlay() {
             styles.timeoutCard,
             {
               backgroundColor: isDark ? 'rgba(31,41,55,0.98)' : 'rgba(255,255,255,0.98)',
-              borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
+              borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(30,57,50,0.28)',
             },
           ]}
         >
@@ -243,7 +243,7 @@ function ApiLoadingOverlay() {
             styles.timeoutCard,
             {
               backgroundColor: isDark ? 'rgba(31,41,55,0.98)' : 'rgba(255,255,255,0.98)',
-              borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
+              borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(30,57,50,0.28)',
             },
           ]}
         >
@@ -273,7 +273,7 @@ function ApiLoadingOverlay() {
                 opacity: pillOpacity,
                 marginTop: insets.top + 15,
                 backgroundColor: isDark ? 'rgba(31,41,55,0.96)' : 'rgba(255,255,255,0.98)',
-                borderColor: isDark ? 'rgba(96,165,250,0.45)' : 'rgba(0,88,190,0.35)',
+                borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(30,57,50,0.28)',
               },
             ]}
           >

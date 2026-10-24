@@ -65,6 +65,14 @@ export const AppSettingKey = {
   recipeHaptic: '@selfapp/recipe_haptic_v1',
   /** 菜谱分类顺序与图标（同步到首页侧栏 / 分类选择器） */
   recipeCategoryMeta: '@selfapp/recipe_category_meta_v1',
+  /** 任务设置：下拉 / 聚焦时增量同步（默认开） */
+  tasksFocusSync: '@selfapp/tasks_focus_sync_v1',
+  /** 任务设置：仅 Wi-Fi 同步附件（默认开） */
+  tasksWifiOnlyAttachments: '@selfapp/tasks_wifi_only_attachments_v1',
+  /** 任务设置：本机加密开关展示态（默认开） */
+  tasksLocalEncrypt: '@selfapp/tasks_local_encrypt_v1',
+  /** 任务设置：减弱动效（覆盖系统偏好，默认关） */
+  tasksPreferReduceMotion: '@selfapp/tasks_prefer_reduce_motion_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

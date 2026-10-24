@@ -1,6 +1,6 @@
 /**
  * 健康首页视觉令牌 — 对齐 `health-screens` 设计稿：奶油纸底、松墨绿、营养素分色。
- * 仅健康 Tab 消费，不影响全局财务蓝主题。
+ * 亦为 App 品牌色基准（全局 Palette / 菜谱模块同源）；财务等折页可另用 fold 令牌。
  */
 import { Platform } from 'react-native';
 

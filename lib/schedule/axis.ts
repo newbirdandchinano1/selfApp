@@ -36,12 +36,12 @@ export function clampSlotHours(raw: unknown): ScheduleSlotHours {
 export const SCHEDULE_DAY_END_MAX_MINUTES = 24 * 60;
 
 /**
- * 逻辑日轴最大终点：次日 23:00（日界最晚整点）= 1440 + 23*60。
- * 日界非 0:00 时，日程终点 = 1440 + 日界整点，可越过午夜。
+ * 日程轴允许的最大终点上限：次日 23:00 = 1440 + 23*60。
+ * 实际可选终点由日界决定，见 scheduleEndMinutesFromDayBoundary。
  */
 export const SCHEDULE_LOGICAL_END_MAX_MINUTES = SCHEDULE_DAY_END_MAX_MINUTES + 23 * 60;
 
-/** 日界整点（向下对齐到小时）→ 逻辑日在轴上的起点分钟 */
+/** 日界整点（向下对齐到小时）→ 分钟 */
 export function scheduleDayStartMinutesFromDayBoundary(boundary: {
   hour: number;
   minute: number;
@@ -50,9 +50,10 @@ export function scheduleDayStartMinutesFromDayBoundary(boundary: {
 }
 
 /**
- * 日界 → 日程轴终点（与日界线同步）：
+ * 日界 → 日程轴「日结束」可选上限（从属于日界，可跨午夜）：
  * - 日界 0:00 → 24:00（1440）
  * - 日界 H:00 → 次日 H:00（1440 + H*60）
+ * 日开始仍可独立选择，不必 ≥ 日界。
  */
 export function scheduleEndMinutesFromDayBoundary(boundary: {
   hour: number;
@@ -65,7 +66,8 @@ export function scheduleEndMinutesFromDayBoundary(boundary: {
 }
 
 /**
- * 按日界校正轴：强制终点 = 日界；起点不得早于日界，并保证至少 1 格。
+ * 仅规范化轴设置；不把日界写回起点。
+ * 若传入 boundary，会把终点钳到日界上限（不抬高起点）。
  */
 export function applyDayBoundaryToAxis(
   axis: {
@@ -74,23 +76,20 @@ export function applyDayBoundaryToAxis(
     slotHours: ScheduleSlotHours;
     breaks?: unknown;
   },
-  boundary: { hour: number; minute: number },
+  boundary?: { hour: number; minute: number },
 ): Omit<ScheduleAxisSettings, 'updatedAt'> {
-  const endMinutes = scheduleEndMinutesFromDayBoundary(boundary);
-  const dayStart = scheduleDayStartMinutesFromDayBoundary(boundary);
-  let startMinutes = snapToHourMinutes(axis.startMinutes, { allow24: false });
-  if (startMinutes < dayStart) startMinutes = dayStart;
-  const slotMins = Math.max(60, axis.slotHours * 60);
-  if (endMinutes - startMinutes < slotMins) {
-    startMinutes = snapToHourMinutes(Math.max(dayStart, endMinutes - slotMins), {
-      allow24: false,
-    });
-  }
-  return normalizeAxisSettings({
-    startMinutes,
-    endMinutes,
+  const normalized = normalizeAxisSettings({
+    startMinutes: axis.startMinutes,
+    endMinutes: axis.endMinutes,
     slotHours: axis.slotHours,
     breaks: axis.breaks,
+  });
+  if (!boundary) return normalized;
+  const maxEnd = scheduleEndMinutesFromDayBoundary(boundary);
+  if (normalized.endMinutes <= maxEnd) return normalized;
+  return normalizeAxisSettings({
+    ...normalized,
+    endMinutes: maxEnd,
   });
 }
 
@@ -221,7 +220,7 @@ export function breaksEqual(a: ScheduleBreak[] | undefined, b: ScheduleBreak[] |
   return true;
 }
 
-/** 结束必须严格晚于开始；断开后至少剩 1 个可排格。终点可越过午夜以对齐日界。 */
+/** 结束必须严格晚于开始；断开后至少剩 1 个可排格。终点可越过午夜（与日界无关）。 */
 export function validateAxisRange(axis: {
   startMinutes: number;
   endMinutes: number;
@@ -337,6 +336,15 @@ export function formatMinutesAsHm(minutes: number): string {
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+/** 轴分钟展示：跨午夜标「次日」（设置页日结束用）。 */
+export function formatScheduleAxisTimeLabel(minutes: number): string {
+  const rounded = Math.round(minutes);
+  if (rounded > SCHEDULE_DAY_END_MAX_MINUTES) {
+    return `次日 ${formatMinutesAsHm(rounded)}`;
+  }
+  return formatMinutesAsHm(rounded);
 }
 
 /** 左侧时间轴：时段区间，如 7-8、10-12、0-2（无前导零） */
@@ -545,27 +553,42 @@ export function maxSpanFromSlot(axis: AxisLike, startSlotIndex: number): number 
   return slots.length - startSlotIndex;
 }
 
-/** 格高基准：按 2h 格宽铺满时的单格高度；可视区高度不随格宽变 */
+/** 格高基准：2h 参考格宽对应单格高度 */
 export const SCHEDULE_REF_SLOT_HOURS = 2;
+/**
+ * 对齐设计稿 `.tt` 可视区：`repeat(N, 26px)` —— 外框高度按此锁定，不随内容撑高。
+ */
+export const SCHEDULE_VIEWPORT_SLOT_H = 26;
+/**
+ * 内容行高（2h 参考格）：约设计稿 CSS 的 2×，保证真机标题/副文可读；
+ * 总高超出 `fixedBodyH` 时在表体内纵向滚动。
+ */
 export const SCHEDULE_BASE_SLOT_H = 52;
+/** 截断短行仍可点选的下限 */
+export const SCHEDULE_MIN_ROW_H = 14;
 
 export type ScheduleSlotLayout = {
   /** 可排工作格数量 */
   slotCount: number;
   timeline: ScheduleTimelineRow[];
-  /** 与 timeline 平行的行高 */
+  /** 与 timeline 平行的行高（按时长比例；截断格更矮） */
   rowHeights: number[];
-  /** 格子区域固定可视高度（按 2h 参考轴、全日墙钟） */
+  /**
+   * 设计稿对齐的固定可视高度（同起止、2h 格宽铺满时的 `.tt` 表体）。
+   * UI 外框始终用此高度；内容更高时内滚。
+   */
   fixedBodyH: number;
-  /** 内容总高度 */
+  /** 内容总高度（按时长 × 内容行高累加，通常长于 fixedBodyH） */
   totalBodyH: number;
-  /** 格宽 < 2h 时内容超出，需纵向滚动 */
+  /** 内容超出可视高度时需纵向滚动 */
   scrollable: boolean;
+  /** 每墙钟小时对应像素（截断/断开均按此换算） */
+  hourPx: number;
 };
 
 /**
- * 表体高度固定为「同起止、2h 格宽」时的高度（按墙钟跨度）。
- * 行高按时长比例分配；断开行同样占位。
+ * 行高 = 时段时长 × (baseSlotH / 2h)；截断格（如 12–13）自然变矮。
+ * 可视区高度按设计稿 `VIEWPORT_SLOT_H` 锁定，内容超出则 scrollable。
  */
 export function computeScheduleSlotLayout(
   axis: AxisLike,
@@ -581,7 +604,9 @@ export function computeScheduleSlotLayout(
     1,
     Math.floor((axis.endMinutes - axis.startMinutes) / (SCHEDULE_REF_SLOT_HOURS * 60)),
   );
-  const fixedBodyH = refCount * baseSlotH;
+  /** 外框对齐设计稿，与内容行高解耦 */
+  const fixedBodyH = refCount * SCHEDULE_VIEWPORT_SLOT_H;
+  const hourPx = baseSlotH / SCHEDULE_REF_SLOT_HOURS;
 
   if (timeline.length === 0 || totalHours <= 0) {
     return {
@@ -591,22 +616,17 @@ export function computeScheduleSlotLayout(
       fixedBodyH,
       totalBodyH: fixedBodyH,
       scrollable: false,
+      hourPx,
     };
   }
 
-  let hourPx: number;
-  let scrollable: boolean;
-  if (axis.slotHours < SCHEDULE_REF_SLOT_HOURS) {
-    hourPx = baseSlotH;
-    scrollable = true;
-  } else {
-    hourPx = fixedBodyH / totalHours;
-    scrollable = false;
-  }
-
-  const rowHeights = timeline.map((r) => ((r.endMinutes - r.startMinutes) / 60) * hourPx);
+  const rowHeights = timeline.map((r) => {
+    const hours = (r.endMinutes - r.startMinutes) / 60;
+    return Math.max(SCHEDULE_MIN_ROW_H, hours * hourPx);
+  });
   const totalBodyH = rowHeights.reduce((a, b) => a + b, 0);
-  return { slotCount, timeline, rowHeights, fixedBodyH, totalBodyH, scrollable };
+  const scrollable = totalBodyH > fixedBodyH + 1;
+  return { slotCount, timeline, rowHeights, fixedBodyH, totalBodyH, scrollable, hourPx };
 }
 
 /** 占用色块高度：跨连续工作格时累加对应行高 */

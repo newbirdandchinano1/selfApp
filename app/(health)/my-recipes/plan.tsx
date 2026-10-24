@@ -288,7 +288,7 @@ export default function RecipePlanScreen() {
                       selected
                         ? { backgroundColor: p.primarySoft }
                         : hasPlan
-                          ? { backgroundColor: p.isDark ? 'rgba(96,165,250,0.12)' : 'rgba(0,88,190,0.06)' }
+                          ? { backgroundColor: p.accentSoft }
                           : null,
                     ]}>
                     <Text

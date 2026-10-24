@@ -1,4 +1,10 @@
+﻿import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
+import {
+  TaskFoldMotion,
+  taskFoldFonts,
+  useTaskFoldTheme,
+} from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { toast, toUserMessage } from '@/lib/app-feedback';
@@ -13,8 +19,8 @@ import {
   formatMinutesAsHm,
   listWorkSlots,
   maxSpanFromSlot,
-  placementBlockHeight,
   placementEndMinutes,
+  SCHEDULE_BASE_SLOT_H,
   slotStartMinutes,
   wallClockToAxisMinutes,
 } from '@/lib/schedule/axis';
@@ -29,6 +35,7 @@ import {
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
+import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 import {
   centerYmdForPeriod,
   formatThreeDayRangeLabel,
@@ -65,6 +72,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Easing,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -88,7 +96,9 @@ import { ScheduleCellTitleRotator } from '@/components/tasks/ScheduleCellTitleRo
 import { FrogScheduleSettingsSheet } from '@/components/tasks/FrogScheduleSettingsSheet';
 import {
   SchedulePlacementDetailSheet,
+  type ScheduleDetailSurface,
   type ScheduleSubjectInfo,
+  type ScheduleVirtualSlot,
   buildAcceptance,
 } from '@/components/tasks/SchedulePlacementDetailSheet';
 import {
@@ -110,6 +120,8 @@ type TodayCompactItem = {
   placement: SchedulePlacementRow | null;
   habit: VirtualHabitPlacement | null;
   virtualTask: VirtualTaskPlacement | null;
+  /** 预选入格时插入的空档（点此放入） */
+  emptySlotIndex: number | null;
   title: string;
   done: boolean;
   timeLabel: string;
@@ -137,8 +149,9 @@ function remainSecondsUntil(
   return Math.round((targetMinutes - axisNowMins) * 60);
 }
 
-const TIME_GUTTER = 56;
-const DAY_HEADER_H = 48;
+/** 对齐设计稿 `.tt`：窄时间轴 + 矮日头 */
+const TIME_GUTTER = 28;
+const DAY_HEADER_H = 22;
 /** 横向分页：左=上一周期 / 中=当前 / 右=下一周期 */
 const MIDDLE_PAGE = 1;
 
@@ -179,6 +192,9 @@ type Props = {
   onHabitCheckIn?: (habitId: string) => void;
   /** 点已达标的日程习惯块：撤销当日打卡（仅今日） */
   onHabitUndo?: (habitId: string) => void;
+  /** 周条点选：跳到以该日为中心的三天窗并切到课表 */
+  jumpToYmd?: string | null;
+  onJumpToYmdConsumed?: () => void;
 };
 
 type CellKey = string; // `${ymd}-${slot}`
@@ -376,66 +392,143 @@ function confirmTogglePlacementDone(
   ]);
 }
 
-/** 日程虚拟习惯：打卡 / 撤销前确认，交互对齐青蛙格 */
-function confirmToggleVirtualHabit(
-  habit: VirtualHabitPlacement,
-  opts: {
-    onCheckIn?: (habitId: string) => void;
-    onUndo?: (habitId: string) => void;
-  },
-) {
-  const titleLabel = (habit.name ?? '').trim() || '该习惯';
-  if (habit.done) {
-    Alert.alert('取消完成？', `确定将「${titleLabel}」标记为未完成吗？`, [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '取消完成',
-        onPress: () => runAfterUiSettles(() => opts.onUndo?.(habit.habitId)),
-      },
-    ]);
-    return;
-  }
-  Alert.alert('确认完成？', `确定将「${titleLabel}」标记为已完成吗？`, [
-    { text: '取消', style: 'cancel' },
-    {
-      text: '完成',
-      onPress: () => runAfterUiSettles(() => opts.onCheckIn?.(habit.habitId)),
-    },
-  ]);
-}
-
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
   return isEditableScheduleDay(ymd, logicalTodayYmd);
 }
 
-/** 有任务格子的蓝灰底：任务越多越深；过去日一律灰阶 */
-function scheduleBlockColors(
-  taskCount: number,
-  opts: { isPast: boolean; allDone: boolean; isDark: boolean },
-): { backgroundColor: string; borderColor: string } {
-  const level = Math.min(4, Math.max(1, Math.round(taskCount))) - 1;
-  if (opts.isPast || opts.allDone) {
-    const alphas = opts.isDark
-      ? [0.28, 0.36, 0.46, 0.58]
-      : [0.14, 0.22, 0.30, 0.40];
-    const a = alphas[level]!;
+  /**
+   * 对齐设计稿 `.blk`：
+   * habit 浅绿虚线 · todo 琥珀黄 · proj 浅灰绿 · frog 深绿（#35604A，比旧 #2A4C3C 更轻）
+   */
+  type ScheduleBlockKind = 'frog' | 'habit' | 'todo' | 'proj';
+
+  /** 占用 → 色种类：独立待办走 todo，项目本体走 proj，项目任务走 frog */
+  function blockKindForPlacement(
+    placement: SchedulePlacementRow,
+    lookup: SubjectLookup,
+  ): ScheduleBlockKind {
+    if (placement.subjectKind === 'project') return 'proj';
+    const task = lookup.tasks.find((t) => t.id === placement.subjectId);
+    if (task && isStandaloneTodoTask(task)) return 'todo';
+    return 'frog';
+  }
+
+  function scheduleBlockStyle(
+    kind: ScheduleBlockKind,
+    opts: { isPast: boolean; allDone: boolean; isDark: boolean },
+  ): {
+    backgroundColor: string;
+    borderColor: string;
+    borderStyle: 'solid' | 'dashed';
+    titleColor: string;
+    metaColor: string;
+  } {
+    if (kind === 'habit') {
+      // `.blk.habit`
+      return {
+        backgroundColor: opts.isDark ? 'rgba(226,236,211,0.28)' : 'rgba(226,236,211,0.8)',
+        borderColor: opts.isDark ? 'rgba(175,195,142,0.55)' : '#AFC38E',
+        borderStyle: 'dashed',
+        titleColor: opts.isDark ? '#C5D6B4' : '#4C653F',
+        metaColor: opts.isDark ? 'rgba(197,214,180,0.7)' : 'rgba(76,101,63,0.72)',
+      };
+    }
+    if (kind === 'todo') {
+      // `.blk.todo`
+      return {
+        backgroundColor: opts.isDark ? 'rgba(246,232,204,0.28)' : 'rgba(246,232,204,0.88)',
+        borderColor: opts.isDark ? 'rgba(230,204,162,0.55)' : '#E6CCA2',
+        borderStyle: 'solid',
+        titleColor: opts.isDark ? '#E2C896' : '#7A5B2D',
+        metaColor: opts.isDark ? 'rgba(226,200,150,0.7)' : 'rgba(122,91,45,0.72)',
+      };
+    }
+    if (kind === 'proj') {
+      // `.blk.proj`
+      return {
+        backgroundColor: opts.isDark ? 'rgba(230,236,224,0.22)' : 'rgba(230,236,224,0.9)',
+        borderColor: opts.isDark ? 'rgba(200,211,190,0.5)' : '#C8D3BE',
+        borderStyle: 'solid',
+        titleColor: opts.isDark ? '#C5D3BC' : '#4B6048',
+        metaColor: opts.isDark ? 'rgba(197,211,188,0.7)' : 'rgba(75,96,72,0.72)',
+      };
+    }
+    // `.blk.frog` / `.blk.frog.done`（取渐变主色，避免旧版 #2A4C3C 过重）
+    if (opts.isPast || opts.allDone) {
+      return {
+        backgroundColor: opts.isDark ? 'rgba(75,106,81,0.55)' : '#4B6A51',
+        borderColor: opts.isDark ? 'rgba(127,160,111,0.28)' : 'rgba(55,82,61,0.35)',
+        borderStyle: 'solid',
+        titleColor: opts.isDark ? 'rgba(244,242,227,0.85)' : '#F4F2E3',
+        metaColor: opts.isDark ? 'rgba(244,242,227,0.55)' : 'rgba(244,242,227,0.72)',
+      };
+    }
     return {
-      backgroundColor: opts.isDark
-        ? `rgba(100,116,139,${a})`
-        : `rgba(148,163,184,${a})`,
-      borderColor: opts.isDark ? 'rgba(148,163,184,0.28)' : 'rgba(148,163,184,0.35)',
+      backgroundColor: opts.isDark ? 'rgba(53,96,74,0.88)' : '#35604A',
+      borderColor: opts.isDark ? 'rgba(169,199,185,0.2)' : 'rgba(36,68,55,0.22)',
+      borderStyle: 'solid',
+      titleColor: '#F5F3E7',
+      metaColor: 'rgba(245,243,231,0.72)',
     };
   }
-  const alphas = opts.isDark
-    ? [0.18, 0.26, 0.36, 0.48]
-    : [0.10, 0.16, 0.24, 0.34];
-  const a = alphas[level]!;
-  return {
-    backgroundColor: opts.isDark
-      ? `rgba(96,165,250,${a})`
-      : `rgba(0,88,190,${a})`,
-    borderColor: opts.isDark ? 'rgba(96,165,250,0.32)' : 'rgba(0,88,190,0.18)',
-  };
+
+/** 预选空档：2s 琥珀呼吸轮廓（preselGlow） */
+function PreselGlowOutline({
+  active,
+  color,
+  reduceMotion,
+}: {
+  active: boolean;
+  color: string;
+  reduceMotion: boolean;
+}) {
+  const glow = React.useRef(new Animated.Value(0.55)).current;
+  React.useEffect(() => {
+    if (!active || reduceMotion) {
+      glow.stopAnimation();
+      glow.setValue(1);
+      return;
+    }
+    glow.setValue(0.45);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glow, {
+          toValue: 1,
+          duration: TaskFoldMotion.preselGlow / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(glow, {
+          toValue: 0.45,
+          duration: TaskFoldMotion.preselGlow / 2,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      glow.stopAnimation();
+    };
+  }, [active, glow, reduceMotion]);
+  if (!active) return null;
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          margin: 1,
+          borderRadius: Radius.xs,
+          borderWidth: 1.5,
+          borderStyle: 'dashed',
+          borderColor: color,
+          opacity: glow,
+        },
+      ]}
+    />
+  );
 }
 
 export function WeeklyFrogSchedule({
@@ -451,24 +544,33 @@ export function WeeklyFrogSchedule({
   onToggleDone,
   onHabitCheckIn,
   onHabitUndo,
+  jumpToYmd = null,
+  onJumpToYmdConsumed,
 }: Props) {
   const { colors: theme, isDark, shadows } = useAppTheme();
-  const primary = theme.primary;
-  const outline = theme.textSecondary;
-  const surfaceLow = theme.surfaceMuted;
-  const gridLineSoft = theme.outline;
-  const todayWash = theme.primaryMuted;
-  const todayWashStrong = isDark ? 'rgba(96,165,250,0.28)' : 'rgba(0,88,190,0.12)';
-  const successTint = theme.secondary;
+  const { tf, fonts: foldFonts } = useTaskFoldTheme();
+  const { animate: foldAnimate } = useFoldMotionGate();
+  const primary = tf.pond;
+  const outline = tf.muted;
+  const surfaceLow = isDark ? tf.paper2 : tf.paper3;
+  const gridLineSoft = tf.line;
+  const todayWash = isDark ? tf.lily2 : 'rgba(232,239,217,0.55)';
+  const todayWashStrong = isDark ? 'rgba(201,217,163,0.28)' : 'rgba(111,149,98,0.22)';
+  const successTint = tf.frog;
+  const sunAmber = tf.sun;
 
   /** 0 = 今天居中的三天；±1 切换一整周期（平移 3 天） */
   const [periodIndex, setPeriodIndex] = React.useState(0);
+  /** 周条点选：以该日为中心，直到用户再翻周期 */
+  const [centerOverride, setCenterOverride] = React.useState<string | null>(null);
+  /** 课表块 FoldRiseIn 错峰序号（每次绘网格重置） */
+  const bloomBlockIndex = React.useRef(0);
   const centerYmd = React.useMemo(
-    () => centerYmdForPeriod(logicalTodayYmd, periodIndex),
-    [logicalTodayYmd, periodIndex],
+    () => centerOverride ?? centerYmdForPeriod(logicalTodayYmd, periodIndex),
+    [centerOverride, logicalTodayYmd, periodIndex],
   );
   const dayYmds = React.useMemo(() => threeDayWindow(centerYmd), [centerYmd]);
-  /** 预加载左右周期，滑动时邻页也有数据 */
+  /** 预加载左右周期，滑动时邻页也有数据；周条跳转日一并纳入 */
   const loadDayYmds = React.useMemo(() => {
     const set = new Set<string>();
     for (const p of [periodIndex - 1, periodIndex, periodIndex + 1]) {
@@ -476,8 +578,11 @@ export function WeeklyFrogSchedule({
         set.add(d);
       }
     }
+    if (centerOverride) {
+      for (const d of threeDayWindow(centerOverride)) set.add(d);
+    }
     return [...set].sort();
-  }, [logicalTodayYmd, periodIndex]);
+  }, [logicalTodayYmd, periodIndex, centerOverride]);
   const thisMonday = React.useMemo(
     () => getWeekStartMondayYmd(logicalTodayYmd),
     [logicalTodayYmd],
@@ -494,8 +599,8 @@ export function WeeklyFrogSchedule({
   const subjectsRef = React.useRef(subjects);
   subjectsRef.current = subjects;
   const [gridWidth, setGridWidth] = React.useState(0);
-  const hPagerRef = React.useRef<ScrollView>(null);
-  const headerPagerRef = React.useRef<ScrollView>(null);
+  const hPagerRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const headerPagerRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
   const pagingLock = React.useRef(false);
 
   const [placeTarget, setPlaceTarget] = React.useState<{
@@ -527,8 +632,12 @@ export function WeeklyFrogSchedule({
   } | null>(null);
 
   const [detail, setDetail] = React.useState<{
-    placement: SchedulePlacementRow;
+    surface: ScheduleDetailSurface;
+    placement: SchedulePlacementRow | null;
     subject: ScheduleSubjectInfo;
+    virtualSlot?: ScheduleVirtualSlot | null;
+    /** 习惯虚拟块：完成走打卡 / 撤销 */
+    habitId?: string;
   } | null>(null);
   /** 首页默认最简：当前时段 + 倒计时；可展开今日列表 / 三天课表 */
   const [zoomMode, setZoomMode] = React.useState<ScheduleZoomMode>('minimal');
@@ -674,22 +783,24 @@ export function WeeklyFrogSchedule({
         bodyTranslateY.setValue(enterFromTY);
 
         requestAnimationFrame(() => {
+          const morphMs = TaskFoldMotion.zoomMorph;
           Animated.parallel([
             Animated.timing(bodyOpacity, {
               toValue: 1,
-              duration: enteringGrid || leavingGrid ? 320 : 260,
+              duration: morphMs,
+              easing: FOLD_MOTION_EASE,
               useNativeDriver: true,
             }),
-            Animated.spring(bodyScale, {
+            Animated.timing(bodyScale, {
               toValue: 1,
-              friction: 6.5,
-              tension: 64,
+              duration: morphMs,
+              easing: FOLD_MOTION_EASE,
               useNativeDriver: true,
             }),
-            Animated.spring(bodyTranslateY, {
+            Animated.timing(bodyTranslateY, {
               toValue: 0,
-              friction: 7,
-              tension: 68,
+              duration: morphMs,
+              easing: FOLD_MOTION_EASE,
               useNativeDriver: true,
             }),
           ]).start(() => {
@@ -705,8 +816,17 @@ export function WeeklyFrogSchedule({
   React.useEffect(() => {
     if (!pendingPlace) return;
     goZoom('grid');
+    setCenterOverride(null);
     setPeriodIndex(0);
   }, [pendingPlace, goZoom]);
+
+  /** 周条点选：以该日为中心打开三天课表 */
+  React.useEffect(() => {
+    if (!jumpToYmd) return;
+    setCenterOverride(jumpToYmd);
+    goZoom('grid');
+    onJumpToYmdConsumed?.();
+  }, [jumpToYmd, goZoom, onJumpToYmdConsumed]);
 
   const loadDaysKey = loadDayYmds.join(',');
 
@@ -836,10 +956,24 @@ export function WeeklyFrogSchedule({
   );
   const slotCount = layout?.slotCount ?? 0;
   const timeline = layout?.timeline ?? [];
-  const rowHeights = layout?.rowHeights ?? [];
-  const totalBodyH = layout?.totalBodyH ?? 52;
+  /** 有备注的工作行抬高，避免虚线备注块被压扁 */
+  const rowHeights = React.useMemo(() => {
+    if (!layout) return [] as number[];
+    return layout.timeline.map((row, i) => {
+      const base = layout.rowHeights[i] ?? SCHEDULE_BASE_SLOT_H;
+      if (row.kind !== 'work') return base;
+      const note = getSlotNote(slotNotes, row.startMinutes);
+      if (!note) return base;
+      return Math.max(base, 36);
+    });
+  }, [layout, slotNotes]);
+  const totalBodyH = React.useMemo(
+    () => (rowHeights.length ? rowHeights.reduce((a, b) => a + b, 0) : layout?.totalBodyH ?? 52),
+    [rowHeights, layout],
+  );
+  /** 外框高度对齐设计稿 `.tt` 表体；内容更高时内滚 */
   const fixedBodyH = layout?.fixedBodyH ?? 52;
-  const bodyScrollable = layout?.scrollable ?? false;
+  const bodyScrollable = totalBodyH > fixedBodyH + 1;
   const axisKey = view
     ? `${view.axis.startMinutes}-${view.axis.endMinutes}-${view.axis.slotHours}-${JSON.stringify(view.axis.breaks ?? [])}`
     : 'none';
@@ -933,7 +1067,7 @@ export function WeeklyFrogSchedule({
     let top = 0;
     for (let i = 0; i < layout.timeline.length; i++) {
       const row = layout.timeline[i]!;
-      const h = layout.rowHeights[i] ?? 0;
+      const h = rowHeights[i] ?? layout.rowHeights[i] ?? 0;
       if (mins < row.endMinutes) {
         const frac =
           row.endMinutes > row.startMinutes
@@ -944,9 +1078,10 @@ export function WeeklyFrogSchedule({
       top += h;
     }
     return top;
-  }, [view, layout, dayYmds, logicalTodayYmd, axisNowMins]);
+  }, [view, layout, rowHeights, dayYmds, logicalTodayYmd, axisNowMins]);
 
   const goPeriod = (delta: number) => {
+    setCenterOverride(null);
     setPeriodIndex((i) => i + delta);
   };
 
@@ -960,6 +1095,7 @@ export function WeeklyFrogSchedule({
     }
     pagingLock.current = true;
     const delta = page < MIDDLE_PAGE ? -1 : 1;
+    setCenterOverride(null);
     setPeriodIndex((i) => i + delta);
     const midX = pageWidth * MIDDLE_PAGE;
     hPagerRef.current?.scrollTo({ x: midX, animated: false });
@@ -1024,6 +1160,24 @@ export function WeeklyFrogSchedule({
     if (!view) return [] as SchedulePlacementRow[];
     return view.placements.filter((p) => p.orphaned || p.startSlotIndex == null);
   }, [view]);
+
+  /** sc-head cnt：「N/M 只已入格」 */
+  const frogPlaceStats = React.useMemo(() => {
+    if (!view) return { inGrid: 0, total: 0 };
+    const map = new Map<string, boolean>();
+    for (const p of view.placements) {
+      const k = `${p.subjectKind}:${p.subjectId}`;
+      const inGrid = !p.orphaned && p.startSlotIndex != null;
+      const prev = map.get(k);
+      if (prev == null) map.set(k, inGrid);
+      else if (inGrid) map.set(k, true);
+    }
+    let inGrid = 0;
+    for (const v of map.values()) if (v) inGrid += 1;
+    return { inGrid, total: map.size };
+  }, [view]);
+
+  const placingMode = !!(pendingPlace || reassignPending);
 
   const openPlace = (
     assignYmd: string,
@@ -1126,6 +1280,64 @@ export function WeeklyFrogSchedule({
     });
   };
 
+  const openVirtualHabitDetail = React.useCallback((habit: VirtualHabitPlacement) => {
+    setCellList(null);
+    setOrphanListOpen(false);
+    setDetail({
+      surface: 'habit',
+      placement: null,
+      habitId: habit.habitId,
+      subject: {
+        kind: 'task',
+        id: habit.habitId,
+        title: habit.name,
+        priority: 0,
+        dueDate: null,
+        acceptanceCriteria: '',
+        projectName: null,
+        extraData: habit.extraData,
+        status: habit.done ? 'done' : 'todo',
+        done: habit.done,
+        deletedSnapshot: false,
+      },
+      virtualSlot: {
+        assignYmd: habit.assignYmd,
+        startSlotIndex: habit.startSlotIndex,
+        spanSlots: habit.spanSlots,
+        hour: habit.hour,
+        minute: habit.minute,
+      },
+    });
+  }, []);
+
+  const openVirtualTaskDetail = React.useCallback(
+    (task: VirtualTaskPlacement) => {
+      const subject = resolveSubject('task', task.taskId, subjects, task.assignYmd);
+      if (!subject) return;
+      setCellList(null);
+      setOrphanListOpen(false);
+      setDetail({
+        surface: 'todo',
+        placement: null,
+        subject: {
+          ...subject,
+          // 虚拟块完成态以当日实例为准
+          done: task.done,
+          status: task.done ? 'done' : subject.status,
+          extraData: task.extraData ?? subject.extraData,
+        },
+        virtualSlot: {
+          assignYmd: task.assignYmd,
+          startSlotIndex: task.startSlotIndex,
+          spanSlots: task.spanSlots,
+          hour: task.hour,
+          minute: task.minute,
+        },
+      });
+    },
+    [subjects],
+  );
+
   const tapVirtualHabit = React.useCallback(
     (habit: VirtualHabitPlacement) => {
       if (habit.assignYmd !== logicalTodayYmd) {
@@ -1138,22 +1350,16 @@ export function WeeklyFrogSchedule({
         else onHabitCheckIn?.(habit.habitId);
         return;
       }
-      confirmToggleVirtualHabit(habit, {
-        onCheckIn: onHabitCheckIn,
-        onUndo: onHabitUndo,
-      });
+      openVirtualHabitDetail(habit);
     },
-    [logicalTodayYmd, onHabitCheckIn, onHabitUndo],
+    [logicalTodayYmd, onHabitCheckIn, onHabitUndo, openVirtualHabitDetail],
   );
 
   const tapVirtualTask = React.useCallback(
     (task: VirtualTaskPlacement) => {
-      if (!onToggleDone) return;
-      const subject = resolveSubject('task', task.taskId, subjects, task.assignYmd);
-      if (!subject) return;
-      confirmTogglePlacementDone(subject, task.assignYmd, onToggleDone);
+      openVirtualTaskDetail(task);
     },
-    [onToggleDone, subjects],
+    [openVirtualTaskDetail],
   );
 
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
@@ -1238,7 +1444,7 @@ export function WeeklyFrogSchedule({
     if (!subject) return;
     setCellList(null);
     setOrphanListOpen(false);
-    setDetail({ placement: p, subject });
+    setDetail({ surface: 'frog', placement: p, subject, virtualSlot: null });
   };
 
   const onCopyLastWeek = () => {
@@ -1298,6 +1504,7 @@ export function WeeklyFrogSchedule({
         placement: p,
         habit: null,
         virtualTask: null,
+        emptySlotIndex: null,
         title: sub?.title?.trim() || '青蛙',
         done: !!sub?.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1314,6 +1521,7 @@ export function WeeklyFrogSchedule({
         placement: null,
         habit: h,
         virtualTask: null,
+        emptySlotIndex: null,
         title: h.name,
         done: h.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1330,6 +1538,7 @@ export function WeeklyFrogSchedule({
         placement: null,
         habit: null,
         virtualTask: t,
+        emptySlotIndex: null,
         title: t.title,
         done: t.done,
         timeLabel: formatMinutesAsHm(startMins),
@@ -1340,14 +1549,82 @@ export function WeeklyFrogSchedule({
     }
     items.sort((a, b) => {
       const sa =
-        a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? a.virtualTask?.startSlotIndex ?? 0;
+        a.placement?.startSlotIndex ??
+        a.habit?.startSlotIndex ??
+        a.virtualTask?.startSlotIndex ??
+        a.emptySlotIndex ??
+        0;
       const sb =
-        b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? b.virtualTask?.startSlotIndex ?? 0;
+        b.placement?.startSlotIndex ??
+        b.habit?.startSlotIndex ??
+        b.virtualTask?.startSlotIndex ??
+        b.emptySlotIndex ??
+        0;
       if (sa !== sb) return sa - sb;
       return a.title.localeCompare(b.title, 'zh');
     });
     return items;
   }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks]);
+
+  /** 今日列表：预选/改派时插入可放入空档（呼吸轮廓） */
+  const todayAgendaItems = React.useMemo(() => {
+    if (!view || !placingMode) return todayCompactItems;
+    const occupied = new Set<number>();
+    for (const it of todayCompactItems) {
+      if (it.placement?.startSlotIndex != null) {
+        const span = Math.max(1, it.placement.spanSlots);
+        for (let i = 0; i < span; i++) occupied.add(it.placement.startSlotIndex + i);
+      }
+      if (it.habit) occupied.add(it.habit.startSlotIndex);
+      if (it.virtualTask) occupied.add(it.virtualTask.startSlotIndex);
+    }
+    const workSlots = listWorkSlots(view.axis);
+    const empties: TodayCompactItem[] = [];
+    const nowCut = axisNowMins ?? -1;
+    for (const slot of workSlots) {
+      if (occupied.has(slot.slotIndex)) continue;
+      // 预选时只提示「还能放入」的空档，避免整日空格刷屏
+      if (nowCut >= 0 && slot.endMinutes <= nowCut) continue;
+      empties.push({
+        placement: null,
+        habit: null,
+        virtualTask: null,
+        emptySlotIndex: slot.slotIndex,
+        title: pendingPlace?.title?.trim() || reassignPending?.subject.title?.trim() || '放入',
+        done: false,
+        timeLabel: formatMinutesAsHm(slot.startMinutes),
+        endLabel: formatMinutesAsHm(slot.endMinutes),
+        startMins: slot.startMinutes,
+        endMins: slot.endMinutes,
+      });
+      if (empties.length >= 3) break;
+    }
+    const merged = [...todayCompactItems, ...empties];
+    merged.sort((a, b) => {
+      if (a.startMins !== b.startMins) return a.startMins - b.startMins;
+      const ae = a.emptySlotIndex != null ? 1 : 0;
+      const be = b.emptySlotIndex != null ? 1 : 0;
+      if (ae !== be) return ae - be;
+      return a.title.localeCompare(b.title, 'zh');
+    });
+    return merged;
+  }, [view, placingMode, todayCompactItems, pendingPlace, reassignPending, axisNowMins]);
+
+  const todayFootStats = React.useMemo(() => {
+    const used = todayCompactItems.reduce((sum, it) => sum + Math.max(0, it.endMins - it.startMins), 0);
+    const workTotal = view
+      ? listWorkSlots(view.axis).reduce((s, slot) => s + (slot.endMinutes - slot.startMinutes), 0)
+      : 0;
+    const free = Math.max(0, workTotal - used);
+    const fmt = (mins: number) => {
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      if (h <= 0) return `${m}m`;
+      if (m <= 0) return `${h}h`;
+      return `${h}h ${String(m).padStart(2, '0')}m`;
+    };
+    return { usedLabel: fmt(used), freeLabel: fmt(free), count: todayCompactItems.length };
+  }, [todayCompactItems, view]);
 
   const minimalFocus = React.useMemo(() => {
     const nowMins = axisNowMins ?? -1;
@@ -1475,7 +1752,9 @@ export function WeeklyFrogSchedule({
     const isTodayCol = ymd === logicalTodayYmd;
     const isPastCol = ymd < logicalTodayYmd;
     const weekday = weekdayFromYmd(ymd);
-    const dayNum = ymd.slice(8);
+    const month = Number(ymd.slice(5, 7));
+    const dayNum = Number(ymd.slice(8));
+    /** 设计稿 `.tt-h`：`10/23 五`，今日 pond 加粗 */
     return (
       <View
         key={`h-${ymd}`}
@@ -1484,45 +1763,20 @@ export function WeeklyFrogSchedule({
           {
             width,
             height: DAY_HEADER_H,
-            borderColor: gridLineSoft,
-            backgroundColor: isTodayCol
-              ? todayWash
-              : isPastCol
-                ? isDark
-                  ? 'rgba(51,65,85,0.45)'
-                  : 'rgba(226,232,240,0.85)'
-                : isDark
-                  ? theme.surface
-                  : theme.surfaceSubtle,
             opacity: isPastCol ? 0.72 : 1,
           },
         ]}>
         <Text
           style={[
-            styles.dayHeaderWeekday,
-            { color: isTodayCol ? primary : outline },
-          ]}>
-          周{WEEKDAY_SHORT_LABELS[weekday - 1]}
+            styles.dayHeaderLabel,
+            {
+              color: isTodayCol ? primary : outline,
+              fontWeight: isTodayCol ? '800' : '600',
+            },
+          ]}
+          numberOfLines={1}>
+          {month}/{dayNum} {WEEKDAY_SHORT_LABELS[weekday - 1]}
         </Text>
-        <View
-          style={[
-            styles.dayHeaderDatePill,
-            isTodayCol && { backgroundColor: primary },
-          ]}>
-          <Text
-            style={[
-              styles.dayHeaderDate,
-              {
-                color: isTodayCol
-                  ? theme.onPrimary
-                  : isPastCol
-                    ? outline
-                    : theme.text,
-              },
-            ]}>
-            {dayNum}
-          </Text>
-        </View>
       </View>
     );
   };
@@ -1532,17 +1786,18 @@ export function WeeklyFrogSchedule({
     const isTodayCol = ymd === logicalTodayYmd;
     const isPastCol = ymd < logicalTodayYmd;
     const editable = dayEditable(ymd, logicalTodayYmd);
-    const breakBg = isDark ? 'rgba(51,65,85,0.55)' : 'rgba(226,232,240,0.95)';
-    const breakFg = isDark ? 'rgba(148,163,184,0.95)' : 'rgba(100,116,139,0.95)';
+    /** 暖纸色休息带 / 空格，对齐设计稿 `.tt-day`（忌 slate 蓝灰） */
+    const breakBg = isDark ? 'rgba(61,72,64,0.45)' : 'rgba(236,230,216,0.95)';
+    const breakFg = isDark ? 'rgba(168,178,168,0.95)' : '#9AA49B';
     const emptyCellBg = isPastCol
       ? isDark
-        ? 'rgba(51,65,85,0.4)'
-        : 'rgba(226,232,240,0.7)'
+        ? 'rgba(50,58,52,0.4)'
+        : 'rgba(241,237,226,0.7)'
       : isTodayCol
         ? todayWash
         : isDark
-          ? 'rgba(15,23,42,0.35)'
-          : theme.surfaceSubtle;
+          ? 'rgba(32,40,36,0.35)'
+          : 'rgba(255,252,245,0.4)';
     return (
       <View key={ymd} style={{ width, opacity: isPastCol ? 0.7 : 1 }}>
         <View style={{ height: totalBodyH, position: 'relative' }}>
@@ -1562,18 +1817,21 @@ export function WeeklyFrogSchedule({
                       alignItems: 'center',
                       justifyContent: 'center',
                       opacity: 0.92,
+                      paddingVertical: rowH < 20 ? 0 : 2,
                     },
                   ]}>
-                  <Text
-                    style={{
-                      color: breakFg,
-                      fontSize: 11,
-                      fontWeight: '700',
-                      textAlign: 'center',
-                    }}
-                    numberOfLines={2}>
-                    {row.label}
-                  </Text>
+                  {rowH >= 14 ? (
+                    <Text
+                      style={{
+                        color: breakFg,
+                        fontSize: rowH < 20 ? 8 : rowH < 28 ? 9 : 11,
+                        fontWeight: '700',
+                        textAlign: 'center',
+                      }}
+                      numberOfLines={rowH < 22 ? 1 : 2}>
+                      {row.label}
+                    </Text>
+                  ) : null}
                 </View>
               );
             }
@@ -1583,8 +1841,15 @@ export function WeeklyFrogSchedule({
             const covering = placementsByCell.get(key) ?? [];
             const cellHabits = habitsByCell.get(key) ?? [];
             const cellVirtualTasks = virtualTasksByCell.get(key) ?? [];
+            const slotNote = getSlotNote(slotNotes, row.startMinutes);
             const isEmpty =
               covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0;
+            /** 截断短行：收紧内边距，色块高度跟行高走 */
+            const blockPad = rowH < 20 ? 1 : 2;
+            const blockH = Math.max(10, rowH - blockPad * 2);
+            const showTitle = rowH >= 18;
+            const showMeta = rowH >= 34;
+            const showCk = rowH >= 20;
             return (
               <Pressable
                 key={`work-${slotIndex}`}
@@ -1597,12 +1862,44 @@ export function WeeklyFrogSchedule({
                     height: rowH,
                     borderColor: gridLineSoft,
                     backgroundColor: emptyCellBg,
+                    padding: blockPad,
                   },
                 ]}>
+                <PreselGlowOutline
+                  active={placingMode && isEmpty && editable}
+                  color={sunAmber}
+                  reduceMotion={!foldAnimate}
+                />
                 {(() => {
                   // 跨格占用的每一格都画色块+任务名（与角标 covering 口径一致）
                   if (covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0) {
-                    return null;
+                    // 设计稿 `.blk.note`：空格虚线备注，随行高截断适配
+                    if (!slotNote || rowH < 16) return null;
+                    return (
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.noteBlock,
+                          {
+                            height: blockH,
+                            borderColor: isDark
+                              ? 'rgba(205,196,180,0.45)'
+                              : 'rgba(205,196,180,0.9)',
+                          },
+                        ]}>
+                        <Text
+                          numberOfLines={rowH >= 28 ? 2 : 1}
+                          style={[
+                            styles.noteBlockText,
+                            {
+                              color: isDark ? 'rgba(155,156,145,0.9)' : '#9B9C91',
+                              fontSize: rowH < 22 ? 8 : 9,
+                            },
+                          ]}>
+                          {slotNote}
+                        </Text>
+                      </View>
+                    );
                   }
                   const display =
                     covering.length > 0
@@ -1616,8 +1913,6 @@ export function WeeklyFrogSchedule({
                     !display && !primaryHabit && cellVirtualTasks.length > 0
                       ? [...cellVirtualTasks].sort((a, b) => Number(a.done) - Number(b.done))[0]
                       : null;
-                  // 按当前格单格高度绘制，避免「起点合并色块」被下一格背景盖住后只剩角标
-                  const h = placementBlockHeight(view.axis, layout, slotIndex, 1) - 6;
                   const unfinishedFrogTitles = listUnfinishedTitlesInCell(
                     covering,
                     subjects,
@@ -1637,27 +1932,29 @@ export function WeeklyFrogSchedule({
                   const showUnfinished =
                     unfinishedTitles.length > 0 ? unfinishedTitles : null;
                   const titleDone = !showUnfinished;
-                  const taskCount =
-                    uniquePlacementsBySubject(covering).length +
-                    cellHabits.length +
-                    cellVirtualTasks.length;
                   const allDone =
                     (display?.done ?? true) &&
                     cellHabits.every((x) => x.done) &&
                     cellVirtualTasks.every((x) => x.done);
-                  const fill = scheduleBlockColors(taskCount, {
+                  const blockKind: ScheduleBlockKind = display
+                    ? blockKindForPlacement(display.primary, subjects)
+                    : primaryHabit
+                      ? 'habit'
+                      : 'todo';
+                  const fill = scheduleBlockStyle(blockKind, {
                     isPast: isPastCol,
                     allDone,
                     isDark,
                   });
                   const titleStyle = [
                     styles.blockTitle,
+                    rowH < 22 && styles.blockTitleCompact,
                     {
-                      color: isPastCol || titleDone ? outline : theme.text,
+                      color: fill.titleColor,
                       textDecorationLine: titleDone
                         ? ('line-through' as const)
                         : ('none' as const),
-                      fontSize: h < 40 ? 11 : 12,
+                      opacity: titleDone && blockKind === 'frog' ? 0.88 : 1,
                     },
                   ];
                   const fallbackTitle =
@@ -1665,45 +1962,93 @@ export function WeeklyFrogSchedule({
                     primaryHabit?.name ??
                     primaryVirtualTask?.title ??
                     '日程';
+                  const startHm = formatMinutesAsHm(row.startMinutes);
+                  const endHm = formatMinutesAsHm(row.endMinutes);
+                  const metaLabel = primaryHabit
+                    ? `${startHm} · 习惯`
+                    : primaryVirtualTask || blockKind === 'todo'
+                      ? `${startHm} · 待办`
+                      : display?.primary.subjectKind === 'project'
+                        ? `${startHm}–${endHm} · 项目`
+                        : `${startHm}–${endHm}${allDone ? ' · 已完成' : ' · 进行中'}`;
+                  const blockKey =
+                    display?.primary.id ??
+                    (primaryHabit
+                      ? `habit-${primaryHabit.habitId}`
+                      : `vtask-${primaryVirtualTask?.taskId}`);
+                  const riseIndex = bloomBlockIndex.current++;
+                  const drawCk = showCk && (blockKind === 'frog' || blockKind === 'todo');
                   return (
-                    <View
-                      key={
-                        display?.primary.id ??
-                        (primaryHabit
-                          ? `habit-${primaryHabit.habitId}`
-                          : `vtask-${primaryVirtualTask?.taskId}`)
-                      }
-                      pointerEvents="none"
-                      style={[
-                        styles.block,
-                        {
-                          height: Math.max(20, h),
-                          backgroundColor: fill.backgroundColor,
-                          borderColor: fill.borderColor,
-                        },
-                      ]}>
-                      <View style={styles.blockBody}>
-                        {showUnfinished && showUnfinished.length > 1 && !isPastCol ? (
-                          <ScheduleCellTitleRotator
-                            titles={showUnfinished}
-                            numberOfLines={1}
-                            style={titleStyle}
-                          />
-                        ) : (
-                          <Text numberOfLines={1} style={titleStyle}>
-                            {showUnfinished?.[0] ?? fallbackTitle}
-                          </Text>
-                        )}
-                        {titleDone ? (
-                          <MaterialIcons
-                            name="check-circle"
-                            size={14}
-                            color={successTint}
-                            style={styles.blockCheck}
-                          />
-                        ) : null}
+                    <FoldRiseIn
+                      key={blockKey}
+                      animate={foldAnimate}
+                      index={riseIndex}
+                      staggerMs={TaskFoldMotion.schedBlockStagger}
+                      fromY={10}
+                      duration={380}
+                      style={{ width: '100%' }}>
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.block,
+                          {
+                            height: blockH,
+                            backgroundColor: fill.backgroundColor,
+                            borderColor: fill.borderColor,
+                            borderStyle: fill.borderStyle,
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                          },
+                        ]}>
+                        <View
+                          style={[
+                            styles.blockBody,
+                            blockKind === 'habit' && styles.blockBodyHabit,
+                            rowH < 22 && styles.blockBodyCompact,
+                          ]}>
+                          {blockKind === 'habit' && showTitle ? (
+                            <View style={[styles.blockFrogDot, { backgroundColor: '#87A566' }]} />
+                          ) : null}
+                          {showTitle ? (
+                            showUnfinished && showUnfinished.length > 1 && !isPastCol ? (
+                              <ScheduleCellTitleRotator
+                                titles={showUnfinished}
+                                numberOfLines={1}
+                                style={titleStyle}
+                              />
+                            ) : (
+                              <Text numberOfLines={1} style={titleStyle}>
+                                {showUnfinished?.[0] ?? fallbackTitle}
+                              </Text>
+                            )
+                          ) : null}
+                          {showMeta ? (
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.blockMeta, { color: fill.metaColor }]}>
+                              {metaLabel}
+                            </Text>
+                          ) : null}
+                          {drawCk ? (
+                            <View
+                              style={[
+                                styles.blockCk,
+                                {
+                                  borderColor: fill.titleColor,
+                                  backgroundColor: allDone
+                                    ? blockKind === 'frog'
+                                      ? '#DDE9CB'
+                                      : fill.titleColor
+                                    : 'transparent',
+                                  opacity: allDone ? 1 : 0.55,
+                                },
+                              ]}
+                            />
+                          ) : null}
+                        </View>
                       </View>
-                    </View>
+                    </FoldRiseIn>
                   );
                 })()}
 
@@ -1712,7 +2057,7 @@ export function WeeklyFrogSchedule({
                   const unfinishedHabits = cellHabits.filter((x) => !x.done).length;
                   const unfinishedVTasks = cellVirtualTasks.filter((x) => !x.done).length;
                   const unfinished = unfinishedFrogs + unfinishedHabits + unfinishedVTasks;
-                  if (unfinished <= 1 || isPastCol) return null;
+                  if (unfinished <= 1 || isPastCol || rowH < 18) return null;
                   return (
                     <View style={[styles.badge, { backgroundColor: primary }]}>
                       <Text style={styles.badgeText}>{unfinished}</Text>
@@ -1721,6 +2066,7 @@ export function WeeklyFrogSchedule({
                 })()}
 
                 {isEmpty &&
+                !slotNote &&
                 isTodayCol &&
                 editable &&
                 !todayHasPlacement &&
@@ -1740,27 +2086,17 @@ export function WeeklyFrogSchedule({
               <View
                 style={[
                   styles.nowDot,
-                  {
-                    backgroundColor: isDark ? '#f87171' : '#fca5a5',
-                  },
+                  { backgroundColor: sunAmber },
                 ]}
               />
               <View
                 style={[
                   styles.nowBar,
-                  {
-                    backgroundColor: isDark ? '#f87171' : '#fca5a5',
-                  },
+                  { backgroundColor: sunAmber, opacity: 0.75 },
                 ]}
               />
-              <View style={styles.nowPill}>
-                <Text
-                  style={[
-                    styles.nowPillText,
-                    { color: isDark ? '#fca5a5' : '#ef4444' },
-                  ]}>
-                  现在
-                </Text>
+              <View style={[styles.nowPill, { backgroundColor: isDark ? tf.paper2 : tf.cream }]}>
+                <Text style={[styles.nowPillText, { color: tf.sun }]}>现在</Text>
               </View>
             </View>
           ) : null}
@@ -1793,6 +2129,7 @@ export function WeeklyFrogSchedule({
 
   const renderScheduleGrid = () => {
     if (!view || !layout) return null;
+    bloomBlockIndex.current = 0;
     const pages = [periodIndex - 1, periodIndex, periodIndex + 1];
     const pw = pageWidth || colWidth * 3;
 
@@ -1806,9 +2143,7 @@ export function WeeklyFrogSchedule({
             borderBottomColor: gridLineSoft,
           },
         ]}>
-        <View style={[styles.timeGutterCorner, { width: TIME_GUTTER, height: DAY_HEADER_H }]}>
-          <Text style={[styles.timeGutterCornerLabel, { color: outline }]}>时段</Text>
-        </View>
+        <View style={[styles.timeGutterCorner, { width: TIME_GUTTER, height: DAY_HEADER_H }]} />
         <View style={{ flex: 1 }} onLayout={onGridLayout}>
           {gridWidth > 0 ? (
             <ScrollView
@@ -1830,6 +2165,12 @@ export function WeeklyFrogSchedule({
         {timeline.map((row, rowIndex) => {
           const rowH = rowHeights[rowIndex] ?? 52;
           const rangeLabel = formatMinuteRangeLabel(row.startMinutes, row.endMinutes);
+          /** 设计稿 `.tt-t`：仅起始小时两位；备注改画在日列 `.blk.note` */
+          const hourLabel = String(Math.floor(Math.max(0, row.startMinutes) / 60) % 24).padStart(
+            2,
+            '0',
+          );
+          const hourFont = rowH < 18 ? 7 : rowH < 24 ? 8 : 9;
           if (row.kind === 'break') {
             return (
               <View
@@ -1839,15 +2180,17 @@ export function WeeklyFrogSchedule({
                   {
                     height: rowH,
                     borderColor: gridLineSoft,
-                    backgroundColor: isDark ? 'rgba(51,65,85,0.4)' : 'rgba(226,232,240,0.7)',
-                    justifyContent: 'center',
+                    backgroundColor: isDark ? 'rgba(61,72,64,0.4)' : 'rgba(236,230,216,0.7)',
+                    justifyContent: 'flex-start',
                   },
                 ]}>
-                <Text
-                  style={[styles.timeRangeText, { color: outline, fontSize: 9 }]}
-                  numberOfLines={2}>
-                  {row.label}
-                </Text>
+                {rowH >= 12 ? (
+                  <Text
+                    style={[styles.timeHourText, { color: outline, fontSize: hourFont }]}
+                    numberOfLines={1}>
+                    {hourLabel}
+                  </Text>
+                ) : null}
               </View>
             );
           }
@@ -1868,14 +2211,16 @@ export function WeeklyFrogSchedule({
                   backgroundColor: note ? todayWash : 'transparent',
                 },
               ]}>
-              <View style={styles.timeLabelBlock}>
-                <Text style={[styles.timeRangeText, { color: outline }]}>{rangeLabel}</Text>
-                {note ? (
-                  <Text style={[styles.timeSlotNote, { color: primary }]} numberOfLines={2}>
-                    {note}
-                  </Text>
-                ) : null}
-              </View>
+              {rowH >= 12 ? (
+                <Text
+                  style={[
+                    styles.timeHourText,
+                    { color: note ? primary : outline, fontSize: hourFont },
+                  ]}
+                  numberOfLines={1}>
+                  {hourLabel}
+                </Text>
+              ) : null}
             </Pressable>
           );
         })}
@@ -1906,16 +2251,18 @@ export function WeeklyFrogSchedule({
       </View>
     );
 
-    const body = bodyScrollable ? (
+    /** 外框锁定设计稿高度；内容行更高时表体内上下滑动 */
+    const body = (
       <ScrollView
         style={{ height: fixedBodyH }}
+        contentContainerStyle={{ minHeight: Math.max(totalBodyH, fixedBodyH) }}
         nestedScrollEnabled
-        showsVerticalScrollIndicator
-        keyboardShouldPersistTaps="handled">
+        scrollEnabled={bodyScrollable}
+        showsVerticalScrollIndicator={bodyScrollable}
+        keyboardShouldPersistTaps="handled"
+        bounces={bodyScrollable}>
         {bodyRow}
       </ScrollView>
-    ) : (
-      <View style={{ height: fixedBodyH, overflow: 'hidden' }}>{bodyRow}</View>
     );
 
     return (
@@ -1931,295 +2278,373 @@ export function WeeklyFrogSchedule({
     index: number,
     list: TodayCompactItem[],
     opts?: { dense?: boolean },
-  ) => (
-    <Pressable
-      key={
-        item.placement?.id ??
-        (item.habit
-          ? `habit-${item.habit.habitId}-${item.startMins}`
-          : `vtask-${item.virtualTask?.taskId}-${item.startMins}`)
-      }
-      onPress={() => {
-        if (item.habit) {
-          tapVirtualHabit(item.habit);
-          return;
+  ) => {
+    const isEmpty = item.emptySlotIndex != null;
+    const kind: ScheduleBlockKind = item.habit
+      ? 'habit'
+      : item.virtualTask
+        ? 'todo'
+        : item.placement
+          ? blockKindForPlacement(item.placement, subjects)
+          : 'frog';
+    const fill = isEmpty
+      ? {
+          backgroundColor: isDark ? 'rgba(255,252,245,0.08)' : 'rgba(255,252,245,0.4)',
+          borderColor: isDark ? tf.line2 : '#D8C9AF',
+          borderStyle: 'dashed' as const,
+          titleColor: isDark ? tf.amberInk : '#AA9C86',
+          metaColor: isDark ? tf.sun : '#B07A32',
         }
-        if (item.virtualTask) {
-          tapVirtualTask(item.virtualTask);
-          return;
+      : scheduleBlockStyle(kind, {
+          isPast: false,
+          allDone: item.done,
+          isDark,
+        });
+    const durMin = Math.max(0, item.endMins - item.startMins);
+    const durLabel = isEmpty
+      ? '可用'
+      : durMin >= 60
+        ? `${Math.round((durMin / 60) * 10) / 10}h`.replace(/\.0h$/, 'h')
+        : `${durMin}m`;
+    const sub =
+      item.placement && !isEmpty
+        ? resolveSubject(
+            item.placement.subjectKind,
+            item.placement.subjectId,
+            subjects,
+            logicalTodayYmd,
+          )
+        : null;
+    const meta = isEmpty
+      ? `预计放入 · ${pendingPlace?.title || reassignPending?.subject.title || '候选'}`
+      : kind === 'habit'
+        ? item.done
+          ? '习惯 · 已完成'
+          : '习惯虚拟块'
+        : kind === 'todo'
+          ? '自动入格 · 独立待办'
+          : item.placement?.subjectKind === 'project'
+            ? `项目 · ${item.done ? '已完成' : '进行中'}`
+            : [sub?.projectName?.trim() || '青蛙', item.done ? '已完成' : '进行中']
+                .filter(Boolean)
+                .join(' · ');
+    const preselTitle =
+      pendingPlace?.title?.trim() || reassignPending?.subject.title?.trim() || '这件事';
+    return (
+      <Pressable
+        key={
+          isEmpty
+            ? `empty-${item.emptySlotIndex}`
+            : item.placement?.id ??
+              (item.habit
+                ? `habit-${item.habit.habitId}-${item.startMins}`
+                : `vtask-${item.virtualTask?.taskId}-${item.startMins}`)
         }
-        if (item.placement) openDetail(item.placement);
-      }}
-      accessibilityRole="button"
-      accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
-      style={({ pressed }) => [
-        opts?.dense ? styles.todayRowDense : styles.todayRow,
-        index < list.length - 1 &&
-          item.done && {
-            borderBottomWidth: StyleSheet.hairlineWidth,
-            borderBottomColor: gridLineSoft,
-          },
-        index < list.length - 1 &&
-          !item.done && {
-            marginBottom: 2,
-          },
-        item.done
-          ? {
-              opacity: pressed ? 0.4 : 0.48,
-            }
-          : {
-              backgroundColor: isDark ? 'rgba(96,165,250,0.10)' : 'rgba(0,88,190,0.07)',
-              borderRadius: Radius.sm,
-              opacity: pressed ? 0.88 : 1,
-            },
-      ]}>
-      <View style={styles.todayTimeCol}>
-        <Text
+        onPress={() => {
+          if (isEmpty && item.emptySlotIndex != null) {
+            handleCellPress(logicalTodayYmd, item.emptySlotIndex);
+            return;
+          }
+          if (item.habit) {
+            tapVirtualHabit(item.habit);
+            return;
+          }
+          if (item.virtualTask) {
+            tapVirtualTask(item.virtualTask);
+            return;
+          }
+          if (item.placement) openDetail(item.placement);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={
+          isEmpty
+            ? `${item.timeLabel} 空档，放入 ${preselTitle}`
+            : `${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`
+        }
+        style={({ pressed }) => [
+          styles.dlRow,
+          index < list.length - 1 && { marginBottom: 2 },
+          { opacity: pressed ? 0.88 : item.done && !isEmpty ? 0.72 : 1 },
+        ]}>
+        <View style={styles.dlTime}>
+          <Text style={[styles.dlTimeStart, { color: outline }]}>{item.timeLabel}</Text>
+          <Text style={[styles.dlTimeDur, { color: tf.faint }]}>{durLabel}</Text>
+        </View>
+        <View
           style={[
-            styles.todayTimeStart,
-            { color: item.done ? outline : primary },
-          ]}>
-          {item.timeLabel}
-        </Text>
-        <Text
-          style={[
-            styles.todayTimeEnd,
-            { color: outline, opacity: item.done ? 0.85 : 1 },
-          ]}>
-          {item.endLabel}
-        </Text>
-      </View>
-      <View
-        style={[
-          styles.todayRail,
-          !item.done && styles.todayRailActive,
-          {
-            backgroundColor: item.done ? `${outline}66` : primary,
-          },
-        ]}
-      />
-      <View style={styles.todayRowBody}>
-        <Text
-          style={[
-            styles.todayRowTitle,
-            !item.done && styles.todayRowTitleActive,
+            styles.dlBlock,
+            opts?.dense && styles.dlBlockDense,
             {
-              color: item.done ? outline : theme.text,
-              textDecorationLine: item.done ? 'line-through' : 'none',
+              backgroundColor: fill.backgroundColor,
+              borderColor: fill.borderColor,
+              borderStyle: fill.borderStyle,
+              alignItems: isEmpty ? 'center' : undefined,
             },
-          ]}
-          numberOfLines={opts?.dense ? 1 : 2}>
-          {item.habit ? `习惯 · ${item.title}` : item.title}
-        </Text>
-      </View>
-      {item.done ? (
-        <MaterialIcons name="check-circle" size={18} color={outline} />
-      ) : (
-        <MaterialIcons name="chevron-right" size={18} color={primary} />
-      )}
-    </Pressable>
-  );
+          ]}>
+          {isEmpty ? (
+            <>
+              <PreselGlowOutline active color={tf.sun} reduceMotion={!foldAnimate} />
+              <Text
+                style={[styles.dlBlockTitle, { color: fill.titleColor, textAlign: 'center' }]}
+                numberOfLines={2}>
+                ＋ 点此处放入「{preselTitle}」
+              </Text>
+              {!opts?.dense ? (
+                <Text
+                  style={[styles.dlBlockMeta, { color: fill.metaColor, textAlign: 'center' }]}
+                  numberOfLines={1}>
+                  {durMin > 0 ? `空档约 ${durMin}m` : '空档'}
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Text
+                style={[
+                  styles.dlBlockTitle,
+                  {
+                    color: fill.titleColor,
+                    textDecorationLine: item.done ? 'line-through' : 'none',
+                  },
+                ]}
+                numberOfLines={1}>
+                {item.title}
+              </Text>
+              {!opts?.dense ? (
+                <Text style={[styles.dlBlockMeta, { color: fill.metaColor }]} numberOfLines={1}>
+                  {meta}
+                </Text>
+              ) : null}
+              <View
+                style={[
+                  styles.dlBlockCk,
+                  {
+                    borderColor: fill.titleColor,
+                    backgroundColor: item.done
+                      ? kind === 'frog'
+                        ? '#DDE9CB'
+                        : fill.titleColor
+                      : 'transparent',
+                    opacity: item.done ? 1 : 0.5,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  },
+                ]}>
+                {item.done ? (
+                  <MaterialIcons
+                    name="check"
+                    size={8}
+                    color={kind === 'frog' ? tf.pond : '#fff'}
+                  />
+                ) : null}
+              </View>
+            </>
+          )}
+        </View>
+      </Pressable>
+    );
+  };
 
-  const headerTitle =
-    zoomMode === 'grid' ? '日程表' : zoomMode === 'agenda' ? '今日日程' : '此刻';
-  const headerIcon =
-    zoomMode === 'grid' ? 'view-week' : zoomMode === 'agenda' ? 'today' : 'schedule';
-
-  const zoomActionBtn = (
-    icon: keyof typeof MaterialIcons.glyphMap,
-    label: string,
-    onPress: () => void,
-    accent?: boolean,
-  ) => (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={({ pressed }) => [
-        styles.iconActionBtn,
-        {
-          backgroundColor: accent ? todayWash : surfaceLow,
-          opacity: pressed ? 0.75 : 1,
-        },
-      ]}>
-      <MaterialIcons name={icon} size={18} color={accent ? primary : outline} />
-    </Pressable>
-  );
+  const zoomSegOptions: { key: ScheduleZoomMode; label: string }[] = [
+    { key: 'minimal', label: '最简' },
+    { key: 'agenda', label: '今日' },
+    { key: 'grid', label: '三天' },
+  ];
 
   return (
     <View style={styles.section}>
       <View
         style={
           isGrid
-            ? sectionCardStyle
+            ? [
+                sectionCardStyle,
+                {
+                  backgroundColor: isDark ? tf.paper2 : tf.cardSoft,
+                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.78)',
+                  overflow: 'hidden',
+                  paddingTop: 0,
+                  paddingHorizontal: 0,
+                },
+              ]
             : [
                 styles.summaryCard,
                 shadows.card,
                 {
-                  backgroundColor: theme.surface,
-                  borderColor: theme.outline,
+                  backgroundColor: isDark ? tf.paper2 : tf.cardSoft,
+                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.78)',
+                  overflow: 'hidden',
+                  paddingTop: 0,
+                  paddingHorizontal: 0,
                 },
               ]
         }>
         <View
           style={[
-            styles.headerRow,
-            { marginBottom: isGrid || isAgenda || isMinimal || !loading ? Spacing.md : 0 },
+            styles.scHead,
+            {
+              borderBottomColor: isDark ? tf.line : 'rgba(230,221,206,0.7)',
+              marginBottom: isGrid || isAgenda || isMinimal || !loading ? 0 : 0,
+            },
           ]}>
-          <View style={styles.titleRow}>
-            <View style={[styles.titleIconWrap, { backgroundColor: todayWash }]}>
-              <MaterialIcons name={headerIcon} size={18} color={primary} />
-            </View>
-            <View style={styles.titleTextCol}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>
-                {headerTitle}
-              </Text>
-              {isMinimal && minimalFocus.kind !== 'empty' ? (
-                <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
-                  {minimalFocus.kind === 'finished'
-                    ? minimalFocus.countdownLabel
-                    : minimalFocus.kind === 'break'
-                      ? `${minimalFocus.breakLabel} ${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`
-                      : `${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`}
-                </Text>
-              ) : null}
-              {isAgenda && todayCompactItems.length > 0 ? (
-                <Text style={[styles.summaryMeta, { color: outline }]} numberOfLines={1}>
-                  {todayDoneCount > 0
-                    ? `${todayDoneCount}/${todayCompactItems.length} 已完成`
-                    : `${todayCompactItems.length} 节安排`}
-                </Text>
-              ) : null}
-            </View>
+          <Text style={[styles.scHeadTitle, { color: tf.ink2 }]}>青蛙周日程</Text>
+          <Text style={[styles.scHeadCnt, { color: tf.faint }]}>
+            <Text style={{ color: tf.frog, fontFamily: foldFonts.mono, fontWeight: '700' }}>
+              {frogPlaceStats.inGrid}
+            </Text>
+            /{Math.max(frogPlaceStats.total, frogPlaceStats.inGrid)} 只已入格
+          </Text>
+          <View style={[styles.zseg, { backgroundColor: tf.track }]}>
+            {zoomSegOptions.map((opt) => {
+              const on = zoomMode === opt.key;
+              return (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => goZoom(opt.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  accessibilityLabel={opt.label}
+                  style={[
+                    styles.zsegBtn,
+                    on && {
+                      backgroundColor: tf.cream,
+                      shadowColor: tf.shadow,
+                      shadowOpacity: 0.1,
+                      shadowRadius: 6,
+                      shadowOffset: { width: 0, height: 2 },
+                      elevation: 2,
+                    },
+                  ]}>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '700',
+                      color: on ? tf.pond : tf.muted,
+                    }}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
-          <View style={styles.headerActions}>
-            {isMinimal && todayCompactItems.length === 0 && !(loading && !view) ? (
-              <Text style={[styles.summaryMeta, { color: outline }]}>暂无安排</Text>
-            ) : null}
-            {isAgenda && todayCompactItems.length === 0 && !(loading && !view) ? (
-              <Text style={[styles.summaryMeta, { color: outline }]}>暂无安排</Text>
-            ) : null}
-            {isGrid && orphanedPlacements.length > 0 ? (
-              <Pressable
-                onPress={() => setOrphanListOpen(true)}
-                hitSlop={6}
-                accessibilityRole="button"
-                accessibilityLabel={`查看未入格任务 ${orphanedPlacements.length} 项`}
-                style={[styles.orphanChip, { backgroundColor: `${theme.danger}14` }]}>
-                <Text style={{ color: theme.danger, fontSize: 12, fontWeight: '700' }}>
-                  未入格 {orphanedPlacements.length}
-                </Text>
-              </Pressable>
-            ) : null}
-            {isGrid ? (
-              <Pressable
-                onPress={() => onCopyLastWeek()}
-                disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
-                accessibilityRole="button"
-                accessibilityLabel="复制上周"
-                style={({ pressed }) => [
-                  styles.iconActionBtn,
-                  {
-                    backgroundColor: todayWash,
-                    opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
-                      ? 0.4
-                      : pressed
-                        ? 0.8
-                        : 1,
-                  },
-                ]}>
-                <MaterialIcons name="content-copy" size={16} color={primary} />
-              </Pressable>
-            ) : null}
+          {isGrid && orphanedPlacements.length > 0 ? (
             <Pressable
-              onPress={() => setSettingsOpen(true)}
-              hitSlop={8}
+              onPress={() => setOrphanListOpen(true)}
+              hitSlop={6}
               accessibilityRole="button"
-              accessibilityLabel="课表设置"
-              style={({ pressed }) => [
-                styles.iconActionBtn,
-                {
-                  backgroundColor: surfaceLow,
-                  opacity: pressed ? 0.8 : 1,
-                },
-              ]}>
-              <MaterialIcons name="tune" size={16} color={outline} />
+              accessibilityLabel={`查看未入格任务 ${orphanedPlacements.length} 项`}
+              style={[styles.orphanChip, { backgroundColor: `${tf.rose}18` }]}>
+              <Text style={{ color: tf.rose, fontSize: 11, fontWeight: '700' }}>
+                未入格 {orphanedPlacements.length}
+              </Text>
             </Pressable>
-            {isMinimal ? (
-              <>
-                {zoomActionBtn('expand-more', '下拉展开今日日程', () => goZoom('agenda'))}
-                {zoomActionBtn('zoom-out-map', '放大为完整日程表', () => goZoom('grid'), true)}
-              </>
-            ) : null}
-            {isAgenda ? (
-              <>
-                {zoomActionBtn('expand-less', '上拉收起为此刻', () => goZoom('minimal'))}
-                {zoomActionBtn('zoom-out-map', '放大为完整日程表', () => goZoom('grid'), true)}
-              </>
-            ) : null}
-            {isGrid
-              ? zoomActionBtn('close-fullscreen', '收起日程表', () => goZoom('agenda'))
-              : null}
-          </View>
+          ) : null}
+          <Pressable
+            onPress={() => onCopyLastWeek()}
+            disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
+            accessibilityRole="button"
+            accessibilityLabel="复制上周"
+            style={({ pressed }) => [
+              styles.copyBtn,
+              {
+                backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                borderColor: isDark ? tf.line : 'rgba(216,205,187,0.6)',
+                opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
+                  ? 0.4
+                  : pressed
+                    ? 0.8
+                    : 1,
+              },
+            ]}>
+            <MaterialIcons name="content-copy" size={14} color={tf.muted} />
+          </Pressable>
+          <Pressable
+            onPress={() => setSettingsOpen(true)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="课表设置"
+            style={({ pressed }) => [
+              styles.copyBtn,
+              {
+                backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                borderColor: isDark ? tf.line : 'rgba(216,205,187,0.6)',
+                opacity: pressed ? 0.8 : 1,
+              },
+            ]}>
+            <MaterialIcons name="tune" size={14} color={tf.muted} />
+          </Pressable>
         </View>
+
+        {isMinimal && minimalFocus.kind !== 'empty' ? (
+          <Text
+            style={[styles.summaryMeta, { color: outline, paddingHorizontal: Spacing['2xl'], paddingTop: 6 }]}
+            numberOfLines={1}>
+            {minimalFocus.kind === 'finished'
+              ? minimalFocus.countdownLabel
+              : minimalFocus.kind === 'break'
+                ? `${minimalFocus.breakLabel} ${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`
+                : `${minimalFocus.rangeLabel} · ${minimalFocus.countdownLabel}`}
+          </Text>
+        ) : null}
+        {isAgenda && todayCompactItems.length > 0 ? (
+          <Text
+            style={[styles.summaryMeta, { color: outline, paddingHorizontal: Spacing['2xl'], paddingTop: 6 }]}
+            numberOfLines={1}>
+            {todayDoneCount > 0
+              ? `${todayFootStats.count} 项安排 · ${todayDoneCount} 已完成`
+              : `${todayFootStats.count} 项安排`}
+          </Text>
+        ) : null}
 
         {reassignPending ? (
           <View
             style={[
               styles.pendingBanner,
+              styles.preselectHint,
               {
-                backgroundColor: `${theme.danger}12`,
-                borderColor: `${theme.danger}33`,
+                backgroundColor: isDark ? tf.amber2 : '#F8ECD7',
+                borderColor: isDark ? tf.line2 : '#E8CDA2',
               },
             ]}>
-            <View style={[styles.pendingIconWrap, { backgroundColor: `${theme.danger}22` }]}>
-              <MaterialIcons name="schedule" size={18} color={theme.danger} />
-            </View>
+            <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: theme.danger, fontWeight: '800', fontSize: 13 }} numberOfLines={1}>
-                重新指派：{reassignPending.subject.title}
-              </Text>
-              <Text style={{ color: outline, fontSize: 12, marginTop: 2, lineHeight: 16 }}>
-                点选今天或未来的格子以落入时段
+              <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                重新指派「{reassignPending.subject.title}」· 点空档放入
               </Text>
             </View>
+            <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
             <Pressable
               onPress={() => setReassignPending(null)}
               hitSlop={10}
               accessibilityRole="button"
               accessibilityLabel="取消重新指派"
               style={styles.pendingClose}>
-              <MaterialIcons name="close" size={20} color={outline} />
+              <MaterialIcons name="close" size={18} color={tf.amberInk} />
             </Pressable>
           </View>
         ) : pendingPlace ? (
           <View
             style={[
               styles.pendingBanner,
+              styles.preselectHint,
               {
-                backgroundColor: todayWash,
-                borderColor: todayWashStrong,
+                backgroundColor: isDark ? tf.amber2 : '#F8ECD7',
+                borderColor: isDark ? tf.line2 : '#E8CDA2',
               },
             ]}>
-            <View style={[styles.pendingIconWrap, { backgroundColor: `${primary}22` }]}>
-              <MaterialIcons name="touch-app" size={18} color={primary} />
-            </View>
+            <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: primary, fontWeight: '800', fontSize: 13 }} numberOfLines={1}>
-                点选格子放置：{pendingPlace.title}
-              </Text>
-              <Text style={{ color: outline, fontSize: 12, marginTop: 2, lineHeight: 16 }}>
-                点空格或已有占用格即可入格
+              <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                已预选「{pendingPlace.title}」· 点空档放入
               </Text>
             </View>
+            <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
             <Pressable
               onPress={() => onClearPendingPlace?.()}
               hitSlop={10}
               accessibilityRole="button"
               accessibilityLabel="取消放置"
               style={styles.pendingClose}>
-              <MaterialIcons name="close" size={20} color={outline} />
+              <MaterialIcons name="close" size={18} color={tf.amberInk} />
             </Pressable>
           </View>
         ) : null}
@@ -2228,6 +2653,9 @@ export function WeeklyFrogSchedule({
           style={{
             opacity: bodyOpacity,
             transform: [{ scale: bodyScale }, { translateY: bodyTranslateY }],
+            paddingHorizontal: Spacing['2xl'],
+            paddingBottom: Spacing.xl,
+            paddingTop: Spacing.md,
           }}>
         {isMinimal ? (
           loading && !view ? (
@@ -2307,7 +2735,7 @@ export function WeeklyFrogSchedule({
         {isAgenda ? (
           loading && !view ? (
             <ActivityIndicator color={primary} style={{ marginVertical: Spacing.xl }} />
-          ) : todayCompactItems.length === 0 ? (
+          ) : todayAgendaItems.length === 0 ? (
             <Pressable
               onPress={() => goZoom('grid')}
               style={({ pressed }) => [
@@ -2325,61 +2753,127 @@ export function WeeklyFrogSchedule({
               </Text>
             </Pressable>
           ) : (
-            <View style={[styles.todayAgenda, { maxHeight: 196 }]}>
+            <View style={[styles.todayAgenda, { maxHeight: placingMode ? 240 : 196 }]}>
               <ScrollView
                 nestedScrollEnabled
-                showsVerticalScrollIndicator={todayCompactItems.length > 4}
+                showsVerticalScrollIndicator={todayAgendaItems.length > 4}
                 keyboardShouldPersistTaps="handled">
-                {todayCompactItems.map((item, index) =>
-                  renderCompactRow(item, index, todayCompactItems),
+                {todayAgendaItems.map((item, index) =>
+                  renderCompactRow(item, index, todayAgendaItems),
                 )}
               </ScrollView>
+              <View style={styles.todayFoot}>
+                <View style={[styles.todayFootDot, { backgroundColor: tf.sage }]} />
+                <Text style={[styles.todayFootText, { color: tf.faint }]} numberOfLines={1}>
+                  已用 {todayFootStats.usedLabel} / 空闲 {todayFootStats.freeLabel}
+                </Text>
+                <View style={styles.todayFootMini}>
+                  {todayCompactItems.slice(0, 5).map((it, i) => {
+                    const k = it.habit
+                      ? 'habit'
+                      : it.virtualTask
+                        ? 'todo'
+                        : it.placement
+                          ? blockKindForPlacement(it.placement, subjects)
+                          : 'frog';
+                    const c =
+                      k === 'frog'
+                        ? tf.frog
+                        : k === 'habit'
+                          ? tf.lily
+                          : k === 'todo'
+                            ? tf.sun
+                            : '#DDE5D4';
+                    return (
+                      <View
+                        key={`ft-${i}`}
+                        style={[styles.todayFootMiniDot, { backgroundColor: c }]}
+                      />
+                    );
+                  })}
+                </View>
+              </View>
             </View>
           )
         ) : null}
 
         {isGrid ? (
           <>
-            <View style={[styles.weekNav, { backgroundColor: surfaceLow }]}>
-              <Pressable
-                onPress={() => goPeriod(-1)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="上一周期"
-                style={({ pressed }) => [
-                  styles.navBtn,
-                  { opacity: pressed ? 0.7 : 1, backgroundColor: theme.surface },
-                ]}>
-                <MaterialIcons name="chevron-left" size={22} color={primary} />
-              </Pressable>
-              <Pressable onPress={() => setPeriodIndex(0)} style={styles.weekTitleHit}>
-                <Text style={[styles.weekTitle, { color: theme.text }]}>
-                  {formatThreeDayRangeLabel(centerYmd)}
-                </Text>
-                {periodIndex !== 0 ? (
-                  <Text style={[styles.weekSub, { color: primary }]}>回今天</Text>
-                ) : (
-                  <Text style={[styles.weekSub, { color: outline }]}>昨 · 今 · 明</Text>
-                )}
-              </Pressable>
-              <Pressable
-                onPress={() => goPeriod(1)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="下一周期"
-                style={({ pressed }) => [
-                  styles.navBtn,
-                  { opacity: pressed ? 0.7 : 1, backgroundColor: theme.surface },
-                ]}>
-                <MaterialIcons name="chevron-right" size={22} color={primary} />
-              </Pressable>
-            </View>
+            {periodIndex !== 0 || centerOverride ? (
+              <View style={styles.weekNavCompact}>
+                <Pressable
+                  onPress={() => goPeriod(-1)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="上一周期"
+                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, padding: 4 }]}>
+                  <MaterialIcons name="chevron-left" size={18} color={primary} />
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setCenterOverride(null);
+                    setPeriodIndex(0);
+                  }}
+                  style={styles.weekTitleHit}>
+                  <Text style={[styles.weekSub, { color: primary }]}>
+                    {formatThreeDayRangeLabel(centerYmd)} · 回今天
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => goPeriod(1)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="下一周期"
+                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, padding: 4 }]}>
+                  <MaterialIcons name="chevron-right" size={18} color={primary} />
+                </Pressable>
+              </View>
+            ) : null}
 
             {loading && !view ? (
               <ActivityIndicator color={primary} style={{ marginVertical: 24 }} />
             ) : view ? (
-              <View style={[styles.gridFrame, { borderColor: gridLineSoft }]}>
+              <View style={styles.gridFrame}>
                 {renderScheduleGrid()}
+                <View
+                  style={[
+                    styles.scFoot,
+                    { borderTopColor: isDark ? tf.line : 'rgba(230,221,206,0.55)' },
+                  ]}>
+                  <View
+                    style={[
+                      styles.scFootRing,
+                      {
+                        borderColor: isDark ? tf.line2 : '#E4E1D5',
+                        borderTopColor: tf.frog,
+                        borderRightColor: tf.frog,
+                      },
+                    ]}
+                  />
+                  <Text style={[styles.scFootText, { color: tf.faint }]} numberOfLines={1}>
+                    本窗 {frogPlaceStats.inGrid}/{Math.max(frogPlaceStats.total, frogPlaceStats.inGrid)}{' '}
+                    已入格
+                  </Text>
+                  <Pressable
+                    onPress={() => onCopyLastWeek()}
+                    disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="复制上周"
+                    style={({ pressed }) => [
+                      styles.scFootGrow,
+                      {
+                        opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
+                          ? 0.4
+                          : pressed
+                            ? 0.7
+                            : 1,
+                      },
+                    ]}>
+                    <MaterialIcons name="auto-awesome" size={11} color={tf.muted} />
+                    <Text style={[styles.scFootGrowText, { color: tf.muted }]}>复制上周</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : null}
           </>
@@ -2689,69 +3183,101 @@ export function WeeklyFrogSchedule({
         visible={!!detail}
         onClose={() => setDetail(null)}
         placement={detail?.placement ?? null}
+        virtualSlot={detail?.virtualSlot ?? null}
+        surface={detail?.surface ?? 'frog'}
         axis={view?.axis ?? { startMinutes: 480, endMinutes: 1320, slotHours: 2, breaks: [] }}
         subject={detail?.subject ?? null}
         editable={
           !!detail &&
-          dayEditable(ymdForWeekday(detail.placement.weekStartYmd, detail.placement.weekday), logicalTodayYmd)
+          dayEditable(
+            detail.virtualSlot?.assignYmd ??
+              (detail.placement
+                ? ymdForWeekday(detail.placement.weekStartYmd, detail.placement.weekday)
+                : logicalTodayYmd),
+            logicalTodayYmd,
+          )
         }
         onToggleDone={() => {
-          if (!detail || !onToggleDone) return;
-          const assignYmd = ymdForWeekday(detail.placement.weekStartYmd, detail.placement.weekday);
-          const payload = {
-            kind: detail.placement.subjectKind,
-            id: detail.placement.subjectId,
-            assignYmd,
-          } as const;
+          if (!detail) return;
           // 先关详情 Modal，再切换完成态，避免 Android Modal 卸掉时 LayoutAnimation 卡死触摸
+          const snapshot = detail;
           setDetail(null);
-          runAfterUiSettles(() => onToggleDone(payload));
-        }}
-        onRemoveSegment={() => {
-          if (!detail) return;
-          void (async () => {
-            try {
-              await removePlacementSegment(detail.placement.id, logicalTodayYmd);
-              setDetail(null);
-              await reload(loadDayYmds, { silent: true });
-              onChanged?.();
-            } catch (err) {
-              toast.error(toUserMessage(err, '移除失败，请稍后重试'));
+          runAfterUiSettles(() => {
+            if (snapshot.surface === 'habit' && snapshot.habitId) {
+              if (snapshot.subject.done) onHabitUndo?.(snapshot.habitId);
+              else onHabitCheckIn?.(snapshot.habitId);
+              return;
             }
-          })();
+            if (!onToggleDone) return;
+            const assignYmd =
+              snapshot.virtualSlot?.assignYmd ??
+              (snapshot.placement
+                ? ymdForWeekday(snapshot.placement.weekStartYmd, snapshot.placement.weekday)
+                : logicalTodayYmd);
+            onToggleDone({
+              kind: snapshot.placement?.subjectKind ?? snapshot.subject.kind,
+              id: snapshot.placement?.subjectId ?? snapshot.subject.id,
+              assignYmd,
+            });
+          });
         }}
-        onCancelAssign={() => {
-          if (!detail) return;
-          void (async () => {
-            try {
-              const assignYmd = ymdForWeekday(
-                detail.placement.weekStartYmd,
-                detail.placement.weekday,
-              );
-              await cancelAssignForPlacementDay(detail.placement.id, logicalTodayYmd);
-              setDetail(null);
-              await reload(loadDayYmds, { silent: true });
-              onChanged?.({
-                kind: detail.placement.subjectKind,
-                id: detail.placement.subjectId,
-                assignYmd,
-                action: 'unassign',
-              });
-            } catch (err) {
-              toast.error(toUserMessage(err, '取消失败，请稍后重试'));
-            }
-          })();
-        }}
-        onReassignTime={
-          detail && (detail.placement.orphaned || detail.placement.startSlotIndex == null)
-            ? () => startReassignTime(detail.placement, detail.subject)
+        onRemoveSegment={
+          detail?.surface === 'frog' && detail.placement
+            ? () => {
+                const placementId = detail.placement!.id;
+                void (async () => {
+                  try {
+                    await removePlacementSegment(placementId, logicalTodayYmd);
+                    setDetail(null);
+                    await reload(loadDayYmds, { silent: true });
+                    onChanged?.();
+                  } catch (err) {
+                    toast.error(toUserMessage(err, '移除失败，请稍后重试'));
+                  }
+                })();
+              }
             : undefined
         }
-        onEdit={() => {
-          if (!detail) return;
-          onOpenSubject?.(detail.placement.subjectKind, detail.placement.subjectId);
-          setDetail(null);
-        }}
+        onCancelAssign={
+          detail?.surface === 'frog' && detail.placement
+            ? () => {
+                const p = detail.placement!;
+                void (async () => {
+                  try {
+                    const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+                    await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
+                    setDetail(null);
+                    await reload(loadDayYmds, { silent: true });
+                    onChanged?.({
+                      kind: p.subjectKind,
+                      id: p.subjectId,
+                      assignYmd,
+                      action: 'unassign',
+                    });
+                  } catch (err) {
+                    toast.error(toUserMessage(err, '取消失败，请稍后重试'));
+                  }
+                })();
+              }
+            : undefined
+        }
+        onReassignTime={
+          detail?.surface === 'frog' && detail.placement
+            ? () => startReassignTime(detail.placement!, detail.subject)
+            : undefined
+        }
+        onEdit={
+          detail?.surface === 'habit'
+            ? undefined
+            : detail
+              ? () => {
+                  const kind = detail.placement?.subjectKind ?? detail.subject.kind;
+                  const id = detail.placement?.subjectId ?? detail.subject.id;
+                  onOpenSubject?.(kind, id);
+                  setDetail(null);
+                }
+              : undefined
+        }
       />
 
       <Modal
@@ -2892,6 +3418,46 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xl,
     borderWidth: StyleSheet.hairlineWidth,
   },
+  scHead: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  scHeadTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.1,
+  },
+  scHeadCnt: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  zseg: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    height: 28,
+    padding: 2,
+    borderRadius: 8,
+    gap: 1,
+  },
+  zsegBtn: {
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  copyBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   pendingBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2902,6 +3468,16 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     marginBottom: Spacing.lg,
   },
+  preselectHint: {
+    marginHorizontal: Spacing['2xl'],
+    marginTop: 8,
+    marginBottom: 6,
+    minHeight: 32,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 6,
+  },
   pendingIconWrap: {
     width: 32,
     height: 32,
@@ -2910,8 +3486,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pendingClose: {
-    width: Layout.minTouchTarget,
-    height: Layout.minTouchTarget,
+    width: 28,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3092,71 +3668,70 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  weekNav: {
+  weekNavCompact: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.lg,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.xs,
-    paddingVertical: Spacing.xs,
-  },
-  navBtn: {
-    width: Layout.minTouchTarget,
-    height: Layout.minTouchTarget,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: 4,
+    paddingHorizontal: 2,
   },
   weekTitleHit: { alignItems: 'center', gap: 2, flex: 1 },
-  weekTitle: { fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
-  weekSub: { fontSize: 12, fontWeight: '600' },
+  weekSub: { fontSize: 11, fontWeight: '600' },
   gridFrame: {
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
+  },
+  scFoot: {
+    height: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  scFootRing: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2.5,
+  },
+  scFootText: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  scFootGrow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  scFootGrowText: {
+    fontSize: 10,
+    fontWeight: '600',
   },
   gridWrap: { flexDirection: 'row' },
   gridHeaderChrome: {
     zIndex: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   timeGutter: {
     borderRightWidth: StyleSheet.hairlineWidth,
   },
   timeGutterCorner: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  timeGutterCornerLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.4,
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
   },
   timeCell: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.xs,
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 0,
+    paddingRight: 3,
   },
-  timeLabelBlock: {
-    gap: 2,
-    alignItems: 'center',
-    width: '100%',
-  },
-  timeRangeText: {
-    fontSize: 11,
-    fontWeight: '700',
+  timeHourText: {
+    fontSize: 9,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
     letterSpacing: -0.2,
-    textAlign: 'center',
-  },
-  timeSlotNote: {
-    fontSize: 10,
-    fontWeight: '700',
-    lineHeight: 12,
-    letterSpacing: 0.1,
-    textAlign: 'center',
+    textAlign: 'right',
+    transform: [{ translateY: -2 }],
   },
   noteKav: {
     flex: 1,
@@ -3208,52 +3783,178 @@ const styles = StyleSheet.create({
   },
   dayHeader: {
     alignItems: 'center',
-    justifyContent: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 2,
+    justifyContent: 'flex-end',
+    paddingBottom: 3,
   },
-  dayHeaderWeekday: {
-    fontSize: 11,
-    fontWeight: '700',
+  dayHeaderLabel: {
+    fontSize: 10,
     letterSpacing: 0.3,
-  },
-  dayHeaderDatePill: {
-    minWidth: 26,
-    height: 26,
-    borderRadius: 13,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  dayHeaderDate: {
-    fontSize: 14,
-    fontWeight: '800',
     fontVariant: ['tabular-nums'],
   },
   slotCell: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderRightWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
     padding: 2,
     overflow: 'visible',
   },
   block: {
     position: 'absolute',
-    left: 2,
+    left: 1,
     right: 2,
     top: 2,
-    borderRadius: Radius.xs,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 7,
+    borderWidth: 1,
     overflow: 'hidden',
     zIndex: 2,
   },
   blockBody: {
     flex: 1,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
+    paddingHorizontal: 4,
+    paddingVertical: 3,
+    paddingRight: 12,
     justifyContent: 'flex-start',
   },
-  blockTitle: { fontWeight: '700' },
-  blockCheck: { position: 'absolute', right: 4, bottom: 2 },
+  blockBodyHabit: {
+    paddingLeft: 10,
+  },
+  blockTitle: {
+    fontWeight: '700',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  blockTitleCompact: {
+    fontSize: 9,
+    lineHeight: 11,
+  },
+  blockBodyCompact: {
+    paddingVertical: 1,
+    paddingHorizontal: 3,
+    paddingRight: 10,
+  },
+  blockMeta: {
+    fontSize: 9,
+    lineHeight: 12,
+    marginTop: 1,
+    fontWeight: '500',
+  },
+  /** 设计稿 `.blk.note`：空格虚线备注 */
+  noteBlock: {
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    backgroundColor: 'transparent',
+  },
+  noteBlockText: {
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 12,
+  },
+  blockCk: {
+    position: 'absolute',
+    right: 3,
+    top: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  blockFrogDot: {
+    position: 'absolute',
+    left: 4,
+    top: 6,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    zIndex: 1,
+  },
+  dlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 41,
+  },
+  dlTime: {
+    width: 36,
+    alignItems: 'flex-end',
+    paddingTop: 2,
+  },
+  dlTimeStart: {
+    fontSize: 11,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  dlTimeDur: {
+    fontSize: 9,
+    fontWeight: '500',
+    marginTop: 1,
+    fontVariant: ['tabular-nums'],
+  },
+  dlBlock: {
+    flex: 1,
+    borderRadius: 9,
+    borderWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingRight: 22,
+    minHeight: 36,
+    justifyContent: 'center',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  dlBlockDense: {
+    minHeight: 30,
+    paddingVertical: 4,
+  },
+  dlBlockTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
+  dlBlockMeta: {
+    fontSize: 10,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  dlBlockCk: {
+    position: 'absolute',
+    right: 6,
+    top: 6,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  todayFoot: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: 6,
+    paddingBottom: 2,
+    paddingHorizontal: 2,
+  },
+  todayFootDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+  },
+  todayFootText: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  todayFootMini: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  todayFootMiniDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#DDE5D4',
+  },
   emptyHint: {
     fontSize: 11,
     fontWeight: '600',

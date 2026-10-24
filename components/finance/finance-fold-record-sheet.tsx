@@ -1435,8 +1435,10 @@ export function FinanceFoldRecordFab({
           style={({ pressed }) => [
             styles.fab,
             {
-              backgroundColor: ff.pine,
-              shadowColor: ff.shadow,
+              backgroundColor: fabBg,
+              borderColor: fabBorder,
+              shadowColor: fabShadow,
+              shadowOpacity: isDark ? 0.45 : 0.28,
               transform: [{ scale: pressed ? 0.97 : 1 }],
             },
           ]}
@@ -1448,18 +1450,19 @@ export function FinanceFoldRecordFab({
             style={[
               styles.fabShimmer,
               {
+                backgroundColor: fabShimmerBg,
                 transform: [{ translateX: shimmerX }, { skewX: '-18deg' }],
               },
             ]}
           />
-          <View style={styles.fabPlus}>
+          <View style={[styles.fabPlus, { backgroundColor: fabPlusBg }]}>
             {busy ? (
-              <ActivityIndicator size="small" color={ff.onPine} />
+              <ActivityIndicator size="small" color={fabFg} />
             ) : (
-              <MaterialIcons name="add" size={18} color={ff.onPine} />
+              <MaterialIcons name="add" size={18} color={fabFg} />
             )}
           </View>
-          <Text style={[styles.fabText, { color: ff.onPine }]}>记一笔</Text>
+          <Text style={[styles.fabText, { color: fabFg }]}>记一笔</Text>
         </Pressable>
       </Animated.View>
     </Animated.View>

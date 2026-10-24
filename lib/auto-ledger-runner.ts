@@ -1,4 +1,4 @@
-import { makeTimestampEntityId } from '@/lib/entity-id';
+﻿import { makeTimestampEntityId } from '@/lib/entity-id';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import { readClipboardImageForAutoLedger } from '@/lib/auto-ledger-clipboard';
 import {
@@ -66,7 +66,7 @@ const AUTO_LEDGER_NOT_BILL_MESSAGE =
   '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 
 const CATEGORY_COLORS = {
-  primary: '#0058be',
+  primary: '#1E3932',
   secondary: '#7c3aed',
   tertiary: '#0d9488',
   subtle: '#94a3b8',
