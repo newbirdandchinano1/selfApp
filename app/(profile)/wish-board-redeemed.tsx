@@ -135,7 +135,7 @@ export default function WishBoardRedeemedScreen() {
 
       <View style={[styles.cta, { paddingBottom: Math.max(insets.bottom, 16) + 4 }]}>
         <PrimaryButton
-          label="查看兑换足迹"
+          label="查看积分足迹"
           onPress={() => router.replace('/wish-board-footprints')}
         />
         <Pressable

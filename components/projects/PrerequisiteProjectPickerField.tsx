@@ -2,9 +2,9 @@ import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { validatePrerequisiteSelection } from '@/lib/repositories/projects/project-prerequisites';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback, useMemo, useState } from 'react';
+import { Alert } from '@/lib/app-feedback';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,

@@ -10,7 +10,7 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { getMinTouchTarget, Spacing } from '@/constants/design-tokens';
 import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   getLifeBetDerivedStats,
@@ -44,7 +44,6 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-rou
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Platform,
   Pressable,

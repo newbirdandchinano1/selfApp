@@ -7,8 +7,8 @@ import {
 } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { getIsLongTermFrog, isFrogDoneForToday } from '@/lib/long-term-task';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
+import { isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -17,6 +17,7 @@ import {
   computeScheduleSlotLayout,
   formatMinuteRangeLabel,
   formatMinutesAsHm,
+  getSlotCount,
   listWorkSlots,
   maxSpanFromSlot,
   placementEndMinutes,
@@ -70,7 +71,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Easing,
   Keyboard,
@@ -357,41 +357,6 @@ function runAfterUiSettles(action: () => void) {
   });
 }
 
-function confirmTogglePlacementDone(
-  subject: ScheduleSubjectInfo,
-  assignYmd: string,
-  onToggleDone: NonNullable<Props['onToggleDone']>,
-) {
-  const titleLabel = (subject.title ?? '').trim() || '该青蛙';
-  const run = () =>
-    runAfterUiSettles(() =>
-      onToggleDone({
-        kind: subject.kind,
-        id: subject.id,
-        assignYmd,
-      }),
-    );
-
-  // 长期未完成：沿用既有多选项确认（完成任务 / 仅结束当日会话）
-  if (!subject.done && getIsLongTermFrog(subject.extraData)) {
-    run();
-    return;
-  }
-
-  if (subject.done) {
-    Alert.alert('取消完成？', `确定将「${titleLabel}」标记为未完成吗？`, [
-      { text: '取消', style: 'cancel' },
-      { text: '取消完成', onPress: run },
-    ]);
-    return;
-  }
-
-  Alert.alert('确认完成？', `确定将「${titleLabel}」标记为已完成吗？`, [
-    { text: '取消', style: 'cancel' },
-    { text: '完成', onPress: run },
-  ]);
-}
-
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
   return isEditableScheduleDay(ymd, logicalTodayYmd);
 }
@@ -422,7 +387,51 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
     borderStyle: 'solid' | 'dashed';
     titleColor: string;
     metaColor: string;
+    /** 完成块用浅底，勾选图标用深色 */
+    doneOnLight: boolean;
   } {
+    // 已完成：整体退饱和 / 浅底，和未完成的实色块一眼可分（不止删除线）
+    if (opts.allDone) {
+      if (kind === 'habit') {
+        return {
+          backgroundColor: opts.isDark ? 'rgba(180,190,170,0.16)' : 'rgba(218,224,212,0.78)',
+          borderColor: opts.isDark ? 'rgba(150,160,140,0.4)' : '#C2C9BB',
+          borderStyle: 'dashed',
+          titleColor: opts.isDark ? 'rgba(168,175,166,0.92)' : '#8A9388',
+          metaColor: opts.isDark ? 'rgba(168,175,166,0.55)' : 'rgba(138,147,136,0.72)',
+          doneOnLight: true,
+        };
+      }
+      if (kind === 'todo') {
+        return {
+          backgroundColor: opts.isDark ? 'rgba(200,190,170,0.16)' : 'rgba(232,226,214,0.82)',
+          borderColor: opts.isDark ? 'rgba(180,170,150,0.4)' : '#D0C8B6',
+          borderStyle: 'solid',
+          titleColor: opts.isDark ? 'rgba(180,170,150,0.9)' : '#9A9080',
+          metaColor: opts.isDark ? 'rgba(180,170,150,0.55)' : 'rgba(154,144,128,0.72)',
+          doneOnLight: true,
+        };
+      }
+      if (kind === 'proj') {
+        return {
+          backgroundColor: opts.isDark ? 'rgba(180,188,176,0.16)' : 'rgba(220,224,216,0.82)',
+          borderColor: opts.isDark ? 'rgba(160,168,155,0.4)' : '#C5CBBE',
+          borderStyle: 'solid',
+          titleColor: opts.isDark ? 'rgba(168,175,166,0.9)' : '#8A9388',
+          metaColor: opts.isDark ? 'rgba(168,175,166,0.55)' : 'rgba(138,147,136,0.72)',
+          doneOnLight: true,
+        };
+      }
+      // frog 完成：浅百合绿底，对比未完成的深绿实色块
+      return {
+        backgroundColor: opts.isDark ? 'rgba(201,217,163,0.22)' : 'rgba(201,217,163,0.78)',
+        borderColor: opts.isDark ? 'rgba(127,160,111,0.4)' : '#A8C08E',
+        borderStyle: 'solid',
+        titleColor: opts.isDark ? 'rgba(197,211,188,0.88)' : '#4B6048',
+        metaColor: opts.isDark ? 'rgba(197,211,188,0.55)' : 'rgba(75,96,72,0.68)',
+        doneOnLight: true,
+      };
+    }
     if (kind === 'habit') {
       // `.blk.habit`
       return {
@@ -431,6 +440,7 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
         borderStyle: 'dashed',
         titleColor: opts.isDark ? '#C5D6B4' : '#4C653F',
         metaColor: opts.isDark ? 'rgba(197,214,180,0.7)' : 'rgba(76,101,63,0.72)',
+        doneOnLight: false,
       };
     }
     if (kind === 'todo') {
@@ -441,6 +451,7 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
         borderStyle: 'solid',
         titleColor: opts.isDark ? '#E2C896' : '#7A5B2D',
         metaColor: opts.isDark ? 'rgba(226,200,150,0.7)' : 'rgba(122,91,45,0.72)',
+        doneOnLight: false,
       };
     }
     if (kind === 'proj') {
@@ -451,16 +462,18 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
         borderStyle: 'solid',
         titleColor: opts.isDark ? '#C5D3BC' : '#4B6048',
         metaColor: opts.isDark ? 'rgba(197,211,188,0.7)' : 'rgba(75,96,72,0.72)',
+        doneOnLight: false,
       };
     }
-    // `.blk.frog` / `.blk.frog.done`（取渐变主色，避免旧版 #2A4C3C 过重）
-    if (opts.isPast || opts.allDone) {
+    // `.blk.frog`：过去未完成略降饱和，仍保持深绿实色（与「已完成浅底」区分）
+    if (opts.isPast) {
       return {
         backgroundColor: opts.isDark ? 'rgba(75,106,81,0.55)' : '#4B6A51',
         borderColor: opts.isDark ? 'rgba(127,160,111,0.28)' : 'rgba(55,82,61,0.35)',
         borderStyle: 'solid',
         titleColor: opts.isDark ? 'rgba(244,242,227,0.85)' : '#F4F2E3',
         metaColor: opts.isDark ? 'rgba(244,242,227,0.55)' : 'rgba(244,242,227,0.72)',
+        doneOnLight: false,
       };
     }
     return {
@@ -469,6 +482,7 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
       borderStyle: 'solid',
       titleColor: '#F5F3E7',
       metaColor: 'rgba(245,243,231,0.72)',
+      doneOnLight: false,
     };
   }
 
@@ -1203,12 +1217,17 @@ export function WeeklyFrogSchedule({
 
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
+    const daySlots = getSlotCount(view.axis);
+    const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
+    const spanSlots = result.allDay
+      ? Math.max(1, daySlots)
+      : result.spanSlots;
     if (placeTarget.rematerializePlacementId) {
       await rematerializeOrphanedPlacement({
         placementId: placeTarget.rematerializePlacementId,
         assignYmd: placeTarget.assignYmd,
-        startSlotIndex: placeTarget.startSlotIndex,
-        spanSlots: result.spanSlots,
+        startSlotIndex,
+        spanSlots,
         logicalTodayYmd,
       });
       setPlaceTarget(null);
@@ -1220,8 +1239,8 @@ export function WeeklyFrogSchedule({
     const row = await placeFrogOnSchedule({
       weekStartYmd: placeTarget.weekStartYmd,
       weekday: placeTarget.weekday,
-      startSlotIndex: placeTarget.startSlotIndex,
-      spanSlots: result.spanSlots,
+      startSlotIndex,
+      spanSlots,
       subjectKind: result.kind,
       subjectId: result.id,
       logicalTodayYmd,
@@ -1362,6 +1381,20 @@ export function WeeklyFrogSchedule({
     [openVirtualTaskDetail],
   );
 
+  const openDetail = React.useCallback(
+    (p: SchedulePlacementRow) => {
+      const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+      const subject = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      if (!subject) return;
+      const surface: ScheduleDetailSurface =
+        blockKindForPlacement(p, subjects) === 'todo' ? 'todo' : 'frog';
+      setCellList(null);
+      setOrphanListOpen(false);
+      setDetail({ surface, placement: p, subject, virtualSlot: null });
+    },
+    [subjects],
+  );
+
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
@@ -1410,15 +1443,9 @@ export function WeeklyFrogSchedule({
       return;
     }
     const display = pickDisplayPlacement(unique, subjects, assignYmd);
-    if (!display?.primary.subjectKind || !onToggleDone) return;
-    const subject = resolveSubject(
-      display.primary.subjectKind,
-      display.primary.subjectId,
-      subjects,
-      assignYmd,
-    );
-    if (!subject) return;
-    confirmTogglePlacementDone(subject, assignYmd, onToggleDone);
+    if (!display?.primary) return;
+    // 与习惯/待办虚拟块一致：进格内详情 Sheet，完成确认用设计稿弹窗，不用系统 Alert
+    openDetail(display.primary);
   };
 
   const handleCellLongPress = (assignYmd: string, slotIndex: number) => {
@@ -1436,15 +1463,6 @@ export function WeeklyFrogSchedule({
       return;
     }
     openCellList(assignYmd, slotIndex, list, habits, vTasks, editable);
-  };
-
-  const openDetail = (p: SchedulePlacementRow) => {
-    const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
-    const subject = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-    if (!subject) return;
-    setCellList(null);
-    setOrphanListOpen(false);
-    setDetail({ surface: 'frog', placement: p, subject, virtualSlot: null });
   };
 
   const onCopyLastWeek = () => {
@@ -1954,7 +1972,7 @@ export function WeeklyFrogSchedule({
                       textDecorationLine: titleDone
                         ? ('line-through' as const)
                         : ('none' as const),
-                      opacity: titleDone && blockKind === 'frog' ? 0.88 : 1,
+                      opacity: titleDone ? 0.78 : 1,
                     },
                   ];
                   const fallbackTitle =
@@ -1965,11 +1983,11 @@ export function WeeklyFrogSchedule({
                   const startHm = formatMinutesAsHm(row.startMinutes);
                   const endHm = formatMinutesAsHm(row.endMinutes);
                   const metaLabel = primaryHabit
-                    ? `${startHm} · 习惯`
+                    ? `${startHm} · 习惯${allDone ? ' · 已完成' : ''}`
                     : primaryVirtualTask || blockKind === 'todo'
-                      ? `${startHm} · 待办`
+                      ? `${startHm} · 待办${allDone ? ' · 已完成' : ''}`
                       : display?.primary.subjectKind === 'project'
-                        ? `${startHm}–${endHm} · 项目`
+                        ? `${startHm}–${endHm} · 项目${allDone ? ' · 已完成' : ''}`
                         : `${startHm}–${endHm}${allDone ? ' · 已完成' : ' · 进行中'}`;
                   const blockKey =
                     display?.primary.id ??
@@ -1977,7 +1995,21 @@ export function WeeklyFrogSchedule({
                       ? `habit-${primaryHabit.habitId}`
                       : `vtask-${primaryVirtualTask?.taskId}`);
                   const riseIndex = bloomBlockIndex.current++;
-                  const drawCk = showCk && (blockKind === 'frog' || blockKind === 'todo');
+                  const drawCk =
+                    showCk &&
+                    (allDone || blockKind === 'frog' || blockKind === 'todo' || blockKind === 'proj');
+                  const ckFill = allDone
+                    ? fill.doneOnLight
+                      ? 'rgba(255,255,255,0.92)'
+                      : blockKind === 'frog'
+                        ? '#DDE9CB'
+                        : fill.titleColor
+                    : 'transparent';
+                  const ckIconColor = fill.doneOnLight
+                    ? primary
+                    : blockKind === 'frog'
+                      ? '#35604A'
+                      : '#fff';
                   return (
                     <FoldRiseIn
                       key={blockKey}
@@ -1996,6 +2028,7 @@ export function WeeklyFrogSchedule({
                             backgroundColor: fill.backgroundColor,
                             borderColor: fill.borderColor,
                             borderStyle: fill.borderStyle,
+                            opacity: allDone ? 0.88 : 1,
                             top: 0,
                             left: 0,
                             right: 0,
@@ -2004,10 +2037,10 @@ export function WeeklyFrogSchedule({
                         <View
                           style={[
                             styles.blockBody,
-                            blockKind === 'habit' && styles.blockBodyHabit,
+                            blockKind === 'habit' && !allDone && styles.blockBodyHabit,
                             rowH < 22 && styles.blockBodyCompact,
                           ]}>
-                          {blockKind === 'habit' && showTitle ? (
+                          {blockKind === 'habit' && showTitle && !allDone ? (
                             <View style={[styles.blockFrogDot, { backgroundColor: '#87A566' }]} />
                           ) : null}
                           {showTitle ? (
@@ -2034,17 +2067,23 @@ export function WeeklyFrogSchedule({
                             <View
                               style={[
                                 styles.blockCk,
+                                allDone && styles.blockCkDone,
                                 {
-                                  borderColor: fill.titleColor,
-                                  backgroundColor: allDone
-                                    ? blockKind === 'frog'
-                                      ? '#DDE9CB'
+                                  borderColor: allDone
+                                    ? fill.doneOnLight
+                                      ? 'rgba(255,255,255,0.92)'
                                       : fill.titleColor
-                                    : 'transparent',
+                                    : fill.titleColor,
+                                  backgroundColor: ckFill,
                                   opacity: allDone ? 1 : 0.55,
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
                                 },
-                              ]}
-                            />
+                              ]}>
+                              {allDone ? (
+                                <MaterialIcons name="check" size={7} color={ckIconColor} />
+                              ) : null}
+                            </View>
                           ) : null}
                         </View>
                       </View>
@@ -2419,11 +2458,17 @@ export function WeeklyFrogSchedule({
                 style={[
                   styles.dlBlockCk,
                   {
-                    borderColor: fill.titleColor,
-                    backgroundColor: item.done
-                      ? kind === 'frog'
-                        ? '#DDE9CB'
+                    borderColor: item.done
+                      ? fill.doneOnLight
+                        ? 'rgba(255,255,255,0.92)'
                         : fill.titleColor
+                      : fill.titleColor,
+                    backgroundColor: item.done
+                      ? fill.doneOnLight
+                        ? 'rgba(255,255,255,0.92)'
+                        : kind === 'frog'
+                          ? '#DDE9CB'
+                          : fill.titleColor
                       : 'transparent',
                     opacity: item.done ? 1 : 0.5,
                     alignItems: 'center',
@@ -2434,7 +2479,13 @@ export function WeeklyFrogSchedule({
                   <MaterialIcons
                     name="check"
                     size={8}
-                    color={kind === 'frog' ? tf.pond : '#fff'}
+                    color={
+                      fill.doneOnLight
+                        ? primary
+                        : kind === 'frog'
+                          ? '#35604A'
+                          : '#fff'
+                    }
                   />
                 ) : null}
               </View>
@@ -2889,6 +2940,7 @@ export function WeeklyFrogSchedule({
         }}
         assignYmd={placeTarget?.assignYmd ?? logicalTodayYmd}
         maxSpan={placeTarget?.maxSpan ?? 1}
+        daySlotCount={view ? getSlotCount(view.axis) : placeTarget?.maxSpan ?? 1}
         lockedProjectIds={lockedProjectIds}
         preselected={
           placeTarget?.rematerializePreselected ?? pendingPlace ?? null
@@ -3222,7 +3274,7 @@ export function WeeklyFrogSchedule({
           });
         }}
         onRemoveSegment={
-          detail?.surface === 'frog' && detail.placement
+          detail?.placement
             ? () => {
                 const placementId = detail.placement!.id;
                 void (async () => {
@@ -3239,7 +3291,7 @@ export function WeeklyFrogSchedule({
             : undefined
         }
         onCancelAssign={
-          detail?.surface === 'frog' && detail.placement
+          detail?.placement
             ? () => {
                 const p = detail.placement!;
                 void (async () => {
@@ -3262,7 +3314,7 @@ export function WeeklyFrogSchedule({
             : undefined
         }
         onReassignTime={
-          detail?.surface === 'frog' && detail.placement
+          detail?.placement
             ? () => startReassignTime(detail.placement!, detail.subject)
             : undefined
         }
@@ -3860,6 +3912,12 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 4,
     borderWidth: 1,
+  },
+  /** 完成态勾选略放大，浅底上更易辨认 */
+  blockCkDone: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   blockFrogDot: {
     position: 'absolute',

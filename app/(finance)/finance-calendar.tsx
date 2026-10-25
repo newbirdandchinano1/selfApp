@@ -6,11 +6,13 @@ import {
 } from '@/components/review/fold-motion';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { formatYmd } from '@/lib/date';
 import { fetchFinanceDailySummaries, fetchFinanceTransactionsRange } from '@/lib/finance-page-api';
 import { runPageApiLoad } from '@/lib/page-api-session';
 import type { FinanceDailySummaryRow, FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
+import { refreshYmdFocusAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
@@ -514,18 +516,36 @@ export default function FinanceCalendarScreen() {
   const incomeDot = '#6AA083';
   const expenseDot = '#D17A5D';
 
-  const today = React.useMemo(() => new Date(), []);
+  const { logicalTodayYmd, logicalTodayDate: today } = usePageDayBoundary('finance');
   const todayMonthStart = React.useMemo(() => monthStart(today), [today]);
   const [monthOffset, setMonthOffset] = React.useState(0);
   const [visibleMonthOffset, setVisibleMonthOffset] = React.useState(0);
-  const [selectedDate, setSelectedDate] = React.useState<Date | null>(today);
+  const [selectedDate, setSelectedDate] = React.useState<Date | null>(null);
   const [sheetVisible, setSheetVisible] = React.useState(false);
   const [sheetSnap, setSheetSnap] = React.useState<'half' | 'full'>('half');
 
   const [pickerVisible, setPickerVisible] = React.useState(false);
-  const [pickYear, setPickYear] = React.useState(today.getFullYear());
-  const [pickMonth, setPickMonth] = React.useState(today.getMonth() + 1);
-  const [pickDay, setPickDay] = React.useState(today.getDate());
+  const [pickYear, setPickYear] = React.useState(() => today.getFullYear());
+  const [pickMonth, setPickMonth] = React.useState(() => today.getMonth() + 1);
+  const [pickDay, setPickDay] = React.useState(() => today.getDate());
+
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    setSelectedDate((sel) => {
+      const selYmd = formatYmd(sel ?? today);
+      const nextYmd = refreshYmdFocusAfterLogicalDayChange(selYmd, logicalTodayYmd, prev);
+      if (nextYmd === selYmd && sel != null) return sel;
+      return today;
+    });
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
+    setPickYear(today.getFullYear());
+    setPickMonth(today.getMonth() + 1);
+    setPickDay(today.getDate());
+  }, [logicalTodayYmd, today]);
 
   const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - 32 - 22));
   const pagerRef = React.useRef<FlatList<number>>(null);
@@ -807,14 +827,13 @@ export default function FinanceCalendarScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      const now = new Date();
-      setSelectedDate(now);
-      setMonthOffset(getMonthDiff(todayMonthStart, monthStart(now)));
-      setVisibleMonthOffset(getMonthDiff(todayMonthStart, monthStart(now)));
-      setPickYear(now.getFullYear());
-      setPickMonth(now.getMonth() + 1);
-      setPickDay(now.getDate());
-    }, [todayMonthStart]),
+      setSelectedDate(today);
+      setMonthOffset(0);
+      setVisibleMonthOffset(0);
+      setPickYear(today.getFullYear());
+      setPickMonth(today.getMonth() + 1);
+      setPickDay(today.getDate());
+    }, [today]),
   );
 
   const motionOn = foldAnimate;

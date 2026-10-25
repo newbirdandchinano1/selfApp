@@ -6,7 +6,8 @@ import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/re
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
-import { toast } from '@/lib/app-feedback';
+import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import { toast, Alert } from '@/lib/app-feedback';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
 import { addDays } from '@/lib/date';
 import {
@@ -21,7 +22,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   FlatList,
   Modal,
@@ -362,8 +362,9 @@ export default function SchedulePickerScreen() {
     [isDark, tf],
   );
 
-  const today = React.useMemo(() => new Date(), []);
-  const todayStart = React.useMemo(() => startOfDay(today), [today]);
+  const { logicalTodayDate } = usePageDayBoundary('tasks');
+  const today = React.useMemo(() => startOfDay(logicalTodayDate), [logicalTodayDate]);
+  const todayStart = today;
   const dateLimit = React.useMemo(
     () => parseDateLimit(typeof params.dateLimit === 'string' ? params.dateLimit : undefined),
     [params.dateLimit],

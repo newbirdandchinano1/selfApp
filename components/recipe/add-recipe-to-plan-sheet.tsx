@@ -1,9 +1,9 @@
+import { useCalendarToday } from '@/hooks/use-calendar-today';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   addRecipePlanEntry,
-  formatLocalYmd,
   MEAL_SLOTS,
   mealSlotLabel,
   parseLocalYmd,
@@ -15,7 +15,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Dimensions,
   Easing,
@@ -85,9 +84,9 @@ export function AddRecipeToPlanSheet({
   const tokens = (colorScheme ?? 'light') === 'dark' ? PaletteDark : PaletteLight;
   const reduceMotion = useReducedMotion();
 
-  const today = useMemo(() => formatLocalYmd(new Date()), []);
-  const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
-  const [viewMonth, setViewMonth] = useState(() => new Date().getMonth());
+  const { calendarTodayYmd: today, calendarTodayDate } = useCalendarToday();
+  const [viewYear, setViewYear] = useState(() => calendarTodayDate.getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => calendarTodayDate.getMonth());
   const [selectedYmd, setSelectedYmd] = useState(today);
   const [slot, setSlot] = useState<MealSlot>('lunch');
   const [note, setNote] = useState('');
@@ -100,14 +99,13 @@ export function AddRecipeToPlanSheet({
   onCloseRef.current = onClose;
 
   const resetForm = useCallback(() => {
-    const now = new Date();
-    setViewYear(now.getFullYear());
-    setViewMonth(now.getMonth());
-    setSelectedYmd(formatLocalYmd(now));
+    setViewYear(calendarTodayDate.getFullYear());
+    setViewMonth(calendarTodayDate.getMonth());
+    setSelectedYmd(today);
     setSlot('lunch');
     setNote('');
     setSaving(false);
-  }, []);
+  }, [calendarTodayDate, today]);
 
   const playOpen = useCallback(() => {
     if (reduceMotion) {

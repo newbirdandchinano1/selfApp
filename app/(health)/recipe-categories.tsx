@@ -1,6 +1,6 @@
 import { RecipeCategoryIcon } from '@/components/recipe/recipe-category-icon';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchProfileRecipes } from '@/lib/profile-page-api';
 import {
   recipeCategoryIconsByGroup,
@@ -32,7 +32,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,

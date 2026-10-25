@@ -26,6 +26,7 @@ import {
   type TasksCalendarProjectItem,
   type TasksCalendarTaskItem,
 } from '@/lib/tasks-calendar-data';
+import { refreshYmdFocusAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
@@ -576,6 +577,20 @@ export default function TasksCalendarScreen() {
     if (!m) return today;
     return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   }, [selectedYmd, today]);
+
+  const prevLogicalTodayYmdRef = React.useRef(logicalTodayYmd);
+  React.useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    setSelectedYmdOverride((override) => {
+      if (override == null) return null;
+      const next = refreshYmdFocusAfterLogicalDayChange(override, logicalTodayYmd, prev);
+      return next === logicalTodayYmd ? null : next;
+    });
+    setMonthOffset(0);
+    setVisibleMonthOffset(0);
+  }, [logicalTodayYmd]);
 
   const { monthGrid, selectedSummary, detailLoading, cacheVersion, getMonthPageData, refreshControl } =
     useTasksCalendarSummaries({

@@ -14,9 +14,16 @@ import type { CashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
 import type { CashFlowState } from '@/lib/repositories/cash-flow/cash-flow.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Alert, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 
+import { Alert } from '@/lib/app-feedback';
 function formatMoney(value: number) {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }

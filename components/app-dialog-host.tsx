@@ -14,6 +14,7 @@ import {
 import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
 import {
   resolveAppDialog,
+  resolveAppDialogAction,
   subscribeAppDialog,
   type AppDialogKind,
   type AppDialogPayload,
@@ -23,6 +24,7 @@ import {
   Animated,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -121,8 +123,16 @@ export function AppDialogHost() {
     outputRange: [0.98, 1],
   });
 
-  const onCancel = () => resolveAppDialog(false);
+  const isActions = Boolean(payload.actions && payload.actions.length > 0);
+  const onCancel = () => {
+    if (isActions) resolveAppDialogAction(null);
+    else resolveAppDialog(false);
+  };
   const onConfirm = () => resolveAppDialog(true);
+
+  const actionButtons = payload.actions ?? [];
+  const primaryActions = actionButtons.filter(b => b.style !== 'cancel');
+  const cancelAction = actionButtons.find(b => b.style === 'cancel');
 
   return (
     <Modal
@@ -148,6 +158,7 @@ export function AppDialogHost() {
         <Animated.View
           style={[
             styles.dialog,
+            isActions && styles.dialogActions,
             {
               borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.65)',
               opacity: progress,
@@ -174,51 +185,121 @@ export function AppDialogHost() {
             <View style={styles.messageSpacer} />
           )}
 
-          <View style={styles.btns}>
-            {payload.cancelText ? (
+          {isActions ? (
+            <View style={styles.actionStack}>
+              <ScrollView
+                style={styles.actionScroll}
+                bounces={false}
+                showsVerticalScrollIndicator={false}>
+                {primaryActions.map(btn => {
+                  const index = actionButtons.indexOf(btn);
+                  const danger = btn.style === 'destructive';
+                  return (
+                    <Pressable
+                      key={`act-${index}-${btn.text}`}
+                      onPress={() => resolveAppDialogAction(index)}
+                      accessibilityRole="button"
+                      accessibilityLabel={btn.text}
+                      style={({ pressed }) => [
+                        styles.actionBtn,
+                        danger
+                          ? { backgroundColor: fold.clay }
+                          : {
+                              backgroundColor: isDark
+                                ? 'rgba(255,255,255,0.08)'
+                                : '#EDE7D9',
+                            },
+                        pressed && { opacity: 0.88 },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.btnLabel,
+                          {
+                            color: danger
+                              ? '#FFFFFF'
+                              : isDark
+                                ? fold.ink
+                                : fold.pine,
+                          },
+                        ]}
+                        numberOfLines={2}>
+                        {btn.text}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              {cancelAction ? (
+                <Pressable
+                  onPress={() => resolveAppDialogAction(actionButtons.indexOf(cancelAction))}
+                  accessibilityRole="button"
+                  accessibilityLabel={cancelAction.text}
+                  style={({ pressed }) => [
+                    styles.actionBtn,
+                    styles.actionCancel,
+                    {
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : '#F3EEE3',
+                      borderColor: isDark ? 'rgba(255,255,255,0.12)' : '#E2DACB',
+                    },
+                    pressed && { opacity: 0.88 },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.btnLabel,
+                      { color: isDark ? fold.muted : '#7C887D' },
+                    ]}>
+                    {cancelAction.text}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : (
+            <View style={styles.btns}>
+              {payload.cancelText ? (
+                <Pressable
+                  onPress={onCancel}
+                  accessibilityRole="button"
+                  accessibilityLabel={payload.cancelText}
+                  style={({ pressed }) => [
+                    styles.btn,
+                    styles.btnGhost,
+                    { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#EDE7D9' },
+                    pressed && { opacity: 0.88 },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.btnLabel,
+                      { color: isDark ? fold.muted : '#7C887D' },
+                    ]}>
+                    {payload.cancelText}
+                  </Text>
+                </Pressable>
+              ) : null}
               <Pressable
-                onPress={onCancel}
+                onPress={onConfirm}
                 accessibilityRole="button"
-                accessibilityLabel={payload.cancelText}
+                accessibilityLabel={payload.confirmText}
                 style={({ pressed }) => [
                   styles.btn,
-                  styles.btnGhost,
-                  { backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : '#EDE7D9' },
-                  pressed && { opacity: 0.88 },
+                  payload.confirmDanger
+                    ? { backgroundColor: fold.clay }
+                    : { backgroundColor: fold.pineButton },
+                  pressed && { opacity: 0.9 },
                 ]}>
                 <Text
                   style={[
                     styles.btnLabel,
-                    { color: isDark ? fold.muted : '#7C887D' },
+                    {
+                      color: payload.confirmDanger
+                        ? '#FFFFFF'
+                        : fold.onPineButton,
+                    },
                   ]}>
-                  {payload.cancelText}
+                  {payload.confirmText}
                 </Text>
               </Pressable>
-            ) : null}
-            <Pressable
-              onPress={onConfirm}
-              accessibilityRole="button"
-              accessibilityLabel={payload.confirmText}
-              style={({ pressed }) => [
-                styles.btn,
-                payload.confirmDanger
-                  ? { backgroundColor: fold.clay }
-                  : { backgroundColor: fold.pineButton },
-                pressed && { opacity: 0.9 },
-              ]}>
-              <Text
-                style={[
-                  styles.btnLabel,
-                  {
-                    color: payload.confirmDanger
-                      ? '#FFFFFF'
-                      : fold.onPineButton,
-                  },
-                ]}>
-                {payload.confirmText}
-              </Text>
-            </Pressable>
-          </View>
+            </View>
+          )}
         </Animated.View>
       </View>
     </Modal>
@@ -245,6 +326,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 60,
     elevation: 20,
+  },
+  dialogActions: {
+    width: 300,
   },
   dic: {
     marginBottom: 8,
@@ -278,5 +362,25 @@ const styles = StyleSheet.create({
   btnLabel: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  actionStack: {
+    gap: 6,
+  },
+  actionScroll: {
+    maxHeight: 260,
+  },
+  actionBtn: {
+    minHeight: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 6,
+  },
+  actionCancel: {
+    marginBottom: 0,
+    marginTop: 2,
+    borderWidth: StyleSheet.hairlineWidth,
   },
 });

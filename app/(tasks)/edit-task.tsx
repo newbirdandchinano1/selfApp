@@ -10,6 +10,7 @@ import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
+import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
@@ -17,9 +18,16 @@ import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
+import {
+  acceptanceChecklistToLines,
+  createEmptyAcceptanceItem,
+  linesToAcceptanceChecklist,
+  mergeAcceptanceChecklistIntoExtraData,
+  parseAcceptanceChecklist,
+  type AcceptanceCriterionItem,
+} from '@/lib/acceptance-criteria';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import {
   DEFAULT_TODO_ICON,
   mergeIconIntoExtraData,
@@ -100,7 +108,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   KeyboardAvoidingView,
   Platform,
@@ -237,6 +244,7 @@ type EditTaskFormSnapshot = {
   entityIcon: string;
   status: TaskStatus;
   acceptanceCriteria: string;
+  note: string;
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -268,18 +276,21 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
       buildDeadlineTextFromSchedule(loadedSchedule) || (task.due_date ? formatDate(task.due_date) : '');
   }
 
+  const isLongTerm = getIsLongTermTask(task.extra_data);
+  const checklist = parseAcceptanceChecklist(task.extra_data, task.description, isLongTerm ? task.note : null);
   return {
     title: (task.title ?? '').trim(),
     entityIcon: parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON),
     status: normalizeEditTaskStatus(task.status),
-    acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
+    acceptanceCriteria: isLongTerm ? acceptanceChecklistToLines(checklist) : '',
+    note: isLongTerm ? '' : (task.note ?? '').trim(),
     priority: mapPriorityTextToKey(priorityLabel),
     deadlineText,
     reminderText,
     repeatText,
     scheduleMeta,
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
-    isLongTermTask: getIsLongTermTask(task.extra_data),
+    isLongTermTask: isLongTerm,
     autoPlaceIntoSchedule: parseAutoPlaceIntoSchedule(task.extra_data),
     rewardPointsText: String(parseRewardPointsFromExtraData(task.extra_data)),
   };
@@ -290,6 +301,7 @@ function buildFormSnapshotFromFields(input: {
   entityIcon: string;
   status: TaskStatus;
   acceptanceCriteria: string;
+  note: string;
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -305,6 +317,7 @@ function buildFormSnapshotFromFields(input: {
     entityIcon: normalizeEntityIcon(input.entityIcon, DEFAULT_TODO_ICON),
     status: input.status,
     acceptanceCriteria: input.acceptanceCriteria.trim(),
+    note: input.note.trim(),
     priority: input.priority,
     deadlineText: input.deadlineText,
     reminderText: input.reminderText,
@@ -348,7 +361,10 @@ export default function EditTaskScreen() {
   const [title, setTitle] = React.useState('');
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_TODO_ICON);
   const [status, setStatus] = React.useState<TaskStatus>('todo');
-  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
+  const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
+    createEmptyAcceptanceItem(),
+  ]);
+  const [note, setNote] = React.useState('');
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
   const [projectPriorityLabel, setProjectPriorityLabel] = React.useState('');
   const [projectName, setProjectName] = React.useState('');
@@ -389,7 +405,8 @@ export default function EditTaskScreen() {
   const titleRef = React.useRef(title);
   const entityIconRef = React.useRef(entityIcon);
   const statusRef = React.useRef(status);
-  const acceptanceCriteriaRef = React.useRef(acceptanceCriteria);
+  const acceptanceItemsRef = React.useRef(acceptanceItems);
+  const noteRef = React.useRef(note);
   const priorityRef = React.useRef(priority);
   const deadlineTextRef = React.useRef(deadlineText);
   const reminderTextRef = React.useRef(reminderText);
@@ -404,7 +421,8 @@ export default function EditTaskScreen() {
   titleRef.current = title;
   entityIconRef.current = entityIcon;
   statusRef.current = status;
-  acceptanceCriteriaRef.current = acceptanceCriteria;
+  acceptanceItemsRef.current = acceptanceItems;
+  noteRef.current = note;
   priorityRef.current = priority;
   deadlineTextRef.current = deadlineText;
   reminderTextRef.current = reminderText;
@@ -491,13 +509,19 @@ export default function EditTaskScreen() {
     [subtasks],
   );
 
+  const acceptanceCriteriaText = React.useMemo(
+    () => (isLongTermTask ? acceptanceChecklistToLines(acceptanceItems) : ''),
+    [acceptanceItems, isLongTermTask],
+  );
+
   const isDirty = React.useMemo(() => {
     if (!loadedFormSnapshot || loading) return false;
     const current = buildFormSnapshotFromFields({
       title,
       entityIcon,
       status,
-      acceptanceCriteria,
+      acceptanceCriteria: acceptanceCriteriaText,
+      note: isLongTermTask ? '' : note,
       priority,
       deadlineText,
       reminderText,
@@ -510,7 +534,7 @@ export default function EditTaskScreen() {
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
   }, [
-    acceptanceCriteria,
+    acceptanceCriteriaText,
     autoPlaceIntoSchedule,
     boundHabitIds,
     deadlineText,
@@ -518,6 +542,7 @@ export default function EditTaskScreen() {
     isLongTermTask,
     loadedFormSnapshot,
     loading,
+    note,
     priority,
     reminderText,
     repeatText,
@@ -739,7 +764,14 @@ export default function EditTaskScreen() {
       setTitle(task.title ?? '');
       setEntityIcon(parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON));
       setStatus(normalizeEditTaskStatus(task.status));
-      setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
+      const longTerm = getIsLongTermTask(task.extra_data);
+      const checklist = parseAcceptanceChecklist(
+        task.extra_data,
+        task.description,
+        longTerm ? task.note : null,
+      );
+      setAcceptanceItems(checklist.length > 0 ? checklist : [createEmptyAcceptanceItem()]);
+      setNote(longTerm ? '' : (task.note ?? '').trim());
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
       const priorityLabel = fromTaskPriority(task.priority);
@@ -758,7 +790,7 @@ export default function EditTaskScreen() {
         setRepeatText(repeat);
       }
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
-      setIsLongTermTask(getIsLongTermTask(task.extra_data));
+      setIsLongTermTask(longTerm);
       setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
@@ -868,7 +900,6 @@ export default function EditTaskScreen() {
                   ...prev,
                   status: normalizeEditTaskStatus(task.status),
                   priority: mapPriorityTextToKey(inheritedPriorityLabel),
-                  acceptanceCriteria: resolveAcceptanceCriteria(task.description, task.note),
                 }
               : prev,
           );
@@ -1027,7 +1058,11 @@ export default function EditTaskScreen() {
       } else {
         delete parsedExtra.autoPlaceIntoSchedule;
       }
-      const mergedExtra = mergeIconIntoExtraData(
+      const longTerm = isLongTermTaskRef.current;
+      const checklist = longTerm ? acceptanceItemsRef.current : [];
+      const acceptanceText = longTerm ? acceptanceChecklistToLines(checklist) : '';
+      const noteToSave = longTerm ? null : noteRef.current.trim() || null;
+      let mergedExtra = mergeIconIntoExtraData(
         mergeRewardPointsIntoExtraData(
           mergeLongTermTaskIntoExtraData(
             mergeBoundHabitIdsIntoExtraData(
@@ -1039,14 +1074,14 @@ export default function EditTaskScreen() {
               }),
               boundHabitIdsRef.current,
             ),
-            isLongTermTaskRef.current,
+            longTerm,
           ),
           normalizeRewardPoints(rewardPointsTextRef.current),
         ),
         entityIconRef.current,
         DEFAULT_TODO_ICON,
       );
-      const acceptance = acceptanceCriteriaRef.current.trim() || null;
+      mergedExtra = mergeAcceptanceChecklistIntoExtraData(mergedExtra, checklist) ?? mergedExtra;
       const nextStatus = statusRef.current;
       let nextPriority = toTaskPriority(priorityKeyToLabel(priorityRef.current));
       if (snapshot.project_id) {
@@ -1066,8 +1101,8 @@ export default function EditTaskScreen() {
             : undefined;
       await updateTask(taskId, {
         title: trimmedTitle,
-        description: acceptance,
-        note: null,
+        description: acceptanceText || null,
+        note: noteToSave,
         status: nextStatus,
         priority: nextPriority,
         due_date: dueDate,
@@ -1093,14 +1128,15 @@ export default function EditTaskScreen() {
         title: trimmedTitle,
         entityIcon: entityIconRef.current,
         status: nextStatus,
-        acceptanceCriteria: acceptanceCriteriaRef.current,
+        acceptanceCriteria: acceptanceText,
+        note: noteToSave ?? '',
         priority: mapPriorityTextToKey(fromTaskPriority(nextPriority)),
         deadlineText: deadlineForDue,
         reminderText: reminderForExtra,
         repeatText: repeatForExtra,
         scheduleMeta: meta,
         boundHabitIds: boundHabitIdsRef.current,
-        isLongTermTask: isLongTermTaskRef.current,
+        isLongTermTask: longTerm,
         autoPlaceIntoSchedule: wantAutoPlace,
         rewardPointsText: rewardPointsTextRef.current,
       });
@@ -1117,8 +1153,8 @@ export default function EditTaskScreen() {
           ? {
               ...prev,
               title: trimmedTitle,
-              description: acceptance,
-              note: null,
+              description: acceptanceText || null,
+              note: noteToSave,
               status: nextStatus,
               priority: nextPriority,
               due_date: dueDate,
@@ -1598,28 +1634,65 @@ export default function EditTaskScreen() {
                     </View>
                   </View>
 
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
-                    <TextInput
-                      value={acceptanceCriteria}
-                      onChangeText={setAcceptanceCriteria}
-                      placeholder="怎样算完成？（可选）"
-                      placeholderTextColor={tf.faint}
-                      editable={!loading}
-                      style={[styles.frowInput, { color: tf.ink2, flex: 1, opacity: loading ? 0.65 : 1 }]}
-                    />
-                  </View>
-
                   <View style={[styles.frow, frowBorder, { opacity: loading ? 0.65 : 1 }]}>
                     <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期任务</Text>
                     <Text style={{ flex: 1, fontSize: 11, color: tf.faint }}>完成时确认是否结束整项</Text>
                     <TaskFoldSwitch
                       value={isLongTermTask}
-                      onValueChange={setIsLongTermTask}
+                      onValueChange={(next) => {
+                        if (next) {
+                          setAcceptanceItems((prev) => {
+                            const hasText = prev.some((i) => i.text.trim());
+                            if (hasText) return prev;
+                            const fromNote = linesToAcceptanceChecklist(note);
+                            return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
+                          });
+                          setNote('');
+                        } else {
+                          setNote((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
+                          setAcceptanceItems([createEmptyAcceptanceItem()]);
+                        }
+                        setIsLongTermTask(next);
+                      }}
                       disabled={loading}
                       accessibilityLabel="长期任务"
                     />
                   </View>
+
+                  {isLongTermTask ? (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>验收标准</Text>
+                      <View style={{ flex: 1, minWidth: 0, opacity: loading ? 0.65 : 1 }}>
+                        <AcceptanceChecklistEditor
+                          items={acceptanceItems}
+                          onChange={setAcceptanceItems}
+                          mode="edit"
+                          disabled={loading}
+                          inkColor={tf.ink2}
+                          faintColor={tf.faint}
+                          frogColor={tf.frog}
+                          onPondColor={tf.onPond}
+                          lineColor={tf.line2}
+                        />
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
+                      <TextInput
+                        value={note}
+                        onChangeText={setNote}
+                        placeholder="可选补充说明"
+                        placeholderTextColor={tf.faint}
+                        editable={!loading}
+                        multiline
+                        style={[
+                          styles.frowInput,
+                          { color: tf.ink2, flex: 1, minHeight: 36, opacity: loading ? 0.65 : 1 },
+                        ]}
+                      />
+                    </View>
+                  )}
 
                   <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
                     <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>绑定习惯</Text>

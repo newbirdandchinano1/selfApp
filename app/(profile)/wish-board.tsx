@@ -253,7 +253,7 @@ export default function WishBoardScreen() {
           },
         ]}
         accessibilityRole="button"
-        accessibilityLabel="查看兑换足迹">
+        accessibilityLabel="查看积分足迹">
         <View style={styles.recentIcon}>
           <Text style={styles.recentEmoji}>🎁</Text>
         </View>
@@ -360,7 +360,7 @@ export default function WishBoardScreen() {
               { opacity: pressed ? 0.88 : 1, backgroundColor: c.card, borderColor: c.line },
             ]}
             accessibilityRole="button"
-            accessibilityLabel="兑换足迹">
+            accessibilityLabel="积分足迹">
             <MaterialIcons name="schedule" size={18} color={c.ink2} />
           </Pressable>
           <Pressable

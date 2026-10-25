@@ -6,7 +6,7 @@ import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
 import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   DEFAULT_CLOUD_AUTH_TOKEN,
   DEFAULT_CLOUD_SQL_API_URL,
@@ -36,7 +36,6 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   Modal,
   Platform,

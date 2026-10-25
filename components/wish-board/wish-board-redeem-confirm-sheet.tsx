@@ -109,7 +109,7 @@ export function WishBoardRedeemConfirmSheet({
           <View style={styles.note}>
             <Text style={styles.noteEmoji}>🧾</Text>
             <Text style={styles.noteText}>
-              兑换将自动记入「兑换足迹」，包含时间与消耗积分，可随时查看或删除。
+              兑换将自动记入「积分足迹」，与获得积分一起按时间展示，可随时查看或删除回退。
             </Text>
           </View>
 

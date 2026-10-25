@@ -23,7 +23,7 @@ import {
   saveReviewPointsSettings,
   type ReviewPointsSettings,
 } from '@/lib/review-points-settings';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { formatPoints, normalizeRewardPoints } from '@/lib/reward-points';
 import { setWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
@@ -34,7 +34,6 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Modal,
   Platform,

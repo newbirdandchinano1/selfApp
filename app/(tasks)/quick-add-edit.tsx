@@ -6,7 +6,7 @@
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import {
   collectFrequentQuickAddCandidates,
@@ -27,7 +27,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   StyleSheet,
   Switch,

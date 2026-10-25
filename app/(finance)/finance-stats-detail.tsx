@@ -15,7 +15,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Pressable,
   ScrollView,
@@ -26,6 +25,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { Alert } from '@/lib/app-feedback';
 const PAGE_API_KEY = 'finance-stats-detail';
 const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const INITIAL_VISIBLE_DAYS = 8;

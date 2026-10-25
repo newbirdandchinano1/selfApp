@@ -4,7 +4,7 @@
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AppIcon } from '@/components/ui/app-icon';
 import { useFoldTheme } from '@/constants/review-fold-theme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   getLifeBetDerivedStats,
@@ -35,7 +35,6 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,

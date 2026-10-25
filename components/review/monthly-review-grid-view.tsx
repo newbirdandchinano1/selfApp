@@ -31,7 +31,7 @@ import {
   upsertMonthlyReviewJournal,
 } from '@/lib/repositories/insights/monthly-review-journal';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   ensureBuiltinCascadeReviewModules,
   listReviewTemplate,
@@ -48,7 +48,6 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,

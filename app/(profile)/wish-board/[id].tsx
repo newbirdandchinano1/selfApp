@@ -403,7 +403,7 @@ function buildNoteText(input: {
   if (isRedeemedOnce) {
     const at = records[0]?.redeemed_at ?? item.redeemed_at;
     const when = at ? `${formatChineseDate(at)} ` : '';
-    return `✅ 已于 ${when}兑换完成，本次消耗 ${formatWishBoxPoints(item.cost_points)} 积分，足迹已记入「兑换足迹」。`;
+    return `✅ 已于 ${when}兑换完成，本次消耗 ${formatWishBoxPoints(item.cost_points)} 积分，足迹已记入「积分足迹」。`;
   }
   if (eligibility && !eligibility.pointsOk) {
     return `⚠️ 同时积分不足：当前 ${formatWishBoxPoints(eligibility.balance)} 分，兑换需要 ${formatWishBoxPoints(eligibility.costPoints)} 分，还差 ${formatWishBoxPoints(pointsShortfall)} 分。`;

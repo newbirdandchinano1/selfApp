@@ -12,10 +12,9 @@ import {
   type FinanceSheetTransactionType,
 } from '@/lib/repositories/finance/finance-sheet-category';
 import { deleteFinanceFlowCategory } from '@/lib/repositories/finance/finance';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import type { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
-import { Alert } from 'react-native';
 
 export type FinanceSheetCategoryColors = {
   primary: string;

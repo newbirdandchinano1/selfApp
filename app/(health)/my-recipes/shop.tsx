@@ -1,6 +1,6 @@
 import { recipeGlassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchProfileRecipes } from '@/lib/profile-page-api';
 import { loadRecipePlanStore, type RecipePlanStore } from '@/lib/recipe-plan';
 import {
@@ -22,7 +22,6 @@ import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,

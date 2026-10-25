@@ -46,7 +46,7 @@ import {
   type ReviewFieldValues,
   type ReviewJournalMeta,
 } from '@/lib/repositories/insights/review-journal-body';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   listDailyReviewsBetween,
   upsertDailyReviewJournal,
@@ -57,7 +57,6 @@ import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   ScrollView,
   StyleSheet,
   Text,

@@ -8,7 +8,7 @@ import {
 } from '@/components/review/fold-motion';
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { clearFinanceLastUsedAccountIfDeleted } from '@/lib/finance-last-used-account';
 import { openFinanceSheet, subscribeFinanceSheetSaved } from '@/lib/finance-transaction-sheet/controller';
@@ -33,7 +33,6 @@ import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   KeyboardAvoidingView,
   Modal,

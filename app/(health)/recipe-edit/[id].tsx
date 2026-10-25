@@ -23,7 +23,7 @@ import {
   type RecipeCategory,
   type RecipeIngredient,
 } from '@/lib/recipes';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { loadRecipeCategoryMeta, sortCategoriesByMeta } from '@/lib/recipe-category-meta';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -33,7 +33,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   ScrollView,

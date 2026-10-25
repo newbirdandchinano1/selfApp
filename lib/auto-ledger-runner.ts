@@ -59,9 +59,9 @@ import {
     getActiveAiLlmApiKey,
     parseFinanceOneLinerFromImage,
 } from '@/lib/zhipu-image-parse';
-import { Alert } from 'react-native';
 import { moveAppToBackground } from 'zheng-background';
 
+import { Alert } from '@/lib/app-feedback';
 const AUTO_LEDGER_NOT_BILL_MESSAGE =
   '这不是账单或支付凭证截图，请换一张支付成功页、账单详情或小票等图片。';
 

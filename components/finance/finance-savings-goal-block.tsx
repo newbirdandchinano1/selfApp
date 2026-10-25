@@ -1,5 +1,5 @@
 import { Radius, Spacing } from '@/constants/design-tokens';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { apiGetFinancePredictedSavings } from '@/lib/api/endpoints/finance';
 import {
   clearFinanceSavingsGoal,
@@ -17,7 +17,6 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
-  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,

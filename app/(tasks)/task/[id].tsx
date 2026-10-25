@@ -3,20 +3,31 @@ import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
+import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { AcceptanceReviewModal } from '@/components/tasks/AcceptanceReviewModal';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
+import {
+  acceptanceChecklistToLines,
+  countAcceptanceProgress,
+  mergeAcceptanceChecklistIntoExtraData,
+  parseAcceptanceChecklist,
+  type AcceptanceCriterionItem,
+} from '@/lib/acceptance-criteria';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import { formatYmd, parseYmd } from '@/lib/date';
 import { formatWriteError } from '@/lib/format-write-error';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import { unassignFrogForDay } from '@/lib/frog-candidates-api';
+import { clearFrogSessionCompletedOn, getIsLongTermTask } from '@/lib/long-term-task';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
+import { applyTaskCompletionPointsReward } from '@/lib/repositories/habits/habit-points-grant';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
+  cascadeParentTaskStatusAfterChildChange,
   countIncompleteDescendantTasks,
   createTask,
   deleteTask,
@@ -56,7 +67,6 @@ import { useIsFocused, useNavigation, usePreventRemove } from 'expo-router/react
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Platform,
@@ -441,7 +451,9 @@ export default function TaskDetailScreen() {
   const { animate: foldAnimate } = useFoldMotionGate();
 
   const [title, setTitle] = React.useState('');
-  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
+  const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([]);
+  const [taskNote, setTaskNote] = React.useState('');
+  const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [status, setStatus] = React.useState('todo');
   const [priority, setPriority] = React.useState<number>(0);
   const [dueDate, setDueDate] = React.useState<string | null>(null);
@@ -468,6 +480,9 @@ export default function TaskDetailScreen() {
   const [unassigning, setUnassigning] = React.useState(false);
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
   const [addSubtaskOpen, setAddSubtaskOpen] = React.useState(false);
+  const [acceptanceReviewOpen, setAcceptanceReviewOpen] = React.useState(false);
+  const [reviewItems, setReviewItems] = React.useState<AcceptanceCriterionItem[]>([]);
+  const [savingAcceptance, setSavingAcceptance] = React.useState(false);
 
   const scheduleSource = React.useMemo(() => `task-detail-${taskId || 'unknown'}`, [taskId]);
   const extraDataRef = React.useRef<string | null>(null);
@@ -569,7 +584,15 @@ export default function TaskDetailScreen() {
       setTaskLoaded(true);
       setLoadedScheduleSnapshot({ dueDate: nextDue, extraData: nextExtra });
       setTitle(row.title);
-      setAcceptanceCriteria(resolveAcceptanceCriteria(row.description, row.note));
+      const longTerm = getIsLongTermTask(row.extra_data);
+      setIsLongTermTask(longTerm);
+      const checklist = parseAcceptanceChecklist(
+        row.extra_data,
+        row.description,
+        longTerm ? row.note : null,
+      );
+      setAcceptanceItems(checklist);
+      setTaskNote(longTerm ? '' : (row.note ?? '').trim());
       setStatus(row.status);
       setPriority(row.priority ?? 0);
       setDueDate(nextDue);
@@ -647,7 +670,9 @@ export default function TaskDetailScreen() {
       setTaskLoaded(false);
       setLoadedScheduleSnapshot(null);
       setTitle('');
-      setAcceptanceCriteria('');
+      setAcceptanceItems([]);
+      setTaskNote('');
+      setIsLongTermTask(false);
       setStatus('todo');
       setPriority(0);
       setDueDate(null);
@@ -661,6 +686,7 @@ export default function TaskDetailScreen() {
       setRelatedTags([]);
       setLinkTasks([]);
       setActivityEvents([]);
+      setAcceptanceReviewOpen(false);
     }
     const t = await getTaskTreeByRootTaskId(taskId);
     setTree(t);
@@ -977,14 +1003,102 @@ export default function TaskDetailScreen() {
     () => (tree?.children ?? []).filter((c) => c.status !== 'done' && c.status !== 'cancelled').length,
     [tree],
   );
-  const acceptanceLines = React.useMemo(
-    () =>
-      acceptanceCriteria
-        .split(/\n+/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [acceptanceCriteria],
+  const acceptanceProgress = React.useMemo(
+    () => countAcceptanceProgress(acceptanceItems),
+    [acceptanceItems],
   );
+
+  const persistAcceptanceItems = React.useCallback(
+    async (items: AcceptanceCriterionItem[], opts?: { manageBusy?: boolean }) => {
+      if (!taskId) return false;
+      const manageBusy = opts?.manageBusy !== false;
+      const prevItems = acceptanceItems;
+      const prevExtra = extraDataRef.current;
+      setAcceptanceItems(items);
+      if (manageBusy) setSavingAcceptance(true);
+      try {
+        const nextExtra = mergeAcceptanceChecklistIntoExtraData(extraDataRef.current, items);
+        const description = acceptanceChecklistToLines(items) || null;
+        await updateTask(taskId, {
+          description,
+          extra_data: nextExtra,
+        });
+        setExtraData(nextExtra);
+        extraDataRef.current = nextExtra;
+        setLoadedScheduleSnapshot((prev) =>
+          prev ? { ...prev, extraData: nextExtra } : { dueDate: dueDateRef.current, extraData: nextExtra },
+        );
+        notifyPageDataChanged(PAGE_API_KEY);
+        return true;
+      } catch (error) {
+        console.warn('保存验收清单失败', error);
+        setAcceptanceItems(prevItems);
+        setExtraData(prevExtra);
+        extraDataRef.current = prevExtra;
+        toast.error(formatWriteError(error, '验收清单保存失败。'));
+        return false;
+      } finally {
+        if (manageBusy) setSavingAcceptance(false);
+      }
+    },
+    [acceptanceItems, taskId],
+  );
+
+  /** 已核对：保存验收清单并完成主任务 */
+  const completeMainTaskAfterAcceptanceReview = React.useCallback(async () => {
+    if (!taskId) return;
+    setSavingAcceptance(true);
+    try {
+      const saved = await persistAcceptanceItems(reviewItems, { manageBusy: false });
+      if (!saved) return;
+      const nextExtra = clearFrogSessionCompletedOn(extraDataRef.current);
+      const completedAt = formatTaskAuditDatetimeLocal();
+      await updateTask(taskId, {
+        status: 'done',
+        completed_at: completedAt,
+        extra_data: nextExtra,
+      });
+      setStatus('done');
+      setExtraData(nextExtra);
+      extraDataRef.current = nextExtra;
+      setLoadedScheduleSnapshot((prev) =>
+        prev ? { ...prev, extraData: nextExtra } : { dueDate: dueDateRef.current, extraData: nextExtra },
+      );
+      try {
+        await insertTaskExecutionEvent(taskId, 'completed', title || null);
+      } catch (eventError) {
+        console.warn('写入主任务完成记录失败', eventError);
+      }
+      try {
+        await applyTaskCompletionPointsReward(taskId, 'earn', nextExtra);
+      } catch (ptsErr) {
+        console.warn('主任务完成发奖失败', ptsErr);
+      }
+      try {
+        await cascadeParentTaskStatusAfterChildChange(taskId, true);
+      } catch (cascadeErr) {
+        console.warn('级联更新父任务失败', cascadeErr);
+      }
+      notifyPageDataChanged(PAGE_API_KEY);
+      setAcceptanceReviewOpen(false);
+      toast.success('已核对并完成任务');
+      await reloadTaskDetail(true);
+    } catch (error) {
+      console.warn('核对完成主任务失败', error);
+      toast.error(formatWriteError(error, '完成任务失败，请稍后重试。'));
+    } finally {
+      setSavingAcceptance(false);
+    }
+  }, [persistAcceptanceItems, reloadTaskDetail, reviewItems, taskId, title]);
+
+  /** 稍后：不完成主任务；勾选进度仍写入，便于下次继续 */
+  const dismissAcceptanceReviewForLater = React.useCallback(() => {
+    void (async () => {
+      await persistAcceptanceItems(reviewItems);
+      setAcceptanceReviewOpen(false);
+      toast.success('主任务暂未完成，可稍后继续核对');
+    })();
+  }, [persistAcceptanceItems, reviewItems]);
   const subtitle = React.useMemo(() => {
     const parts = [projectName, parentTitle].filter(Boolean);
     if (parts.length === 0) return isLeaf ? '叶子任务' : '任务详情';
@@ -1135,6 +1249,15 @@ export default function TaskDetailScreen() {
     async (child: TaskTreeNode) => {
       if (togglingId) return;
       const nextDone = child.status !== 'done' && child.status !== 'cancelled';
+      const siblings = tree?.children ?? [];
+      const willAllComplete =
+        nextDone &&
+        siblings.length > 0 &&
+        siblings.every((c) =>
+          c.id === child.id
+            ? true
+            : c.status === 'done' || c.status === 'cancelled',
+        );
       try {
         setTogglingId(child.id);
         await updateTask(child.id, {
@@ -1152,6 +1275,11 @@ export default function TaskDetailScreen() {
         }
         notifyPageDataChanged(PAGE_API_KEY);
         await reloadTaskDetail(true);
+        // 子任务全部完成后提示核对验收清单（目标提醒，非拆分任务）
+        if (willAllComplete && isLongTermTask) {
+          setReviewItems(acceptanceItems.map((item) => ({ ...item })));
+          setAcceptanceReviewOpen(true);
+        }
       } catch (error) {
         console.warn('更新子任务失败', error);
         toast.error(formatWriteError(error, '子任务状态更新失败。'));
@@ -1159,7 +1287,7 @@ export default function TaskDetailScreen() {
         setTogglingId(null);
       }
     },
-    [reloadTaskDetail, togglingId],
+    [acceptanceItems, isLongTermTask, reloadTaskDetail, togglingId, tree?.children],
   );
 
   const footPad = Math.max(insets.bottom, 12);
@@ -1322,33 +1450,73 @@ export default function TaskDetailScreen() {
                 )
               : null}
 
-            {rise(
-              hasFrog ? 2 : 1,
-              <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                <View style={styles.sectionHead}>
-                  <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>验收标准</Text>
-                  <Pressable
-                    onPress={() =>
-                      taskId &&
-                      router.push({ pathname: '/edit-task', params: { id: taskId, from: 'task-detail' } })
-                    }
-                    hitSlop={8}
-                    style={{ marginLeft: 'auto' }}>
-                    <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>编辑 ›</Text>
-                  </Pressable>
-                </View>
-                {acceptanceLines.length > 0 ? (
-                  acceptanceLines.map((line, i) => (
-                    <View key={`${i}-${line.slice(0, 12)}`} style={styles.subhabit}>
-                      <View style={[styles.cb2, { borderColor: tf.line2 }]} />
-                      <Text style={[styles.subhabitText, { color: tf.ink2 }]}>{line}</Text>
+            {isLongTermTask
+              ? rise(
+                  hasFrog ? 2 : 1,
+                  <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                    <View style={styles.sectionHead}>
+                      <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>验收标准</Text>
+                      {acceptanceProgress.total > 0 ? (
+                        <Text style={{ fontSize: 11, color: tf.faint, marginLeft: 6 }}>
+                          {acceptanceProgress.done} / {acceptanceProgress.total} 达成
+                        </Text>
+                      ) : null}
+                      <Pressable
+                        onPress={() =>
+                          taskId &&
+                          router.push({
+                            pathname: '/edit-task',
+                            params: { id: taskId, from: 'task-detail' },
+                          })
+                        }
+                        hitSlop={8}
+                        style={{ marginLeft: 'auto' }}>
+                        <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>编辑 ›</Text>
+                      </Pressable>
                     </View>
-                  ))
-                ) : (
-                  <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>暂无验收标准</Text>
-                )}
-              </View>,
-            )}
+                    {acceptanceItems.length > 0 ? (
+                      <AcceptanceChecklistEditor
+                        items={acceptanceItems}
+                        onChange={(items) => void persistAcceptanceItems(items)}
+                        mode="check"
+                        disabled={savingAcceptance}
+                        showProgress={false}
+                        inkColor={tf.ink2}
+                        faintColor={tf.faint}
+                        frogColor={tf.frog}
+                        onPondColor={tf.onPond}
+                        lineColor={tf.line2}
+                      />
+                    ) : (
+                      <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
+                        暂无验收标准
+                      </Text>
+                    )}
+                  </View>,
+                )
+              : taskNote
+                ? rise(
+                    hasFrog ? 2 : 1,
+                    <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                      <View style={styles.sectionHead}>
+                        <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>备注</Text>
+                        <Pressable
+                          onPress={() =>
+                            taskId &&
+                            router.push({
+                              pathname: '/edit-task',
+                              params: { id: taskId, from: 'task-detail' },
+                            })
+                          }
+                          hitSlop={8}
+                          style={{ marginLeft: 'auto' }}>
+                          <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>编辑 ›</Text>
+                        </Pressable>
+                      </View>
+                      <Text style={{ fontSize: 12, color: tf.ink2, lineHeight: 18 }}>{taskNote}</Text>
+                    </View>,
+                  )
+                : null}
 
             {rise(
               hasFrog ? 3 : 2,
@@ -1833,6 +2001,17 @@ export default function TaskDetailScreen() {
         progressDone={progress.done}
         progressTotal={progress.total}
         scheduleSource={addSubtaskSource}
+      />
+
+      <AcceptanceReviewModal
+        visible={acceptanceReviewOpen}
+        items={reviewItems}
+        onChangeItems={setReviewItems}
+        busy={savingAcceptance}
+        onDismiss={dismissAcceptanceReviewForLater}
+        onConfirm={() => {
+          void completeMainTaskAfterAcceptanceReview();
+        }}
       />
     </SafeAreaView>
   );

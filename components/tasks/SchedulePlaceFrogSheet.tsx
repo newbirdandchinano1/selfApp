@@ -19,7 +19,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Pressable,
@@ -32,12 +31,15 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Alert } from '@/lib/app-feedback';
 export type SchedulePlaceResult = {
   kind: ScheduleSubjectKind;
   id: string;
   title: string;
   spanSlots: number;
   assignYmd: string;
+  /** 占用当日全部可排格（从第 0 格起）；父级应忽略点选格的 startSlotIndex */
+  allDay?: boolean;
 };
 
 export type SchedulePlaceTag = { name: string; color: string };
@@ -62,7 +64,10 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   assignYmd: string;
+  /** 从点选格起可连续占用的最大格数 */
   maxSpan: number;
+  /** 当日可排工作格总数；用于「全天」铺满（默认与 maxSpan 相同） */
+  daySlotCount?: number;
   lockedProjectIds?: Set<string>;
   /** 已选定主体时跳过列表，只选占用格数 */
   preselected?: SchedulePlacePreselected | null;
@@ -467,6 +472,7 @@ export function SchedulePlaceFrogSheet({
   onClose,
   assignYmd,
   maxSpan,
+  daySlotCount,
   lockedProjectIds,
   preselected,
   onConfirm,
@@ -476,12 +482,16 @@ export function SchedulePlaceFrogSheet({
   const { tf, isDark, fonts } = useTaskFoldTheme();
   const { animate } = useFoldMotionGate();
 
+  const fullDaySlots = Math.max(1, daySlotCount ?? maxSpan);
+  const canAssignAllDay = fullDaySlots >= 1;
+
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [eligible, setEligible] = React.useState<DisplayCandidate[]>([]);
   const [blocked, setBlocked] = React.useState<DisplayCandidate[]>([]);
   const [picked, setPicked] = React.useState<DisplayCandidate | null>(null);
   const [span, setSpan] = React.useState(1);
+  const [allDay, setAllDay] = React.useState(false);
   const [logicalToday, setLogicalToday] = React.useState(assignYmd);
   const [tagColorByName, setTagColorByName] = React.useState<Map<string, string>>(() => new Map());
   const [seg, setSeg] = React.useState<SegKey>('recommend');
@@ -530,6 +540,7 @@ export function SchedulePlaceFrogSheet({
     setOnlyEligible(false);
     setBlockedOpen(false);
     setSpan(1);
+    setAllDay(false);
   }, [visible, assignYmd]);
 
   React.useEffect(() => {
@@ -557,6 +568,7 @@ export function SchedulePlaceFrogSheet({
   React.useEffect(() => {
     if (!visible) return;
     setSpan(1);
+    setAllDay(false);
     if (preselected) {
       setPicked(toDisplayCandidate(preselected, tagColorByName, logicalToday || assignYmd));
       setEligible([]);
@@ -618,7 +630,13 @@ export function SchedulePlaceFrogSheet({
     );
   }, [visible, tagColorByName, preselected, logicalToday, assignYmd]);
 
-  const canConfirm = !!picked && span >= 1 && span <= maxSpan && !saving;
+  const effectiveSpan = allDay ? fullDaySlots : span;
+  const canConfirm =
+    !!picked &&
+    !saving &&
+    (allDay
+      ? canAssignAllDay
+      : span >= 1 && span <= maxSpan);
   const showList = !preselected && !picked;
   const dateLabel = formatAssignTitle(assignYmd);
 
@@ -666,8 +684,9 @@ export function SchedulePlaceFrogSheet({
         kind: picked.kind,
         id: picked.id,
         title: picked.title,
-        spanSlots: span,
+        spanSlots: effectiveSpan,
         assignYmd,
+        allDay: allDay || undefined,
       });
       onClose();
     } catch (err) {
@@ -675,7 +694,7 @@ export function SchedulePlaceFrogSheet({
     } finally {
       setSaving(false);
     }
-  }, [picked, canConfirm, onConfirm, span, assignYmd, onClose]);
+  }, [picked, canConfirm, onConfirm, effectiveSpan, assignYmd, allDay, onClose]);
 
   const sheetBg = isDark ? tf.paper2 : tf.card;
   const translateY = sheetY.interpolate({
@@ -712,15 +731,52 @@ export function SchedulePlaceFrogSheet({
       </FoldPopIn>
 
       <Text style={[styles.spanHint, { color: tf.muted }]}>
-        连续占用格数（最多 {maxSpan}）
+        {allDay
+          ? `全天 · 占用当日全部 ${fullDaySlots} 格`
+          : `连续占用格数（最多 ${maxSpan}）`}
       </Text>
       <View style={styles.spanRow}>
+        {canAssignAllDay ? (
+          <Pressable
+            onPress={() => {
+              setAllDay(true);
+              setSpan(fullDaySlots);
+            }}
+            accessibilityRole="button"
+            accessibilityState={{ selected: allDay }}
+            accessibilityLabel="指派全天"
+            style={[
+              styles.spanChip,
+              styles.allDayChip,
+              {
+                borderColor: allDay ? tf.pond : tf.line2,
+                backgroundColor: allDay ? tf.lily2 : 'transparent',
+              },
+            ]}>
+            <MaterialIcons
+              name="wb-sunny"
+              size={14}
+              color={allDay ? tf.pond : tf.muted}
+            />
+            <Text
+              style={{
+                color: allDay ? tf.pond : tf.ink,
+                fontWeight: '700',
+                fontSize: 13,
+              }}>
+              全天
+            </Text>
+          </Pressable>
+        ) : null}
         {Array.from({ length: maxSpan }, (_, i) => i + 1).map((n) => {
-          const active = span === n;
+          const active = !allDay && span === n;
           return (
             <Pressable
               key={n}
-              onPress={() => setSpan(n)}
+              onPress={() => {
+                setAllDay(false);
+                setSpan(n);
+              }}
               style={[
                 styles.spanChip,
                 {
@@ -775,7 +831,9 @@ export function SchedulePlaceFrogSheet({
           ) : (
             <>
               <MaterialIcons name="cruelty-free" size={18} color={tf.onPond} />
-              <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>确认入格</Text>
+              <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
+                {allDay ? '指派全天' : '确认入格'}
+              </Text>
             </>
           )}
         </Pressable>
@@ -821,7 +879,7 @@ export function SchedulePlaceFrogSheet({
               <Text style={[styles.sheetSub, { color: tf.muted }]}>
                 {showList
                   ? '先选任务或项目 · 已完成 / 搁置 / 未开始项目不可入格'
-                  : `放入 ${dateLabel} · 点选连续格数后确认`}
+                  : `放入 ${dateLabel} · 选格数或指派全天`}
               </Text>
             </View>
             <Pressable
@@ -1174,6 +1232,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
+  },
+  allDayChip: {
+    flexDirection: 'row',
+    gap: 4,
+    minWidth: 72,
+    paddingHorizontal: 14,
   },
   foot2: {
     flexDirection: 'row',

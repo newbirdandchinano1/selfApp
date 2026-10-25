@@ -15,6 +15,7 @@ import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
+import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -24,11 +25,17 @@ import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
-import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
+import {
+  acceptanceChecklistToLines,
+  createEmptyAcceptanceItem,
+  linesToAcceptanceChecklist,
+  mergeAcceptanceChecklistIntoExtraData,
+  type AcceptanceCriterionItem,
+} from '@/lib/acceptance-criteria';
 import {
   mergeRewardPointsIntoExtraData,
   normalizeRewardPoints,
@@ -73,17 +80,16 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Animated,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -165,7 +171,9 @@ export default function AddTaskScreen() {
 
   const [title, setTitle] = React.useState('');
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_TODO_ICON);
-  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('');
+  const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
+    createEmptyAcceptanceItem(),
+  ]);
   const [note, setNote] = React.useState('');
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
@@ -366,7 +374,11 @@ export default function AddTaskScreen() {
   const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
     setTitle(task.title ?? '');
     setEntityIcon(parseIconFromExtraData(task.extra_data, DEFAULT_TODO_ICON));
-    setAcceptanceCriteria(resolveAcceptanceCriteria(task.description, task.note));
+    // 独立待办无「长期」开关：统一走备注（description 旧验收文案并入备注兼容）
+    const legacyAcceptance = (task.description ?? '').trim();
+    const legacyNote = (task.note ?? '').trim();
+    setNote(legacyNote || legacyAcceptance);
+    setAcceptanceItems([createEmptyAcceptanceItem()]);
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
@@ -504,16 +516,16 @@ export default function AddTaskScreen() {
           entityIcon,
           DEFAULT_TODO_ICON,
         );
-        const trimmedAcceptanceCriteria = acceptanceCriteria.trim() || null;
+        const trimmedNote = note.trim() || null;
         if (isEditStandalone) {
           await updateTask(editTaskId, {
             title: trimmedTitle,
-            description: trimmedAcceptanceCriteria,
-            note: null,
+            description: null,
+            note: trimmedNote,
             status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
-            extra_data: extraPayload,
+            extra_data: mergeAcceptanceChecklistIntoExtraData(extraPayload, []),
           });
           await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
@@ -524,12 +536,12 @@ export default function AddTaskScreen() {
             category_id: null,
             parent_task_id: null,
             title: trimmedTitle,
-            description: trimmedAcceptanceCriteria,
-            note: null,
+            description: null,
+            note: trimmedNote,
             status: shelved ? 'shelved' : 'todo',
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
-            extra_data: extraPayload,
+            extra_data: mergeAcceptanceChecklistIntoExtraData(extraPayload, []),
           });
           await setTaskTagIds(id, selectedTagIds);
         }
@@ -555,33 +567,40 @@ export default function AddTaskScreen() {
       try {
         setIsSubmitting(true);
         const id = makeTimestampEntityId('tsk_', 8);
+        const checklist = isLongTermTask ? acceptanceItems : [];
+        const description = isLongTermTask
+          ? acceptanceChecklistToLines(acceptanceItems) || null
+          : null;
+        const noteToSave = isLongTermTask ? null : note.trim() || null;
+        let extraPayload = mergeIconIntoExtraData(
+          mergeRewardPointsIntoExtraData(
+            mergeLongTermTaskIntoExtraData(
+              JSON.stringify({
+                reminder: reminderText || '',
+                repeat: repeatText || '',
+                schedule: scheduleMeta,
+                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
+              }),
+              isLongTermTask,
+            ),
+            normalizeRewardPoints(rewardPointsText),
+          ),
+          entityIcon,
+          DEFAULT_TODO_ICON,
+        );
+        extraPayload = mergeAcceptanceChecklistIntoExtraData(extraPayload, checklist) ?? extraPayload;
         await createTask({
           id,
           project_id: quickProjectId,
           category_id: quickTaskCategoryId,
           parent_task_id: null,
           title: trimmedTitle,
-          description: acceptanceCriteria.trim() || null,
-          note: note.trim() || null,
+          description,
+          note: noteToSave,
           status: 'todo',
           priority: taskPriorityKeyToNumber(priority),
           due_date: resolveDueDate(),
-          extra_data: mergeIconIntoExtraData(
-            mergeRewardPointsIntoExtraData(
-              mergeLongTermTaskIntoExtraData(
-                JSON.stringify({
-                  reminder: reminderText || '',
-                  repeat: repeatText || '',
-                  schedule: scheduleMeta,
-                  ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
-                }),
-                isLongTermTask,
-              ),
-              normalizeRewardPoints(rewardPointsText),
-            ),
-            entityIcon,
-            DEFAULT_TODO_ICON,
-          ),
+          extra_data: extraPayload,
         });
         // 项目未贴标签时才保存任务自有标签
         if (!inheritsProjectTags && selectedTagIds.length > 0) {
@@ -627,8 +646,8 @@ export default function AddTaskScreen() {
         reminderText: reminderText,
         repeat: repeatText,
         repeatText: repeatText,
-        note: note.trim() || null,
-        acceptanceCriteria: acceptanceCriteria.trim(),
+        note: isLongTermTask ? null : note.trim() || null,
+        acceptanceCriteria: isLongTermTask ? acceptanceChecklistToLines(acceptanceItems) : '',
         schedule: scheduleMeta,
         isLongTermTask,
         autoPlaceIntoSchedule: wantAutoPlace,
@@ -908,15 +927,21 @@ export default function AddTaskScreen() {
                     <View
                       style={[
                         styles.frow,
-                        { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
+                        {
+                          borderTopWidth: StyleSheet.hairlineWidth,
+                          borderTopColor: 'rgba(232,224,210,0.52)',
+                          alignItems: 'flex-start',
+                          paddingVertical: 8,
+                        },
                       ]}>
-                      <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
                       <TextInput
-                        value={acceptanceCriteria}
-                        onChangeText={setAcceptanceCriteria}
-                        placeholder="怎样算完成？（可选）"
+                        value={note}
+                        onChangeText={setNote}
+                        placeholder="可选补充说明"
                         placeholderTextColor={tf.faint}
-                        style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
+                        multiline
+                        style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
                       />
                     </View>
                   </View>
@@ -1120,7 +1145,28 @@ export default function AddTaskScreen() {
                   <Text style={[styles.fchipText, { color: tf.onPond }]}>叶子任务</Text>
                 </View>
                 <Pressable
-                  onPress={() => setIsLongTermTask((v) => !v)}
+                  onPress={() => {
+                    setIsLongTermTask((v) => {
+                      const next = !v;
+                      if (next) {
+                        // 开启长期：备注行迁移为验收项（若清单为空）
+                        setAcceptanceItems((prev) => {
+                          const hasText = prev.some((i) => i.text.trim());
+                          if (hasText) return prev;
+                          const fromNote = linesToAcceptanceChecklist(note);
+                          return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
+                        });
+                      } else {
+                        // 关闭长期：验收文案并入备注（若备注为空）
+                        setNote((prev) => {
+                          if (prev.trim()) return prev;
+                          return acceptanceChecklistToLines(acceptanceItems);
+                        });
+                        setAcceptanceItems([createEmptyAcceptanceItem()]);
+                      }
+                      return next;
+                    });
+                  }}
                   accessibilityRole="button"
                   accessibilityState={{ selected: isLongTermTask }}
                   style={[
@@ -1312,17 +1358,40 @@ export default function AddTaskScreen() {
             fromY={10}
             holdHidden={foldAnimate}>
             <View style={[styles.fcard, styles.fcardTight, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-              <View style={styles.frow}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
-                <TextInput
-                  value={acceptanceCriteria}
-                  onChangeText={setAcceptanceCriteria}
-                  placeholder="怎样算完成？（可选）"
-                  placeholderTextColor={tf.faint}
-                  style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
-                />
-                <MaterialIcons name="edit" size={14} color={tf.faint} />
-              </View>
+              {isLongTermTask ? (
+                <View style={{ paddingVertical: 4 }}>
+                  <Text style={[styles.frowLab, { color: '#8A968C', marginBottom: 4 }]}>验收标准</Text>
+                  <AcceptanceChecklistEditor
+                    items={acceptanceItems}
+                    onChange={setAcceptanceItems}
+                    mode="edit"
+                    inkColor={tf.ink2}
+                    faintColor={tf.faint}
+                    frogColor={tf.frog}
+                    onPondColor={tf.onPond}
+                    lineColor={tf.line2}
+                  />
+                  <View style={[styles.hintline, { marginTop: 4 }]}>
+                    <MaterialIcons name="info-outline" size={12} color={tf.faint} />
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>
+                      验收清单提示目标达成，与子任务拆分互不冲突。
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <View style={[styles.frow, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                  <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
+                  <TextInput
+                    value={note}
+                    onChangeText={setNote}
+                    placeholder="可选补充说明"
+                    placeholderTextColor={tf.faint}
+                    multiline
+                    style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
+                  />
+                  <MaterialIcons name="edit" size={14} color={tf.faint} style={{ marginTop: 6 }} />
+                </View>
+              )}
               <View style={styles.hintline}>
                 <MaterialIcons name="cruelty-free" size={12} color={tf.frog} />
                 <Text style={{ fontSize: 10, color: '#6F856B', flex: 1 }}>
@@ -1364,21 +1433,6 @@ export default function AddTaskScreen() {
                 <Text style={[styles.frowVal, { color: tf.ink2 }]} numberOfLines={1}>
                   {repeatText || '不重复'}
                 </Text>
-              </View>
-              <View
-                style={[
-                  styles.frow,
-                  { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(232,224,210,0.52)' },
-                ]}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>备注</Text>
-                <TextInput
-                  value={note}
-                  onChangeText={setNote}
-                  placeholder="可选补充说明"
-                  placeholderTextColor={tf.faint}
-                  style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
-                />
-                <MaterialIcons name="edit" size={14} color={tf.faint} />
               </View>
             </View>
           </FoldRiseIn>

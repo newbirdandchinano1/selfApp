@@ -56,7 +56,7 @@ import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   getFrogAssignedDates,
   getFrogAssignedOn,
@@ -288,7 +288,6 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Dimensions,
   Easing,
@@ -5080,12 +5079,17 @@ export default function TasksScreen() {
     () => [styles.section, styles.stackedSection, { borderTopColor: colors.outline }],
     [colors.outline],
   );
+  /**
+   * 待办/三窗格行面：夜间必须用不透明实底。
+   * 暗色 `tf.card` 为 rgba(…,0.06)，会把 ReanimatedSwipeable 侧滑钮透到表层。
+   */
+  const todoListSurface = isDark ? tf.paper2 : 'rgba(255,252,245,0.92)';
   /** 设计稿 `.card.panes`：三窗格统一暖纸卡片（强制无阴影） */
   const panesCardStyle = React.useMemo(
     () => [
       styles.panesCard,
       {
-        backgroundColor: isDark ? tf.card : 'rgba(255,252,245,0.92)',
+        backgroundColor: todoListSurface,
         borderColor: isDark ? tf.line : 'rgba(216,205,187,0.75)',
         shadowColor: 'transparent',
         shadowOpacity: 0,
@@ -5094,7 +5098,7 @@ export default function TasksScreen() {
         elevation: 0,
       },
     ],
-    [isDark, tf.card, tf.line],
+    [isDark, tf.line, todoListSurface],
   );
 
   /**
@@ -6477,11 +6481,7 @@ export default function TasksScreen() {
                           /** 与窗格同色实底盖住侧滑钮；elevation 0 避免行阴影 */
                           childrenContainerStyle={[
                             styles.standaloneTodoSwipeChild,
-                            {
-                              backgroundColor: isDark
-                                ? tf.card
-                                : 'rgba(255,252,245,0.92)',
-                            },
+                            { backgroundColor: todoListSurface },
                           ]}
                           renderRightActions={() => (
                             <View style={styles.standaloneSwipeActions}>
@@ -6627,9 +6627,7 @@ export default function TasksScreen() {
                                   ? isDark
                                     ? 'rgba(248,236,215,0.14)'
                                     : 'rgba(248,236,215,0.38)'
-                                  : isDark
-                                    ? tf.card
-                                    : 'rgba(255,252,245,0.92)',
+                                  : todoListSurface,
                                 borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.52)',
                                 opacity: isRepeatWaiting ? 0.55 : 1,
                                 minHeight: 39,

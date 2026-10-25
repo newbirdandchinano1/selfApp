@@ -13,7 +13,6 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Keyboard,
   KeyboardAvoidingView,
@@ -33,7 +32,7 @@ import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { foldFonts, useFoldTheme } from '@/components/review/fold-ui';
 import { Spacing } from '@/constants/design-tokens';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
   createReviewColumn,

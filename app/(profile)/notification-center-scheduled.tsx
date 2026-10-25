@@ -8,7 +8,7 @@ import {
 } from '@/components/review/fold-motion';
 import { AppIcon } from '@/components/ui';
 import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   deleteScheduledAppNotification,
   listScheduledAppNotifications,
@@ -23,7 +23,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,

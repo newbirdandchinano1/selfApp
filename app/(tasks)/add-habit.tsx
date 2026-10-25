@@ -34,7 +34,7 @@ import {
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
@@ -85,7 +85,6 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
-  Alert,
   LayoutAnimation,
   Modal,
   Platform,

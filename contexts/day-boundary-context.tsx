@@ -103,12 +103,33 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
       bump();
     };
 
+    /**
+     * 对齐当前逻辑日 key。
+     * forceBump：回前台时即使 key 未变也 bump——后台挂起期间 timer 可能已改 ref 但 setState 丢失，
+     * 仅靠 key 比较会漏刷新；ymd 未变时下游 useMemo/effect 仍会短路。
+     */
+    const syncDayKey = (opts?: { forceBump?: boolean }) => {
+      const key = currentDayKey();
+      const prev = lastEmittedKeyRef.current;
+      if (prev == null) {
+        lastEmittedKeyRef.current = key;
+        if (opts?.forceBump) bump();
+        return;
+      }
+      if (prev !== key) {
+        onDayKeyAdvanced();
+        return;
+      }
+      if (opts?.forceBump) bump();
+    };
+
     const schedule = () => {
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(() => {
         const key = currentDayKey();
         if (lastEmittedKeyRef.current == null) {
           lastEmittedKeyRef.current = key;
+          bump();
         } else if (lastEmittedKeyRef.current !== key) {
           onDayKeyAdvanced();
         } else {
@@ -119,12 +140,7 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     };
 
     const onForeground = () => {
-      const key = currentDayKey();
-      if (lastEmittedKeyRef.current == null) {
-        lastEmittedKeyRef.current = key;
-      } else if (lastEmittedKeyRef.current !== key) {
-        onDayKeyAdvanced();
-      }
+      syncDayKey({ forceBump: true });
       schedule();
     };
 
@@ -137,7 +153,8 @@ export function DayBoundaryProvider({ children }: { children: React.ReactNode })
     const pollId = setInterval(() => {
       const key = currentDayKey();
       if (lastEmittedKeyRef.current != null && lastEmittedKeyRef.current !== key) {
-        onForeground();
+        syncDayKey();
+        schedule();
       }
     }, 30_000);
 

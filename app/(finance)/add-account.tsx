@@ -3,7 +3,7 @@ import { FoldPopIn, FoldRiseIn, useFoldMotionGate } from '@/components/review/fo
 import { Layout, Spacing } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
 import {
   FINANCE_ACCOUNT_ICON_OPTIONS,
@@ -44,7 +44,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,

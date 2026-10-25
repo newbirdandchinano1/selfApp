@@ -1,14 +1,14 @@
 import { recipeGlassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { StoredImage } from '@/components/stored-image';
+import { useCalendarToday } from '@/hooks/use-calendar-today';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchProfileRecipes } from '@/lib/profile-page-api';
 import {
   addRecipePlanEntry,
   daySlotMark,
   entriesForDate,
-  formatLocalYmd,
   loadRecipePlanStore,
   MEAL_SLOTS,
   mealSlotLabel,
@@ -25,12 +25,12 @@ import {
   type RecipeItem,
   type RecipeStore,
 } from '@/lib/recipes';
+import { refreshYmdFocusAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -78,10 +78,19 @@ export default function RecipePlanScreen() {
   const p = getRecipePalette(colorScheme);
   const tabBarInset = recipeGlassTabBarContentInset(insets.bottom);
 
-  const today = useMemo(() => formatLocalYmd(new Date()), []);
-  const [viewYear, setViewYear] = useState(() => new Date().getFullYear());
-  const [viewMonth, setViewMonth] = useState(() => new Date().getMonth());
+  const { calendarTodayYmd: today, calendarTodayDate } = useCalendarToday();
+  const [viewYear, setViewYear] = useState(() => calendarTodayDate.getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => calendarTodayDate.getMonth());
   const [selectedYmd, setSelectedYmd] = useState(today);
+  const prevTodayRef = useRef(today);
+  useEffect(() => {
+    const prev = prevTodayRef.current;
+    if (prev === today) return;
+    prevTodayRef.current = today;
+    setSelectedYmd((focusPrev) => refreshYmdFocusAfterLogicalDayChange(focusPrev, today, prev));
+    setViewYear(calendarTodayDate.getFullYear());
+    setViewMonth(calendarTodayDate.getMonth());
+  }, [today, calendarTodayDate]);
 
   const [recipeStore, setRecipeStore] = useState<RecipeStore | null>(null);
   const [planStore, setPlanStore] = useState<RecipePlanStore>({ version: 1, entries: [] });

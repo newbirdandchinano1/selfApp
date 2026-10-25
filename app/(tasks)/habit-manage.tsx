@@ -6,7 +6,7 @@ import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { addDaysToYmd } from '@/lib/date';
 import { sortHabitGridSectionsByTagWeight } from '@/lib/habit-grid-sort';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
@@ -50,7 +50,6 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,

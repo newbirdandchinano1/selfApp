@@ -5,7 +5,7 @@
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
   createHabitContext,
   deleteHabitContexts,
@@ -20,7 +20,6 @@ import { useFocusEffect } from 'expo-router/react-navigation';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,

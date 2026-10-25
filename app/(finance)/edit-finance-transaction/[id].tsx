@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui';
 import { Layout } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { formatFinanceHappenedAt, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import { useFinanceSheetCategories } from '@/lib/finance-transaction-sheet/use-sheet-categories';
@@ -33,7 +33,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,

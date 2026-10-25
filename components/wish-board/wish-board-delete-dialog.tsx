@@ -41,7 +41,7 @@ export function WishBoardDeleteDialog({
           </View>
           <Text style={styles.heading}>删除这个心愿？</Text>
           <Text style={styles.sub}>
-            「{wishTitle}」删除后不可恢复，{'\n'}但已产生的兑换足迹会保留。
+            「{wishTitle}」删除后不可恢复，{'\n'}但已产生的积分足迹会保留。
           </Text>
           <View style={styles.footer}>
             <Pressable

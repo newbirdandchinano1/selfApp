@@ -31,7 +31,7 @@ import {
   setWeeklyReviewCoachingText,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { isDailyReviewSkippedOnWeeklyReviewDay } from '@/lib/weekly-review-settings';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -41,7 +41,6 @@ import * as Clipboard from 'expo-clipboard';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,

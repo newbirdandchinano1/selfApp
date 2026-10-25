@@ -8,7 +8,7 @@ import {
 import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
 import { Spacing } from '@/constants/design-tokens';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import {
   buildArchiveSummary,
   filterLogs,
@@ -31,7 +31,6 @@ import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Pressable,
   ScrollView,

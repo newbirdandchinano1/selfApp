@@ -5,7 +5,7 @@ import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressab
 import { StoredImage } from '@/components/stored-image';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchProfileRecipes } from '@/lib/profile-page-api';
 import {
   addRecipeToBasket,
@@ -39,7 +39,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Modal,
   Pressable,

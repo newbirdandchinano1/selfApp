@@ -5,7 +5,7 @@ import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { formatYmd, parseYmd } from '@/lib/date';
 import {
   createQuickAddItemMap,
@@ -31,7 +31,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,

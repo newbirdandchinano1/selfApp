@@ -10,7 +10,7 @@ import {
   formatHealthMetricLedgerRefTitle,
   formatPointsLedgerReasonLabel,
 } from '@/lib/points-ledger-reason-label';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { deletePointsLedgerRecord } from '@/lib/repositories/points/points';
 import { formatPoints } from '@/lib/reward-points';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -18,7 +18,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   StyleSheet,
   Text,

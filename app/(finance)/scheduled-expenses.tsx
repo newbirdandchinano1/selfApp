@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui';
 import { Layout } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { ymdFromDatetime } from '@/lib/api-mysql-datetime';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import {
@@ -37,7 +37,6 @@ import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-  Alert,
   Animated,
   Easing,
   Pressable,

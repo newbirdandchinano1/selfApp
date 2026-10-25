@@ -4,6 +4,7 @@ import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
@@ -13,9 +14,17 @@ import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import {
+  acceptanceChecklistToLines,
+  createEmptyAcceptanceItem,
+  linesToAcceptanceChecklist,
+  mergeAcceptanceChecklistIntoExtraData,
+  parseAcceptanceChecklist,
+  type AcceptanceCriterionItem,
+} from '@/lib/acceptance-criteria';
 import { consumeAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
-import { toast } from '@/lib/app-feedback';
+import { toast, Alert } from '@/lib/app-feedback';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
   endCloudSqliteDirtyIgnoreBatch,
@@ -33,6 +42,7 @@ import { addDaysToYmd } from '@/lib/date';
 import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
 import {
   getIsLongTermProject,
+  getIsLongTermTask,
   mergeLongTermProjectIntoExtraData,
   mergeLongTermTaskIntoExtraData,
 } from '@/lib/long-term-task';
@@ -98,7 +108,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -418,6 +427,7 @@ function mapTaskRowToSubtask(task: TaskRow): Subtask {
     note: task.note ?? '',
     acceptanceCriteria: task.description ?? '',
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
+    isLongTermTask: getIsLongTermTask(task.extra_data),
   };
 }
 
@@ -445,9 +455,13 @@ function isProjectSubtaskUnchanged(
   });
   const nextStatus = (subtask.done ? 'done' : 'todo') as TaskRow['status'];
   const nextDue = extractDueDateFromDeadlineText(subtask.deadline || subtask.deadlineText || '');
+  const longTerm = subtask.isLongTermTask === true;
+  const nextDescription = longTerm ? subtask.acceptanceCriteria?.trim() || null : null;
+  const nextNote = longTerm ? null : subtask.note?.trim() || null;
   return (
     existing.title === (subtask.title.trim() || '未命名任务') &&
-    (existing.description ?? null) === (subtask.acceptanceCriteria?.trim() || null) &&
+    (existing.description ?? null) === nextDescription &&
+    (existing.note ?? null) === nextNote &&
     existing.status === nextStatus &&
     (existing.due_date?.slice(0, 10) ?? null) === (nextDue ?? null) &&
     (existing.extra_data ?? null) === nextExtra &&
@@ -508,6 +522,9 @@ export default function EditProjectScreen() {
   const [title, setTitle] = React.useState('');
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
+  const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
+    createEmptyAcceptanceItem(),
+  ]);
   const [deadlineText, setDeadlineText] = React.useState('');
   const [reminderText, setReminderText] = React.useState('');
   const [repeatText, setRepeatText] = React.useState('');
@@ -608,29 +625,35 @@ export default function EditProjectScreen() {
         taskSchedule,
         extractDueDateFromDeadlineText(task.deadline || task.deadlineText || ''),
       );
+      const longTerm = task.isLongTermTask === true;
+      const checklist = longTerm
+        ? linesToAcceptanceChecklist(task.acceptanceCriteria ?? '')
+        : [];
+      let taskExtra = mergeLongTermTaskIntoExtraData(
+        JSON.stringify({
+          reminder: task.reminder || task.reminderText || '',
+          repeat: task.repeat || task.repeatText || '',
+          schedule: taskSchedule,
+          ...(task.autoPlaceIntoSchedule ? { autoPlaceIntoSchedule: true } : {}),
+          ...(task.icon?.trim()
+            ? { icon: normalizeEntityIcon(task.icon, DEFAULT_TODO_ICON) }
+            : {}),
+        }),
+        longTerm,
+      );
+      taskExtra = mergeAcceptanceChecklistIntoExtraData(taskExtra, checklist) ?? taskExtra;
       await createTask({
         id: task.id,
         project_id: projectId,
         category_id: normalizedCategoryId,
         parent_task_id: null,
         title: task.title.trim() || '未命名任务',
-        description: task.acceptanceCriteria?.trim() || null,
-        note: null,
+        description: longTerm ? task.acceptanceCriteria?.trim() || null : null,
+        note: longTerm ? null : task.note?.trim() || null,
         status: (task.done ? 'done' : 'todo') as TaskRow['status'],
         priority: taskPriorityKeyToNumber(priority),
         due_date: dueDate,
-        extra_data: mergeLongTermTaskIntoExtraData(
-          JSON.stringify({
-            reminder: task.reminder || task.reminderText || '',
-            repeat: task.repeat || task.repeatText || '',
-            schedule: taskSchedule,
-            ...(task.autoPlaceIntoSchedule ? { autoPlaceIntoSchedule: true } : {}),
-            ...(task.icon?.trim()
-              ? { icon: normalizeEntityIcon(task.icon, DEFAULT_TODO_ICON) }
-              : {}),
-          }),
-          task.isLongTermTask === true,
-        ),
+        extra_data: taskExtra,
       });
       // 项目一旦有子任务，不再可作为青蛙实体
       const snap = projectSnapshotRef.current;
@@ -681,7 +704,10 @@ export default function EditProjectScreen() {
       setEntityIcon(resolveProjectDisplayIcon(project.name, project.extra_data));
       setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
       setPriority(taskPriorityToKey(project.priority ?? 0));
-      setNotes(project.note ?? '');
+      const longTerm = getIsLongTermProject(project.extra_data);
+      const checklist = parseAcceptanceChecklist(project.extra_data, longTerm ? project.note : null, null);
+      setAcceptanceItems(checklist.length > 0 ? checklist : [createEmptyAcceptanceItem()]);
+      setNotes(longTerm ? '' : (project.note ?? ''));
       const extraData = parseProjectExtraData(project.extra_data);
       setProjectExtraData(extraData);
       const loadedSchedule = (extraData.schedule ?? null) as ProjectScheduleMeta | null;
@@ -696,7 +722,7 @@ export default function EditProjectScreen() {
         console.warn('加载项目标签关联失败', tagErr);
         setSelectedTagIds([]);
       }
-      setIsLongTermProject(getIsLongTermProject(project.extra_data));
+      setIsLongTermProject(longTerm);
       setSelectedLifeBetId(project.life_bet_id?.trim() ? project.life_bet_id : null);
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
@@ -1036,16 +1062,21 @@ export default function EditProjectScreen() {
       );
       const withIcon = mergeIconIntoExtraObject(withReward, entityIcon, DEFAULT_PROJECT_ICON);
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withIcon), isLongTermProject);
+      const checklist = isLongTermProject ? acceptanceItems : [];
+      const withAcceptance =
+        mergeAcceptanceChecklistIntoExtraData(withLongTerm, checklist) ?? withLongTerm;
       // 项目一旦有子任务，不再可作为青蛙实体
       const nextExtraAfterTasks =
-        subtasks.length > 0 ? clearProjectFrogFields(withLongTerm) : withLongTerm;
+        subtasks.length > 0 ? clearProjectFrogFields(withAcceptance) : withAcceptance;
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         life_bet_id: selectedLifeBetId,
         name: trimmedTitle,
         priority: taskPriorityKeyToNumber(priority),
-        note: notes.trim() || null,
+        note: isLongTermProject
+          ? acceptanceChecklistToLines(acceptanceItems) || null
+          : notes.trim() || null,
         due_date: projectDueDate,
         extra_data: nextExtraAfterTasks,
       });
@@ -1069,20 +1100,29 @@ export default function EditProjectScreen() {
       for (const { subtask, parent_task_id } of flatWithParents) {
         const existingTask = existingTaskById.get(subtask.id);
         const existingExtra = existingTask ? parseTaskExtraData(existingTask.extra_data) : parseTaskExtraData(null);
-        const payload = {
-          project_id: projectId,
-          parent_task_id,
-          title: subtask.title.trim() || '未命名任务',
-          description: subtask.acceptanceCriteria?.trim() || null,
-          note: null,
-          status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
-          priority: projectPriorityValue,
-          due_date: extractDueDateFromDeadlineText(subtask.deadline || subtask.deadlineText || ''),
-          extra_data: JSON.stringify({
+        const longTerm = subtask.isLongTermTask === true;
+        const checklist = longTerm
+          ? linesToAcceptanceChecklist(subtask.acceptanceCriteria ?? '')
+          : [];
+        let taskExtra = mergeLongTermTaskIntoExtraData(
+          JSON.stringify({
             ...existingExtra,
             reminder: subtask.reminder || subtask.reminderText || '',
             repeat: subtask.repeat || subtask.repeatText || '',
           }),
+          longTerm,
+        );
+        taskExtra = mergeAcceptanceChecklistIntoExtraData(taskExtra, checklist) ?? taskExtra;
+        const payload = {
+          project_id: projectId,
+          parent_task_id,
+          title: subtask.title.trim() || '未命名任务',
+          description: longTerm ? subtask.acceptanceCriteria?.trim() || null : null,
+          note: longTerm ? null : subtask.note?.trim() || null,
+          status: (subtask.done ? 'done' : 'todo') as TaskRow['status'],
+          priority: projectPriorityValue,
+          due_date: extractDueDateFromDeadlineText(subtask.deadline || subtask.deadlineText || ''),
+          extra_data: taskExtra,
         };
 
         if (existingTaskIds.has(subtask.id)) {
@@ -1187,6 +1227,7 @@ export default function EditProjectScreen() {
     deadlineText,
     entityIcon,
     isLongTermProject,
+    acceptanceItems,
     notes,
     prerequisiteProjectIds,
     priority,
@@ -1509,18 +1550,41 @@ export default function EditProjectScreen() {
                       />
                     </View>
                   </View>
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收</Text>
-                    <TextInput
-                      value={notes}
-                      onChangeText={setNotes}
-                      placeholder="怎样算完成？（可选）"
-                      placeholderTextColor={tf.faint}
-                      editable={!formBusy}
-                      style={[styles.frowInput, { color: tf.ink2, flex: 1, opacity: formBusy ? 0.65 : 1 }]}
-                    />
-                    <MaterialIcons name="edit" size={14} color="#A4ADA3" />
-                  </View>
+                  {isLongTermProject ? (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>验收标准</Text>
+                      <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
+                        <AcceptanceChecklistEditor
+                          items={acceptanceItems}
+                          onChange={setAcceptanceItems}
+                          mode="edit"
+                          disabled={formBusy}
+                          inkColor={tf.ink2}
+                          faintColor={tf.faint}
+                          frogColor={tf.frog}
+                          onPondColor={tf.onPond}
+                          lineColor={tf.line2}
+                        />
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
+                      <TextInput
+                        value={notes}
+                        onChangeText={setNotes}
+                        placeholder="可选补充说明"
+                        placeholderTextColor={tf.faint}
+                        editable={!formBusy}
+                        multiline
+                        style={[
+                          styles.frowInput,
+                          { color: tf.ink2, flex: 1, minHeight: 36, opacity: formBusy ? 0.65 : 1 },
+                        ]}
+                      />
+                      <MaterialIcons name="edit" size={14} color="#A4ADA3" style={{ marginTop: 6 }} />
+                    </View>
+                  )}
                 </View>
               </FoldRiseIn>
 
@@ -1712,7 +1776,21 @@ export default function EditProjectScreen() {
                     </Text>
                     <TaskFoldSwitch
                       value={isLongTermProject}
-                      onValueChange={setIsLongTermProject}
+                      onValueChange={(next) => {
+                        if (next) {
+                          setAcceptanceItems((prev) => {
+                            const hasText = prev.some((i) => i.text.trim());
+                            if (hasText) return prev;
+                            const fromNote = linesToAcceptanceChecklist(notes);
+                            return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
+                          });
+                          setNotes('');
+                        } else {
+                          setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
+                          setAcceptanceItems([createEmptyAcceptanceItem()]);
+                        }
+                        setIsLongTermProject(next);
+                      }}
                       disabled={formBusy}
                       accessibilityLabel="长期项目"
                     />

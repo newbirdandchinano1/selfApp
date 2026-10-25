@@ -157,8 +157,8 @@ export function WishBoardBalanceBar({
           onPress={onFootprints}
           style={({ pressed }) => [styles.pill, { opacity: pressed ? 0.88 : 1 }]}
           accessibilityRole="button"
-          accessibilityLabel="兑换足迹">
-          <Text style={styles.pillText}>兑换足迹 ›</Text>
+          accessibilityLabel="积分足迹">
+          <Text style={styles.pillText}>积分足迹 ›</Text>
         </Pressable>
       </View>
     </View>

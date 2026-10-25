@@ -7,7 +7,7 @@ import {
 } from '@/components/review/fold-motion';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { addDaysToYmd } from '@/lib/date';
 import { syncHabitDetailDataFromApi } from '@/lib/habit-detail-api';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
@@ -77,7 +77,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Platform,

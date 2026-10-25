@@ -16,7 +16,6 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Animated,
   Modal,
   Pressable,
@@ -27,6 +26,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Alert } from '@/lib/app-feedback';
 type RangeTab = '周' | '月' | '年' | '自定义';
 type CustomDateField = 'start' | 'end';
 type PickerColumn = 'year' | 'month' | 'day';

@@ -48,7 +48,7 @@ import {
     runInAutoLedgerSession,
 } from '@/lib/auto-ledger-session';
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
 import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
@@ -141,24 +141,23 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Dimensions,
-    Easing,
-    Keyboard,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    Pressable,
-    StyleProp,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    View,
-    ViewStyle,
-    type KeyboardEvent,
+  ActivityIndicator,
+  Animated,
+  Dimensions,
+  Easing,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleProp,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+  ViewStyle,
+  type KeyboardEvent,
 } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';

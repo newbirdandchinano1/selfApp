@@ -138,7 +138,7 @@ export default function WishBoardManageScreen() {
         <Text style={styles.emptyEmoji}>🎁</Text>
         <Text style={styles.emptyTitle}>{items.length === 0 ? '还没有心愿' : '没有可管理的心愿'}</Text>
         <Text style={styles.emptySub}>
-          {items.length === 0 ? '点右上角 ＋ 许下第一个心愿' : '兑换完成的心愿已归档到兑换足迹'}
+          {items.length === 0 ? '点右上角 ＋ 许下第一个心愿' : '兑换完成的心愿已记入积分足迹'}
         </Text>
         <Pressable
           onPress={() => setAddVisible(true)}

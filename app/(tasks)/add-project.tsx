@@ -19,12 +19,20 @@ import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import {
+  acceptanceChecklistToLines,
+  createEmptyAcceptanceItem,
+  linesToAcceptanceChecklist,
+  mergeAcceptanceChecklistIntoExtraData,
+  type AcceptanceCriterionItem,
+} from '@/lib/acceptance-criteria';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { toast } from '@/lib/app-feedback';
 import {
@@ -126,6 +134,9 @@ export default function AddProjectScreen() {
   const [title, setTitle] = React.useState('');
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
+  const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
+    createEmptyAcceptanceItem(),
+  ]);
   const [categories, setCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = React.useState<string | null>(null);
   const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
@@ -292,12 +303,14 @@ export default function AddProjectScreen() {
       const projectId = buildProjectId();
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
       const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
+      const checklist = isLongTermProject ? acceptanceItems : [];
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
       const withReward = mergeRewardPointsIntoExtraData(
         withLongTerm,
         normalizeRewardPoints(rewardPointsText),
       );
       const withIcon = mergeIconIntoExtraData(withReward, entityIcon, DEFAULT_PROJECT_ICON);
+      const withAcceptance = mergeAcceptanceChecklistIntoExtraData(withIcon, checklist) ?? withIcon;
       const projectPriority = taskPriorityKeyToNumber(priority);
       const projectDueDate = dueDateFromScheduleMeta(
         scheduleToSave,
@@ -309,9 +322,11 @@ export default function AddProjectScreen() {
         category_id: selectedCategoryId,
         life_bet_id: selectedLifeBetId,
         priority: projectPriority,
-        note: notes.trim() || null,
+        note: isLongTermProject
+          ? acceptanceChecklistToLines(acceptanceItems) || null
+          : notes.trim() || null,
         due_date: projectDueDate,
-        extra_data: withIcon,
+        extra_data: withAcceptance,
       });
       await setProjectTagIds(projectId, selectedTagIds);
 
@@ -366,6 +381,7 @@ export default function AddProjectScreen() {
     deadlineText,
     entityIcon,
     initialTasks,
+    acceptanceItems,
     isLongTermProject,
     notes,
     notifyAncestorsDataChanged,
@@ -555,7 +571,21 @@ export default function AddProjectScreen() {
                 <Text style={{ flex: 1, fontSize: 12, color: tf.faint }}>无子任务时可指派青蛙</Text>
                 <TaskFoldSwitch
                   value={isLongTermProject}
-                  onValueChange={setIsLongTermProject}
+                  onValueChange={(next) => {
+                    if (next) {
+                      setAcceptanceItems((prev) => {
+                        const hasText = prev.some((i) => i.text.trim());
+                        if (hasText) return prev;
+                        const fromNote = linesToAcceptanceChecklist(notes);
+                        return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
+                      });
+                      setNotes('');
+                    } else {
+                      setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
+                      setAcceptanceItems([createEmptyAcceptanceItem()]);
+                    }
+                    setIsLongTermProject(next);
+                  }}
                   accessibilityLabel="长期项目"
                 />
               </View>
@@ -595,17 +625,36 @@ export default function AddProjectScreen() {
                   </Pressable>
                 </View>
               </View>
-              <View style={[styles.frow, frowBorder]}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>验收标准</Text>
-                <TextInput
-                  value={notes}
-                  onChangeText={setNotes}
-                  placeholder="怎样算完成？（可选）"
-                  placeholderTextColor={tf.faint}
-                  style={[styles.frowInput, { color: tf.ink2, flex: 1 }]}
-                />
-                <MaterialIcons name="edit" size={14} color="#A4ADA3" />
-              </View>
+              {isLongTermProject ? (
+                <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                  <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>验收标准</Text>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <AcceptanceChecklistEditor
+                      items={acceptanceItems}
+                      onChange={setAcceptanceItems}
+                      mode="edit"
+                      inkColor={tf.ink2}
+                      faintColor={tf.faint}
+                      frogColor={tf.frog}
+                      onPondColor={tf.onPond}
+                      lineColor={tf.line2}
+                    />
+                  </View>
+                </View>
+              ) : (
+                <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                  <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
+                  <TextInput
+                    value={notes}
+                    onChangeText={setNotes}
+                    placeholder="可选补充说明"
+                    placeholderTextColor={tf.faint}
+                    multiline
+                    style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
+                  />
+                  <MaterialIcons name="edit" size={14} color="#A4ADA3" style={{ marginTop: 6 }} />
+                </View>
+              )}
               <View style={[styles.frow, frowBorder]}>
                 <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
                 <View style={{ flex: 1, minWidth: 0 }}>

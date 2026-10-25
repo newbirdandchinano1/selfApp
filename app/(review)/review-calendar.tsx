@@ -28,10 +28,11 @@ import {
   shouldFetchReviewFromApi,
 } from '@/lib/review-page-api';
 import { formatYmd } from '@/lib/date';
+import { refreshYmdFocusAfterLogicalDayChange } from '@/lib/tasks-logical-day';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -104,6 +105,16 @@ export default function ReviewCalendarScreen() {
 
   const [visibleMonth, setVisibleMonth] = useState(() => monthStart(todayDate));
   const [selectedYmd, setSelectedYmd] = useState(logicalTodayYmd);
+  const prevLogicalTodayYmdRef = useRef(logicalTodayYmd);
+  useEffect(() => {
+    const prev = prevLogicalTodayYmdRef.current;
+    if (prev === logicalTodayYmd) return;
+    prevLogicalTodayYmdRef.current = logicalTodayYmd;
+    setSelectedYmd((focusPrev) =>
+      refreshYmdFocusAfterLogicalDayChange(focusPrev, logicalTodayYmd, prev),
+    );
+    setVisibleMonth(monthStart(todayDate));
+  }, [logicalTodayYmd, todayDate]);
   const [filledSet, setFilledSet] = useState<Set<string>>(() => new Set());
   const [fieldsByYmd, setFieldsByYmd] = useState<Record<string, ReviewFieldValues>>({});
   const [dailyTemplate, setDailyTemplate] = useState<ReviewDimensionTemplate[]>([]);

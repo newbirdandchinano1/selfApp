@@ -27,7 +27,6 @@ import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
-  Alert,
   Animated,
   Modal,
   Pressable,
@@ -38,6 +37,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Alert } from '@/lib/app-feedback';
 export type ScheduleSubjectInfo = {
   kind: 'task' | 'project';
   id: string;
@@ -208,6 +208,8 @@ export function SchedulePlacementDetailSheet({
   const { animate } = useFoldMotionGate();
 
   const [confirmOpen, setConfirmOpen] = React.useState(false);
+  /** complete = 确认完成/打卡；undo = 撤销完成/打卡（统一走设计稿弹窗，不用系统 Alert） */
+  const [confirmKind, setConfirmKind] = React.useState<'complete' | 'undo'>('complete');
   const [nowMins, setNowMins] = React.useState(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
@@ -218,8 +220,8 @@ export function SchedulePlacementDetailSheet({
   const dialogScale = React.useRef(new Animated.Value(0.92)).current;
   const dialogOpacity = React.useRef(new Animated.Value(0)).current;
 
-  const isVirtual = surface === 'habit' || surface === 'todo';
-  const canManagePlacement = surface === 'frog' && !!placement;
+  /** 有真实占用即可改派/取消指派（含琥珀黄独立待办占用；与 surface 文案无关） */
+  const canManagePlacement = !!placement;
 
   React.useEffect(() => {
     if (!visible) {
@@ -300,7 +302,7 @@ export function SchedulePlacementDetailSheet({
   }, [animate, confirmOpen, dialogOpacity, dialogScale]);
 
   const deleted =
-    !isVirtual &&
+    canManagePlacement &&
     (!!subject?.deletedSnapshot || isFrogSubjectDeleted(subject?.extraData ?? null));
   const readOnly = !editable || deleted;
   const isOrphaned =
@@ -362,8 +364,6 @@ export function SchedulePlacementDetailSheet({
       }`
     : timeRange;
 
-  const subjectFallback =
-    surface === 'habit' ? '该习惯' : surface === 'todo' ? '该待办' : '该青蛙';
   const primaryChipLabel =
     surface === 'habit' ? '习惯' : surface === 'todo' ? '待办' : '青蛙';
   const secondaryChipLabel =
@@ -375,14 +375,46 @@ export function SchedulePlacementDetailSheet({
           ? '叶子任务'
           : '项目';
   const confirmTitle =
-    surface === 'habit'
-      ? '完成这项习惯？'
-      : surface === 'todo'
-        ? '完成这项待办？'
-        : '完成这只青蛙？';
+    confirmKind === 'undo'
+      ? surface === 'habit'
+        ? '撤销这项打卡？'
+        : surface === 'todo'
+          ? '撤销待办完成？'
+          : '取消青蛙完成？'
+      : surface === 'habit'
+        ? '完成这项习惯？'
+        : surface === 'todo'
+          ? '完成这项待办？'
+          : '完成这只青蛙？';
   const confirmStatPrimary =
-    surface === 'habit' ? '习惯打卡' : surface === 'todo' ? '待办 +1' : '青蛙 +1';
-  const detailBtnLabel = surface === 'habit' ? '习惯详情' : '任务详情';
+    confirmKind === 'undo'
+      ? surface === 'habit'
+        ? '撤销打卡'
+        : surface === 'todo'
+          ? '待办撤销'
+          : '青蛙撤销'
+      : surface === 'habit'
+        ? '习惯打卡'
+        : surface === 'todo'
+          ? '待办 +1'
+          : '青蛙 +1';
+  const confirmBodyLead =
+    confirmKind === 'undo'
+      ? surface === 'habit'
+        ? '撤销后恢复未打卡状态，热力会按规则回退'
+        : '撤销完成后恢复原积分与热力'
+      : surface === 'habit'
+        ? '打卡后计入今日习惯与完成热力'
+        : '完成后计入今日完成热力';
+  const confirmPrimaryLabel =
+    confirmKind === 'undo'
+      ? surface === 'habit'
+        ? '撤销打卡'
+        : '撤销完成'
+      : surface === 'habit'
+        ? '打卡'
+        : '完成';
+  const detailBtnLabel = surface === 'habit' ? '习惯详情' : surface === 'todo' ? '待办详情' : '任务详情';
   const noteText = subject?.done
     ? surface === 'habit'
       ? '撤销后恢复未打卡状态，热力会按规则回退。'
@@ -400,23 +432,7 @@ export function SchedulePlacementDetailSheet({
 
   const openCompleteConfirm = () => {
     if (readOnly || !subject) return;
-    if (subject.done) {
-      Alert.alert(
-        '取消完成？',
-        `确定将「${subject.title.trim() || subjectFallback}」标记为未完成吗？`,
-        [
-          { text: '再看看', style: 'cancel' },
-          {
-            text: '取消完成',
-            onPress: () => {
-              onClose();
-              onToggleDone();
-            },
-          },
-        ],
-      );
-      return;
-    }
+    setConfirmKind(subject.done ? 'undo' : 'complete');
     setConfirmOpen(true);
   };
 
@@ -741,18 +757,16 @@ export function SchedulePlacementDetailSheet({
                 {confirmTitle}
               </Text>
               <Text style={[styles.dialogBody, { color: '#7E8C81' }]}>
-                {surface === 'habit'
-                  ? '打卡后计入今日习惯与完成热力'
-                  : '完成后计入今日完成热力'}
-                {rewardPts !== 0 ? `，并结算 ` : '。'}
-                {rewardPts !== 0 ? (
+                {confirmBodyLead}
+                {confirmKind === 'complete' && rewardPts !== 0 ? `，并结算 ` : '。'}
+                {confirmKind === 'complete' && rewardPts !== 0 ? (
                   <Text style={{ fontWeight: '800', color: tf.pond }}>
                     {rewardPts > 0 ? '+' : ''}
                     {formatPoints(rewardPts)}
                   </Text>
                 ) : null}
-                {rewardPts !== 0 ? ' 积分。' : ''}
-                若误点，可撤销。
+                {confirmKind === 'complete' && rewardPts !== 0 ? ' 积分。' : ''}
+                {confirmKind === 'complete' ? '若误点，可撤销。' : ''}
               </Text>
               <View style={styles.dstats}>
                 <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
@@ -762,12 +776,19 @@ export function SchedulePlacementDetailSheet({
                 </View>
                 <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
                   <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
-                    积分 {rewardPts !== 0 ? `${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)}` : '—'}
+                    积分{' '}
+                    {confirmKind === 'undo'
+                      ? rewardPts !== 0
+                        ? `${rewardPts > 0 ? '-' : '+'}${formatPoints(Math.abs(rewardPts))}`
+                        : '—'
+                      : rewardPts !== 0
+                        ? `${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)}`
+                        : '—'}
                   </Text>
                 </View>
                 <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
                   <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
-                    热力 ↑
+                    {confirmKind === 'undo' ? '热力 ↓' : '热力 ↑'}
                   </Text>
                 </View>
               </View>
@@ -786,7 +807,7 @@ export function SchedulePlacementDetailSheet({
                     styles.dbtn,
                     { backgroundColor: tf.pond, opacity: pressed ? 0.92 : 1 },
                   ]}>
-                  <Text style={[styles.dbtnText, { color: tf.onPond }]}>完成</Text>
+                  <Text style={[styles.dbtnText, { color: tf.onPond }]}>{confirmPrimaryLabel}</Text>
                 </Pressable>
               </View>
             </Animated.View>

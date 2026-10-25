@@ -17,15 +17,31 @@ export type AppDialogAlertOptions = {
   okText?: string;
 };
 
+export type AppDialogActionButton = {
+  text: string;
+  style?: 'default' | 'cancel' | 'destructive';
+};
+
+export type AppDialogActionsOptions = {
+  title: string;
+  message?: string;
+  kind?: AppDialogKind;
+  buttons: AppDialogActionButton[];
+};
+
 export type AppDialogPayload = {
   id: number;
   title: string;
   message: string;
   kind: AppDialogKind;
+  /** null = 单按钮 / 动作列表模式不使用左右双键 */
   cancelText: string | null;
   confirmText: string;
   confirmDanger: boolean;
-  resolve: (confirmed: boolean) => void;
+  /** 非 null 时为多选项列表（替代左右双键） */
+  actions: AppDialogActionButton[] | null;
+  /** confirm/alert：boolean；actions：选中下标，取消/遮罩为 null */
+  resolve: (result: boolean | number | null) => void;
 };
 
 type Listener = (payload: AppDialogPayload | null) => void;
@@ -42,19 +58,21 @@ function emit(payload: AppDialogPayload | null): void {
   }
 }
 
-function dismissCurrent(confirmed: boolean): void {
+function dismissCurrent(result: boolean | number | null): void {
   const prev = current;
   if (!prev) return;
   emit(null);
-  prev.resolve(confirmed);
+  prev.resolve(result);
 }
 
-function open(partial: Omit<AppDialogPayload, 'id' | 'resolve'>): Promise<boolean> {
+function open(
+  partial: Omit<AppDialogPayload, 'id' | 'resolve'>,
+): Promise<boolean | number | null> {
   return new Promise(resolve => {
     if (current) {
       const prev = current;
       emit(null);
-      prev.resolve(false);
+      prev.resolve(prev.actions ? null : false);
     }
 
     const payload: AppDialogPayload = {
@@ -82,30 +100,62 @@ export const dialog = {
         (opts.confirmText ?? (destructive ? '删除' : '确定')).trim() ||
         (destructive ? '删除' : '确定'),
       confirmDanger: destructive,
-    });
+      actions: null,
+    }).then(r => r === true);
   },
 
-  /** 单按钮提示；关闭后 resolve */
-  async alert(opts: AppDialogAlertOptions): Promise<void> {
-    await open({
+  /** 单按钮提示；点确认 true，点遮罩/返回 false */
+  alert(opts: AppDialogAlertOptions): Promise<boolean> {
+    return open({
       title: opts.title.trim() || '提示',
       message: (opts.message ?? '').trim(),
       kind: opts.kind ?? 'success',
       cancelText: null,
       confirmText: (opts.okText ?? '好的').trim() || '好的',
       confirmDanger: false,
-    });
+      actions: null,
+    }).then(r => r === true);
+  },
+
+  /**
+   * 多选项列表；resolve 选中下标，遮罩/无选为 null。
+   * 用于替代 RN Alert 的多按钮动作菜单。
+   */
+  actions(opts: AppDialogActionsOptions): Promise<number | null> {
+    const buttons = opts.buttons
+      .map(b => ({
+        text: (b.text ?? '').trim() || '选项',
+        style: b.style ?? ('default' as const),
+      }))
+      .filter(b => b.text);
+    if (buttons.length === 0) {
+      return Promise.resolve(null);
+    }
+    return open({
+      title: opts.title.trim() || '请选择',
+      message: (opts.message ?? '').trim(),
+      kind: opts.kind ?? 'success',
+      cancelText: null,
+      confirmText: '',
+      confirmDanger: false,
+      actions: buttons,
+    }).then(r => (typeof r === 'number' ? r : null));
   },
 
   /** 强制关闭（视为取消） */
   dismiss(): void {
-    dismissCurrent(false);
+    dismissCurrent(current?.actions ? null : false);
   },
 };
 
-/** Host 内调用：用户点确认 / 取消 / 遮罩 */
+/** Host 内调用：用户点确认 / 取消 / 遮罩（双键模式） */
 export function resolveAppDialog(confirmed: boolean): void {
   dismissCurrent(confirmed);
+}
+
+/** Host 内调用：动作列表选中 / 取消 */
+export function resolveAppDialogAction(index: number | null): void {
+  dismissCurrent(index);
 }
 
 export function subscribeAppDialog(listener: Listener): () => void {
