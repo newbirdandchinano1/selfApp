@@ -25,13 +25,13 @@ import {
   Animated,
   FlatList,
   Modal,
+  PixelRatio,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -77,9 +77,12 @@ const timeQuickChips = ['本周', '下周', '本月', '下月', '未来半年'];
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_PAGE_SPAN = 481;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
-/** content 左右 14 + minical padding 8；估错会导致 initialScrollIndex 错位到别的月份 */
-const CALENDAR_H_INSET = 14 * 2 + 8 * 2;
 const REMINDER_OPTIONS: ReminderOption[] = TASK_REMINDER_OPTIONS;
+
+/** 亚像素宽度会导致 paging/snap 停在两月之间（左右各露一半） */
+function roundCalendarWidth(width: number): number {
+  return PixelRatio.roundToNearestPixel(width);
+}
 const REPEAT_OPTIONS: RepeatOption[] = ['不重复', '每天', '每周', '每月', '每年'];
 const WEEKDAY_OPTIONS = [
   { label: '周一', value: 1 },
@@ -434,16 +437,82 @@ export default function SchedulePickerScreen() {
   const [timePickerTarget, setTimePickerTarget] = React.useState<'start' | 'end'>('start');
   const hasAppliedInitialRef = React.useRef(false);
 
-  const { width: windowWidth } = useWindowDimensions();
-  const [calendarWidth, setCalendarWidth] = React.useState(() => Math.max(1, windowWidth - CALENDAR_H_INSET));
+  /** 先测容器宽再挂 FlatList，避免估宽 / 亚像素导致翻页停在两月之间 */
+  const [calendarWidth, setCalendarWidth] = React.useState(0);
+  const [pagerMountKey, setPagerMountKey] = React.useState(0);
   const pagerRef = React.useRef<FlatList<number>>(null);
   const pagerCurrentIndexRef = React.useRef(MONTH_PAGE_CENTER_INDEX);
-  const pagerWidthReadyRef = React.useRef(false);
-  const pagerLaidOutWidthRef = React.useRef(0);
+  const pagerSettledRef = React.useRef(false);
+  const calendarWidthRef = React.useRef(0);
   const pagerData = React.useMemo(
     () => Array.from({ length: MONTH_PAGE_SPAN }, (_, i) => i - MONTH_PAGE_CENTER_INDEX),
     []
   );
+
+  React.useEffect(() => {
+    calendarWidthRef.current = calendarWidth;
+  }, [calendarWidth]);
+
+  const commitPagerIndex = React.useCallback((nextIndex: number) => {
+    if (!pagerSettledRef.current) return;
+    const clamped = Math.max(0, Math.min(MONTH_PAGE_SPAN - 1, nextIndex));
+    pagerCurrentIndexRef.current = clamped;
+    const nextOffset = clamped - MONTH_PAGE_CENTER_INDEX;
+    setVisibleMonthOffset(nextOffset);
+    setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+  }, []);
+
+  const snapPagerToOffset = React.useCallback(
+    (contentOffsetX: number, animatedScroll: boolean) => {
+      if (!pagerSettledRef.current) return;
+      const w = calendarWidthRef.current;
+      if (w <= 0) return;
+      const nextIndex = Math.round(contentOffsetX / w);
+      const targetOffset = nextIndex * w;
+      if (Math.abs(contentOffsetX - targetOffset) > 0.5) {
+        pagerRef.current?.scrollToOffset({ offset: targetOffset, animated: animatedScroll });
+      }
+      commitPagerIndex(nextIndex);
+    },
+    [commitPagerIndex],
+  );
+
+  const scrollPagerToMonthOffset = React.useCallback((offset: number, animated: boolean) => {
+    const w = calendarWidthRef.current;
+    if (w <= 0) return;
+    const nextIndex = offset + MONTH_PAGE_CENTER_INDEX;
+    pagerCurrentIndexRef.current = nextIndex;
+    pagerRef.current?.scrollToOffset({ offset: nextIndex * w, animated });
+  }, []);
+
+  const onPagerContainerLayout = React.useCallback(
+    (e: { nativeEvent: { layout: { width: number } } }) => {
+      const width = roundCalendarWidth(e.nativeEvent.layout.width);
+      if (width <= 0) return;
+      const prev = calendarWidthRef.current;
+      if (Math.abs(prev - width) < 0.5) return;
+      pagerSettledRef.current = false;
+      calendarWidthRef.current = width;
+      setCalendarWidth(width);
+      setPagerMountKey((k) => k + 1);
+    },
+    [],
+  );
+
+  const onPagerListLoad = React.useCallback(() => {
+    if (pagerSettledRef.current) return;
+    const w = calendarWidthRef.current;
+    if (w <= 0) return;
+    const targetIndex = MONTH_PAGE_CENTER_INDEX + monthOffset;
+    pagerCurrentIndexRef.current = targetIndex;
+    requestAnimationFrame(() => {
+      pagerRef.current?.scrollToOffset({ offset: targetIndex * w, animated: false });
+      requestAnimationFrame(() => {
+        pagerSettledRef.current = true;
+        setVisibleMonthOffset(monthOffset);
+      });
+    });
+  }, [monthOffset]);
   const visibleMonthDate = React.useMemo(
     () => new Date(today.getFullYear(), today.getMonth() + visibleMonthOffset, 1),
     [today, visibleMonthOffset]
@@ -892,11 +961,6 @@ export default function SchedulePickerScreen() {
     return new Date(base.getFullYear() + 100, 11, 31);
   }, [yearlyDate]);
 
-  React.useEffect(() => {
-    const nextWidth = Math.max(1, windowWidth - CALENDAR_H_INSET);
-    setCalendarWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
-  }, [windowWidth]);
-
   const toggleWeeklyDay = (day: number) => {
     setWeeklyDays((prev) => {
       if (prev.includes(day)) return prev.filter((d) => d !== day);
@@ -921,33 +985,14 @@ export default function SchedulePickerScreen() {
     setTimeSelectingEnd(false);
   }, [dateLimit, todayStart]);
 
+  /** 按钮换月：同步标题并滚到对应页（滑动回调已同步 index 时跳过，避免打架） */
   React.useEffect(() => {
     setVisibleMonthOffset(monthOffset);
-    if (calendarWidth <= 0) return;
-
-    const nextIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
-    // 宽度从估算值变为 onLayout 实测值时必须重对齐，否则 contentOffset 按旧宽算会偏到错误月份
-    const widthChanged =
-      pagerLaidOutWidthRef.current > 0 &&
-      Math.abs(pagerLaidOutWidthRef.current - calendarWidth) >= 1;
-    const needsForceAlign = !pagerWidthReadyRef.current || widthChanged;
-    pagerLaidOutWidthRef.current = calendarWidth;
-
-    if (needsForceAlign) {
-      pagerWidthReadyRef.current = true;
-      pagerCurrentIndexRef.current = nextIndex;
-      requestAnimationFrame(() => {
-        pagerRef.current?.scrollToIndex({ index: nextIndex, animated: false });
-      });
-      return;
-    }
-
-    if (nextIndex === pagerCurrentIndexRef.current) return;
-    pagerCurrentIndexRef.current = nextIndex;
-    requestAnimationFrame(() => {
-      pagerRef.current?.scrollToIndex({ index: nextIndex, animated: true });
-    });
-  }, [calendarWidth, monthOffset]);
+    if (!pagerSettledRef.current || calendarWidth <= 0) return;
+    const expectedIndex = monthOffset + MONTH_PAGE_CENTER_INDEX;
+    if (expectedIndex === pagerCurrentIndexRef.current) return;
+    scrollPagerToMonthOffset(monthOffset, true);
+  }, [calendarWidth, monthOffset, scrollPagerToMonthOffset]);
 
   React.useEffect(() => {
     if (hasAppliedInitialRef.current) return;
@@ -1115,7 +1160,7 @@ export default function SchedulePickerScreen() {
     setCalBloomArmed(false);
     let cancelled = false;
     const armBloom = () => {
-      // 再等两帧，避开 pager 首次 scrollToIndex / onLayout
+      // 再等两帧，避开 pager 首次 scrollToOffset / onLayout
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (!cancelled) setCalBloomArmed(true);
@@ -1286,46 +1331,60 @@ export default function SchedulePickerScreen() {
             </View>
           </FoldRiseIn>
 
+          <View style={styles.pagerClip} onLayout={onPagerContainerLayout}>
+          {calendarWidth > 0 ? (
           <FlatList
+            key={`schedule-cal-pager-${pagerMountKey}-${calendarWidth}`}
             ref={pagerRef}
             data={pagerData}
             horizontal
-            pagingEnabled
             nestedScrollEnabled
             directionalLockEnabled
             decelerationRate="fast"
+            bounces={false}
+            overScrollMode="never"
+            snapToInterval={calendarWidth}
+            snapToAlignment="start"
+            disableIntervalMomentum
             initialScrollIndex={MONTH_PAGE_CENTER_INDEX}
+            contentOffset={{ x: MONTH_PAGE_CENTER_INDEX * calendarWidth, y: 0 }}
             getItemLayout={(_, index) => ({ length: calendarWidth, offset: calendarWidth * index, index })}
             showsHorizontalScrollIndicator={false}
             keyExtractor={(offset) => `month-${offset}`}
+            style={{ width: calendarWidth }}
             windowSize={5}
             maxToRenderPerBatch={3}
+            initialNumToRender={3}
             updateCellsBatchingPeriod={16}
             removeClippedSubviews={false}
-            onLayout={(e) => {
-              const width = e.nativeEvent.layout.width;
-              setCalendarWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
-            }}
+            onLayout={onPagerListLoad}
             onScroll={(e) => {
-              if (calendarWidth <= 0) return;
-              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
+              if (!pagerSettledRef.current) return;
+              const w = calendarWidthRef.current;
+              if (w <= 0) return;
+              const rawIndex = e.nativeEvent.contentOffset.x / w;
               const previewOffset = Math.round(rawIndex) - MONTH_PAGE_CENTER_INDEX;
               setVisibleMonthOffset((prev) => (prev === previewOffset ? prev : previewOffset));
             }}
             scrollEventThrottle={16}
+            onScrollEndDrag={(e) => {
+              if (!pagerSettledRef.current) return;
+              const velocityX = e.nativeEvent.velocity?.x ?? 0;
+              if (Math.abs(velocityX) > 0.2) return;
+              snapPagerToOffset(e.nativeEvent.contentOffset.x, true);
+            }}
             onMomentumScrollEnd={(e) => {
-              if (calendarWidth <= 0) return;
-              const rawIndex = e.nativeEvent.contentOffset.x / calendarWidth;
-              const nextIndex = Math.round(rawIndex);
-              const nextOffset = nextIndex - MONTH_PAGE_CENTER_INDEX;
-              pagerCurrentIndexRef.current = nextIndex;
-              setVisibleMonthOffset(nextOffset);
-              setMonthOffset((prev) => (prev === nextOffset ? prev : nextOffset));
+              if (!pagerSettledRef.current) return;
+              snapPagerToOffset(e.nativeEvent.contentOffset.x, false);
             }}
             onScrollToIndexFailed={(info) => {
-              if (calendarWidth <= 0) return;
+              const w = calendarWidthRef.current;
+              if (w <= 0) return;
               requestAnimationFrame(() => {
-                pagerRef.current?.scrollToOffset({ offset: info.index * calendarWidth, animated: false });
+                pagerRef.current?.scrollToOffset({ offset: info.index * w, animated: false });
+                requestAnimationFrame(() => {
+                  pagerSettledRef.current = true;
+                });
               });
             }}
             contentContainerStyle={styles.calendarPager}
@@ -1344,7 +1403,7 @@ export default function SchedulePickerScreen() {
               const calBloomPlay = enterAnimate && isEntranceMonth && calBloomArmed;
 
               return (
-                <View style={[styles.calendarPage, { width: calendarWidth || '100%' }]}>
+                <View style={[styles.calendarPage, { width: calendarWidth }]}>
                   <FoldRiseIn
                     animate={calBloomPlay}
                     index={0}
@@ -1551,6 +1610,10 @@ export default function SchedulePickerScreen() {
               );
             }}
           />
+          ) : (
+            <View style={{ minHeight: 220 }} />
+          )}
+          </View>
         </View>
 
         <FoldRiseIn
@@ -2026,10 +2089,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
     paddingBottom: 4,
   },
+  pagerClip: { width: '100%', overflow: 'hidden' },
   calendarPager: { alignItems: 'stretch' },
   monthTitle: { fontSize: 16, fontWeight: '600' },
   monthActions: { flexDirection: 'row', gap: 4 },
-  calendarPage: { width: '100%' },
+  calendarPage: {},
   weekRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 2, paddingBottom: 2 },
   weekText: { width: '14.28%', textAlign: 'center', fontSize: 10, fontWeight: '600' },
   grid: { width: '100%' },

@@ -467,7 +467,9 @@ async function hydrateTreesFromLocal(
       return mergeProjectTaskTreeMaps(apiTreeMap, localMap);
     }
 
-    // 接口已省略终态任务：缺席的「已同步未完成」视为他端已完成，禁止从本地旧库拼回。
+    // 接口已省略终态任务：本地终态不必拼回。
+    // 未完成缺席则保留——上游已 syncTasksTableFromApi，他端完成会把本地写成 done；
+    // 仍为 todo 的多为刚新建尚未进 projects-list 树，或接口树截断。
     const next: Record<string, TaskTreeNode[]> = { ...apiTreeMap };
     for (const project of projects) {
       const projectId = String(project.id);
@@ -479,9 +481,8 @@ async function hydrateTreesFromLocal(
         if (apiIds.has(String(t.id))) return true;
         const syncStatus = String(t.sync_status ?? 'synced');
         if (syncStatus === 'pending_create' || syncStatus === 'pending_update') return true;
-        // 本地已是终态：隐藏开关下不必拼回
         if (isTaskTerminalStatus(t.status)) return false;
-        return false;
+        return true;
       });
       if (allowedLocal.length === 0) continue;
       next[projectId] = unionProjectTaskTrees(apiTree, buildTaskTreeFromRows(allowedLocal));
@@ -619,7 +620,8 @@ export async function fetchProjectsListForProject(
         if (apiIds.has(String(t.id))) return true;
         const syncStatus = String(t.sync_status ?? 'synced');
         if (syncStatus === 'pending_create' || syncStatus === 'pending_update') return true;
-        return false;
+        if (isTaskTerminalStatus(t.status)) return false;
+        return true;
       });
       tree = unionProjectTaskTrees(tree, buildTaskTreeFromRows(allowedLocal));
     } else {

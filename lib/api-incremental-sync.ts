@@ -528,6 +528,31 @@ async function listPendingApiSyncTableNames(): Promise<string[]> {
   return out;
 }
 
+/**
+ * rethrow 时检查仍未推掉的 pending。
+ * onlyTables 作用域写（保存项目/记账等）只盯本域，避免无关表遗留 pending 误报成这次保存失败。
+ */
+async function listPendingForRethrowCheck(onlyTables: string[]): Promise<string[]> {
+  const all = await listPendingApiSyncTableNames();
+  if (onlyTables.length === 0) return all;
+  const scope = new Set(onlyTables);
+  return all.filter(t => scope.has(t));
+}
+
+async function waitForApiPushIdle(opts?: { rethrow?: boolean }): Promise<boolean> {
+  const maxWaitMs = 30000;
+  const start = Date.now();
+  while (apiPushInFlight) {
+    if (Date.now() - start > maxWaitMs) {
+      if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
+      scheduleUnifiedPushAfterFailure();
+      return false;
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
 /** 脏表增量：将本地待同步行推送到 REST 后端。仅 flushApiDirtyTablesNow 可调用。 */
 async function pushApiDirtyTablesIfNeeded(opts?: {
   rethrow?: boolean;
@@ -545,16 +570,9 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
       scheduleUnifiedPush();
       return;
     }
-    const maxWaitMs = 30000;
-    const start = Date.now();
-    while (apiPushInFlight) {
-      if (Date.now() - start > maxWaitMs) {
-        if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
-        scheduleUnifiedPushAfterFailure();
-        return;
-      }
-      await new Promise<void>(resolve => setTimeout(resolve, 50));
-    }
+    if (!(await waitForApiPushIdle(opts))) return;
+    // 与登录后等待一致：空档后重入，避免沿用 inflight 期间的脏表/pending 快照
+    return pushApiDirtyTablesIfNeeded(opts);
   }
 
   if (isSilentCloudRestoreInFlight()) {
@@ -569,7 +587,7 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
     only.length > 0 ? only : peekApiDirtyTables().filter(t => !REST_SKIP_TABLES.has(t));
   if (dirtyList.length === 0) {
     if (opts?.rethrow) {
-      const pending = await listPendingApiSyncTableNames();
+      const pending = await listPendingForRethrowCheck(only);
       if (pending.length > 0) {
         throw new Error('有未同步到服务器的本地修改，请保持网络后重试');
       }
@@ -594,17 +612,7 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
 
   if (apiPushInFlight) {
     if (mustRun) {
-      // 等待空档后重入，避免与其它推送交错丢 onlyTables
-      const maxWaitMs = 30000;
-      const start = Date.now();
-      while (apiPushInFlight) {
-        if (Date.now() - start > maxWaitMs) {
-          if (opts?.rethrow) throw new Error('同步繁忙，请稍后重试');
-          scheduleUnifiedPushAfterFailure();
-          return;
-        }
-        await new Promise<void>(resolve => setTimeout(resolve, 50));
-      }
+      if (!(await waitForApiPushIdle(opts))) return;
       return pushApiDirtyTablesIfNeeded(opts);
     }
     scheduleUnifiedPush();
@@ -641,10 +649,15 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
     if (effectiveOrder.length === 0) {
       await clearApiDirtyTablesWithoutPending(dirtyList);
       if (opts?.rethrow) {
-        const pending = await listPendingApiSyncTableNames();
+        // 本域（onlyTables）已无待推：成功返回。全库冲刷才检查全局 pending。
+        const pending = await listPendingForRethrowCheck(only);
         if (pending.length > 0) {
           throw new Error(`有未同步到服务器的本地修改（${pending.join('、')}），请保持网络后重试`);
         }
+      }
+      // awaitSync 会 clearPushDebounce；其它脏表需补排后台推，否则会一直卡着
+      if (only.length > 0 && peekApiDirtyTables().some(t => !only.includes(t))) {
+        scheduleUnifiedPush();
       }
       return;
     }
@@ -907,6 +920,10 @@ async function pushApiDirtyTablesIfNeeded(opts?: {
     resetPushBackoff();
     if (opts?.rethrow && uploadedCount === 0 && leftoverReasons.length > 0) {
       throw new Error(leftoverReasons.slice(0, 4).join('\n'));
+    }
+    // 作用域推送成功后：把 awaitSync 清掉的其它脏表重新挂上后台队列
+    if (only.length > 0 && peekApiDirtyTables().some(t => !only.includes(t))) {
+      scheduleUnifiedPush();
     }
   } catch (e) {
     if (__DEV__) console.warn('[api incremental] 推送失败', e);

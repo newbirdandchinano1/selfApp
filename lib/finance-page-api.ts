@@ -228,7 +228,7 @@ export async function fetchFinanceHome(opts?: {
     return readLocal();
   }
 
-  try {
+  const fetchAndApply = async (): Promise<FinanceHomeData> => {
     const payload: FinanceHomePayload = await apiGetFinanceHome({
       logicalToday: opts?.logicalToday,
       dayBoundaryHour: opts?.dayBoundaryHour,
@@ -261,11 +261,23 @@ export async function fetchFinanceHome(opts?: {
       monthly: payload.monthly ?? null,
       fromApi: true,
     };
+  };
+
+  try {
+    return await fetchAndApply();
   } catch (e) {
     if (opts?.serverFallback === false) throw e;
-    markPageLoadRestFailed();
-    console.warn('[finance-page-api] home 失败，回退本地', e);
-    return readLocal();
+    // 冷启动/排队争用时首次 home 常瞬时失败，静默再试一次再回退本地
+    try {
+      if (opts?.signal?.aborted) throw e;
+      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+      if (opts?.signal?.aborted) throw e;
+      return await fetchAndApply();
+    } catch (e2) {
+      markPageLoadRestFailed();
+      console.warn('[finance-page-api] home 失败，回退本地', e2);
+      return readLocal();
+    }
   }
 }
 

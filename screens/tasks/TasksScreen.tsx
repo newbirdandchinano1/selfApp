@@ -2685,14 +2685,15 @@ export default function TasksScreen() {
     setStandaloneTodos(pageData.standaloneTodos);
     setMatrixWeekTasks(pageData.matrixWeekTasks);
 
+    // 与设计稿一致：有任务的项目默认展开树；未知 id 默认 true（否则只见「x / y 任务」不见行）
     if (!storedExpanded) {
-      const allCollapsed = Object.fromEntries(mergedProjects.map((p) => [p.id, false] as const));
-      setExpandedProjectIds(allCollapsed);
-      await saveExpandedProjectState(allCollapsed);
+      const allExpanded = Object.fromEntries(mergedProjects.map((p) => [p.id, true] as const));
+      setExpandedProjectIds(allExpanded);
+      await saveExpandedProjectState(allExpanded);
     } else {
       const merged: Record<string, boolean> = { ...storedExpanded };
       for (const p of mergedProjects) {
-        if (typeof merged[p.id] !== 'boolean') merged[p.id] = false;
+        if (typeof merged[p.id] !== 'boolean') merged[p.id] = true;
       }
       setExpandedProjectIds(merged);
       await saveExpandedProjectState(merged);
@@ -7804,7 +7805,20 @@ export default function TasksScreen() {
                               </Pressable>
                             </View>
                           ) : null}
-                          <View style={[styles.projectFoldFoot, { borderTopColor: tf.line }]}>
+                          <Pressable
+                            onPress={() => {
+                              if (hasAnyTasks) toggleProjectExpand(project.id);
+                            }}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              isExpanded
+                                ? `收起任务树，${progress.done} / ${progress.total} 任务`
+                                : `展开任务树，${progress.done} / ${progress.total} 任务`
+                            }
+                            style={({ pressed }) => [
+                              styles.projectFoldFoot,
+                              { borderTopColor: tf.line, opacity: pressed ? 0.85 : 1 },
+                            ]}>
                             {hasFrogAssignment && !isCompleted ? (
                               <View style={[styles.projectFrogChip, { backgroundColor: tf.lily2 }]}>
                                 <MaterialIcons name="eco" size={11} color={tf.frog} />
@@ -7813,6 +7827,11 @@ export default function TasksScreen() {
                                 </Text>
                               </View>
                             ) : null}
+                            <MaterialIcons
+                              name={isExpanded ? 'expand-less' : 'expand-more'}
+                              size={16}
+                              color={tf.faint}
+                            />
                             <Text style={{ fontSize: 11, color: tf.faint }}>
                               {progress.done} / {progress.total} 任务
                             </Text>
@@ -7830,7 +7849,7 @@ export default function TasksScreen() {
                                 </Text>
                               ) : null}
                             </View>
-                          </View>
+                          </Pressable>
                         </View>
                       ) : (
                         <View

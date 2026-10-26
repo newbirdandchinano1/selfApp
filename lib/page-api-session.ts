@@ -53,14 +53,25 @@ export function isWarmProcessSession(): boolean {
 // 新 JS 进程 / Web 刷新视为冷启动
 markProcessColdStart();
 
-/** REST 读取失败但已回退本地（wrapLoad 不应标记 synced） */
+/** REST 读取失败但已回退本地（wrapLoad 不应标记 synced）；无活跃 read 帧时的兜底 */
 let pageLoadRestFailed = false;
 
 export function markPageLoadRestFailed(): void {
+  const top = activePageReadStack[activePageReadStack.length - 1];
+  if (top) {
+    top.restFailed = true;
+    return;
+  }
   pageLoadRestFailed = true;
 }
 
 export function consumePageLoadRestFailed(): boolean {
+  const top = activePageReadStack[activePageReadStack.length - 1];
+  if (top) {
+    const failed = top.restFailed;
+    top.restFailed = false;
+    return failed;
+  }
   const failed = pageLoadRestFailed;
   pageLoadRestFailed = false;
   return failed;
@@ -196,6 +207,8 @@ export type PageApiReadOpts = {
   forceRefresh?: boolean;
 };
 
+type PageApiReadFrame = PageApiReadOpts & { restFailed: boolean };
+
 /**
  * 是否应只读本地。bootstrap_done 之后（及之前的首屏）默认 SQLite；
  * 禁止用 hasSynced / sessionLoaded / RestRefresh 决定打网。
@@ -218,11 +231,11 @@ export function resolvePageApiReadOpts(_pageKey: string, _forceRefresh?: boolean
   return { forceRefresh: Boolean(_forceRefresh) };
 }
 
-const activePageReadStack: PageApiReadOpts[] = [];
+const activePageReadStack: PageApiReadFrame[] = [];
 
 /** 页面 load 期间设置，供 readApiTable / readApiRecord 隐式继承（支持并发嵌套） */
 export function beginPageApiRead(opts: PageApiReadOpts): void {
-  activePageReadStack.push(opts);
+  activePageReadStack.push({ ...opts, restFailed: false });
 }
 
 export function endPageApiRead(): void {
@@ -231,7 +244,8 @@ export function endPageApiRead(): void {
 
 export function getActivePageApiReadOpts(): PageApiReadOpts | undefined {
   if (activePageReadStack.length === 0) return undefined;
-  return activePageReadStack[activePageReadStack.length - 1];
+  const { restFailed: _restFailed, ...opts } = activePageReadStack[activePageReadStack.length - 1];
+  return opts;
 }
 
 export function resolveReadCacheOnly(): boolean {

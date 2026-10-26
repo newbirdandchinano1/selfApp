@@ -1394,6 +1394,9 @@ export default function HealthScreen() {
   }, []);
 
   React.useEffect(() => {
+    // 首次进页时 intake 仍为全 0：若此时同步会把已发奖误判为未达标并撤销，数据到位后再加回
+    if (initialHealthLoadPending || forceFailureSkeleton) return;
+    if (!metricPointsSettings.enabled) return;
     const ymd = formatLocalYmd(selectedDate);
     const percents = metricPercentsForPoints;
     const settings = metricPointsSettings;
@@ -1404,7 +1407,13 @@ export default function HealthScreen() {
       });
     }, 400);
     return () => clearTimeout(timer);
-  }, [selectedDate, metricPercentsForPoints, metricPointsSettings]);
+  }, [
+    initialHealthLoadPending,
+    forceFailureSkeleton,
+    selectedDate,
+    metricPercentsForPoints,
+    metricPointsSettings,
+  ]);
 
   const openPointsSettingsModal = React.useCallback(() => {
     setPointsSettingsOpen(true);

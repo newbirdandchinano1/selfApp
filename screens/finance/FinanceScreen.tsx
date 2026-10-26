@@ -841,13 +841,6 @@ export default function FinanceScreen() {
     [loadFinanceAccounts, loadFinanceTransactions, markPageDirty],
   );
 
-  React.useEffect(() => {
-    void loadMonthBudgetSettings().then(setMonthBudgetSettings);
-    void loadBudgetRefreshDay().then(setBudgetRefreshDay);
-    void loadScheduledFinanceExpenses().then(setScheduledExpenses);
-    void loadFinanceSavingsGoal().then((g) => setSavingsGoalTargetDate(g?.targetDate ?? null));
-  }, []);
-
   /** 手动记账弹窗：不超过安全区顶部以下，避免顶栏关闭按钮被挡 */
   const manualSheetMaxHeight = React.useMemo(() => Dimensions.get('window').height - insets.top - 10, [insets.top]);
   /** 折叠记一笔顶栏 + Segment 估算高度，余量给下方可滚动内容 */
@@ -2309,13 +2302,27 @@ export default function FinanceScreen() {
 
     return wrapLoad(async () => {
       try {
-        const settings = await loadMonthBudgetSettings();
-        if (isStale()) return;
-        setMonthBudgetSettings(settings);
-        const rd = await loadBudgetRefreshDay();
-        if (isStale()) return;
-        setBudgetRefreshDay(rd);
-        await loadFinanceLastUsedAccountId();
+        // 设置读取失败不阻断首页；避免与 home 争用冷启动登录/队列
+        let rd = 1;
+        try {
+          const settings = await loadMonthBudgetSettings();
+          if (isStale()) return;
+          setMonthBudgetSettings(settings);
+        } catch (e) {
+          console.warn('[finance] loadMonthBudgetSettings failed', e);
+        }
+        try {
+          rd = await loadBudgetRefreshDay();
+          if (isStale()) return;
+          setBudgetRefreshDay(rd);
+        } catch (e) {
+          console.warn('[finance] loadBudgetRefreshDay failed', e);
+        }
+        try {
+          await loadFinanceLastUsedAccountId();
+        } catch (e) {
+          console.warn('[finance] loadFinanceLastUsedAccountId failed', e);
+        }
         if (isStale()) return;
 
         // 未同步或强制刷新：走 home；已有列表时本地重读（含刚记账的 pending）

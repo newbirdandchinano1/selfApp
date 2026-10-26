@@ -1196,6 +1196,8 @@ export default function EditProjectScreen() {
       await requestPush({
         awaitSync: true,
         rethrow: true,
+        // 本地已落库；同步失败用下方 toast，勿挂全局「加载失败」蒙层
+        quiet: true,
         onlyTables: projectSyncTables,
       });
       notifyAncestorsDataChanged();
@@ -1259,6 +1261,7 @@ export default function EditProjectScreen() {
           await requestPush({
             awaitSync: true,
             rethrow: true,
+            quiet: true,
             onlyTables: projectSyncTables,
           });
         } catch (syncErr) {

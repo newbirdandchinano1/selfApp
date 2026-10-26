@@ -202,17 +202,46 @@ export function ProjectFoldTaskTree({
   const { animate } = useFoldMotionGate();
   const heightProg = React.useRef(new Animated.Value(expanded ? 1 : 0)).current;
   const [measuredH, setMeasuredH] = React.useState(0);
+  const measuredHRef = React.useRef(0);
   const [mounted, setMounted] = React.useState(expanded);
+  const nodeSig = React.useMemo(() => {
+    let n = 0;
+    const walk = (list: TaskTreeNode[]) => {
+      for (const node of list) {
+        n += 1;
+        const ch = Array.isArray(node.children) ? node.children : [];
+        if (ch.length) walk(ch);
+      }
+    };
+    walk(nodes);
+    return n;
+  }, [nodes]);
 
   React.useEffect(() => {
-    if (expanded) setMounted(true);
+    // 节点增减后重新测量，避免高度卡在旧值把新行裁掉
+    measuredHRef.current = 0;
+    setMeasuredH(0);
+  }, [nodeSig]);
+
+  React.useEffect(() => {
+    if (expanded) {
+      setMounted(true);
+      // 尚未量到高度时先满开，避免 opacity=0 / height=0 导致看不见行、也量不到高
+      if (measuredHRef.current <= 0) {
+        heightProg.setValue(1);
+      }
+    }
     Animated.timing(heightProg, {
       toValue: expanded ? 1 : 0,
       duration: animate ? TaskFoldMotion.treeExpand : 0,
       easing: expanded ? FOLD_MOTION_SPRING : FOLD_MOTION_EASE,
       useNativeDriver: false,
     }).start(({ finished }) => {
-      if (finished && !expanded) setMounted(false);
+      if (finished && !expanded) {
+        setMounted(false);
+        measuredHRef.current = 0;
+        setMeasuredH(0);
+      }
     });
   }, [animate, expanded, heightProg]);
 
@@ -251,6 +280,25 @@ export function ProjectFoldTaskTree({
     });
   };
 
+  const treeBody = (
+    <View
+      style={styles.tree}
+      onLayout={(e) => {
+        const h = Math.ceil(e.nativeEvent.layout.height);
+        if (h > 0 && Math.abs(h - measuredHRef.current) > 1) {
+          measuredHRef.current = h;
+          setMeasuredH(h);
+        }
+      }}>
+      {renderLevel(nodes, 0)}
+    </View>
+  );
+
+  // 展开且未测高：不锁 height，立即露出任务行（设计稿默认可见树）
+  if (expanded && measuredH <= 0) {
+    return treeBody;
+  }
+
   const animatedStyle =
     measuredH > 0
       ? {
@@ -263,18 +311,7 @@ export function ProjectFoldTaskTree({
         }
       : { opacity: heightProg };
 
-  return (
-    <Animated.View style={animatedStyle}>
-      <View
-        style={styles.tree}
-        onLayout={(e) => {
-          const h = Math.ceil(e.nativeEvent.layout.height);
-          if (h > 0 && Math.abs(h - measuredH) > 1) setMeasuredH(h);
-        }}>
-        {renderLevel(nodes, 0)}
-      </View>
-    </Animated.View>
-  );
+  return <Animated.View style={animatedStyle}>{treeBody}</Animated.View>;
 }
 
 const styles = StyleSheet.create({

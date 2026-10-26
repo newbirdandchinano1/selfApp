@@ -357,6 +357,8 @@ export default function AddProjectScreen() {
         await requestPush({
           awaitSync: true,
           rethrow: true,
+          // 本地已落库；同步失败勿挂全局「加载失败」蒙层
+          quiet: true,
           onlyTables: projectSyncTables,
         });
       } catch (syncErr) {

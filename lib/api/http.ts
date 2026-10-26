@@ -171,6 +171,9 @@ export function extractEnvelope(parsed: unknown): ApiEnvelope<unknown> | null {
   };
 }
 
+/** 并发 ensureApiLoggedIn 共用一次登录，避免冷启动多请求各自打 /auth/login */
+let loginInflight: Promise<string> | null = null;
+
 export async function apiLogin(opts?: {
   signal?: AbortSignal;
   username?: string;
@@ -181,6 +184,8 @@ export async function apiLogin(opts?: {
    */
   skipQueue?: boolean;
 }): Promise<string> {
+  if (loginInflight) return loginInflight;
+
   const run = async (): Promise<string> => {
     const baseUrl = await getApiBaseUrl();
     const username = opts?.username ?? (await getApiUsername());
@@ -219,8 +224,11 @@ export async function apiLogin(opts?: {
     return token;
   };
 
-  if (opts?.skipQueue) return run();
-  return enqueueApiRequest(run, { kind: 'write' });
+  const queued = opts?.skipQueue ? run() : enqueueApiRequest(run, { kind: 'write' });
+  loginInflight = queued.finally(() => {
+    loginInflight = null;
+  });
+  return loginInflight;
 }
 
 export async function ensureApiLoggedIn(opts?: {

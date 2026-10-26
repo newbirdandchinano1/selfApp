@@ -367,6 +367,7 @@ export default function ProjectTagsScreen() {
         await requestPush({
           awaitSync: true,
           rethrow: true,
+          quiet: true,
           onlyTables: tagSyncTables,
         });
       } catch (syncErr) {
@@ -392,6 +393,7 @@ export default function ProjectTagsScreen() {
         await requestPush({
           awaitSync: true,
           rethrow: true,
+          quiet: true,
           onlyTables: tagSyncTables,
         });
       } catch (syncErr) {
