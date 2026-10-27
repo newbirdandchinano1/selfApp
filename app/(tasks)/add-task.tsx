@@ -16,8 +16,8 @@ import {
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
-import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -41,10 +41,6 @@ import {
   normalizeRewardPoints,
   parseRewardPointsFromExtraData,
 } from '@/lib/reward-points';
-import {
-  canEnableAutoPlaceIntoSchedule,
-  parseAutoPlaceIntoSchedule,
-} from '@/lib/schedule/task-virtual-placement';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import {
@@ -81,7 +77,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   ActivityIndicator,
-  Animated,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -179,8 +174,6 @@ export default function AddTaskScreen() {
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
-  const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
-  const [switchBounceToken, setSwitchBounceToken] = React.useState(0);
   const [projectName, setProjectName] = React.useState<string | null>(null);
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
@@ -237,50 +230,6 @@ export default function AddTaskScreen() {
     },
   });
   const defaultScheduleApplied = React.useRef(false);
-
-  /** 清除重复或去掉具体时间时关掉自动入格 */
-  React.useEffect(() => {
-    if (!autoPlaceIntoSchedule) return;
-    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
-    if (!gate.ok) setAutoPlaceIntoSchedule(false);
-  }, [autoPlaceIntoSchedule, scheduleMeta, repeatText]);
-
-  const toggleAutoPlaceIntoSchedule = React.useCallback(() => {
-    if (autoPlaceIntoSchedule) {
-      setAutoPlaceIntoSchedule(false);
-      return;
-    }
-    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
-    if (!gate.ok) {
-      setSwitchBounceToken((n) => n + 1);
-      if (gate.reason === 'no-repeat') {
-        Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
-          { text: '取消', style: 'cancel' },
-          { text: '去设置', onPress: openSchedulePicker },
-        ]);
-        return;
-      }
-      Alert.alert('无法开启自动入格', '自动入格需在日程中开启「具体时间」。', [
-        { text: '取消', style: 'cancel' },
-        { text: '去设置', onPress: openSchedulePicker },
-      ]);
-      return;
-    }
-    setAutoPlaceIntoSchedule(true);
-  }, [autoPlaceIntoSchedule, openSchedulePicker, repeatText, scheduleMeta]);
-
-  const autoPlaceGate = React.useMemo(
-    () => canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText),
-    [repeatText, scheduleMeta],
-  );
-  const autoPlaceExpand = React.useRef(new Animated.Value(0)).current;
-  React.useEffect(() => {
-    Animated.timing(autoPlaceExpand, {
-      toValue: autoPlaceIntoSchedule ? 1 : 0,
-      duration: foldAnimate ? TaskFoldMotion.fieldExpand : 120,
-      useNativeDriver: false,
-    }).start();
-  }, [autoPlaceExpand, autoPlaceIntoSchedule, foldAnimate]);
 
   React.useEffect(() => {
     if (lockScheduleFromParam) setInheritsProjectSchedule(true);
@@ -382,12 +331,10 @@ export default function AddTaskScreen() {
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
-    setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
     const shelved = task.status === 'shelved';
     setStandaloneIntent(shelved ? 'shelved' : 'active');
     if (shelved) {
       clearSchedule();
-      setAutoPlaceIntoSchedule(false);
       return;
     }
     const loadedSchedule = parseStandaloneTaskScheduleMeta(task.extra_data);
@@ -482,20 +429,6 @@ export default function AddTaskScreen() {
       return;
     }
     const trimmedTitle = titleCheck.title;
-    const wantAutoPlace =
-      autoPlaceIntoSchedule && (!isStandalone || standaloneIntent === 'active');
-    if (wantAutoPlace) {
-      const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
-      if (!gate.ok) {
-        Alert.alert(
-          '无法保存',
-          gate.reason === 'no-repeat'
-            ? '自动入格需先设置重复规则。'
-            : '自动入格需在日程中设置具体时间。',
-        );
-        return;
-      }
-    }
     if (isStandalone) {
       try {
         setIsSubmitting(true);
@@ -509,7 +442,6 @@ export default function AddTaskScreen() {
                   reminder: reminderText || '',
                   repeat: repeatText || '',
                   schedule: scheduleMeta,
-                  ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
                 }),
             normalizeRewardPoints(rewardPointsText),
           ),
@@ -579,7 +511,6 @@ export default function AddTaskScreen() {
                 reminder: reminderText || '',
                 repeat: repeatText || '',
                 schedule: scheduleMeta,
-                ...(wantAutoPlace ? { autoPlaceIntoSchedule: true } : {}),
               }),
               isLongTermTask,
             ),
@@ -650,7 +581,6 @@ export default function AddTaskScreen() {
         acceptanceCriteria: isLongTermTask ? acceptanceChecklistToLines(acceptanceItems) : '',
         schedule: scheduleMeta,
         isLongTermTask,
-        autoPlaceIntoSchedule: wantAutoPlace,
         icon: entityIcon,
       },
     });
@@ -668,13 +598,6 @@ export default function AddTaskScreen() {
   const formBusy = isSubmitting || loadingEdit;
   const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
   const foldCardBorder = tf.line2;
-  const scheduleSummary = [deadlineText || '未设置日程', reminderText, repeatText]
-    .filter(Boolean)
-    .join(' · ');
-  const autoPlacePreviewH = autoPlaceExpand.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 56],
-  });
   const rewardN = Math.round(Number(rewardPointsText) || 0);
 
   const removeStandaloneTodo = React.useCallback(() => {
@@ -707,12 +630,6 @@ export default function AddTaskScreen() {
       },
     ]);
   }, [editTaskId, formBusy, notifyAncestorsDataChanged, router, title]);
-
-  const bumpReward = (delta: number) => {
-    const cur = Number(rewardPointsText);
-    const base = Number.isFinite(cur) ? cur : 0;
-    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
-  };
 
   if (isStandalone) {
     const footPad = Math.max(insets.bottom, 12);
@@ -859,45 +776,6 @@ export default function AddTaskScreen() {
                         <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
                       </Pressable>
 
-                      <View style={styles.frow}>
-                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: tf.faint }}>
-                            {autoPlaceGate.ok ? '重复 + 具体时间已满足' : '需同时有重复与具体时间'}
-                          </Text>
-                        </View>
-                        <TaskFoldSwitch
-                          value={autoPlaceIntoSchedule}
-                          onValueChange={() => toggleAutoPlaceIntoSchedule()}
-                          bounceToken={switchBounceToken}
-                          accessibilityLabel="自动入格"
-                        />
-                      </View>
-
-                      <Animated.View style={{ height: autoPlacePreviewH, overflow: 'hidden' }}>
-                        <View
-                          style={[
-                            styles.fbox,
-                            {
-                              backgroundColor: 'rgba(232,239,217,0.4)',
-                              borderColor: '#C8D8B1',
-                            },
-                          ]}>
-                          <Text style={{ fontSize: 11, color: '#607A5C', lineHeight: 16 }}>
-                            <Text style={{ fontWeight: '700' }}>自动入格预览 </Text>
-                            {repeatText || '重复日'} {deadlineText || ''} → 冲突时顺延到下一空档。
-                          </Text>
-                        </View>
-                      </Animated.View>
-
-                      {!autoPlaceGate.ok ? (
-                        <View style={styles.hintline}>
-                          <MaterialIcons name="lightbulb-outline" size={12} color="#8A5F25" />
-                          <Text style={{ fontSize: 10, color: '#8A5F25', flex: 1 }}>
-                            缺少重复或具体时间时，开关会弹回并保持关闭。
-                          </Text>
-                        </View>
-                      ) : null}
                     </View>
                   </FoldRiseIn>
                 ) : null}
@@ -912,17 +790,11 @@ export default function AddTaskScreen() {
                         </Text>
                         <Text style={{ fontSize: 10, color: tf.faint }}>完成时结算</Text>
                       </View>
-                      <View style={styles.stepper}>
-                        <Pressable onPress={() => bumpReward(-1)} style={styles.stepperBtn} accessibilityLabel="减少积分">
-                          <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
-                        </Pressable>
-                        <Text style={{ fontFamily: fonts.mono, color: '#5C6D60', minWidth: 18, textAlign: 'center' }}>
-                          {rewardN}
-                        </Text>
-                        <Pressable onPress={() => bumpReward(1)} style={styles.stepperBtn} accessibilityLabel="增加积分">
-                          <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
-                        </Pressable>
-                      </View>
+                      <RewardPointsStepper
+                        value={rewardPointsText}
+                        onChange={setRewardPointsText}
+                        monoFontFamily={fonts.mono}
+                      />
                     </View>
                     <View
                       style={[
@@ -992,34 +864,6 @@ export default function AddTaskScreen() {
                   </View>
                 </FoldRiseIn>
 
-                {autoPlaceIntoSchedule && standaloneIntent === 'active' ? (
-                  <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                    <View
-                      style={[
-                        styles.fcard,
-                        styles.fcardTight,
-                        {
-                          backgroundColor: 'rgba(232,239,217,0.36)',
-                          borderColor: '#C8D8B1',
-                        },
-                      ]}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <View style={[styles.frogmark, { backgroundColor: tf.pond }]}>
-                          <MaterialIcons name="spa" size={14} color={tf.sun} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#4F6152' }}>
-                            创建后 · {repeatText || '按重复'} 自动入格
-                          </Text>
-                          <Text style={{ fontSize: 10, color: '#7F947B', marginTop: 2 }}>{scheduleSummary}</Text>
-                        </View>
-                        <View style={[styles.autoTag, { backgroundColor: tf.lily2 }]}>
-                          <Text style={{ fontSize: 10, color: tf.frog, fontWeight: '700' }}>自动</Text>
-                        </View>
-                      </View>
-                    </View>
-                  </FoldRiseIn>
-                ) : null}
               </>
             )}
           </ScrollView>
@@ -1288,41 +1132,6 @@ export default function AddTaskScreen() {
                 )}
               </Pressable>
 
-              <View style={styles.frow}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 11, color: tf.faint }}>
-                    {autoPlaceGate.ok
-                      ? inheritsProjectSchedule
-                        ? '与项目日程一致 · 可开启'
-                        : '重复 + 具体时间已满足'
-                      : '需同时有重复与具体时间'}
-                  </Text>
-                </View>
-                <TaskFoldSwitch
-                  value={autoPlaceIntoSchedule}
-                  onValueChange={() => toggleAutoPlaceIntoSchedule()}
-                  bounceToken={switchBounceToken}
-                  accessibilityLabel="自动入格"
-                />
-              </View>
-
-              <Animated.View style={{ height: autoPlacePreviewH, overflow: 'hidden' }}>
-                <View
-                  style={[
-                    styles.fbox,
-                    {
-                      backgroundColor: 'rgba(232,239,217,0.4)',
-                      borderColor: '#C8D8B1',
-                    },
-                  ]}>
-                  <Text style={{ fontSize: 11, color: '#607A5C', lineHeight: 16 }}>
-                    <Text style={{ fontWeight: '700' }}>自动入格预览 </Text>
-                    {repeatText || '重复日'} {deadlineText || ''} → 冲突时顺延到下一空档。
-                  </Text>
-                </View>
-              </Animated.View>
-
               <View
                 style={[
                   styles.frow,
@@ -1335,17 +1144,11 @@ export default function AddTaskScreen() {
                   </Text>
                   <Text style={{ fontSize: 10, color: tf.faint }}>完成时结算</Text>
                 </View>
-                <View style={styles.stepper}>
-                  <Pressable onPress={() => bumpReward(-1)} style={styles.stepperBtn} accessibilityLabel="减少积分">
-                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
-                  </Pressable>
-                  <Text style={{ fontFamily: fonts.mono, color: '#5C6D60', minWidth: 18, textAlign: 'center' }}>
-                    {rewardN}
-                  </Text>
-                  <Pressable onPress={() => bumpReward(1)} style={styles.stepperBtn} accessibilityLabel="增加积分">
-                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
-                  </Pressable>
-                </View>
+                <RewardPointsStepper
+                  value={rewardPointsText}
+                  onChange={setRewardPointsText}
+                  monoFontFamily={fonts.mono}
+                />
               </View>
             </View>
           </FoldRiseIn>
@@ -1437,40 +1240,6 @@ export default function AddTaskScreen() {
             </View>
           </FoldRiseIn>
 
-          {autoPlaceIntoSchedule ? (
-            <FoldRiseIn
-              animate={foldAnimate}
-              index={quickProjectId ? 7 : 6}
-              duration={520}
-              staggerMs={42}
-              fromY={10}
-              holdHidden={foldAnimate}>
-              <View
-                style={[
-                  styles.fcard,
-                  styles.fcardTight,
-                  {
-                    backgroundColor: 'rgba(232,239,217,0.36)',
-                    borderColor: '#C8D8B1',
-                  },
-                ]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <View style={[styles.frogmark, { backgroundColor: tf.pond }]}>
-                    <MaterialIcons name="spa" size={14} color={tf.sun} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#4F6152' }}>
-                      创建后 · {repeatText || '按重复'} 自动入格
-                    </Text>
-                    <Text style={{ fontSize: 10, color: '#7F947B', marginTop: 2 }}>{scheduleSummary}</Text>
-                  </View>
-                  <View style={[styles.autoTag, { backgroundColor: tf.lily2 }]}>
-                    <Text style={{ fontSize: 10, color: tf.frog, fontWeight: '700' }}>自动</Text>
-                  </View>
-                </View>
-              </View>
-            </FoldRiseIn>
-          ) : null}
         </ScrollView>
 
         <View style={[styles.foldFoot, { paddingBottom: footPad }]}>
@@ -1613,15 +1382,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   hintline: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  stepperBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: '#F0EBDE',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   frogmark: {
     width: 28,
     height: 28,

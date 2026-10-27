@@ -1097,10 +1097,10 @@ export default function HabitDetailScreen() {
                     </Text>
                   </View>
                   {habitReminder.enabled && habitReminderClock ? (
-                    <Text style={{ fontSize: 11, color: tf.faint }}>
-                      {habitReminderClock} 提醒 · 已入格
-                    </Text>
-                  ) : null}
+                    <Text style={{ fontSize: 11, color: tf.faint }}>{habitReminderClock} 提醒</Text>
+                  ) : (
+                    <Text style={{ fontSize: 11, color: tf.faint }}>按循环全天入格</Text>
+                  )}
                 </View>
               </View>
               <FoldPopIn animate={foldAnimate} index={0} delayMs={120} duration={380}>

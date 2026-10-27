@@ -13,6 +13,7 @@ import {
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -88,10 +89,6 @@ import {
   type DateLimitYmd,
   type ScheduleMetaLike,
 } from '@/lib/schedule-inherit';
-import {
-  canEnableAutoPlaceIntoSchedule,
-  parseAutoPlaceIntoSchedule,
-} from '@/lib/schedule/task-virtual-placement';
 import {
   consumeSchedulePickerResult,
   normalizeRouteParam,
@@ -252,7 +249,6 @@ type EditTaskFormSnapshot = {
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
   isLongTermTask: boolean;
-  autoPlaceIntoSchedule: boolean;
   rewardPointsText: string;
 };
 
@@ -291,7 +287,6 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     scheduleMeta,
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
     isLongTermTask: isLongTerm,
-    autoPlaceIntoSchedule: parseAutoPlaceIntoSchedule(task.extra_data),
     rewardPointsText: String(parseRewardPointsFromExtraData(task.extra_data)),
   };
 }
@@ -309,7 +304,6 @@ function buildFormSnapshotFromFields(input: {
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
   isLongTermTask: boolean;
-  autoPlaceIntoSchedule: boolean;
   rewardPointsText: string;
 }): EditTaskFormSnapshot {
   return {
@@ -325,7 +319,6 @@ function buildFormSnapshotFromFields(input: {
     scheduleMeta: input.scheduleMeta,
     boundHabitIds: input.boundHabitIds,
     isLongTermTask: input.isLongTermTask,
-    autoPlaceIntoSchedule: input.autoPlaceIntoSchedule,
     rewardPointsText: String(normalizeRewardPoints(input.rewardPointsText)),
   };
 }
@@ -386,8 +379,6 @@ export default function EditTaskScreen() {
   const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
-  const [autoPlaceIntoSchedule, setAutoPlaceIntoSchedule] = React.useState(false);
-  const [switchBounceToken, setSwitchBounceToken] = React.useState(0);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<TagRow[]>([]);
@@ -415,7 +406,6 @@ export default function EditTaskScreen() {
   const taskSnapshotRef = React.useRef(taskSnapshot);
   const boundHabitIdsRef = React.useRef(boundHabitIds);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
-  const autoPlaceIntoScheduleRef = React.useRef(autoPlaceIntoSchedule);
   const rewardPointsTextRef = React.useRef(rewardPointsText);
   const selectedTagIdsRef = React.useRef(selectedTagIds);
   titleRef.current = title;
@@ -431,40 +421,8 @@ export default function EditTaskScreen() {
   taskSnapshotRef.current = taskSnapshot;
   boundHabitIdsRef.current = boundHabitIds;
   isLongTermTaskRef.current = isLongTermTask;
-  autoPlaceIntoScheduleRef.current = autoPlaceIntoSchedule;
   rewardPointsTextRef.current = rewardPointsText;
   selectedTagIdsRef.current = selectedTagIds;
-
-  React.useEffect(() => {
-    if (!autoPlaceIntoSchedule) return;
-    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
-    if (!gate.ok) setAutoPlaceIntoSchedule(false);
-  }, [autoPlaceIntoSchedule, scheduleMeta, repeatText]);
-
-  const openSchedulePickerRef = React.useRef<() => void>(() => {});
-  const toggleAutoPlaceIntoSchedule = React.useCallback(() => {
-    if (autoPlaceIntoSchedule) {
-      setAutoPlaceIntoSchedule(false);
-      return;
-    }
-    const gate = canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText);
-    if (!gate.ok) {
-      setSwitchBounceToken((n) => n + 1);
-      if (gate.reason === 'no-repeat') {
-        Alert.alert('无法开启自动入格', '请先在日程中设置重复规则。', [
-          { text: '取消', style: 'cancel' },
-          { text: '去设置', onPress: () => openSchedulePickerRef.current() },
-        ]);
-        return;
-      }
-      Alert.alert('无法开启自动入格', '自动入格需在日程中开启「具体时间」。', [
-        { text: '取消', style: 'cancel' },
-        { text: '去设置', onPress: () => openSchedulePickerRef.current() },
-      ]);
-      return;
-    }
-    setAutoPlaceIntoSchedule(true);
-  }, [autoPlaceIntoSchedule, repeatText, scheduleMeta]);
 
   const inheritsProjectPriority = !!taskSnapshot?.project_id;
   const isRootTask = !taskSnapshot?.parent_task_id;
@@ -499,10 +457,6 @@ export default function EditTaskScreen() {
 
   const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
   const foldCardBorder = tf.line2;
-  const autoPlaceGate = React.useMemo(
-    () => canEnableAutoPlaceIntoSchedule(scheduleMeta, repeatText),
-    [repeatText, scheduleMeta],
-  );
   const rewardN = Math.round(Number(rewardPointsText) || 0);
   const incompleteSubtaskCount = React.useMemo(
     () => subtasks.filter((s) => !s.done).length,
@@ -529,13 +483,11 @@ export default function EditTaskScreen() {
       scheduleMeta,
       boundHabitIds,
       isLongTermTask,
-      autoPlaceIntoSchedule,
       rewardPointsText,
     });
     return !formSnapshotsEqual(loadedFormSnapshot, current);
   }, [
     acceptanceCriteriaText,
-    autoPlaceIntoSchedule,
     boundHabitIds,
     deadlineText,
     entityIcon,
@@ -559,12 +511,6 @@ export default function EditTaskScreen() {
       useNativeDriver: true,
     }).start();
   }, [dirtyOpacity, isDirty]);
-
-  const bumpReward = React.useCallback((delta: number) => {
-    const cur = Number(rewardPointsText);
-    const base = Number.isFinite(cur) ? cur : 0;
-    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
-  }, [rewardPointsText]);
 
   const reload = React.useCallback(async (forceRefresh = false) => {
     if (!taskId) return;
@@ -624,7 +570,6 @@ export default function EditTaskScreen() {
       },
     });
   }, [inheritsProjectSchedule, router, scheduleMeta, scheduleSource, taskDateLimit]);
-  openSchedulePickerRef.current = openSchedulePicker;
 
   const createSubtaskFromDraft = React.useCallback(
     async (draft: AddSubtaskDraft) => {
@@ -791,7 +736,6 @@ export default function EditTaskScreen() {
       }
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
       setIsLongTermTask(longTerm);
-      setAutoPlaceIntoSchedule(parseAutoPlaceIntoSchedule(task.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
       // 任务主体已加载完成，附属数据不应阻塞编辑操作。
@@ -984,19 +928,6 @@ export default function EditTaskScreen() {
       let deadlineForDue = deadlineTextRef.current;
       let reminderForExtra = reminderTextRef.current;
       let repeatForExtra = repeatTextRef.current;
-      let wantAutoPlace = autoPlaceIntoScheduleRef.current;
-      if (wantAutoPlace) {
-        const gate = canEnableAutoPlaceIntoSchedule(meta, repeatForExtra);
-        if (!gate.ok) {
-          Alert.alert(
-            '无法保存任务',
-            gate.reason === 'no-repeat'
-              ? '自动入格需先设置重复规则。'
-              : '自动入格需在日程中设置具体时间。',
-          );
-          return false;
-        }
-      }
       let nextInheritsSchedule = inheritsProjectSchedule;
       let nextInheritsTags = inheritsProjectTags;
       let forcedProjectSchedule = projectScheduleMeta;
@@ -1053,11 +984,7 @@ export default function EditTaskScreen() {
       const dueDate = dueDateFromScheduleMeta(meta, extractDueDateFromDeadlineText(deadlineForDue));
       const parsedExtra = parseTaskExtraData(snapshot.extra_data);
       delete (parsedExtra as Record<string, unknown>).completion_reward;
-      if (wantAutoPlace) {
-        parsedExtra.autoPlaceIntoSchedule = true;
-      } else {
-        delete parsedExtra.autoPlaceIntoSchedule;
-      }
+      delete parsedExtra.autoPlaceIntoSchedule;
       const longTerm = isLongTermTaskRef.current;
       const checklist = longTerm ? acceptanceItemsRef.current : [];
       const acceptanceText = longTerm ? acceptanceChecklistToLines(checklist) : '';
@@ -1137,7 +1064,6 @@ export default function EditTaskScreen() {
         scheduleMeta: meta,
         boundHabitIds: boundHabitIdsRef.current,
         isLongTermTask: longTerm,
-        autoPlaceIntoSchedule: wantAutoPlace,
         rewardPointsText: rewardPointsTextRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
@@ -1334,7 +1260,7 @@ export default function EditTaskScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
       <ComposerTopBar
         title={loading ? '加载中' : '编辑任务'}
-        subtitle="修改会影响项目进度与自动入格"
+        subtitle="修改会影响项目进度"
         onBack={handleBackPress}
         onSubmit={handleSavePress}
         submitting={formBusy}
@@ -1554,26 +1480,6 @@ export default function EditTaskScreen() {
                     )}
                   </Pressable>
 
-                  <View style={styles.frow}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>自动入格</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ fontSize: 11, color: tf.faint }}>
-                        {autoPlaceGate.ok
-                          ? autoPlaceIntoSchedule
-                            ? '重复 + 具体时间已满足 · 当前已占用'
-                            : '重复 + 具体时间已满足'
-                          : '需同时有重复与具体时间'}
-                      </Text>
-                    </View>
-                    <TaskFoldSwitch
-                      value={autoPlaceIntoSchedule}
-                      onValueChange={() => toggleAutoPlaceIntoSchedule()}
-                      disabled={loading}
-                      bounceToken={switchBounceToken}
-                      accessibilityLabel="自动入格"
-                    />
-                  </View>
-
                   {showTagField ? (
                     <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
                       <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
@@ -1607,31 +1513,12 @@ export default function EditTaskScreen() {
                         {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
                       </Text>
                     </View>
-                    <View style={styles.stepper}>
-                      <Pressable
-                        onPress={() => bumpReward(-1)}
-                        disabled={loading}
-                        style={styles.stepperBtn}
-                        accessibilityLabel="减少积分">
-                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
-                      </Pressable>
-                      <Text
-                        style={{
-                          fontFamily: fonts.mono,
-                          color: '#5C6D60',
-                          minWidth: 18,
-                          textAlign: 'center',
-                        }}>
-                        {rewardN}
-                      </Text>
-                      <Pressable
-                        onPress={() => bumpReward(1)}
-                        disabled={loading}
-                        style={styles.stepperBtn}
-                        accessibilityLabel="增加积分">
-                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
-                      </Pressable>
-                    </View>
+                    <RewardPointsStepper
+                      value={rewardPointsText}
+                      onChange={setRewardPointsText}
+                      disabled={loading}
+                      monoFontFamily={fonts.mono}
+                    />
                   </View>
 
                   <View style={[styles.frow, frowBorder, { opacity: loading ? 0.65 : 1 }]}>
@@ -1931,15 +1818,6 @@ const styles = StyleSheet.create({
   frowVal: { flex: 1, fontSize: 13, fontWeight: '600' },
   frowValBold: { fontSize: 13, fontWeight: '700' },
   frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0 },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  stepperBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: '#F0EBDE',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   trow: {
     flexDirection: 'row',
     alignItems: 'center',

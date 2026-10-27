@@ -118,7 +118,8 @@ function SortRow({
                 backgroundColor: cardBg,
                 borderColor: isActive ? '#D9C9AE' : tf.line2,
                 opacity: pressed && !isActive ? 0.92 : 1,
-                transform: isActive ? [{ rotate: '-0.5deg' }] : undefined,
+                // 始终保留 transform：Fabric 在 undefined→null 清属性时 processTransform 会崩
+                transform: [{ rotate: isActive ? '-0.5deg' : '0deg' }],
                 zIndex: isActive ? 2 : 0,
               },
             ]}>

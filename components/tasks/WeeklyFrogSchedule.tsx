@@ -116,7 +116,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 export type ScheduleZoomMode = 'minimal' | 'agenda' | 'grid';
 
 type TodayCompactItem = {
-  /** 青蛙占用；习惯/自动入格待办虚拟块时为空 */
+  /** 青蛙占用；习惯/虚拟待办块时为空 */
   placement: SchedulePlacementRow | null;
   habit: VirtualHabitPlacement | null;
   virtualTask: VirtualTaskPlacement | null;
@@ -128,7 +128,22 @@ type TodayCompactItem = {
   endLabel: string;
   startMins: number;
   endMins: number;
+  /** 标签最大权重（与待办/项目树一致）；空档不参与权重赛 */
+  tagWeight: number;
+  /** 四象限 priority，同权重次级键；习惯无此字段时为 0 */
+  priority: number;
 };
+
+/** 今日列表：未完成优先 → 标签权重↓ → priority↓ → 标题 → 时刻 */
+function compareTodayCompactByWeight(a: TodayCompactItem, b: TodayCompactItem): number {
+  if (a.done !== b.done) return a.done ? 1 : -1;
+  if (a.tagWeight !== b.tagWeight) return b.tagWeight - a.tagWeight;
+  if (a.priority !== b.priority) return b.priority - a.priority;
+  const byTitle = a.title.localeCompare(b.title, 'zh');
+  if (byTitle !== 0) return byTitle;
+  if (a.startMins !== b.startMins) return a.startMins - b.startMins;
+  return 0;
+}
 
 function formatRemainLabel(remainSec: number, opts?: { untilStart?: boolean }): string {
   const sec = Math.max(0, Math.floor(remainSec));
@@ -178,6 +193,11 @@ type Props = {
   sectionCardStyle: object | object[];
   lockedProjectIds?: Set<string>;
   subjects: SubjectLookup;
+  /**
+   * 今日列表混排用：习惯/任务/项目 id → 标签最大权重
+   * （与待办栏、项目树同一套语义）
+   */
+  tagWeightBySubjectId?: Map<string, number>;
   /** 从项目列表长按预选：展开课表并点空格入格 */
   pendingPlace?: SchedulePendingPlace | null;
   onClearPendingPlace?: () => void;
@@ -551,6 +571,7 @@ export function WeeklyFrogSchedule({
   sectionCardStyle,
   lockedProjectIds,
   subjects,
+  tagWeightBySubjectId,
   pendingPlace = null,
   onClearPendingPlace,
   onChanged,
@@ -906,7 +927,7 @@ export function WeeklyFrogSchedule({
     void reload(loadDayYmds);
   }, [loadDaysKey, reload, loadDayYmds]);
 
-  // 任务列表变更（完成/编辑自动入格）时重算虚拟待办，不必整表 reload
+  // 任务列表变更（完成/编辑）时重算虚拟待办，不必整表 reload
   React.useEffect(() => {
     if (!view) return;
     let cancelled = false;
@@ -1036,10 +1057,13 @@ export function WeeklyFrogSchedule({
   const habitsByCell = React.useMemo(() => {
     const map = new Map<CellKey, VirtualHabitPlacement[]>();
     for (const h of virtualHabits) {
-      const key = cellKey(h.assignYmd, h.startSlotIndex);
-      const list = map.get(key) ?? [];
-      list.push(h);
-      map.set(key, list);
+      const span = Math.max(1, h.spanSlots);
+      for (let i = 0; i < span; i++) {
+        const key = cellKey(h.assignYmd, h.startSlotIndex + i);
+        const list = map.get(key) ?? [];
+        list.push(h);
+        map.set(key, list);
+      }
     }
     return map;
   }, [virtualHabits]);
@@ -1047,10 +1071,13 @@ export function WeeklyFrogSchedule({
   const virtualTasksByCell = React.useMemo(() => {
     const map = new Map<CellKey, VirtualTaskPlacement[]>();
     for (const t of virtualTasks) {
-      const key = cellKey(t.assignYmd, t.startSlotIndex);
-      const list = map.get(key) ?? [];
-      list.push(t);
-      map.set(key, list);
+      const span = Math.max(1, t.spanSlots);
+      for (let i = 0; i < span; i++) {
+        const key = cellKey(t.assignYmd, t.startSlotIndex + i);
+        const list = map.get(key) ?? [];
+        list.push(t);
+        map.set(key, list);
+      }
     }
     return map;
   }, [virtualTasks]);
@@ -1360,7 +1387,7 @@ export function WeeklyFrogSchedule({
   const tapVirtualHabit = React.useCallback(
     (habit: VirtualHabitPlacement) => {
       if (habit.assignYmd !== logicalTodayYmd) {
-        Alert.alert(habit.name, '未到打卡日，请到当天再打卡。可在习惯编辑页关闭入格。');
+        Alert.alert(habit.name, '未到打卡日，请到当天再打卡。');
         return;
       }
       // 子习惯走清单弹窗，不在此做整卡确认
@@ -1510,14 +1537,21 @@ export function WeeklyFrogSchedule({
 
   const todayCompactItems = React.useMemo(() => {
     if (!view) return [];
+    const daySlotCount = getSlotCount(view.axis);
+    const weightOf = (id: string) => {
+      const w = tagWeightBySubjectId?.get(id);
+      return typeof w === 'number' && Number.isFinite(w) ? w : 0;
+    };
     const items: TodayCompactItem[] = [];
     for (const p of view.placements) {
       if (p.orphaned || p.startSlotIndex == null) continue;
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (assignYmd !== logicalTodayYmd) continue;
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      const span = Math.max(1, p.spanSlots);
       const startMins = slotStartMinutes(view.axis, p.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, p.startSlotIndex, Math.max(1, p.spanSlots));
+      const endMins = placementEndMinutes(view.axis, p.startSlotIndex, span);
+      const allDay = p.startSlotIndex === 0 && span >= daySlotCount;
       items.push({
         placement: p,
         habit: null,
@@ -1525,16 +1559,20 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: null,
         title: sub?.title?.trim() || '青蛙',
         done: !!sub?.done,
-        timeLabel: formatMinutesAsHm(startMins),
-        endLabel: formatMinutesAsHm(endMins),
+        timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
+        endLabel: allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
+        tagWeight: weightOf(p.subjectId),
+        priority: sub?.priority ?? 0,
       });
     }
     for (const h of virtualHabits) {
       if (h.assignYmd !== logicalTodayYmd) continue;
+      const span = Math.max(1, h.spanSlots);
       const startMins = slotStartMinutes(view.axis, h.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, h.startSlotIndex, 1);
+      const endMins = placementEndMinutes(view.axis, h.startSlotIndex, span);
+      const allDay = h.allDay || (h.startSlotIndex === 0 && span >= daySlotCount);
       items.push({
         placement: null,
         habit: h,
@@ -1542,16 +1580,20 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: null,
         title: h.name,
         done: h.done,
-        timeLabel: formatMinutesAsHm(startMins),
-        endLabel: formatMinutesAsHm(endMins),
+        timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
+        endLabel: allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
+        tagWeight: weightOf(h.habitId),
+        priority: 0,
       });
     }
     for (const t of virtualTasks) {
       if (t.assignYmd !== logicalTodayYmd) continue;
+      const span = Math.max(1, t.spanSlots);
       const startMins = slotStartMinutes(view.axis, t.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, t.startSlotIndex, 1);
+      const endMins = placementEndMinutes(view.axis, t.startSlotIndex, span);
+      const allDay = t.allDay || (t.startSlotIndex === 0 && span >= daySlotCount);
       items.push({
         placement: null,
         habit: null,
@@ -1559,30 +1601,17 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: null,
         title: t.title,
         done: t.done,
-        timeLabel: formatMinutesAsHm(startMins),
-        endLabel: formatMinutesAsHm(endMins),
+        timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
+        endLabel: allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
+        tagWeight: weightOf(t.taskId),
+        priority: t.priority ?? 0,
       });
     }
-    items.sort((a, b) => {
-      const sa =
-        a.placement?.startSlotIndex ??
-        a.habit?.startSlotIndex ??
-        a.virtualTask?.startSlotIndex ??
-        a.emptySlotIndex ??
-        0;
-      const sb =
-        b.placement?.startSlotIndex ??
-        b.habit?.startSlotIndex ??
-        b.virtualTask?.startSlotIndex ??
-        b.emptySlotIndex ??
-        0;
-      if (sa !== sb) return sa - sb;
-      return a.title.localeCompare(b.title, 'zh');
-    });
+    items.sort(compareTodayCompactByWeight);
     return items;
-  }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks]);
+  }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks, tagWeightBySubjectId]);
 
   /** 今日列表：预选/改派时插入可放入空档（呼吸轮廓） */
   const todayAgendaItems = React.useMemo(() => {
@@ -1593,8 +1622,14 @@ export function WeeklyFrogSchedule({
         const span = Math.max(1, it.placement.spanSlots);
         for (let i = 0; i < span; i++) occupied.add(it.placement.startSlotIndex + i);
       }
-      if (it.habit) occupied.add(it.habit.startSlotIndex);
-      if (it.virtualTask) occupied.add(it.virtualTask.startSlotIndex);
+      if (it.habit) {
+        const span = Math.max(1, it.habit.spanSlots);
+        for (let i = 0; i < span; i++) occupied.add(it.habit.startSlotIndex + i);
+      }
+      if (it.virtualTask) {
+        const span = Math.max(1, it.virtualTask.spanSlots);
+        for (let i = 0; i < span; i++) occupied.add(it.virtualTask.startSlotIndex + i);
+      }
     }
     const workSlots = listWorkSlots(view.axis);
     const empties: TodayCompactItem[] = [];
@@ -1614,18 +1649,15 @@ export function WeeklyFrogSchedule({
         endLabel: formatMinutesAsHm(slot.endMinutes),
         startMins: slot.startMinutes,
         endMins: slot.endMinutes,
+        tagWeight: -1,
+        priority: 0,
       });
       if (empties.length >= 3) break;
     }
-    const merged = [...todayCompactItems, ...empties];
-    merged.sort((a, b) => {
-      if (a.startMins !== b.startMins) return a.startMins - b.startMins;
-      const ae = a.emptySlotIndex != null ? 1 : 0;
-      const be = b.emptySlotIndex != null ? 1 : 0;
-      if (ae !== be) return ae - be;
-      return a.title.localeCompare(b.title, 'zh');
-    });
-    return merged;
+    const ranked = [...todayCompactItems].sort(compareTodayCompactByWeight);
+    // 空档仍按时刻插在末尾（预选操作），不参与权重混排
+    empties.sort((a, b) => a.startMins - b.startMins);
+    return [...ranked, ...empties];
   }, [view, placingMode, todayCompactItems, pendingPlace, reassignPending, axisNowMins]);
 
   const todayFootStats = React.useMemo(() => {
@@ -1667,14 +1699,7 @@ export function WeeklyFrogSchedule({
       for (const x of slotItems) {
         byId.set(compactItemId(x), x);
       }
-      return [...byId.values()].sort((a, b) => {
-        const sa =
-          a.placement?.startSlotIndex ?? a.habit?.startSlotIndex ?? a.virtualTask?.startSlotIndex ?? 0;
-        const sb =
-          b.placement?.startSlotIndex ?? b.habit?.startSlotIndex ?? b.virtualTask?.startSlotIndex ?? 0;
-        if (sa !== sb) return sa - sb;
-        return a.title.localeCompare(b.title, 'zh');
-      });
+      return [...byId.values()].sort(compareTodayCompactByWeight);
     };
 
     const itemsStartingInSlot = (slotIndex: number) =>
@@ -2340,11 +2365,14 @@ export function WeeklyFrogSchedule({
           isDark,
         });
     const durMin = Math.max(0, item.endMins - item.startMins);
+    const isAllDayRow = !isEmpty && item.timeLabel === '全天';
     const durLabel = isEmpty
       ? '可用'
-      : durMin >= 60
-        ? `${Math.round((durMin / 60) * 10) / 10}h`.replace(/\.0h$/, 'h')
-        : `${durMin}m`;
+      : isAllDayRow
+        ? '全天'
+        : durMin >= 60
+          ? `${Math.round((durMin / 60) * 10) / 10}h`.replace(/\.0h$/, 'h')
+          : `${durMin}m`;
     const sub =
       item.placement && !isEmpty
         ? resolveSubject(
@@ -2361,7 +2389,9 @@ export function WeeklyFrogSchedule({
           ? '习惯 · 已完成'
           : '习惯虚拟块'
         : kind === 'todo'
-          ? '自动入格 · 独立待办'
+          ? item.virtualTask?.allDay
+            ? '独立待办 · 全天'
+            : '独立待办 · 定点'
           : item.placement?.subjectKind === 'project'
             ? `项目 · ${item.done ? '已完成' : '进行中'}`
             : [sub?.projectName?.trim() || '青蛙', item.done ? '已完成' : '进行中']

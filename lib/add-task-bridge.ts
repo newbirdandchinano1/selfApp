@@ -20,6 +20,7 @@ export type AddTaskBridgePayload = {
     acceptanceCriteria?: string;
     schedule?: Record<string, unknown> | null;
     isLongTermTask?: boolean;
+    /** @deprecated 自动入格功能已移除，仅保留字段兼容旧数据 */
     autoPlaceIntoSchedule?: boolean;
     /** emoji 图标，与习惯同源 */
     icon?: string;

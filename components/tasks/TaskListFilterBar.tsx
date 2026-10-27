@@ -18,11 +18,14 @@ import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
   countActiveTaskListFilterDims,
   EMPTY_TASK_LIST_FILTER,
+  formatTaskListFilterScopeHint,
   isTaskListFilterActive,
   TASK_DATE_PRESET_OPTIONS,
+  TASK_ENTITY_SCOPE_OPTIONS,
   TASK_PRIORITY_FILTER_OPTIONS,
   toggleInList,
   type TaskDatePreset,
+  type TaskEntityScopeFilter,
   type TaskListFilterState,
   type TaskLongTermFilter,
 } from '@/lib/task-list-filter';
@@ -36,6 +39,8 @@ type Props = {
   searchPlaceholder?: string;
   /** 展开面板「长期」区块标题 */
   longTermSectionLabel?: string;
+  /** 项目列表：显示「全部 / 仅项目 / 仅任务」作用域 */
+  showEntityScope?: boolean;
 };
 
 function FilterChip({
@@ -92,12 +97,15 @@ export function TaskListFilterBar({
   resultCount,
   searchPlaceholder = '搜索标题或备注…',
   longTermSectionLabel = '长期任务',
+  showEntityScope = false,
 }: Props) {
   const { tf, isDark } = useTaskFoldTheme();
   const [expanded, setExpanded] = React.useState(false);
   const [searchFocused, setSearchFocused] = React.useState(false);
   const active = isTaskListFilterActive(value);
   const dimCount = countActiveTaskListFilterDims(value);
+  const entityScope = value.entityScope ?? 'all';
+  const scopeHint = showEntityScope ? formatTaskListFilterScopeHint(value) : '';
 
   const patch = React.useCallback(
     (partial: Partial<TaskListFilterState>) => {
@@ -114,9 +122,22 @@ export function TaskListFilterBar({
     patch({ longTerm: value.longTerm === next ? 'all' : next });
   };
 
+  const setEntityScope = (next: TaskEntityScopeFilter) => {
+    patch({ entityScope: next });
+  };
+
   const clearAll = () => {
     onChange({ ...EMPTY_TASK_LIST_FILTER });
   };
+
+  const activeSummary =
+    typeof resultCount === 'number'
+      ? scopeHint
+        ? `已筛选 · ${scopeHint} · ${resultCount} 项`
+        : `已筛选 · ${resultCount} 项`
+      : scopeHint
+        ? `筛选生效 · ${scopeHint}`
+        : '筛选生效中';
 
   return (
     <View style={styles.wrap}>
@@ -186,6 +207,19 @@ export function TaskListFilterBar({
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.quickRow}
         style={styles.quickScroll}>
+        {showEntityScope
+          ? TASK_ENTITY_SCOPE_OPTIONS.filter((opt) => opt.key !== 'all').map((opt) => (
+              <FilterChip
+                key={opt.key}
+                compact
+                label={opt.short}
+                active={entityScope === opt.key}
+                onPress={() =>
+                  setEntityScope(entityScope === opt.key ? 'all' : opt.key)
+                }
+              />
+            ))
+          : null}
         {TASK_DATE_PRESET_OPTIONS.map((opt) => (
           <FilterChip
             key={opt.key}
@@ -221,7 +255,29 @@ export function TaskListFilterBar({
               borderColor: tf.line,
             },
           ]}>
-          <Text style={[styles.sectionLabel, { color: tf.muted }]}>紧急程度（可多选）</Text>
+          {showEntityScope ? (
+            <>
+              <Text style={[styles.sectionLabel, { color: tf.muted }]}>对象</Text>
+              <View style={styles.wrapChips}>
+                {TASK_ENTITY_SCOPE_OPTIONS.map((opt) => (
+                  <FilterChip
+                    key={opt.key}
+                    label={opt.label}
+                    active={entityScope === opt.key}
+                    onPress={() => setEntityScope(opt.key)}
+                  />
+                ))}
+              </View>
+            </>
+          ) : null}
+
+          <Text
+            style={[
+              styles.sectionLabel,
+              { color: tf.muted, marginTop: showEntityScope ? 10 : 0 },
+            ]}>
+            紧急程度（可多选）
+          </Text>
           <View style={styles.wrapChips}>
             {TASK_PRIORITY_FILTER_OPTIONS.map((opt) => (
               <FilterChip
@@ -277,8 +333,12 @@ export function TaskListFilterBar({
 
           <View style={styles.panelFoot}>
             {typeof resultCount === 'number' ? (
-              <Text style={[styles.resultHint, { color: tf.muted }]}>
-                {active ? `匹配 ${resultCount} 项` : `共 ${resultCount} 项`}
+              <Text style={[styles.resultHint, { color: active ? tf.pond : tf.muted }]}>
+                {active
+                  ? scopeHint
+                    ? `匹配 ${scopeHint} · ${resultCount} 项`
+                    : `匹配 ${resultCount} 项`
+                  : `共 ${resultCount} 项`}
               </Text>
             ) : (
               <View />
@@ -292,8 +352,8 @@ export function TaskListFilterBar({
         </View>
       ) : active ? (
         <View style={styles.activeHintRow}>
-          <Text style={[styles.resultHint, { color: tf.muted }]} numberOfLines={1}>
-            {typeof resultCount === 'number' ? `已筛选 · ${resultCount} 项` : '筛选生效中'}
+          <Text style={[styles.resultHint, { color: tf.pond }]} numberOfLines={1}>
+            {activeSummary}
           </Text>
           <MotionPressable onPress={clearAll} hitSlop={6}>
             <Text style={[styles.clearText, { color: tf.pond }]}>清除</Text>

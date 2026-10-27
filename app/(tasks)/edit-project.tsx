@@ -9,6 +9,7 @@ import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField'
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
+import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -265,7 +266,6 @@ type Subtask = {
   schedule?: ProjectScheduleMeta | null;
   boundHabitIds?: string[];
   isLongTermTask?: boolean;
-  autoPlaceIntoSchedule?: boolean;
   icon?: string;
 };
 
@@ -634,7 +634,6 @@ export default function EditProjectScreen() {
           reminder: task.reminder || task.reminderText || '',
           repeat: task.repeat || task.repeatText || '',
           schedule: taskSchedule,
-          ...(task.autoPlaceIntoSchedule ? { autoPlaceIntoSchedule: true } : {}),
           ...(task.icon?.trim()
             ? { icon: normalizeEntityIcon(task.icon, DEFAULT_TODO_ICON) }
             : {}),
@@ -983,12 +982,6 @@ export default function EditProjectScreen() {
     },
     [],
   );
-
-  const bumpReward = React.useCallback((delta: number) => {
-    const cur = Number(rewardPointsText);
-    const base = Number.isFinite(cur) ? cur : 0;
-    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
-  }, [rewardPointsText]);
 
   const openSchedulePicker = React.useCallback(() => {
     const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
@@ -1747,30 +1740,12 @@ export default function EditProjectScreen() {
                       </Text>
                       <Text style={{ fontSize: 10, color: tf.faint }}>项目完成时结算</Text>
                     </View>
-                    <View style={styles.stepper}>
-                      <Pressable
-                        onPress={() => bumpReward(-1)}
-                        disabled={formBusy}
-                        style={styles.stepperBtn}>
-                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
-                      </Pressable>
-                      <Text
-                        style={{
-                          fontFamily: fonts.mono,
-                          fontSize: 13,
-                          color: '#5C6D60',
-                          minWidth: 24,
-                          textAlign: 'center',
-                        }}>
-                        {rewardN}
-                      </Text>
-                      <Pressable
-                        onPress={() => bumpReward(1)}
-                        disabled={formBusy}
-                        style={styles.stepperBtn}>
-                        <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
-                      </Pressable>
-                    </View>
+                    <RewardPointsStepper
+                      value={rewardPointsText}
+                      onChange={setRewardPointsText}
+                      disabled={formBusy}
+                      monoFontFamily={fonts.mono}
+                    />
                   </View>
                   <View style={[styles.frow, frowBorder]}>
                     <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期</Text>
@@ -2033,15 +2008,6 @@ const styles = StyleSheet.create({
     height: 22,
     paddingHorizontal: 8,
     borderRadius: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  stepperBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: '#F0EBDE',
     alignItems: 'center',
     justifyContent: 'center',
   },

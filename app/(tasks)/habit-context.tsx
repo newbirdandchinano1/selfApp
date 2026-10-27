@@ -131,7 +131,8 @@ function CtxRow({
                 backgroundColor: cardBg,
                 borderColor: isActive ? '#D9C9AE' : tf.line2,
                 opacity: locked ? (pressed && !isActive ? 0.7 : 0.78) : pressed && !isActive ? 0.92 : 1,
-                transform: isActive ? [{ rotate: '-0.4deg' }] : undefined,
+                // 始终保留 transform：Fabric 在 undefined→null 清属性时 processTransform 会崩
+                transform: [{ rotate: isActive ? '-0.4deg' : '0deg' }],
               },
             ]}>
             <View style={[styles.ctxic, { backgroundColor: isDark ? tf.lily2 : tint }]}>

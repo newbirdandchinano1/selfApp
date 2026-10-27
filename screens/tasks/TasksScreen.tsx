@@ -229,8 +229,10 @@ import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project
 import {
   applyProjectListFilter,
   applyTaskListFilter,
+  collectMatchingTaskIdsInProject,
   EMPTY_TASK_LIST_FILTER,
   filterProjectTaskTreeForListFilter,
+  getProjectListFilterMatchKind,
   isTaskListFilterActive,
   projectPassesListFilter,
   type TaskListFilterState,
@@ -5516,11 +5518,31 @@ export default function TasksScreen() {
     </View>
   );
 
+  const scheduleTagWeightBySubjectId = React.useMemo(() => {
+    const map = new Map<string, number>();
+    projectTagWeightById.forEach((w, id) => map.set(id, w));
+    standaloneTodoTagWeightById.forEach((w, id) => map.set(id, w));
+    habitTagsByHabitId.forEach((tags, id) => map.set(id, maxTagWeight(tags)));
+    // 项目任务：继承所属项目标签权重（与项目树一致）
+    for (const t of scheduleSubjects.tasks) {
+      if (!t.project_id || map.has(t.id)) continue;
+      const pw = projectTagWeightById.get(t.project_id);
+      if (typeof pw === 'number') map.set(t.id, pw);
+    }
+    return map;
+  }, [
+    projectTagWeightById,
+    standaloneTodoTagWeightById,
+    habitTagsByHabitId,
+    scheduleSubjects.tasks,
+  ]);
+
   const scheduleSharedProps = {
     logicalTodayYmd,
     sectionCardStyle,
     lockedProjectIds,
     subjects: scheduleSubjects,
+    tagWeightBySubjectId: scheduleTagWeightBySubjectId,
     pendingPlace: pendingSchedulePlace,
     onClearPendingPlace: () => setPendingSchedulePlace(null),
     onChanged: onScheduleChanged,
@@ -6918,6 +6940,7 @@ export default function TasksScreen() {
                     resultCount={projectsShownInList.length}
                     searchPlaceholder="搜索项目名称或备注…"
                     longTermSectionLabel="长期项目"
+                    showEntityScope
                   />
                 ) : null}
                 <View style={styles.projectListFilterRow}>
@@ -7081,12 +7104,35 @@ export default function TasksScreen() {
                   const projectRewardPoints = parseRewardPointsFromExtraData(project.extra_data);
                   const projectRewardBadgeBg = getRewardBadgeBackgroundColor(projectRewardPoints, isDark);
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
+                  const projectFilterOpts = {
+                    logicalTodayYmd,
+                    tagIdsByProjectId: projectTagIdsByProjectId,
+                    tasksByProjectId: projectListTasksByProjectId,
+                  };
+                  const projectFilterActive = isTaskListFilterActive(projectListFilter);
                   const projectMatchedByFilter =
-                    !isTaskListFilterActive(projectListFilter) ||
-                    projectPassesListFilter(project, projectListFilter, {
-                      logicalTodayYmd,
-                      tagIdsByProjectId: projectTagIdsByProjectId,
-                    });
+                    !projectFilterActive ||
+                    projectPassesListFilter(project, projectListFilter, projectFilterOpts);
+                  const filterMatchKind = getProjectListFilterMatchKind(
+                    project,
+                    projectListFilter,
+                    projectFilterOpts,
+                  );
+                  const filterHitTaskIds = projectFilterActive
+                    ? collectMatchingTaskIdsInProject(
+                        project.id,
+                        projectListFilter,
+                        projectFilterOpts,
+                      )
+                    : null;
+                  const filterMatchLabel =
+                    filterMatchKind === 'both'
+                      ? '项目·任务'
+                      : filterMatchKind === 'project'
+                        ? '命中项目'
+                        : filterMatchKind === 'task'
+                          ? '命中任务'
+                          : '';
                   const listFilteredTaskTree = filterProjectTaskTreeForListFilter(
                     taskTree,
                     projectListFilter,
@@ -7097,7 +7143,9 @@ export default function TasksScreen() {
                     listFilteredTaskTree,
                     hideCompletedProjectTasks,
                   );
-                  const isExpanded = !!expandedProjectIds[project.id];
+                  const isExpanded =
+                    !!expandedProjectIds[project.id] ||
+                    (projectFilterActive && filterMatchKind === 'task');
                   const progress = getProjectTreeTaskProgress(taskTree);
 
                   const hasAnyTasks = taskTree.length > 0;
@@ -7155,11 +7203,16 @@ export default function TasksScreen() {
                             styles.projectCard,
                             {
                               backgroundColor: projectCardBg,
-                              borderColor: isLocked
-                                ? taskUi.hairlineMutedStrong
-                                : isCompleted
-                                  ? taskUi.successWashLine
-                                  : taskUi.hairline,
+                              borderColor:
+                                filterMatchKind !== 'none'
+                                  ? tf.pond
+                                  : isLocked
+                                    ? taskUi.hairlineMutedStrong
+                                    : isCompleted
+                                      ? taskUi.successWashLine
+                                      : taskUi.hairline,
+                              borderWidth:
+                                filterMatchKind !== 'none' ? 1.5 : StyleSheet.hairlineWidth,
                               opacity: hasFrogAssignment && !isCompleted ? 0.72 : 1,
                             },
                           ]}>
@@ -7170,13 +7223,18 @@ export default function TasksScreen() {
                           {
                             backgroundColor: isScheduleExpired
                               ? tf.rose
-                              : isCompleted
-                                ? tf.sage
-                                : (project.priority ?? 0) >= 4
-                                  ? tf.rose
-                                  : (project.priority ?? 0) >= 2
-                                    ? tf.sun
-                                    : tf.frog,
+                              : filterMatchKind === 'task'
+                                ? tf.pond
+                                : filterMatchKind === 'project' || filterMatchKind === 'both'
+                                  ? tf.frog
+                                  : isCompleted
+                                    ? tf.sage
+                                    : (project.priority ?? 0) >= 4
+                                      ? tf.rose
+                                      : (project.priority ?? 0) >= 2
+                                        ? tf.sun
+                                        : tf.frog,
+                            width: filterMatchKind !== 'none' ? 4 : undefined,
                           },
                         ]}
                       />
@@ -7265,6 +7323,25 @@ export default function TasksScreen() {
                                 numberOfLines={1}>
                                 {project.name}
                               </Text>
+                              {filterMatchLabel ? (
+                                <View
+                                  style={[
+                                    styles.projectFilterHitChip,
+                                    {
+                                      backgroundColor:
+                                        filterMatchKind === 'task' ? tf.sage2 : tf.lily2,
+                                    },
+                                  ]}>
+                                  <Text
+                                    style={{
+                                      fontSize: 9,
+                                      fontWeight: '800',
+                                      color: tf.pond,
+                                    }}>
+                                    {filterMatchLabel}
+                                  </Text>
+                                </View>
+                              ) : null}
                               {hasFrogAssignment && !isCompleted ? (
                                 <View
                                   style={[
@@ -7754,6 +7831,7 @@ export default function TasksScreen() {
                               collapsedTaskIds={collapsedTaskIds}
                               formatDayLabel={formatFrogAssignDayLabel}
                               priorityLabel={formatTaskPriorityShort}
+                              highlightTaskIds={filterHitTaskIds}
                               onToggleCollapse={toggleTaskCollapse}
                               onToggleDone={(task) => {
                                 if (isLocked) {
@@ -8848,6 +8926,13 @@ const styles = StyleSheet.create({
     marginTop: 'auto',
   },
   projectTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 2 },
+  projectFilterHitChip: {
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    flexShrink: 0,
+    alignSelf: 'center',
+  },
   projectTitle: { fontSize: 16, fontWeight: '800' },
   projectTitleDone: {
     textDecorationLine: 'line-through',

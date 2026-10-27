@@ -21,6 +21,7 @@ import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerFie
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -431,12 +432,6 @@ export default function AddProjectScreen() {
     setTitle(clampTitle(text, titleMax));
   };
 
-  const bumpReward = React.useCallback((delta: number) => {
-    const cur = Number(rewardPointsText);
-    const base = Number.isFinite(cur) ? cur : 0;
-    setRewardPointsText(String(Math.max(-999, Math.min(999, Math.round(base + delta)))));
-  }, [rewardPointsText]);
-
   const rewardN = Math.round(Number(rewardPointsText) || 0);
   const footPad = Math.max(insets.bottom, 12);
   const titleShakeX = titleShake.interpolate({
@@ -615,17 +610,11 @@ export default function AddProjectScreen() {
                   </Text>
                   <Text style={{ fontSize: 10, color: tf.faint }}>项目完成时结算</Text>
                 </View>
-                <View style={styles.stepper}>
-                  <Pressable onPress={() => bumpReward(-1)} style={styles.stepperBtn}>
-                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>−</Text>
-                  </Pressable>
-                  <Text style={{ fontFamily: fonts.mono, fontSize: 13, color: '#5C6D60', minWidth: 24, textAlign: 'center' }}>
-                    {rewardN}
-                  </Text>
-                  <Pressable onPress={() => bumpReward(1)} style={styles.stepperBtn}>
-                    <Text style={{ color: '#6F7D72', fontWeight: '700' }}>+</Text>
-                  </Pressable>
-                </View>
+                <RewardPointsStepper
+                  value={rewardPointsText}
+                  onChange={setRewardPointsText}
+                  monoFontFamily={fonts.mono}
+                />
               </View>
               {isLongTermProject ? (
                 <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
@@ -886,15 +875,6 @@ const styles = StyleSheet.create({
   frowLab: { width: 64, fontSize: 12, flexShrink: 0 },
   frowValBold: { fontSize: 13, fontWeight: '700' },
   frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0, fontWeight: '600' },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  stepperBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    backgroundColor: '#F0EBDE',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   hintline: {
     flexDirection: 'row',
     alignItems: 'flex-start',

@@ -50,6 +50,7 @@ function ProjectFoldTaskRow({
   formatDayLabel,
   priorityLabel,
   collapsed,
+  filterHit,
   onToggleCollapse,
   onToggleDone,
   onOpen,
@@ -64,12 +65,14 @@ function ProjectFoldTaskRow({
   formatDayLabel: (ymd: string, today: string) => string;
   priorityLabel: (priority: number) => string;
   collapsed: boolean;
+  /** 当前筛选命中本任务 */
+  filterHit?: boolean;
   onToggleCollapse?: () => void;
   onToggleDone: () => void;
   onOpen: () => void;
   onLongPress?: () => void;
 }) {
-  const { tf, fonts } = useTaskFoldTheme();
+  const { tf, fonts, isDark } = useTaskFoldTheme();
   const { animate } = useFoldMotionGate();
   const done = node.status === 'done' || node.status === 'cancelled';
   const children = Array.isArray(node.children) ? node.children : [];
@@ -106,7 +109,18 @@ function ProjectFoldTaskRow({
       duration={TaskFoldMotion.treeExpand}
       fromY={6}
       fromScale={0.98}>
-      <View style={[styles.trow, { paddingLeft: padLeft }]}>
+      <View
+        style={[
+          styles.trow,
+          { paddingLeft: padLeft },
+          filterHit
+            ? {
+                backgroundColor: isDark ? 'rgba(127,166,149,0.22)' : 'rgba(127,166,149,0.16)',
+                borderRadius: 6,
+                marginRight: 2,
+              }
+            : null,
+        ]}>
         {hasChildren ? (
           <Pressable
             onPress={onToggleCollapse}
@@ -151,13 +165,19 @@ function ProjectFoldTaskRow({
             style={[
               styles.tn,
               {
-                color: done ? '#A8AFA6' : tf.ink2,
+                color: done ? '#A8AFA6' : filterHit ? tf.pond : tf.ink2,
+                fontWeight: filterHit ? '700' : '600',
                 textDecorationLine: done ? 'line-through' : 'none',
               },
             ]}
             numberOfLines={1}>
             {node.title?.trim() || '（无标题）'}
           </Text>
+          {filterHit ? (
+            <View style={[styles.filterHitChip, { backgroundColor: tf.sage2 }]}>
+              <Text style={[styles.filterHitChipText, { color: tf.pond }]}>命中</Text>
+            </View>
+          ) : null}
           {frogLeaf ? (
             <View style={[styles.frogleaf, { backgroundColor: tf.lily2 }]}>
               <Text style={[styles.frogleafText, { color: '#5A8256' }]}>{frogLeaf}</Text>
@@ -184,6 +204,7 @@ export function ProjectFoldTaskTree({
   onToggleDone,
   onOpenTask,
   onLongPressTask,
+  highlightTaskIds,
   maxDepth = 3,
 }: {
   nodes: TaskTreeNode[];
@@ -197,6 +218,8 @@ export function ProjectFoldTaskTree({
   onToggleDone: (task: TaskRow) => void;
   onOpenTask: (taskId: string) => void;
   onLongPressTask?: (task: TaskRow) => void;
+  /** 筛选命中的任务 id，用于行高亮 */
+  highlightTaskIds?: Set<string> | null;
   maxDepth?: number;
 }) {
   const { animate } = useFoldMotionGate();
@@ -267,6 +290,7 @@ export function ProjectFoldTaskTree({
             formatDayLabel={formatDayLabel}
             priorityLabel={priorityLabel}
             collapsed={isCollapsed}
+            filterHit={!!highlightTaskIds?.has(node.id)}
             onToggleCollapse={hasChildren ? () => onToggleCollapse(node.id) : undefined}
             onToggleDone={() => onToggleDone(node)}
             onOpen={() => onOpenTask(node.id)}
@@ -351,6 +375,16 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: 12,
     fontWeight: '600',
+  },
+  filterHitChip: {
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    flexShrink: 0,
+  },
+  filterHitChipText: {
+    fontSize: 9,
+    fontWeight: '800',
   },
   frogleaf: {
     borderRadius: 3,

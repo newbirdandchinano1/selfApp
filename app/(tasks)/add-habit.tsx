@@ -27,11 +27,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { syncScheduleSlotRemindersForHabit } from '@/lib/schedule-slot-reminder-notifications';
-import {
-  describeHabitScheduleSlotMapping,
-  isHabitSchedulePlaceableCycle,
-} from '@/lib/schedule/habit-virtual-placement';
-import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
+import { isHabitSchedulePlaceableCycle } from '@/lib/schedule/habit-virtual-placement';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
 import { toast, Alert } from '@/lib/app-feedback';
@@ -271,7 +267,6 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
-  const [scheduleAxisHint, setScheduleAxisHint] = React.useState<string | null>(null);
   const [expectedGoalOpen, setExpectedGoalOpen] = React.useState(false);
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(false);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
@@ -514,7 +509,7 @@ export default function AddHabitScreen() {
   }, [habitKind, activeTab]);
 
   const schedulePlacementHint = React.useMemo(() => {
-    if ((habitKind !== 'build' && habitKind !== 'task') || !reminderEnabled) return null;
+    if (habitKind !== 'build' && habitKind !== 'task') return null;
     const cycleExtra = JSON.stringify({
       habitKind,
       schedule: { activeTab },
@@ -523,56 +518,13 @@ export default function AddHabitScreen() {
       return null;
     }
     if (habitKind === 'build' && (activeTab === '每周N天' || activeTab === '每月N天')) {
-      return (
-        scheduleAxisHint ??
-        '开启提醒后会入格日程表；本周期完成天数达标后，剩余日格子不再显示'
-      );
+      return '按循环以全天入格日程表；本周期完成天数达标后，剩余日格子不再显示';
     }
     if (habitKind === 'task') {
-      return (
-        scheduleAxisHint ??
-        '开启提醒后会入格日程表；本周期完成预期目标后，剩余日格子不再显示'
-      );
+      return '按循环以全天入格日程表；本周期完成预期目标后，剩余日格子不再显示';
     }
-    return scheduleAxisHint;
-  }, [habitKind, reminderEnabled, activeTab, scheduleAxisHint]);
-
-  React.useEffect(() => {
-    if ((habitKind !== 'build' && habitKind !== 'task') || !reminderEnabled) {
-      setScheduleAxisHint(null);
-      return;
-    }
-    const placeableBuild =
-      habitKind === 'build' &&
-      (activeTab === '每天' ||
-        activeTab === '每周定期' ||
-        activeTab === '每月定期' ||
-        activeTab === '每周N天' ||
-        activeTab === '每月N天');
-    const placeableTask =
-      habitKind === 'task' && (TASK_CYCLE_TABS as string[]).includes(String(activeTab));
-    if (!placeableBuild && !placeableTask) {
-      setScheduleAxisHint(null);
-      return;
-    }
-    let cancelled = false;
-    void getScheduleAxisSettings()
-      .then((axis) => {
-        if (cancelled) return;
-        const mapped = describeHabitScheduleSlotMapping(
-          axis,
-          reminderTime.getHours(),
-          reminderTime.getMinutes(),
-        );
-        setScheduleAxisHint(mapped.ok ? null : mapped.reason);
-      })
-      .catch(() => {
-        if (!cancelled) setScheduleAxisHint(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [habitKind, reminderEnabled, reminderTime, activeTab]);
+    return '按循环以全天入格日程表（与提醒开关无关）';
+  }, [habitKind, activeTab]);
 
   const taskGoalTypeOptions = React.useMemo(
     () => getTaskExpectedGoalTypeOptions(taskRepeatPeriod),
@@ -1087,7 +1039,7 @@ export default function AddHabitScreen() {
             : `累计 ${expectedGoalValue} 天`
       : '';
   const reminderSummary = reminderEnabled
-    ? `${pad2(reminderTime.getHours())}:${pad2(reminderTime.getMinutes())} · 可入格`
+    ? `${pad2(reminderTime.getHours())}:${pad2(reminderTime.getMinutes())}`
     : '未开启';
   const previewEms = (em: string): string => {
     if (em === 'pts') return formatSignedPoints(rewardPts);
@@ -1694,7 +1646,7 @@ export default function AddHabitScreen() {
               <HabitTile
                 icon={<MaterialIcons name="notifications-none" size={12} color="#5A7680" />}
                 iconTone="blue"
-                title="提醒并入格"
+                title="提醒"
                 subtitle={reminderSummary}
                 trailing={reminderEnabled ? '开 ›' : '关 ›'}
                 onPress={() => toggleTile('reminder')}
@@ -1909,10 +1861,10 @@ export default function AddHabitScreen() {
                 <View style={styles.quantifyTop}>
                   <View style={styles.reminderIntro}>
                     <Text style={[Typography.bodyStrong, styles.quantifyTitle, { color: colors.text }]}>
-                      提醒并入格日程表
+                      打卡提醒
                     </Text>
                     <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                      开启后按设定时刻推送日程提醒，并自动叠到日程表对应格子（养成习惯 · 每天/每周定期/每月定期）
+                      开启后按设定时刻推送提醒；习惯按循环规则以全天形式出现在日程表（与提醒开关无关）
                       {Platform.OS === 'web' ? '；网页版不会登记系统提醒' : ''}
                     </Text>
                   </View>
@@ -1928,6 +1880,20 @@ export default function AddHabitScreen() {
                   </Pressable>
                 </View>
 
+                {schedulePlacementHint ? (
+                  <Text
+                    style={[
+                      Typography.caption,
+                      {
+                        color: colors.textSecondary,
+                        paddingHorizontal: Spacing.md,
+                        paddingBottom: Spacing.sm,
+                      },
+                    ]}>
+                    {schedulePlacementHint}
+                  </Text>
+                ) : null}
+
                 {reminderEnabled ? (
                   <View style={[styles.quantifyBody, { borderTopColor: colors.outline }]}>
                     <Pressable
@@ -1941,7 +1907,7 @@ export default function AddHabitScreen() {
                         Platform.OS === 'web' && { opacity: 0.65 },
                       ]}>
                       <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
-                        提醒 / 入格时间
+                        提醒时间
                       </Text>
                       <View style={styles.reminderTimeRight}>
                         <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
@@ -1952,15 +1918,6 @@ export default function AddHabitScreen() {
                         ) : null}
                       </View>
                     </Pressable>
-                    {schedulePlacementHint ? (
-                      <Text
-                        style={[
-                          Typography.caption,
-                          { color: '#d97706', marginTop: Spacing.sm, paddingHorizontal: 4 },
-                        ]}>
-                        {schedulePlacementHint}
-                      </Text>
-                    ) : null}
                   </View>
                 ) : null}
               </AppCard>

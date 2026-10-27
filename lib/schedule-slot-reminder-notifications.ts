@@ -147,6 +147,8 @@ async function collectVirtualHabitSlotReminderParams(params: {
     });
     for (const v of virtuals) {
       if (v.done) continue;
+      // 全天入格不走日程格提醒；有提醒时刻由习惯提醒通道负责
+      if (v.allDay) continue;
       const startMins = slotStartMinutes(axis, v.startSlotIndex);
       const day = logicalYmdToLocalDate(v.assignYmd);
       const startAt = new Date(

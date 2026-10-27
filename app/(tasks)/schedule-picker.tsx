@@ -785,7 +785,7 @@ export default function SchedulePickerScreen() {
     const currentRepeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
     /**
      * 设置了重复规则时，不把日历/时刻区间带回（date/range 无效）。
-     * 仍保留「具体时间」：供重复待办自动入格映射到日程表格子。
+     * 仍保留「具体时间」：有时刻则定点入格，否则全天入格。
      */
     const repeatLocksSchedule = repeatOption !== '不重复';
     const basePayload = {
@@ -1142,7 +1142,6 @@ export default function SchedulePickerScreen() {
         : '日期与时刻 · 快捷芯片与月历同步';
   const foldCardBg = isDark ? 'rgba(255,252,245,0.06)' : 'rgba(255,252,245,0.86)';
   const footPad = Math.max(insets.bottom, 12);
-  const canAutoPlace = repeatOption !== '不重复' && hasExactTime;
   /** 首帧冻结入场月，避免 FlatList 先以「无绽放」挂载再切真 */
   if (showContent && calBloomMonthRef.current == null) {
     calBloomMonthRef.current = monthOffset;
@@ -1699,11 +1698,6 @@ export default function SchedulePickerScreen() {
                 {repeatSummary}
               </Text>
             </View>
-            {canAutoPlace ? (
-              <View style={[styles.autoTag, { backgroundColor: tf.sage2 }]}>
-                <Text style={{ fontSize: 10, fontWeight: '700', color: '#36594D' }}>可自动入格</Text>
-              </View>
-            ) : null}
             <Text style={{ fontSize: 11, color: tf.muted, marginLeft: 2 }}>›</Text>
           </Pressable>
         </FoldRiseIn>

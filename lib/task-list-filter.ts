@@ -18,6 +18,9 @@ export type TaskDatePreset = 'today' | 'tomorrow' | 'week' | 'month' | 'year';
 /** 长期：全部 / 仅长期 / 仅非长期 */
 export type TaskLongTermFilter = 'all' | 'yes' | 'no';
 
+/** 项目列表作用域：全部 / 仅项目本身 / 仅子任务 */
+export type TaskEntityScopeFilter = 'all' | 'project' | 'task';
+
 export type TaskListFilterState = {
   search: string;
   datePreset: TaskDatePreset | null;
@@ -26,6 +29,13 @@ export type TaskListFilterState = {
   /** 空 = 不限；1–4 对应四象限 */
   priorities: number[];
   longTerm: TaskLongTermFilter;
+  /**
+   * 项目列表专用：匹配对象。
+   * - all：项目本身或任一子任务命中即保留
+   * - project：仅项目本身命中才保留
+   * - task：仅子任务命中才保留（任务树只留命中链）
+   */
+  entityScope: TaskEntityScopeFilter;
 };
 
 export const EMPTY_TASK_LIST_FILTER: TaskListFilterState = {
@@ -34,7 +44,18 @@ export const EMPTY_TASK_LIST_FILTER: TaskListFilterState = {
   tagIds: [],
   priorities: [],
   longTerm: 'all',
+  entityScope: 'all',
 };
+
+export const TASK_ENTITY_SCOPE_OPTIONS: {
+  key: TaskEntityScopeFilter;
+  label: string;
+  short: string;
+}[] = [
+  { key: 'all', label: '全部', short: '全部' },
+  { key: 'project', label: '仅项目', short: '仅项目' },
+  { key: 'task', label: '仅任务', short: '仅任务' },
+];
 
 export const TASK_DATE_PRESET_OPTIONS: { key: TaskDatePreset; label: string }[] = [
   { key: 'today', label: '今天' },
@@ -57,7 +78,8 @@ export function isTaskListFilterActive(filter: TaskListFilterState): boolean {
     filter.datePreset != null ||
     filter.tagIds.length > 0 ||
     filter.priorities.length > 0 ||
-    filter.longTerm !== 'all'
+    filter.longTerm !== 'all' ||
+    (filter.entityScope ?? 'all') !== 'all'
   );
 }
 
@@ -68,7 +90,16 @@ export function countActiveTaskListFilterDims(filter: TaskListFilterState): numb
   if (filter.tagIds.length > 0) n += 1;
   if (filter.priorities.length > 0) n += 1;
   if (filter.longTerm !== 'all') n += 1;
+  if ((filter.entityScope ?? 'all') !== 'all') n += 1;
   return n;
+}
+
+/** 筛选摘要文案（用于栏底提示） */
+export function formatTaskListFilterScopeHint(filter: TaskListFilterState): string {
+  const scope = filter.entityScope ?? 'all';
+  if (scope === 'project') return '仅项目';
+  if (scope === 'task') return '仅任务';
+  return '';
 }
 
 export function resolveDatePresetRange(
@@ -224,7 +255,7 @@ export function projectPassesListFilter(
   return true;
 }
 
-function projectHasMatchingDescendantTask(
+export function projectHasMatchingDescendantTask(
   projectId: string,
   filter: TaskListFilterState,
   opts: ApplyProjectListFilterOpts,
@@ -238,14 +269,60 @@ function projectHasMatchingDescendantTask(
   return tasks.some((t) => taskPassesListFilter(t, filter, taskOpts));
 }
 
-/** 项目本身匹配，或其下任一子任务匹配 */
+export type ProjectListFilterMatchKind = 'none' | 'project' | 'task' | 'both';
+
+/** 项目列表筛选命中类型（用于 UI 高亮：项目 / 任务 / 两者） */
+export function getProjectListFilterMatchKind(
+  project: ProjectRow,
+  filter: TaskListFilterState,
+  opts: ApplyProjectListFilterOpts,
+): ProjectListFilterMatchKind {
+  if (!isTaskListFilterActive(filter)) return 'none';
+  const projectHit = projectPassesListFilter(project, filter, opts);
+  const taskHit = projectHasMatchingDescendantTask(project.id, filter, opts);
+  if (projectHit && taskHit) return 'both';
+  if (projectHit) return 'project';
+  if (taskHit) return 'task';
+  return 'none';
+}
+
+/** 收集项目下命中筛选条件的任务 id（高亮用） */
+export function collectMatchingTaskIdsInProject(
+  projectId: string,
+  filter: TaskListFilterState,
+  opts: ApplyProjectListFilterOpts,
+): Set<string> {
+  const out = new Set<string>();
+  if (!isTaskListFilterActive(filter)) return out;
+  const tasks = opts.tasksByProjectId?.[projectId];
+  if (!tasks || tasks.length === 0) return out;
+  const taskOpts: ApplyTaskListFilterOpts = {
+    logicalTodayYmd: opts.logicalTodayYmd,
+    tagIdsByTaskId: opts.tagIdsByTaskId,
+  };
+  for (const t of tasks) {
+    if (taskPassesListFilter(t, filter, taskOpts)) out.add(t.id);
+  }
+  return out;
+}
+
+/**
+ * 项目本身匹配，或其下任一子任务匹配（受 entityScope 约束）。
+ * - project：仅项目本身
+ * - task：仅子任务
+ * - all：二者任一
+ */
 export function projectOrDescendantPassesListFilter(
   project: ProjectRow,
   filter: TaskListFilterState,
   opts: ApplyProjectListFilterOpts,
 ): boolean {
-  if (projectPassesListFilter(project, filter, opts)) return true;
-  return projectHasMatchingDescendantTask(project.id, filter, opts);
+  const scope = filter.entityScope ?? 'all';
+  const projectHit = projectPassesListFilter(project, filter, opts);
+  if (scope === 'project') return projectHit;
+  const taskHit = projectHasMatchingDescendantTask(project.id, filter, opts);
+  if (scope === 'task') return taskHit;
+  return projectHit || taskHit;
 }
 
 export function applyProjectListFilter<T extends ProjectRow>(
@@ -260,8 +337,9 @@ export function applyProjectListFilter<T extends ProjectRow>(
 type TaskTreeFilterNode = TaskRow & { children?: TaskTreeFilterNode[] };
 
 /**
- * 列表筛选生效且项目本身未命中时：只保留匹配任务及其祖先链。
- * 项目本身已命中则原样返回（展开后仍看完整任务树）。
+ * 列表筛选生效时裁剪任务树。
+ * - 仅任务 / 项目未命中：只保留匹配任务及其祖先链
+ * - 项目本身已命中且作用域非「仅任务」：原样返回完整任务树
  */
 export function filterProjectTaskTreeForListFilter<T extends TaskTreeFilterNode>(
   nodes: T[],
@@ -269,7 +347,9 @@ export function filterProjectTaskTreeForListFilter<T extends TaskTreeFilterNode>
   opts: ApplyTaskListFilterOpts,
   projectMatched: boolean,
 ): T[] {
-  if (!isTaskListFilterActive(filter) || projectMatched) return nodes;
+  const scope = filter.entityScope ?? 'all';
+  const showFullTree = projectMatched && scope !== 'task';
+  if (!isTaskListFilterActive(filter) || showFullTree) return nodes;
   const result: T[] = [];
   for (const node of nodes) {
     const children = Array.isArray(node.children) ? (node.children as T[]) : [];

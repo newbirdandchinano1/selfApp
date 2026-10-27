@@ -370,7 +370,7 @@ export function SchedulePlacementDetailSheet({
     surface === 'habit'
       ? '习惯虚拟块'
       : surface === 'todo'
-        ? '自动入格'
+        ? '虚拟入格'
         : subject?.kind === 'task'
           ? '叶子任务'
           : '项目';
