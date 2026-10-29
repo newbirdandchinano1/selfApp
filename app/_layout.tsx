@@ -37,6 +37,7 @@ import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
 import { hydrateApiDirtyFromStorage, markAllPendingTablesDirty } from '@/lib/api-incremental-sync';
 import {
+  clearPendingFlushBlock,
   formatPendingFlushError,
   runStartupPendingFlush,
   subscribePendingFlushBlock,
@@ -153,8 +154,10 @@ function RootLayoutInner() {
   const hasBeenBlockedRef = useRef(false);
   const flushReadyRef = useRef(false);
   const blockingErrorRef = useRef(false);
+  /** 用户已选择进入：后续冲刷失败不再全屏阻断 */
+  const admittedDespitePendingRef = useRef(false);
 
-  /** pending 冲刷成功后才启动 SyncManager，避免 Pull 抢在上传前覆盖缓存。 */
+  /** pending 冲刷成功（或用户主动进入）后启动 SyncManager；Push 调度会继续后台上传。 */
   const runDeferredBootstrapOnce = () => {
     if (deferredStartedRef.current) return;
     deferredStartedRef.current = true;
@@ -185,6 +188,29 @@ function RootLayoutInner() {
     });
   };
 
+  /** 立刻放行主界面，并把遗留 pending 交给后台静默推送（不再 await）。 */
+  const admitAppAndSyncInBackground = () => {
+    admittedDespitePendingRef.current = true;
+    clearPendingFlushBlock();
+    hasBeenBlockedRef.current = false;
+    blockingErrorRef.current = false;
+    setFlushError(null);
+    setFlushStatus(null);
+    setFlushRetrying(false);
+    flushReadyRef.current = true;
+    setFlushReady(true);
+    runDeferredBootstrapOnce();
+    void runStartupPendingFlush({ blockOnFailure: false }).then(result => {
+      if (__DEV__) {
+        console.log('[bootstrap] 后台 pending 冲刷', {
+          ok: result.ok,
+          skipped: result.skipped,
+          remaining: result.inventoryAfter.total,
+        });
+      }
+    });
+  };
+
   const runPendingFlushGate = async (): Promise<boolean> => {
     setFlushStatus('正在同步未上传的本地修改…');
     setFlushError(null);
@@ -200,6 +226,10 @@ function RootLayoutInner() {
         }),
       ]);
       if (!result.ok) {
+        if (admittedDespitePendingRef.current) {
+          admitAppAndSyncInBackground();
+          return true;
+        }
         flushReadyRef.current = false;
         setFlushReady(false);
         blockingErrorRef.current = true;
@@ -217,6 +247,10 @@ function RootLayoutInner() {
       return true;
     } catch (e) {
       console.warn('[bootstrap] pending 冲刷异常', e);
+      if (admittedDespitePendingRef.current) {
+        admitAppAndSyncInBackground();
+        return true;
+      }
       flushReadyRef.current = false;
       setFlushReady(false);
       blockingErrorRef.current = true;
@@ -252,14 +286,10 @@ function RootLayoutInner() {
     }
   };
 
-  const handleFlushRetry = async () => {
+  /** 冲刷失败后的「进入应用」：立刻放行，同步改后台静默，不再卡在开屏。 */
+  const handleFlushRetry = () => {
     if (flushRetrying) return;
-    setFlushRetrying(true);
-    try {
-      await runPendingFlushGate();
-    } finally {
-      setFlushRetrying(false);
-    }
+    admitAppAndSyncInBackground();
   };
 
   useEffect(() => {
@@ -336,6 +366,8 @@ function RootLayoutInner() {
   useEffect(() => {
     return subscribePendingFlushBlock((blocked, message) => {
       if (blocked) {
+        // 用户已选择进入后，登录后二次冲刷失败也不再全屏挡住
+        if (admittedDespitePendingRef.current) return;
         hasBeenBlockedRef.current = true;
         flushReadyRef.current = false;
         blockingErrorRef.current = true;
@@ -485,9 +517,7 @@ function RootLayoutInner() {
               <PendingFlushBlockOverlay
                 message={flushError}
                 retrying={flushRetrying}
-                onRetry={() => {
-                  void handleFlushRetry();
-                }}
+                onRetry={handleFlushRetry}
               />
             ) : null}
           </View>
@@ -500,12 +530,18 @@ function RootLayoutInner() {
             syncProgress={syncProgress}
             statusText={flushStatus}
             retrying={flushRetrying}
+            actionLabel={!dbError && flushError ? '进入应用' : '重试'}
+            actionHint={
+              !dbError && flushError
+                ? '可先进入应用，未上传的修改会在后台继续同步。'
+                : null
+            }
             onRetry={() => {
               if (dbError) {
                 void handleDbRetry();
                 return;
               }
-              void handleFlushRetry();
+              handleFlushRetry();
             }}
           />
         ) : null}

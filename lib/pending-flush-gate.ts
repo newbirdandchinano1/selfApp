@@ -1,6 +1,6 @@
 /**
  * 阶段 1：上线前冲刷遗留 pending。
- * 仅在推送抛错时阻断；SQLite 里冲不掉的历史 pending 不得伪装成「没网」。
+ * 首次失败可提示；用户选择进入后不再硬阻断，改由 SyncManager 后台静默推送。
  * 课表 outbox 已拆除，不再作为闸门条件。
  */
 
@@ -21,6 +21,14 @@ export type PendingFlushResult = {
   inventoryBefore: PendingFlushInventory;
   inventoryAfter: PendingFlushInventory;
   error?: string;
+};
+
+export type RunStartupPendingFlushOpts = {
+  /**
+   * 失败时是否把 blocked 状态通知给 UI（默认 true）。
+   * 用户已选择进入应用后的后台重试应传 false，避免再次全屏挡住。
+   */
+  blockOnFailure?: boolean;
 };
 
 type BlockListener = (blocked: boolean, message: string | null) => void;
@@ -80,6 +88,11 @@ export function isPendingFlushBlocked(): boolean {
   return blockedFromFailedFlush;
 }
 
+/** 清除冲刷失败阻断（用户选择先进入应用时调用）。 */
+export function clearPendingFlushBlock(): void {
+  setBlockedFromFailedFlush(false);
+}
+
 /** 扫描 SQLite pending 行。 */
 export async function collectPendingFlushInventory(): Promise<PendingFlushInventory> {
   const { countPendingApiSyncRowsByTable } = await import('@/lib/api-incremental-sync');
@@ -94,10 +107,14 @@ export async function collectPendingFlushInventory(): Promise<PendingFlushInvent
 
 /**
  * 启动或登录后强制把本地 pending 推到服务器。
- * 失败保持队列，返回 ok:false，由 UI 阻断进入。
+ * 失败保持队列；默认通知 UI（可 blockOnFailure:false 改为静默）。
  */
-export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
+export async function runStartupPendingFlush(
+  opts?: RunStartupPendingFlushOpts,
+): Promise<PendingFlushResult> {
   if (inflight) return inflight;
+
+  const blockOnFailure = opts?.blockOnFailure !== false;
 
   inflight = (async (): Promise<PendingFlushResult> => {
     const before = await collectPendingFlushInventory();
@@ -129,7 +146,7 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
       const after = await collectPendingFlushInventory();
       logPendingFlushInventory('冲刷后', after);
 
-      // 可上传 pending 数量没有下降：飞行模式/请求被吞掉时不得当成功进首页（1-B）
+      // 可上传 pending 数量没有下降：飞行模式/请求被吞掉时不得当成功
       // 有网时若部分上传成功（after < before），即使 OCC 残留也不按断网拦住
       if (after.total > 0 && after.total >= before.total) {
         const leftover = Object.entries(after.tableCounts)
@@ -139,9 +156,15 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
           ? `${PENDING_FLUSH_BLOCK_MESSAGE}\n仍待上传：${leftover}`
           : PENDING_FLUSH_BLOCK_MESSAGE;
         if (__DEV__) {
-          console.warn('[pending-flush] 冲刷后可上传 pending 未减少，阻断进入', after.tableCounts);
+          console.warn(
+            '[pending-flush] 冲刷后可上传 pending 未减少',
+            blockOnFailure ? '（可阻断 UI）' : '（后台静默）',
+            after.tableCounts,
+          );
         }
-        setBlockedFromFailedFlush(true, error);
+        if (blockOnFailure) {
+          setBlockedFromFailedFlush(true, error);
+        }
         return {
           ok: false,
           skipped: false,
@@ -165,9 +188,15 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
       logPendingFlushInventory('冲刷失败', after);
       const error = formatFlushBlockMessage(e);
       if (__DEV__) {
-        console.warn('[pending-flush] 冲刷抛错，阻断进入', e);
+        console.warn(
+          '[pending-flush] 冲刷抛错',
+          blockOnFailure ? '（可阻断 UI）' : '（后台静默）',
+          e,
+        );
       }
-      setBlockedFromFailedFlush(true, error);
+      if (blockOnFailure) {
+        setBlockedFromFailedFlush(true, error);
+      }
       return {
         ok: false,
         skipped: false,
@@ -184,10 +213,10 @@ export async function runStartupPendingFlush(): Promise<PendingFlushResult> {
 }
 
 /**
- * 登录拿到新 token 后再次冲刷（与启动闸门去重）。
+ * 登录拿到新 token 后再次冲刷（与启动闸门去重；失败不挡主界面）。
  */
 export function schedulePendingFlushAfterLogin(): void {
-  void runStartupPendingFlush().then(result => {
+  void runStartupPendingFlush({ blockOnFailure: false }).then(result => {
     if (__DEV__) {
       console.log('[pending-flush] 登录后冲刷', {
         ok: result.ok,

@@ -34,6 +34,10 @@ export type AppSplashScreenProps = {
   /** 冲刷/初始化重试进行中 */
   retrying?: boolean;
   onRetry?: () => void;
+  /** 错误态主按钮文案（冲刷失败用「进入应用」） */
+  actionLabel?: string;
+  /** 错误态补充说明 */
+  actionHint?: string | null;
 };
 
 function formatSyncProgress(progress: InitialSyncProgress | null | undefined): string | null {
@@ -57,6 +61,8 @@ export function AppSplashScreen({
   statusText,
   retrying,
   onRetry,
+  actionLabel,
+  actionHint,
 }: AppSplashScreenProps) {
   const insets = useSafeAreaInsets();
   const [visible, setVisible] = useState(true);
@@ -66,6 +72,9 @@ export function AppSplashScreen({
   const nativeHiddenRef = useRef(false);
   const shellOpacity = useRef(new Animated.Value(1)).current;
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+
+  const primaryActionLabel = actionLabel?.trim() || '重试';
+  const busyActionLabel = primaryActionLabel === '进入应用' ? '正在进入…' : '正在重试…';
 
   const hideNativeSplash = () => {
     // 允许多次触发：iPad 生产包上单次 hideAsync 常无效，需重试
@@ -152,6 +161,7 @@ export function AppSplashScreen({
           ]}
         >
           <Text style={styles.errorText}>{dbError}</Text>
+          {actionHint ? <Text style={styles.retryHint}>{actionHint}</Text> : null}
           {statusText ? <Text style={styles.retryHint}>{statusText}</Text> : null}
           <View style={styles.errorActions}>
             <Pressable
@@ -162,7 +172,9 @@ export function AppSplashScreen({
                 { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
               ]}
             >
-              <Text style={styles.errorButtonText}>{retrying ? '正在重试…' : '重试'}</Text>
+              <Text style={styles.errorButtonText}>
+                {retrying ? busyActionLabel : primaryActionLabel}
+              </Text>
             </Pressable>
           </View>
         </View>
