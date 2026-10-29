@@ -1,5 +1,8 @@
 {
   "name": "zheng-background",
   "version": "1.0.0",
-  "main": "index.ts"
+  "description": "Background execution helpers for selfApp auto-ledger",
+  "main": "index.ts",
+  "license": "UNLICENSED",
+  "author": "selfApp"
 }

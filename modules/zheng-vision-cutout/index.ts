@@ -20,19 +20,73 @@ export function isVisionCutoutModuleLinked(): boolean {
   return native != null;
 }
 
+export type VisionCutoutAvailability = {
+  linked: boolean;
+  platform: typeof Platform.OS;
+  available: boolean;
+  /** 人类可读原因，便于测试页排查 */
+  reason: string;
+  nativeAvailableRaw?: boolean | null;
+};
+
+/** 详细可用性（测试页用）；日常业务可只看 `available`。 */
+export async function getVisionCutoutAvailability(): Promise<VisionCutoutAvailability> {
+  const linked = native != null;
+  const platform = Platform.OS;
+  if (platform !== 'ios') {
+    return {
+      linked,
+      platform,
+      available: false,
+      reason: `当前平台为 ${platform}，Vision 人像抠图仅支持 iOS`,
+    };
+  }
+  if (!linked || !native?.isAvailable) {
+    return {
+      linked: false,
+      platform,
+      available: false,
+      reason:
+        '原生模块未链入：当前手机上的 App 是旧包，或不含 ZhengVisionCutout.podspec。请用 EAS development 重新打包并安装后再测。',
+    };
+  }
+  try {
+    const nativeAvailableRaw = await native.isAvailable();
+    if (!nativeAvailableRaw) {
+      return {
+        linked: true,
+        platform,
+        available: false,
+        reason: '模块已链入，但 isAvailable=false（常见于 iOS 模拟器；请用真机）',
+        nativeAvailableRaw,
+      };
+    }
+    return {
+      linked: true,
+      platform,
+      available: true,
+      reason: '可用',
+      nativeAvailableRaw,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      linked: true,
+      platform,
+      available: false,
+      reason: `调用 isAvailable 失败：${msg}`,
+      nativeAvailableRaw: null,
+    };
+  }
+}
+
 /**
  * 当前环境是否可用 Vision 人像抠图。
  * iOS 实机 + 已链入模块为 true；模拟器 / Android / Expo Go 为 false。
  */
 export async function isVisionCutoutAvailable(): Promise<boolean> {
-  if (Platform.OS !== 'ios' || !native?.isAvailable) {
-    return false;
-  }
-  try {
-    return await native.isAvailable();
-  } catch {
-    return false;
-  }
+  const info = await getVisionCutoutAvailability();
+  return info.available;
 }
 
 /**

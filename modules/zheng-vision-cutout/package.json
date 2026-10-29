@@ -1,5 +1,8 @@
 {
   "name": "zheng-vision-cutout",
   "version": "1.0.0",
-  "main": "index.ts"
+  "description": "iOS Vision person cutout (transparent PNG) for selfApp",
+  "main": "index.ts",
+  "license": "UNLICENSED",
+  "author": "selfApp"
 }

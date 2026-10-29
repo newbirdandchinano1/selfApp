@@ -18,7 +18,9 @@ npx expo start
 | `zheng-background` | 后台保活 / 切后台（自动记账） |
 | `zheng-vision-cutout` | iOS Vision 人像抠图 → 透明 PNG（仅实机） |
 
-侧边栏 **系统管理 → Vision 抠图测试** 可联调选图与抠图。改 Swift 后需 `npx expo run:ios` 重编；模拟器上人像分割通常不可用。
+侧边栏 **系统管理 → Vision 抠图测试** 可联调选图与抠图。改 Swift 后需重新打 **development 原生包**（Windows 上用 EAS：`npx eas build --profile development --platform ios`）并装到真机；仅 `npx expo start` 热更新 JS **不会**带上新原生模块。模拟器上人像分割通常不可用。
+
+本地 Expo Module 必须带 `ios/*.podspec`，否则 iOS autolinking 会丢弃该模块（表现为测试页「模块已链入=否」）。
 
 ## 常用命令
 

@@ -17,8 +17,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   cutOutPerson,
-  isVisionCutoutAvailable,
-  isVisionCutoutModuleLinked,
+  getVisionCutoutAvailability,
+  type VisionCutoutAvailability,
   type VisionCutoutQuality,
 } from 'zheng-vision-cutout';
 
@@ -35,8 +35,7 @@ export default function VisionCutoutTestScreen() {
   const isDark = colorScheme === 'dark';
   const theme = Colors[(colorScheme ?? 'light') as 'light' | 'dark'];
 
-  const [linked] = useState(() => isVisionCutoutModuleLinked());
-  const [available, setAvailable] = useState<boolean | null>(null);
+  const [availability, setAvailability] = useState<VisionCutoutAvailability | null>(null);
   const [sourceUri, setSourceUri] = useState<string | null>(null);
   const [resultUri, setResultUri] = useState<string | null>(null);
   const [quality, setQuality] = useState<VisionCutoutQuality>('accurate');
@@ -142,10 +141,17 @@ export default function VisionCutoutTestScreen() {
     let alive = true;
     void (async () => {
       try {
-        const ok = await isVisionCutoutAvailable();
-        if (alive) setAvailable(ok);
-      } catch {
-        if (alive) setAvailable(false);
+        const info = await getVisionCutoutAvailability();
+        if (alive) setAvailability(info);
+      } catch (e) {
+        if (alive) {
+          setAvailability({
+            linked: false,
+            platform: Platform.OS,
+            available: false,
+            reason: e instanceof Error ? e.message : String(e),
+          });
+        }
       }
     })();
     return () => {
@@ -193,7 +199,7 @@ export default function VisionCutoutTestScreen() {
   }, [appendLog, busy, quality, sourceUri]);
 
   const availabilityLabel =
-    available === null ? '检测中…' : available ? '可用（iOS 实机）' : '不可用';
+    availability == null ? '检测中…' : availability.available ? '可用' : '不可用';
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }} edges={['top']}>
@@ -207,15 +213,19 @@ export default function VisionCutoutTestScreen() {
 
       <ScrollView contentContainerStyle={stylesMemo.body}>
         <View style={stylesMemo.status}>
-          <Text style={stylesMemo.statusText}>平台：{Platform.OS}</Text>
+          <Text style={stylesMemo.statusText}>平台：{availability?.platform ?? Platform.OS}</Text>
           <Text style={stylesMemo.statusText}>
-            模块已链入：{linked ? '是' : '否（需 expo run:ios 重编）'}
+            模块已链入：{availability == null ? '…' : availability.linked ? '是' : '否'}
           </Text>
           <Text style={stylesMemo.statusText}>能力状态：{availabilityLabel}</Text>
+          {availability?.reason ? (
+            <Text style={stylesMemo.statusText}>原因：{availability.reason}</Text>
+          ) : null}
         </View>
 
         <Text style={stylesMemo.hint}>
-          用人像穿搭照测试去背景留人。纯衣服/无人照片通常会失败。模拟器与 Android 不可用。
+          用人像穿搭照测试去背景留人。若「模块已链入=否」，说明手机上的原生包太旧：请用含
+          ZhengVisionCutout.podspec 的代码重新 EAS development 打包并安装（仅热更新 JS 不够）。
         </Text>
 
         <Text style={stylesMemo.label}>质量</Text>
@@ -242,10 +252,10 @@ export default function VisionCutoutTestScreen() {
 
         <Pressable
           onPress={() => void onCutOut()}
-          disabled={busy || !sourceUri || available === false}
+          disabled={busy || !sourceUri || availability?.available === false}
           style={[
             stylesMemo.btn,
-            (busy || !sourceUri || available === false) && stylesMemo.btnDisabled,
+            (busy || !sourceUri || availability?.available === false) && stylesMemo.btnDisabled,
           ]}>
           {busy ? (
             <ActivityIndicator color="#fff" />
