@@ -187,7 +187,7 @@ export function WeeklyReviewFormScreen({
               ? parseWeeklyReviewFields(previewRow, wColIds)
               : emptyFieldValues(wColIds);
             setWeeklyFields(
-              rollupWeeklyFieldsFromDailyEntries(
+              await rollupWeeklyFieldsFromDailyEntries(
                 base,
                 snapshot.dailyEntries,
                 snapshot.reviewCycleEndYmd,
@@ -210,7 +210,7 @@ export function WeeklyReviewFormScreen({
           setMetrics(m);
           const base = row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds);
           setWeeklyFields(
-            rollupWeeklyFieldsFromDailyEntries(
+            await rollupWeeklyFieldsFromDailyEntries(
               base,
               snapshot.dailyEntries,
               snapshot.reviewCycleEndYmd,

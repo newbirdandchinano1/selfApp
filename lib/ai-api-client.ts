@@ -185,7 +185,30 @@ export async function aiMemoReview(body: { memo_context_text: string }): Promise
   return agentAiRequest(`${AI_PREFIX}/memo/review`, { method: 'POST', body });
 }
 
-export async function aiWeeklyReviewCoaching(body: { user_prompt: string }): Promise<{ text: string }> {
+export type ReviewCoachingDimensionColumn = {
+  title: string;
+  value: string;
+};
+
+export type ReviewCoachingDimension = {
+  title: string;
+  value?: string;
+  columns?: ReviewCoachingDimensionColumn[];
+};
+
+export type ReviewCoachingRequestBody = {
+  review_type?: 'daily' | 'weekly' | 'monthly';
+  period_label?: string;
+  dimensions?: ReviewCoachingDimension[];
+  metrics_text?: string | null;
+  related_digest?: string | null;
+  execution_score?: number | null;
+  review_data?: string;
+  /** @deprecated 旧客户端整段正文；新调用请只传结构化复盘数据 */
+  user_prompt?: string;
+};
+
+export async function aiWeeklyReviewCoaching(body: ReviewCoachingRequestBody): Promise<{ text: string }> {
   return agentAiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
 }
 

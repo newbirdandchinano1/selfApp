@@ -61,7 +61,7 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 | 10 | POST | `/api/v1/ai/finance/cash-flow-analysis` | 现金流分析 |
 | 11 | POST | `/api/v1/ai/memo/review` | 备忘点评（不落库） |
 | 12 | POST | `/api/app/memos/:id/ai-review` | 备忘点评并写库（业务后端 → Agent） |
-| 13 | POST | `/api/v1/ai/weekly-review/coaching` | 周复盘教练文案 |
+| 13 | POST | `/api/v1/ai/weekly-review/coaching` | 日/周/月复盘分析 |
 
 > 上表以外的 AI 场景（心愿、项目点评、缺点、目标墙、技能等）**当前 Agent 未提供路由**，本文不再描述。
 
@@ -148,15 +148,26 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 
 对指定备忘分析并写入 `ai_evaluation` / `ai_suggestions` / `ai_review_at`（后端内部代调 Agent）。
 
-### 4.5 周复盘
+### 4.5 日 / 周 / 月复盘
 
 **`POST .../weekly-review/coaching`**
 
+客户端只传复盘页数据；角色与日/周/月策略在 Agent `review_prompts.py`。
+
 ```json
-{ "user_prompt": "本周复盘上下文…" }
+{
+  "review_type": "daily",
+  "period_label": "2026-03-30",
+  "dimensions": [
+    { "title": "健康", "columns": [{ "title": "记录", "value": "…" }] }
+  ],
+  "metrics_text": null,
+  "related_digest": null,
+  "execution_score": null
+}
 ```
 
-返回 `{ "text": "…" }`。
+`review_type`：`daily` | `weekly` | `monthly`。兼容旧字段 `user_prompt`。返回 `{ "text": "…" }`。
 
 ---
 
@@ -166,7 +177,7 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 
 图片请用 `splitImageBase64AndMime` 拆成 `image_base64` + `image_mime_type`。
 
-摘要拼装（如账单摘要、复盘 prompt）仍在 App 本地完成，只把文本 POST 给 Agent。
+账单等摘要仍可在 App 本地拼装后 POST；复盘分析请传结构化字段（`review_type` + `dimensions` 等），不要在客户端写写作指令。
 
 ---
 

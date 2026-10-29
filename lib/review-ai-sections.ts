@@ -1,7 +1,6 @@
 /**
  * 把 AI 复盘文本解析成「观察 / 风险 / 建议」三段结构。
- * AI 复盘分析页（设计稿 11）用它把长文本拆成可扫读的卡片，
- * 解析失败时回退为原文整段展示，不丢内容。
+ * 分析页顶部 hero 用导语 + 问题/风险；建议段单独进下方动作卡。
  */
 
 export type ReviewAiSectionKey = 'problems' | 'risks' | 'suggestions';

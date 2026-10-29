@@ -548,7 +548,15 @@ export async function analyzeMemoReviewFromText(
 }
 
 export type GenerateWeeklyReviewCoachingFromTextOptions = {
-  userPrompt: string;
+  /** @deprecated 仅兼容旧调用；优先传 reviewType + dimensions */
+  userPrompt?: string;
+  reviewType?: 'daily' | 'weekly' | 'monthly';
+  periodLabel?: string;
+  dimensions?: aiApi.ReviewCoachingDimension[];
+  metricsText?: string | null;
+  relatedDigest?: string | null;
+  executionScore?: number | null;
+  reviewData?: string;
   maxAttempts?: number;
   retryDelayMs?: number;
 };
@@ -557,13 +565,76 @@ export type GenerateWeeklyReviewCoachingFromTextResult =
   | { ok: true; text: string; attempts: number }
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
+/** 把结构化复盘拼成整段正文；兼容仍只认 user_prompt 的旧版 Agent */
+function assembleReviewUserPrompt(options: GenerateWeeklyReviewCoachingFromTextOptions): string {
+  const explicit = (options.userPrompt ?? '').trim();
+  if (explicit) return explicit;
+
+  const parts: string[] = [];
+  const label = (options.periodLabel ?? '').trim();
+  if (label) parts.push(`复盘周期：${label}`);
+  if (options.executionScore != null) parts.push(`自评执行分（1-5）：${options.executionScore}`);
+  if (parts.length > 0) parts.push('');
+
+  const dims = options.dimensions ?? [];
+  dims.forEach((dim, idx) => {
+    const title = (dim.title ?? '').trim() || `维度${idx + 1}`;
+    parts.push(`${idx + 1}、${title}：`);
+    const columns = dim.columns;
+    if (!columns || columns.length === 0) {
+      parts.push((dim.value ?? '').trim() || '（未填写）');
+      parts.push('');
+      return;
+    }
+    for (const col of columns) {
+      const colTitle = (col.title ?? '').trim();
+      const colValue = (col.value ?? '').trim();
+      if (columns.length > 1 && colTitle) parts.push(`【${colTitle}】`);
+      parts.push(colValue || '（未填写）');
+      parts.push('');
+    }
+  });
+
+  const metrics = (options.metricsText ?? '').trim();
+  if (metrics) {
+    parts.push('App 内本周期统计：');
+    parts.push(metrics);
+    parts.push('');
+  }
+
+  const digest = (options.relatedDigest ?? '').trim();
+  if (digest) {
+    parts.push('相关周期原文：');
+    parts.push(digest);
+    parts.push('');
+  }
+
+  const blob = (options.reviewData ?? '').trim();
+  if (blob) {
+    if (dims.length > 0 || metrics || digest) parts.push('补充原文：');
+    parts.push(blob);
+  }
+
+  return parts.join('\n').trim();
+}
+
 export async function generateWeeklyReviewCoachingFromText(
   options: GenerateWeeklyReviewCoachingFromTextOptions,
 ): Promise<GenerateWeeklyReviewCoachingFromTextResult> {
-  const userPrompt = options.userPrompt.trim();
+  const userPrompt = assembleReviewUserPrompt(options);
   if (!userPrompt) return { ok: false, error: '复盘内容为空', attempts: 0 };
   try {
-    const { text } = await aiApi.aiWeeklyReviewCoaching({ user_prompt: userPrompt });
+    const { text } = await aiApi.aiWeeklyReviewCoaching({
+      review_type: options.reviewType ?? 'weekly',
+      period_label: options.periodLabel ?? '',
+      dimensions: options.dimensions,
+      metrics_text: options.metricsText,
+      related_digest: options.relatedDigest,
+      execution_score: options.executionScore,
+      review_data: options.reviewData,
+      // 线上旧 Agent 仍强制校验 user_prompt；新 Agent 会优先用 dimensions
+      user_prompt: userPrompt,
+    });
     return { ok: true, text, attempts: 1 };
   } catch (e) {
     const err = mapApiError(e);

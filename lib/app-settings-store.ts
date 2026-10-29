@@ -189,8 +189,20 @@ export async function getAppSetting<T>(key: string): Promise<T | null> {
 export async function setAppSetting(key: string, value: unknown): Promise<void> {
   const db = await getDatabase();
   await migrateAppSettingsFromAsyncStorageIfNeeded();
-  const now = new Date().toISOString();
   const value_json = serializeValue(value);
+  const existing = await db.getFirstAsync<{ value_json: string; sync_status: string }>(
+    'SELECT value_json, sync_status FROM app_settings WHERE key = ? LIMIT 1',
+    [key],
+  );
+  // 值未变且非删除态：跳过，避免 ensure* / 偏好回写反复 pending 推送
+  if (
+    existing &&
+    existing.sync_status !== 'pending_delete' &&
+    existing.value_json === value_json
+  ) {
+    return;
+  }
+  const now = new Date().toISOString();
   await db.runAsync(
     `INSERT INTO app_settings (key, value_json, updated_at, sync_status) VALUES (?, ?, ?, 'pending_create')
      ON CONFLICT(key) DO UPDATE SET

@@ -194,6 +194,8 @@ export type ReviewRollupChildEntry = {
 /**
  * 将子周期（日→周 / 周→月）同名内置栏目汇总为父周期默认正文。
  * 格式：【标签】\n正文，多天/周之间空行分隔；跳过空栏目。
+ * 注意：健康 / 任务 / 财务在 `rollupWeekly*` / `rollupMonthly*` 中会优先覆盖为
+ * `review-day-facts` 的结构化周期排版；本函数主要用于日常 / 缺陷 / 新想法等手写栏。
  */
 export function aggregateBuiltinFieldsFromChildren(opts: {
   children: ReviewRollupChildEntry[];
@@ -333,4 +335,27 @@ export function getFilledFieldsFromTemplate(
 
 export function totalFilledLength(fields: ReviewFieldValues): number {
   return Object.values(fields).reduce((n, v) => n + v.length, 0);
+}
+
+/** 模板中每个维度至少有一栏非空（日复盘「格子」全部写完） */
+export function areAllReviewDimensionsFilled(
+  template: ReviewDimensionTemplate[],
+  fields: ReviewFieldValues,
+): boolean {
+  if (!template.length) return false;
+  return template.every(dim =>
+    dim.columns.some(col => (fields[col.id] ?? '').trim().length > 0),
+  );
+}
+
+/** 统计已填维度数 / 总维度数 */
+export function countFilledReviewDimensions(
+  template: ReviewDimensionTemplate[],
+  fields: ReviewFieldValues,
+): { filled: number; total: number } {
+  const total = template.length;
+  const filled = template.filter(dim =>
+    dim.columns.some(col => (fields[col.id] ?? '').trim().length > 0),
+  ).length;
+  return { filled, total };
 }

@@ -489,16 +489,33 @@ export function FoldTodayDataCard({
   onInsertFacts?: () => void;
 }) {
   const { palette } = useFoldTheme();
-  const tasks = facts.tasks.slice(0, 4);
-  const habits = facts.habits.slice(0, 4);
-  const restTasks = Math.max(0, facts.tasks.length - tasks.length);
-  const restHabits = Math.max(0, facts.habits.length - habits.length);
+  const previewItems = useMemo(() => {
+    const frogs = facts.frogs ?? [];
+    const todos = facts.todos ?? [];
+    const habitsDone = (facts.habits ?? []).filter(h => h.done);
+    const rows: { id: string; title: string }[] = [];
+    for (const f of frogs.slice(0, 3)) {
+      rows.push({ id: `frog-${f.id}`, title: f.done ? f.title : `未完成 · ${f.title}` });
+    }
+    for (const t of todos.slice(0, 2)) {
+      if (rows.length >= 4) break;
+      rows.push({ id: `todo-${t.id}`, title: t.done ? `待办 · ${t.title}` : `待办未完 · ${t.title}` });
+    }
+    return { rows, habitsDone, frogs, todos };
+  }, [facts]);
+
+  const restCount = Math.max(
+    0,
+    previewItems.frogs.length + previewItems.todos.length - previewItems.rows.length,
+  );
+  const restHabits = Math.max(0, previewItems.habitsDone.length - 4);
+  const habits = previewItems.habitsDone.slice(0, 4);
 
   const summaryLines = useMemo(() => {
     const lines: string[] = [];
     const h = facts.health;
-    if (h.records.length > 0 || h.calories > 0 || h.hydration > 0) {
-      lines.push(`健康 · 热量 ${Math.round(h.calories)}kcal · ${h.records.length} 条记录`);
+    if (h.calories > 0 || h.hydration > 0 || h.protein > 0) {
+      lines.push(`健康 · 热量 ${Math.round(h.calories)}kcal`);
     } else if (h.weightKg != null) {
       lines.push(`健康 · 体重 ${h.weightKg}kg`);
     }
@@ -508,6 +525,9 @@ export function FoldTodayDataCard({
     return lines;
   }, [facts]);
 
+  const frogPending = previewItems.frogs.filter(f => !f.done).length;
+  const habitPending = (facts.habits ?? []).filter(h => !h.done).length;
+
   return (
     <FoldCard style={styles.todayCard}>
       <View style={styles.todayHead}>
@@ -516,7 +536,10 @@ export function FoldTodayDataCard({
             今日数据 · 自动汇总
           </Text>
           <Text style={[styles.todayMeta, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-            任务 {facts.tasks.length} · 习惯 {facts.habits.length}
+            任务 {previewItems.frogs.length}
+            {frogPending > 0 ? `（未完 ${frogPending}）` : ''} · 待办 {previewItems.todos.length} · 习惯{' '}
+            {(facts.habits ?? []).length}
+            {habitPending > 0 ? `（未打 ${habitPending}）` : ''}
           </Text>
         </View>
         {onInsertFacts ? (
@@ -539,12 +562,12 @@ export function FoldTodayDataCard({
 
       <View style={styles.todayColumns}>
         <View style={styles.todayTasks}>
-          {tasks.length === 0 ? (
+          {previewItems.rows.length === 0 ? (
             <Text style={[styles.todayEmpty, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-              今天还没有任务记录
+              今天还没有任务或待办
             </Text>
           ) : (
-            tasks.map(task => <FactTaskRow key={task.id} title={task.title} />)
+            previewItems.rows.map(task => <FactTaskRow key={task.id} title={task.title} />)
           )}
         </View>
         <View style={styles.todayHabits}>
@@ -582,14 +605,14 @@ export function FoldTodayDataCard({
         </View>
       ) : null}
 
-      {restTasks + restHabits > 0 ? (
+      {restCount + restHabits > 0 ? (
         <Pressable
           onPress={onViewAll}
           accessibilityRole="button"
           accessibilityLabel="查看全部今日数据"
           style={({ pressed }) => [styles.todayMore, pressed && { opacity: 0.7 }]}>
           <Text style={[styles.todayMoreText, { color: palette.faint }]} maxFontSizeMultiplier={1.35}>
-            另有 {restTasks} 任务 · {restHabits} 习惯未展示
+            另有 {restCount} 项 · {restHabits} 习惯未展示
           </Text>
           <Text style={[styles.todayMoreText, { color: palette.sage }]} maxFontSizeMultiplier={1.35}>
             查看全部 ›
@@ -702,64 +725,91 @@ export function FoldDimensionGrid({
   );
 }
 
-/** 设计稿 ai-mini：整卡可点，进入 AI 复盘分析全屏（screen 11） */
+/** 日复盘 AI 入口：靠前展示，主按钮直达分析全屏（screen 11） */
 export function FoldAiMini({
   text,
   busy,
   insightCount,
   onOpen,
+  ready = true,
+  readyHint,
 }: {
   text: string | null | undefined;
   busy?: boolean;
   /** 摘要旁展示的洞察条数，缺省按正文粗估 */
   insightCount?: number;
   onOpen: () => void;
+  /** false 时仍可点，但文案提示需先写完格子 */
+  ready?: boolean;
+  readyHint?: string;
 }) {
   const { palette } = useFoldTheme();
   const body = (text ?? '').trim();
+  const hasBody = body.length > 0;
   const summary = busy
     ? '正在阅读今天的记录…'
-    : body
+    : hasBody
       ? body.split(/\n|。|\. /).map(s => s.trim()).filter(Boolean)[0] ?? ''
-      : '写下今天的内容后，AI 会在这里留下观察。';
+      : ready
+        ? '写完各维度后，点下方按钮生成「问题 / 建议」分析。'
+        : readyHint || '先写完今日全部复盘格子，再生成 AI 分析。';
   const count =
     insightCount ??
     (body
       ? Math.max(1, body.split(/\n+/).map(s => s.trim()).filter(s => s.startsWith('·') || s.length > 8).length)
       : 0);
   const sub =
-    body && !busy
-      ? `${summary.slice(0, 28)}${summary.length > 28 ? '…' : ''} · ${count} 条洞察`
+    hasBody && !busy
+      ? `${summary.slice(0, 36)}${summary.length > 36 ? '…' : ''} · ${count} 条洞察`
       : summary;
+  const ctaLabel = busy ? '分析中…' : hasBody ? '查看 / 重新分析' : '生成 AI 分析';
 
   return (
     <Pressable
       onPress={onOpen}
+      disabled={busy}
       accessibilityRole="button"
-      accessibilityLabel="打开 AI 复盘分析"
-      style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+      accessibilityLabel={ctaLabel}
+      accessibilityState={{ busy: !!busy, disabled: !!busy }}
+      style={({ pressed }) => [{ opacity: busy ? 0.85 : pressed ? 0.94 : 1 }]}>
       <FoldCard tone="pine" style={styles.aiCard}>
         <View style={styles.aiHead}>
           <View style={[styles.aiOrb, { backgroundColor: palette.aiOrb }]}>
-            <MaterialIcons name="auto-awesome" size={16} color={palette.pineSolid} />
+            <MaterialIcons name="auto-awesome" size={18} color={palette.pineSolid} />
           </View>
           <View style={styles.aiCopy}>
             <Text style={[styles.aiTitle, { color: palette.aiInk }]} maxFontSizeMultiplier={1.35}>
-              AI 今日观察
+              AI 复盘分析
             </Text>
             <Text
               style={[styles.aiSummary, { color: palette.aiSoft }]}
-              numberOfLines={1}
+              numberOfLines={2}
               maxFontSizeMultiplier={1.35}>
               {sub}
             </Text>
           </View>
-          <View style={styles.aiAction}>
-            <Text style={[styles.aiActionText, { color: palette.aiSoft }]} maxFontSizeMultiplier={1.35}>
-              展开
-            </Text>
-            <MaterialIcons name="chevron-right" size={14} color={palette.aiSoft} />
-          </View>
+        </View>
+        <View
+          style={[
+            styles.aiCta,
+            {
+              backgroundColor: ready || hasBody ? palette.onPine : 'rgba(255,255,255,0.22)',
+              opacity: busy ? 0.7 : 1,
+            },
+          ]}>
+          <MaterialIcons
+            name="auto-awesome"
+            size={15}
+            color={ready || hasBody ? palette.pineSolid : palette.aiSoft}
+          />
+          <Text
+            style={[
+              styles.aiCtaText,
+              { color: ready || hasBody ? palette.pineSolid : palette.aiSoft },
+            ]}
+            maxFontSizeMultiplier={1.3}>
+            {ctaLabel}
+          </Text>
         </View>
       </FoldCard>
     </Pressable>
@@ -1028,18 +1078,26 @@ const styles = StyleSheet.create({
   dimTitle: { fontSize: 13, fontWeight: '700', flexShrink: 1 },
   dimPreview: { fontSize: 11, lineHeight: 16, paddingRight: 8 },
   dimCorner: { position: 'absolute', right: 8, bottom: 8 },
-  aiCard: { marginTop: 10, gap: 8 },
-  aiHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  aiCard: { marginTop: 16, marginBottom: 4, gap: 12, paddingVertical: 14 },
+  aiHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   aiOrb: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
   },
   aiCopy: { flex: 1, minWidth: 0 },
-  aiTitle: { fontSize: 13, fontWeight: '700' },
-  aiSummary: { fontSize: 11, marginTop: 2, lineHeight: 16 },
-  aiAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  aiActionText: { fontSize: 11, fontWeight: '700' },
+  aiTitle: { fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
+  aiSummary: { fontSize: 12, marginTop: 4, lineHeight: 18 },
+  aiCta: {
+    minHeight: 44,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+  },
+  aiCtaText: { fontSize: 14, fontWeight: '800' },
 });

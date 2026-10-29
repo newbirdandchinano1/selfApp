@@ -14,7 +14,7 @@ import {
 } from '@/components/review/review-utils';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
-import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
+import { generateReviewAiAnalysis, reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
 import {
   collectColumnIds,
   hasAnyFilledField,
@@ -283,8 +283,9 @@ export function MonthlyReviewGridView({
       Alert.alert('暂不可用', '未来月份仅可查看，不可生成 AI 分析。');
       return;
     }
-    if (!reviewHasEnoughTextForAi(fields)) {
-      Alert.alert('内容偏少', '请先填写至少约 30 字，再生成 AI 分析。');
+    const gate = reviewCanRunAiAnalysis({ scope: 'monthly', template: monthlyTemplate, fields });
+    if (!gate.ok) {
+      Alert.alert('暂不可用', gate.reason);
       return;
     }
     setAiBusy(true);

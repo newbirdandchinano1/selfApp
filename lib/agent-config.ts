@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const DEFAULT_AGENT_BASE_URL = 'http://124.223.161.79:8000';
 
 /** 与 Agent `.env` 中 `API_KEY` 对齐；生产请用环境变量覆盖 */
-export const DEFAULT_AGENT_API_KEY = 'change-me';
+export const DEFAULT_AGENT_API_KEY = 'zhengjiaxin';
 
 const AGENT_BASE_URL_STORAGE_KEY = '@selfapp/agent-base-url';
 const AGENT_API_KEY_STORAGE_KEY = '@selfapp/agent-api-key';

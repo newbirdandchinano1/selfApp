@@ -54,19 +54,35 @@ function reserveRemap(remap: Map<string, string>, oldId: string): void {
   remap.set(oldId, next);
 }
 
+/**
+ * `app_settings` / `app_meta` 的主键是业务语义 key（MySQL 为 VARCHAR(255)），
+ * 不是实体 id。若按 36 字符缩短，上传 body 与本地 key 脱节，
+ * markLocalRowsSynced 会更新 0 行，造成 pending 死循环推送。
+ */
+const SEMANTIC_KEY_PK_TABLES = new Set(['app_settings', 'app_meta']);
+
+function isSemanticKeyPkColumn(table: string, col: string): boolean {
+  return SEMANTIC_KEY_PK_TABLES.has(table) && col === 'key';
+}
+
 function collectIdLikeValuesFromRow(
+  table: string,
   row: Record<string, unknown>,
   remap: Map<string, string>,
   pkCols: string[],
 ): void {
   for (const col of pkCols) {
+    if (isSemanticKeyPkColumn(table, col)) continue;
     const v = row[col];
     if (typeof v === 'string' && v) reserveRemap(remap, v);
   }
-  const id = row.id;
-  if (typeof id === 'string' && id) reserveRemap(remap, id);
+  if (!SEMANTIC_KEY_PK_TABLES.has(table)) {
+    const id = row.id;
+    if (typeof id === 'string' && id) reserveRemap(remap, id);
+  }
 
   for (const [col, value] of Object.entries(row)) {
+    if (isSemanticKeyPkColumn(table, col)) continue;
     if (!isIdLikeColumnName(col)) continue;
     if (typeof value === 'string' && value) reserveRemap(remap, value);
   }
@@ -82,7 +98,7 @@ export function buildMysqlIdRemapForUpload(
   for (const [table, rows] of rowsByTable) {
     const pkCols = pkColsByTable.get(table) ?? ['id'];
     for (const row of rows) {
-      collectIdLikeValuesFromRow(row, remap, pkCols);
+      collectIdLikeValuesFromRow(table, row, remap, pkCols);
     }
   }
 
@@ -112,7 +128,14 @@ export function applyMysqlIdRemapToUploadBundle(
   for (const [table, rows] of rowsByTable) {
     rowsByTable.set(
       table,
-      rows.map(row => applyMysqlIdRemapToRow(row, remap)),
+      rows.map(row => {
+        const next = applyMysqlIdRemapToRow(row, remap);
+        // 语义主键不得被其它表的 id 缩短映射误伤
+        if (SEMANTIC_KEY_PK_TABLES.has(table) && typeof row.key === 'string') {
+          next.key = row.key;
+        }
+        return next;
+      }),
     );
   }
 }

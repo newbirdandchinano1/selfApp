@@ -2,7 +2,6 @@ import {
   aggregateBuiltinFieldsFromChildren,
   collectColumnIds,
   emptyFieldValues,
-  fillEmptyFieldsFromRollup,
   parseDailyReviewBody,
   parseWeeklyReviewFields,
   type ReviewFieldValues,
@@ -10,12 +9,20 @@ import {
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import { listWeeklyReviewsBetween } from '@/lib/repositories/insights/weekly-review-journal';
 import {
+  BUILTIN_REVIEW_COLUMN_IDS,
+} from '@/lib/repositories/insights/review-template-defaults';
+import {
   ensureBuiltinCascadeReviewModules,
   ensureBuiltinDailyReviewModules,
   listReviewTemplate,
 } from '@/lib/repositories/insights/review-template';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRange, getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
+import {
+  builtinReviewFactsFieldPatch,
+  loadReviewPeriodFacts,
+  reviewDayFactsIsEmpty,
+} from '@/lib/review-day-facts';
 import { fetchReviewHome, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
@@ -70,27 +77,74 @@ export function monthEndYmdFromMonthStart(monthStartYmd: string): string {
   return formatYmd(end);
 }
 
-/** 从近六天（跳过周复盘日）日复盘汇总到周复盘空栏 */
-export function rollupWeeklyFieldsFromDailyEntries(
+/** 健康 / 任务 / 财务：优先用结构化周期事实；其余栏仍用子周期原文拼接 */
+function mergeStructuredFactsIntoEmpty(
+  fields: ReviewFieldValues,
+  textRollup: ReviewFieldValues,
+  factsPatch: ReviewFieldValues,
+  scope: 'weekly' | 'monthly',
+): ReviewFieldValues {
+  const structuredIds = new Set([
+    BUILTIN_REVIEW_COLUMN_IDS[scope].health,
+    BUILTIN_REVIEW_COLUMN_IDS[scope].tasks,
+    BUILTIN_REVIEW_COLUMN_IDS[scope].finance,
+  ]);
+  const out = { ...fields };
+  const prefer = { ...textRollup, ...factsPatch };
+  for (const [id, value] of Object.entries(prefer)) {
+    if ((out[id] ?? '').trim()) continue;
+    const v = (value ?? '').trim();
+    if (!v) continue;
+    // 结构化 patch 覆盖同名文本 rollup
+    if (structuredIds.has(id) && (factsPatch[id] ?? '').trim()) {
+      out[id] = factsPatch[id]!;
+      continue;
+    }
+    out[id] = value;
+  }
+  return out;
+}
+
+/** 从近六天（跳过周复盘日）汇总到周复盘空栏；健康/任务/财务用统一排版 */
+export async function rollupWeeklyFieldsFromDailyEntries(
   fields: ReviewFieldValues,
   dailyEntries: DailyEntry[],
   reviewCycleEndYmd: string,
   configuredDow: number | null,
-): ReviewFieldValues {
-  const children = dailyEntries
-    .filter(
-      e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow),
-    )
-    .map(e => ({ label: e.label, fields: e.fields }));
-  const rollup = aggregateBuiltinFieldsFromChildren({
+): Promise<ReviewFieldValues> {
+  const activeEntries = dailyEntries.filter(
+    e => !isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow),
+  );
+  const children = activeEntries.map(e => ({ label: e.label, fields: e.fields }));
+  const textRollup = aggregateBuiltinFieldsFromChildren({
     children,
     childScope: 'daily',
     parentScope: 'weekly',
   });
-  return fillEmptyFieldsFromRollup(fields, rollup);
+
+  let factsPatch: ReviewFieldValues = {};
+  if (activeEntries.length > 0) {
+    const startYmd = activeEntries[0]!.ymd;
+    const endYmd = activeEntries[activeEntries.length - 1]!.ymd;
+    const skip = new Set(
+      dailyEntries
+        .filter(e => isDailyReviewSkippedOnWeeklyReviewDay(e.ymd, reviewCycleEndYmd, configuredDow))
+        .map(e => e.ymd),
+    );
+    try {
+      const facts = await loadReviewPeriodFacts(startYmd, endYmd, { skipYmds: skip });
+      if (!reviewDayFactsIsEmpty(facts)) {
+        factsPatch = builtinReviewFactsFieldPatch('weekly', facts);
+      }
+    } catch (e) {
+      if (__DEV__) console.warn('[rollup-weekly-facts]', e);
+    }
+  }
+
+  return mergeStructuredFactsIntoEmpty(fields, textRollup, factsPatch, 'weekly');
 }
 
-/** 从本月各周复盘汇总到月复盘空栏 */
+/** 从本月各周复盘汇总到月复盘空栏；健康/任务/财务用统一排版 */
 export async function rollupMonthlyFieldsFromWeeklyJournals(
   fields: ReviewFieldValues,
   monthStartYmd: string,
@@ -112,12 +166,23 @@ export async function rollupMonthlyFieldsFromWeeklyJournals(
       fields: parseWeeklyReviewFields(row, wColIds),
     };
   });
-  const rollup = aggregateBuiltinFieldsFromChildren({
+  const textRollup = aggregateBuiltinFieldsFromChildren({
     children,
     childScope: 'weekly',
     parentScope: 'monthly',
   });
-  return fillEmptyFieldsFromRollup(fields, rollup);
+
+  let factsPatch: ReviewFieldValues = {};
+  try {
+    const facts = await loadReviewPeriodFacts(monthStartYmdFromYmd(monthStartYmd), monthEnd);
+    if (!reviewDayFactsIsEmpty(facts)) {
+      factsPatch = builtinReviewFactsFieldPatch('monthly', facts);
+    }
+  } catch (e) {
+    if (__DEV__) console.warn('[rollup-monthly-facts]', e);
+  }
+
+  return mergeStructuredFactsIntoEmpty(fields, textRollup, factsPatch, 'monthly');
 }
 
 export function shiftMonthStartYmd(monthStartYmd: string, deltaMonths: number): string {

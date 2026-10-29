@@ -8,12 +8,14 @@ import {
 import { normalizeRewardPoints, roundPoints } from '@/lib/reward-points';
 import { getDatabase } from '@/lib/database';
 import {
+  areAllReviewDimensionsFilled,
   collectColumnIds,
   parseDailyReviewBody,
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import { listReviewTemplate } from '@/lib/repositories/insights/review-template';
+import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import {
   adjustPointsBalance,
@@ -40,19 +42,21 @@ function isDailyReviewSkippedForYmd(ymd: string, configuredDow: number | null): 
   return ymd === endYmd;
 }
 
-function isDailyReviewDone(fields: ReviewFieldValues): boolean {
-  return Object.values(fields).some(v => (v ?? '').trim().length > 0);
+/** 全部维度格子写完才算完成（发积分） */
+function isDailyReviewDone(template: ReviewDimensionTemplate[], fields: ReviewFieldValues): boolean {
+  return areAllReviewDimensionsFilled(template, fields);
 }
 
 /** 以 endYmd 为终点的连续复盘天数（跳过周复盘日） */
 function countStreakEndingAt(
   byYmd: Map<string, ReviewFieldValues>,
+  template: ReviewDimensionTemplate[],
   configuredDow: number | null,
   endYmd: string,
 ): number {
   if (!endYmd || isDailyReviewSkippedForYmd(endYmd, configuredDow)) return 0;
   const endFields = byYmd.get(endYmd);
-  if (!endFields || !isDailyReviewDone(endFields)) return 0;
+  if (!endFields || !isDailyReviewDone(template, endFields)) return 0;
 
   let streak = 0;
   let cursor = endYmd;
@@ -62,7 +66,7 @@ function countStreakEndingAt(
       continue;
     }
     const fields = byYmd.get(cursor);
-    if (!fields || !isDailyReviewDone(fields)) break;
+    if (!fields || !isDailyReviewDone(template, fields)) break;
     streak += 1;
     cursor = shiftYmd(cursor, -1);
   }
@@ -239,8 +243,8 @@ export async function syncDailyReviewPointsForYmd(params: {
   );
 
   const fields = byYmd.get(ymd) ?? {};
-  const done = isDailyReviewDone(fields);
-  const streak = countStreakEndingAt(byYmd, configuredDow, ymd);
+  const done = isDailyReviewDone(tpl, fields);
+  const streak = countStreakEndingAt(byYmd, tpl, configuredDow, ymd);
   const streakBonusEligible =
     done && streak > 0 && streak % REVIEW_STREAK_BONUS_DAYS === 0;
 

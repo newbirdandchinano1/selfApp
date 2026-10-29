@@ -435,8 +435,10 @@ export async function ensureBuiltinReviewModules(scope: ReviewTemplateScope): Pr
  * 已有自定义维度会保留，仅调整排序。
  */
 export async function ensureBuiltinDailyReviewModules(): Promise<void> {
+  const { AppSettingKey, getAppSettingRaw, setAppSetting } = await import('@/lib/app-settings-store');
+  const migrated = await getAppSettingRaw(AppSettingKey.reviewBuiltinDailyModulesV1);
   await ensureBuiltinReviewModules('daily');
-  const { AppSettingKey, setAppSetting } = await import('@/lib/app-settings-store');
+  if (migrated === '1') return;
   await setAppSetting(AppSettingKey.reviewBuiltinDailyModulesV1, '1');
 }
 
@@ -444,7 +446,15 @@ export async function ensureBuiltinDailyReviewModules(): Promise<void> {
  * 日/周/月对齐六大内置模块；软删除旧版周/月默认维度（汇总本周事件等）。
  */
 export async function ensureBuiltinCascadeReviewModules(): Promise<void> {
-  const { AppSettingKey, setAppSetting } = await import('@/lib/app-settings-store');
+  const { AppSettingKey, getAppSettingRaw, setAppSetting } = await import('@/lib/app-settings-store');
+  const cascadeDone = await getAppSettingRaw(AppSettingKey.reviewBuiltinCascadeModulesV1);
+  if (cascadeDone === '1') {
+    // 标记已完成仍补齐缺失维度，但不重复写 app_settings / 软删旧默认
+    await ensureBuiltinReviewModules('daily');
+    await ensureBuiltinReviewModules('weekly');
+    await ensureBuiltinReviewModules('monthly');
+    return;
+  }
 
   for (const id of LEGACY_WEEKLY_DEFAULT_DIMENSION_IDS) {
     await softDeleteLegacyDefaultDimension(id);

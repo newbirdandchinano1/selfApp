@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["ZhengVisionCutoutModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.zhengvisioncutout.ZhengVisionCutoutModule"]
+  }
+}

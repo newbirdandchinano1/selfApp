@@ -2,6 +2,7 @@
  * 日 / 周 / 月维度详情屏同构实现：编辑器、自动保存、工具栏共用；
  * scope 只决定路由参数、模板、可否编辑、persist 适配与是否展示 AI panel。
  */
+import { ReviewActionFeedStrip, isReviewActionFeedDimension } from '@/components/review/review-action-feed';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
 import { ReviewFieldEditor, type ReviewFieldEditorState } from '@/components/review/review-field-editor';
 import { ReviewDimensionSkeleton } from '@/components/skeletons/review';
@@ -20,8 +21,14 @@ import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
-import { generateReviewAiAnalysis, reviewHasEnoughTextForAi } from '@/lib/review-ai-analysis';
-import { loadReviewDayFacts, dailyReviewFactsTextForColumn, type ReviewDayFacts } from '@/lib/review-day-facts';
+import { generateReviewAiAnalysis, reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
+import { addDaysToYmd } from '@/lib/date';
+import {
+  loadReviewDayFacts,
+  loadReviewPeriodFacts,
+  reviewFactsTextForColumn,
+  type ReviewDayFacts,
+} from '@/lib/review-day-facts';
 import {
   applyFontSizeToTextModel,
   emptyReviewFieldModel,
@@ -175,7 +182,8 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     Record<string, TextSelection | undefined>
   >({});
   const [aiBusy, setAiBusy] = useState(false);
-  const [todayFacts, setTodayFacts] = useState<ReviewDayFacts | null>(null);
+  /** 当前周期结构化事实（日=当日；周/月=区间合并），供写入健康/任务/财务 */
+  const [periodFacts, setPeriodFacts] = useState<ReviewDayFacts | null>(null);
   const [yesterdayFacts, setYesterdayFacts] = useState<ReviewDayFacts | null>(null);
 
   const hydratedRef = useRef(false);
@@ -346,7 +354,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
               getWeeklyReviewJournalByWeek(periodYmd),
             ]);
             const colIds = collectColumnIds(weeklyTpl);
-            const parsed = rollupWeeklyFieldsFromDailyEntries(
+            const parsed = await rollupWeeklyFieldsFromDailyEntries(
               parseWeeklyReviewFields(row, colIds),
               snapshot.dailyEntries,
               snapshot.reviewCycleEndYmd,
@@ -429,19 +437,39 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     focusDimension(dimensionId, template);
   }, [dimensionId, focusDimension, template]);
 
-  /** 日维度详情：拉取当日与昨日健康事实，用于「昨日对照」只读卡 */
+  /** 拉取周期事实：日=当日+昨日对照；周/月=区间合并（健康/任务/财务写入用） */
   useEffect(() => {
-    if (scope !== 'daily' || !periodYmd) return;
+    if (!periodYmd) return;
     let cancelled = false;
     void (async () => {
-      const yesterday = getYesterdayYmd(periodYmd);
-      const [today, prev] = await Promise.all([
-        loadReviewDayFacts(periodYmd).catch(() => null),
-        loadReviewDayFacts(yesterday).catch(() => null),
-      ]);
-      if (cancelled) return;
-      setTodayFacts(today);
-      setYesterdayFacts(prev);
+      if (scope === 'daily') {
+        const yesterday = getYesterdayYmd(periodYmd);
+        const [today, prev] = await Promise.all([
+          loadReviewDayFacts(periodYmd).catch(() => null),
+          loadReviewDayFacts(yesterday).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setPeriodFacts(today);
+        setYesterdayFacts(prev);
+        return;
+      }
+      setYesterdayFacts(null);
+      try {
+        if (scope === 'weekly') {
+          const endYmd = addDaysToYmd(periodYmd, 6);
+          // 周复盘日通常落在区间末日，结构化汇总跳过该日
+          const facts = await loadReviewPeriodFacts(periodYmd, endYmd, {
+            skipYmds: new Set([endYmd]),
+          });
+          if (!cancelled) setPeriodFacts(facts);
+          return;
+        }
+        const monthEnd = monthEndYmdFromMonthStart(periodYmd);
+        const facts = await loadReviewPeriodFacts(periodYmd, monthEnd);
+        if (!cancelled) setPeriodFacts(facts);
+      } catch {
+        if (!cancelled) setPeriodFacts(null);
+      }
     })();
     return () => {
       cancelled = true;
@@ -525,8 +553,9 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       Alert.alert('暂不可用', '未来月份仅可查看，不可生成 AI 分析。');
       return;
     }
-    if (!reviewHasEnoughTextForAi(fields)) {
-      Alert.alert('内容偏少', '请先填写至少约 30 字，再生成 AI 分析。');
+    const gate = reviewCanRunAiAnalysis({ scope: 'monthly', template, fields });
+    if (!gate.ok) {
+      Alert.alert('暂不可用', gate.reason);
       return;
     }
     setAiBusy(true);
@@ -694,18 +723,21 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     [canEdit, commitFieldModel, editorStateByColumn, fieldModels],
   );
 
-  /** 日复盘内置栏目（健康 / 任务 / 财务）可写入当日事实；其它栏目无素材 */
+  /** 内置栏目（健康 / 任务 / 财务）可写入周期结构化事实；其它栏目无素材 */
   const factsTextByColumn = useMemo(() => {
     const out: Record<string, string> = {};
-    if (scope !== 'daily' || !todayFacts) return out;
+    if (!periodFacts) return out;
     for (const dim of template) {
       for (const col of dim.columns) {
-        const text = dailyReviewFactsTextForColumn(todayFacts, col.id);
+        const text = reviewFactsTextForColumn(periodFacts, scope, col.id);
         if (text) out[col.id] = text;
       }
     }
     return out;
-  }, [scope, template, todayFacts]);
+  }, [periodFacts, scope, template]);
+
+  const insertFactsLabel =
+    scope === 'weekly' ? '写入本周数据' : scope === 'monthly' ? '写入本月数据' : '写入今日数据';
 
   /** 把当日事实追加到栏目末尾（保留已写内容，可撤销） */
   const insertFactsIntoColumn = useCallback(
@@ -776,26 +808,26 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
   );
 
   const yesterdayRows = useMemo(() => {
-    if (scope !== 'daily' || !todayFacts || !yesterdayFacts) return [];
+    if (scope !== 'daily' || !periodFacts || !yesterdayFacts) return [];
     const rows = [
       {
         label: '热量',
-        current: Math.round(todayFacts.health.calories),
+        current: Math.round(periodFacts.health.calories),
         prev: Math.round(yesterdayFacts.health.calories),
       },
       {
         label: '饮水',
-        current: Math.round(todayFacts.health.hydration),
+        current: Math.round(periodFacts.health.hydration),
         prev: Math.round(yesterdayFacts.health.hydration),
       },
       {
         label: '任务',
-        current: todayFacts.tasks.length,
+        current: periodFacts.tasks.length,
         prev: yesterdayFacts.tasks.length,
       },
     ];
     return rows.filter(row => row.current > 0 || row.prev > 0);
-  }, [scope, todayFacts, yesterdayFacts]);
+  }, [scope, periodFacts, yesterdayFacts]);
 
   if (!periodYmd || !dimensionId) {
     return (
@@ -935,7 +967,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                                   setActiveColumnId(col.id);
                                   insertFactsIntoColumn(col.id);
                                 }}
-                                accessibilityLabel="写入今日数据"
+                                accessibilityLabel={insertFactsLabel}
                               />
                             ) : null}
                             <FoldIconButton
@@ -973,6 +1005,17 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                     );
                   })}
                 </View>
+              ) : null}
+
+              {dimension && isReviewActionFeedDimension(dimension.id) ? (
+                <ReviewActionFeedStrip
+                  dimensionId={dimension.id}
+                  hint={
+                    dimension.columns
+                      .map(c => (fields[c.id] ?? '').trim())
+                      .find(Boolean) ?? ''
+                  }
+                />
               ) : null}
 
               {yesterdayRows.length > 0 ? (

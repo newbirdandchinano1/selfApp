@@ -1,6 +1,7 @@
 /**
  * AI 复盘分析全屏页 · 对齐 `复盘页动效规范.html` 第 11 屏
- * 动效：骨架 shimmer 1.2s → 关键词 pop → 正文 28ms/字流式 → 卡片 riseIn
+ * 动效：骨架 shimmer 1.2s → 关键词 pop → 顶部正文流式 → 下方图表 / 建议 riseIn
+ * 观察正文只放顶部 hero，不再拆成中间洞察卡（避免与顶部重复）。
  */
 import {
   FoldPopIn,
@@ -9,16 +10,24 @@ import {
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { FoldCard, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
+import { ReviewActionFeedStrip } from '@/components/review/review-action-feed';
 import type { DailyEntry } from '@/components/review/review-utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast, toUserMessage } from '@/lib/app-feedback';
-import { generateReviewAiAnalysis, reviewHasEnoughTextForAi, type ReviewAiScope } from '@/lib/review-ai-analysis';
+import {
+  generateReviewAiAnalysis,
+  reviewCanRunAiAnalysis,
+  type ReviewAiScope,
+} from '@/lib/review-ai-analysis';
 import { parseReviewAiDigest } from '@/lib/review-ai-sections';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import {
   parseDailyReviewJournal,
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
+import {
+  BUILTIN_REVIEW_DIMENSION_IDS,
+} from '@/lib/repositories/insights/review-template-defaults';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -53,21 +62,6 @@ const MOOD_SCORE: Record<string, number> = {
   '😔': 0.18,
 };
 
-const INSIGHT_META = [
-  { icon: 'gps-fixed' as const, tint: 'sage' as const },
-  { icon: 'local-fire-department' as const, tint: 'amber' as const },
-  { icon: 'favorite' as const, tint: 'clay' as const },
-];
-
-type InsightCardModel = {
-  key: string;
-  title: string;
-  body: string;
-  conf: string;
-  icon: (typeof INSIGHT_META)[number]['icon'];
-  tint: (typeof INSIGHT_META)[number]['tint'];
-};
-
 function plainLength(fields: ReviewFieldValues): number {
   let total = 0;
   for (const value of Object.values(fields ?? {})) {
@@ -80,23 +74,6 @@ function firstSentence(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (!flat) return '';
   return (flat.split(/(?<=[。！？!?])/)[0] ?? flat).trim();
-}
-
-function splitInsight(item: string): { title: string; body: string } {
-  const raw = item.replace(/\s+/g, ' ').trim();
-  const dash = raw.split(/\s*(?:——|→|›)\s*/);
-  if (dash.length >= 2 && dash[0]!.length >= 4) {
-    return { title: dash[0]!.trim(), body: dash.slice(1).join('').trim() || dash[0]!.trim() };
-  }
-  const title = firstSentence(raw).replace(/[。！？!?]$/, '');
-  const rest = raw.slice(title.length).replace(/^[。！？!?\s]+/, '').trim();
-  return { title: title || raw.slice(0, 18), body: rest || raw };
-}
-
-function confidenceFor(item: string, index: number): string {
-  const base = 0.86 - index * 0.06;
-  const boost = Math.min(0.06, item.replace(/\s+/g, '').length / 400);
-  return (Math.max(0.62, Math.min(0.92, base + boost))).toFixed(2);
 }
 
 function seriesPoints(values: (number | null)[]): { x: number; y: number }[] {
@@ -278,41 +255,31 @@ export function ReviewAiAnalysisScreen({
   );
 
   const headline = useMemo(() => {
+    if (digest.intro.trim()) return firstSentence(digest.intro);
     if (digest.headline) return digest.headline;
     if (filledDimensions.length === 0) return '这一周，还没有留下可以被观察的文字。';
     return `这一周，你在${filledDimensions
       .slice(0, 2)
       .map(item => item.title)
       .join('、')}之间留下了痕迹。`;
-  }, [digest.headline, filledDimensions]);
+  }, [digest.headline, digest.intro, filledDimensions]);
 
+  /** 观察正文全部进顶部；建议段留给下方「下周可以试试」 */
   const heroBody = useMemo(() => {
-    const intro = digest.intro.replace(digest.headline, '').trim();
-    if (intro) return intro;
-    return `不是所有进展都需要被量化。分析只基于你在${periodLabel}写下的内容，以及近 7 天日复盘。`;
-  }, [digest.headline, digest.intro, periodLabel]);
-
-  const insights = useMemo((): InsightCardModel[] => {
-    const pool: { item: string; key: string }[] = [];
+    const intro = digest.intro.trim();
+    if (intro) {
+      const rest = intro.replace(headline, '').replace(/^[。！？!?\s]+/, '').trim();
+      return rest || intro;
+    }
+    const blocks: string[] = [];
     for (const section of digest.sections) {
       if (section.key === 'suggestions') continue;
-      section.items.forEach((item, i) => {
-        pool.push({ item, key: `${section.key}-${i}` });
-      });
+      blocks.push(`【${section.title}】`);
+      for (const item of section.items) blocks.push(`· ${item}`);
     }
-    return pool.slice(0, 3).map((row, index) => {
-      const { title, body } = splitInsight(row.item);
-      const meta = INSIGHT_META[index % INSIGHT_META.length]!;
-      return {
-        key: row.key,
-        title,
-        body,
-        conf: confidenceFor(row.item, index),
-        icon: meta.icon,
-        tint: meta.tint,
-      };
-    });
-  }, [digest.sections]);
+    if (blocks.length > 0) return blocks.join('\n');
+    return `不是所有进展都需要被量化。分析只基于你在${periodLabel}写下的内容，以及近 7 天日复盘。`;
+  }, [digest.intro, digest.sections, headline, periodLabel]);
 
   const moodValues = useMemo(
     () =>
@@ -339,11 +306,12 @@ export function ReviewAiAnalysisScreen({
 
   const generate = useCallback(async () => {
     if (!canEdit) {
-      toast.error('请在每周复盘日生成 AI 分析');
+      toast.error(scope === 'daily' ? '当前日期不可编辑，无法生成分析' : '请在每周复盘日生成 AI 分析');
       return;
     }
-    if (!reviewHasEnoughTextForAi(fields)) {
-      toast.error('内容偏少，请先写满约 30 字再生成');
+    const gate = reviewCanRunAiAnalysis({ scope, template, fields });
+    if (!gate.ok) {
+      toast.error(gate.reason);
       return;
     }
     const token = ++revealTokenRef.current;
@@ -433,13 +401,6 @@ export function ReviewAiAnalysisScreen({
   const showShimmer = phase === 'shimmer' || (busy && !hasBody);
   const showContent = hasBody && phase !== 'shimmer';
   const cardsAnimate = showMotion && bodyDone;
-
-  const tintColors = (tint: InsightCardModel['tint']) =>
-    tint === 'clay'
-      ? { bg: fold.clay2, fg: fold.clay }
-      : tint === 'amber'
-        ? { bg: fold.amber2, fg: fold.amber }
-        : { bg: '#E8EFEA', fg: '#4A675A' };
 
   return (
     <Modal
@@ -570,66 +531,15 @@ export function ReviewAiAnalysisScreen({
 
           {showShimmer ? (
             <View style={styles.skeletonBlock}>
-              {[0, 1, 2].map(i => (
-                <FoldCard key={`sk-${i}`} style={styles.skeletonCard}>
-                  <View style={styles.skeletonRow}>
-                    <Skeleton width={25} height={25} borderRadius={8} />
-                    <View style={styles.skeletonCol}>
-                      <Skeleton width="70%" height={11} borderRadius={4} />
-                      <Skeleton width="100%" height={9} borderRadius={4} />
-                      <Skeleton width="88%" height={9} borderRadius={4} />
-                    </View>
-                  </View>
-                </FoldCard>
-              ))}
-            </View>
-          ) : null}
-
-          {showContent && insights.length > 0
-            ? insights.map((card, index) => {
-                const tint = tintColors(card.tint);
-                return (
-                  <FoldRiseIn
-                    key={card.key}
-                    animate={cardsAnimate}
-                    index={index}
-                    staggerMs={70}
-                    delayMs={100}
-                    duration={350}>
-                    <FoldCard style={styles.insightCard}>
-                      <View style={[styles.insightIcon, { backgroundColor: tint.bg }]}>
-                        <MaterialIcons name={card.icon} size={14} color={tint.fg} />
-                      </View>
-                      <View style={styles.insightCopy}>
-                        <Text
-                          style={[styles.insightTitle, { color: fold.ink2 }]}
-                          numberOfLines={2}
-                          maxFontSizeMultiplier={1.3}>
-                          {card.title}
-                        </Text>
-                        <Text
-                          style={[styles.insightBody, { color: fold.muted }]}
-                          maxFontSizeMultiplier={1.35}>
-                          {card.body}
-                        </Text>
-                      </View>
-                      <Text style={[styles.insightConf, { color: fold.faint }]} maxFontSizeMultiplier={1.2}>
-                        {card.conf}
-                      </Text>
-                    </FoldCard>
-                  </FoldRiseIn>
-                );
-              })
-            : null}
-
-          {showContent && insights.length === 0 && hasBody ? (
-            <FoldRiseIn animate={cardsAnimate} index={0} delayMs={100} duration={350}>
-              <FoldCard style={styles.rawCard}>
-                <Text style={[styles.rawText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.35}>
-                  {text}
-                </Text>
+              <FoldCard style={styles.skeletonCard}>
+                <View style={styles.skeletonCol}>
+                  <Skeleton width="88%" height={12} borderRadius={4} />
+                  <Skeleton width="100%" height={10} borderRadius={4} />
+                  <Skeleton width="92%" height={10} borderRadius={4} />
+                  <Skeleton width="76%" height={10} borderRadius={4} />
+                </View>
               </FoldCard>
-            </FoldRiseIn>
+            </View>
           ) : null}
 
           {!showShimmer && !hasBody ? (
@@ -647,7 +557,7 @@ export function ReviewAiAnalysisScreen({
 
           <FoldRiseIn
             animate={showMotion && (bodyDone || (!hasBody && phase === 'idle'))}
-            index={insights.length}
+            index={0}
             staggerMs={70}
             delayMs={hasBody ? 160 : 0}
             duration={350}>
@@ -713,7 +623,7 @@ export function ReviewAiAnalysisScreen({
           {showContent && suggestionItems.length > 0 ? (
             <FoldRiseIn
               animate={cardsAnimate}
-              index={insights.length + 1}
+              index={1}
               staggerMs={70}
               delayMs={180}
               duration={350}>
@@ -747,9 +657,22 @@ export function ReviewAiAnalysisScreen({
             </FoldRiseIn>
           ) : null}
 
+          {showContent ? (
+            <ReviewActionFeedStrip
+              dimensionId={
+                scope === 'monthly'
+                  ? BUILTIN_REVIEW_DIMENSION_IDS.monthly.ideas
+                  : scope === 'weekly'
+                    ? BUILTIN_REVIEW_DIMENSION_IDS.weekly.ideas
+                    : BUILTIN_REVIEW_DIMENSION_IDS.daily.ideas
+              }
+              hint={suggestionItems[0] ?? text.slice(0, 40)}
+            />
+          ) : null}
+
           <FoldRiseIn
             animate={showMotion && (bodyDone || !hasBody)}
-            index={insights.length + 2}
+            index={2}
             staggerMs={55}
             delayMs={hasBody ? 220 : 40}
             duration={320}>
@@ -893,7 +816,7 @@ const styles = StyleSheet.create({
     maxWidth: 300,
     zIndex: 1,
   },
-  heroBody: { fontSize: 11, lineHeight: 17, marginTop: 4, zIndex: 1 },
+  heroBody: { fontSize: 12, lineHeight: 19, marginTop: 6, zIndex: 1 },
   heroTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 10, zIndex: 1 },
   heroTag: {
     borderWidth: 1,
@@ -903,29 +826,8 @@ const styles = StyleSheet.create({
   },
   heroTagText: { fontSize: 9.5, fontWeight: '700' },
   skeletonBlock: { gap: 6 },
-  skeletonCard: { paddingVertical: 10 },
-  skeletonRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
-  skeletonCol: { flex: 1, gap: 7 },
-  insightCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 11,
-  },
-  insightIcon: {
-    width: 25,
-    height: 25,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  insightCopy: { flex: 1, minWidth: 0 },
-  insightTitle: { fontSize: 12, fontWeight: '700', lineHeight: 17 },
-  insightBody: { fontSize: 10.5, lineHeight: 16, marginTop: 3 },
-  insightConf: { fontSize: 9, fontFamily: foldFonts.mono, marginTop: 2 },
-  rawCard: { paddingVertical: 10, paddingHorizontal: 11 },
-  rawText: { fontSize: 12, lineHeight: 19 },
+  skeletonCard: { paddingVertical: 12 },
+  skeletonCol: { flex: 1, gap: 8 },
   emptyCard: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 12 },
   emptyIcon: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   emptyText: { flex: 1, fontSize: 12, lineHeight: 18 },

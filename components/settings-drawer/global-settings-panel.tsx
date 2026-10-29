@@ -679,6 +679,15 @@ export function GlobalSettingsPanel({
                 hint="实时查看本机发出的接口请求与返回，支持复制详情"
                 onPress={() => go('/api-request-monitor')}
                 palette={palette}
+                showDivider
+              />
+              <NavRow
+                icon="content-cut"
+                tone="pine"
+                title="Vision 抠图测试"
+                hint="端上人像去背景（iOS 实机 / development build）"
+                onPress={() => go('/vision-cutout-test')}
+                palette={palette}
               />
             </GroupCard>
           </View>

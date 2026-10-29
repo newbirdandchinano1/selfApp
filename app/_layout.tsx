@@ -500,6 +500,7 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-basket" />
             {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
             <Stack.Screen name="api-request-monitor" />
+            <Stack.Screen name="vision-cutout-test" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />

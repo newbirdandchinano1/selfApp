@@ -34,10 +34,12 @@ import {
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
 import { loadReviewDayFacts, builtinDailyReviewFieldPatch, reviewDayFactsIsEmpty, type ReviewDayFacts } from '@/lib/review-day-facts';
+import { reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { fetchReviewJournal, shouldFetchReviewFromApi } from '@/lib/review-page-api';
 import {
+  areAllReviewDimensionsFilled,
   collectColumnIds,
   emptyFieldValues,
   parseDailyReviewBody,
@@ -362,14 +364,35 @@ export function DailyReviewGridView({
     return hit?.id ?? dailyTemplate[0]?.id ?? null;
   }, [dailyTemplate]);
 
+  const allDimsFilled = useMemo(
+    () => areAllReviewDimensionsFilled(dailyTemplate, fields),
+    [dailyTemplate, fields],
+  );
+
+  /** Alert 关闭后再开 Modal，避免 Android 上 Alert+Modal 叠层卡住 */
+  const openAiAnalysis = useCallback(() => {
+    const hasExisting = (meta.ai_analysis ?? '').trim().length > 0;
+    if (!hasExisting) {
+      const gate = reviewCanRunAiAnalysis({ scope: 'daily', template: dailyTemplate, fields });
+      if (!gate.ok) {
+        toast.info(gate.reason);
+        return;
+      }
+    }
+    setTimeout(() => setAiOpen(true), 320);
+  }, [dailyTemplate, fields, meta.ai_analysis]);
+
   const openMore = useCallback(() => {
     Alert.alert('更多', undefined, [
       { text: '一键写入今日数据', onPress: insertFacts },
       { text: '去填写每周复盘', onPress: () => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form')) },
-      { text: 'AI 复盘分析', onPress: () => setAiOpen(true) },
+      {
+        text: allDimsFilled ? 'AI 复盘分析' : 'AI 复盘分析（请先写完格子）',
+        onPress: openAiAnalysis,
+      },
       { text: '取消', style: 'cancel' },
     ]);
-  }, [insertFacts, onSwitchToWeekly, router]);
+  }, [allDimsFilled, insertFacts, onSwitchToWeekly, openAiAnalysis, router]);
 
   const goWeekly = useCallback(() => {
     if (onSwitchToWeekly) onSwitchToWeekly();
@@ -483,7 +506,12 @@ export function DailyReviewGridView({
               />
             )}
 
-            <FoldAiMini text={meta.ai_analysis} onOpen={() => setAiOpen(true)} />
+            <FoldAiMini
+              text={meta.ai_analysis}
+              onOpen={openAiAnalysis}
+              ready={allDimsFilled}
+              readyHint={`请先写完全部维度（${filledDims}/${Math.max(dailyTemplate.length, 1)}），再生成分析`}
+            />
           </>
         ) : null}
 

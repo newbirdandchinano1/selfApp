@@ -164,7 +164,7 @@ export function WeeklyReviewGridView({
           ]);
           const base = row ? parseWeeklyReviewFields(row, wColIds) : emptyFieldValues(wColIds);
           setFields(
-            rollupWeeklyFieldsFromDailyEntries(
+            await rollupWeeklyFieldsFromDailyEntries(
               base,
               snapshot.dailyEntries,
               snapshot.reviewCycleEndYmd,
