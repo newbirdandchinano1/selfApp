@@ -21,7 +21,7 @@ import {
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import type { UserRow } from '@/lib/repositories/users/user.types';
-import { estimateDailyIntakeTargetsFromContext, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { estimateDailyIntakeTargetsFromContext } from '@/lib/zhipu-image-parse';
 
 export type DailyAiIntakeTargetsRow = {
   dateYmd: string;
@@ -180,7 +180,6 @@ export async function invalidateDailyIntakeAiTargetsCache(): Promise<void> {
 export type EnsureDailyAiIntakeTargetsResult =
   | { status: 'cached'; row: DailyAiIntakeTargetsRow }
   | { status: 'fresh'; row: DailyAiIntakeTargetsRow }
-  | { status: 'no_api_key' }
   | { status: 'failed'; error: string };
 
 /**
@@ -205,16 +204,11 @@ export async function ensureDailyAiIntakeTargetsForToday(params: {
     return { status: 'cached', row: cached };
   }
 
-  const apiKey = getActiveAiLlmApiKey().trim();
-  if (!apiKey) {
-    return { status: 'no_api_key' };
-  }
-
   const records = await getHealthRecordsLast7Days(user.id, todayYmd, {
     forceRefresh: true,
   });
   const context = buildContextBlock({ user, todayYmd, records, dietary });
-  const ai = await estimateDailyIntakeTargetsFromContext({ apiKey, contextBlock: context });
+  const ai = await estimateDailyIntakeTargetsFromContext({ contextBlock: context });
   if (!ai.ok) {
     return { status: 'failed', error: ai.error };
   }

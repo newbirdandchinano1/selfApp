@@ -28,7 +28,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
@@ -88,8 +88,6 @@ import { getUserDayScheduleKind, getUserDayScheduleLabelZh } from '@/lib/user-wo
 import {
   analyzeFoodNutritionFromImage,
   finalizeFoodTextIntakeForRecord,
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
   parseFoodIntakeFromText,
 } from '@/lib/zhipu-image-parse';
 import {
@@ -1893,7 +1891,7 @@ export default function HealthScreen() {
         setPendingIntake({ id: pendingId, kind: 'ai', label: text, startedAt: Date.now() });
         void (async () => {
           try {
-            const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text });
+            const r = await parseFoodIntakeFromText({ text });
             if (!r.ok) {
               toast.warn(r.error);
               return;
@@ -1948,7 +1946,6 @@ export default function HealthScreen() {
         void (async () => {
           try {
             const r = await analyzeFoodNutritionFromImage({
-              apiKey: getActiveAiLlmApiKey(),
               imageBase64: payload.imageBase64,
               imageMimeType: payload.imageMimeType,
               ...(photoNote ? { supplementText: photoNote } : {}),
@@ -2626,10 +2623,9 @@ export default function HealthScreen() {
   ]);
 
   const assistantSubtitle = React.useMemo(() => {
-    if (!dailyAiTargets && !isActiveAiLlmConfigured()) return '本地估算';
     const d = parseYmdToLocalDate(calendarTodayYmd) ?? selectedDate;
     return formatHeaderDate(d);
-  }, [dailyAiTargets, calendarTodayYmd, selectedDate]);
+  }, [calendarTodayYmd, selectedDate]);
 
   const assistantRememberedHint = React.useMemo(() => {
     const kindLabel =
@@ -2640,11 +2636,6 @@ export default function HealthScreen() {
           : '手动输入';
     return `已记住：${assistantTab} → ${kindLabel}。下次打开会回到这个候选。`;
   }, [assistantSuggestSelection, assistantTab]);
-
-  const openAiConfigFromAssistant = React.useCallback(() => {
-    setAssistantOpen(false);
-    router.push('/(tabs)/profile' as Href);
-  }, [router]);
 
   const applyAssistantSelectionForTab = React.useCallback(
     (tab: IntakeAssistantUiTab) => {
@@ -3976,7 +3967,6 @@ export default function HealthScreen() {
         visible={assistantOpen}
         onClose={dismissAssistantModal}
         onSave={saveAssistantModal}
-        onConfigureAi={openAiConfigFromAssistant}
         tab={assistantTab}
         onTabChange={setAssistantTab}
         subtitle={assistantSubtitle}
@@ -3989,7 +3979,6 @@ export default function HealthScreen() {
         onManualGoalChange={onAssistantManualGoalChange}
         dailyAiLoading={dailyAiLoading}
         hasAiTargets={Boolean(dailyAiTargets)}
-        aiConfigured={isActiveAiLlmConfigured()}
         rationaleZh={dailyAiTargets?.rationale_zh ?? null}
         contextRows={assistantContextRows}
         otherGoals={assistantOtherGoals}

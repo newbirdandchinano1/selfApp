@@ -56,7 +56,6 @@ export type IntakeAssistantSheetProps = {
   visible: boolean;
   onClose: () => void;
   onSave: () => void;
-  onConfigureAi?: () => void;
   tab: IntakeAssistantUiTab;
   onTabChange: (tab: IntakeAssistantUiTab) => void;
   /** 有 AI 缓存时传日期文案；本地兜底传「本地估算」 */
@@ -70,7 +69,6 @@ export type IntakeAssistantSheetProps = {
   onManualGoalChange: (text: string) => void;
   dailyAiLoading?: boolean;
   hasAiTargets: boolean;
-  aiConfigured: boolean;
   rationaleZh?: string | null;
   contextRows?: IntakeAssistantContextRow[];
   otherGoals?: IntakeAssistantOtherGoal[];
@@ -87,7 +85,6 @@ export function IntakeAssistantSheet({
   visible,
   onClose,
   onSave,
-  onConfigureAi,
   tab,
   onTabChange,
   subtitle,
@@ -100,7 +97,6 @@ export function IntakeAssistantSheet({
   onManualGoalChange,
   dailyAiLoading = false,
   hasAiTargets,
-  aiConfigured,
   rationaleZh,
   contextRows = [],
   otherGoals = [],
@@ -174,9 +170,8 @@ export function IntakeAssistantSheet({
           ? nutrients.carbohydrate
           : nutrients.calories;
 
-  /** 无 AI 目标缓存时走本地公式展示（含未配密钥 / 请求失败） */
+  /** 无 AI 目标缓存时走本地公式展示（含请求失败） */
   const useLocalFallback = !hasAiTargets && !dailyAiLoading;
-  const showAiKeyWarning = !aiConfigured;
   const bestBadge = hasAiTargets ? 'AI 目标' : '本地公式';
   const bestTitleUnit =
     tab === '水分' ? 'ml 水分' : tab === '蛋白质' ? 'g 蛋白质' : tab === '碳水' ? 'g 碳水' : 'kcal';
@@ -280,24 +275,6 @@ export function IntakeAssistantSheet({
                   );
                 })}
               </View>
-
-              {showAiKeyWarning ? (
-                <View style={[styles.warnBanner, { backgroundColor: isDark ? 'rgba(196,120,82,0.16)' : '#F8E8D8' }]}>
-                  <MaterialIcons name="info-outline" size={18} color={nutrients.protein} />
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={[styles.warnTitle, { color: hh.ink }]}>未配置 AI 密钥，已切换本地公式</Text>
-                    <Text style={[styles.warnBody, { color: hh.inkSoft }]}>
-                      「今日最佳」按体重、目标与活动水平估算，仍可保存。
-                      {onConfigureAi ? (
-                        <Text style={{ color: hh.pine, fontWeight: '800' }} onPress={onConfigureAi}>
-                          {' '}
-                          去「我的」配置
-                        </Text>
-                      ) : null}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
 
               {dailyAiLoading ? (
                 <View style={styles.loadingRow}>

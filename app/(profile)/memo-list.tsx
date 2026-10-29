@@ -31,7 +31,7 @@ import {
   addMemoAiPendingAnalysisListener,
   addMemoAiReviewSavedListener,
 } from '@/lib/memo-ai-background';
-import { analyzeMemoReviewFromText, getActiveAiLlmApiKey, isActiveAiLlmConfigured } from '@/lib/zhipu-image-parse';
+import { analyzeMemoReviewFromText } from '@/lib/zhipu-image-parse';
 import { plainTextFromBody } from '@/lib/memo-richdoc/plain-text';
 import { getMemoTags, getTagsByEntityIds, normalizeTagDomain } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
@@ -129,8 +129,6 @@ export default function MemoListScreen() {
   const line = colors.outline;
   const primary = colors.primary;
   const secondary = colors.secondary;
-
-  const zhipuReady = isActiveAiLlmConfigured();
 
   const [items, setItems] = useState<MemoItem[]>([]);
   const [allTags, setAllTags] = useState<TagRow[]>([]);
@@ -327,9 +325,7 @@ export default function MemoListScreen() {
     } catch (e) {
       if (__DEV__) console.warn('[memo-list] ai-review failed, fallback', e);
     }
-    const key = getActiveAiLlmApiKey().trim();
-    if (!key) return { ok: false, error: '未配置服务器 AI（请先登录）' };
-    const r = await analyzeMemoReviewFromText({ apiKey: key, memoContextText: ctx });
+    const r = await analyzeMemoReviewFromText({ memoContextText: ctx });
     if (!r.ok) return { ok: false, error: r.error };
     const saved = await setMemoAiReview(row.id, { evaluation: r.evaluation, suggestions: r.suggestions });
     if (!saved) return { ok: false, error: '保存失败' };
@@ -345,17 +341,13 @@ export default function MemoListScreen() {
 
   const openAiModal = useCallback(
     (row: MemoItem) => {
-      if (!zhipuReady) {
-        Alert.alert('无法调用 AI', '请配置智谱 API 密钥（EXPO_PUBLIC_ZHIPU_API_KEY）。');
-        return;
-      }
       if (!memoContextForAiReview(row)) {
         Alert.alert('内容为空', '请先为该备忘填写标题或正文。');
         return;
       }
       setAiModalId(row.id);
     },
-    [zhipuReady],
+    [],
   );
 
   const aiRunLock = useRef(false);

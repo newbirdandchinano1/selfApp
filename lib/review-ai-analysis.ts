@@ -1,6 +1,6 @@
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { totalFilledLength, type ReviewFieldValues } from '@/lib/repositories/insights/review-journal-body';
-import { generateWeeklyReviewCoachingFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { generateWeeklyReviewCoachingFromText } from '@/lib/zhipu-image-parse';
 
 export type ReviewAiScope = 'daily' | 'weekly' | 'monthly';
 
@@ -161,11 +161,8 @@ function buildPrompt(input: ReviewAiAnalysisInput): string {
 
 export async function generateReviewAiAnalysis(input: ReviewAiAnalysisInput): Promise<string> {
   const prompt = buildPrompt(input);
-  const key = getActiveAiLlmApiKey().trim();
-  if (key) {
-    const r = await generateWeeklyReviewCoachingFromText({ apiKey: key, userPrompt: prompt });
-    if (r.ok) return r.text;
-  }
+  const r = await generateWeeklyReviewCoachingFromText({ userPrompt: prompt });
+  if (r.ok) return r.text;
   return buildLocalAnalysis(input);
 }
 

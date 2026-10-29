@@ -56,7 +56,6 @@ import {
 } from '@/lib/shortcut-auto-ledger-pending';
 import { consumeShortcutImageHandoffExpected } from '@/lib/shortcut-auto-ledger-route-bridge';
 import {
-    getActiveAiLlmApiKey,
     parseFinanceOneLinerFromImage,
 } from '@/lib/zhipu-image-parse';
 import { moveAppToBackground } from 'zheng-background';
@@ -201,13 +200,6 @@ export async function processAutoLedgerFromImage(
     await enterAutoLedgerSession();
   }
   try {
-    const key = getActiveAiLlmApiKey().trim();
-    if (!key) {
-      const msg = '未配置智谱密钥（EXPO_PUBLIC_ZHIPU_API_KEY）。';
-      reportAutoLedgerError(msg, opts);
-      return;
-    }
-
     if (!accounts.length) {
       reportAutoLedgerError('请先添加至少一个账户。', opts);
       return;
@@ -243,7 +235,6 @@ export async function processAutoLedgerFromImage(
 
         try {
           const resolved = await parseFinanceOneLinerFromImage({
-            apiKey: key,
             imageDataUri,
             accounts: accountHints,
             maxAttempts: 2,

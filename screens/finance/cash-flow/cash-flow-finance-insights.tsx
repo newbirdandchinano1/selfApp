@@ -8,8 +8,6 @@ import type { FinanceTransactionRow } from '@/lib/repositories/finance/finance.t
 import type { CashFlowState } from '@/lib/repositories/cash-flow/cash-flow.types';
 import {
   analyzeAiFinanceDashboardFromText,
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
   type AiFinanceDashboardPayload,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -25,7 +23,6 @@ type FinanceInsightsContextValue = {
   aiLoading: boolean;
   aiError: string | null;
   analysisStale: boolean;
-  zhipuReady: boolean;
   displayHealthScore: number;
   fallbackHealthScore: number;
   healthSummary: string | null;
@@ -98,7 +95,6 @@ export function CashFlowFinanceInsightsProvider({
   refreshSignal?: number;
   children: React.ReactNode;
 }) {
-  const zhipuReady = isActiveAiLlmConfigured();
   const [aiDashboard, setAiDashboard] = useState<AiFinanceDashboardPayload | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -369,17 +365,12 @@ export function CashFlowFinanceInsightsProvider({
   );
 
   const runAiAnalysis = useCallback(() => {
-    if (!zhipuReady) {
-      setAiError('未检测到智谱 API 密钥：请设置 EXPO_PUBLIC_ZHIPU_API_KEY。');
-      return;
-    }
     const seq = ++aiReqRef.current;
     setAiLoading(true);
     setAiError(null);
     void (async () => {
       try {
         const r = await analyzeAiFinanceDashboardFromText({
-          apiKey: getActiveAiLlmApiKey(),
           summaryText: aiFinanceDigest,
           past6NetSavings: past6Net,
           past6Income,
@@ -409,7 +400,7 @@ export function CashFlowFinanceInsightsProvider({
         if (seq === aiReqRef.current) setAiLoading(false);
       }
     })();
-  }, [aiFinanceDigest, past6Income, past6Net, zhipuReady]);
+  }, [aiFinanceDigest, past6Income, past6Net]);
 
   const healthSummary = aiDashboard?.health_summary ?? null;
 
@@ -419,7 +410,6 @@ export function CashFlowFinanceInsightsProvider({
       aiLoading,
       aiError,
       analysisStale,
-      zhipuReady,
       displayHealthScore,
       fallbackHealthScore,
       healthSummary,
@@ -437,7 +427,6 @@ export function CashFlowFinanceInsightsProvider({
       aiLoading,
       aiError,
       analysisStale,
-      zhipuReady,
       displayHealthScore,
       fallbackHealthScore,
       healthSummary,
@@ -459,7 +448,6 @@ export function CashFlowHealthScoreCard({ surface, text, subtle, border, isDark 
   const {
     aiLoading,
     aiError,
-    zhipuReady,
     displayHealthScore,
     fallbackHealthScore,
     healthSummary,
@@ -480,9 +468,7 @@ export function CashFlowHealthScoreCard({ surface, text, subtle, border, isDark 
       : healthSummary ??
         (aiError
           ? `智谱接口异常，圆环为本地估算（${fallbackHealthScore} 分）。可点击刷新重试。`
-          : zhipuReady
-            ? '基于记账流水与现金流模型。点击刷新生成 AI 健康分与预测曲线。'
-            : '未配置智谱 API，显示本地估算分。');
+          : '基于记账流水与现金流模型。点击刷新生成 AI 健康分与预测曲线。');
 
   return (
     <View style={[styles.card, { backgroundColor: surface, borderColor: border, marginBottom: 16 }]}>
@@ -493,9 +479,9 @@ export function CashFlowHealthScoreCard({ surface, text, subtle, border, isDark 
         </View>
         <Pressable
           onPress={runAiAnalysis}
-          disabled={aiLoading || !zhipuReady}
+          disabled={aiLoading}
           hitSlop={8}
-          style={({ pressed }) => [{ opacity: pressed || aiLoading || !zhipuReady ? 0.45 : 1, padding: 4 }]}>
+          style={({ pressed }) => [{ opacity: pressed || aiLoading ? 0.45 : 1, padding: 4 }]}>
           {aiLoading ? (
             <ActivityIndicator size="small" color={subtle} />
           ) : (
@@ -680,7 +666,6 @@ export function CashFlowForecastSection({ surface, text, subtle, border, isDark 
     aiLoading,
     aiError,
     analysisStale,
-    zhipuReady,
     aiDashboard,
     savingsForecastSeries,
     incomeForecastSeries,
@@ -700,13 +685,13 @@ export function CashFlowForecastSection({ surface, text, subtle, border, isDark 
         <Text style={[styles.sectionKicker, { color: subtle }]}>AI 趋势预测</Text>
         <Pressable
           onPress={runAiAnalysis}
-          disabled={aiLoading || !zhipuReady}
+          disabled={aiLoading}
           style={({ pressed }) => [
             styles.updateBtn,
             {
               borderColor: border,
               backgroundColor: isDark ? 'rgba(124,58,237,0.12)' : '#f5f3ff',
-              opacity: pressed || aiLoading || !zhipuReady ? 0.5 : 1,
+              opacity: pressed || aiLoading ? 0.5 : 1,
             },
           ]}>
           {aiLoading ? (
@@ -737,9 +722,7 @@ export function CashFlowForecastSection({ surface, text, subtle, border, isDark 
 
       {!aiDashboard && !aiLoading ? (
         <Text style={[styles.emptyHint, { color: subtle }]}>
-          {zhipuReady
-            ? '储蓄增长已按账户净资产与自由现金流实时计算；点击「生成预测」可补充收入与月盈余 AI 曲线。'
-            : '未配置智谱 API，收入与月盈余预测不可用；储蓄增长仍按账户净资产与自由现金流计算。'}
+          储蓄增长已按账户净资产与自由现金流实时计算；点击「生成预测」可补充收入与月盈余 AI 曲线。
         </Text>
       ) : null}
 

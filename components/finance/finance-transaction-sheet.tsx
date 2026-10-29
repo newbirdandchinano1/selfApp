@@ -34,7 +34,6 @@ import {
 } from '@/lib/repositories/finance/finance';
 import { budgetExtraPatchForTransaction } from '@/lib/repositories/finance/finance-transaction-extra';
 import {
-  getActiveAiLlmApiKey,
   parseFinanceOneLinerFromImage,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -127,7 +126,6 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
     newCategoryIcon,
     setNewCategoryIcon,
     isSavingCategory,
-    zhipuTxnReady,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,
@@ -238,16 +236,8 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
       setAlbumImageUri(imageDataUri);
       setAlbumScanPhase('scanning');
 
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) {
-        setAlbumScanPhase('error');
-        setAlbumScanError('未配置 AI 密钥，无法识图。');
-        return;
-      }
-
       const accountHints = financeAccounts.map((a) => ({ name: a.name, account_no: a.account_no }));
       const resolved = await parseFinanceOneLinerFromImage({
-        apiKey: key,
         imageDataUri,
         accounts: accountHints,
         maxAttempts: 2,
@@ -469,10 +459,8 @@ function FinanceTransactionSheetBody({ c }: { c: FinanceTransactionSheetControll
         ? `智谱已识别：${sentenceLedgerPreview.name}`
         : `本地规则：${sentenceLedgerPreview.name}`;
     }
-    return zhipuTxnReady
-      ? '说一句日常消费，AI 会帮你拆成金额、分类与账户'
-      : '未检测到 AI：仅本地规则（需句中含阿拉伯数字金额）';
-  }, [sentenceLedgerPreview, zhipuTxnReady]);
+    return '说一句日常消费，AI 会帮你拆成金额、分类与账户';
+  }, [sentenceLedgerPreview]);
 
   const foldTransferLabel =
     transferPairMeta.mode === 'repay'

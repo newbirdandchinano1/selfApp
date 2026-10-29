@@ -35,3 +35,14 @@ npx expo start
 4. **格内详情 · 完成确认**（shot 04）：底栏 380ms 上滑、青蛙跳一次、四宫格动作、完成前 340ms 确认弹窗（积分 / 热力说明）。
 5. **任务日历**（shot 09）：月历语义四色圆点（蛙/办/习/项）、点日展开明细、换月标题 120ms 淡出；本月概览数字滚动。
 6. **新建 / 编辑待办**（shot 11）：折页表单卡、四象限 220ms 选中、自动入格弹簧开关（条件不足回弹）、条件预览展开、底栏创建。
+
+## 财务 · 储蓄目标
+
+`FinanceSavingsGoalBlock`：设定目标金额与日期后，卡片右侧主数字展示 **每日需存**（缺口 ÷ 剩余天数，含定时预扣抬高）；副文案为当前/目标进度与倒计时；可选展示服务端「预测可存」。
+
+## AI
+
+App **不直连**智谱。场景请求经 `lib/ai-api-client.ts` → **Agent** `/api/v1/ai/*`（Key 仅存 `selfAPP_AIAgent`；App 持共享 `X-API-Key`）。  
+备忘落库点评仍走业务后端 `POST /api/app/memos/:id/ai-review`（后端代调 Agent）。  
+配置：`lib/agent-config.ts`（`EXPO_PUBLIC_AGENT_BASE_URL` / `EXPO_PUBLIC_AGENT_API_KEY`）。  
+门面：`lib/zhipu-image-parse.ts`。接口清单见 [AI_API.md](./AI_API.md)。

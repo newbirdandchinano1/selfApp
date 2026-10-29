@@ -16,8 +16,6 @@ import {
 import type { CashFlowState } from '@/lib/repositories/cash-flow/cash-flow.types';
 import {
   analyzeCashFlowDashboardFromText,
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -412,7 +410,6 @@ function DashboardBody({
   const gapToFreedom = Math.max(0, state.necessaryExpenses - metrics.totalPassiveIncome);
   const now = new Date();
 
-  const zhipuReady = isActiveAiLlmConfigured();
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -435,13 +432,6 @@ function DashboardBody({
     let cancelled = false;
 
     (async () => {
-      if (!zhipuReady) {
-        setAiAnalysis(null);
-        setAiError('未检测到智谱 API 密钥：请设置 EXPO_PUBLIC_ZHIPU_API_KEY。');
-        setAiLoading(false);
-        return;
-      }
-
       const force = forceAiRefreshRef.current;
       forceAiRefreshRef.current = false;
 
@@ -474,7 +464,6 @@ function DashboardBody({
 
       try {
         const res = await analyzeCashFlowDashboardFromText({
-          apiKey: getActiveAiLlmApiKey(),
           summaryText: aiSummaryText,
         });
         if (cancelled || reqId !== aiRequestId.current) return;
@@ -504,7 +493,7 @@ function DashboardBody({
     return () => {
       cancelled = true;
     };
-  }, [aiFingerprint, aiSummaryText, zhipuReady, aiRefreshTick]);
+  }, [aiFingerprint, aiSummaryText, aiRefreshTick]);
 
   const insightFallback = useMemo(() => {
     const cover = metrics.freedomProgress.toFixed(0);
@@ -659,9 +648,9 @@ function DashboardBody({
               <Text style={styles.insightTitle}>AI 综合判断：</Text>
               <Pressable
                 onPress={onRefreshAiAdvice}
-                disabled={aiLoading || !zhipuReady}
+                disabled={aiLoading}
                 hitSlop={8}
-                style={({ pressed }) => [{ opacity: pressed || aiLoading || !zhipuReady ? 0.45 : 1 }]}>
+                style={({ pressed }) => [{ opacity: pressed || aiLoading ? 0.45 : 1 }]}>
                 {aiLoading ? (
                   <ActivityIndicator size="small" color="#A57635" />
                 ) : (

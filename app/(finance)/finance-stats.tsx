@@ -9,7 +9,7 @@ import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { fetchFinanceStats, type FinanceStatsData } from '@/lib/finance-page-api';
 import { addDays, formatYmd } from '@/lib/date';
-import { analyzeFinanceBillSummaryFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeFinanceBillSummaryFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
@@ -544,7 +544,6 @@ export default function FinanceStatsScreen() {
     setAiBillAnalysisError(null);
     try {
       const r = await analyzeFinanceBillSummaryFromText({
-        apiKey: getActiveAiLlmApiKey(),
         summaryText: billSummaryForAi,
         maxAttempts: 12,
         retryDelayMs: 1000,

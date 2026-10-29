@@ -9,7 +9,6 @@ import { resolveStoredImageDisplayUri } from '@/lib/stored-images';
 import { MotionPressable } from '@/components/ui/motion-pressable';
 import {
   analyzeFoodNutritionFromImage,
-  getActiveAiLlmApiKey,
   parseAiIntakeNumericValue,
   parseFoodIntakeFromText,
   type FoodTextIntakeJson,
@@ -1088,7 +1087,7 @@ export function RecordIntakeSheet({
 
     const started = Date.now();
     try {
-      const r = await parseFoodIntakeFromText({ apiKey: getActiveAiLlmApiKey(), text: t });
+      const r = await parseFoodIntakeFromText({ text: t });
       if (gen !== aiParseGenRef.current) return;
       if (!r.ok) {
         setAiError(r.error);
@@ -1134,7 +1133,6 @@ export function RecordIntakeSheet({
       setPhotoFieldTexts(null);
       try {
         const r = await analyzeFoodNutritionFromImage({
-          apiKey: getActiveAiLlmApiKey(),
           imageBase64: base64,
           imageMimeType: mime,
           ...(note.trim() ? { supplementText: note.trim() } : {}),

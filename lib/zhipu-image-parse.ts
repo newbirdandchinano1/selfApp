@@ -1,6 +1,6 @@
 /**
- * AI 能力门面：请求统一走自建后端 /api/app/ai/*（见 AI_API.md）。
- * 保留与原 `lib/zhipu-image-parse.ts` 相同的函数签名与 `{ ok, ... }` 返回形态，便于 App 各页无痛迁移。
+ * AI 能力门面：请求统一走 Agent `/api/v1/ai/*`（见 AI_API.md）。
+ * 成功时返回 `{ ok: true, ... }`，失败时返回 `{ ok: false, error, ... }`。
  */
 
 import { ApiRequestError } from '@/lib/api-client';
@@ -36,33 +36,14 @@ const FOOD_NUTRITION_FALLBACK: FoodNutritionJson = {
 export const TINY_TEST_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=';
 
-/** @deprecated 智谱 Key 已迁至服务端；保留兼容，恒为空 */
-export function getZhipuApiKeyFromEnv(): string {
-  return '';
-}
-
-/** @deprecated 请使用后端 AI；保留兼容 */
-export function getZhipuApiKey(): string {
-  return '';
-}
-
-/** 服务端 AI 可用（不再依赖客户端智谱 Key） */
-export function getActiveAiLlmApiKey(): string {
-  return isActiveAiLlmConfigured() ? 'server' : '';
-}
-
-export function isActiveAiLlmConfigured(): boolean {
-  return true;
-}
-
 export type ZhipuConnectivityProbeResult = {
   httpStatus: number;
   httpOk: boolean;
   bodySnippet: string;
 };
 
-/** 探测后端 → 智谱链路（GET /api/app/ai/health） */
-export async function probeZhipuTextConnectivity(_apiKey?: string): Promise<ZhipuConnectivityProbeResult> {
+/** 探测 Agent → 智谱链路（GET /api/v1/ai/health） */
+export async function probeZhipuTextConnectivity(): Promise<ZhipuConnectivityProbeResult> {
   try {
     const data = await aiApi.aiGetHealth();
     return {
@@ -84,18 +65,9 @@ function mapApiError(e: unknown): { error: string; httpStatus?: number; details?
   return { error: e instanceof Error ? e.message : String(e) };
 }
 
-function rejectNoApiKey(attempts = 0): { ok: false; error: string; attempts: number } {
-  return { ok: false, error: '未配置服务器 AI（请先登录服务器同步）', attempts };
-}
-
-function ensureApiKeyOption(apiKey: string): boolean {
-  return Boolean(apiKey.trim()) || isActiveAiLlmConfigured();
-}
-
 // --- 饮食 ---
 
 export type ParseFoodIntakeFromTextOptions = {
-  apiKey: string;
   text: string;
   question?: string;
 };
@@ -273,7 +245,6 @@ export function normalizeDailyIntakeTargetsPayload(raw: unknown): DailyIntakeTar
 export async function parseFoodIntakeFromText(
   options: ParseFoodIntakeFromTextOptions,
 ): Promise<ParseFoodIntakeFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.text.trim();
   if (!text) return { ok: false, error: '描述为空', attempts: 0 };
   try {
@@ -301,7 +272,6 @@ export async function parseFoodIntakeFromText(
 }
 
 export type EstimateDailyIntakeTargetsFromContextOptions = {
-  apiKey: string;
   contextBlock: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -314,7 +284,6 @@ export type EstimateDailyIntakeTargetsFromContextResult =
 export async function estimateDailyIntakeTargetsFromContext(
   options: EstimateDailyIntakeTargetsFromContextOptions,
 ): Promise<EstimateDailyIntakeTargetsFromContextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const context = options.contextBlock.trim();
   if (!context) return { ok: false, error: '上下文为空', attempts: 0 };
   try {
@@ -328,7 +297,6 @@ export async function estimateDailyIntakeTargetsFromContext(
 }
 
 export type AnalyzeFoodNutritionOptions = {
-  apiKey: string;
   imageBase64: string;
   imageMimeType?: string;
   supplementText?: string;
@@ -439,9 +407,6 @@ export function normalizeFoodNutritionPayload(raw: unknown): { data: FoodNutriti
 export async function analyzeFoodNutritionFromImage(
   options: AnalyzeFoodNutritionOptions,
 ): Promise<AnalyzeFoodNutritionResult> {
-  if (!ensureApiKeyOption(options.apiKey)) {
-    return { ok: false, error: '未配置 API 密钥', attempts: 0, data: { ...FOOD_NUTRITION_FALLBACK } };
-  }
   const rawB64 = options.imageBase64?.trim() ?? '';
   if (!rawB64) {
     return { ok: false, error: '图片数据为空', attempts: 0, data: { ...FOOD_NUTRITION_FALLBACK } };
@@ -479,7 +444,6 @@ export async function analyzeFoodNutritionFromImage(
 // --- 财务 ---
 
 export type AnalyzeFinanceBillSummaryFromTextOptions = {
-  apiKey: string;
   summaryText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -492,7 +456,6 @@ export type AnalyzeFinanceBillSummaryFromTextResult =
 export async function analyzeFinanceBillSummaryFromText(
   options: AnalyzeFinanceBillSummaryFromTextOptions,
 ): Promise<AnalyzeFinanceBillSummaryFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.summaryText.trim();
   if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
   try {
@@ -505,7 +468,6 @@ export async function analyzeFinanceBillSummaryFromText(
 }
 
 export type AnalyzeCashFlowDashboardFromTextOptions = {
-  apiKey: string;
   summaryText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -518,7 +480,6 @@ export type AnalyzeCashFlowDashboardFromTextResult =
 export async function analyzeCashFlowDashboardFromText(
   options: AnalyzeCashFlowDashboardFromTextOptions,
 ): Promise<AnalyzeCashFlowDashboardFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.summaryText.trim();
   if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
   try {
@@ -531,7 +492,6 @@ export async function analyzeCashFlowDashboardFromText(
 }
 
 export type AnalyzeFinanceTxnCommentFromTextOptions = {
-  apiKey: string;
   summaryText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -544,7 +504,6 @@ export type AnalyzeFinanceTxnCommentFromTextResult =
 export async function analyzeFinanceTxnCommentFromText(
   options: AnalyzeFinanceTxnCommentFromTextOptions,
 ): Promise<AnalyzeFinanceTxnCommentFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.summaryText.trim();
   if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
   try {
@@ -557,7 +516,6 @@ export async function analyzeFinanceTxnCommentFromText(
 }
 
 export type AnalyzeMemoReviewFromTextOptions = {
-  apiKey: string;
   memoContextText: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -572,7 +530,6 @@ export type MemoReviewJsonNormalizeMode = 'memo' | 'full';
 export async function analyzeMemoReviewFromText(
   options: AnalyzeMemoReviewFromTextOptions,
 ): Promise<AnalyzeMemoReviewFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.memoContextText.trim();
   if (!text) return { ok: false, error: '备忘内容为空', attempts: 0 };
   try {
@@ -591,7 +548,6 @@ export async function analyzeMemoReviewFromText(
 }
 
 export type GenerateWeeklyReviewCoachingFromTextOptions = {
-  apiKey: string;
   userPrompt: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -604,7 +560,6 @@ export type GenerateWeeklyReviewCoachingFromTextResult =
 export async function generateWeeklyReviewCoachingFromText(
   options: GenerateWeeklyReviewCoachingFromTextOptions,
 ): Promise<GenerateWeeklyReviewCoachingFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const userPrompt = options.userPrompt.trim();
   if (!userPrompt) return { ok: false, error: '复盘内容为空', attempts: 0 };
   try {
@@ -622,7 +577,6 @@ export type ParseFinanceOneLinerFromImageAccountHint = {
 };
 
 export type ParseFinanceOneLinerFromTextOptions = {
-  apiKey: string;
   text: string;
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -671,7 +625,6 @@ function mapFinanceOneLinerOk(
 export async function parseFinanceOneLinerFromText(
   options: ParseFinanceOneLinerFromTextOptions,
 ): Promise<ParseFinanceOneLinerFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.text.trim();
   if (!text) return { ok: false, error: '输入为空', attempts: 0 };
   try {
@@ -687,7 +640,6 @@ export async function parseFinanceOneLinerFromText(
 }
 
 export type ParseFinanceOneLinerFromImageOptions = {
-  apiKey: string;
   imageDataUri: string;
   accounts?: ParseFinanceOneLinerFromImageAccountHint[];
   maxAttempts?: number;
@@ -712,7 +664,6 @@ export type ParseFinanceOneLinerFromImageResult =
 export async function parseFinanceOneLinerFromImage(
   options: ParseFinanceOneLinerFromImageOptions,
 ): Promise<ParseFinanceOneLinerFromImageResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const uri = options.imageDataUri.trim();
   if (!uri) return { ok: false, error: '图片为空', attempts: 0 };
   const { image_base64, image_mime_type } = aiApi.splitImageBase64AndMime(uri);
@@ -750,7 +701,6 @@ export async function parseFinanceOneLinerFromImage(
 }
 
 export type AnalyzeAiFinanceDashboardFromTextOptions = {
-  apiKey: string;
   summaryText: string;
   past6NetSavings?: number[];
   past6Income?: number[];
@@ -765,7 +715,6 @@ export type AnalyzeAiFinanceDashboardFromTextResult =
 export async function analyzeAiFinanceDashboardFromText(
   options: AnalyzeAiFinanceDashboardFromTextOptions,
 ): Promise<AnalyzeAiFinanceDashboardFromTextResult> {
-  if (!ensureApiKeyOption(options.apiKey)) return rejectNoApiKey(0);
   const text = options.summaryText.trim();
   if (!text) return { ok: false, error: '摘要为空', attempts: 0 };
   try {

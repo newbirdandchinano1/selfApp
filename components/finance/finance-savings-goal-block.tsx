@@ -322,9 +322,22 @@ export function FinanceSavingsGoalBlock({
     ? progress?.achieved
       ? '已达成'
       : progress
-        ? formatSavingsGoalDateLabel(goal.targetDate)
+        ? formatSavingsGoalCountdownLabel(progress.daysLeft, goal.targetDate, today)
         : ''
     : '设定金额与日期';
+  const progressLeftSub = goal
+    ? showAmounts
+      ? `${formatCurrency(Math.min(currentNetWorth, goal.targetAmount))} / ${formatCurrency(goal.targetAmount)}`
+      : hiddenAmountText
+    : leftSub;
+  const predictLabel =
+    goal && showAmounts
+      ? predictedLoading && predictedDeposit == null
+        ? '预测可存 …'
+        : predictedDeposit != null
+          ? `预测可存 ${formatCurrency(predictedDeposit)}`
+          : null
+      : null;
 
   return (
     <>
@@ -348,12 +361,19 @@ export function FinanceSavingsGoalBlock({
             <Text style={[styles.goalTitle, { color: text }]} numberOfLines={1}>
               {goal ? '储蓄目标' : '设置储蓄目标'}
             </Text>
-            <Text style={[styles.goalAmount, { color: primary }]} numberOfLines={1}>
+            <Text
+              style={[
+                styles.goalAmount,
+                { color: progress?.achieved ? successColor : primary },
+              ]}
+              numberOfLines={1}>
               {!goal
                 ? '去设置'
-                : showAmounts
-                  ? `${formatCurrency(Math.min(currentNetWorth, goal.targetAmount))} / ${formatCurrency(goal.targetAmount)}`
-                  : hiddenAmountText}
+                : progress?.achieved
+                  ? '已达成'
+                  : showAmounts
+                    ? `${formatCurrency(progress?.dailyTarget ?? 0)} / 日`
+                    : hiddenAmountText}
             </Text>
           </View>
           <View style={[styles.goalTrack, { backgroundColor: trackBg }]}>
@@ -369,7 +389,7 @@ export function FinanceSavingsGoalBlock({
           </View>
           <View style={styles.goalSub}>
             <Text style={[styles.goalSubText, { color: subtle }]} numberOfLines={1}>
-              {leftSub}
+              {progressLeftSub}
             </Text>
             <Text
               style={[
@@ -380,10 +400,9 @@ export function FinanceSavingsGoalBlock({
               {rightSub}
             </Text>
           </View>
-          {goal && predictedDeposit != null && showAmounts ? (
+          {predictLabel ? (
             <Text style={[styles.goalPredict, { color: subtle }]} numberOfLines={1}>
-              预测可存 {formatCurrency(predictedDeposit)}
-              {predictedLoading ? '…' : ''}
+              {predictLabel}
             </Text>
           ) : null}
         </View>

@@ -1,4 +1,4 @@
-import { analyzeFinanceTxnCommentFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeFinanceTxnCommentFromText } from '@/lib/zhipu-image-parse';
 import { updateFinanceTransaction } from './finance';
 
 /** 生成智谱摘要所需字段（与列表展示口径一致）。 */
@@ -36,18 +36,15 @@ export function buildFinanceTxnAiSummaryText(input: FinanceTxnAiSummaryInput): s
 
 /**
  * 调用智谱生成单条评价并写入 `finance_transactions.ai_comment`。
- * 无密钥或请求失败时返回 `{ ok: false }`。
+ * 请求失败时返回 `{ ok: false }`。
  * 仅用于新建/编辑后主动生成或用户手动刷新；列表页不对历史无评价流水强制补全。
  */
 export async function tryPersistFinanceTxnAiComment(
   txnId: string,
   input: FinanceTxnAiSummaryInput,
 ): Promise<{ ok: true; comment: string } | { ok: false }> {
-  const key = getActiveAiLlmApiKey().trim();
-  if (!key) return { ok: false };
   const summaryText = buildFinanceTxnAiSummaryText(input);
   const r = await analyzeFinanceTxnCommentFromText({
-    apiKey: key,
     summaryText,
     maxAttempts: 8,
     retryDelayMs: 800,

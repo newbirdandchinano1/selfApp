@@ -31,7 +31,6 @@ import { resyncAppNotificationsAfterPreferenceChange } from '@/lib/notification-
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { initDatabase } from '@/lib/database';
 import { loadCloudBackupTokenCache } from '@/lib/cloud-backup-config';
 import { hydrateCloudDirtyFromStorage } from '@/lib/cloud-sql-dirty-track';
@@ -167,7 +166,6 @@ function RootLayoutInner() {
           await loadPersistedIntakeTargets();
           await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
-          await loadAiLlmProviderPreference();
           await loadApiDebugEnabled();
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {

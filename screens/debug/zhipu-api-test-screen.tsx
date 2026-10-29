@@ -2,7 +2,6 @@
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import {
   analyzeFoodNutritionFromImage,
-  getActiveAiLlmApiKey,
   TINY_TEST_JPEG_BASE64,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -98,13 +97,11 @@ export default function ZhipuApiTestScreen() {
   };
 
   const runAnalyze = async (mode: 'tiny' | 'picker') => {
-    const key = getActiveAiLlmApiKey();
     setBusy(true);
     setLog('分析中…');
     try {
       if (mode === 'tiny') {
         const r = await analyzeFoodNutritionFromImage({
-          apiKey: key,
           imageBase64: TINY_TEST_JPEG_BASE64,
           imageMimeType: 'image/jpeg',
         });
@@ -134,7 +131,6 @@ export default function ZhipuApiTestScreen() {
 
       const mime = asset0.mimeType?.trim() || 'image/jpeg';
       const r = await analyzeFoodNutritionFromImage({
-        apiKey: key,
         imageBase64,
         imageMimeType: mime,
       });
@@ -157,7 +153,7 @@ export default function ZhipuApiTestScreen() {
 
       <ScrollView contentContainerStyle={stylesMemo.body} keyboardShouldPersistTaps="handled">
         <Text style={stylesMemo.hint}>
-          调用智谱视觉模型，估算图中食物的蛋白质（g）、碳水化合物（g）、热量（kcal）。接口强制 JSON，字段均为数字；非食物时
+          经自建后端调用智谱视觉模型，估算图中食物的蛋白质（g）、碳水化合物（g）、热量（kcal）。接口强制 JSON，字段均为数字；非食物时
           is_food=0 并用 non_food_code 1～3 表示原因。含 1305 重试、空图与解析失败兜底、字段类型容错（如字符串数字转数值）。
         </Text>
 

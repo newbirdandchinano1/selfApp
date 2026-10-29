@@ -1,9 +1,11 @@
 /**
- * App → 自建后端 /api/app/ai/*（智谱 Key 仅存服务端）。
+ * App → selfAPP_AIAgent `/api/v1/ai/*`（智谱 Key 仅存 Agent；鉴权为 X-API-Key）。
  * 规范见项目根目录 AI_API.md 与各业务模块 APP 接入说明。
  */
 
-import { apiRequest } from '@/lib/api-client';
+import { getAgentApiKey, getAgentBaseUrl } from '@/lib/agent-config';
+import { ApiRequestError } from '@/lib/api/http';
+import { fetchWithTimeoutAndRetry } from '@/lib/cloud-fetch-retry';
 
 import type {
   AiFinanceDashboardPayload,
@@ -12,7 +14,8 @@ import type {
   FoodTextIntakeJson,
 } from '@/lib/ai-types';
 
-const AI_PREFIX = '/api/app/ai';
+const AI_PREFIX = '/api/v1/ai';
+const AI_TIMEOUT_MS = 120_000;
 
 export type AiHealthData = {
   ok: boolean;
@@ -41,15 +44,91 @@ export type FinanceOneLinerJson = {
   payment_time?: string | null;
 };
 
+type AgentEnvelope<T> = {
+  code: number;
+  message: string;
+  data: T | null;
+};
+
+function extractEnvelope(parsed: unknown): AgentEnvelope<unknown> | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const o = parsed as Record<string, unknown>;
+  if (typeof o.code !== 'number' || typeof o.message !== 'string') return null;
+  return { code: o.code, message: o.message, data: (o.data ?? null) as unknown };
+}
+
+async function agentAiRequest<T>(
+  path: string,
+  options: { method?: 'GET' | 'POST'; body?: unknown } = {},
+): Promise<T> {
+  const baseUrl = await getAgentBaseUrl();
+  const apiKey = await getAgentApiKey();
+  const method = options.method ?? 'GET';
+  const url = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+
+  const headers: Record<string, string> = {
+    'X-API-Key': apiKey,
+  };
+  let requestBody: string | undefined;
+  if (options.body !== undefined && options.body !== null) {
+    requestBody = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const res = await fetchWithTimeoutAndRetry(
+    url,
+    {
+      method,
+      headers,
+      ...(requestBody !== undefined ? { body: requestBody } : {}),
+    },
+    { perAttemptTimeoutMs: AI_TIMEOUT_MS, maxAttempts: 2 },
+  );
+
+  let parsed: unknown = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      parsed = null;
+    }
+  }
+
+  const envelope = extractEnvelope(parsed);
+  if (!envelope) {
+    throw new ApiRequestError(
+      `Agent 响应格式异常：HTTP ${res.status}`,
+      res.status,
+      -1,
+      { retryable: res.status >= 500 },
+    );
+  }
+
+  if (!(res.status === 200 && envelope.code === 0)) {
+    throw new ApiRequestError(
+      envelope.message || `Agent 请求失败：HTTP ${res.status}`,
+      res.status,
+      envelope.code,
+      {
+        retryable: res.status === 500 || res.status === 502 || res.status === 503,
+        data: envelope.data,
+      },
+    );
+  }
+
+  return envelope.data as T;
+}
+
 export async function aiGetHealth(): Promise<AiHealthData> {
-  return apiRequest<AiHealthData>(`${AI_PREFIX}/health`, { method: 'GET' });
+  return agentAiRequest<AiHealthData>(`${AI_PREFIX}/health`, { method: 'GET' });
 }
 
 export async function aiFoodIntakeFromText(body: {
   text: string;
   question?: string;
 }): Promise<FoodTextIntakeJson> {
-  return apiRequest(`${AI_PREFIX}/food/intake-from-text`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/food/intake-from-text`, { method: 'POST', body });
 }
 
 export async function aiFoodNutritionFromImage(body: {
@@ -57,18 +136,18 @@ export async function aiFoodNutritionFromImage(body: {
   image_mime_type?: string;
   supplement_text?: string;
 }): Promise<FoodNutritionJson> {
-  return apiRequest(`${AI_PREFIX}/food/nutrition-from-image`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/food/nutrition-from-image`, { method: 'POST', body });
 }
 
 export async function aiFoodDailyTargets(body: { context_block: string }): Promise<DailyIntakeTargetsEstimateJson> {
-  return apiRequest(`${AI_PREFIX}/food/daily-targets`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/food/daily-targets`, { method: 'POST', body });
 }
 
 export async function aiFinanceParseOneLiner(body: {
   text: string;
   accounts?: FinanceOneLinerAccountHint[];
 }): Promise<FinanceOneLinerJson> {
-  return apiRequest(`${AI_PREFIX}/finance/parse-one-liner`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/parse-one-liner`, { method: 'POST', body });
 }
 
 export async function aiFinanceParseOneLinerFromImage(body: {
@@ -76,15 +155,15 @@ export async function aiFinanceParseOneLinerFromImage(body: {
   image_mime_type?: string;
   accounts?: FinanceOneLinerAccountHint[];
 }): Promise<FinanceOneLinerJson> {
-  return apiRequest(`${AI_PREFIX}/finance/parse-one-liner-from-image`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/parse-one-liner-from-image`, { method: 'POST', body });
 }
 
 export async function aiFinanceTxnComment(body: { summary_text: string }): Promise<{ comment: string }> {
-  return apiRequest(`${AI_PREFIX}/finance/txn-comment`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/txn-comment`, { method: 'POST', body });
 }
 
 export async function aiFinanceBillSummaryAnalysis(body: { summary_text: string }): Promise<{ analysis: string }> {
-  return apiRequest(`${AI_PREFIX}/finance/bill-summary-analysis`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/bill-summary-analysis`, { method: 'POST', body });
 }
 
 export async function aiFinanceDashboardAnalysis(body: {
@@ -92,22 +171,22 @@ export async function aiFinanceDashboardAnalysis(body: {
   past6_net_savings?: number[];
   past6_income?: number[];
 }): Promise<AiFinanceDashboardPayload> {
-  return apiRequest(`${AI_PREFIX}/finance/dashboard-analysis`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/dashboard-analysis`, { method: 'POST', body });
 }
 
 export async function aiFinanceCashFlowAnalysis(body: { summary_text: string }): Promise<{ analysis: string }> {
-  return apiRequest(`${AI_PREFIX}/finance/cash-flow-analysis`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/finance/cash-flow-analysis`, { method: 'POST', body });
 }
 
 export async function aiMemoReview(body: { memo_context_text: string }): Promise<{
   evaluation: string;
   suggestions: string;
 }> {
-  return apiRequest(`${AI_PREFIX}/memo/review`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/memo/review`, { method: 'POST', body });
 }
 
 export async function aiWeeklyReviewCoaching(body: { user_prompt: string }): Promise<{ text: string }> {
-  return apiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
+  return agentAiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
 }
 
 /** 拆分 data URI 或纯 Base64，供图片类接口使用 */

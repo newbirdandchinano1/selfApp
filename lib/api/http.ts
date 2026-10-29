@@ -250,7 +250,7 @@ type ApiRequestOptions = {
   perAttemptTimeoutMs?: number;
   /**
    * 不触发全局「正在同步数据…」全屏蒙层（后台任务、页面内自有 loading 时使用）。
-   * `/api/app/ai/*` 默认视为耗时长的非阻塞请求，也会跳过蒙层。
+   * Agent `/api/v1/ai/*` 与备忘 `ai-review` 默认视为耗时长的非阻塞请求，也会跳过蒙层。
    */
   skipGlobalLoading?: boolean;
 };
@@ -287,9 +287,10 @@ export async function apiRequest<T = unknown>(
     : `${baseUrl}${normalizedPath.startsWith('/') ? '' : '/'}${normalizedPath}`;
   const method = options.method ?? 'GET';
   const retryOnUnauthorized = options.retryOnUnauthorized ?? true;
-  // 长耗时推理类 POST：不占 CRUD 写槽、不挂同步蒙层
+  // 长耗时推理类 POST：不占 CRUD 写槽、不挂同步蒙层（场景 AI 已走 Agent；此处覆盖备忘落库点评等）
   const isLongAiStylePost =
     /\/api(?:\/app)?\/ai(?:\/|$)/.test(normalizedPath) ||
+    /\/api\/v1\/ai(?:\/|$)/.test(normalizedPath) ||
     /\/memos\/[^/]+\/ai-review(?:\?|$)/.test(normalizedPath);
   const queueKind: 'read' | 'write' =
     method === 'GET' || isLongAiStylePost ? 'read' : 'write';

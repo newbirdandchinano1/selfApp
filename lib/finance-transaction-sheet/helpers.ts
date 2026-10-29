@@ -141,7 +141,7 @@ export type SentenceLedgerPreviewState =
     }
   | { kind: 'error'; message: string };
 
-/** 无智谱密钥时的极简规则解析（需含阿拉伯数字金额）。 */
+/** 无法用 AI 解析时的极简规则兜底（需含阿拉伯数字金额）。 */
 export function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
   const s = raw.trim().replace(/\s+/g, ' ');
   if (!s) return { ok: false };

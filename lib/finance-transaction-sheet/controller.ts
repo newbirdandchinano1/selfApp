@@ -33,8 +33,6 @@ import {
 import { budgetExtraPatchForTransaction, buildFinanceTransferTxnExtra } from '@/lib/repositories/finance/finance-transaction-extra';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
 import {
-  getActiveAiLlmApiKey,
-  isActiveAiLlmConfigured,
   parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
 import { formatFinanceHappenedAt } from '@/lib/api-mysql-datetime';
@@ -197,8 +195,6 @@ export function useFinanceTransactionSheetController({
     confirmDeleteCustomCategory,
   } = sheetCategories;
 
-  const zhipuTxnReady = isActiveAiLlmConfigured();
-
   const manualSheetMaxHeight = React.useMemo(
     () => Dimensions.get('window').height - insets.top - 10,
     [insets.top],
@@ -300,36 +296,29 @@ export function useFinanceTransactionSheetController({
     const trimmed = line.trim();
     if (!trimmed) return { ok: false, error: '请输入用一句话描述这笔账。' };
     const accountHints = financeAccountsRef.current.map((a) => ({ name: a.name, account_no: a.account_no }));
-    const key = getActiveAiLlmApiKey().trim();
-    if (key) {
-      const r = await parseFinanceOneLinerFromText({
-        apiKey: key,
-        text: trimmed,
-        maxAttempts: 6,
-        retryDelayMs: 800,
-        accounts: accountHints.length > 0 ? accountHints : undefined,
-      });
-      if (r.ok) {
-        return {
-          ok: true,
-          source: 'ai',
-          parsed: {
-            transaction_type: r.transaction_type,
-            amount: r.amount,
-            name: r.name,
-            category_label: r.category_label,
-            account_name: r.account_name,
-            payment_account_label: r.payment_account_label,
-          },
-        };
-      }
-      const loc = parseFinanceSentenceLocal(trimmed);
-      if (loc.ok) return { ok: true, parsed: loc, source: 'local' };
-      return { ok: false, error: `智谱解析未成功（${r.error}）。本地规则也无法识别，请写清数字金额后再试。` };
+    const r = await parseFinanceOneLinerFromText({
+      text: trimmed,
+      maxAttempts: 6,
+      retryDelayMs: 800,
+      accounts: accountHints.length > 0 ? accountHints : undefined,
+    });
+    if (r.ok) {
+      return {
+        ok: true,
+        source: 'ai',
+        parsed: {
+          transaction_type: r.transaction_type,
+          amount: r.amount,
+          name: r.name,
+          category_label: r.category_label,
+          account_name: r.account_name,
+          payment_account_label: r.payment_account_label,
+        },
+      };
     }
     const loc = parseFinanceSentenceLocal(trimmed);
     if (loc.ok) return { ok: true, parsed: loc, source: 'local' };
-    return { ok: false, error: '请写明金额（需含阿拉伯数字），或配置 EXPO_PUBLIC_ZHIPU_API_KEY 以使用智谱 AI 理解口语。' };
+    return { ok: false, error: '请写明金额（需含阿拉伯数字）。' };
   }, []);
 
   const resetSheetForm = React.useCallback(
@@ -979,7 +968,6 @@ export function useFinanceTransactionSheetController({
     setSelectedCategoryKey,
     setSelectedAccountId,
     pickAccountForAutoLedger,
-    zhipuTxnReady,
     sheetSentence,
     setSheetSentence,
     sentenceLedgerPreview,

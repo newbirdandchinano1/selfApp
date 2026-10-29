@@ -2,7 +2,7 @@ import type { WeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-rev
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { totalFilledLength } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewFieldValues } from '@/lib/repositories/insights/review-journal-body';
-import { generateWeeklyReviewCoachingFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { generateWeeklyReviewCoachingFromText } from '@/lib/zhipu-image-parse';
 
 export type WeeklyCoachingSection = {
   dimensionTitle: string;
@@ -141,9 +141,7 @@ function buildLocalCoaching(input: WeeklyCoachingInput): string {
 }
 
 async function tryZhipuWeeklyCoaching(prompt: string): Promise<string | null> {
-  const key = getActiveAiLlmApiKey().trim();
-  if (!key) return null;
-  const r = await generateWeeklyReviewCoachingFromText({ apiKey: key, userPrompt: prompt });
+  const r = await generateWeeklyReviewCoachingFromText({ userPrompt: prompt });
   return r.ok ? r.text : null;
 }
 

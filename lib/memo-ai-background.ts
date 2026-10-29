@@ -1,5 +1,5 @@
 import { memoContextForAiReview, runMemoAiReviewOnServer, setMemoAiReview, type MemoItem } from '@/lib/memos';
-import { analyzeMemoReviewFromText, getActiveAiLlmApiKey } from '@/lib/zhipu-image-parse';
+import { analyzeMemoReviewFromText } from '@/lib/zhipu-image-parse';
 
 const memoAiInFlight = new Set<string>();
 const memoAiPendingAnalysisIds = new Set<string>();
@@ -76,11 +76,9 @@ export function startMemoAiReviewInBackground(row: MemoItem): void {
         // fall through
       }
 
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) return;
       const ctx = memoContextForAiReview(row);
       if (!ctx) return;
-      const r = await analyzeMemoReviewFromText({ apiKey: key, memoContextText: ctx });
+      const r = await analyzeMemoReviewFromText({ memoContextText: ctx });
       if (!r.ok) return;
       const saved = await setMemoAiReview(row.id, { evaluation: r.evaluation, suggestions: r.suggestions });
       if (saved) notifyMemoAiReviewSaved(saved);

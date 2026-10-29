@@ -4,7 +4,6 @@ import { Motion } from '@/constants/design-tokens';
 import { useFoldTheme, type FoldSemanticPalette } from '@/constants/review-fold-theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
-import { loadAiLlmProviderPreference } from '@/lib/ai-llm-provider-preference';
 import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
@@ -475,7 +474,6 @@ export function GlobalSettingsPanel({
       });
       if (r.ok) {
         setLastFullCloudBackupAtIso(r.cloudLastUpdated);
-        void loadAiLlmProviderPreference();
         const warnBlock =
           r.warnings.length > 0 ? `\n\n注意：\n${r.warnings.map(w => `· ${w}`).join('\n')}` : '';
         Alert.alert(

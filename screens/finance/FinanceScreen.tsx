@@ -129,8 +129,6 @@ import { addDaysToLogicalYmd, getLogicalLocalYmd, logicalYmdToLocalDate } from '
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
 import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import {
-    getActiveAiLlmApiKey,
-    isActiveAiLlmConfigured,
     parseFinanceOneLinerFromImage,
     parseFinanceOneLinerFromText,
 } from '@/lib/zhipu-image-parse';
@@ -353,7 +351,7 @@ type SentenceLedgerPreviewState =
     }
   | { kind: 'error'; message: string };
 
-/** 无智谱密钥时的极简规则解析（需含阿拉伯数字金额）。 */
+/** 无法用 AI 解析时的极简规则兜底（需含阿拉伯数字金额）。 */
 function parseFinanceSentenceLocal(raw: string): ({ ok: true } & ParsedOneLiner) | { ok: false } {
   const s = raw.trim().replace(/\s+/g, ' ');
   if (!s) return { ok: false };
@@ -1055,8 +1053,6 @@ export default function FinanceScreen() {
     [hasMoreHistoryDays, isLoadingMoreDays, loadMoreHistoryDays]
   );
 
-  const zhipuTxnReady = isActiveAiLlmConfigured();
-
   const pickAccountForAutoLedger = React.useCallback(
     (
       accounts: FinanceAccountBalanceRow[],
@@ -1088,50 +1084,40 @@ export default function FinanceScreen() {
     [],
   );
 
-  /** 当前选择的文本模型优先，失败则本地规则（与 `parseFinanceOneLinerFromText` / 调试页同源密钥）。 */
+  /** 当前选择的文本模型优先，失败则本地规则。 */
   const resolveFinanceSentenceLine = React.useCallback(async (line: string): Promise<SentenceResolveResult> => {
     const trimmed = line.trim();
     if (!trimmed) {
       return { ok: false, error: '请输入用一句话描述这笔账。' };
     }
     const accountHints = financeAccountsRef.current.map((a) => ({ name: a.name, account_no: a.account_no }));
-    const key = getActiveAiLlmApiKey().trim();
-    if (key) {
-      const r = await parseFinanceOneLinerFromText({
-        apiKey: key,
-        text: trimmed,
-        maxAttempts: 6,
-        retryDelayMs: 800,
-        accounts: accountHints.length > 0 ? accountHints : undefined,
-      });
-      if (r.ok) {
-        return {
-          ok: true,
-          source: 'ai',
-          parsed: {
-            transaction_type: r.transaction_type,
-            amount: r.amount,
-            name: r.name,
-            category_label: r.category_label,
-            account_name: r.account_name,
-            payment_account_label: r.payment_account_label,
-          },
-        };
-      }
-      const loc = parseFinanceSentenceLocal(trimmed);
-      if (loc.ok) {
-        return { ok: true, parsed: loc, source: 'local' };
-      }
+    const r = await parseFinanceOneLinerFromText({
+      text: trimmed,
+      maxAttempts: 6,
+      retryDelayMs: 800,
+      accounts: accountHints.length > 0 ? accountHints : undefined,
+    });
+    if (r.ok) {
       return {
-        ok: false,
-        error: `智谱解析未成功（${r.error}）。本地规则也无法识别，请写清数字金额后再试。`,
+        ok: true,
+        source: 'ai',
+        parsed: {
+          transaction_type: r.transaction_type,
+          amount: r.amount,
+          name: r.name,
+          category_label: r.category_label,
+          account_name: r.account_name,
+          payment_account_label: r.payment_account_label,
+        },
       };
     }
     const loc = parseFinanceSentenceLocal(trimmed);
-    if (loc.ok) return { ok: true, parsed: loc, source: 'local' };
+    if (loc.ok) {
+      return { ok: true, parsed: loc, source: 'local' };
+    }
     return {
       ok: false,
-      error: '请写明金额（需含阿拉伯数字），或配置 EXPO_PUBLIC_ZHIPU_API_KEY 以使用智谱 AI 理解口语。',
+      error: '请写明金额（需含阿拉伯数字）。',
     };
   }, []);
 
@@ -1923,17 +1909,6 @@ export default function FinanceScreen() {
       autoLedgerSourceRef.current = ledgerSource;
       const handoff = isAutoLedgerHandoffSession();
 
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) {
-        const msg = '未配置智谱密钥（EXPO_PUBLIC_ZHIPU_API_KEY）。';
-        if (handoff) {
-          void notifyAutoLedgerFailure(msg);
-        } else {
-          toast.error(msg);
-        }
-        return;
-      }
-
       if (!accounts.length) {
         const msg = '请先添加至少一个账户。';
         if (handoff) {
@@ -1972,7 +1947,6 @@ export default function FinanceScreen() {
 
           try {
             const resolved = await parseFinanceOneLinerFromImage({
-              apiKey: key,
               imageDataUri,
               accounts: accountHints,
               maxAttempts: 2,
@@ -3151,16 +3125,8 @@ export default function FinanceScreen() {
       setAlbumImageUri(imageDataUri);
       setAlbumScanPhase('scanning');
 
-      const key = getActiveAiLlmApiKey().trim();
-      if (!key) {
-        setAlbumScanPhase('error');
-        setAlbumScanError('未配置 AI 密钥，无法识图。');
-        return;
-      }
-
       const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
       const resolved = await parseFinanceOneLinerFromImage({
-        apiKey: key,
         imageDataUri,
         accounts: accountHints,
         maxAttempts: 2,
@@ -3370,10 +3336,8 @@ export default function FinanceScreen() {
         ? `智谱已识别：${sentenceLedgerPreview.name}`
         : `本地规则：${sentenceLedgerPreview.name}`;
     }
-    return zhipuTxnReady
-      ? '说一句日常消费，AI 会帮你拆成金额、分类与账户'
-      : '未检测到 AI：仅本地规则（需句中含阿拉伯数字金额）';
-  }, [sentenceLedgerPreview, zhipuTxnReady]);
+    return '说一句日常消费，AI 会帮你拆成金额、分类与账户';
+  }, [sentenceLedgerPreview]);
 
   const foldTransferLabel =
     transferPairMeta.mode === 'repay'
