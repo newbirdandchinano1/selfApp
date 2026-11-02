@@ -29,6 +29,7 @@ import {
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { reviewAiPreviewTitle } from '@/lib/review-ai-sections';
 import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
 import {
   collectColumnIds,
@@ -569,7 +570,7 @@ export function WeeklyReviewGridView({
                         numberOfLines={2}
                         maxFontSizeMultiplier={1.3}
                         style={[styles.aiBodyText, { color: fold.ink2 }]}>
-                        {aiCoaching}
+                        {reviewAiPreviewTitle(aiCoaching) || aiCoaching}
                       </Text>
                     ) : (
                       <Text

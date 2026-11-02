@@ -209,6 +209,14 @@ export async function tryMarkBreakHabitCompleted(
   } catch (ptsErr) {
     console.warn('戒除习惯达成目标发奖失败', habit.id, ptsErr);
   }
+  try {
+    const { completeProjectsBoundToHabitIfReady } = await import(
+      '@/lib/repositories/projects/project-completion-habits'
+    );
+    await completeProjectsBoundToHabitIfReady(habit.id, { logicalTodayYmd: todayYmd });
+  } catch (linkErr) {
+    console.warn('戒除习惯成功后联动项目收尾失败', habit.id, linkErr);
+  }
   return true;
 }
 

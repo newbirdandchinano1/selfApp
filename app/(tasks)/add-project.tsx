@@ -20,6 +20,7 @@ import { PrerequisiteProjectPickerField } from '@/components/projects/Prerequisi
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
@@ -42,9 +43,16 @@ import {
 } from '@/lib/constants/entity-icon-choices';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { mergeLongTermProjectIntoExtraData } from '@/lib/long-term-task';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
 import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
+import {
+  filterHabitsForProjectCompletionPicker,
+  mergeCompletionHabitIdsIntoExtraData,
+} from '@/lib/repositories/projects/project-completion-habits';
 import {
   mergePrerequisiteIdsIntoExtraData,
   validatePrerequisiteSelection,
@@ -126,13 +134,20 @@ const PAGE_API_KEY = 'add-project';
 export default function AddProjectScreen() {
   const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
-  const params = useLocalSearchParams<{ source?: string; categoryId?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    source?: string;
+    categoryId?: string | string[];
+    /** 复盘建议等入口预填项目名 */
+    title?: string;
+  }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
   const { tf, fonts } = useTaskFoldTheme();
   const { animate: foldAnimate } = useFoldMotionGate();
 
-  const [title, setTitle] = React.useState('');
+  const prefillTitle =
+    typeof params.title === 'string' ? params.title.trim() : Array.isArray(params.title) ? (params.title[0] ?? '').trim() : '';
+  const [title, setTitle] = React.useState(prefillTitle);
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
   const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
@@ -145,6 +160,10 @@ export default function AddProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
+  const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
+  const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
+  const [habitsLoading, setHabitsLoading] = React.useState(true);
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
@@ -237,8 +256,35 @@ export default function AddProjectScreen() {
       } finally {
         setLifeBetsLoading(false);
       }
+      setHabitsLoading(true);
+      try {
+        const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
+        setHabitContexts(contexts.map((c) => ({ id: c.id, name: c.name })));
+        setAllHabits(habits);
+      } catch (error) {
+        console.warn('加载小习惯列表失败', error);
+        setHabitContexts([]);
+        setAllHabits([]);
+      } finally {
+        setHabitsLoading(false);
+      }
     }, forceRefresh);
   }, [wrapLoad]);
+
+  const habitSections = React.useMemo(() => {
+    const filtered = filterHabitsForProjectCompletionPicker(allHabits, completionHabitIds);
+    const habitsByContext = new Map<string, HabitRow[]>();
+    for (const habit of filtered) {
+      const list = habitsByContext.get(habit.context) ?? [];
+      list.push(habit);
+      habitsByContext.set(habit.context, list);
+    }
+    return habitContexts.map((ctx) => ({
+      contextId: ctx.id,
+      contextName: ctx.name,
+      habits: habitsByContext.get(ctx.id) ?? [],
+    }));
+  }, [allHabits, completionHabitIds, habitContexts]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -303,7 +349,10 @@ export default function AddProjectScreen() {
     try {
       const projectId = buildProjectId();
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
-      const extra = mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds);
+      const extra = mergeCompletionHabitIdsIntoExtraData(
+        mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds),
+        completionHabitIds,
+      );
       const checklist = isLongTermProject ? acceptanceItems : [];
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
       const withReward = mergeRewardPointsIntoExtraData(
@@ -380,6 +429,7 @@ export default function AddProjectScreen() {
     }
   }, [
     allProjects,
+    completionHabitIds,
     creating,
     deadlineText,
     entityIcon,
@@ -544,6 +594,28 @@ export default function AddProjectScreen() {
                     surfaceLow={isDark ? colors.input : '#F1EDE1'}
                     surfaceLowest={isDark ? colors.surface : tf.card}
                     isDark={isDark}
+                  />
+                </View>
+              </View>
+              <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成习惯</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <BoundHabitPickerField
+                    selectedHabitIds={completionHabitIds}
+                    sections={habitSections}
+                    loading={habitsLoading}
+                    onChange={setCompletionHabitIds}
+                    textColor={tf.ink}
+                    outline={tf.muted}
+                    placeholderColor={tf.faint}
+                    primary={tf.pond}
+                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                    surfaceLowest={isDark ? colors.surface : tf.card}
+                    isDark={isDark}
+                    emptyHint="可选；须设周期目标的养成/戒除习惯"
+                    selectedHint="全部达成周期目标后，才满足项目完成条件"
+                    modalTitle="完成条件 · 小习惯"
+                    modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
                   />
                 </View>
               </View>

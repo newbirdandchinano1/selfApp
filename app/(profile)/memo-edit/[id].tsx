@@ -13,6 +13,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import {
   emptyMemoEditModel,
+  updateMemoEditModelPlain,
   type MemoEditModel,
   type MemoFormatAction,
 } from '@/lib/memo-format';
@@ -85,9 +86,15 @@ async function pickMemoImageUri(memoId: string | null): Promise<string | null> {
 
 export default function MemoEditScreen() {
   const router = useRouter();
-  const { id: idParam } = useLocalSearchParams<{ id: string }>();
+  const {
+    id: idParam,
+    title: titleParam,
+    body: bodyParam,
+  } = useLocalSearchParams<{ id: string; title?: string; body?: string }>();
   const id = normalizeId(idParam);
   const isNew = id === 'new';
+  const prefillTitle = typeof titleParam === 'string' ? titleParam.trim() : '';
+  const prefillBody = typeof bodyParam === 'string' ? bodyParam.trim() : '';
   const { colors, isDark } = useAppTheme();
   const wall = useMemo(() => memoWallTone(isDark), [isDark]);
   const pagePaper = memoPagePaper(memoPaperColor(id || 'new'));
@@ -187,6 +194,10 @@ export default function MemoEditScreen() {
       if (isNew) {
         setSelectedTagIds([]);
         setPinned(false);
+        if (prefillTitle) setTitle(prefillTitle.slice(0, 80));
+        if (prefillBody) {
+          setBodyModel(updateMemoEditModelPlain(emptyMemoEditModel(), prefillBody));
+        }
         return;
       }
 
@@ -208,7 +219,7 @@ export default function MemoEditScreen() {
       setLoading(false);
       setTagsLoading(false);
     }
-  }, [id, isNew]);
+  }, [id, isNew, prefillBody, prefillTitle]);
 
   useFocusEffect(
     useCallback(() => {

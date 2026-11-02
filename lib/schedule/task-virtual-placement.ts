@@ -1,10 +1,12 @@
 /**
  * 独立待办 → 日程表虚拟入格（不写 schedule_placements）
- * - 仅独立待办；项目任务仍靠手动青蛙
+ * - 仅独立待办；项目任务仍靠手动青蛙（过期未完成青蛙另见滞留今日）
  * - 有具体时间 → 按时刻落格；无具体时间 → 全天
- * - 有重复 → 按重复日；有日期无时间 → 今天起至截止日每天全天；
- *   无日期无重复 → 每天全天直至完成
+ * - 有重复 → 按重复日；漏做/过期 → 今天起每日入格直至完成
+ * - 有日期无时间 → 今天起至截止日每天全天；过期未完成继续每日
+ * - 无日期无重复 → 每天全天直至完成
  * - 同日已有手动占用则不再叠虚拟块
+ * - 定点时刻落在轴外时回退全天，避免整条消失
  */
 import type { AxisLike } from '@/lib/schedule/axis';
 import {
@@ -18,7 +20,11 @@ import {
 } from '@/lib/schedule/meta';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import { ymdForWeekday } from '@/lib/schedule/week';
+import { getFrogAssignedDates } from '@/lib/frog-assignment';
+import { isFrogDoneForToday } from '@/lib/long-term-task';
+import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import { isHabitVisibleOnCalendarDay } from '@/lib/tasks-calendar-data';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import {
@@ -29,6 +35,7 @@ import {
 import {
   isTaskActiveStatus,
   isTaskShelvedStatus,
+  isTaskTerminalStatus,
   type TaskRow,
 } from '@/lib/repositories/tasks/task.types';
 
@@ -44,6 +51,13 @@ export type VirtualTaskPlacement = {
   priority: number;
   extraData: string | null;
   allDay: boolean;
+  /** 截止日期/日程窗/漏做已过且未完成 → 今日列表置顶 */
+  overdue?: boolean;
+  /**
+   * 过期未完成青蛙滞留今日时标注主体类型；
+   * 缺省为独立待办（琥珀块）。
+   */
+  carrySubjectKind?: 'task' | 'project';
 };
 
 function parseExtraObject(extraData: string | null | undefined): Record<string, unknown> {
@@ -130,6 +144,17 @@ function isViewYmdInDatedAllDayWindow(params: {
   return true;
 }
 
+/** 重复待办：执行日入格；已过期/漏做则从今天起每日入格（与待办栏滞留口径一致） */
+function shouldShowRepeatingVirtualTaskOnDay(
+  task: TaskRow,
+  viewYmd: string,
+  logicalTodayYmd: string,
+  repeat: NonNullable<ReturnType<typeof parseTaskRepeatSchedule>>,
+): boolean {
+  if (isTaskRepeatDueOnLogicalDay(viewYmd, repeat)) return true;
+  return viewYmd >= logicalTodayYmd && isTaskOverdueForList(task, logicalTodayYmd);
+}
+
 /** 单日是否应虚拟入格（不含轴映射；不含与真实占用去重） */
 export function shouldShowVirtualTaskOnDay(params: {
   task: TaskRow;
@@ -152,7 +177,7 @@ export function shouldShowVirtualTaskOnDay(params: {
   const repeat = parseTaskRepeatSchedule(task.extra_data);
 
   if (hasExactTime) {
-    if (repeat) return isTaskRepeatDueOnLogicalDay(viewYmd, repeat);
+    if (repeat) return shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
     const bounds = scheduleMetaToYmdBounds(schedule, task.due_date);
     if (bounds.startYmd || bounds.endYmd) {
       return isViewYmdInDatedAllDayWindow({
@@ -167,7 +192,7 @@ export function shouldShowVirtualTaskOnDay(params: {
   }
 
   // 全天
-  if (repeat) return isTaskRepeatDueOnLogicalDay(viewYmd, repeat);
+  if (repeat) return shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
 
   const bounds = scheduleMetaToYmdBounds(schedule, task.due_date);
   if (bounds.startYmd || bounds.endYmd) {
@@ -216,13 +241,14 @@ export function buildVirtualTaskPlacementsForDays(params: {
 
     const schedule = parseScheduleMetaFromExtra(task.extra_data);
     const hasExactTime = scheduleMetaHasExactTimeForAutoPlace(schedule);
+    /** 定点时刻落在轴外时回退全天，避免过期/当日待办整条消失 */
     let timedSlot: { hour: number; minute: number; slotIndex: number } | null = null;
     if (hasExactTime) {
       const hm = parseStartTimeHm(schedule!.startTime!);
-      if (!hm) continue;
-      const slotIndex = mapHabitTimeToWorkSlotIndex(axis, hm.hour, hm.minute);
-      if (slotIndex == null) continue;
-      timedSlot = { ...hm, slotIndex };
+      if (hm) {
+        const slotIndex = mapHabitTimeToWorkSlotIndex(axis, hm.hour, hm.minute);
+        if (slotIndex != null) timedSlot = { ...hm, slotIndex };
+      }
     }
 
     for (const ymd of dayYmds) {
@@ -238,6 +264,9 @@ export function buildVirtualTaskPlacementsForDays(params: {
       }
       if (placedKeys.has(`${task.id}:${ymd}`)) continue;
 
+      const done = isTaskDoneOnAssignYmd(task, ymd);
+      const overdue = !done && isTaskOverdueForList(task, logicalTodayYmd);
+
       if (timedSlot) {
         out.push({
           taskId: task.id,
@@ -247,10 +276,11 @@ export function buildVirtualTaskPlacementsForDays(params: {
           spanSlots: 1,
           hour: timedSlot.hour,
           minute: timedSlot.minute,
-          done: isTaskDoneOnAssignYmd(task, ymd),
+          done,
           priority: task.priority ?? 0,
           extraData: task.extra_data,
           allDay: false,
+          overdue,
         });
       } else {
         out.push({
@@ -261,15 +291,92 @@ export function buildVirtualTaskPlacementsForDays(params: {
           spanSlots: allDay.spanSlots,
           hour: axisStartH,
           minute: axisStartM,
-          done: isTaskDoneOnAssignYmd(task, ymd),
+          done,
           priority: task.priority ?? 0,
           extraData: task.extra_data,
           allDay: true,
+          overdue,
         });
       }
     }
   }
 
+  return out;
+}
+
+/**
+ * 过期未完成青蛙 → 今日全天虚拟块（不写 schedule_placements）。
+ * 仅当最近指派日早于今天、当日尚未再指派、且该指派日未完成会话时滞留。
+ */
+export function buildOverdueFrogCarryPlacementsForToday(params: {
+  tasks: TaskRow[];
+  projects: ProjectRow[];
+  logicalTodayYmd: string;
+  axis: AxisLike;
+  /** 今日已有真实占用的主体，避免重复 */
+  placements?: SchedulePlacementRow[];
+}): VirtualTaskPlacement[] {
+  const { tasks, projects, logicalTodayYmd, axis, placements } = params;
+  const onToday = new Set<string>();
+  if (placements) {
+    for (const p of placements) {
+      if (p.orphaned || p.startSlotIndex == null) continue;
+      const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
+      if (ymd !== logicalTodayYmd) continue;
+      onToday.add(`${p.subjectKind}:${p.subjectId}`);
+    }
+  }
+  const allDay = allDaySpanForAxis(axis);
+  const axisStartH = Math.floor(axis.startMinutes / 60);
+  const axisStartM = axis.startMinutes % 60;
+  const out: VirtualTaskPlacement[] = [];
+  const seen = new Set<string>();
+
+  const pushCarry = (
+    kind: 'task' | 'project',
+    id: string,
+    title: string,
+    priority: number,
+    extraData: string | null,
+    status: string,
+  ) => {
+    const key = `${kind}:${id}`;
+    if (seen.has(key) || onToday.has(key)) return;
+    if (isTaskTerminalStatus(status) || isTaskShelvedStatus(status)) return;
+    const dates = getFrogAssignedDates(extraData);
+    if (dates.includes(logicalTodayYmd)) return;
+    const past = dates.filter((d) => d < logicalTodayYmd);
+    if (past.length === 0) return;
+    const lastAssignYmd = past[past.length - 1]!;
+    // 上次指派日已完成会话：不滞留（长期青蛙须重新入格）
+    if (isFrogDoneForToday(extraData, status, lastAssignYmd)) return;
+    seen.add(key);
+    out.push({
+      taskId: id,
+      title: title.trim() || (kind === 'project' ? '项目' : '青蛙'),
+      assignYmd: logicalTodayYmd,
+      startSlotIndex: allDay.startSlotIndex,
+      spanSlots: allDay.spanSlots,
+      hour: axisStartH,
+      minute: axisStartM,
+      done: false,
+      priority,
+      extraData,
+      allDay: true,
+      overdue: true,
+      carrySubjectKind: kind,
+    });
+  };
+
+  for (const t of tasks) {
+    if (isStandaloneTodoTask(t)) continue;
+    pushCarry('task', t.id, t.title, t.priority ?? 0, t.extra_data, t.status);
+  }
+  for (const p of projects) {
+    const status =
+      p.status === 'completed' || p.status === 'archived' ? 'done' : 'todo';
+    pushCarry('project', p.id, p.name, p.priority ?? 0, p.extra_data, status);
+  }
   return out;
 }
 

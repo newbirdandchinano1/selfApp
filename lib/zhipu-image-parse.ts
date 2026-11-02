@@ -562,7 +562,15 @@ export type GenerateWeeklyReviewCoachingFromTextOptions = {
 };
 
 export type GenerateWeeklyReviewCoachingFromTextResult =
-  | { ok: true; text: string; attempts: number }
+  | {
+      ok: true;
+      text: string;
+      title: string;
+      overview: string;
+      tags: string[];
+      suggestions: aiApi.ReviewCoachingSuggestion[];
+      attempts: number;
+    }
   | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
 
 /** 把结构化复盘拼成整段正文；兼容仍只认 user_prompt 的旧版 Agent */
@@ -624,7 +632,7 @@ export async function generateWeeklyReviewCoachingFromText(
   const userPrompt = assembleReviewUserPrompt(options);
   if (!userPrompt) return { ok: false, error: '复盘内容为空', attempts: 0 };
   try {
-    const { text } = await aiApi.aiWeeklyReviewCoaching({
+    const data = await aiApi.aiWeeklyReviewCoaching({
       review_type: options.reviewType ?? 'weekly',
       period_label: options.periodLabel ?? '',
       dimensions: options.dimensions,
@@ -635,9 +643,39 @@ export async function generateWeeklyReviewCoachingFromText(
       // 线上旧 Agent 仍强制校验 user_prompt；新 Agent 会优先用 dimensions
       user_prompt: userPrompt,
     });
-    return { ok: true, text, attempts: 1 };
+    // 调试：控制台查看 Agent 回传的完整复盘 JSON
+    console.log('[review-ai] coaching response', JSON.stringify(data, null, 2));
+    const title = (data.title ?? '').trim();
+    const overview = (data.overview ?? '').trim();
+    const tags = Array.isArray(data.tags) ? data.tags.filter((t): t is string => typeof t === 'string') : [];
+    const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+    // 优先用服务端规范 JSON；缺字段时本地再序列化一份，保证落库可解析
+    let text = (data.text ?? '').trim();
+    if (!text && (title || overview || suggestions.length > 0)) {
+      text = JSON.stringify({
+        title,
+        overview,
+        tags,
+        suggestions: suggestions.map(s => ({
+          text: s.text,
+          action: s.action,
+          draft_title: s.draft_title,
+          draft_body: s.draft_body ?? '',
+        })),
+      });
+    }
+    return {
+      ok: true,
+      text,
+      title,
+      overview,
+      tags,
+      suggestions,
+      attempts: 1,
+    };
   } catch (e) {
     const err = mapApiError(e);
+    console.warn('[review-ai] coaching failed', err);
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
   }
 }

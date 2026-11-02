@@ -1398,6 +1398,49 @@ function showProjectCompletionDispositionPrompt(
   );
 }
 
+/** 完成条件含小习惯时先门禁；softWaitHabits 用于任务已齐、静等习惯（不弹强制归档） */
+async function promptProjectCompletionWithHabitGate(
+  project: ProjectRow,
+  options: {
+    incompleteCount?: number;
+    onArchive: () => void;
+    softWaitHabits?: boolean;
+  },
+) {
+  try {
+    const {
+      evaluateProjectCompletionHabits,
+      formatProjectCompletionHabitsBlockMessage,
+      parseCompletionHabitIds,
+    } = await import('@/lib/repositories/projects/project-completion-habits');
+    if (parseCompletionHabitIds(project.extra_data).length === 0) {
+      showProjectCompletionDispositionPrompt(project, options);
+      return;
+    }
+    const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
+    if (evaluation.ok) {
+      showProjectCompletionDispositionPrompt(project, options);
+      return;
+    }
+    if (options.softWaitHabits) {
+      const names = evaluation.pending.map((p) => p.title).join('、');
+      toast.info(names ? `任务已齐，还差小习惯：${names}` : '任务已齐，完成条件中的小习惯尚未达成');
+      return;
+    }
+    Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '仍要归档',
+        style: 'destructive',
+        onPress: () => showProjectCompletionDispositionPrompt(project, options),
+      },
+    ]);
+  } catch (err) {
+    console.warn('检查项目小习惯完成条件失败', err);
+    showProjectCompletionDispositionPrompt(project, options);
+  }
+}
+
 type ProjectListFlatItem =
   | { kind: 'month'; key: string; label: string; count: number; collapsed: boolean }
   | { kind: 'project'; key: string; project: ProjectRow }
@@ -3443,7 +3486,7 @@ export default function TasksScreen() {
 
   const promptProjectCompletionDisposition = React.useCallback(
     (project: ProjectRow, incompleteCount?: number) => {
-      showProjectCompletionDispositionPrompt(project, {
+      void promptProjectCompletionWithHabitGate(project, {
         incompleteCount,
         onArchive: () => void completeProjectFromList(project),
       });
@@ -3526,7 +3569,32 @@ export default function TasksScreen() {
         projectSwipeableRefs.current[project.id]?.close();
         return;
       }
-      void moveProjectToInboxById(project.id);
+      void (async () => {
+        try {
+          const {
+            evaluateProjectCompletionHabits,
+            formatProjectCompletionHabitsBlockMessage,
+            parseCompletionHabitIds,
+          } = await import('@/lib/repositories/projects/project-completion-habits');
+          if (parseCompletionHabitIds(project.extra_data).length > 0) {
+            const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
+            if (!evaluation.ok) {
+              Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
+                { text: '取消', style: 'cancel', onPress: () => projectSwipeableRefs.current[project.id]?.close() },
+                {
+                  text: '仍要归档',
+                  style: 'destructive',
+                  onPress: () => void moveProjectToInboxById(project.id),
+                },
+              ]);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn('收纳前检查小习惯完成条件失败', err);
+        }
+        void moveProjectToInboxById(project.id);
+      })();
     },
     [moveProjectToInboxById, projectTaskTreeMap]
   );
@@ -3875,7 +3943,8 @@ export default function TasksScreen() {
             }
             const tree = nextTreeMap[pid] ?? [];
             if (isProjectInboxProgressComplete(proj, tree)) {
-              showProjectCompletionDispositionPrompt(proj, {
+              void promptProjectCompletionWithHabitGate(proj, {
+                softWaitHabits: true,
                 onArchive: () => void moveProjectToInboxById(pid),
               });
             }
@@ -4478,12 +4547,15 @@ export default function TasksScreen() {
         if (marked) {
           scheduleHabitsReload();
           await syncHabitBoundTasksForHabit(habitId);
+          // tryMark 内已联动项目收尾；刷新列表以反映自动归档
+          const rows = await loadProjects();
+          await loadProjectTasks(rows);
         }
       } catch (err) {
         console.warn('检测戒除习惯完成状态失败', err);
       }
     },
-    [dayBoundary, scheduleHabitsReload, syncHabitBoundTasksForHabit]
+    [dayBoundary, loadProjectTasks, loadProjects, scheduleHabitsReload, syncHabitBoundTasksForHabit]
   );
 
   const maybeCompleteBuildHabit = React.useCallback(
@@ -4497,12 +4569,14 @@ export default function TasksScreen() {
         if (marked) {
           scheduleHabitsReload();
           await syncHabitBoundTasksForHabit(habitId);
+          const rows = await loadProjects();
+          await loadProjectTasks(rows);
         }
       } catch (err) {
         console.warn('检测养成习惯完成状态失败', err);
       }
     },
-    [dayBoundary, scheduleHabitsReload, syncHabitBoundTasksForHabit]
+    [dayBoundary, loadProjectTasks, loadProjects, scheduleHabitsReload, syncHabitBoundTasksForHabit]
   );
 
   const maybeRefreshTaskHabitVisibility = React.useCallback(

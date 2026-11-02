@@ -5,6 +5,7 @@ import { PrerequisiteProjectPickerField } from '@/components/projects/Prerequisi
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
@@ -47,10 +48,18 @@ import {
   mergeLongTermProjectIntoExtraData,
   mergeLongTermTaskIntoExtraData,
 } from '@/lib/long-term-task';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
 import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
+import {
+  filterHabitsForProjectCompletionPicker,
+  mergeCompletionHabitIdsIntoExtraData,
+  parseCompletionHabitIds,
+} from '@/lib/repositories/projects/project-completion-habits';
 import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
@@ -548,6 +557,10 @@ export default function EditProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
+  const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
+  const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
+  const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
+  const [habitsLoading, setHabitsLoading] = React.useState(true);
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
@@ -715,6 +728,7 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
+      setCompletionHabitIds(parseCompletionHabitIds(project.extra_data));
       try {
         setSelectedTagIds(await getTagIdsByProjectId(projectId));
       } catch (tagErr) {
@@ -778,10 +792,37 @@ export default function EditProjectScreen() {
         } finally {
           setLifeBetsLoading(false);
         }
+        setHabitsLoading(true);
+        try {
+          const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
+          setHabitContexts(contexts.map((c) => ({ id: c.id, name: c.name })));
+          setAllHabits(habits);
+        } catch (error) {
+          console.warn('加载小习惯列表失败', error);
+          setHabitContexts([]);
+          setAllHabits([]);
+        } finally {
+          setHabitsLoading(false);
+        }
       }, forceRefresh);
     },
     [loadProject, wrapLoad],
   );
+
+  const habitSections = React.useMemo(() => {
+    const filtered = filterHabitsForProjectCompletionPicker(allHabits, completionHabitIds);
+    const habitsByContext = new Map<string, HabitRow[]>();
+    for (const habit of filtered) {
+      const list = habitsByContext.get(habit.context) ?? [];
+      list.push(habit);
+      habitsByContext.set(habit.context, list);
+    }
+    return habitContexts.map((ctx) => ({
+      contextId: ctx.id,
+      contextName: ctx.name,
+      habits: habitsByContext.get(ctx.id) ?? [],
+    }));
+  }, [allHabits, completionHabitIds, habitContexts]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadProjectPage);
 
@@ -1044,9 +1085,12 @@ export default function EditProjectScreen() {
         : null;
       const writeOpts = { deferSync: true as const };
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
-      const mergedExtra = mergePrerequisiteIdsIntoExtraData(
-        { ...projectExtraData, schedule: scheduleToSave },
-        prerequisiteProjectIds,
+      const mergedExtra = mergeCompletionHabitIdsIntoExtraData(
+        mergePrerequisiteIdsIntoExtraData(
+          { ...projectExtraData, schedule: scheduleToSave },
+          prerequisiteProjectIds,
+        ),
+        completionHabitIds,
       );
       delete (mergedExtra as Record<string, unknown>).completion_reward;
       const withReward = mergeRewardPointsIntoExtraObject(
@@ -1219,6 +1263,7 @@ export default function EditProjectScreen() {
     }
   }, [
     allProjects,
+    completionHabitIds,
     deadlineText,
     entityIcon,
     isLongTermProject,
@@ -1503,6 +1548,29 @@ export default function EditProjectScreen() {
                         surfaceLow={surfaceLow}
                         surfaceLowest={surfaceLowest}
                         isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成习惯</Text>
+                    <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
+                      <BoundHabitPickerField
+                        selectedHabitIds={completionHabitIds}
+                        sections={habitSections}
+                        loading={habitsLoading || loading}
+                        disabled={formBusy}
+                        onChange={setCompletionHabitIds}
+                        textColor={tf.ink}
+                        outline={outline}
+                        placeholderColor={tf.faint}
+                        primary={primary}
+                        surfaceLow={surfaceLow}
+                        surfaceLowest={surfaceLowest}
+                        isDark={isDark}
+                        emptyHint="可选；须设周期目标的养成/戒除习惯"
+                        selectedHint="全部达成周期目标后，才满足项目完成条件"
+                        modalTitle="完成条件 · 小习惯"
+                        modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
                       />
                     </View>
                   </View>

@@ -152,7 +152,7 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 
 **`POST .../weekly-review/coaching`**
 
-客户端只传复盘页数据；角色与日/周/月策略在 Agent `review_prompts.py`。
+客户端只传复盘页数据。**返回 JSON 契约由 App 定义**（`lib/review-ai-json-contract.ts`），Agent `review_prompts.py` 按该契约写 system prompt。
 
 ```json
 {
@@ -167,7 +167,36 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 }
 ```
 
-`review_type`：`daily` | `weekly` | `monthly`。兼容旧字段 `user_prompt`。返回 `{ "text": "…" }`。
+`review_type`：`daily` | `weekly` | `monthly`。兼容旧字段 `user_prompt`。
+
+返回结构化 JSON（App 落库用 `text`，UI 用其余字段）：
+
+| 字段 | UI |
+|------|-----|
+| `title` | 分析页顶部总结标题 |
+| `overview` | 「复盘概览」卡 |
+| `tags` | 标题下维度标签（0～4；健康/任务/财务/日常/缺陷/新想法） |
+| `suggestions[]` | 「明天/下周/下月可以试试」；每项 `text` / `action` / `draft_title` / `draft_body` |
+| `text` | 上述结构的规范 JSON 字符串，供落库 |
+
+```json
+{
+  "title": "今天执行集中，睡眠偏晚",
+  "overview": "上午推进了关键任务……",
+  "tags": ["任务", "健康"],
+  "suggestions": [
+    {
+      "text": "明天上午只排一项青蛙任务并完成。",
+      "action": "todo",
+      "draft_title": "明日青蛙",
+      "draft_body": "只排一项，完成即勾选"
+    }
+  ],
+  "text": "{\"title\":\"…\",\"overview\":\"…\",\"tags\":[…],\"suggestions\":[…]}"
+}
+```
+
+`suggestions[].action`：`memo` | `project` | `habit` | `todo`（建议更合适的落地点；App 每条仅一个「+」，点开后再选备忘/项目/习惯/待办）。条数由模型按内容给出，客户端按返回长度动态展示。
 
 ---
 

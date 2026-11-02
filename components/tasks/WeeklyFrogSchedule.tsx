@@ -30,6 +30,7 @@ import {
   type VirtualHabitPlacement,
 } from '@/lib/schedule/habit-virtual-placement';
 import {
+  buildOverdueFrogCarryPlacementsForToday,
   buildVirtualTaskPlacementsForDays,
   type VirtualTaskPlacement,
 } from '@/lib/schedule/task-virtual-placement';
@@ -37,6 +38,7 @@ import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import {
   centerYmdForPeriod,
   formatThreeDayRangeLabel,
@@ -124,6 +126,8 @@ type TodayCompactItem = {
   emptySlotIndex: number | null;
   title: string;
   done: boolean;
+  /** 截止/日程窗/漏做已过且未完成 → 置顶 */
+  overdue: boolean;
   timeLabel: string;
   endLabel: string;
   startMins: number;
@@ -134,9 +138,10 @@ type TodayCompactItem = {
   priority: number;
 };
 
-/** 今日列表：未完成优先 → 标签权重↓ → priority↓ → 标题 → 时刻 */
+/** 今日列表：未完成优先 → 过期置顶 → 标签权重↓ → priority↓ → 标题 → 时刻 */
 function compareTodayCompactByWeight(a: TodayCompactItem, b: TodayCompactItem): number {
   if (a.done !== b.done) return a.done ? 1 : -1;
+  if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
   if (a.tagWeight !== b.tagWeight) return b.tagWeight - a.tagWeight;
   if (a.priority !== b.priority) return b.priority - a.priority;
   const byTitle = a.title.localeCompare(b.title, 'zh');
@@ -369,12 +374,17 @@ function uniquePlacementsBySubject(list: SchedulePlacementRow[]): SchedulePlacem
 
 /** Alert / Modal 关闭后再改状态，避免 Android 触摸层与 LayoutAnimation 抢焦点卡死 */
 function runAfterUiSettles(action: () => void) {
-  requestIdleCallback(() => {
-    // 再等一帧，让原生 Dialog / Modal dismiss 动画真正卸掉
+  const run = () => {
     requestAnimationFrame(() => {
       action();
     });
-  });
+  };
+  // RN 个别环境无 requestIdleCallback；有则加 timeout，避免闲时回调迟迟不来像「点了没反应」
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(run, { timeout: 400 });
+    return;
+  }
+  setTimeout(run, 48);
 }
 
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
@@ -897,16 +907,23 @@ export function WeeklyFrogSchedule({
             checkInsByHabit: checkInsMaps,
           }),
         );
-        setVirtualTasks(
-          buildVirtualTaskPlacementsForDays({
-            tasks: subjectsRef.current.tasks,
-            dayYmds: days,
-            logicalTodayYmd,
-            axis: data.axis,
-            dayBoundary: boundary,
-            placements: data.placements,
-          }),
-        );
+        const lookup = subjectsRef.current;
+        const virtualTodos = buildVirtualTaskPlacementsForDays({
+          tasks: lookup.tasks,
+          dayYmds: days,
+          logicalTodayYmd,
+          axis: data.axis,
+          dayBoundary: boundary,
+          placements: data.placements,
+        });
+        const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
+          tasks: lookup.tasks,
+          projects: lookup.projects,
+          logicalTodayYmd,
+          axis: data.axis,
+          placements: data.placements,
+        });
+        setVirtualTasks([...virtualTodos, ...overdueFrogs]);
       } catch (err) {
         if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
@@ -933,21 +950,27 @@ export function WeeklyFrogSchedule({
     let cancelled = false;
     void loadTasksDayBoundary().then((boundary) => {
       if (cancelled) return;
-      setVirtualTasks(
-        buildVirtualTaskPlacementsForDays({
-          tasks: subjects.tasks,
-          dayYmds: loadDayYmdsRef.current,
-          logicalTodayYmd,
-          axis: view.axis,
-          dayBoundary: boundary,
-          placements: view.placements,
-        }),
-      );
+      const virtualTodos = buildVirtualTaskPlacementsForDays({
+        tasks: subjects.tasks,
+        dayYmds: loadDayYmdsRef.current,
+        logicalTodayYmd,
+        axis: view.axis,
+        dayBoundary: boundary,
+        placements: view.placements,
+      });
+      const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
+        tasks: subjects.tasks,
+        projects: subjects.projects,
+        logicalTodayYmd,
+        axis: view.axis,
+        placements: view.placements,
+      });
+      setVirtualTasks([...virtualTodos, ...overdueFrogs]);
     });
     return () => {
       cancelled = true;
     };
-  }, [subjects.tasks, view, logicalTodayYmd]);
+  }, [subjects.tasks, subjects.projects, view, logicalTodayYmd]);
 
   // 任意本地课表变更（含设置弹窗改轴）立即静默重载
   React.useEffect(() => {
@@ -1358,12 +1381,13 @@ export function WeeklyFrogSchedule({
 
   const openVirtualTaskDetail = React.useCallback(
     (task: VirtualTaskPlacement) => {
-      const subject = resolveSubject('task', task.taskId, subjects, task.assignYmd);
+      const kind = task.carrySubjectKind ?? 'task';
+      const subject = resolveSubject(kind, task.taskId, subjects, task.assignYmd);
       if (!subject) return;
       setCellList(null);
       setOrphanListOpen(false);
       setDetail({
-        surface: 'todo',
+        surface: task.carrySubjectKind ? 'frog' : 'todo',
         placement: null,
         subject: {
           ...subject,
@@ -1552,15 +1576,27 @@ export function WeeklyFrogSchedule({
       const startMins = slotStartMinutes(view.axis, p.startSlotIndex);
       const endMins = placementEndMinutes(view.axis, p.startSlotIndex, span);
       const allDay = p.startSlotIndex === 0 && span >= daySlotCount;
+      const done = !!sub?.done;
+      let overdue = false;
+      if (!done) {
+        if (p.subjectKind === 'task') {
+          const row = subjects.tasks.find((t) => t.id === p.subjectId);
+          overdue = row ? isTaskOverdueForList(row, logicalTodayYmd) : false;
+        } else {
+          const due = sub?.dueDate?.slice(0, 10) ?? '';
+          overdue = /^\d{4}-\d{2}-\d{2}$/.test(due) && due < logicalTodayYmd;
+        }
+      }
       items.push({
         placement: p,
         habit: null,
         virtualTask: null,
         emptySlotIndex: null,
         title: sub?.title?.trim() || '青蛙',
-        done: !!sub?.done,
-        timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
-        endLabel: allDay ? '' : formatMinutesAsHm(endMins),
+        done,
+        overdue,
+        timeLabel: overdue ? '过期' : allDay ? '全天' : formatMinutesAsHm(startMins),
+        endLabel: overdue || allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
         tagWeight: weightOf(p.subjectId),
@@ -1580,6 +1616,7 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: null,
         title: h.name,
         done: h.done,
+        overdue: false,
         timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
         endLabel: allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
@@ -1594,6 +1631,7 @@ export function WeeklyFrogSchedule({
       const startMins = slotStartMinutes(view.axis, t.startSlotIndex);
       const endMins = placementEndMinutes(view.axis, t.startSlotIndex, span);
       const allDay = t.allDay || (t.startSlotIndex === 0 && span >= daySlotCount);
+      const overdue = !t.done && (!!t.overdue || !!t.carrySubjectKind);
       items.push({
         placement: null,
         habit: null,
@@ -1601,8 +1639,9 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: null,
         title: t.title,
         done: t.done,
-        timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
-        endLabel: allDay ? '' : formatMinutesAsHm(endMins),
+        overdue,
+        timeLabel: overdue ? '过期' : allDay ? '全天' : formatMinutesAsHm(startMins),
+        endLabel: overdue || allDay ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
         tagWeight: weightOf(t.taskId),
@@ -1645,6 +1684,7 @@ export function WeeklyFrogSchedule({
         emptySlotIndex: slot.slotIndex,
         title: pendingPlace?.title?.trim() || reassignPending?.subject.title?.trim() || '放入',
         done: false,
+        overdue: false,
         timeLabel: formatMinutesAsHm(slot.startMinutes),
         endLabel: formatMinutesAsHm(slot.endMinutes),
         startMins: slot.startMinutes,
@@ -1702,11 +1742,21 @@ export function WeeklyFrogSchedule({
       return [...byId.values()].sort(compareTodayCompactByWeight);
     };
 
-    const itemsStartingInSlot = (slotIndex: number) =>
-      todayCompactItems.filter(
-        (x) =>
-          (x.placement?.startSlotIndex ?? x.habit?.startSlotIndex) === slotIndex,
-      );
+    /** 当前格：起点落在本格，或时段覆盖本格（全天/跨格/过期滞留） */
+    const itemsCoveringSlot = (slot: {
+      slotIndex: number;
+      startMinutes: number;
+      endMinutes: number;
+    }) =>
+      todayCompactItems.filter((x) => {
+        const startSlot =
+          x.placement?.startSlotIndex ??
+          x.habit?.startSlotIndex ??
+          x.virtualTask?.startSlotIndex ??
+          null;
+        if (startSlot === slot.slotIndex) return true;
+        return x.startMins < slot.endMinutes && x.endMins > slot.startMinutes;
+      });
 
     const currentSlot = workSlots.find(
       (s) => nowMins >= s.startMinutes && nowMins < s.endMinutes,
@@ -1714,7 +1764,7 @@ export function WeeklyFrogSchedule({
     if (currentSlot) {
       return {
         kind: 'current' as const,
-        items: mergeFocusItems(itemsStartingInSlot(currentSlot.slotIndex)),
+        items: mergeFocusItems(itemsCoveringSlot(currentSlot)),
         rangeLabel: `${formatMinutesAsHm(currentSlot.startMinutes)}–${formatMinutesAsHm(currentSlot.endMinutes)}`,
         countdownLabel: formatRemainLabel(
           remainSecondsUntil(currentSlot.endMinutes, axisNowMins),
@@ -1733,9 +1783,7 @@ export function WeeklyFrogSchedule({
     if (currentBreak) {
       return {
         kind: 'break' as const,
-        items: mergeFocusItems(
-          nextSlot ? itemsStartingInSlot(nextSlot.slotIndex) : [],
-        ),
+        items: mergeFocusItems(nextSlot ? itemsCoveringSlot(nextSlot) : []),
         rangeLabel: `${formatMinutesAsHm(currentBreak.startMinutes)}–${formatMinutesAsHm(currentBreak.endMinutes)}`,
         countdownLabel: nextSlot
           ? formatRemainLabel(remainSecondsUntil(nextSlot.startMinutes, axisNowMins), {
@@ -1749,7 +1797,7 @@ export function WeeklyFrogSchedule({
     if (nextSlot) {
       return {
         kind: 'upcoming' as const,
-        items: mergeFocusItems(itemsStartingInSlot(nextSlot.slotIndex)),
+        items: mergeFocusItems(itemsCoveringSlot(nextSlot)),
         rangeLabel: `${formatMinutesAsHm(nextSlot.startMinutes)}–${formatMinutesAsHm(nextSlot.endMinutes)}`,
         countdownLabel: formatRemainLabel(
           remainSecondsUntil(nextSlot.startMinutes, axisNowMins),
@@ -1983,7 +2031,11 @@ export function WeeklyFrogSchedule({
                     ? blockKindForPlacement(display.primary, subjects)
                     : primaryHabit
                       ? 'habit'
-                      : 'todo';
+                      : primaryVirtualTask?.carrySubjectKind === 'project'
+                        ? 'proj'
+                        : primaryVirtualTask?.carrySubjectKind === 'task'
+                          ? 'frog'
+                          : 'todo';
                   const fill = scheduleBlockStyle(blockKind, {
                     isPast: isPastCol,
                     allDone,
@@ -2009,11 +2061,13 @@ export function WeeklyFrogSchedule({
                   const endHm = formatMinutesAsHm(row.endMinutes);
                   const metaLabel = primaryHabit
                     ? `${startHm} · 习惯${allDone ? ' · 已完成' : ''}`
-                    : primaryVirtualTask || blockKind === 'todo'
-                      ? `${startHm} · 待办${allDone ? ' · 已完成' : ''}`
-                      : display?.primary.subjectKind === 'project'
-                        ? `${startHm}–${endHm} · 项目${allDone ? ' · 已完成' : ''}`
-                        : `${startHm}–${endHm}${allDone ? ' · 已完成' : ' · 进行中'}`;
+                    : primaryVirtualTask?.carrySubjectKind
+                      ? `${startHm} · 过期${allDone ? ' · 已完成' : ''}`
+                      : primaryVirtualTask || blockKind === 'todo'
+                        ? `${startHm} · 待办${allDone ? ' · 已完成' : ''}`
+                        : display?.primary.subjectKind === 'project'
+                          ? `${startHm}–${endHm} · 项目${allDone ? ' · 已完成' : ''}`
+                          : `${startHm}–${endHm}${allDone ? ' · 已完成' : ' · 进行中'}`;
                   const blockKey =
                     display?.primary.id ??
                     (primaryHabit
@@ -2346,11 +2400,15 @@ export function WeeklyFrogSchedule({
     const isEmpty = item.emptySlotIndex != null;
     const kind: ScheduleBlockKind = item.habit
       ? 'habit'
-      : item.virtualTask
-        ? 'todo'
-        : item.placement
-          ? blockKindForPlacement(item.placement, subjects)
-          : 'frog';
+      : item.virtualTask?.carrySubjectKind === 'project'
+        ? 'proj'
+        : item.virtualTask?.carrySubjectKind === 'task'
+          ? 'frog'
+          : item.virtualTask
+            ? 'todo'
+            : item.placement
+              ? blockKindForPlacement(item.placement, subjects)
+              : 'frog';
     const fill = isEmpty
       ? {
           backgroundColor: isDark ? 'rgba(255,252,245,0.08)' : 'rgba(255,252,245,0.4)',
@@ -2392,11 +2450,15 @@ export function WeeklyFrogSchedule({
           ? item.virtualTask?.allDay
             ? '独立待办 · 全天'
             : '独立待办 · 定点'
-          : item.placement?.subjectKind === 'project'
-            ? `项目 · ${item.done ? '已完成' : '进行中'}`
-            : [sub?.projectName?.trim() || '青蛙', item.done ? '已完成' : '进行中']
-                .filter(Boolean)
-                .join(' · ');
+          : item.virtualTask?.carrySubjectKind === 'project'
+            ? `过期项目 · ${item.done ? '已完成' : '待处理'}`
+            : item.virtualTask?.carrySubjectKind === 'task'
+              ? `过期青蛙 · ${item.done ? '已完成' : '待处理'}`
+              : item.placement?.subjectKind === 'project'
+                ? `项目 · ${item.done ? '已完成' : '进行中'}`
+                : [sub?.projectName?.trim() || '青蛙', item.done ? '已完成' : '进行中']
+                    .filter(Boolean)
+                    .join(' · ');
     const preselTitle =
       pendingPlace?.title?.trim() || reassignPending?.subject.title?.trim() || '这件事';
     return (
@@ -2852,11 +2914,15 @@ export function WeeklyFrogSchedule({
                   {todayCompactItems.slice(0, 5).map((it, i) => {
                     const k = it.habit
                       ? 'habit'
-                      : it.virtualTask
-                        ? 'todo'
-                        : it.placement
-                          ? blockKindForPlacement(it.placement, subjects)
-                          : 'frog';
+                      : it.virtualTask?.carrySubjectKind === 'project'
+                        ? 'proj'
+                        : it.virtualTask?.carrySubjectKind === 'task'
+                          ? 'frog'
+                          : it.virtualTask
+                            ? 'todo'
+                            : it.placement
+                              ? blockKindForPlacement(it.placement, subjects)
+                              : 'frog';
                     const c =
                       k === 'frog'
                         ? tf.frog
@@ -3065,33 +3131,46 @@ export function WeeklyFrogSchedule({
                           {canEdit ? (
                             <Pressable
                               onPress={() => {
-                                Alert.alert(
-                                  '取消指派',
-                                  `确定取消「${sub.title}」在 ${assignYmd} 的指派吗？`,
-                                  [
-                                    { text: '保留', style: 'cancel' },
-                                    {
-                                      text: '取消指派',
-                                      style: 'destructive',
-                                      onPress: () => {
-                                        void (async () => {
-                                          try {
-                                            await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
-                                            await reload(loadDayYmds, { silent: true });
-                                            onChanged?.({
-                                              kind: p.subjectKind,
-                                              id: p.subjectId,
-                                              assignYmd,
-                                              action: 'unassign',
-                                            });
-                                          } catch (err) {
-                                            toast.error(toUserMessage(err, '取消失败，请稍后重试'));
-                                          }
-                                        })();
+                                // 先关孤儿列表 Modal，再弹确认，避免与 AppDialogHost Modal 嵌套卡死
+                                const placementId = p.id;
+                                const subjectKind = p.subjectKind;
+                                const subjectId = p.subjectId;
+                                const dayYmd = assignYmd;
+                                setOrphanListOpen(false);
+                                runAfterUiSettles(() => {
+                                  Alert.alert(
+                                    '取消指派',
+                                    `确定取消「${sub.title}」在 ${dayYmd} 的指派吗？`,
+                                    [
+                                      { text: '保留', style: 'cancel' },
+                                      {
+                                        text: '取消指派',
+                                        style: 'destructive',
+                                        onPress: () => {
+                                          void (async () => {
+                                            try {
+                                              await cancelAssignForPlacementDay(
+                                                placementId,
+                                                logicalTodayYmd,
+                                              );
+                                              await reload(loadDayYmds, { silent: true });
+                                              onChanged?.({
+                                                kind: subjectKind,
+                                                id: subjectId,
+                                                assignYmd: dayYmd,
+                                                action: 'unassign',
+                                              });
+                                            } catch (err) {
+                                              toast.error(
+                                                toUserMessage(err, '取消失败，请稍后重试'),
+                                              );
+                                            }
+                                          })();
+                                        },
                                       },
-                                    },
-                                  ],
-                                );
+                                    ],
+                                  );
+                                });
                               }}
                               style={({ pressed }) => [
                                 styles.orphanActionBtn,
@@ -3187,13 +3266,24 @@ export function WeeklyFrogSchedule({
                   <View
                     style={[
                       styles.listRowRail,
-                      { backgroundColor: t.done ? `${outline}66` : primary },
+                      {
+                        backgroundColor: t.done
+                          ? `${outline}66`
+                          : t.carrySubjectKind
+                            ? successTint
+                            : sunAmber,
+                      },
                     ]}
                   />
                   <Text
                     style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }}
                     numberOfLines={2}>
-                    待办 · {t.title}
+                    {t.carrySubjectKind === 'project'
+                      ? '过期项目'
+                      : t.carrySubjectKind === 'task'
+                        ? '过期青蛙'
+                        : '待办'}{' '}
+                    · {t.title}
                   </Text>
                   {t.done ? (
                     <MaterialIcons name="check-circle" size={16} color={successTint} />
@@ -3306,17 +3396,20 @@ export function WeeklyFrogSchedule({
         onRemoveSegment={
           detail?.placement
             ? () => {
+                // Sheet 内已关 Modal；延后写库，与 onToggleDone 同口径
                 const placementId = detail.placement!.id;
-                void (async () => {
-                  try {
-                    await removePlacementSegment(placementId, logicalTodayYmd);
-                    setDetail(null);
-                    await reload(loadDayYmds, { silent: true });
-                    onChanged?.();
-                  } catch (err) {
-                    toast.error(toUserMessage(err, '移除失败，请稍后重试'));
-                  }
-                })();
+                setDetail(null);
+                runAfterUiSettles(() => {
+                  void (async () => {
+                    try {
+                      await removePlacementSegment(placementId, logicalTodayYmd);
+                      await reload(loadDayYmds, { silent: true });
+                      onChanged?.();
+                    } catch (err) {
+                      toast.error(toUserMessage(err, '移除失败，请稍后重试'));
+                    }
+                  })();
+                });
               }
             : undefined
         }
@@ -3324,22 +3417,24 @@ export function WeeklyFrogSchedule({
           detail?.placement
             ? () => {
                 const p = detail.placement!;
-                void (async () => {
-                  try {
-                    const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
-                    await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
-                    setDetail(null);
-                    await reload(loadDayYmds, { silent: true });
-                    onChanged?.({
-                      kind: p.subjectKind,
-                      id: p.subjectId,
-                      assignYmd,
-                      action: 'unassign',
-                    });
-                  } catch (err) {
-                    toast.error(toUserMessage(err, '取消失败，请稍后重试'));
-                  }
-                })();
+                const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+                setDetail(null);
+                runAfterUiSettles(() => {
+                  void (async () => {
+                    try {
+                      await cancelAssignForPlacementDay(p.id, logicalTodayYmd);
+                      await reload(loadDayYmds, { silent: true });
+                      onChanged?.({
+                        kind: p.subjectKind,
+                        id: p.subjectId,
+                        assignYmd,
+                        action: 'unassign',
+                      });
+                    } catch (err) {
+                      toast.error(toUserMessage(err, '取消失败，请稍后重试'));
+                    }
+                  })();
+                });
               }
             : undefined
         }

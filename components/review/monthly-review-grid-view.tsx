@@ -16,6 +16,11 @@ import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { generateReviewAiAnalysis, reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
 import {
+  formatReviewAiPayloadForCopy,
+  parseReviewAiPayload,
+  reviewAiPreviewTitle,
+} from '@/lib/review-ai-sections';
+import {
   collectColumnIds,
   hasAnyFilledField,
   migrateMonthlyLegacyFields,
@@ -378,6 +383,8 @@ export function MonthlyReviewGridView({
           : '等待记录';
 
   const aiText = (meta.ai_analysis ?? '').trim();
+  const aiPreview = reviewAiPreviewTitle(aiText);
+  const aiReadable = aiText ? formatReviewAiPayloadForCopy(parseReviewAiPayload(aiText)) : '';
   /** 设计稿 14 列 + 再缩小一档，避免热力区占满首屏 */
   const cellGap = 3;
   const contentMaxWidth = Math.min(width, 460);
@@ -678,7 +685,7 @@ export function MonthlyReviewGridView({
                 style={[styles.aiBody, { color: fold.ink2 }]}
                 numberOfLines={aiExpanded ? undefined : 3}
                 maxFontSizeMultiplier={1.4}>
-                {aiText}
+                {aiExpanded ? aiReadable || aiPreview || aiText : aiPreview || aiText}
               </Text>
             ) : (
               <Text style={[styles.aiHint, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>

@@ -632,6 +632,15 @@ export function GlobalSettingsPanel({
                 showDivider
               />
               <NavRow
+                icon="checkroom"
+                tone="clay"
+                title="我的衣柜"
+                hint="管理衣物与穿搭（建设中）"
+                onPress={() => go('/my-wardrobe')}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
                 icon="description"
                 tone="amber"
                 title="备忘录"

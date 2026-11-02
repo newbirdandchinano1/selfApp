@@ -37,7 +37,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Alert } from '@/lib/app-feedback';
 export type ScheduleSubjectInfo = {
   kind: 'task' | 'project';
   id: string;
@@ -208,8 +207,13 @@ export function SchedulePlacementDetailSheet({
   const { animate } = useFoldMotionGate();
 
   const [confirmOpen, setConfirmOpen] = React.useState(false);
-  /** complete = 确认完成/打卡；undo = 撤销完成/打卡（统一走设计稿弹窗，不用系统 Alert） */
-  const [confirmKind, setConfirmKind] = React.useState<'complete' | 'undo'>('complete');
+  /**
+   * 片内确认：完成/撤销/取消指派/移除本格段一律走设计稿弹窗。
+   * 禁止在本 Sheet（RN Modal）上再叠 AppDialogHost（也是 Modal），否则 Android 触摸层卡死。
+   */
+  const [confirmKind, setConfirmKind] = React.useState<
+    'complete' | 'undo' | 'cancelAssign' | 'removeSegment'
+  >('complete');
   const [nowMins, setNowMins] = React.useState(() => {
     const d = new Date();
     return d.getHours() * 60 + d.getMinutes();
@@ -375,45 +379,63 @@ export function SchedulePlacementDetailSheet({
           ? '叶子任务'
           : '项目';
   const confirmTitle =
-    confirmKind === 'undo'
-      ? surface === 'habit'
-        ? '撤销这项打卡？'
-        : surface === 'todo'
-          ? '撤销待办完成？'
-          : '取消青蛙完成？'
-      : surface === 'habit'
-        ? '完成这项习惯？'
-        : surface === 'todo'
-          ? '完成这项待办？'
-          : '完成这只青蛙？';
+    confirmKind === 'cancelAssign'
+      ? '取消该日指派？'
+      : confirmKind === 'removeSegment'
+        ? '移除本格段？'
+        : confirmKind === 'undo'
+          ? surface === 'habit'
+            ? '撤销这项打卡？'
+            : surface === 'todo'
+              ? '撤销待办完成？'
+              : '取消青蛙完成？'
+          : surface === 'habit'
+            ? '完成这项习惯？'
+            : surface === 'todo'
+              ? '完成这项待办？'
+              : '完成这只青蛙？';
   const confirmStatPrimary =
-    confirmKind === 'undo'
-      ? surface === 'habit'
-        ? '撤销打卡'
-        : surface === 'todo'
-          ? '待办撤销'
-          : '青蛙撤销'
-      : surface === 'habit'
-        ? '习惯打卡'
-        : surface === 'todo'
-          ? '待办 +1'
-          : '青蛙 +1';
+    confirmKind === 'cancelAssign'
+      ? '取消指派'
+      : confirmKind === 'removeSegment'
+        ? '移除本格'
+        : confirmKind === 'undo'
+          ? surface === 'habit'
+            ? '撤销打卡'
+            : surface === 'todo'
+              ? '待办撤销'
+              : '青蛙撤销'
+          : surface === 'habit'
+            ? '习惯打卡'
+            : surface === 'todo'
+              ? '待办 +1'
+              : '青蛙 +1';
   const confirmBodyLead =
-    confirmKind === 'undo'
-      ? surface === 'habit'
-        ? '撤销后恢复未打卡状态，热力会按规则回退'
-        : '撤销完成后恢复原积分与热力'
-      : surface === 'habit'
-        ? '打卡后计入今日习惯与完成热力'
-        : '完成后计入今日完成热力';
+    confirmKind === 'cancelAssign'
+      ? '将去掉该日全部占用并取消该日青蛙指派，其它日保留'
+      : confirmKind === 'removeSegment'
+        ? '仅删除这一段占用；若该日已无其它占用将取消当日指派'
+        : confirmKind === 'undo'
+          ? surface === 'habit'
+            ? '撤销后恢复未打卡状态，热力会按规则回退'
+            : '撤销完成后恢复原积分与热力'
+          : surface === 'habit'
+            ? '打卡后计入今日习惯与完成热力'
+            : '完成后计入今日完成热力';
   const confirmPrimaryLabel =
-    confirmKind === 'undo'
-      ? surface === 'habit'
-        ? '撤销打卡'
-        : '撤销完成'
-      : surface === 'habit'
-        ? '打卡'
-        : '完成';
+    confirmKind === 'cancelAssign'
+      ? '取消指派'
+      : confirmKind === 'removeSegment'
+        ? '移除'
+        : confirmKind === 'undo'
+          ? surface === 'habit'
+            ? '撤销打卡'
+            : '撤销完成'
+          : surface === 'habit'
+            ? '打卡'
+            : '完成';
+  const showCompleteStats =
+    confirmKind === 'complete' || confirmKind === 'undo';
   const detailBtnLabel = surface === 'habit' ? '习惯详情' : surface === 'todo' ? '待办详情' : '任务详情';
   const noteText = subject?.done
     ? surface === 'habit'
@@ -436,9 +458,31 @@ export function SchedulePlacementDetailSheet({
     setConfirmOpen(true);
   };
 
-  const confirmComplete = () => {
+  const openCancelAssignConfirm = () => {
+    if (readOnly || !onCancelAssign) return;
+    setConfirmKind('cancelAssign');
+    setConfirmOpen(true);
+  };
+
+  const openRemoveSegmentConfirm = () => {
+    if (readOnly || !onRemoveSegment) return;
+    setConfirmKind('removeSegment');
+    setConfirmOpen(true);
+  };
+
+  /** 先关确认层与 Sheet，再回调父级（父级须再延后执行写库，避免 Modal 卸掉时抢焦点） */
+  const confirmAction = () => {
+    const kind = confirmKind;
     setConfirmOpen(false);
     onClose();
+    if (kind === 'cancelAssign') {
+      onCancelAssign?.();
+      return;
+    }
+    if (kind === 'removeSegment') {
+      onRemoveSegment?.();
+      return;
+    }
     onToggleDone();
   };
 
@@ -618,12 +662,7 @@ export function SchedulePlacementDetailSheet({
             {canManagePlacement && onCancelAssign ? (
               <Pressable
                 disabled={readOnly}
-                onPress={() => {
-                  Alert.alert('取消指派', '将去掉该日全部占用并取消该日青蛙指派（其它日保留）。', [
-                    { text: '保留', style: 'cancel' },
-                    { text: '取消指派', style: 'destructive', onPress: onCancelAssign },
-                  ]);
-                }}
+                onPress={openCancelAssignConfirm}
                 style={({ pressed }) => [
                   styles.pdAct,
                   {
@@ -662,16 +701,7 @@ export function SchedulePlacementDetailSheet({
           {canManagePlacement && !isOrphaned && onRemoveSegment ? (
             <Pressable
               disabled={readOnly}
-              onPress={() => {
-                Alert.alert(
-                  '从本格段移除',
-                  '仅删除这一段占用；若该日已无其它占用将取消当日指派。',
-                  [
-                    { text: '取消', style: 'cancel' },
-                    { text: '移除', style: 'destructive', onPress: onRemoveSegment },
-                  ],
-                );
-              }}
+              onPress={openRemoveSegmentConfirm}
               style={({ pressed }) => [{ opacity: readOnly ? 0.4 : pressed ? 0.7 : 1, paddingVertical: 4 }]}>
               <Text style={{ fontSize: 11, color: tf.faint, textAlign: 'center' }}>
                 仅移除本格段 · {priorityLabel(subject?.priority ?? 0)}
@@ -768,30 +798,40 @@ export function SchedulePlacementDetailSheet({
                 {confirmKind === 'complete' && rewardPts !== 0 ? ' 积分。' : ''}
                 {confirmKind === 'complete' ? '若误点，可撤销。' : ''}
               </Text>
-              <View style={styles.dstats}>
-                <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
-                  <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
-                    {confirmStatPrimary}
-                  </Text>
+              {showCompleteStats ? (
+                <View style={styles.dstats}>
+                  <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
+                    <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
+                      {confirmStatPrimary}
+                    </Text>
+                  </View>
+                  <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
+                    <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
+                      积分{' '}
+                      {confirmKind === 'undo'
+                        ? rewardPts !== 0
+                          ? `${rewardPts > 0 ? '-' : '+'}${formatPoints(Math.abs(rewardPts))}`
+                          : '—'
+                        : rewardPts !== 0
+                          ? `${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)}`
+                          : '—'}
+                    </Text>
+                  </View>
+                  <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
+                    <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
+                      {confirmKind === 'undo' ? '热力 ↓' : '热力 ↑'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
-                  <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
-                    积分{' '}
-                    {confirmKind === 'undo'
-                      ? rewardPts !== 0
-                        ? `${rewardPts > 0 ? '-' : '+'}${formatPoints(Math.abs(rewardPts))}`
-                        : '—'
-                      : rewardPts !== 0
-                        ? `${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)}`
-                        : '—'}
-                  </Text>
+              ) : (
+                <View style={[styles.dstats, { justifyContent: 'center' }]}>
+                  <View style={[styles.dstat, { backgroundColor: 'rgba(245,222,214,0.75)' }]}>
+                    <Text style={[styles.dstatText, { color: '#A56547', fontFamily: fonts.mono }]}>
+                      {confirmStatPrimary}
+                    </Text>
+                  </View>
                 </View>
-                <View style={[styles.dstat, { backgroundColor: 'rgba(232,239,217,0.65)' }]}>
-                  <Text style={[styles.dstatText, { color: '#5D7A57', fontFamily: fonts.mono }]}>
-                    {confirmKind === 'undo' ? '热力 ↓' : '热力 ↑'}
-                  </Text>
-                </View>
-              </View>
+              )}
               <View style={styles.dbtns}>
                 <Pressable
                   onPress={() => setConfirmOpen(false)}
@@ -802,10 +842,16 @@ export function SchedulePlacementDetailSheet({
                   <Text style={[styles.dbtnText, { color: '#7C887D' }]}>再看看</Text>
                 </Pressable>
                 <Pressable
-                  onPress={confirmComplete}
+                  onPress={confirmAction}
                   style={({ pressed }) => [
                     styles.dbtn,
-                    { backgroundColor: tf.pond, opacity: pressed ? 0.92 : 1 },
+                    {
+                      backgroundColor:
+                        confirmKind === 'cancelAssign' || confirmKind === 'removeSegment'
+                          ? tf.clay
+                          : tf.pond,
+                      opacity: pressed ? 0.92 : 1,
+                    },
                   ]}>
                   <Text style={[styles.dbtnText, { color: tf.onPond }]}>{confirmPrimaryLabel}</Text>
                 </Pressable>

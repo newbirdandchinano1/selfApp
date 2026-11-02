@@ -8,7 +8,7 @@ import { getTagsByProjectId } from '@/lib/repositories/projects/project-tag';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getDatabase, type SyncStatus } from '../../database.native';
 
-export type ProjectCompletionLogSource = 'archive' | 'compress' | 'manual_delete';
+export type ProjectCompletionLogSource = 'archive' | 'compress' | 'manual_delete' | 'habit_completion';
 
 export type ProjectCompletionLogRow = {
   id: string;

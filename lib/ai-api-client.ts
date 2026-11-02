@@ -208,7 +208,26 @@ export type ReviewCoachingRequestBody = {
   user_prompt?: string;
 };
 
-export async function aiWeeklyReviewCoaching(body: ReviewCoachingRequestBody): Promise<{ text: string }> {
+/** 与 `lib/review-ai-json-contract.ts` 对齐 */
+export type ReviewCoachingSuggestionAction = 'memo' | 'project' | 'habit' | 'todo';
+
+export type ReviewCoachingSuggestion = {
+  text: string;
+  action: ReviewCoachingSuggestionAction;
+  draft_title: string;
+  draft_body?: string;
+};
+
+/** Agent 复盘分析结果：结构化字段 + 落库用 text（规范 JSON 字符串） */
+export type ReviewCoachingResult = {
+  title: string;
+  overview: string;
+  tags: string[];
+  suggestions: ReviewCoachingSuggestion[];
+  text: string;
+};
+
+export async function aiWeeklyReviewCoaching(body: ReviewCoachingRequestBody): Promise<ReviewCoachingResult> {
   return agentAiRequest(`${AI_PREFIX}/weekly-review/coaching`, { method: 'POST', body });
 }
 

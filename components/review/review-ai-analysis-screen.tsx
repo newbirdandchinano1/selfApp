@@ -10,7 +10,6 @@ import {
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { FoldCard, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
-import { ReviewActionFeedStrip } from '@/components/review/review-action-feed';
 import type { DailyEntry } from '@/components/review/review-utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast, toUserMessage } from '@/lib/app-feedback';
@@ -19,18 +18,25 @@ import {
   reviewCanRunAiAnalysis,
   type ReviewAiScope,
 } from '@/lib/review-ai-analysis';
-import { parseReviewAiDigest } from '@/lib/review-ai-sections';
+import {
+  hrefForReviewAiSuggestion,
+  REVIEW_AI_ACTION_META,
+  REVIEW_AI_ACTION_ORDER,
+} from '@/lib/review-ai-quick-create';
+import {
+  formatReviewAiPayloadForCopy,
+  parseReviewAiPayload,
+  type ReviewAiSuggestionAction,
+} from '@/lib/review-ai-sections';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import {
   parseDailyReviewJournal,
   type ReviewFieldValues,
 } from '@/lib/repositories/insights/review-journal-body';
-import {
-  BUILTIN_REVIEW_DIMENSION_IDS,
-} from '@/lib/repositories/insights/review-template-defaults';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -70,10 +76,10 @@ function plainLength(fields: ReviewFieldValues): number {
   return total;
 }
 
-function firstSentence(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  if (!flat) return '';
-  return (flat.split(/(?<=[。！？!?])/)[0] ?? flat).trim();
+function suggestListTitle(scope: ReviewAiScope): string {
+  if (scope === 'daily') return '明天可以试试';
+  if (scope === 'monthly') return '下月可以试试';
+  return '下周可以试试';
 }
 
 function seriesPoints(values: (number | null)[]): { x: number; y: number }[] {
@@ -148,6 +154,7 @@ export function ReviewAiAnalysisScreen({
 }: ReviewAiAnalysisScreenProps) {
   const { fold } = useFoldTheme();
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { animate: motionOk } = useFoldMotionGate();
 
   const [draft, setDraft] = useState<string | null>(null);
@@ -158,8 +165,17 @@ export function ReviewAiAnalysisScreen({
   const [streamReady, setStreamReady] = useState(false);
   const [headlineDone, setHeadlineDone] = useState(false);
   const [bodyDone, setBodyDone] = useState(false);
+  /** 分析页 Modal 内的正中遮罩（不做透明度动画，避免挂载前播完导致「看不见」） */
+  const [createPickerIndex, setCreatePickerIndex] = useState<number | null>(null);
   const revealTokenRef = useRef(0);
+  /** 与 busy 同步；供 effect 判断，避免把 busy 放进 deps 额外重跑 */
+  const busyRef = useRef(false);
   const shimmerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setBusySafe = useCallback((next: boolean) => {
+    busyRef.current = next;
+    setBusy(next);
+  }, []);
 
   const text = draft ?? initialText ?? '';
   const hasBody = text.trim().length > 0;
@@ -212,11 +228,13 @@ export function ReviewAiAnalysisScreen({
     requestAnimationFrame(() => setStreamReady(true));
   }, [resetStreamFlags]);
 
-  // 打开已有内容：直接 reveal；空内容 idle
+  // 打开已有内容：直接 reveal；空内容 idle。
+  // 生成进行中不要 bump token：onPersist 会改 initialText，否则 finally 对不上 token，busy 卡死。
   useEffect(() => {
     if (!visible) {
       setPhase('idle');
       setDraft(null);
+      setBusySafe(false);
       resetStreamFlags();
       if (shimmerTimerRef.current) {
         clearTimeout(shimmerTimerRef.current);
@@ -224,6 +242,7 @@ export function ReviewAiAnalysisScreen({
       }
       return;
     }
+    if (busyRef.current) return;
     if ((initialText ?? '').trim()) {
       revealTokenRef.current += 1;
       startRevealNow();
@@ -231,9 +250,9 @@ export function ReviewAiAnalysisScreen({
       setPhase('idle');
       resetStreamFlags();
     }
-  }, [initialText, resetStreamFlags, startRevealNow, visible]);
+  }, [initialText, resetStreamFlags, setBusySafe, startRevealNow, visible]);
 
-  const digest = useMemo(() => parseReviewAiDigest(text), [text]);
+  const payload = useMemo(() => parseReviewAiPayload(text), [text]);
 
   const filledDimensions = useMemo(
     () =>
@@ -246,40 +265,30 @@ export function ReviewAiAnalysisScreen({
     [fields, template],
   );
 
-  const heroTags = useMemo(
-    () =>
-      filledDimensions.length > 0
-        ? filledDimensions.slice(0, 4).map(item => item.title)
-        : ['本周暂无记录'],
-    [filledDimensions],
-  );
+  const heroTags = useMemo(() => {
+    if (payload.tags.length > 0) return payload.tags.slice(0, 4);
+    if (filledDimensions.length > 0) return filledDimensions.slice(0, 4).map(item => item.title);
+    return scope === 'daily' ? ['今日暂无记录'] : ['本周暂无记录'];
+  }, [filledDimensions, payload.tags, scope]);
 
   const headline = useMemo(() => {
-    if (digest.intro.trim()) return firstSentence(digest.intro);
-    if (digest.headline) return digest.headline;
-    if (filledDimensions.length === 0) return '这一周，还没有留下可以被观察的文字。';
-    return `这一周，你在${filledDimensions
+    if (payload.title.trim()) return payload.title.trim();
+    if (filledDimensions.length === 0) {
+      return scope === 'daily'
+        ? '这一天，还没有留下可以被观察的文字。'
+        : '这一周，还没有留下可以被观察的文字。';
+    }
+    return `你在${filledDimensions
       .slice(0, 2)
       .map(item => item.title)
       .join('、')}之间留下了痕迹。`;
-  }, [digest.headline, digest.intro, filledDimensions]);
+  }, [filledDimensions, payload.title, scope]);
 
-  /** 观察正文全部进顶部；建议段留给下方「下周可以试试」 */
-  const heroBody = useMemo(() => {
-    const intro = digest.intro.trim();
-    if (intro) {
-      const rest = intro.replace(headline, '').replace(/^[。！？!?\s]+/, '').trim();
-      return rest || intro;
-    }
-    const blocks: string[] = [];
-    for (const section of digest.sections) {
-      if (section.key === 'suggestions') continue;
-      blocks.push(`【${section.title}】`);
-      for (const item of section.items) blocks.push(`· ${item}`);
-    }
-    if (blocks.length > 0) return blocks.join('\n');
-    return `不是所有进展都需要被量化。分析只基于你在${periodLabel}写下的内容，以及近 7 天日复盘。`;
-  }, [digest.intro, digest.sections, headline, periodLabel]);
+  /** 复盘概览卡正文 */
+  const overviewBody = useMemo(() => {
+    if (payload.overview.trim()) return payload.overview.trim();
+    return `不是所有进展都需要被量化。分析只基于你在${periodLabel}写下的内容。`;
+  }, [payload.overview, periodLabel]);
 
   const moodValues = useMemo(
     () =>
@@ -299,10 +308,8 @@ export function ReviewAiAnalysisScreen({
     return lengths.map(length => (length > 0 ? length / max : null));
   }, [dailyEntries]);
 
-  const suggestionItems = useMemo(
-    () => digest.sections.find(section => section.key === 'suggestions')?.items ?? [],
-    [digest.sections],
-  );
+  const suggestionItems = payload.suggestions;
+  const tryListTitle = suggestListTitle(scope);
 
   const generate = useCallback(async () => {
     if (!canEdit) {
@@ -315,7 +322,7 @@ export function ReviewAiAnalysisScreen({
       return;
     }
     const token = ++revealTokenRef.current;
-    setBusy(true);
+    setBusySafe(true);
     resetStreamFlags();
     setPhase('shimmer');
     const startedAt = Date.now();
@@ -345,7 +352,8 @@ export function ReviewAiAnalysisScreen({
       if ((draft ?? initialText ?? '').trim()) startRevealNow();
       else setPhase('idle');
     } finally {
-      if (revealTokenRef.current === token) setBusy(false);
+      // 仅当仍是本轮生成时清 busy；关闭弹层会另途复位
+      if (revealTokenRef.current === token) setBusySafe(false);
     }
   }, [
     canEdit,
@@ -357,6 +365,7 @@ export function ReviewAiAnalysisScreen({
     periodLabel,
     resetStreamFlags,
     scope,
+    setBusySafe,
     startRevealNow,
     template,
   ]);
@@ -376,19 +385,54 @@ export function ReviewAiAnalysisScreen({
   }, [generate, onPersist, text]);
 
   const handleClose = useCallback(() => {
+    revealTokenRef.current += 1;
+    setBusySafe(false);
+    setCreatePickerIndex(null);
     setDraft(null);
     setPhase('idle');
     onClose();
-  }, [onClose]);
+  }, [onClose, setBusySafe]);
 
   const copyText = useCallback(async () => {
-    if (!text.trim()) {
+    const readable = formatReviewAiPayloadForCopy(payload) || text.trim();
+    if (!readable) {
       toast.error('还没有可复制的内容');
       return;
     }
-    await Clipboard.setStringAsync(text);
+    await Clipboard.setStringAsync(readable);
     toast.success('已复制分析');
-  }, [text]);
+  }, [payload, text]);
+
+  const openCreatePicker = useCallback(
+    (index: number) => {
+      if (!suggestionItems[index]) return;
+      setCreatePickerIndex(index);
+    },
+    [suggestionItems],
+  );
+
+  const closeCreatePicker = useCallback(() => {
+    setCreatePickerIndex(null);
+  }, []);
+
+  const confirmSuggestionCreate = useCallback(
+    (action: ReviewAiSuggestionAction) => {
+      const index = createPickerIndex;
+      const item = index != null ? suggestionItems[index] : null;
+      setCreatePickerIndex(null);
+      if (!item) return;
+      handleClose();
+      // 等分析页 Modal 卸掉再跳转，避免路由被挡住
+      setTimeout(() => {
+        router.push(hrefForReviewAiSuggestion(item, action));
+      }, 320);
+    },
+    [createPickerIndex, handleClose, router, suggestionItems],
+  );
+
+  const createPickerItem =
+    createPickerIndex != null ? suggestionItems[createPickerIndex] ?? null : null;
+  const createPickerOpen = createPickerItem != null;
 
   const chartMoodPath = useMemo(() => buildSeriesPath(moodValues), [moodValues]);
   const chartMoodArea = useMemo(() => buildAreaPath(moodValues), [moodValues]);
@@ -406,10 +450,96 @@ export function ReviewAiAnalysisScreen({
     <Modal
       visible={visible}
       animationType="slide"
-      onRequestClose={handleClose}
+      onRequestClose={() => {
+        if (createPickerOpen) {
+          closeCreatePicker();
+          return;
+        }
+        handleClose();
+      }}
       presentationStyle="fullScreen"
       statusBarTranslucent>
-      <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+      <View style={[styles.root, { backgroundColor: fold.paper }]}>
+        {createPickerOpen ? (
+          <View style={styles.createPickerRoot} pointerEvents="box-none">
+            <Pressable
+              style={styles.createPickerBackdrop}
+              onPress={closeCreatePicker}
+              accessibilityRole="button"
+              accessibilityLabel="关闭"
+            />
+            <View style={styles.createPickerCenter} pointerEvents="box-none">
+              <View
+                style={[
+                  styles.createPickerDialog,
+                  {
+                    backgroundColor: fold.card,
+                    borderColor: fold.line,
+                    shadowColor: 'rgba(20,30,24,1)',
+                  },
+                ]}>
+                <Text
+                  style={[styles.createPickerTitle, { color: fold.ink }]}
+                  maxFontSizeMultiplier={1.3}>
+                  落到哪里
+                </Text>
+                <Text
+                  style={[styles.createPickerHint, { color: fold.muted }]}
+                  numberOfLines={2}
+                  maxFontSizeMultiplier={1.25}>
+                  {createPickerItem?.draftTitle || createPickerItem?.text}
+                </Text>
+                <View style={styles.createPickerList}>
+                  {REVIEW_AI_ACTION_ORDER.map(action => {
+                    const meta = REVIEW_AI_ACTION_META[action];
+                    return (
+                      <Pressable
+                        key={action}
+                        onPress={() => confirmSuggestionCreate(action)}
+                        accessibilityRole="button"
+                        accessibilityLabel={meta.createLabel}
+                        style={({ pressed }) => [
+                          styles.createPickerRow,
+                          {
+                            borderColor: fold.line,
+                            backgroundColor: pressed ? fold.cardSoft : fold.paper2,
+                          },
+                        ]}>
+                        <View style={[styles.createPickerIcon, { backgroundColor: fold.sage2 }]}>
+                          <MaterialIcons name={meta.icon} size={17} color={fold.pine} />
+                        </View>
+                        <Text
+                          style={[styles.createPickerLabel, { color: fold.ink }]}
+                          maxFontSizeMultiplier={1.3}>
+                          {meta.createLabel}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Pressable
+                  onPress={closeCreatePicker}
+                  accessibilityRole="button"
+                  accessibilityLabel="取消"
+                  style={({ pressed }) => [
+                    styles.createPickerCancel,
+                    {
+                      backgroundColor: fold.paper2,
+                      opacity: pressed ? 0.82 : 1,
+                    },
+                  ]}>
+                  <Text
+                    style={[styles.createPickerCancelText, { color: fold.muted }]}
+                    maxFontSizeMultiplier={1.3}>
+                    取消
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+      <SafeAreaView style={styles.root} edges={['left', 'right']}>
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 8) }]}>
           <Pressable
             onPress={handleClose}
@@ -477,16 +607,10 @@ export function ReviewAiAnalysisScreen({
                   delayMs={80}
                   style={[styles.heroTitle, { color: fold.summaryText }]}
                   maxFontSizeMultiplier={1.25}
-                  onDone={() => setHeadlineDone(true)}
-                />
-                <FoldStreamText
-                  text={heroBody}
-                  animate={showMotion && headlineDone}
-                  msPerChar={28}
-                  delayMs={40}
-                  style={[styles.heroBody, { color: fold.summaryMuted }]}
-                  maxFontSizeMultiplier={1.3}
-                  onDone={() => setBodyDone(true)}
+                  onDone={() => {
+                    setHeadlineDone(true);
+                    setBodyDone(true);
+                  }}
                 />
                 <View style={styles.heroTags}>
                   {heroTags.map((tag, i) => (
@@ -522,8 +646,8 @@ export function ReviewAiAnalysisScreen({
                 </Text>
                 <Text style={[styles.heroBody, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.3}>
                   {busy
-                    ? '骨架准备中，随后会流式写出观察与建议。'
-                    : `写下${scopeLabel}内容后，这里会整理出观察、风险与三条可执行的小动作。`}
+                    ? '骨架准备中，随后会写出标题、概览与可执行建议。'
+                    : `写下${scopeLabel}内容后，这里会给出总结标题、复盘概览与可落地的小动作。`}
                 </Text>
               </>
             )}
@@ -555,9 +679,32 @@ export function ReviewAiAnalysisScreen({
             </FoldCard>
           ) : null}
 
+          {showContent ? (
+            <FoldRiseIn
+              animate={cardsAnimate || (showMotion && headlineDone)}
+              index={0}
+              staggerMs={70}
+              delayMs={120}
+              duration={350}>
+              <FoldCard style={styles.overviewCard}>
+                <Text style={[styles.overviewLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                  复盘概览
+                </Text>
+                <FoldStreamText
+                  text={overviewBody}
+                  animate={showMotion && headlineDone}
+                  msPerChar={18}
+                  delayMs={40}
+                  style={[styles.overviewBody, { color: fold.ink2 }]}
+                  maxFontSizeMultiplier={1.3}
+                />
+              </FoldCard>
+            </FoldRiseIn>
+          ) : null}
+
           <FoldRiseIn
             animate={showMotion && (bodyDone || (!hasBody && phase === 'idle'))}
-            index={0}
+            index={1}
             staggerMs={70}
             delayMs={hasBody ? 160 : 0}
             duration={350}>
@@ -623,20 +770,20 @@ export function ReviewAiAnalysisScreen({
           {showContent && suggestionItems.length > 0 ? (
             <FoldRiseIn
               animate={cardsAnimate}
-              index={1}
+              index={2}
               staggerMs={70}
               delayMs={180}
               duration={350}>
               <FoldCard style={styles.suggestCard}>
                 <View style={styles.suggestHead}>
                   <Text style={[styles.suggestTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
-                    下周可以试试
+                    {tryListTitle}
                   </Text>
                   <Text style={[styles.suggestCount, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-                    {Math.min(3, suggestionItems.length)} 个很小的动作
+                    {suggestionItems.length} 个很小的动作
                   </Text>
                 </View>
-                {suggestionItems.slice(0, 3).map((item, index) => (
+                {suggestionItems.map((item, index) => (
                   <View key={`suggest-${index}`}>
                     {index > 0 ? <View style={[styles.divider, { backgroundColor: fold.line }]} /> : null}
                     <View style={styles.suggestRow}>
@@ -647,9 +794,26 @@ export function ReviewAiAnalysisScreen({
                           {String(index + 1).padStart(2, '0')}
                         </Text>
                       </View>
-                      <Text style={[styles.suggestText, { color: fold.ink2 }]} maxFontSizeMultiplier={1.35}>
-                        {item}
+                      <Text
+                        style={[styles.suggestText, { color: fold.ink2, flex: 1 }]}
+                        maxFontSizeMultiplier={1.35}>
+                        {item.text}
                       </Text>
+                      <Pressable
+                        onPress={() => openCreatePicker(index)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`落到执行：${item.draftTitle || item.text}`}
+                        hitSlop={10}
+                        style={({ pressed }) => [
+                          styles.suggestCreateBtn,
+                          {
+                            borderColor: fold.line2,
+                            backgroundColor: fold.cardSoft,
+                            opacity: pressed ? 0.75 : 1,
+                          },
+                        ]}>
+                        <MaterialIcons name="add" size={18} color={fold.pine} />
+                      </Pressable>
                     </View>
                   </View>
                 ))}
@@ -657,22 +821,9 @@ export function ReviewAiAnalysisScreen({
             </FoldRiseIn>
           ) : null}
 
-          {showContent ? (
-            <ReviewActionFeedStrip
-              dimensionId={
-                scope === 'monthly'
-                  ? BUILTIN_REVIEW_DIMENSION_IDS.monthly.ideas
-                  : scope === 'weekly'
-                    ? BUILTIN_REVIEW_DIMENSION_IDS.weekly.ideas
-                    : BUILTIN_REVIEW_DIMENSION_IDS.daily.ideas
-              }
-              hint={suggestionItems[0] ?? text.slice(0, 40)}
-            />
-          ) : null}
-
           <FoldRiseIn
             animate={showMotion && (bodyDone || !hasBody)}
-            index={2}
+            index={3}
             staggerMs={55}
             delayMs={hasBody ? 220 : 40}
             duration={320}>
@@ -727,6 +878,7 @@ export function ReviewAiAnalysisScreen({
           </FoldRiseIn>
         </ScrollView>
       </SafeAreaView>
+      </View>
     </Modal>
   );
 }
@@ -831,6 +983,9 @@ const styles = StyleSheet.create({
   emptyCard: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 12 },
   emptyIcon: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   emptyText: { flex: 1, fontSize: 12, lineHeight: 18 },
+  overviewCard: { paddingVertical: 12, paddingHorizontal: 12, gap: 6 },
+  overviewLabel: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4 },
+  overviewBody: { fontSize: 12, lineHeight: 19 },
   chartCard: { paddingVertical: 10, paddingHorizontal: 12, gap: 4 },
   chartHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   chartTitle: { fontSize: 11.5, fontWeight: '800' },
@@ -854,10 +1009,95 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 1,
   },
   suggestIndex: { fontSize: 8.5, fontFamily: foldFonts.mono, fontWeight: '700' },
-  suggestText: { flex: 1, fontSize: 11, lineHeight: 17 },
+  suggestText: { fontSize: 11, lineHeight: 17, paddingRight: 2 },
+  suggestCreateBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -2,
+  },
   divider: { height: StyleSheet.hairlineWidth },
+  createPickerRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 1000,
+  },
+  createPickerBackdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(25,34,28,0.48)',
+  },
+  createPickerCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+  },
+  createPickerDialog: {
+    width: 300,
+    maxWidth: '100%',
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 13,
+    gap: 10,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 24 },
+    shadowOpacity: 0.3,
+    shadowRadius: 60,
+    elevation: 24,
+  },
+  createPickerTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    fontFamily: foldFonts.serif,
+    textAlign: 'center',
+  },
+  createPickerHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  createPickerList: { gap: 7, width: '100%' },
+  createPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  createPickerIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createPickerLabel: { flex: 1, fontSize: 14, fontWeight: '700' },
+  createPickerCancel: {
+    height: 42,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createPickerCancelText: { fontSize: 14, fontWeight: '700' },
   aiActions: { flexDirection: 'row', gap: 6, marginTop: 4 },
   primaryBtn: {
     flex: 1,

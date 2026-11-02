@@ -9,6 +9,10 @@ import {
 import { FoldCard, FoldSwitch, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import {
+  formatReviewAiPayloadForCopy,
+  parseReviewAiPayload,
+} from '@/lib/review-ai-sections';
 import { generateWeeklyReviewCoaching, weeklyReviewHasEnoughText } from '@/lib/weekly-review-coaching';
 import {
   buildDailyDigest,
@@ -944,7 +948,7 @@ export function WeeklyReviewFormScreen({
                     </Text>
                   </View>
                   <Text style={[styles.aiResultBody, { color: fold.ink2 }]} maxFontSizeMultiplier={1.4}>
-                    {aiCoaching}
+                    {formatReviewAiPayloadForCopy(parseReviewAiPayload(aiCoaching)) || aiCoaching}
                   </Text>
                   <View style={styles.aiLinks}>
                     <Pressable onPress={() => router.push('/(tabs)/tasks')} hitSlop={6} accessibilityRole="button">

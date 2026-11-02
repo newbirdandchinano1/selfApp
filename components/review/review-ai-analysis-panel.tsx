@@ -2,6 +2,11 @@ import { FoldCard } from '@/components/review/fold-ui';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getMinTouchTarget, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useFoldTheme } from '@/constants/review-fold-theme';
+import {
+  formatReviewAiPayloadForCopy,
+  parseReviewAiPayload,
+  reviewAiPreviewTitle,
+} from '@/lib/review-ai-sections';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -21,6 +26,11 @@ export function ReviewAiAnalysisPanel({
 }) {
   const { fold } = useFoldTheme();
   const body = (text ?? '').trim();
+  const displayBody = useMemo(() => {
+    if (!body) return '';
+    const readable = formatReviewAiPayloadForCopy(parseReviewAiPayload(body));
+    return readable || reviewAiPreviewTitle(body) || body;
+  }, [body]);
   const touchMin = useMemo(() => getMinTouchTarget(Platform.OS), []);
   const actionLabel = body ? '重新分析' : 'AI 分析';
 
@@ -69,7 +79,7 @@ export function ReviewAiAnalysisPanel({
         </View>
       ) : body ? (
         <Text style={[Typography.body, { color: fold.ink2, lineHeight: 22 }]} maxFontSizeMultiplier={1.35}>
-          {body}
+          {displayBody}
         </Text>
       ) : (
         <View style={styles.emptyRow}>
@@ -77,7 +87,7 @@ export function ReviewAiAnalysisPanel({
             <MaterialIcons name="auto-awesome" size={18} color={fold.pine} />
           </View>
           <Text style={[Typography.body, { color: fold.muted, lineHeight: 21, flex: 1 }]} maxFontSizeMultiplier={1.35}>
-            填写一定内容后，可生成「目前的问题 / 潜在问题 / 建议」诊断分析。
+            填写一定内容后，可生成总结标题、复盘概览与可落地建议。
           </Text>
         </View>
       )}

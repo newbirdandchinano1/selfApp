@@ -30,6 +30,12 @@ type BoundHabitPickerFieldProps = {
   surfaceLow: string;
   surfaceLowest: string;
   isDark: boolean;
+  /** 未选时的副文案 */
+  emptyHint?: string;
+  /** 已选时的副文案 */
+  selectedHint?: string;
+  modalTitle?: string;
+  modalDesc?: string;
 };
 
 export function BoundHabitPickerField({
@@ -45,6 +51,10 @@ export function BoundHabitPickerField({
   surfaceLow,
   surfaceLowest,
   isDark,
+  emptyHint = '可选多项；绑定后由习惯进度驱动任务完成',
+  selectedHint = '全部绑定习惯达成目标后，此任务将自动完成',
+  modalTitle = '绑定小习惯',
+  modalDesc = '可多选小习惯；当全部达成目标时，本任务会自动标记为完成。',
 }: BoundHabitPickerFieldProps) {
   const [modalVisible, setModalVisible] = useState(false);
   const [draftIds, setDraftIds] = useState<string[]>([]);
@@ -112,10 +122,10 @@ export function BoundHabitPickerField({
             </Text>
             {selectedHabitIds.length > 0 ? (
               <Text style={[styles.selectHint, { color: outline }]} numberOfLines={2}>
-                全部绑定习惯达成目标后，此任务将自动完成
+                {selectedHint}
               </Text>
             ) : (
-              <Text style={[styles.selectHint, { color: outline }]}>可选多项；绑定后由习惯进度驱动任务完成</Text>
+              <Text style={[styles.selectHint, { color: outline }]}>{emptyHint}</Text>
             )}
           </View>
         </View>
@@ -132,14 +142,12 @@ export function BoundHabitPickerField({
             onPress={() => {}}
             style={[styles.modalCard, { backgroundColor: surfaceLowest, borderColor: placeholderColor }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>绑定小习惯</Text>
+              <Text style={[styles.modalTitle, { color: textColor }]}>{modalTitle}</Text>
               <Pressable onPress={closeModal} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
                 <MaterialIcons name="close" size={22} color={outline} />
               </Pressable>
             </View>
-            <Text style={[styles.modalDesc, { color: outline }]}>
-              可多选小习惯；当全部达成目标时，本任务会自动标记为完成。
-            </Text>
+            <Text style={[styles.modalDesc, { color: outline }]}>{modalDesc}</Text>
             {totalHabits === 0 ? (
               <Text style={[styles.modalEmpty, { color: outline }]}>暂无小习惯，请先在任务页添加</Text>
             ) : (

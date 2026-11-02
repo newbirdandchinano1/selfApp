@@ -746,21 +746,43 @@ export function FoldAiMini({
   const { palette } = useFoldTheme();
   const body = (text ?? '').trim();
   const hasBody = body.length > 0;
+  const structuredTitle = useMemo(() => {
+    if (!body.startsWith('{')) return '';
+    try {
+      const parsed = JSON.parse(body) as { title?: unknown };
+      return typeof parsed.title === 'string' ? parsed.title.trim() : '';
+    } catch {
+      return '';
+    }
+  }, [body]);
   const summary = busy
     ? '正在阅读今天的记录…'
     : hasBody
-      ? body.split(/\n|。|\. /).map(s => s.trim()).filter(Boolean)[0] ?? ''
+      ? structuredTitle || body.split(/\n|。|\. /).map(s => s.trim()).filter(Boolean)[0] || ''
       : ready
-        ? '写完各维度后，点下方按钮生成「问题 / 建议」分析。'
+        ? '写完各维度后，点下方按钮生成总结、概览与建议。'
         : readyHint || '先写完今日全部复盘格子，再生成 AI 分析。';
   const count =
     insightCount ??
     (body
-      ? Math.max(1, body.split(/\n+/).map(s => s.trim()).filter(s => s.startsWith('·') || s.length > 8).length)
+      ? (() => {
+          if (body.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(body) as { suggestions?: unknown };
+              return Array.isArray(parsed.suggestions) ? Math.max(1, parsed.suggestions.length) : 1;
+            } catch {
+              /* fall through */
+            }
+          }
+          return Math.max(
+            1,
+            body.split(/\n+/).map(s => s.trim()).filter(s => s.startsWith('·') || s.length > 8).length,
+          );
+        })()
       : 0);
   const sub =
     hasBody && !busy
-      ? `${summary.slice(0, 36)}${summary.length > 36 ? '…' : ''} · ${count} 条洞察`
+      ? `${summary.slice(0, 36)}${summary.length > 36 ? '…' : ''} · ${count} 条建议`
       : summary;
   const ctaLabel = busy ? '分析中…' : hasBody ? '查看 / 重新分析' : '生成 AI 分析';
 

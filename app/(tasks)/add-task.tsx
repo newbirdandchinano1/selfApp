@@ -157,6 +157,9 @@ export default function AddTaskScreen() {
     categoryId?: string;
     standalone?: string;
     id?: string;
+    /** 复盘建议等入口预填 */
+    title?: string;
+    note?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
@@ -164,12 +167,12 @@ export default function AddTaskScreen() {
   const { animate: foldAnimate } = useFoldMotionGate();
   const titleInputRef = React.useRef<React.ElementRef<typeof TextInput>>(null);
 
-  const [title, setTitle] = React.useState('');
+  const [title, setTitle] = React.useState(() => firstRouteParam(params.title).trim());
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_TODO_ICON);
   const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
     createEmptyAcceptanceItem(),
   ]);
-  const [note, setNote] = React.useState('');
+  const [note, setNote] = React.useState(() => firstRouteParam(params.note).trim());
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
