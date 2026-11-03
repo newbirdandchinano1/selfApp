@@ -136,7 +136,7 @@ export default function MessagesScreen() {
     if (tab === 'feed') {
       return {
         title: '消息',
-        sub: '资讯 · 每日精选',
+        sub: '资讯 · 热点热榜',
         action: 'readall' as const,
         actionDisabled: feedUnread === 0,
       };

@@ -42,4 +42,6 @@ export * from '@/lib/api/endpoints/tasks';
 export * from '@/lib/api/endpoints/finance';
 export * from '@/lib/api/endpoints/review';
 export * from '@/lib/api/endpoints/profile';
+export * from '@/lib/api/endpoints/wardrobe';
+export * from '@/lib/api/endpoints/news';
 export { apiHealthCheck } from '@/lib/api/endpoints/system';

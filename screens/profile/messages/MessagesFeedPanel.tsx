@@ -1,6 +1,8 @@
 /**
- * 消息 · 资讯：远端采集列表，封面色块、已读态、下拉刷新。
- * 对齐设计稿 08。
+ * 消息 · 资讯：TrendRadar 热点列表。
+ * - 搜索：标题 / 摘要 / 渠道
+ * - 分类 Tab：按 platformName（渠道）分栏，另有「全部」
+ * - 下拉刷新、触底加载、本机已读、点击打开原文
  */
 import {
   FoldRiseIn,
@@ -21,15 +23,18 @@ import React, {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Linking,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -40,6 +45,8 @@ export type MessagesFeedPanelHandle = {
 type Props = {
   onStatsChange?: (stats: { total: number; unread: number }) => void;
 };
+
+const ALL_CHANNEL = '__all__';
 
 const COVER_PALETTES: { bg: [string, string]; fg: string; icon: AppIconName }[] = [
   { bg: ['#CBDCCB', '#8FB49F'], fg: '#22483B', icon: 'spa' },
@@ -54,26 +61,21 @@ function coverFor(id: string, index: number) {
   return COVER_PALETTES[(hash + index) % COVER_PALETTES.length]!;
 }
 
-function formatMeta(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return '';
-  const diffMs = Date.now() - t;
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 60) return mins < 1 ? '刚刚' : `${mins} 分钟`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} 小时`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
-  try {
-    return new Date(t).toLocaleDateString();
-  } catch {
-    return '';
-  }
+function formatReportDate(ymd: string | null | undefined): string {
+  const s = String(ymd ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  return `${s.slice(5, 7)}/${s.slice(8, 10)}`;
 }
 
-function estimateMinutes(body: string): number {
-  const len = body.trim().length;
-  return Math.max(3, Math.min(12, Math.round(len / 80) || 4));
+function channelOf(item: RemoteInboxItem): string {
+  const key = String(item.sourceKey ?? '').trim();
+  return key || '其他';
+}
+
+function matchesQuery(item: RemoteInboxItem, q: string): boolean {
+  if (!q) return true;
+  const hay = `${item.title}\n${item.body}\n${channelOf(item)}`.toLowerCase();
+  return hay.includes(q);
 }
 
 export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
@@ -81,6 +83,16 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
     const { fold } = useFoldTheme();
     const { animate: motionOn } = useFoldMotionGate();
     const [items, setItems] = useState<RemoteInboxItem[]>([]);
+    const [reportDate, setReportDate] = useState<string | null>(null);
+    const [total, setTotal] = useState(0);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const loadingMoreRef = useRef(false);
+
+    const [searchDraft, setSearchDraft] = useState('');
+    const [searchQuery, setSearchQuery] = useState('');
+    const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [channel, setChannel] = useState<string>(ALL_CHANNEL);
 
     const unreadCount = useMemo(() => items.filter((i) => !i.readAt).length, [items]);
 
@@ -88,13 +100,39 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
       onStatsChange?.({ total: items.length, unread: unreadCount });
     }, [items.length, onStatsChange, unreadCount]);
 
+    useEffect(() => {
+      return () => {
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      };
+    }, []);
+
+    const onChangeSearch = useCallback((text: string) => {
+      setSearchDraft(text);
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = setTimeout(() => {
+        setSearchQuery(text.trim().toLowerCase());
+      }, 220);
+    }, []);
+
+    const clearSearch = useCallback(() => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      setSearchDraft('');
+      setSearchQuery('');
+    }, []);
+
     const reload = useCallback(async () => {
       try {
-        const page = await fetchRemoteInboxPage();
+        const page = await fetchRemoteInboxPage({ limit: 500 });
         setItems(Array.isArray(page?.items) ? page.items : []);
+        setReportDate(page?.reportDate ?? null);
+        setTotal(Number(page?.total ?? page?.items?.length ?? 0));
+        setNextCursor(page?.nextCursor ?? null);
       } catch (e) {
         if (__DEV__) console.warn('[messages/feed] fetch failed', e);
         setItems([]);
+        setReportDate(null);
+        setTotal(0);
+        setNextCursor(null);
       }
     }, []);
 
@@ -103,6 +141,37 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
     }, [reload]);
 
     const { refreshControl } = usePullToRefresh(reload);
+
+    const loadMore = useCallback(async () => {
+      if (!nextCursor || loadingMoreRef.current) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+      try {
+        const page = await fetchRemoteInboxPage({
+          cursor: nextCursor,
+          limit: 120,
+          mirrorLocal: false,
+        });
+        const incoming = Array.isArray(page?.items) ? page.items : [];
+        setItems((prev) => {
+          const seen = new Set(prev.map((i) => i.id));
+          const merged = [...prev];
+          for (const row of incoming) {
+            if (seen.has(row.id)) continue;
+            seen.add(row.id);
+            merged.push(row);
+          }
+          return merged;
+        });
+        setNextCursor(page?.nextCursor ?? null);
+        if (page?.total != null) setTotal(Number(page.total));
+      } catch (e) {
+        if (__DEV__) console.warn('[messages/feed] load more failed', e);
+      } finally {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
+    }, [nextCursor]);
 
     const doMarkAllRead = useCallback(() => {
       if (unreadCount === 0) return;
@@ -131,25 +200,139 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
       }
     }, []);
 
-    const sorted = useMemo(() => {
-      return [...items].sort((a, b) => {
+    /** 搜索命中后再做渠道聚合，避免 Tab 数字与列表脱节 */
+    const searchedItems = useMemo(
+      () => items.filter((i) => matchesQuery(i, searchQuery)),
+      [items, searchQuery],
+    );
+
+    const channelTabs = useMemo(() => {
+      const counts = new Map<string, number>();
+      for (const item of searchedItems) {
+        const key = channelOf(item);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      const ranked = [...counts.entries()].sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return a[0].localeCompare(b[0], 'zh-CN');
+      });
+      return [
+        { key: ALL_CHANNEL, label: '全部', count: searchedItems.length },
+        ...ranked.map(([key, count]) => ({ key, label: key, count })),
+      ];
+    }, [searchedItems]);
+
+    useEffect(() => {
+      if (channel === ALL_CHANNEL) return;
+      if (!channelTabs.some((t) => t.key === channel)) {
+        setChannel(ALL_CHANNEL);
+      }
+    }, [channel, channelTabs]);
+
+    const filtered = useMemo(() => {
+      const base =
+        channel === ALL_CHANNEL
+          ? searchedItems
+          : searchedItems.filter((i) => channelOf(i) === channel);
+      return [...base].sort((a, b) => {
         const aUnread = a.readAt ? 0 : 1;
         const bUnread = b.readAt ? 0 : 1;
         if (aUnread !== bUnread) return bUnread - aUnread;
         return Date.parse(b.createdAt) - Date.parse(a.createdAt);
       });
-    }, [items]);
+    }, [channel, searchedItems]);
+
+    const metaLeft = reportDate
+      ? `热点 · ${formatReportDate(reportDate)}`
+      : '热点资讯 · TrendRadar';
+
+    const emptyTitle = searchQuery
+      ? '没有匹配结果'
+      : channel !== ALL_CHANNEL
+        ? '该渠道暂无内容'
+        : '暂无热点';
+    const emptySubtitle = searchQuery
+      ? '试试换个关键词，或清空搜索'
+      : '下拉刷新；渠道来自各平台热榜（platformName）';
 
     return (
       <View style={styles.root}>
         <View style={styles.metaRow}>
-          <Text style={[styles.metaLeft, { color: fold.muted }]}>为你挑选 · 基于近期节奏</Text>
+          <Text style={[styles.metaLeft, { color: fold.muted }]}>{metaLeft}</Text>
           <Text style={[styles.metaRight, { color: '#8B6126' }]}>
-            {unreadCount > 0 ? `未读 ${unreadCount}` : '已读完'}
+            {unreadCount > 0 ? `未读 ${unreadCount}` : items.length > 0 ? '已读完' : '暂无'}
           </Text>
         </View>
 
-        {sorted.length === 0 ? (
+        <View
+          style={[
+            styles.searchBox,
+            { borderColor: fold.line, backgroundColor: fold.card },
+          ]}>
+          <AppIcon name="search" size={14} color={fold.muted} />
+          <TextInput
+            value={searchDraft}
+            onChangeText={onChangeSearch}
+            placeholder="搜索标题、渠道…"
+            placeholderTextColor="#A5A9A1"
+            style={[styles.searchInput, { color: fold.ink }]}
+            returnKeyType="search"
+            clearButtonMode="never"
+            autoCorrect={false}
+            autoCapitalize="none"
+          />
+          {searchDraft.trim() ? (
+            <Pressable
+              onPress={clearSearch}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="清空搜索">
+              <AppIcon name="close" size={14} color={fold.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+
+        {channelTabs.length > 1 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pills}
+            style={styles.pillsScroll}
+            keyboardShouldPersistTaps="handled">
+            {channelTabs.map((tab) => {
+              const on = channel === tab.key;
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setChannel(tab.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  style={({ pressed }) => [
+                    styles.pill,
+                    {
+                      backgroundColor: on ? fold.pineButton : fold.card,
+                      borderColor: on ? fold.pineButton : fold.line,
+                    },
+                    pressed && { transform: [{ scale: 0.96 }] },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.pillText,
+                      {
+                        color: on ? fold.onPineButton : fold.muted,
+                        fontWeight: on ? '800' : ('650' as never),
+                      },
+                    ]}
+                    numberOfLines={1}>
+                    {tab.label} {tab.count}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
+
+        {filtered.length === 0 ? (
           <ScrollView
             contentContainerStyle={styles.emptyList}
             refreshControl={refreshControl}
@@ -157,23 +340,34 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
             showsVerticalScrollIndicator={false}>
             <ScreenEmptyState
               icon="article"
-              title="暂无资讯"
-              subtitle="下拉刷新；内容将由采集推送填充"
+              title={emptyTitle}
+              subtitle={emptySubtitle}
               style={styles.empty}
             />
           </ScrollView>
         ) : (
           <FlatList
-            data={sorted}
+            data={filtered}
             keyExtractor={(item) => item.id}
             refreshControl={refreshControl}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            onEndReachedThreshold={0.35}
+            onEndReached={() => {
+              if (channel === ALL_CHANNEL && !searchQuery) void loadMore();
+            }}
             ListFooterComponent={
               <View style={styles.footerBlock}>
                 <View style={styles.footerRow}>
-                  <Text style={styles.footerHint}>共 {items.length} 篇</Text>
+                  <Text style={styles.footerHint}>
+                    本栏 {filtered.length} 条
+                    {channel === ALL_CHANNEL && total > items.length ? ` · 已载 ${items.length}/${total}` : ''}
+                  </Text>
                 </View>
+                {loadingMore ? (
+                  <ActivityIndicator size="small" color={fold.sage} style={{ marginVertical: 8 }} />
+                ) : null}
                 <View
                   style={[
                     styles.noteCard,
@@ -181,7 +375,7 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
                   ]}>
                   <AppIcon name="refresh" size={12} color={fold.sage} />
                   <Text style={[styles.noteText, { color: fold.muted }]}>
-                    下拉刷新会在顶部短暂出现骨架，不遮挡已读列表。
+                    分类按新闻渠道（今日头条、微博、知乎等）；搜索可筛标题与渠道。
                   </Text>
                 </View>
               </View>
@@ -189,9 +383,8 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
             renderItem={({ item, index }) => {
               const unread = !item.readAt;
               const cover = coverFor(item.id, index);
-              const mins = estimateMinutes(item.body || item.title);
-              const source =
-                (typeof item.sourceKey === 'string' && item.sourceKey.trim()) || '折页精选';
+              const source = channelOf(item);
+              const sectionLabel = item.section === 'rss' ? 'RSS' : '热榜';
               return (
                 <FoldRiseIn
                   animate={motionOn}
@@ -238,9 +431,8 @@ export const MessagesFeedPanel = forwardRef<MessagesFeedPanelHandle, Props>(
                         </Text>
                       ) : null}
                       <View style={styles.cardMeta}>
-                        <Text style={styles.cardMetaText}>
-                          {source} · {mins} 分钟
-                          {formatMeta(item.createdAt) ? ` · ${formatMeta(item.createdAt)}` : ''}
+                        <Text style={styles.cardMetaText} numberOfLines={1}>
+                          {source} · {sectionLabel}
                         </Text>
                         <View
                           style={[
@@ -281,6 +473,34 @@ const styles = StyleSheet.create({
   },
   metaLeft: { fontSize: 11 },
   metaRight: { fontSize: 10, fontWeight: '700' },
+  searchBox: {
+    height: 34,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 12,
+    paddingVertical: 0,
+    minWidth: 0,
+  },
+  pillsScroll: { flexGrow: 0, marginBottom: 8 },
+  pills: { gap: 6, paddingHorizontal: 1, paddingBottom: 1 },
+  pill: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: 140,
+  },
+  pillText: { fontSize: 10 },
   emptyList: { flexGrow: 1 },
   empty: { flex: 1, paddingTop: 40 },
   listContent: { paddingBottom: 40, gap: 6 },

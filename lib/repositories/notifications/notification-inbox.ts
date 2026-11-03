@@ -376,7 +376,9 @@ export type RemoteInboxMirrorItem = {
 
 /**
  * 用服务端资讯页全量替换本地 `source='remote'` 镜像（便于铃铛 total 一次聚合）。
- * 保留服务端 read_at；空列表则清空本地资讯镜像。
+ * 优先保留服务端 read_at；若服务端未给已读时间，则沿用本地同 remoteId 的已读态
+ * （TrendRadar 热点接口无已读字段，靠本机记忆）。
+ * 空列表则清空本地资讯镜像。
  */
 export async function replaceRemoteInboxMirror(
   items: RemoteInboxMirrorItem[],
@@ -387,6 +389,19 @@ export async function replaceRemoteInboxMirror(
 
   await db.execAsync('BEGIN IMMEDIATE');
   try {
+    const prevRows = await db.getAllAsync<{ dedupe_key: string; read_at: string | null }>(
+      `SELECT dedupe_key, read_at FROM notification_inbox
+        WHERE source = 'remote' AND read_at IS NOT NULL AND TRIM(read_at) != ''`,
+    );
+    const prevReadByDedupe = new Map<string, string>();
+    for (const row of prevRows ?? []) {
+      const key = String(row.dedupe_key ?? '').trim();
+      const readAt = row.read_at != null ? String(row.read_at).trim() : '';
+      if (key && readAt && Number.isFinite(Date.parse(readAt))) {
+        prevReadByDedupe.set(key, readAt);
+      }
+    }
+
     await db.runAsync(`DELETE FROM notification_inbox WHERE source = 'remote'`);
     for (const item of items) {
       const remoteId = String(item.id ?? '').trim();
@@ -398,8 +413,9 @@ export async function replaceRemoteInboxMirror(
         item.createdAt && Number.isFinite(Date.parse(item.createdAt))
           ? item.createdAt
           : new Date().toISOString();
-      const readAt =
+      const serverReadAt =
         item.readAt && Number.isFinite(Date.parse(item.readAt)) ? item.readAt : null;
+      const readAt = serverReadAt ?? prevReadByDedupe.get(dedupeKey) ?? null;
       const dataJson = serializeDataJson({
         remoteId,
         href: item.href ?? null,
