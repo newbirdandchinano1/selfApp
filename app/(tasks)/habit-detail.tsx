@@ -15,6 +15,10 @@ import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
+  formatProjectProgressHabitsFullMessage,
+  notifyProjectsProgressHabitsAfterCheckIn,
+} from '@/lib/repositories/projects/project-progress-habits';
+import {
   isBreakHabitSucceeded,
   parseBreakHabitCycle,
   resolveBreakCycleStartYmd,
@@ -45,7 +49,7 @@ import {
   parseHabitDailyGoal,
   parseHabitIncrementCap,
 } from '@/lib/repositories/habits/habit-goal';
-import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { habitKindLabel, parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   applyBreakHabitReward,
   syncBreakHabitPenaltyPointsReward,
@@ -54,7 +58,7 @@ import {
 } from '@/lib/repositories/habits/habit-points-grant';
 import { parseHabitRewardPoints } from '@/lib/repositories/habits/habit-reward-points';
 import { formatHabitReminderClock, parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
-import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
+import { hasActiveSubHabits, habitSubItemsLabel } from '@/lib/repositories/habits/habit-sub';
 import {
   computeTaskPeriodGoalProgress,
   isTaskHabitPeriodGoalMet,
@@ -343,12 +347,6 @@ const SCREEN_TITLE = '习惯详情';
 const PAGE_API_KEY = 'habit-detail';
 /** 详情页补卡/撤销连点防抖间隔（与任务页小习惯卡片一致） */
 const HABIT_DETAIL_PRESS_DEBOUNCE_MS = 500;
-
-function habitKindLabel(kind: HabitKind): string {
-  if (kind === 'break') return '戒除';
-  if (kind === 'task') return '完成任务';
-  return '养成';
-}
 
 export default function HabitDetailScreen() {
   const router = useRouter();
@@ -804,7 +802,7 @@ export default function HabitDetailScreen() {
     if (!consumeHabitDetailPressDebounce(habit.id)) return;
     if (hasActiveSubHabits(habit.extra_data)) {
       const kind = parseHabitKind(habit.extra_data);
-      const label = kind === 'task' ? '子任务' : '子习惯';
+      const label = habitSubItemsLabel(kind).singular;
       Alert.alert('提示', `该习惯已启用${label}，请在任务页点击习惯后，在清单中完成打卡。`);
       return;
     }
@@ -865,7 +863,15 @@ export default function HabitDetailScreen() {
         }
       }
       await reload(true);
-      toast.success('已补卡');
+      try {
+        const progressResult = await notifyProjectsProgressHabitsAfterCheckIn(habit.id);
+        const progressMsg = formatProjectProgressHabitsFullMessage(progressResult.updates);
+        if (progressMsg) toast.info(progressMsg);
+        else toast.success('已补卡');
+      } catch (progressErr) {
+        console.warn('补卡后同步项目习惯进度失败', progressErr);
+        toast.success('已补卡');
+      }
     } catch (e) {
       console.warn('习惯补卡失败', e);
       toast.error(toUserMessage(e, '补卡未保存，请稍后重试。'));
@@ -981,6 +987,11 @@ export default function HabitDetailScreen() {
       }
       if (ymd === logicalTodayYmd) {
         void resyncHabitReminderForHabitId(habit.id);
+      }
+      try {
+        await notifyProjectsProgressHabitsAfterCheckIn(habit.id, { silent: true });
+      } catch (progressErr) {
+        console.warn('撤销后同步项目习惯进度失败', progressErr);
       }
       await reload(true);
       toast.success('已撤销');

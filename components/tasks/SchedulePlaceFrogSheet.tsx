@@ -66,8 +66,10 @@ type Props = {
   assignYmd: string;
   /** 从点选格起可连续占用的最大格数 */
   maxSpan: number;
-  /** 当日可排工作格总数；用于「全天」铺满（默认与 maxSpan 相同） */
+  /** 当日可排工作格总数；用于「全天」语义（默认与 maxSpan 相同） */
   daySlotCount?: number;
+  /** 从顶部全天格打开时默认勾选全天 */
+  initialAllDay?: boolean;
   lockedProjectIds?: Set<string>;
   /** 已选定主体时跳过列表，只选占用格数 */
   preselected?: SchedulePlacePreselected | null;
@@ -473,6 +475,7 @@ export function SchedulePlaceFrogSheet({
   assignYmd,
   maxSpan,
   daySlotCount,
+  initialAllDay = false,
   lockedProjectIds,
   preselected,
   onConfirm,
@@ -491,7 +494,7 @@ export function SchedulePlaceFrogSheet({
   const [blocked, setBlocked] = React.useState<DisplayCandidate[]>([]);
   const [picked, setPicked] = React.useState<DisplayCandidate | null>(null);
   const [span, setSpan] = React.useState(1);
-  const [allDay, setAllDay] = React.useState(false);
+  const [allDay, setAllDay] = React.useState(!!initialAllDay);
   const [logicalToday, setLogicalToday] = React.useState(assignYmd);
   const [tagColorByName, setTagColorByName] = React.useState<Map<string, string>>(() => new Map());
   const [seg, setSeg] = React.useState<SegKey>('recommend');
@@ -539,9 +542,10 @@ export function SchedulePlaceFrogSheet({
     setQuery('');
     setOnlyEligible(false);
     setBlockedOpen(false);
-    setSpan(1);
-    setAllDay(false);
-  }, [visible, assignYmd]);
+    const preferAllDay = !!initialAllDay;
+    setAllDay(preferAllDay);
+    setSpan(preferAllDay ? fullDaySlots : 1);
+  }, [visible, assignYmd, initialAllDay, fullDaySlots]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -732,7 +736,7 @@ export function SchedulePlaceFrogSheet({
 
       <Text style={[styles.spanHint, { color: tf.muted }]}>
         {allDay
-          ? `全天 · 占用当日全部 ${fullDaySlots} 格`
+          ? '全天 · 放入顶部全天格，不占用时段'
           : `连续占用格数（最多 ${maxSpan}）`}
       </Text>
       <View style={styles.spanRow}>

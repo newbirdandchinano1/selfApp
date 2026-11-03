@@ -1,6 +1,6 @@
 /**
- * 养成习惯「每周N天 / 每月N天」：周期内达标天数进度，及入格隐藏判断。
- * 与任务型 getTaskHabitTasksViewState.hiddenOnViewDay 对齐：
+ * 养成习惯旧版「每周N天 / 每月N天」（新建已收敛到周期配额）：周期内达标天数进度，及入格隐藏判断。
+ * 与周期配额 getTaskHabitTasksViewState.hiddenOnViewDay 对齐：
  * 本周期目标在查看日之前已达成 → 当日及之后本周期格子不再显示；下周期刷新再入格。
  */
 import { addDaysToLogicalYmd } from '@/lib/tasks-logical-day';

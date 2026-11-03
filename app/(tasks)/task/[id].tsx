@@ -5,8 +5,13 @@ import {
 } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { AcceptanceReviewModal } from '@/components/tasks/AcceptanceReviewModal';
+import { NoteImagePreview } from '@/components/tasks/note-image-attach';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
+import {
+  formatTaskStatusLabel,
+  TaskStatusTag,
+} from '@/components/tasks/task-status-tag';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
@@ -23,6 +28,7 @@ import { formatWriteError } from '@/lib/format-write-error';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import { unassignFrogForDay } from '@/lib/frog-candidates-api';
 import { clearFrogSessionCompletedOn, getIsLongTermTask } from '@/lib/long-term-task';
+import { parseNoteImageUris } from '@/lib/note-image-extra';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { applyTaskCompletionPointsReward } from '@/lib/repositories/habits/habit-points-grant';
 import { getProjectById } from '@/lib/repositories/projects/project';
@@ -130,15 +136,6 @@ function parseTaskMeta(extraData: string | null): TaskMetaExtra {
   }
 }
 
-function formatTaskStatus(status: string) {
-  if (status === 'doing') return '进行中';
-  if (status === 'done') return '已完成';
-  if (status === 'blocked') return '受阻';
-  if (status === 'cancelled') return '已取消';
-  if (status === 'shelved') return '暂时搁置';
-  return '待办';
-}
-
 function formatTaskPriority(priority: number) {
   if (priority >= 4) return 'P1 紧急重要';
   if (priority === 3) return 'P2 紧急不重要';
@@ -153,13 +150,6 @@ function formatPriorityShort(priority: number) {
   if (priority === 2) return 'P3';
   if (priority === 1) return 'P4';
   return '';
-}
-
-function statusTagTone(status: string): 'green' | 'amber' | 'gray' | 'rose' {
-  if (status === 'doing' || status === 'done') return 'green';
-  if (status === 'blocked' || status === 'shelved') return 'amber';
-  if (status === 'cancelled') return 'rose';
-  return 'gray';
 }
 
 function formatDateTimeCN(value: string | null) {
@@ -453,6 +443,7 @@ export default function TaskDetailScreen() {
   const [title, setTitle] = React.useState('');
   const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([]);
   const [taskNote, setTaskNote] = React.useState('');
+  const [taskNoteImageUris, setTaskNoteImageUris] = React.useState<string[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [status, setStatus] = React.useState('todo');
   const [priority, setPriority] = React.useState<number>(0);
@@ -593,6 +584,7 @@ export default function TaskDetailScreen() {
       );
       setAcceptanceItems(checklist);
       setTaskNote(longTerm ? '' : (row.note ?? '').trim());
+      setTaskNoteImageUris(longTerm ? [] : parseNoteImageUris(row.extra_data));
       setStatus(row.status);
       setPriority(row.priority ?? 0);
       setDueDate(nextDue);
@@ -989,7 +981,6 @@ export default function TaskDetailScreen() {
   });
 
   const meta = React.useMemo(() => parseTaskMeta(extraData), [extraData]);
-  const statusLabel = formatTaskStatus(status);
   const priorityLabel = formatTaskPriority(priority);
   const dueLabel = React.useMemo(
     () => buildScheduleDisplayLabel(meta.schedule, dueDate),
@@ -1363,7 +1354,7 @@ export default function TaskDetailScreen() {
                       {title || '未找到任务'}
                     </Text>
                     <View style={styles.tagRow}>
-                      <StatusTag label={statusLabel} tone={statusTagTone(status)} />
+                      <TaskStatusTag status={status} force compact={false} />
                       {!!priorityLabel && <StatusTag label={priorityLabel} tone="amber" />}
                       {isLeaf ? <StatusTag label="叶子任务" tone="gray" /> : null}
                       {hasFrog ? <StatusTag label="🐸 已入格" tone="frog" /> : null}
@@ -1494,7 +1485,7 @@ export default function TaskDetailScreen() {
                     )}
                   </View>,
                 )
-              : taskNote
+              : taskNote || taskNoteImageUris.length > 0
                 ? rise(
                     hasFrog ? 2 : 1,
                     <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
@@ -1513,7 +1504,12 @@ export default function TaskDetailScreen() {
                           <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>编辑 ›</Text>
                         </Pressable>
                       </View>
-                      <Text style={{ fontSize: 12, color: tf.ink2, lineHeight: 18 }}>{taskNote}</Text>
+                      {taskNote ? (
+                        <Text style={{ fontSize: 12, color: tf.ink2, lineHeight: 18 }}>{taskNote}</Text>
+                      ) : null}
+                      {taskNoteImageUris.length > 0 ? (
+                        <NoteImagePreview uris={taskNoteImageUris} borderColor={tf.line2} />
+                      ) : null}
                     </View>,
                   )
                 : null}
@@ -1537,33 +1533,38 @@ export default function TaskDetailScreen() {
                     <View key={child.id} style={styles.trow}>
                       <Pressable
                         onPress={() => void toggleChildDone(child)}
-                        disabled={togglingId === child.id}
+                        disabled={togglingId === child.id || child.status === 'shelved'}
                         hitSlop={6}
                         style={[
                           styles.cb,
                           done && { backgroundColor: tf.frog, borderColor: tf.frog },
                           !done && { borderColor: tf.line2 },
+                          child.status === 'shelved' && { opacity: 0.55 },
                         ]}>
                         {togglingId === child.id ? (
                           <ActivityIndicator size="small" color={done ? '#fff' : tf.frog} />
                         ) : done ? (
                           <MaterialIcons name="check" size={12} color="#fff" />
+                        ) : child.status === 'shelved' ? (
+                          <MaterialIcons name="pause" size={10} color={tf.muted} />
                         ) : null}
                       </Pressable>
                       <Pressable
                         onPress={() => router.push({ pathname: '/task/[id]', params: { id: child.id } })}
-                        style={{ flex: 1, minWidth: 0 }}>
+                        style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                         <Text
                           style={[
                             styles.tn,
                             {
-                              color: done ? tf.faint : tf.ink2,
+                              flexShrink: 1,
+                              color: done || child.status === 'shelved' ? tf.faint : tf.ink2,
                               textDecorationLine: done ? 'line-through' : 'none',
                             },
                           ]}
                           numberOfLines={2}>
                           {child.title}
                         </Text>
+                        <TaskStatusTag status={child.status} />
                       </Pressable>
                       {childFrog ? (
                         <View style={styles.frogleaf}>
@@ -1761,7 +1762,7 @@ export default function TaskDetailScreen() {
                         </Text>
                       </View>
                       <Text style={{ fontSize: 10, color: '#9DA69D' }}>
-                        {formatTaskStatus(link.status)}
+                        {formatTaskStatusLabel(link.status)}
                       </Text>
                     </Pressable>
                   ))

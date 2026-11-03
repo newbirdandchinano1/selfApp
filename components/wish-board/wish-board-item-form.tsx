@@ -15,6 +15,7 @@ import {
   WISH_BOARD_ICON_OPTIONS,
   type WishBoardIconOption,
 } from '@/lib/constants/wish-board-icons';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
@@ -67,6 +68,7 @@ type Props = {
   balance: number;
   projects: ProjectRow[];
   tasks: TaskRow[];
+  habits?: HabitRow[];
   currentNetWorth?: number | null;
   conditionsLoading?: boolean;
   saving?: boolean;
@@ -88,6 +90,7 @@ export function WishBoardItemForm({
   balance,
   projects,
   tasks,
+  habits = [],
   currentNetWorth = null,
   conditionsLoading = false,
   saving = false,
@@ -291,6 +294,7 @@ export function WishBoardItemForm({
           onChange={setRedeemConditions}
           projects={projects}
           tasks={tasks}
+          habits={habits}
           currentNetWorth={currentNetWorth}
           loading={conditionsLoading}
           disabled={disabled}

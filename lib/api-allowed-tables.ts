@@ -45,9 +45,19 @@ export const API_ALLOWED_TABLES = new Set([
   'wish_board_items',
   'life_directions',
   'life_bets',
+  'life_road_nodes',
   'tags',
   'tag_links',
   'health_daily_targets',
+  'wardrobe_closets',
+  'wardrobe_categories',
+  'wardrobe_items',
+  'wardrobe_occasions',
+  'wardrobe_outfits',
+  'wardrobe_outfit_items',
+  'wardrobe_wear_logs',
+  'wardrobe_option_values',
+  'wardrobe_body_profile',
 ]);
 
 /** 非 id 主键表 */
@@ -77,6 +87,15 @@ export const API_GENERIC_WRITE_FORBIDDEN_TABLES = new Set([
   'schedule_placements',
   'schedule_week_axis_snapshot',
   'finance_transactions',
+  'wardrobe_closets',
+  'wardrobe_categories',
+  'wardrobe_items',
+  'wardrobe_occasions',
+  'wardrobe_outfits',
+  'wardrobe_outfit_items',
+  'wardrobe_wear_logs',
+  'wardrobe_option_values',
+  'wardrobe_body_profile',
 ]);
 
 export function isApiGenericWriteForbidden(table: string): boolean {

@@ -17,6 +17,8 @@ export type AddTaskBridgePayload = {
     repeat?: string;
     repeatText?: string;
     note?: string | null;
+    /** 备注附图本地 / 库路径列表，写入 tasks.extra_data.note_image_uris */
+    noteImageUris?: string[];
     acceptanceCriteria?: string;
     schedule?: Record<string, unknown> | null;
     isLongTermTask?: boolean;

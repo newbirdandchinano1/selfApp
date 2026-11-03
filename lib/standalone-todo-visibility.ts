@@ -198,7 +198,8 @@ export function isStandaloneTodoRepeatWaiting(task: TaskRow, logicalTodayYmd: st
  * 独立待办日程窗：
  * - 时刻/单日：当天显示；过期未完成仍保留（特殊标识 + 置顶）
  * - 时间段：区间内显示，过期未完成仍保留
- * - 未开始的未来日程不提前展示
+ * - 明天的日程提前进入列表（底部特殊标记，见 `isStandaloneTodoTomorrowPreview`）
+ * - 更远的未来日程仍不提前展示
  * 重复规则由 repeat 过滤器处理。
  */
 export function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalTodayYmd: string): boolean {
@@ -206,16 +207,37 @@ export function standaloneTodoPassesScheduleWindowFilter(task: TaskRow, logicalT
   if (parseTaskRepeatSchedule(task.extra_data)) return true;
 
   const window = getStandaloneTodoScheduleWindow(task);
+  const tomorrowYmd = addDaysToYmd(logicalTodayYmd, 1);
   if (window.kind === 'moment') {
     if (logicalTodayYmd === window.ymd) return true;
+    if (window.ymd === tomorrowYmd && isStandaloneTodoOpen(task)) return true;
     return isStandaloneTodoOpen(task) && logicalTodayYmd > window.ymd;
   }
   if (window.kind === 'period') {
     if (logicalTodayYmd >= window.startYmd && logicalTodayYmd <= window.endYmd) return true;
+    if (window.startYmd === tomorrowYmd && isStandaloneTodoOpen(task)) return true;
     return isStandaloneTodoOpen(task) && logicalTodayYmd > window.endYmd;
   }
 
   return true;
+}
+
+/**
+ * 明天预览待办：日程落在明天（或无日程仅 due_date=明天），排在今日已完成下方、变灰并标「明天」。
+ * 重复待办走 `isStandaloneTodoRepeatWaiting`，不占用本标记。
+ */
+export function isStandaloneTodoTomorrowPreview(task: TaskRow, logicalTodayYmd: string): boolean {
+  if (!isStandaloneTodoOpen(task) || isTaskShelvedStatus(task.status)) return false;
+  if (parseTaskRepeatSchedule(task.extra_data)) return false;
+  if (isTaskOverdueForList(task, logicalTodayYmd)) return false;
+
+  const tomorrowYmd = addDaysToYmd(logicalTodayYmd, 1);
+  const window = getStandaloneTodoScheduleWindow(task);
+  if (window.kind === 'moment') return window.ymd === tomorrowYmd;
+  if (window.kind === 'period') return window.startYmd === tomorrowYmd;
+
+  const due = task.due_date?.trim().slice(0, 10) ?? '';
+  return due === tomorrowYmd;
 }
 
 export function isStandaloneTodoVisibleOnDay(

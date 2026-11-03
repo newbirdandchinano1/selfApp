@@ -96,7 +96,8 @@ export async function fetchProfileLifeRoad(opts?: {
   const serverFallback = opts?.serverFallback ?? true;
   await Promise.all([
     readApiTable('life_directions', { serverFallback }),
-    readApiTable('life_bets', { serverFallback }),
+    readApiTable('life_road_nodes', { serverFallback }),
+    readApiTable('life_bets', { serverFallback }).catch(() => undefined),
   ]);
   return { fromApi: true };
 }

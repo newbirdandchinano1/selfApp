@@ -41,6 +41,7 @@ const PAGE_PARENTS: Record<string, string[]> = {
   'life-road': [TAB_PAGE_KEYS.profile],
   'edit-life-direction': ['life-road', TAB_PAGE_KEYS.profile],
   'edit-life-bet': ['life-road', TAB_PAGE_KEYS.profile],
+  'edit-life-road-node': ['life-road', TAB_PAGE_KEYS.profile],
   'memo-list': [TAB_PAGE_KEYS.profile],
   'memo-view': ['memo-list', TAB_PAGE_KEYS.profile],
   'memo-edit': ['memo-view', 'memo-list', TAB_PAGE_KEYS.profile],

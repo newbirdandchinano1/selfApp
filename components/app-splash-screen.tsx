@@ -160,22 +160,24 @@ export function AppSplashScreen({
             },
           ]}
         >
-          <Text style={styles.errorText}>{dbError}</Text>
-          {actionHint ? <Text style={styles.retryHint}>{actionHint}</Text> : null}
-          {statusText ? <Text style={styles.retryHint}>{statusText}</Text> : null}
-          <View style={styles.errorActions}>
-            <Pressable
-              disabled={retrying}
-              onPress={onRetry}
-              style={({ pressed }) => [
-                styles.errorButton,
-                { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
-              ]}
-            >
-              <Text style={styles.errorButtonText}>
-                {retrying ? busyActionLabel : primaryActionLabel}
-              </Text>
-            </Pressable>
+          <View style={styles.errorContent}>
+            <Text style={styles.errorText}>{dbError}</Text>
+            {actionHint ? <Text style={styles.retryHint}>{actionHint}</Text> : null}
+            {statusText ? <Text style={styles.retryHint}>{statusText}</Text> : null}
+            <View style={styles.errorActions}>
+              <Pressable
+                disabled={retrying}
+                onPress={onRetry}
+                style={({ pressed }) => [
+                  styles.errorButton,
+                  { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
+                ]}
+              >
+                <Text style={styles.errorButtonText}>
+                  {retrying ? busyActionLabel : primaryActionLabel}
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       ) : null}
@@ -225,23 +227,33 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
+  errorContent: {
+    width: '100%',
+    maxWidth: 360,
+    alignItems: 'center',
+  },
   errorText: {
+    width: '100%',
     fontSize: 14,
     fontWeight: '700',
     color: '#131b2e',
     textAlign: 'center',
+    lineHeight: 22,
     opacity: 0.85,
   },
   retryHint: {
+    width: '100%',
     marginTop: 8,
     fontSize: 13,
     fontWeight: '600',
     color: '#131b2e',
     textAlign: 'center',
+    lineHeight: 20,
     opacity: 0.55,
   },
   errorActions: {
     flexDirection: 'row',
+    justifyContent: 'center',
     gap: 10,
     marginTop: 14,
   },

@@ -85,7 +85,7 @@ export function mergeCompletionHabitIdsIntoExtraDataString(
   return JSON.stringify(next);
 }
 
-/** 可否作为项目完成条件：养成须有预期目标，戒除须有连续天数；任务型周期习惯不纳入 */
+/** 可否作为项目完成条件：养成须有预期目标，戒除须有连续天数；周期配额不纳入 */
 export function isHabitEligibleForProjectCompletion(habit: Pick<HabitRow, 'extra_data'>): boolean {
   const kind = parseHabitKind(habit.extra_data);
   if (kind === 'build') return parseBuildHabitExpectedGoal(habit.extra_data) != null;

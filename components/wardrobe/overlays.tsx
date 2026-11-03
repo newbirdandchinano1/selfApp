@@ -1,6 +1,7 @@
 import {
   OCCASIONS,
   RECENT_SEARCHES,
+  isUncategorizedCategory,
   itemById,
   type ClosetLayout,
   type ClosetSort,
@@ -25,7 +26,6 @@ import {
   IconHanger,
   IconImage,
   IconLayers,
-  IconLink,
   IconPalette,
   IconPlus,
   IconSearch,
@@ -36,8 +36,7 @@ import {
   IconTag,
 } from '@/components/wardrobe/icons';
 import { FOLD_MOTION_EASE, FOLD_MOTION_SPRING } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeEm, wardrobeFonts, wardrobeType } from '@/constants/wardrobe-theme';
-import { toast } from '@/lib/app-feedback/toast-events';
+import { useWardrobeTheme, wardrobeEm, wardrobeFonts, wardrobeType, type WardrobePalette } from '@/constants/wardrobe-theme';
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -50,6 +49,15 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+
+type WardrobeStyles = ReturnType<typeof createStyles>;
+
+function useWardrobeStyles(): { w: WardrobePalette; styles: WardrobeStyles } {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
+  return { w, styles };
+}
 
 /* ─── shared bits ─── */
 
@@ -68,6 +76,7 @@ function SheetRow({
   trailing?: React.ReactNode;
   leading?: React.ReactNode;
 }) {
+  const { styles } = useWardrobeStyles();
   return (
     <Pressable onPress={onPress} style={[styles.sheetRow, active && styles.sheetRowActive]}>
       {leading}
@@ -81,6 +90,7 @@ function SheetRow({
 }
 
 function DetailGrid({ pairs }: { pairs: [string, string][] }) {
+  const { styles } = useWardrobeStyles();
   return (
     <View style={styles.detailGrid}>
       {pairs.map(([label, value]) => (
@@ -97,6 +107,7 @@ function DetailGrid({ pairs }: { pairs: [string, string][] }) {
 
 /** 穿搭统计进度条：对齐设计稿 growX（.8s，错峰 60ms） */
 function StatBarFill({ widthPct, index }: { widthPct: number; index: number }) {
+  const { styles } = useWardrobeStyles();
   const progress = useRef(new Animated.Value(0)).current;
   const target = Math.max(0, Math.min(100, widthPct));
 
@@ -140,94 +151,120 @@ export const LayoutPop = memo(function LayoutPop({
   onManageCategories,
   onClose,
 }: LayoutPopProps) {
-  if (!visible) return null;
+  const { w, styles } = useWardrobeStyles();
+  const insets = useSafeAreaInsets();
   const rows: { key: ClosetLayout; label: string; icon: React.ReactNode }[] = [
-    { key: 'card', label: '卡片布局', icon: <IconGrid size={11} color={WARDROBE.pine} /> },
-    { key: 'double', label: '双列布局', icon: <IconDoubleCols size={11} color={WARDROBE.pine} /> },
-    { key: 'single', label: '单列布局', icon: <IconSingleCol size={11} color={WARDROBE.pine} /> },
+    { key: 'card', label: '卡片布局', icon: <IconGrid size={11} color={w.pine} /> },
+    { key: 'double', label: '双列布局', icon: <IconDoubleCols size={11} color={w.pine} /> },
+    { key: 'single', label: '单列布局', icon: <IconSingleCol size={11} color={w.pine} /> },
   ];
   return (
-    <>
-      <Pressable style={styles.catcher} onPress={onClose} />
-      <View style={styles.layoutPop}>
-        <Text style={styles.popTitle}>VIEW · 视图</Text>
-        {rows.map((row) => (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent>
+      <View style={styles.layoutPopBackdrop}>
+        {/* Android 会折叠空 View，必须 collapsable={false}，否则空白处点不到 */}
+        <Pressable
+          style={styles.layoutPopDismissHit}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="关闭菜单"
+          collapsable={false}
+        />
+        <View style={[styles.layoutPop, { top: Math.max(insets.top, 12) + 56 }]} collapsable={false}>
+          <Text style={styles.popTitle}>VIEW · 视图</Text>
+          {rows.map((row) => (
+            <Pressable
+              key={row.key}
+              style={[styles.popRow, layout === row.key && styles.popRowActive]}
+              onPress={() => {
+                onLayout(row.key);
+                onClose();
+              }}>
+              <View style={styles.pi}>{row.icon}</View>
+              <Text style={[styles.popRowText, layout === row.key && styles.popRowTextActive]}>{row.label}</Text>
+              <View style={[styles.check, layout === row.key && styles.checkOn]}>
+                <IconCheck size={12} color={w.amber} />
+              </View>
+            </Pressable>
+          ))}
+          <View style={styles.popSep} />
           <Pressable
-            key={row.key}
-            style={[styles.popRow, layout === row.key && styles.popRowActive]}
+            style={styles.popRow}
             onPress={() => {
-              onLayout(row.key);
               onClose();
+              onSort();
             }}>
-            <View style={styles.pi}>{row.icon}</View>
-            <Text style={[styles.popRowText, layout === row.key && styles.popRowTextActive]}>{row.label}</Text>
-            <View style={[styles.check, layout === row.key && styles.checkOn]}>
-              <IconCheck size={12} color={WARDROBE.amber} />
+            <View style={styles.pi}>
+              <IconSort size={11} color={w.pine} />
             </View>
+            <Text style={styles.popRowText}>修改排序</Text>
           </Pressable>
-        ))}
-        <View style={styles.popSep} />
-        <Pressable
-          style={styles.popRow}
-          onPress={() => {
-            onClose();
-            onSort();
-          }}>
-          <View style={styles.pi}>
-            <IconSort size={11} color={WARDROBE.pine} />
-          </View>
-          <Text style={styles.popRowText}>修改排序</Text>
-        </Pressable>
-        <Pressable
-          style={styles.popRow}
-          onPress={() => {
-            onClose();
-            onManageCategories();
-          }}>
-          <View style={styles.pi}>
-            <IconFolderPlus size={11} color={WARDROBE.pine} />
-          </View>
-          <Text style={styles.popRowText}>管理分类</Text>
-        </Pressable>
+          <Pressable
+            style={styles.popRow}
+            onPress={() => {
+              onClose();
+              onManageCategories();
+            }}>
+            <View style={styles.pi}>
+              <IconFolderPlus size={11} color={w.pine} />
+            </View>
+            <Text style={styles.popRowText}>管理分类</Text>
+          </Pressable>
+        </View>
       </View>
-    </>
+    </Modal>
   );
 });
 
 /* ─── CreatePop ─── */
 
-const CREATE_OPTS: Record<
-  WardrobeTab,
-  { label: string; note: string; icon: React.ReactNode; tile: string }[]
-> = {
-  closet: [
-    { label: '拍照', note: '用相机记录今天的穿搭', icon: <IconCamera size={14} color="#41604F" />, tile: '#E1E8E1' },
-    { label: '从相册导入', note: '选择已有照片', icon: <IconImage size={14} color="#8C6A3C" />, tile: '#F1E5D3' },
-    { label: '淘宝链接', note: '粘贴链接自动识别', icon: <IconLink size={14} color="#4A5F79" />, tile: '#E3E7EF' },
-    { label: '从剪贴板导入', note: '读取剪贴板中的图片', icon: <IconClip size={14} color="#8C5541" />, tile: '#F0DFD5' },
-  ],
-  outfits: [
-    { label: '从单品组合', note: '挑选衣橱里的单品', icon: <IconLayers size={14} color="#41604F" />, tile: '#E1E8E1' },
-    { label: '拍照上传', note: '记录今天的造型', icon: <IconCamera size={14} color="#8C6A3C" />, tile: '#F1E5D3' },
-    { label: 'AI 灵感', note: '根据场合生成搭配', icon: <IconSparkle size={14} color="#4A5F79" />, tile: '#E3E7EF' },
-  ],
-  mine: [
-    { label: '新建衣橱', note: '为旅行或季节单独整理', icon: <IconBox size={14} color="#41604F" />, tile: '#E1E8E1' },
-    { label: '导入衣橱', note: '从备份恢复数据', icon: <IconClip size={14} color="#8C6A3C" />, tile: '#F1E5D3' },
-    { label: '邀请共用', note: '与家人一起整理衣橱', icon: <IconLayers size={14} color="#4A5F79" />, tile: '#E3E7EF' },
-  ],
-};
+function createOptsFor(
+  tab: WardrobeTab,
+  w: WardrobePalette,
+): { label: string; note: string; icon: React.ReactNode; tile: string }[] {
+  if (tab === 'closet') {
+    return [
+      { label: '拍照', note: '用相机记录今天的穿搭', icon: <IconCamera size={14} color={w.pine} />, tile: w.sage2 },
+      { label: '从相册导入', note: '选择已有照片', icon: <IconImage size={14} color={w.amber} />, tile: w.amber2 },
+    ];
+  }
+  if (tab === 'outfits') {
+    return [
+      { label: '从单品组合', note: '挑选衣橱里的单品', icon: <IconLayers size={14} color={w.pine} />, tile: w.sage2 },
+      { label: '拍照上传', note: '记录今天的造型', icon: <IconCamera size={14} color={w.amber} />, tile: w.amber2 },
+      { label: 'AI 灵感', note: '根据场合生成搭配', icon: <IconSparkle size={14} color={w.sky} />, tile: w.sky2 },
+    ];
+  }
+  return [
+    { label: '新建衣橱', note: '为旅行或季节单独整理', icon: <IconBox size={14} color={w.pine} />, tile: w.sage2 },
+    { label: '导入衣橱', note: '从备份恢复数据', icon: <IconClip size={14} color={w.amber} />, tile: w.amber2 },
+    { label: '邀请共用', note: '与家人一起整理衣橱', icon: <IconLayers size={14} color={w.sky} />, tile: w.sky2 },
+  ];
+}
 
 export type CreatePopProps = {
   visible: boolean;
   tab: WardrobeTab;
   categoryHint?: string | null;
   onClose: () => void;
+  /** 选中创建入口；由页面打开对应编辑器 */
+  onSelect?: (label: string) => void;
 };
 
-export const CreatePop = memo(function CreatePop({ visible, tab, categoryHint, onClose }: CreatePopProps) {
-  if (!visible) return null;
-  const opts = CREATE_OPTS[tab];
+export const CreatePop = memo(function CreatePop({
+  visible,
+  tab,
+  categoryHint,
+  onClose,
+  onSelect,
+}: CreatePopProps) {
+  const { w, styles } = useWardrobeStyles();
+  const insets = useSafeAreaInsets();
+  const opts = createOptsFor(tab, w);
   const title =
     tab === 'closet' && categoryHint
       ? `CREATE · 添加到${categoryHint}`
@@ -238,28 +275,43 @@ export const CreatePop = memo(function CreatePop({ visible, tab, categoryHint, o
           : 'CREATE · 添加单品';
 
   return (
-    <>
-      <Pressable style={styles.catcher} onPress={onClose} />
-      <View style={styles.createPop}>
-        <Text style={styles.popTitle}>{title}</Text>
-        {opts.map((opt) => (
-          <Pressable
-            key={opt.label}
-            style={styles.createOpt}
-            onPress={() => {
-              toast.info(`演示：${opt.label}`);
-              onClose();
-            }}>
-            <View style={[styles.coIco, { backgroundColor: opt.tile }]}>{opt.icon}</View>
-            <View>
-              <Text style={styles.coTitle}>{opt.label}</Text>
-              <Text style={styles.coNote}>{opt.note}</Text>
-            </View>
-          </Pressable>
-        ))}
-        <View style={styles.createArrow} />
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent>
+      <View style={styles.layoutPopBackdrop}>
+        <Pressable
+          style={styles.layoutPopDismissHit}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="关闭菜单"
+          collapsable={false}
+        />
+        <View
+          style={[styles.createPop, { bottom: 154 + Math.max(insets.bottom - 10, 0) }]}
+          collapsable={false}>
+          <Text style={styles.popTitle}>{title}</Text>
+          {opts.map((opt) => (
+            <Pressable
+              key={opt.label}
+              style={styles.createOpt}
+              onPress={() => {
+                onSelect?.(opt.label);
+                onClose();
+              }}>
+              <View style={[styles.coIco, { backgroundColor: opt.tile }]}>{opt.icon}</View>
+              <View>
+                <Text style={styles.coTitle}>{opt.label}</Text>
+                <Text style={styles.coNote}>{opt.note}</Text>
+              </View>
+            </Pressable>
+          ))}
+          <View style={styles.createArrow} />
+        </View>
       </View>
-    </>
+    </Modal>
   );
 });
 
@@ -279,12 +331,39 @@ export type SheetContent =
       items?: WardrobeItem[];
       outfits?: WardrobeOutfit[];
     }
-  | { kind: 'context'; tab: WardrobeTab; sort: ClosetSort; categories: WardrobeCategory[] }
+  | {
+      kind: 'context';
+      tab: WardrobeTab;
+      sort: ClosetSort;
+      categories: WardrobeCategory[];
+      itemCount?: number;
+      outfitCount?: number;
+    }
   | null;
+
+export type WardrobeSheetClosetRow = {
+  id: string;
+  name: string;
+  is_default: number;
+  item_count?: number;
+};
+
+export type WardrobeSheetOptionRow = {
+  id: string;
+  kind: string;
+  value: string;
+};
 
 export type WardrobeSheetProps = {
   content: SheetContent;
   onClose: () => void;
+  /** 含「全部」的场合名列表；缺省用演示 OCCASIONS */
+  occasions?: readonly string[];
+  closets?: WardrobeSheetClosetRow[];
+  optionRows?: WardrobeSheetOptionRow[];
+  bodyPairs?: [string, string][];
+  aboutPairs?: [string, string][];
+  wearHistory28?: boolean[] | null;
   onSortPick?: (sort: ClosetSort) => void;
   onSeason?: (season: SeasonFilter) => void;
   onOpenItem?: (id: string) => void;
@@ -292,11 +371,35 @@ export type WardrobeSheetProps = {
   onWearOutfit?: (id: string) => void;
   onOpenGeneric?: (key: string) => void;
   onCategoryAction?: (action: string, name?: string) => void;
+  onCreateItem?: (categoryHint?: string) => void;
+  onEditItem?: (id: string) => void;
+  onDeleteItem?: (id: string) => void;
+  onCreateOutfit?: (seedItemIds?: string[]) => void;
+  onEditOutfit?: (id: string) => void;
+  onDeleteOutfit?: (id: string) => void;
+  onCreateCategory?: () => void;
+  onRenameCategory?: (name: string) => void;
+  onDeleteCategory?: (name: string) => void;
+  onCreateOccasion?: () => void;
+  onDeleteOccasion?: (name: string) => void;
+  onCreateCloset?: () => void;
+  onSelectCloset?: (id: string) => void;
+  onDeleteCloset?: (id: string) => void;
+  onCreateOption?: (kind: 'color' | 'brand' | 'season' | 'fit') => void;
+  onDeleteOption?: (id: string, label: string) => void;
+  onEditBody?: () => void;
+  onOutfitSort?: (mode: 'recent' | 'wear' | 'occasion') => void;
 };
 
 export const WardrobeSheet = memo(function WardrobeSheet({
   content,
   onClose,
+  occasions: occasionsProp,
+  closets,
+  optionRows,
+  bodyPairs,
+  aboutPairs,
+  wearHistory28,
   onSortPick,
   onSeason,
   onOpenItem,
@@ -304,7 +407,27 @@ export const WardrobeSheet = memo(function WardrobeSheet({
   onWearOutfit,
   onOpenGeneric,
   onCategoryAction,
+  onCreateItem,
+  onEditItem,
+  onDeleteItem,
+  onCreateOutfit,
+  onEditOutfit,
+  onDeleteOutfit,
+  onCreateCategory,
+  onRenameCategory,
+  onDeleteCategory,
+  onCreateOccasion,
+  onDeleteOccasion,
+  onCreateCloset,
+  onSelectCloset,
+  onDeleteCloset,
+  onCreateOption,
+  onDeleteOption,
+  onEditBody,
+  onOutfitSort,
 }: WardrobeSheetProps) {
+  const occasionList = occasionsProp?.length ? occasionsProp : OCCASIONS;
+  const { w, styles } = useWardrobeStyles();
   const insets = useSafeAreaInsets();
   const visible = !!content;
   const translateY = useRef(new Animated.Value(480)).current;
@@ -342,7 +465,6 @@ export const WardrobeSheet = memo(function WardrobeSheet({
     const map: Record<string, string> = {
       wardrobe: '衣橱管理',
       options: '选项管理',
-      sizes: '详细尺码管理',
       body: '身材数据',
       season: '衣橱季节',
       stats: '穿搭统计',
@@ -357,7 +479,10 @@ export const WardrobeSheet = memo(function WardrobeSheet({
     if (!content) return null;
     if (content.kind === 'item') {
       const item = content.item;
-      const dots = Array.from({ length: 28 }, (_, index) => (index * 7 + item.wear) % 4 === 0);
+      const dots =
+        wearHistory28 && wearHistory28.length === 28
+          ? wearHistory28
+          : Array.from({ length: 28 }, () => false);
       return (
         <View>
           <View style={[styles.detailVisual, { backgroundColor: item.tint }]}>
@@ -403,13 +528,34 @@ export const WardrobeSheet = memo(function WardrobeSheet({
             <Pressable
               style={[styles.btn, styles.btnPrimary]}
               onPress={() => onWearItem?.(item.id)}>
-              <IconHanger size={11} color={WARDROBE.onPine} />
+              <IconHanger size={11} color={w.onPine} />
               <Text style={styles.btnPrimaryText}>穿这件</Text>
             </Pressable>
             <Pressable
               style={[styles.btn, styles.btnGhost]}
-              onPress={() => toast.info('演示：加入搭配')}>
+              onPress={() => {
+                onClose();
+                onCreateOutfit?.([item.id]);
+              }}>
               <Text style={styles.btnGhostText}>加入搭配</Text>
+            </Pressable>
+          </View>
+          <View style={[styles.detailActions, { marginTop: 8 }]}>
+            <Pressable
+              style={[styles.btn, styles.btnGhost]}
+              onPress={() => {
+                onClose();
+                onEditItem?.(item.id);
+              }}>
+              <Text style={styles.btnGhostText}>编辑</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.btn, styles.btnGhost]}
+              onPress={() => {
+                onClose();
+                onDeleteItem?.(item.id);
+              }}>
+              <Text style={styles.btnGhostText}>删除</Text>
             </Pressable>
           </View>
         </View>
@@ -420,7 +566,7 @@ export const WardrobeSheet = memo(function WardrobeSheet({
       const { outfit, items } = content;
       return (
         <View>
-          <View style={[styles.detailVisual, { backgroundColor: '#F1E9DA', height: 160 }]}>
+          <View style={[styles.detailVisual, { backgroundColor: w.paper2, height: 160 }]}>
             <Text style={styles.dvLabel}>LOOK · {outfit.date.replace('.', ' / ')}</Text>
             <View style={styles.dvSeason}>
               <Text style={styles.dvSeasonText}>{outfit.occasion}</Text>
@@ -481,15 +627,26 @@ export const WardrobeSheet = memo(function WardrobeSheet({
             <Pressable
               style={[styles.btn, styles.btnPrimary]}
               onPress={() => onWearOutfit?.(outfit.id)}>
-              <IconHanger size={11} color={WARDROBE.onPine} />
+              <IconHanger size={11} color={w.onPine} />
               <Text style={styles.btnPrimaryText}>穿这套</Text>
             </Pressable>
             <Pressable
               style={[styles.btn, styles.btnGhost]}
-              onPress={() => toast.info('演示：编辑搭配')}>
-              <Text style={styles.btnGhostText}>编辑搭配</Text>
+              onPress={() => {
+                onClose();
+                onEditOutfit?.(outfit.id);
+              }}>
+              <Text style={styles.btnGhostText}>编辑拼图</Text>
             </Pressable>
           </View>
+          <Pressable
+            style={[styles.addRow, { marginTop: 8 }]}
+            onPress={() => {
+              onClose();
+              onDeleteOutfit?.(outfit.id);
+            }}>
+            <Text style={styles.addRowText}>删除这套搭配</Text>
+          </Pressable>
         </View>
       );
     }
@@ -520,21 +677,30 @@ export const WardrobeSheet = memo(function WardrobeSheet({
     if (content.kind === 'categories') {
       return (
         <View style={styles.sheetList}>
-          {content.categories.map((cat) => (
-            <SheetRow
-              key={cat.name}
-              title={cat.name}
-              note={`${cat.ids.length} 件单品 · 点击管理`}
-              onPress={() => onCategoryAction?.('open', cat.name)}
-            />
-          ))}
+          {content.categories.map((cat) => {
+            const locked = isUncategorizedCategory(cat.name);
+            return (
+              <SheetRow
+                key={cat.name}
+                title={cat.name}
+                note={
+                  locked
+                    ? `${cat.ids.length} 件单品 · 系统分类，不可编辑`
+                    : `${cat.ids.length} 件单品 · 点击管理`
+                }
+                onPress={
+                  locked ? undefined : () => onCategoryAction?.('open', cat.name)
+                }
+              />
+            );
+          })}
           <Pressable
             style={styles.addRow}
             onPress={() => {
-              toast.info('演示：新建分类');
               onClose();
+              onCreateCategory?.();
             }}>
-            <IconPlus size={12} color={WARDROBE.muted} />
+            <IconPlus size={12} color={w.muted} />
             <Text style={styles.addRowText}>新建分类</Text>
           </Pressable>
         </View>
@@ -543,6 +709,7 @@ export const WardrobeSheet = memo(function WardrobeSheet({
 
     if (content.kind === 'category') {
       const cat = content.categories.find((c) => c.name === content.name);
+      const locked = isUncategorizedCategory(content.name);
       return (
         <View style={styles.sheetList}>
           <SheetRow
@@ -550,17 +717,30 @@ export const WardrobeSheet = memo(function WardrobeSheet({
             note={`把新单品加入「${content.name}」`}
             onPress={() => onCategoryAction?.('add', content.name)}
           />
-          <SheetRow
-            title="重命名分类"
-            note={`当前名称：${content.name}`}
-            onPress={() => toast.info('演示：重命名分类')}
-          />
-          <SheetRow title="调整顺序" note="拖动分类在衣橱中的位置" onPress={() => toast.info('演示：调整顺序')} />
-          <SheetRow
-            title="删除分类"
-            note={cat?.ids.length ? '需先移动其中单品' : '该分类暂无单品，可直接删除'}
-            onPress={() => toast.info('演示：删除分类')}
-          />
+          {locked ? null : (
+            <>
+              <SheetRow
+                title="重命名分类"
+                note={`当前名称：${content.name}`}
+                onPress={() => {
+                  onClose();
+                  onRenameCategory?.(content.name);
+                }}
+              />
+              <SheetRow
+                title="删除分类"
+                note={
+                  cat?.ids.length
+                    ? '删除后单品将归入未分类'
+                    : '该分类暂无单品，可直接删除'
+                }
+                onPress={() => {
+                  onClose();
+                  onDeleteCategory?.(content.name);
+                }}
+              />
+            </>
+          )}
         </View>
       );
     }
@@ -576,33 +756,44 @@ export const WardrobeSheet = memo(function WardrobeSheet({
             />
             <SheetRow
               title="管理场合"
-              note={`${OCCASIONS.length - 1} 个场合`}
+              note={`${Math.max(0, occasionList.length - 1)} 个场合`}
               onPress={() => onOpenGeneric?.('occasions')}
             />
             <SheetRow
               title="新建搭配"
               note="从单品中组合一套新造型"
-              onPress={() => toast.info('演示：新建搭配')}
+              onPress={() => {
+                onClose();
+                onCreateOutfit?.();
+              }}
             />
           </View>
         );
       }
       if (content.tab === 'mine') {
+        const itemCount = content.itemCount ?? 0;
+        const outfitCount = content.outfitCount ?? 0;
+        const closetNote = closets?.length
+          ? `${closets.length} 个衣橱 · ${itemCount} 件单品`
+          : `${itemCount} 件单品`;
+        const optionNote = optionRows?.length
+          ? `${optionRows.length} 个词条`
+          : '颜色、品牌、季节与版型';
         return (
           <View style={styles.sheetList}>
             <SheetRow
               title="切换衣橱"
-              note="我的橱柜 · 旅行衣橱"
+              note={closetNote}
               onPress={() => onOpenGeneric?.('wardrobe')}
             />
             <SheetRow
               title="选项管理"
-              note="分类、颜色、品牌与季节"
+              note={optionNote}
               onPress={() => onOpenGeneric?.('options')}
             />
             <SheetRow
               title="关于 ATELIER"
-              note="版本 2.0 · 交互演示"
+              note={`${itemCount} 件 · ${outfitCount} 套 · 云端同步`}
               onPress={() => onOpenGeneric?.('about')}
             />
           </View>
@@ -628,7 +819,11 @@ export const WardrobeSheet = memo(function WardrobeSheet({
           />
           <SheetRow
             title="切换衣橱"
-            note="我的橱柜 · 12 件单品"
+            note={
+              closets?.length
+                ? `${closets.length} 个衣橱 · ${closets.reduce((n, c) => n + (c.item_count ?? 0), 0)} 件`
+                : '管理多个衣橱'
+            }
             onPress={() => onOpenGeneric?.('wardrobe')}
           />
         </View>
@@ -638,96 +833,147 @@ export const WardrobeSheet = memo(function WardrobeSheet({
     if (content.kind === 'generic') {
       const key = content.key;
       if (key === 'wardrobe') {
+        const list = closets?.length
+          ? closets
+          : [{ id: 'local', name: '我的橱柜', is_default: 1, item_count: content.items?.length ?? 0 }];
         return (
           <View style={styles.sheetList}>
-            <View style={styles.pickRow}>
-              <View style={styles.pIco}>
-                <IconCloset size={15} color={WARDROBE.pine} />
-              </View>
-              <View style={styles.srCopy}>
-                <Text style={styles.srTitle}>我的橱柜</Text>
-                <Text style={styles.srNote}>当前衣橱 · 12 件单品</Text>
-              </View>
-              <View style={[styles.radio, styles.radioOn]} />
-            </View>
-            <View style={styles.pickRow}>
-              <View style={styles.pIco}>
-                <IconCloset size={15} color={WARDROBE.pine} />
-              </View>
-              <View style={styles.srCopy}>
-                <Text style={styles.srTitle}>旅行衣橱</Text>
-                <Text style={styles.srNote}>4 件单品 · 上次更新 10.18</Text>
-              </View>
-              <View style={styles.radio} />
-            </View>
-            <Pressable style={styles.addRow} onPress={() => toast.info('演示：新建衣橱')}>
-              <IconPlus size={12} color={WARDROBE.muted} />
+            {list.map((c) => (
+              <Pressable
+                key={c.id}
+                style={styles.pickRow}
+                onPress={() => onSelectCloset?.(c.id)}
+                onLongPress={() => {
+                  if (c.is_default) return;
+                  onClose();
+                  onDeleteCloset?.(c.id);
+                }}>
+                <View style={styles.pIco}>
+                  <IconCloset size={15} color={w.pine} />
+                </View>
+                <View style={styles.srCopy}>
+                  <Text style={styles.srTitle}>{c.name}</Text>
+                  <Text style={styles.srNote}>
+                    {c.is_default ? '当前默认' : '长按可删除'}
+                    {c.item_count != null ? ` · ${c.item_count} 件` : ''}
+                  </Text>
+                </View>
+                <View style={[styles.radio, c.is_default ? styles.radioOn : null]} />
+              </Pressable>
+            ))}
+            <Pressable
+              style={styles.addRow}
+              onPress={() => {
+                onClose();
+                onCreateCloset?.();
+              }}>
+              <IconPlus size={12} color={w.muted} />
               <Text style={styles.addRowText}>新建衣橱</Text>
             </Pressable>
           </View>
         );
       }
       if (key === 'options') {
+        const rows = optionRows ?? [];
         const opts = [
-          { label: '分类', note: '9 个分类', tile: '#E1E8E1', tone: '#41604F', icon: <IconTag size={15} color="#41604F" /> },
-          { label: '颜色', note: '4 个色系', tile: '#F1E5D3', tone: '#8C6A3C', icon: <IconPalette size={15} color="#8C6A3C" /> },
-          { label: '品牌', note: '10 个品牌', tile: '#E3E7EF', tone: '#4A5F79', icon: <IconTag size={15} color="#4A5F79" /> },
-          { label: '季节', note: '4 个季节', tile: '#E0E9E4', tone: '#3E6150', icon: <IconSeason size={15} color="#3E6150" /> },
+          {
+            kind: 'color' as const,
+            label: '颜色',
+            unit: '色系',
+            tile: w.amber2,
+            icon: <IconPalette size={15} color={w.amber} />,
+          },
+          {
+            kind: 'brand' as const,
+            label: '品牌',
+            unit: '品牌',
+            tile: w.sky2,
+            icon: <IconTag size={15} color={w.sky} />,
+          },
+          {
+            kind: 'season' as const,
+            label: '季节',
+            unit: '季节',
+            tile: w.sage2,
+            icon: <IconSeason size={15} color={w.pine2} />,
+          },
+          {
+            kind: 'fit' as const,
+            label: '版型',
+            unit: '版型',
+            tile: w.clay2,
+            icon: <IconTag size={15} color={w.clay} />,
+          },
         ];
         return (
           <View style={styles.sheetList}>
-            {opts.map((o) => (
-              <Pressable key={o.label} style={styles.pickRow} onPress={() => toast.info(`演示：${o.label}`)}>
-                <View style={[styles.pIco, { backgroundColor: o.tile }]}>{o.icon}</View>
-                <View style={styles.srCopy}>
-                  <Text style={styles.srTitle}>{o.label}</Text>
-                  <Text style={styles.srNote}>{o.note}</Text>
+            {opts.map((o) => {
+              const kindRows = rows.filter((r) => r.kind === o.kind);
+              return (
+                <View key={o.kind} style={styles.optionGroup}>
+                  <Pressable
+                    style={styles.pickRow}
+                    onPress={() => {
+                      onClose();
+                      onCreateOption?.(o.kind);
+                    }}>
+                    <View style={[styles.pIco, { backgroundColor: o.tile }]}>{o.icon}</View>
+                    <View style={styles.srCopy}>
+                      <Text style={styles.srTitle}>{o.label}</Text>
+                      <Text style={styles.srNote}>
+                        {kindRows.length} 个{o.unit} · 点击添加
+                      </Text>
+                    </View>
+                    <IconPlus size={12} color={w.muted2} />
+                  </Pressable>
+                  {kindRows.map((row) => (
+                    <Pressable
+                      key={row.id}
+                      style={styles.optionChildRow}
+                      onLongPress={() => {
+                        onClose();
+                        onDeleteOption?.(row.id, row.value);
+                      }}>
+                      <View style={styles.srCopy}>
+                        <Text style={styles.srTitle}>{row.value}</Text>
+                        <Text style={styles.srNote}>长按删除</Text>
+                      </View>
+                    </Pressable>
+                  ))}
                 </View>
-                <IconArrow size={11} color={WARDROBE.muted2} />
-              </Pressable>
-            ))}
-          </View>
-        );
-      }
-      if (key === 'sizes') {
-        return (
-          <View style={styles.sheetList}>
-            {[
-              ['上装', 'M · 肩宽 38 / 胸围 84', '#E3E7EF', '#4A5F79'],
-              ['下装', '27 · 腰围 66 / 臀围 90', '#E9E2D5', '#77694F'],
-              ['鞋履', '38 · 脚长 240mm', '#E0E9E4', '#3E6150'],
-              ['配饰', 'ONE SIZE', '#F0DFD5', '#8C5541'],
-            ].map(([label, note, tile, tone]) => (
-              <View key={label} style={styles.pickRow}>
-                <View style={[styles.pIco, { backgroundColor: tile }]}>
-                  <IconHanger size={15} color={tone} />
-                </View>
-                <View style={styles.srCopy}>
-                  <Text style={styles.srTitle}>{label}</Text>
-                  <Text style={styles.srNote}>{note}</Text>
-                </View>
-                <IconArrow size={11} color={WARDROBE.muted2} />
-              </View>
-            ))}
+              );
+            })}
           </View>
         );
       }
       if (key === 'body') {
+        const pairs =
+          bodyPairs ??
+          ([
+            ['身高', '—'],
+            ['体重', '—'],
+            ['肩宽', '—'],
+            ['胸围', '—'],
+            ['腰围', '—'],
+            ['臀围', '—'],
+            ['腿长', '—'],
+            ['脚长', '—'],
+            ['上装', '—'],
+            ['下装', '—'],
+            ['鞋码', '—'],
+          ] as [string, string][]);
         return (
           <View>
-            <DetailGrid
-              pairs={[
-                ['身高', '165 cm'],
-                ['体重', '52 kg'],
-                ['肩宽', '38 cm'],
-                ['胸围', '84 cm'],
-                ['腰围', '66 cm'],
-                ['臀围', '90 cm'],
-                ['腿长', '98 cm'],
-                ['脚长', '240 mm'],
-              ]}
-            />
-            <Text style={styles.mutedP}>身材数据仅保存在本机，用于推荐更合身的单品。</Text>
+            <DetailGrid pairs={pairs} />
+            <Pressable
+              style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]}
+              onPress={() => {
+                onClose();
+                onEditBody?.();
+              }}>
+              <Text style={styles.btnPrimaryText}>编辑身材 / 尺码</Text>
+            </Pressable>
+            <Text style={styles.mutedP}>数据同步到云端，用于多端一致的尺码与身材档案。</Text>
           </View>
         );
       }
@@ -764,8 +1010,19 @@ export const WardrobeSheet = memo(function WardrobeSheet({
         );
       }
       if (key === 'stats') {
-        const cats = (content.categories ?? []).filter((c) => c.ids.length).sort((a, b) => b.ids.length - a.ids.length);
-        const total = content.items?.length || 12;
+        const itemList = content.items ?? [];
+        const cats = (content.categories ?? [])
+          .filter((c) => c.ids.length)
+          .sort((a, b) => b.ids.length - a.ids.length);
+        const total = Math.max(itemList.length, 1);
+        const topWorn = [...itemList].sort((a, b) => b.wear - a.wear)[0];
+        const totalWear = itemList.reduce((sum, it) => sum + (it.wear || 0), 0);
+        const used = itemList.filter((it) => it.wear > 0).length;
+        const usagePct = itemList.length ? Math.round((used / itemList.length) * 100) : 0;
+        const valueSum = itemList.reduce((sum, it) => {
+          const n = Number(String(it.price).replace(/[^\d.]/g, ''));
+          return sum + (Number.isFinite(n) ? n : 0);
+        }, 0);
         return (
           <View>
             <View style={styles.statBars}>
@@ -781,10 +1038,10 @@ export const WardrobeSheet = memo(function WardrobeSheet({
             </View>
             <DetailGrid
               pairs={[
-                ['本月穿着', '32 次'],
-                ['最常穿', '帆布鞋'],
-                ['使用率', '71%'],
-                ['总价值', '¥7,100'],
+                ['累计穿着', `${totalWear} 次`],
+                ['最常穿', topWorn?.name ?? '—'],
+                ['使用率', `${usagePct}%`],
+                ['总价值', valueSum ? `¥${valueSum.toLocaleString('zh-CN')}` : '—'],
               ]}
             />
           </View>
@@ -793,18 +1050,19 @@ export const WardrobeSheet = memo(function WardrobeSheet({
       if (key === 'outfit-sort') {
         return (
           <View style={styles.sheetList}>
-            {[
-              ['最近添加', '按创建时间倒序'],
-              ['穿着次数', '最常穿的搭配优先'],
-              ['场合', '按场合分组'],
-            ].map(([label, note], i) => (
+            {(
+              [
+                ['recent', '最近添加', '按更新时间倒序'],
+                ['wear', '穿着次数', '最常穿的搭配优先'],
+                ['occasion', '场合', '按场合名称分组'],
+              ] as const
+            ).map(([mode, label, note]) => (
               <SheetRow
-                key={label}
+                key={mode}
                 title={label}
                 note={note}
-                active={i === 0}
                 onPress={() => {
-                  toast.info(`演示：按${label}排序`);
+                  onOutfitSort?.(mode);
                   onClose();
                 }}
               />
@@ -816,23 +1074,34 @@ export const WardrobeSheet = memo(function WardrobeSheet({
         const outfitList = content.outfits ?? [];
         return (
           <View style={styles.sheetList}>
-            {OCCASIONS.slice(1).map((o) => {
+            {occasionList.filter((o) => o !== '全部').map((o) => {
               const count = outfitList.filter((outfit) => outfit.occasion === o).length;
               return (
-                <View key={o} style={styles.pickRow}>
+                <Pressable
+                  key={o}
+                  style={styles.pickRow}
+                  onLongPress={() => {
+                    onClose();
+                    onDeleteOccasion?.(o);
+                  }}>
                   <View style={styles.pIco}>
-                    <IconTag size={15} color={WARDROBE.pine} />
+                    <IconTag size={15} color={w.pine} />
                   </View>
                   <View style={styles.srCopy}>
                     <Text style={styles.srTitle}>{o}</Text>
-                    <Text style={styles.srNote}>{count} 套搭配</Text>
+                    <Text style={styles.srNote}>{count} 套搭配 · 长按删除</Text>
                   </View>
-                  <IconArrow size={11} color={WARDROBE.muted2} />
-                </View>
+                  <IconArrow size={11} color={w.muted2} />
+                </Pressable>
               );
             })}
-            <Pressable style={styles.addRow} onPress={() => toast.info('演示：新建场合')}>
-              <IconPlus size={12} color={WARDROBE.muted} />
+            <Pressable
+              style={styles.addRow}
+              onPress={() => {
+                onClose();
+                onCreateOccasion?.();
+              }}>
+              <IconPlus size={12} color={w.muted} />
               <Text style={styles.addRowText}>新建场合</Text>
             </Pressable>
           </View>
@@ -847,18 +1116,22 @@ export const WardrobeSheet = memo(function WardrobeSheet({
               </View>
               <View>
                 <Text style={styles.profileName}>ATELIER</Text>
-                <Text style={styles.profileMeta}>WARDROBE SYSTEM · VERSION 2.0</Text>
+                <Text style={styles.profileMeta}>WARDROBE · CLOUD SYNC</Text>
               </View>
             </View>
             <Text style={styles.mutedP}>
-              一款安静、克制的衣橱管理工具。用分类、色彩与穿着记录，看看自己真正需要什么。</Text>
+              衣橱数据经 `/api/app/wardrobe` 与云端同步；穿着次数以日志为准。
+            </Text>
             <DetailGrid
-              pairs={[
-                ['单品', '12'],
-                ['搭配', '8'],
-                ['衣橱天数', '286'],
-                ['数据', '仅存本机'],
-              ]}
+              pairs={
+                aboutPairs ??
+                ([
+                  ['单品', String(content.items?.length ?? 0)],
+                  ['搭配', String(content.outfits?.length ?? 0)],
+                  ['分类', String(content.categories?.length ?? 0)],
+                  ['数据', '云端同步'],
+                ] as [string, string][])
+              }
             />
           </View>
         );
@@ -882,7 +1155,7 @@ export const WardrobeSheet = memo(function WardrobeSheet({
           <View style={styles.sheetHead}>
             <Text style={styles.sheetTitle}>{title}</Text>
             <Pressable onPress={onClose} style={styles.sheetClose} accessibilityLabel="关闭">
-              <IconClose size={16} color={WARDROBE.ink2} />
+              <IconClose size={16} color={w.ink2} />
             </Pressable>
           </View>
           <ScrollView style={styles.sheetBody} showsVerticalScrollIndicator={false}>
@@ -917,6 +1190,7 @@ export const SearchOverlay = memo(function SearchOverlay({
   onClose,
   onOpenItem,
 }: SearchOverlayProps) {
+  const { w, styles } = useWardrobeStyles();
   const [query, setQuery] = useState('');
   const [mounted, setMounted] = useState(false);
   const insets = useSafeAreaInsets();
@@ -999,19 +1273,19 @@ export const SearchOverlay = memo(function SearchOverlay({
       pointerEvents={visible ? 'auto' : 'none'}>
       <View style={styles.searchTop}>
         <View style={styles.searchField}>
-          <IconSearch size={16} color={WARDROBE.muted} />
+          <IconSearch size={16} color={w.muted} />
           <TextInput
             value={query}
             onChangeText={setQuery}
             placeholder="搜索单品、颜色、品牌…"
-            placeholderTextColor={WARDROBE.muted2}
+            placeholderTextColor={w.muted2}
             style={styles.searchInput}
             autoFocus={visible}
             returnKeyType="search"
           />
           {query ? (
             <Pressable onPress={() => setQuery('')} hitSlop={8}>
-              <IconClose size={14} color={WARDROBE.muted} />
+              <IconClose size={14} color={w.muted} />
             </Pressable>
           ) : null}
         </View>
@@ -1051,7 +1325,7 @@ export const SearchOverlay = memo(function SearchOverlay({
           </>
         ) : results.length === 0 ? (
           <View style={styles.searchEmpty}>
-            <IconSearch size={28} color={WARDROBE.muted2} />
+            <IconSearch size={28} color={w.muted2} />
             <Text style={styles.emptyTitle}>没有找到相关单品</Text>
             <Text style={styles.emptyHint}>试试「针织」「通勤」或「雾蓝」</Text>
           </View>
@@ -1071,6 +1345,7 @@ export const SearchOverlay = memo(function SearchOverlay({
 });
 
 function SearchRow({ item, onPress }: { item: WardrobeItem; onPress: () => void }) {
+  const { styles } = useWardrobeStyles();
   return (
     <Pressable style={styles.searchRow} onPress={onPress}>
       <View style={[styles.srThumb, { backgroundColor: item.tint }]}>
@@ -1087,44 +1362,63 @@ function SearchRow({ item, onPress }: { item: WardrobeItem; onPress: () => void 
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
+  popLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 28,
+    elevation: 28,
+  },
+  popLayerModal: {
+    flex: 1,
+  },
   catcher: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(20,30,25,0.1)',
-    zIndex: 38,
-    elevation: 20,
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: w.dim,
+  },
+  layoutPopBackdrop: {
+    flex: 1,
+    backgroundColor: w.dim,
+  },
+  layoutPopDismissHit: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1,
   },
   layoutPop: {
     position: 'absolute',
     left: 18,
     top: 92,
     width: 180,
-    zIndex: 40,
+    zIndex: 2,
+    elevation: 12,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: WARDROBE.card2,
+    borderColor: w.line,
+    backgroundColor: w.card2,
     padding: 6,
-    shadowColor: '#18261E',
+    shadowColor: w.shadow,
     shadowOpacity: 0.2,
     shadowRadius: 24,
-    elevation: 24,
   },
   createPop: {
     position: 'absolute',
     right: 20,
     bottom: 154,
     width: 214,
-    zIndex: 36,
+    zIndex: 2,
+    elevation: 12,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: WARDROBE.card2,
+    borderColor: w.line,
+    backgroundColor: w.card2,
     padding: 6,
-    shadowColor: '#18261E',
+    shadowColor: w.shadow,
     shadowOpacity: 0.2,
     shadowRadius: 24,
-    elevation: 12,
   },
   createArrow: {
     position: 'absolute',
@@ -1132,10 +1426,10 @@ const styles = StyleSheet.create({
     bottom: -5,
     width: 10,
     height: 10,
-    backgroundColor: WARDROBE.card2,
+    backgroundColor: w.card2,
     borderRightWidth: 1,
     borderBottomWidth: 1,
-    borderColor: WARDROBE.line,
+    borderColor: w.line,
     transform: [{ rotate: '45deg' }],
   },
   popTitle: {
@@ -1143,7 +1437,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingTop: 5,
     paddingBottom: 6,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   popRow: {
     flexDirection: 'row',
@@ -1157,20 +1451,20 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: wardrobeFonts.sans,
     fontSize: 9.5,
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
-  popRowTextActive: { color: WARDROBE.pine, fontFamily: wardrobeFonts.sansSemiBold },
+  popRowTextActive: { color: w.pine, fontFamily: wardrobeFonts.sansSemiBold },
   pi: {
     width: 19,
     height: 19,
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(33,69,58,0.06)',
+    backgroundColor: w.pineWash,
   },
   check: { width: 12, height: 12, opacity: 0 },
   checkOn: { opacity: 1 },
-  popSep: { height: 1, backgroundColor: WARDROBE.line3, marginVertical: 4, marginHorizontal: 6 },
+  popSep: { height: 1, backgroundColor: w.line3, marginVertical: 4, marginHorizontal: 6 },
   createOpt: { flexDirection: 'row', alignItems: 'center', gap: 9, padding: 8, borderRadius: 10 },
   coIco: {
     width: 28,
@@ -1182,34 +1476,34 @@ const styles = StyleSheet.create({
   coTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 9.5,
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   coNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 2,
   },
   sheetRoot: { flex: 1, justifyContent: 'flex-end' },
   sheetBackdrop: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(24,35,29,0.34)',
+    backgroundColor: w.dim,
   },
   sheet: {
-    backgroundColor: WARDROBE.card2,
+    backgroundColor: w.card2,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     maxHeight: '88%',
     paddingTop: 8,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
+    borderColor: w.line,
   },
   sheetHandle: {
     alignSelf: 'center',
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: WARDROBE.line2,
+    backgroundColor: w.line2,
     marginBottom: 6,
   },
   sheetHead: {
@@ -1221,7 +1515,7 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     ...wardrobeType.sheetTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   sheetClose: {
     width: 32,
@@ -1230,8 +1524,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.7)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   sheetBody: { paddingHorizontal: 16, paddingBottom: 12 },
   sheetList: { gap: 6 },
@@ -1243,30 +1537,30 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 13,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.55)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   sheetRowActive: {
-    borderColor: 'rgba(33,69,58,0.24)',
-    backgroundColor: 'rgba(33,69,58,0.04)',
+    borderColor: w.pine,
+    backgroundColor: w.pineWash,
   },
   srCopy: { flex: 1, minWidth: 0 },
   srTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 9.5,
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
-  srTitleActive: { color: WARDROBE.pine, fontFamily: wardrobeFonts.sansSemiBold },
+  srTitleActive: { color: w.pine, fontFamily: wardrobeFonts.sansSemiBold },
   srNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 2,
   },
   srPrice: {
     fontFamily: wardrobeFonts.monoSemiBold,
     fontSize: 8,
-    color: WARDROBE.clay,
+    color: w.clay,
   },
   srThumb: {
     width: 44,
@@ -1281,9 +1575,9 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     borderWidth: 1,
-    borderColor: WARDROBE.line2,
+    borderColor: w.line2,
   },
-  radioOn: { borderColor: WARDROBE.pine, backgroundColor: WARDROBE.pine },
+  radioOn: { borderColor: w.pineSolid, backgroundColor: w.pineSolid },
   addRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1293,12 +1587,12 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: WARDROBE.line2,
+    borderColor: w.line2,
   },
   addRowText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   pickRow: {
     flexDirection: 'row',
@@ -1308,8 +1602,21 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 13,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.55)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
+  },
+  optionGroup: { gap: 4 },
+  optionChildRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginLeft: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   pIco: {
     width: 32,
@@ -1317,7 +1624,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: WARDROBE.sage2,
+    backgroundColor: w.sage2,
   },
   detailVisual: {
     height: 174,
@@ -1325,7 +1632,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 13,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.7)',
+    borderColor: w.glassBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1337,7 +1644,7 @@ const styles = StyleSheet.create({
     fontFamily: wardrobeFonts.mono,
     fontSize: 6,
     letterSpacing: wardrobeEm(0.18, 6),
-    color: 'rgba(44,64,55,0.5)',
+    color: w.muted,
   },
   dvSeason: {
     position: 'absolute',
@@ -1347,15 +1654,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,253,247,0.72)',
+    backgroundColor: w.glassStrong,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.7)',
+    borderColor: w.glassBorder,
   },
   dvSeasonText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.04, 6.5),
-    color: WARDROBE.pine,
+    color: w.pine,
   },
   detailGarment: { zIndex: 1 },
   detailTitleRow: {
@@ -1368,12 +1675,12 @@ const styles = StyleSheet.create({
   detailTitle: {
     flex: 1,
     ...wardrobeType.detailTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   detailPrice: {
     fontFamily: wardrobeFonts.monoBold,
     fontSize: 14,
-    color: WARDROBE.clay,
+    color: w.clay,
     paddingTop: 3,
   },
   detailTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginVertical: 10, paddingHorizontal: 2 },
@@ -1382,14 +1689,14 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.7)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   tagChipText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.03, 6.5),
-    color: WARDROBE.ink3,
+    color: w.ink3,
   },
   detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 11 },
   dg: {
@@ -1404,19 +1711,19 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.66)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   dgLabel: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 7.5,
     letterSpacing: wardrobeEm(0.04, 7.5),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   dgValue: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 7.5,
-    color: WARDROBE.ink2,
+    color: w.ink2,
     maxWidth: '60%',
   },
   wearHistory: {
@@ -1424,33 +1731,33 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.5)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   whHead: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   whHeadText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 7.5,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   whHeadBold: {
     fontFamily: wardrobeFonts.monoBold,
     fontSize: 8,
-    color: WARDROBE.pine,
+    color: w.pine,
   },
   whDots: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   whDot: {
     width: '6.2%' as unknown as number,
     aspectRatio: 1,
     borderRadius: 2,
-    backgroundColor: 'rgba(33,69,58,0.075)',
+    backgroundColor: w.pineWash,
     minWidth: 10,
     minHeight: 10,
     flexGrow: 1,
     flexBasis: '6%',
     maxWidth: 14,
   },
-  whDotOn: { backgroundColor: WARDROBE.sage },
+  whDotOn: { backgroundColor: w.sage },
   detailActions: { flexDirection: 'row', gap: 8, paddingBottom: 8 },
   btn: {
     flex: 1,
@@ -1461,27 +1768,27 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 999,
   },
-  btnPrimary: { backgroundColor: WARDROBE.pine },
+  btnPrimary: { backgroundColor: w.pineSolid },
   btnPrimaryText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 9,
-    color: WARDROBE.onPine,
+    color: w.onPine,
   },
   btnGhost: {
     borderWidth: 1,
-    borderColor: WARDROBE.line2,
-    backgroundColor: 'rgba(252,249,241,0.56)',
+    borderColor: w.line2,
+    backgroundColor: w.glass,
   },
   btnGhostText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 9,
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   outfitNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 9,
     lineHeight: 15,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginBottom: 12,
     marginHorizontal: 2,
   },
@@ -1495,13 +1802,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     top: '24%',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.66)',
+    borderColor: w.glassBorder,
   },
   mutedP: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8.5,
     lineHeight: 14,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginVertical: 12,
     marginHorizontal: 2,
   },
@@ -1513,19 +1820,19 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 19,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.62)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   seasonTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 10,
     letterSpacing: wardrobeEm(0.03, 10),
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   seasonNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 2,
   },
   segmented: {
@@ -1533,33 +1840,33 @@ const styles = StyleSheet.create({
     gap: 2,
     padding: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(33,69,58,0.06)',
+    backgroundColor: w.pineWash,
   },
   seg: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999 },
-  segActive: { backgroundColor: WARDROBE.card2 },
+  segActive: { backgroundColor: w.card2 },
   segText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 7,
     letterSpacing: wardrobeEm(0.02, 7),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-  segTextActive: { color: WARDROBE.pine, fontFamily: wardrobeFonts.sansSemiBold },
+  segTextActive: { color: w.pine, fontFamily: wardrobeFonts.sansSemiBold },
   statBars: { gap: 9, paddingVertical: 4, marginBottom: 12 },
   sbRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sbLabel: {
     width: 48,
     fontFamily: wardrobeFonts.sans,
     fontSize: 7,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-  sbTrack: { flex: 1, height: 6, borderRadius: 99, backgroundColor: 'rgba(33,69,58,0.07)', overflow: 'hidden' },
-  sbFill: { height: '100%', borderRadius: 99, backgroundColor: WARDROBE.sage },
+  sbTrack: { flex: 1, height: 6, borderRadius: 99, backgroundColor: w.pineWash, overflow: 'hidden' },
+  sbFill: { height: '100%', borderRadius: 99, backgroundColor: w.sage },
   sbCount: {
     width: 30,
     textAlign: 'right',
     fontFamily: wardrobeFonts.mono,
     fontSize: 7,
-    color: WARDROBE.ink3,
+    color: w.ink3,
   },
   aboutCard: {
     flexDirection: 'row',
@@ -1568,26 +1875,26 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(255,253,247,0.95)',
+    borderColor: w.line,
+    backgroundColor: w.glassStrong,
     marginTop: 2,
   },
   avatar: {
     width: 52,
     height: 52,
     borderRadius: 17,
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { fontFamily: wardrobeFonts.serif, fontSize: 22, color: '#F6F0E1' },
+  avatarText: { fontFamily: wardrobeFonts.serif, fontSize: 22, color: w.onPine },
   profileName: {
     ...wardrobeType.profileName,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   profileMeta: {
     ...wardrobeType.profileMeta,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 4,
   },
   searchOverlay: {
@@ -1598,7 +1905,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 50,
     elevation: 50,
-    backgroundColor: 'rgba(244,240,231,0.96)',
+    backgroundColor: w.screenMid,
     paddingHorizontal: 18,
   },
   searchTop: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
@@ -1611,27 +1918,27 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: WARDROBE.card,
+    borderColor: w.line,
+    backgroundColor: w.card,
   },
   searchInput: {
     flex: 1,
     fontFamily: wardrobeFonts.sans,
     fontSize: 10,
     letterSpacing: wardrobeEm(0.02, 10),
-    color: WARDROBE.ink,
+    color: w.ink,
     padding: 0,
   },
   searchCancel: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 9,
     letterSpacing: wardrobeEm(0.03, 9),
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   searchBody: { flex: 1 },
   searchKicker: {
     ...wardrobeType.popTitle,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 14,
     marginBottom: 8,
   },
@@ -1644,13 +1951,13 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.7)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   searchTagText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
-    color: WARDROBE.ink3,
+    color: w.ink3,
   },
   colorDot: { width: 7, height: 7, borderRadius: 4 },
   searchList: { gap: 6 },
@@ -1663,31 +1970,32 @@ const styles = StyleSheet.create({
     paddingRight: 10,
     borderRadius: 15,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
-    backgroundColor: 'rgba(252,249,241,0.56)',
+    borderColor: w.line3,
+    backgroundColor: w.glass,
   },
   searchEmpty: { alignItems: 'center', paddingTop: 60, gap: 8 },
   searchRowTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 10,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   searchRowNote: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.03, 6.5),
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 3,
   },
   emptyTitle: {
     fontFamily: wardrobeFonts.serif,
     fontSize: 16,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   emptyHint: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
     lineHeight: 13,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-});
+  });
+}

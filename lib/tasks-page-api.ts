@@ -61,6 +61,8 @@ import {
 
   isStandaloneTodoRepeatWaiting,
 
+  isStandaloneTodoTomorrowPreview,
+
   standaloneTodoPassesDayBoundaryFilter,
 
   standaloneTodoPassesStandaloneListFilter,
@@ -273,16 +275,17 @@ export function resolveMatrixProjectIds(projects: ProjectRow[]): string | undefi
 
 /**
  * 独立待办列表排序（结构性置底/置顶优先，再按业务键级联；业务层对齐 sortProjectsForList）：
- * 1. 已完成 / 取消 → 最底
- * 2. 搁置 → 终态之上
- * 3. 未到执行日的重复待办（waiting）→ 搁置之上
- * 4. 活跃组内：过期 → 置顶
- * 5. 标签权重分降序（取已贴标签的最大权重；无标签=0 → 靠后）
- * 6. 紧急程度 priority 降序
- * 7. 有有效截止的在前；同有截止则越早越前；无截止 → 靠后
+ * 1. 活跃（组内过期置顶）
+ * 2. 未到执行日的重复待办（waiting）
+ * 3. 搁置
+ * 4. 已完成 / 取消
+ * 5. 明天预览 → 今日已完成之下
+ * 6. 标签权重分降序（取已贴标签的最大权重；无标签=0 → 靠后）
+ * 7. 紧急程度 priority 降序
+ * 8. 有有效截止的在前；同有截止则越早越前；无截止 → 靠后
  *    （due_date → schedule.range.end → schedule.date）
- * 8. 积分奖励降序（无积分 / 0 → 靠后）
- * 9. updated_at 降序 → id 升序作最后平局
+ * 9. 积分奖励降序（无积分 / 0 → 靠后）
+ * 10. updated_at 降序 → id 升序作最后平局
  */
 export function sortStandaloneTodosLocally(
   rows: TaskRow[],
@@ -302,25 +305,22 @@ export function sortStandaloneTodosLocally(
     return typeof w === 'number' && Number.isFinite(w) ? w : 0;
   };
 
-  const isWaiting = (t: TaskRow) =>
-    !!logicalTodayYmd && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd);
+  /** 越小越靠前：活跃 → waiting → 搁置 → 已完成 → 明天预览 */
+  const structureRank = (t: TaskRow): number => {
+    if (logicalTodayYmd && isStandaloneTodoTomorrowPreview(t, logicalTodayYmd)) return 4;
+    if (isDoneRow(t)) return 3;
+    if (t.status === 'shelved') return 2;
+    if (logicalTodayYmd && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd)) return 1;
+    return 0;
+  };
 
   const isOverdue = (t: TaskRow) =>
     !!logicalTodayYmd && isStandaloneTodoOverdue(t, logicalTodayYmd);
 
   return rows.slice().sort((a, b) => {
-    // 结构层：终态 → 搁置 → waiting →（活跃内过期置顶）
-    const da = isDoneRow(a);
-    const db = isDoneRow(b);
-    if (da !== db) return da ? 1 : -1;
-
-    const sa = a.status === 'shelved';
-    const sb = b.status === 'shelved';
-    if (sa !== sb) return sa ? 1 : -1;
-
-    const wa = isWaiting(a);
-    const wb = isWaiting(b);
-    if (wa !== wb) return wa ? 1 : -1;
+    const rankA = structureRank(a);
+    const rankB = structureRank(b);
+    if (rankA !== rankB) return rankA - rankB;
 
     const oa = isOverdue(a);
     const ob = isOverdue(b);

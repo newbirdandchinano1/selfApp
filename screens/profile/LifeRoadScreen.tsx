@@ -1,10 +1,9 @@
 /**
- * 道路总览：对齐设计稿 11 / 14（时间桶 Tab、总方向卡、名额已满拦截）。
- * 动效：入场 420ms 错峰；切桶赌注上浮；满额点新增抖动 + 琥珀闪。
+ * 道路导图子页：总方向 → 多年/更远 → 年 → 季 → 月 → 项目。
+ * 节点可展开验收标准 checklist；默认只展开当前年 / 季 / 月。
  */
 import {
   FoldRiseIn,
-  FOLD_MOTION_EASE,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { AppIcon } from '@/components/ui/app-icon';
@@ -13,38 +12,37 @@ import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
-  getLifeBetDerivedStats,
-  getLifeBetProgressRatio,
-  listActiveProjectsForLifeBet,
-  resolveLifeBetProgressRatio,
-  type LifeBetActiveProjectRef,
-  type LifeBetDerivedStats,
-} from '@/lib/life-road/life-road-derived';
+  acceptanceMetaLabel,
+  parseAcceptanceCriteria,
+  writeAcceptanceCriteria,
+  type LifeRoadAcceptanceItem,
+} from '@/lib/life-road/life-road-acceptance';
 import {
-  formatLifeBetListMeta,
-  LIFE_BET_HORIZON_LABELS,
-  LIFE_BET_STATUS_LABELS,
-  lifeBetFoldStatusTone,
-} from '@/lib/life-road/life-road-labels';
+  LIFE_ROAD_NODE_KIND_LABELS,
+  LIFE_ROAD_NODE_STATUS_LABELS,
+  monthLabel,
+  quarterLabel,
+  type LifeRoadNodeKind,
+} from '@/lib/life-road/life-road-node-model';
 import {
-  currentCalendarYear,
-  LIFE_BET_YEAR_ACTIVE_LIMIT,
-  type LifeBetHorizon,
-} from '@/lib/life-road/life-road-limits';
-import {
-  countActiveYearBetsLocal,
-  deleteLifeBet,
-  getLifeBets,
-  updateLifeBet,
-} from '@/lib/repositories/life-road/life-bet';
-import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
+  buildRoadMindMap,
+  type RoadMindMapModel,
+  type RoadProjectRef,
+} from '@/lib/life-road/life-road-tree';
+import { getDatabase } from '@/lib/database';
 import { getLifeDirection } from '@/lib/repositories/life-road/life-direction';
 import type { LifeDirectionRow } from '@/lib/repositories/life-road/life-direction.types';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import {
+  deleteLifeRoadNode,
+  getLifeRoadNodes,
+  updateLifeRoadNode,
+} from '@/lib/repositories/life-road/life-road-node';
+import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
+import { fetchProfileLifeRoad } from '@/lib/profile-page-api';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   Platform,
   Pressable,
   ScrollView,
@@ -56,185 +54,155 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const PAGE_KEY = 'life-road';
 const MIN_TOUCH = getMinTouchTarget(Platform.OS);
-const HORIZON_ORDER: LifeBetHorizon[] = ['year', 'multi', 'farther'];
 
-type BetView = {
-  bet: LifeBetRow;
-  derived: LifeBetDerivedStats;
-  projects: LifeBetActiveProjectRef[];
-  projectTotal: number;
-  progressRatio: number;
-};
-
-async function swapSortOrder(a: LifeBetRow, b: LifeBetRow): Promise<void> {
-  const orderA = a.sort_order;
-  const orderB = b.sort_order;
-  if (orderA === orderB) {
-    await updateLifeBet(a.id, { sort_order: orderA - 1 });
-    await updateLifeBet(b.id, { sort_order: orderB + 1 });
-    return;
-  }
-  await updateLifeBet(a.id, { sort_order: orderB });
-  await updateLifeBet(b.id, { sort_order: orderA });
+function joinMeta(...parts: Array<string | null | undefined>): string | undefined {
+  const s = parts.filter((p) => p && String(p).trim()).join(' · ');
+  return s || undefined;
 }
 
-function formatUpdatedAt(iso: string | null | undefined): string {
-  if (!iso) return '尚未更新';
-  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T'));
-  if (Number.isNaN(d.getTime())) return '尚未更新';
-  return `更新于 ${d.getMonth() + 1}月${d.getDate()}日 · 影响赌注排序`;
-}
-
-function ProgressBar({
-  ratio,
-  animate,
-  trackColor,
-  fillColor,
+function AcceptanceInline({
+  depth,
+  items,
+  fold,
+  onToggleItem,
 }: {
-  ratio: number;
-  animate: boolean;
-  trackColor: string;
-  fillColor: string;
+  depth: number;
+  items: LifeRoadAcceptanceItem[];
+  fold: ReturnType<typeof useFoldTheme>['fold'];
+  onToggleItem: (itemId: string) => void;
 }) {
-  const width = useRef(new Animated.Value(animate ? 0 : ratio)).current;
-  useEffect(() => {
-    if (!animate) {
-      width.setValue(ratio);
-      return;
-    }
-    Animated.timing(width, {
-      toValue: ratio,
-      duration: 500,
-      easing: FOLD_MOTION_EASE,
-      useNativeDriver: false,
-    }).start();
-  }, [animate, ratio, width]);
-
-  const pct = width.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
-  });
-
+  if (items.length === 0) return null;
   return (
-    <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
-      <Animated.View style={[styles.progressFill, { width: pct, backgroundColor: fillColor }]} />
+    <View style={{ marginLeft: depth * 14 + 22, marginBottom: 6, gap: 4 }}>
+      {items.map((item) => (
+        <Pressable
+          key={item.id}
+          onPress={() => onToggleItem(item.id)}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: item.done }}
+          style={[
+            styles.acceptRow,
+            {
+              borderColor: fold.line,
+              backgroundColor: 'rgba(255,252,245,0.72)',
+            },
+          ]}>
+          <View
+            style={[
+              styles.acceptCheck,
+              {
+                borderColor: item.done ? fold.pine2 : fold.line,
+                backgroundColor: item.done ? fold.sage2 : 'transparent',
+              },
+            ]}>
+            <Text style={{ color: fold.pine2, fontSize: 10, fontWeight: '800' }}>
+              {item.done ? '✓' : ''}
+            </Text>
+          </View>
+          <Text
+            style={[
+              styles.acceptTxt,
+              {
+                color: item.done ? fold.muted : fold.ink2,
+                textDecorationLine: item.done ? 'line-through' : 'none',
+              },
+            ]}
+            numberOfLines={2}>
+            {item.text}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
 
-function BetCard({
-  view,
-  index,
-  total,
-  animate,
-  animKey,
-  onEdit,
-  onPromote,
-  onDemote,
-  onDelete,
-  showDelete,
+type DraftTarget =
+  | { mode: 'edit'; node: LifeRoadNodeRow }
+  | {
+      mode: 'create';
+      kind: LifeRoadNodeKind;
+      calendar_year?: number;
+      quarter?: number;
+      month?: number;
+      parent_id?: string | null;
+    };
+
+function Chevron({ open, color }: { open: boolean; color: string }) {
+  return (
+    <Text style={{ color, fontSize: 12, fontWeight: '800', width: 14 }}>
+      {open ? '▾' : '▸'}
+    </Text>
+  );
+}
+
+function NodeRow({
+  depth,
+  label,
+  title,
+  meta,
+  empty,
+  current,
+  open,
+  onToggle,
+  onPress,
   fold,
 }: {
-  view: BetView;
-  index: number;
-  total: number;
-  animate: boolean;
-  animKey: number;
-  onEdit: () => void;
-  onPromote: () => void;
-  onDemote: () => void;
-  onDelete: () => void;
-  showDelete?: boolean;
+  depth: number;
+  label: string;
+  title: string;
+  meta?: string;
+  empty?: boolean;
+  current?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+  onPress: () => void;
   fold: ReturnType<typeof useFoldTheme>['fold'];
 }) {
-  const tone = lifeBetFoldStatusTone(view.bet.status, fold);
-  const meta = formatLifeBetListMeta(view.bet, view.derived, Math.round(view.progressRatio * 100));
-  const faded = view.bet.status === 'arrived' || view.bet.status === 'dropped';
-  const canUp = index > 0;
-  const canDown = index < total - 1;
-
   return (
-    <FoldRiseIn animate={animate} index={index} staggerMs={45} fromY={14} key={`${animKey}-${view.bet.id}`}>
-      <View
-        style={[
-          styles.betItem,
-          {
-            backgroundColor: 'rgba(255,252,245,0.92)',
-            borderColor: fold.line,
-            opacity: faded ? 0.66 : 1,
-          },
-        ]}>
-        <Text style={[styles.grip, { color: fold.faint }]} accessibilityLabel="拖动手柄">
-          ⋮⋮
+    <View
+      style={[
+        styles.nodeRow,
+        {
+          marginLeft: depth * 14,
+          borderColor: current ? fold.pine2 : fold.line,
+          backgroundColor: current ? 'rgba(90,122,90,0.08)' : 'rgba(255,252,245,0.92)',
+          opacity: empty ? 0.72 : 1,
+        },
+      ]}>
+      {onToggle ? (
+        <Pressable
+          onPress={onToggle}
+          hitSlop={8}
+          accessibilityLabel={open ? '折叠' : '展开'}
+          style={styles.chevBtn}>
+          <Chevron open={!!open} color={fold.muted} />
+        </Pressable>
+      ) : (
+        <View style={styles.chevBtn}>
+          <Text style={{ color: fold.faint, fontSize: 10 }}>·</Text>
+        </View>
+      )}
+      <Pressable onPress={onPress} style={styles.nodeMain} accessibilityRole="button">
+        <Text style={[styles.nodeLab, { color: fold.faint }]}>{label}</Text>
+        <Text
+          style={[
+            styles.nodeTitle,
+            {
+              color: empty ? fold.muted : fold.ink,
+              fontFamily: depth <= 1 ? foldFonts.serif : undefined,
+              fontStyle: empty ? 'italic' : 'normal',
+            },
+          ]}
+          numberOfLines={2}>
+          {title}
         </Text>
-        <Pressable onPress={onEdit} style={styles.betMain} accessibilityRole="button">
-          <View style={styles.betTitleRow}>
-            <Text style={[styles.betTitle, { color: fold.ink }]} numberOfLines={2}>
-              {view.bet.title}
-            </Text>
-            <View style={[styles.betStatus, { backgroundColor: tone.bg }]}>
-              <Text style={[styles.betStatusText, { color: tone.text }]}>
-                {LIFE_BET_STATUS_LABELS[view.bet.status]}
-              </Text>
-            </View>
-          </View>
-          <Text style={[styles.betMeta, { color: fold.faint }]} numberOfLines={2}>
+        {meta ? (
+          <Text style={[styles.nodeMeta, { color: fold.faint }]} numberOfLines={1}>
             {meta}
           </Text>
-          {view.bet.status !== 'dropped' ? (
-            <ProgressBar
-              ratio={view.progressRatio}
-              animate={animate}
-              trackColor="#E7E2D5"
-              fillColor={fold.pine2}
-            />
-          ) : null}
-        </Pressable>
-        <View style={styles.betActs}>
-          <Pressable
-            onPress={onPromote}
-            disabled={!canUp}
-            accessibilityLabel="上移"
-            style={({ pressed }) => [
-              styles.bactBtn,
-              { backgroundColor: '#F0EBE0', opacity: !canUp ? 0.35 : pressed ? 0.75 : 1 },
-            ]}>
-            <AppIcon name="keyboard-arrow-up" size={14} color={fold.muted} />
-          </Pressable>
-          <Pressable
-            onPress={onDemote}
-            disabled={!canDown}
-            accessibilityLabel="下移"
-            style={({ pressed }) => [
-              styles.bactBtn,
-              { backgroundColor: '#F0EBE0', opacity: !canDown ? 0.35 : pressed ? 0.75 : 1 },
-            ]}>
-            <AppIcon name="keyboard-arrow-down" size={14} color={fold.muted} />
-          </Pressable>
-          {showDelete ? (
-            <Pressable
-              onPress={onDelete}
-              accessibilityLabel="删除"
-              style={({ pressed }) => [
-                styles.bactBtn,
-                { backgroundColor: '#F0EBE0', opacity: pressed ? 0.75 : 1 },
-              ]}>
-              <AppIcon name="delete-outline" size={12} color={fold.clay} />
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={onEdit}
-              accessibilityLabel="编辑"
-              style={({ pressed }) => [
-                styles.bactBtn,
-                { backgroundColor: '#F0EBE0', opacity: pressed ? 0.75 : 1 },
-              ]}>
-              <AppIcon name="edit" size={12} color={fold.muted} />
-            </Pressable>
-          )}
-        </View>
-      </View>
-    </FoldRiseIn>
+        ) : null}
+      </Pressable>
+    </View>
   );
 }
 
@@ -243,725 +211,578 @@ export default function LifeRoadScreen() {
   const insets = useSafeAreaInsets();
   const { fold } = useFoldTheme();
   const { animate: motionOn } = useFoldMotionGate();
-  const params = useLocalSearchParams<{ focus?: string | string[] }>();
-  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_KEY);
+  const { wrapLoad } = usePageApiSync(PAGE_KEY);
 
   const [direction, setDirection] = useState<LifeDirectionRow | null>(null);
-  const [bets, setBets] = useState<BetView[]>([]);
+  const [model, setModel] = useState<RoadMindMapModel | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [yearActiveCount, setYearActiveCount] = useState(0);
-  const [horizon, setHorizon] = useState<LifeBetHorizon>('year');
-  const [bucketAnimKey, setBucketAnimKey] = useState(0);
-  const [sortMode, setSortMode] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const seededExpand = useRef(false);
 
-  const shakeX = useRef(new Animated.Value(0)).current;
-  const bannerFlash = useRef(new Animated.Value(0)).current;
+  const rebuild = useCallback(async () => {
+    const [dir, nodes] = await Promise.all([
+      getLifeDirection({ serverFallback: true }),
+      getLifeRoadNodes({ serverFallback: true }),
+    ]);
+    setDirection(dir);
 
-  const yearFull = yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT;
-  const capacityMode = yearFull && horizon === 'year';
+    const db = await getDatabase();
+    const projectsByMonthId = new Map<string, RoadProjectRef[]>();
+    if (db) {
+      const linked = await db.getAllAsync<{
+        id: string;
+        name: string;
+        status: string;
+        life_month_goal_id: string;
+      }>(
+        `SELECT id, name, status, life_month_goal_id FROM projects
+         WHERE life_month_goal_id IS NOT NULL
+           AND life_month_goal_id != ''
+           AND sync_status != 'pending_delete'
+           AND status IN ('active', 'paused', 'completed')`,
+      );
+      for (const p of linked ?? []) {
+        const mid = String(p.life_month_goal_id);
+        const list = projectsByMonthId.get(mid) ?? [];
+        list.push({
+          id: String(p.id),
+          name: String(p.name),
+          status: String(p.status),
+        });
+        projectsByMonthId.set(mid, list);
+      }
+    }
+    const next = buildRoadMindMap(nodes, projectsByMonthId);
+    setModel(next);
+    if (!seededExpand.current) {
+      setExpanded(new Set(next.defaultExpandedKeys));
+      seededExpand.current = true;
+    }
+  }, []);
 
   const reload = useCallback(
-    async (forceRefresh = false) => {
-      setLoadError(null);
+    async (force = false) => {
+      setLoading(true);
       try {
         await wrapLoad(async () => {
-          const [nextDirection, nextBets] = await Promise.all([
-            getLifeDirection({ serverFallback: true }),
-            getLifeBets({ serverFallback: true }),
-          ]);
-          const views: BetView[] = await Promise.all(
-            nextBets.map(async (bet) => {
-              const [derived, linked, taskRatio] = await Promise.all([
-                getLifeBetDerivedStats(bet.id, bet.status),
-                listActiveProjectsForLifeBet(bet.id, 3),
-                getLifeBetProgressRatio(bet.id),
-              ]);
-              return {
-                bet,
-                derived,
-                projects: linked?.projects ?? [],
-                projectTotal: linked?.total ?? 0,
-                progressRatio: resolveLifeBetProgressRatio(
-                  bet.status,
-                  taskRatio,
-                  linked?.total ?? derived.activeProjectCount,
-                ),
-              };
-            }),
-          );
-          const activeYear = await countActiveYearBetsLocal(currentCalendarYear());
-          setDirection(nextDirection);
-          setBets(views);
-          setYearActiveCount(activeYear);
-        }, forceRefresh);
+          await fetchProfileLifeRoad({ serverFallback: true });
+          await rebuild();
+        }, force);
       } catch (e) {
-        setLoadError(e instanceof Error ? e.message : '加载失败');
+        toast.error(toUserMessage(e, '道路加载失败'));
       } finally {
         setLoading(false);
       }
     },
-    [wrapLoad],
+    [rebuild, wrapLoad],
   );
 
-  const { refreshControl } = usePagePullRefresh(PAGE_KEY, reload);
+  const { refreshControl } = usePagePullRefresh(PAGE_KEY, () => reload(true));
 
   useFocusEffect(
     useCallback(() => {
-      void reload();
+      void reload(false);
     }, [reload]),
   );
 
   useEffect(() => {
-    const focus = Array.isArray(params.focus) ? params.focus[0] : params.focus;
-    if (focus === 'full') {
-      setHorizon('year');
-    }
-  }, [params.focus]);
+    void reload(false);
+  }, [reload]);
 
-  const grouped = useMemo(() => {
-    const map: Record<LifeBetHorizon, BetView[]> = { year: [], multi: [], farther: [] };
-    const archived: BetView[] = [];
-    const yearNow = currentCalendarYear();
-    for (const view of bets) {
-      if (
-        view.bet.status === 'arrived' ||
-        (view.bet.horizon === 'year' && view.bet.year != null && view.bet.year < yearNow)
-      ) {
-        archived.push(view);
-        continue;
-      }
-      if (view.bet.status === 'dropped') continue;
-      map[view.bet.horizon].push(view);
-    }
-    return { map, archived };
-  }, [bets]);
-
-  const activeList = grouped.map[horizon];
-  const horizonCounts = useMemo(() => {
-    return {
-      year: grouped.map.year.filter((v) =>
-        v.bet.status === 'on_track' || v.bet.status === 'paused',
-      ).length,
-      multi: grouped.map.multi.length,
-      farther: grouped.map.farther.length,
-    };
-  }, [grouped]);
-
-  const flashCapacity = useCallback(() => {
-    if (!motionOn) {
-      toast.warn('今年名额已满 · 完成、移出今年或放弃后可腾出');
-      return;
-    }
-    shakeX.setValue(0);
-    bannerFlash.setValue(0);
-    Animated.sequence([
-      Animated.timing(shakeX, { toValue: 5, duration: 55, useNativeDriver: true }),
-      Animated.timing(shakeX, { toValue: -5, duration: 55, useNativeDriver: true }),
-      Animated.timing(shakeX, { toValue: 4, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeX, { toValue: -3, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeX, { toValue: 0, duration: 70, useNativeDriver: true }),
-    ]).start();
-    Animated.sequence([
-      Animated.timing(bannerFlash, {
-        toValue: 1,
-        duration: 160,
-        easing: FOLD_MOTION_EASE,
-        useNativeDriver: false,
-      }),
-      Animated.timing(bannerFlash, {
-        toValue: 0,
-        duration: 280,
-        easing: FOLD_MOTION_EASE,
-        useNativeDriver: false,
-      }),
-    ]).start();
-    toast.warn('今年名额已满 · 完成或放弃后可腾出');
-  }, [bannerFlash, motionOn, shakeX]);
-
-  const openAdd = useCallback(
-    (target: LifeBetHorizon = horizon) => {
-      if (target === 'year' && yearActiveCount >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
-        setHorizon('year');
-        flashCapacity();
-        return;
-      }
-      router.push({
-        pathname: '/edit-life-bet/[id]',
-        params: { id: 'new', horizon: target },
-      });
-    },
-    [flashCapacity, horizon, router, yearActiveCount],
-  );
-
-  const onDeleteBet = useCallback(
-    (bet: LifeBetRow) => {
-      Alert.alert('删除这条道路？', '项目不会被删除，只会取消归属。', [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '删除',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              try {
-                await deleteLifeBet(bet.id);
-                notifyAncestorsDataChanged();
-                toast.success('已删除');
-                await reload();
-              } catch (e) {
-                toast.error(toUserMessage(e, '删除失败，请稍后重试'));
-              }
-            })();
-          },
-        },
-      ]);
-    },
-    [notifyAncestorsDataChanged, reload],
-  );
-
-  const onMove = useCallback(
-    async (list: BetView[], index: number, dir: -1 | 1) => {
-      const other = list[index + dir];
-      const self = list[index];
-      if (!self || !other) return;
-      try {
-        await swapSortOrder(self.bet, other.bet);
-        notifyAncestorsDataChanged();
-        await reload();
-      } catch (e) {
-        Alert.alert('排序失败', e instanceof Error ? e.message : '请稍后重试');
-      }
-    },
-    [notifyAncestorsDataChanged, reload],
-  );
-
-  const switchHorizon = (next: LifeBetHorizon) => {
-    if (next === horizon) return;
-    setHorizon(next);
-    setBucketAnimKey((k) => k + 1);
+  const toggle = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
-  const headerTitle = capacityMode ? `今年 · ${yearActiveCount} 条` : '我的道路';
-  const headerSub = capacityMode
-    ? '名额已满 · 先做完再写新的'
-    : `今年 ${yearActiveCount} 条在路上 · 最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条`;
+  const openDirection = () => router.push('/edit-life-direction');
 
-  const bannerBg = bannerFlash.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['#FBEEDC', '#F5D9A8'],
-  });
+  const openNode = (target: DraftTarget) => {
+    if (target.mode === 'edit') {
+      router.push({
+        pathname: '/edit-life-road-node/[id]',
+        params: { id: target.node.id },
+      });
+      return;
+    }
+    const params: Record<string, string> = {
+      id: 'new',
+      kind: target.kind,
+    };
+    if (target.calendar_year != null) params.year = String(target.calendar_year);
+    if (target.quarter != null) params.quarter = String(target.quarter);
+    if (target.month != null) params.month = String(target.month);
+    if (target.parent_id) params.parent_id = target.parent_id;
+    router.push({ pathname: '/edit-life-road-node/[id]', params });
+  };
 
-  const yearNow = currentCalendarYear();
-  const archivedYear =
-    grouped.archived[0]?.bet.year ??
-    (grouped.archived.length > 0 ? yearNow - 1 : yearNow - 1);
+  const confirmDelete = (node: LifeRoadNodeRow) => {
+    Alert.alert('删除节点', `确定删除「${node.title}」？挂在其下的项目会摘除归属。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '删除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            try {
+              await deleteLifeRoadNode(node.id);
+              toast.success('已删除');
+              await rebuild();
+            } catch (e) {
+              toast.error(toUserMessage(e, '删除失败'));
+            }
+          })();
+        },
+      },
+    ]);
+  };
+
+  const toggleAcceptanceItem = useCallback(
+    (node: LifeRoadNodeRow, itemId: string) => {
+      void (async () => {
+        try {
+          const items = parseAcceptanceCriteria(node.extra_data).map((it) =>
+            it.id === itemId ? { ...it, done: !it.done } : it,
+          );
+          await updateLifeRoadNode(node.id, {
+            extra_data: writeAcceptanceCriteria(node.extra_data, items),
+          });
+          await rebuild();
+        } catch (e) {
+          toast.error(toUserMessage(e, '更新验收标准失败'));
+        }
+      })();
+    },
+    [rebuild],
+  );
+
+  const aboveOpen = expanded.has('above');
+
+  const headerRight = useMemo(
+    () => (
+      <Pressable
+        onPress={() =>
+          openNode({
+            mode: 'create',
+            kind: 'multi',
+          })
+        }
+        accessibilityLabel="添加多年目标"
+        style={{ paddingHorizontal: 8, minHeight: MIN_TOUCH, justifyContent: 'center' }}>
+        <Text style={{ color: fold.pine2, fontWeight: '700', fontSize: 13 }}>+ 多年</Text>
+      </Pressable>
+    ),
+    [fold.pine2],
+  );
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
-      <Stack.Screen options={{ headerShown: false }} />
-
-      <View style={[styles.appBar, { paddingTop: insets.top + 4, borderBottomColor: fold.line }]}>
-        <Pressable
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel="返回"
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.iconBtn,
-            { borderColor: fold.line, backgroundColor: fold.card },
-            pressed && { opacity: 0.88 },
-          ]}>
-          <AppIcon name="arrow-back" size={20} color={fold.ink} />
-        </Pressable>
-        <View style={styles.appBarTitleWrap}>
-          <Text style={[styles.appTitle, { color: fold.ink }]}>{headerTitle}</Text>
-          <Text style={[styles.appSub, { color: fold.muted }]} numberOfLines={1}>
-            {headerSub}
+    <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+      <Stack.Screen
+        options={{
+          title: '我的道路',
+          headerRight: () => headerRight,
+        }}
+      />
+      <ScrollView
+        refreshControl={refreshControl}
+        contentContainerStyle={{
+          paddingHorizontal: 14,
+          paddingTop: 8,
+          paddingBottom: insets.bottom + Spacing['6xl'],
+        }}>
+        <FoldRiseIn animate={motionOn} index={0} fromY={10}>
+          <Text style={[styles.hint, { color: fold.muted }]}>
+            浏览年季月拆解；节点可展开验收标准。具体做法与推进在项目里完成。
           </Text>
-        </View>
-        {capacityMode ? (
-          <Pressable
-            onPress={() => setSortMode((v) => !v)}
-            accessibilityRole="button"
-            accessibilityLabel="排序"
-            style={({ pressed }) => [
-              styles.pillBtn,
-              { borderColor: fold.line2, backgroundColor: 'rgba(255,252,245,0.66)' },
-              pressed && { opacity: 0.88 },
-            ]}>
-            <Text style={[styles.pillBtnLabel, { color: fold.ink2 }]}>
-              {sortMode ? '完成' : '排序'}
-            </Text>
-          </Pressable>
+        </FoldRiseIn>
+
+        {loading && !model ? (
+          <ActivityIndicator style={{ marginTop: 40 }} color={fold.pine} />
         ) : (
-          <Pressable
-            onPress={() => router.push('/edit-life-direction')}
-            accessibilityRole="button"
-            accessibilityLabel="编辑总方向"
-            style={({ pressed }) => [
-              styles.pillBtn,
-              { borderColor: fold.line2, backgroundColor: 'rgba(255,252,245,0.66)' },
-              pressed && { opacity: 0.88 },
-            ]}>
-            <AppIcon name="edit" size={12} color={fold.ink2} />
-            <Text style={[styles.pillBtnLabel, { color: fold.ink2 }]}>总方向</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator color={fold.pine} />
-        </View>
-      ) : (
-        <ScrollView
-          refreshControl={refreshControl}
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: Math.max(insets.bottom, 16) + 28 },
-          ]}
-          showsVerticalScrollIndicator={false}>
-          {loadError ? (
-            <View style={[styles.errorCard, { backgroundColor: fold.clay2, borderColor: fold.clay }]}>
-              <Text style={{ color: fold.clay, textAlign: 'center', fontWeight: '700' }}>{loadError}</Text>
-              <Pressable onPress={() => void reload(true)} style={[styles.retryBtn, { backgroundColor: fold.pine }]}>
-                <Text style={{ color: fold.onPineButton, fontWeight: '700' }}>重试</Text>
-              </Pressable>
-            </View>
-          ) : null}
-
-          {!capacityMode ? (
-            <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={10}>
-              <Pressable
-                onPress={() => router.push('/edit-life-direction')}
-                style={[styles.dirCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
-                <View style={styles.rowline}>
-                  <Text style={[styles.kicker, { color: fold.muted }]}>TOTAL DIRECTION</Text>
-                  <View style={[styles.tagAmber, { backgroundColor: fold.amber2 }]}>
-                    <Text style={[styles.tagAmberText, { color: '#8B6126' }]} numberOfLines={1}>
-                      {direction?.year_theme?.trim() || String(yearNow)}
-                    </Text>
-                  </View>
-                </View>
-                {direction?.body ? (
-                  <Text style={[styles.roadDir, { color: fold.pine, fontFamily: foldFonts.serif }]}>
-                    {direction.body}
-                  </Text>
-                ) : (
-                  <Text style={[styles.roadDirEmpty, { color: fold.muted }]}>
-                    还没有写下方向。用来看清未来几年押什么，不是用来排任务。
-                  </Text>
-                )}
-                <View style={styles.rowline}>
-                  <Text style={[styles.dirMeta, { color: fold.faint }]}>
-                    {formatUpdatedAt(direction?.updated_at)}
-                  </Text>
-                  <Text style={[styles.dirEdit, { color: '#8B6126' }]}>编辑 ›</Text>
-                </View>
-              </Pressable>
+          <>
+            <FoldRiseIn animate={motionOn} index={1} fromY={12}>
+              <NodeRow
+                depth={0}
+                label="总方向"
+                title={direction?.body?.trim() || '点击写下总方向'}
+                empty={!direction?.body?.trim()}
+                current
+                onPress={openDirection}
+                fold={fold}
+              />
             </FoldRiseIn>
-          ) : (
-            <Animated.View
-              style={[
-                styles.limitBanner,
-                {
-                  backgroundColor: bannerBg,
-                  borderColor: '#E7CFA6',
-                },
-              ]}>
-              <AppIcon name="lock" size={14} color="#B08A4E" />
-              <Text style={styles.limitBannerText}>
-                <Text style={{ fontWeight: '800' }}>今年 {yearActiveCount} / {LIFE_BET_YEAR_ACTIVE_LIMIT} 已满。</Text>
-                「在路上 + 暂搁」合计不超过 {LIFE_BET_YEAR_ACTIVE_LIMIT} 条，完成或放弃后自动腾出名额。
-              </Text>
-            </Animated.View>
-          )}
 
-          <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={10}>
-            <View style={styles.roadTabs}>
-              {HORIZON_ORDER.map((key) => {
-                const on = horizon === key;
-                const count =
-                  key === 'year'
-                    ? `${yearActiveCount} / ${LIFE_BET_YEAR_ACTIVE_LIMIT}`
-                    : `${horizonCounts[key]} 条`;
-                return (
+            <FoldRiseIn animate={motionOn} index={2} fromY={12}>
+              <NodeRow
+                depth={0}
+                label="今年之上"
+                title={
+                  model && model.aboveYear.length > 0
+                    ? `${model.aboveYear.length} 条多年 / 更远`
+                    : '可写多年或更远方向'
+                }
+                empty={!model?.aboveYear.length}
+                open={aboveOpen}
+                onToggle={() => toggle('above')}
+                onPress={() => toggle('above')}
+                fold={fold}
+              />
+              {aboveOpen ? (
+                <View>
+                  {(model?.aboveYear ?? []).map((n) => {
+                    const criteria = parseAcceptanceCriteria(n.extra_data);
+                    const cKey = `accept:${n.id}`;
+                    const cOpen = expanded.has(cKey);
+                    return (
+                      <View key={n.id}>
+                        <NodeRow
+                          depth={1}
+                          label={LIFE_ROAD_NODE_KIND_LABELS[n.kind]}
+                          title={n.title}
+                          meta={joinMeta(
+                            LIFE_ROAD_NODE_STATUS_LABELS[n.status],
+                            acceptanceMetaLabel(criteria),
+                          )}
+                          open={criteria.length > 0 ? cOpen : undefined}
+                          onToggle={
+                            criteria.length > 0 ? () => toggle(cKey) : undefined
+                          }
+                          onPress={() => openNode({ mode: 'edit', node: n })}
+                          fold={fold}
+                        />
+                        {cOpen ? (
+                          <AcceptanceInline
+                            depth={1}
+                            items={criteria}
+                            fold={fold}
+                            onToggleItem={(itemId) => toggleAcceptanceItem(n, itemId)}
+                          />
+                        ) : null}
+                      </View>
+                    );
+                  })}
                   <Pressable
-                    key={key}
-                    onPress={() => switchHorizon(key)}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: on }}
-                    style={[
-                      styles.roadTab,
-                      {
-                        backgroundColor: on ? fold.pineButton : '#F8F4EA',
-                        borderColor: on ? fold.pineButton : fold.line,
-                      },
-                    ]}>
-                    <Text
-                      style={[
-                        styles.roadTabTitle,
-                        { color: on ? fold.onPineButton : fold.muted, fontWeight: on ? '800' : '700' },
-                      ]}>
-                      {LIFE_BET_HORIZON_LABELS[key]}
-                    </Text>
-                    <Text style={[styles.roadTabSub, { color: on ? '#B7CCC1' : '#A1A69D' }]}>
-                      {count}
+                    onPress={() => openNode({ mode: 'create', kind: 'farther' })}
+                    style={[styles.addGhost, { marginLeft: 14, borderColor: fold.line }]}>
+                    <Text style={{ color: fold.pine2, fontSize: 12, fontWeight: '700' }}>
+                      + 更远
                     </Text>
                   </Pressable>
-                );
-              })}
-            </View>
-          </FoldRiseIn>
-
-          {activeList.length === 0 ? (
-            <View style={[styles.emptySlot, { borderColor: fold.line, backgroundColor: fold.paper2 }]}>
-              <Text style={{ color: fold.muted, fontWeight: '600' }}>
-                {horizon === 'year' ? '今年还没有下注' : '这一段还空着'}
-              </Text>
-            </View>
-          ) : (
-            activeList.map((view, index) => (
-              <BetCard
-                key={view.bet.id}
-                view={view}
-                index={index}
-                total={activeList.length}
-                animate={motionOn}
-                animKey={bucketAnimKey}
-                fold={fold}
-                showDelete={sortMode}
-                onEdit={() =>
-                  router.push({ pathname: '/edit-life-bet/[id]', params: { id: view.bet.id } })
-                }
-                onPromote={() => void onMove(activeList, index, -1)}
-                onDemote={() => void onMove(activeList, index, 1)}
-                onDelete={() => onDeleteBet(view.bet)}
-              />
-            ))
-          )}
-
-          <Animated.View style={{ transform: [{ translateX: shakeX }] }}>
-            {horizon === 'year' && yearFull ? (
-              <Pressable
-                onPress={flashCapacity}
-                accessibilityRole="button"
-                accessibilityLabel="今年名额已满"
-                style={[styles.addBtnLocked, { borderColor: fold.line2 }]}>
-                <AppIcon name="lock" size={14} color="#9AA097" />
-                <Text style={styles.addBtnLockedText}>今年名额已满</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                onPress={() => openAdd(horizon)}
-                accessibilityRole="button"
-                accessibilityLabel={`写下一条${LIFE_BET_HORIZON_LABELS[horizon]}赌注`}
-                style={({ pressed }) => [
-                  styles.addBtn,
-                  { backgroundColor: fold.pineButton, opacity: pressed ? 0.92 : 1 },
-                ]}>
-                <AppIcon name="add" size={16} color={fold.onPineButton} />
-                <Text style={[styles.addBtnText, { color: fold.onPineButton }]}>
-                  写下一条{LIFE_BET_HORIZON_LABELS[horizon]}赌注
-                </Text>
-              </Pressable>
-            )}
-          </Animated.View>
-
-          {capacityMode ? (
-            <View style={[styles.tipsCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
-              <View style={styles.rowline}>
-                <Text style={[styles.tipsTitle, { color: fold.ink2 }]}>腾出名额的三种方式</Text>
-                <Text style={{ fontSize: 11, color: fold.faint }}>任选其一</Text>
-              </View>
-              {[
-                { text: '标记一条为「已完成」', tag: '腾出 1', tone: 'green' as const },
-                { text: '把一条移到「更远 / 多年」', tag: '腾出 1', tone: 'amber' as const },
-                { text: '放弃一条并写一句原因', tag: '腾出 1', tone: 'gray' as const },
-              ].map((row) => (
-                <View key={row.text} style={styles.tipRow}>
-                  <Text style={[styles.tipText, { color: fold.ink2 }]}>{row.text}</Text>
-                  <View
-                    style={[
-                      styles.tipTag,
-                      {
-                        backgroundColor:
-                          row.tone === 'green'
-                            ? fold.sage2
-                            : row.tone === 'amber'
-                              ? fold.amber2
-                              : fold.paper2,
-                      },
-                    ]}>
-                    <Text
-                      style={{
-                        fontSize: 10,
-                        fontWeight: '700',
-                        color:
-                          row.tone === 'green'
-                            ? fold.pine2
-                            : row.tone === 'amber'
-                              ? '#8B6126'
-                              : fold.muted,
-                      }}>
-                      {row.tag}
-                    </Text>
-                  </View>
                 </View>
-              ))}
-            </View>
-          ) : null}
+              ) : null}
+            </FoldRiseIn>
 
-          {!capacityMode && horizon === 'year' && grouped.archived.length > 0 ? (
-            <>
-              <View style={styles.bucketCap}>
-                <Text style={{ color: fold.faint, fontSize: 12 }}>已归档 · {archivedYear}</Text>
-                <Text style={{ color: fold.faint, fontSize: 12 }}>
-                  查看 {grouped.archived.length} 条 ›
-                </Text>
-              </View>
-              {grouped.archived.slice(0, 2).map((view, index) => (
-                <BetCard
-                  key={`arch-${view.bet.id}`}
-                  view={view}
-                  index={index}
-                  total={1}
-                  animate={motionOn}
-                  animKey={bucketAnimKey + 100}
-                  fold={fold}
-                  onEdit={() =>
-                    router.push({ pathname: '/edit-life-bet/[id]', params: { id: view.bet.id } })
-                  }
-                  onPromote={() => undefined}
-                  onDemote={() => undefined}
-                  onDelete={() => onDeleteBet(view.bet)}
-                />
-              ))}
-            </>
-          ) : null}
+            {(model?.years ?? []).map((yearBranch, yi) => {
+              const yKey = `year:${yearBranch.year}`;
+              const yOpen = expanded.has(yKey);
+              const yearCriteria = yearBranch.node
+                ? parseAcceptanceCriteria(yearBranch.node.extra_data)
+                : [];
+              return (
+                <FoldRiseIn key={yKey} animate={motionOn} index={3 + yi} fromY={12}>
+                  <NodeRow
+                    depth={0}
+                    label={`${yearBranch.year} 年`}
+                    title={yearBranch.node?.title?.trim() || '点击写下今年目标'}
+                    empty={!yearBranch.node?.title?.trim()}
+                    current={yearBranch.isCurrent}
+                    open={yOpen}
+                    onToggle={() => toggle(yKey)}
+                    meta={acceptanceMetaLabel(yearCriteria) ?? undefined}
+                    onPress={() => {
+                      if (yearBranch.node) {
+                        openNode({ mode: 'edit', node: yearBranch.node });
+                      } else {
+                        openNode({
+                          mode: 'create',
+                          kind: 'year',
+                          calendar_year: yearBranch.year,
+                        });
+                      }
+                    }}
+                    fold={fold}
+                  />
+                  {yOpen && yearBranch.node ? (
+                    <AcceptanceInline
+                      depth={0}
+                      items={yearCriteria}
+                      fold={fold}
+                      onToggleItem={(itemId) =>
+                        toggleAcceptanceItem(yearBranch.node!, itemId)
+                      }
+                    />
+                  ) : null}
+                  {yOpen
+                    ? yearBranch.quarters.map((q) => {
+                        const qKey = `quarter:${yearBranch.year}:${q.quarter}`;
+                        const qOpen = expanded.has(qKey);
+                        const qCriteria = q.node
+                          ? parseAcceptanceCriteria(q.node.extra_data)
+                          : [];
+                        const showEmptyQuarter =
+                          q.hasContent ||
+                          q.isCurrent ||
+                          qOpen ||
+                          qCriteria.length > 0;
+                        if (!showEmptyQuarter && !yearBranch.isCurrent) {
+                          // 非当前年：无内容季默认折叠隐藏骨架噪点
+                          return null;
+                        }
+                        return (
+                          <View key={qKey}>
+                            <NodeRow
+                              depth={1}
+                              label={quarterLabel(q.quarter)}
+                              title={
+                                q.node?.title?.trim() ||
+                                (q.isCurrent ? '本季焦点（可空）' : '空窗 · 点击填写')
+                              }
+                              empty={!q.node?.title?.trim()}
+                              current={q.isCurrent}
+                              open={qOpen}
+                              onToggle={() => toggle(qKey)}
+                              meta={acceptanceMetaLabel(qCriteria) ?? undefined}
+                              onPress={() => {
+                                if (q.node) openNode({ mode: 'edit', node: q.node });
+                                else
+                                  openNode({
+                                    mode: 'create',
+                                    kind: 'quarter',
+                                    calendar_year: yearBranch.year,
+                                    quarter: q.quarter,
+                                    parent_id: yearBranch.node?.id ?? null,
+                                  });
+                              }}
+                              fold={fold}
+                            />
+                            {qOpen && q.node ? (
+                              <AcceptanceInline
+                                depth={1}
+                                items={qCriteria}
+                                fold={fold}
+                                onToggleItem={(itemId) =>
+                                  toggleAcceptanceItem(q.node!, itemId)
+                                }
+                              />
+                            ) : null}
+                            {qOpen
+                              ? q.months.map((m) => {
+                                  const mKey = `month:${yearBranch.year}:${m.month}`;
+                                  const mOpen = expanded.has(mKey);
+                                  const mCriteria = m.node
+                                    ? parseAcceptanceCriteria(m.node.extra_data)
+                                    : [];
+                                  const canExpand =
+                                    m.projects.length > 0 || mCriteria.length > 0;
+                                  const showKids = Boolean(mOpen && canExpand);
+                                  return (
+                                    <View key={mKey}>
+                                      <NodeRow
+                                        depth={2}
+                                        label={monthLabel(m.month)}
+                                        title={
+                                          m.node?.title?.trim() ||
+                                          (m.isCurrent ? '本月焦点（可空）' : '空窗')
+                                        }
+                                        empty={!m.node?.title?.trim()}
+                                        current={m.isCurrent}
+                                        open={canExpand ? mOpen : undefined}
+                                        onToggle={
+                                          canExpand ? () => toggle(mKey) : undefined
+                                        }
+                                        onPress={() => {
+                                          if (m.node) openNode({ mode: 'edit', node: m.node });
+                                          else
+                                            openNode({
+                                              mode: 'create',
+                                              kind: 'month',
+                                              calendar_year: yearBranch.year,
+                                              quarter: m.quarter,
+                                              month: m.month,
+                                              parent_id: q.node?.id ?? null,
+                                            });
+                                        }}
+                                        fold={fold}
+                                        meta={joinMeta(
+                                          acceptanceMetaLabel(mCriteria),
+                                          m.projects.length > 0
+                                            ? `${m.projects.length} 个项目`
+                                            : null,
+                                        )}
+                                      />
+                                      {showKids && m.node ? (
+                                        <AcceptanceInline
+                                          depth={2}
+                                          items={mCriteria}
+                                          fold={fold}
+                                          onToggleItem={(itemId) =>
+                                            toggleAcceptanceItem(m.node!, itemId)
+                                          }
+                                        />
+                                      ) : null}
+                                      {showKids
+                                        ? m.projects.map((p) => (
+                                            <NodeRow
+                                              key={p.id}
+                                              depth={3}
+                                              label="项目"
+                                              title={p.name}
+                                              onPress={() =>
+                                                router.push({
+                                                  pathname: '/edit-project',
+                                                  params: { id: p.id },
+                                                })
+                                              }
+                                              fold={fold}
+                                            />
+                                          ))
+                                        : null}
+                                      {m.node ? (
+                                        <Pressable
+                                          onPress={() =>
+                                            router.push({
+                                              pathname: '/add-project',
+                                              params: {
+                                                life_month_goal_id: m.node!.id,
+                                              },
+                                            })
+                                          }
+                                          style={[
+                                            styles.addGhost,
+                                            { marginLeft: 14 * 3, borderColor: fold.line },
+                                          ]}>
+                                          <Text
+                                            style={{
+                                              color: fold.pine2,
+                                              fontSize: 12,
+                                              fontWeight: '700',
+                                            }}>
+                                            + 从此月建项目
+                                          </Text>
+                                        </Pressable>
+                                      ) : null}
+                                    </View>
+                                  );
+                                })
+                              : null}
+                          </View>
+                        );
+                      })
+                    : null}
+                </FoldRiseIn>
+              );
+            })}
 
-          {!capacityMode ? (
-            <View style={[styles.noteCard, { backgroundColor: fold.card, borderColor: fold.line }]}>
-              <AppIcon name="gps-fixed" size={12} color={fold.faint} />
-              <Text style={[styles.noteText, { color: fold.faint }]}>
-                今年「在路上 + 暂搁」合计最多 {LIFE_BET_YEAR_ACTIVE_LIMIT} 条；完成或放弃后才能腾出位置。
+            <Pressable
+              onPress={() =>
+                openNode({
+                  mode: 'create',
+                  kind: 'year',
+                  calendar_year: new Date().getFullYear() + 1,
+                })
+              }
+              style={[styles.addGhost, { borderColor: fold.line, marginTop: 12 }]}>
+              <Text style={{ color: fold.pine2, fontSize: 12, fontWeight: '700' }}>
+                + 下一年目标
               </Text>
-            </View>
-          ) : null}
-        </ScrollView>
-      )}
+            </Pressable>
+
+            {__DEV__ && model ? (
+              <Pressable
+                onPress={() => {
+                  const first = model.aboveYear[0] ?? model.years[0]?.node;
+                  if (first) confirmDelete(first);
+                }}
+                style={{ marginTop: 24, opacity: 0.4 }}>
+                <Text style={{ color: fold.faint, fontSize: 10 }}>
+                  <AppIcon name="info" size={10} color={fold.faint} /> 长按节点可在编辑页删除
+                </Text>
+              </Pressable>
+            ) : null}
+          </>
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  appBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingBottom: 10,
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+  root: { flex: 1 },
+  hint: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 12,
   },
-  iconBtn: {
-    width: 36,
-    height: 36,
+  nodeRow: {
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  appBarTitleWrap: { flex: 1, minWidth: 0 },
-  appTitle: { fontSize: 18, fontWeight: '800', letterSpacing: -0.2 },
-  appSub: { marginTop: 2, fontSize: 11, fontWeight: '600' },
-  pillBtn: {
-    height: 30,
-    paddingHorizontal: 11,
-    borderRadius: 20,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginBottom: 6,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 4,
   },
-  pillBtnLabel: { fontSize: 12, fontWeight: '700' },
-  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scroll: { paddingHorizontal: 15, paddingTop: 10, gap: 8 },
-  errorCard: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 14,
-    gap: 10,
-    marginBottom: 6,
-  },
-  retryBtn: {
-    alignSelf: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-  },
-  dirCard: {
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    marginBottom: 2,
-  },
-  rowline: {
-    flexDirection: 'row',
+  chevBtn: {
+    width: 22,
+    minHeight: 28,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+    justifyContent: 'center',
   },
-  kicker: {
+  nodeMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  nodeLab: {
     fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  nodeTitle: {
+    fontSize: 14,
     fontWeight: '700',
-    letterSpacing: 0.8,
+    lineHeight: 20,
+    marginTop: 1,
   },
-  tagAmber: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
+  nodeMeta: {
+    fontSize: 11,
+    marginTop: 2,
   },
-  tagAmberText: { fontSize: 10, fontWeight: '800' },
-  roadDir: {
-    fontSize: 15,
-    lineHeight: 22,
-    marginVertical: 6,
-    fontWeight: '600',
-  },
-  roadDirEmpty: { fontSize: 13, lineHeight: 20, marginVertical: 6 },
-  dirMeta: { fontSize: 11, flex: 1 },
-  dirEdit: { fontSize: 11, fontWeight: '700' },
-  roadTabs: { flexDirection: 'row', gap: 5, marginBottom: 2 },
-  roadTab: {
-    flex: 1,
-    minHeight: 40,
+  addGhost: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
     borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 5,
-    gap: 1,
-  },
-  roadTabTitle: { fontSize: 13 },
-  roadTabSub: { fontSize: 10, fontWeight: '600' },
-  betItem: {
-    borderRadius: 13,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
     paddingHorizontal: 10,
-    paddingVertical: 9,
+    marginBottom: 6,
+    alignItems: 'flex-start',
+  },
+  acceptRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-  },
-  grip: { fontSize: 12, lineHeight: 18, marginTop: 2, width: 14, textAlign: 'center' },
-  betMain: { flex: 1, minWidth: 0 },
-  betTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
-  betTitle: { flex: 1, fontSize: 14, fontWeight: '700', lineHeight: 20 },
-  betStatus: {
-    borderRadius: 5,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-  },
-  betStatusText: { fontSize: 10, fontWeight: '700' },
-  betMeta: { marginTop: 4, fontSize: 11, lineHeight: 16 },
-  progressTrack: {
-    height: 2,
-    borderRadius: 2,
-    marginTop: 6,
-    overflow: 'hidden',
-  },
-  progressFill: { height: '100%', borderRadius: 2 },
-  betActs: { gap: 3 },
-  bactBtn: {
-    width: 24,
-    height: 20,
-    borderRadius: 5,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: MIN_TOUCH * 0.55,
-  },
-  addBtn: {
-    height: 40,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 4,
-  },
-  addBtnText: { fontSize: 13, fontWeight: '800' },
-  addBtnLocked: {
-    height: 40,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    backgroundColor: '#E2DDD1',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 4,
-  },
-  addBtnLockedText: { fontSize: 13, fontWeight: '700', color: '#9AA097' },
-  limitBanner: {
-    borderRadius: 11,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 7,
-    marginBottom: 2,
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
   },
-  limitBannerText: {
+  acceptCheck: {
+    width: 18,
+    height: 18,
+    borderRadius: 5,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  acceptTxt: {
     flex: 1,
+    minWidth: 0,
     fontSize: 12,
     lineHeight: 17,
-    color: '#8B5A1E',
-  },
-  tipsCard: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
-    marginTop: 4,
-    gap: 4,
-  },
-  tipsTitle: { fontSize: 13, fontWeight: '800' },
-  tipRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-    gap: 8,
-  },
-  tipText: { flex: 1, fontSize: 12 },
-  tipTag: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
-  bucketCap: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-    marginBottom: 2,
-    paddingHorizontal: 2,
-  },
-  noteCard: {
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    marginTop: 4,
-  },
-  noteText: { flex: 1, fontSize: 11, lineHeight: 16 },
-  emptySlot: {
-    borderRadius: 13,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderStyle: 'dashed',
-    paddingVertical: Spacing['4xl'],
-    alignItems: 'center',
+    fontWeight: '600',
   },
 });

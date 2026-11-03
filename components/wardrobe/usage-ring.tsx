@@ -1,6 +1,11 @@
 import { FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeEm, wardrobeFonts } from '@/constants/wardrobe-theme';
-import React, { memo, useEffect, useRef, useState } from 'react';
+import {
+  useWardrobeTheme,
+  wardrobeEm,
+  wardrobeFonts,
+  type WardrobePalette,
+} from '@/constants/wardrobe-theme';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 
@@ -21,6 +26,8 @@ export const UsageRing = memo(function UsageRing({
   gradient = true,
   animate: animateProp,
 }: UsageRingProps) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const gate = useFoldMotionGate();
   const animate = animateProp ?? gate.animate;
   const r = 42;
@@ -111,7 +118,7 @@ export const UsageRing = memo(function UsageRing({
           cx={50}
           cy={50}
           r={r}
-          stroke={gradient ? 'url(#wardrobeRingGrad)' : WARDROBE.amber3}
+          stroke={gradient ? 'url(#wardrobeRingGrad)' : w.amber3}
           strokeWidth={7}
           fill="none"
           strokeLinecap="round"
@@ -127,55 +134,57 @@ export const UsageRing = memo(function UsageRing({
   );
 });
 
-const styles = StyleSheet.create({
-  orbit: {
-    position: 'absolute',
-    left: -5,
-    top: -5,
-    borderRadius: 999,
-    zIndex: 1,
-  },
-  orbitDot: {
-    position: 'absolute',
-    top: 1,
-    left: '50%',
-    marginLeft: -2.5,
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: WARDROBE.amber3,
-    shadowColor: '#E6B878',
-    shadowOpacity: 0.85,
-    shadowRadius: 4.5,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 4,
-  },
-  ringSvg: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    transform: [{ rotate: '-90deg' }],
-  },
-  ringLabel: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 3,
-  },
-  ringPct: {
-    fontFamily: wardrobeFonts.monoBold,
-    color: '#FFF9EA',
-    textAlign: 'center',
-  },
-  ringHint: {
-    fontFamily: wardrobeFonts.mono,
-    letterSpacing: wardrobeEm(0.15, 5.5),
-    color: 'rgba(245,240,227,0.45)',
-    marginTop: 3,
-    textAlign: 'center',
-  },
-});
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
+    orbit: {
+      position: 'absolute',
+      left: -5,
+      top: -5,
+      borderRadius: 999,
+      zIndex: 1,
+    },
+    orbitDot: {
+      position: 'absolute',
+      top: 1,
+      left: '50%',
+      marginLeft: -2.5,
+      width: 5,
+      height: 5,
+      borderRadius: 2.5,
+      backgroundColor: w.amber3,
+      shadowColor: '#E6B878',
+      shadowOpacity: 0.85,
+      shadowRadius: 4.5,
+      shadowOffset: { width: 0, height: 0 },
+      elevation: 4,
+    },
+    ringSvg: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      transform: [{ rotate: '-90deg' }],
+    },
+    ringLabel: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 3,
+    },
+    ringPct: {
+      fontFamily: wardrobeFonts.monoBold,
+      color: '#FFF9EA',
+      textAlign: 'center',
+    },
+    ringHint: {
+      fontFamily: wardrobeFonts.mono,
+      letterSpacing: wardrobeEm(0.15, 5.5),
+      color: 'rgba(245,240,227,0.45)',
+      marginTop: 3,
+      textAlign: 'center',
+    },
+  });
+}

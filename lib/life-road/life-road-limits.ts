@@ -1,8 +1,10 @@
 /**
- * 道路赌注：枚举、字段校验与「今年进行中 ≤ 5」限额（App 侧先拦）。
+ * 道路赌注（旧模型兼容）：枚举与字段校验。
+ * 年季月拆解后取消「今年进行中 ≤ 5」硬限额；保留常量以免旧调用崩。
  */
 
-export const LIFE_BET_YEAR_ACTIVE_LIMIT = 5;
+/** @deprecated 年季月模型已取消硬限额；恒为极大值以放行旧写入 */
+export const LIFE_BET_YEAR_ACTIVE_LIMIT = 999;
 
 export const LIFE_BET_HORIZON_VALUES = ['year', 'multi', 'farther'] as const;
 export type LifeBetHorizon = (typeof LIFE_BET_HORIZON_VALUES)[number];
@@ -90,8 +92,8 @@ export function isActiveLifeBetStatus(status: string): boolean {
 }
 
 /**
- * 合并后规则：horizon=year 时 year 必填；进行中今年条数不得超过上限。
- * @param activeCountSameYear 同 year 下已有 on_track|paused 条数（不含自身）
+ * 合并后规则：horizon=year 时 year 必填。
+ * 年季月模型后不再做条数硬限额（activeCountSameYear 保留参数以兼容旧调用）。
  */
 export function assertLifeBetYearRulesMerged(input: {
   horizon: LifeBetHorizon;
@@ -99,17 +101,12 @@ export function assertLifeBetYearRulesMerged(input: {
   status: LifeBetStatus;
   activeCountSameYear: number;
 }): void {
+  void input.status;
+  void input.activeCountSameYear;
   if (input.horizon === 'year') {
     if (input.year == null) {
       throw new LifeRoadValidationError('「今年」桶必须填写公历年');
     }
-  }
-  if (!isActiveLifeBetStatus(input.status)) return;
-  if (input.horizon !== 'year' || input.year == null) return;
-  if (input.activeCountSameYear >= LIFE_BET_YEAR_ACTIVE_LIMIT) {
-    throw new LifeRoadValidationError(
-      `今年进行中的道路赌注最多 ${LIFE_BET_YEAR_ACTIVE_LIMIT} 条（在路上/暂搁）；已完成或已放弃不占名额`,
-    );
   }
 }
 

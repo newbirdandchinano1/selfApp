@@ -1,6 +1,6 @@
 /**
  * ATELIER 衣橱视觉令牌：对齐 `衣橱-UI重构.html` 的 :root。
- * 仅衣橱页消费，不改动全局主题。
+ * 仅衣橱页消费，不改动全局主题。夜间随 `useAppTheme`（同财务 / 复盘折页）。
  *
  * 字族（与设计稿栈一致）：
  * --serif → Noto Serif SC
@@ -9,10 +9,14 @@
  *
  * Native 必须用「字重内嵌于 fontFamily」的 expo-google-fonts 面名，
  * 不可再叠 fontWeight，否则 Android 会整段回退成系统默认字体。
+ *
+ * 色板约定：`pine` 作标题 / 描边强调（夜间变浅）；实心底（FAB / Dock / 主按钮）用 `pineSolid`。
  */
 import { Platform, type TextStyle } from 'react-native';
 
-export const WARDROBE = {
+import { useAppTheme } from '@/hooks/use-app-theme';
+
+export const WARDROBE_LIGHT = {
   paper: '#F3EFE6',
   paper2: '#E9E2D4',
   paper3: '#E1D8C7',
@@ -28,6 +32,9 @@ export const WARDROBE = {
   pine2: '#2D5949',
   pine3: '#3D6B58',
   pine4: '#173229',
+  /** 实心松绿填充（FAB / Dock / 主按钮）；夜间保持偏深以保证 onPine 对比 */
+  pineSolid: '#21453A',
+  pineSolid2: '#2D5949',
   sage: '#8CAD9C',
   sage2: '#DCE7DF',
   sage3: '#C5D6C8',
@@ -50,9 +57,78 @@ export const WARDROBE = {
   weekCard1: '#1C3A30',
   weekCard2: '#234438',
   shadow: 'rgba(31,48,39,0.10)',
+  /** 顶栏图标钮 / 操作簇半透底 */
+  glass: 'rgba(252,249,241,0.66)',
+  glassStrong: 'rgba(252,249,241,0.92)',
+  glassBorder: 'rgba(255,255,255,0.72)',
+  pineWash: 'rgba(33,69,58,0.06)',
+  dim: 'rgba(25,34,28,0.45)',
+  amberMark: 'rgba(211,154,85,0.24)',
 } as const;
 
-export type WardrobePalette = typeof WARDROBE;
+export type WardrobePalette = { readonly [K in keyof typeof WARDROBE_LIGHT]: string };
+
+export const WARDROBE_DARK: WardrobePalette = {
+  paper: '#121A16',
+  paper2: '#1A2320',
+  paper3: '#222B26',
+  card: '#1B2420',
+  card2: '#1F2A25',
+  white: '#FFFDF8',
+  ink: '#F2EEE4',
+  ink2: '#C6D0C9',
+  ink3: '#9AABA2',
+  muted: '#8A968F',
+  muted2: '#6F7A73',
+  pine: '#A9C7B9',
+  pine2: '#8DB5A3',
+  pine3: '#6D9482',
+  pine4: '#3D6B58',
+  pineSolid: '#2F5A4C',
+  pineSolid2: '#254A3D',
+  sage: '#8CAD9C',
+  sage2: 'rgba(140,173,156,0.22)',
+  sage3: 'rgba(140,173,156,0.32)',
+  amber: '#E0B072',
+  amber2: 'rgba(224,176,114,0.18)',
+  amber3: '#E6B878',
+  clay: '#E08B6D',
+  clay2: 'rgba(224,139,109,0.2)',
+  rose: '#D4A0A0',
+  sky: '#8AA8B1',
+  sky2: 'rgba(138,168,177,0.22)',
+  line: 'rgba(230,221,206,0.12)',
+  line2: 'rgba(230,221,206,0.22)',
+  line3: 'rgba(230,221,206,0.08)',
+  onPine: '#F7F2E5',
+  screenTop: '#141C18',
+  screenMid: '#121A16',
+  screenBot: '#0F1613',
+  weekCard0: '#2E594A',
+  weekCard1: '#1C3A30',
+  weekCard2: '#234438',
+  shadow: '#000000',
+  glass: 'rgba(255,255,255,0.06)',
+  glassStrong: 'rgba(22,32,28,0.94)',
+  glassBorder: 'rgba(230,221,206,0.14)',
+  pineWash: 'rgba(169,199,185,0.12)',
+  dim: 'rgba(0,0,0,0.55)',
+  amberMark: 'rgba(224,176,114,0.28)',
+};
+
+/** 浅色别名；新代码请用 `useWardrobeTheme().w` */
+export const WARDROBE = WARDROBE_LIGHT;
+
+export function useWardrobeTheme(): {
+  w: WardrobePalette;
+  isDark: boolean;
+} {
+  const { isDark } = useAppTheme();
+  return {
+    w: isDark ? WARDROBE_DARK : WARDROBE_LIGHT,
+    isDark,
+  };
+}
 
 const IS_WEB = Platform.OS === 'web';
 

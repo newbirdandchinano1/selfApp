@@ -43,6 +43,12 @@ let pullQueued = false;
 type DirtyListener = (dirtyTables: string[], needFullSync?: boolean) => void;
 const dirtyListeners = new Set<DirtyListener>();
 
+/** 合并短时内多次 dirty，避免同步/连写时 UI 重载风暴 */
+const DIRTY_COALESCE_MS = 120;
+let pendingDirtyTables = new Set<string>();
+let pendingNeedFullSync = false;
+let dirtyFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
 export function subscribeSyncDirty(listener: DirtyListener): () => void {
   dirtyListeners.add(listener);
   return () => {
@@ -53,7 +59,12 @@ export function subscribeSyncDirty(listener: DirtyListener): () => void {
 /** apply 后通知 UI 重读本地；cursor 无关 */
 export const subscribeLocalDataChanged = subscribeSyncDirty;
 
-function emitDirty(tables: string[], needFullSync = false): void {
+function flushDirtyNow(): void {
+  dirtyFlushTimer = null;
+  const tables = [...pendingDirtyTables].sort();
+  const needFullSync = pendingNeedFullSync;
+  pendingDirtyTables = new Set();
+  pendingNeedFullSync = false;
   if (tables.length === 0 && !needFullSync) return;
   for (const fn of dirtyListeners) {
     try {
@@ -62,6 +73,17 @@ function emitDirty(tables: string[], needFullSync = false): void {
       console.warn('[sync-pull] dirty listener error', e);
     }
   }
+}
+
+function emitDirty(tables: string[], needFullSync = false): void {
+  if (tables.length === 0 && !needFullSync) return;
+  for (const t of tables) {
+    const cleaned = t.trim();
+    if (cleaned) pendingDirtyTables.add(cleaned);
+  }
+  if (needFullSync) pendingNeedFullSync = true;
+  if (dirtyFlushTimer) clearTimeout(dirtyFlushTimer);
+  dirtyFlushTimer = setTimeout(flushDirtyNow, DIRTY_COALESCE_MS);
 }
 
 /** 本地写入后通知订阅方重读 SQLite（不触发 pull） */
@@ -90,12 +112,17 @@ function foldPage(events: SyncChangeEvent[]): SyncChangeEvent[] {
   // ????????task_execution_events ???? tasks/projects?
   // ???????????? FOREIGN KEY constraint failed
   const PARENT_FIRST = new Map<string, number>([
-    ['project_categories', 0],
-    ['task_categories', 1],
-    ['projects', 2],
-    ['tasks', 3],
-    ['habits', 4],
-    ['tags', 5],
+    ['users', 0],
+    ['project_categories', 1],
+    ['task_categories', 2],
+    ['finance_accounts', 3],
+    ['finance_flow_categories', 4],
+    ['projects', 5],
+    ['tasks', 6],
+    ['habits', 7],
+    ['tags', 8],
+    ['health_records', 9],
+    ['finance_transactions', 10],
   ]);
   return [...m.values()].sort((a, b) => {
     const oa = PARENT_FIRST.get(a.table) ?? 10;

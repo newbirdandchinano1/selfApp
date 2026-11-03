@@ -9,7 +9,7 @@ import {
 } from './habit-goal';
 import { parseHabitKind } from './habit-kind';
 
-/** 完成任务类型的重复周期（存于 schedule.activeTab） */
+/** 周期配额（habitKind=task）的重复周期（存于 schedule.activeTab） */
 export type TaskRepeatPeriod = '每日' | '每周' | '每月' | '每年';
 
 export const TASK_REPEAT_PERIODS: TaskRepeatPeriod[] = ['每日', '每周', '每月', '每年'];
@@ -88,7 +88,7 @@ function filterCheckInsInRange(
   return out;
 }
 
-/** 完成任务类型：当前周期内的预期目标进度 */
+/** 周期配额：当前周期内的预期目标进度 */
 export function computeTaskPeriodGoalProgress(params: {
   expectedGoal: BuildHabitExpectedGoal;
   checkIns: Record<string, number>;
@@ -167,7 +167,7 @@ export function hasLocalCheckInsInTaskPeriod(params: {
   return false;
 }
 
-/** 任务页 / 日历：周期型完成任务在指定逻辑日的展示与隐藏状态 */
+/** 任务页 / 日历：周期配额在指定逻辑日的展示与隐藏状态 */
 export function getTaskHabitTasksViewState(params: {
   extraData: string | null;
   checkIns: Record<string, number>;
@@ -260,7 +260,7 @@ export function countTaskHabitPeriodCompletions(params: {
   return count;
 }
 
-/** 完成任务：当前重复周期允许的预期目标类型 */
+/** 周期配额：当前重复周期允许的预期目标类型 */
 export function getTaskExpectedGoalTypeOptions(period: TaskRepeatPeriod): BuildHabitExpectedGoalType[] {
   if (period === '每日') return ['times'];
   return ['days', 'times'];
@@ -275,7 +275,7 @@ function daysInYear(year: number): number {
   return isLeap ? 366 : 365;
 }
 
-/** 完成任务：预期目标数值上限（按天数受周期天数约束） */
+/** 周期配额：预期目标数值上限（按天数受周期天数约束） */
 export function getTaskExpectedGoalMaxValue(
   period: TaskRepeatPeriod,
   type: BuildHabitExpectedGoalType,

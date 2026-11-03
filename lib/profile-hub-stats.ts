@@ -7,15 +7,13 @@ import {
 import { getDatabase } from '@/lib/database';
 import { isYmdInRange } from '@/lib/date';
 import { ymdFromAuditDatetime } from '@/lib/api-mysql-datetime';
-import { getLifeBetDerivedStats } from '@/lib/life-road/life-road-derived';
-import { currentCalendarYear } from '@/lib/life-road/life-road-limits';
+import { buildRoadMindMap, resolveYearFocusLine } from '@/lib/life-road/life-road-tree';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import { listWeightLogsLastNDays } from '@/lib/repositories/health/weight-log';
-import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
 import { getLifeDirectionLocal } from '@/lib/repositories/life-road/life-direction';
-import type { LifeBetHorizon, LifeBetStatus } from '@/lib/life-road/life-road-limits';
+import { getLifeRoadNodesLocal } from '@/lib/repositories/life-road/life-road-node';
 import { listWishBoardItems } from '@/lib/repositories/wish-board/wish-board';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { roundPoints } from '@/lib/reward-points';
@@ -85,25 +83,13 @@ export type ProfileFillChip = {
   tab: 'basic' | 'persona' | 'body';
 };
 
-/** 我的页道路卡片：单条赌注摘要（含派生，失败时 count 为 null） */
-export type ProfileRoadBetSummary = {
-  id: string;
-  title: string;
-  status: LifeBetStatus;
-  horizon: LifeBetHorizon;
-  year: number | null;
-  activeProjectCount: number | null;
-  latestCompletedName: string | null;
-  isEmptyWindow: boolean;
-};
-
+/** 我的页道路摘要：总方向 + 今年焦点（极简，不做清单） */
 export type ProfileRoadHub = {
   direction: string | null;
-  yearTheme: string | null;
-  /** 今年桶：默认不含放弃；最多 5 条在路上/暂搁/已抵达 */
-  yearBets: ProfileRoadBetSummary[];
-  /** 两三年/更远（不含放弃），有则卡片出「更远」段 */
-  fartherBets: ProfileRoadBetSummary[];
+  /** 当前月 / 季 / 年目标短句，择一 */
+  yearFocus: string | null;
+  /** 高于今年的节点条数（多年 + 更远） */
+  aboveYearCount: number;
   /** 读缓存失败时非空；UI 显示错误+重试，不编造清单 */
   error: string | null;
 };
@@ -133,55 +119,45 @@ export type ProfileHubStats = {
 
 const EMPTY_ROAD: ProfileRoadHub = {
   direction: null,
-  yearTheme: null,
-  yearBets: [],
-  fartherBets: [],
+  yearFocus: null,
+  aboveYearCount: 0,
   error: null,
 };
 
 /** 从本地缓存组装道路 hub；失败不抛，写入 error */
 async function loadRoadHub(): Promise<ProfileRoadHub> {
   try {
-    const [direction, bets] = await Promise.all([
+    const [direction, nodes] = await Promise.all([
       getLifeDirectionLocal(),
-      getLifeBetsLocal(),
+      getLifeRoadNodesLocal(),
     ]);
-    const calendarYear = currentCalendarYear();
-    const yearCandidates = bets.filter((b) => {
-      if (b.horizon !== 'year') return false;
-      if (b.status === 'dropped') return false;
-      if (b.year == null) return true;
-      return b.year === calendarYear;
-    });
-    const yearBetsRaw = yearCandidates.slice(0, 5);
-    const fartherRaw = bets.filter(
-      (b) => (b.horizon === 'multi' || b.horizon === 'farther') && b.status !== 'dropped',
-    );
-
-    const toSummary = async (b: (typeof bets)[number]): Promise<ProfileRoadBetSummary> => {
-      const derived = await getLifeBetDerivedStats(b.id, b.status);
-      return {
-        id: b.id,
-        title: b.title,
-        status: b.status,
-        horizon: b.horizon,
-        year: b.year,
-        activeProjectCount: derived.activeProjectCount,
-        latestCompletedName: derived.latestCompletedName,
-        isEmptyWindow: derived.isEmptyWindow,
-      };
-    };
-
-    const [yearBets, fartherBets] = await Promise.all([
-      Promise.all(yearBetsRaw.map(toSummary)),
-      Promise.all(fartherRaw.map(toSummary)),
-    ]);
-
+    const db = await getDatabase();
+    const projectsByMonthId = new Map<string, { id: string; name: string; status: string }[]>();
+    if (db) {
+      const linked = await db.getAllAsync<{
+        id: string;
+        name: string;
+        status: string;
+        life_month_goal_id: string;
+      }>(
+        `SELECT id, name, status, life_month_goal_id FROM projects
+         WHERE life_month_goal_id IS NOT NULL
+           AND life_month_goal_id != ''
+           AND sync_status != 'pending_delete'
+           AND status IN ('active', 'paused')`,
+      );
+      for (const p of linked ?? []) {
+        const mid = String(p.life_month_goal_id);
+        const list = projectsByMonthId.get(mid) ?? [];
+        list.push({ id: String(p.id), name: String(p.name), status: String(p.status) });
+        projectsByMonthId.set(mid, list);
+      }
+    }
+    const model = buildRoadMindMap(nodes, projectsByMonthId);
     return {
       direction: direction?.body?.trim() || null,
-      yearTheme: direction?.year_theme?.trim() || null,
-      yearBets,
-      fartherBets,
+      yearFocus: resolveYearFocusLine(model),
+      aboveYearCount: model.aboveYear.length,
       error: null,
     };
   } catch (e) {

@@ -25,7 +25,7 @@ export type HabitSubHabitsMeta = {
 };
 
 /**
- * 完成任务且重复周期非「每日」时，子任务完成态按周期累计（本周/月/年内不清空），
+ * 周期配额且重复周期非「每日」时，子项完成态按周期累计（本周/月/年内不清空），
  * 与父任务「每周清空」等设定一致；养成/戒除/每日任务仍按自然日。
  */
 function usesPeriodScopedSubCheckIns(extraData: string | null): boolean {
@@ -124,7 +124,7 @@ export function hasActiveSubHabits(extraData: string | null): boolean {
   return meta.enabled && meta.items.length > 0;
 }
 
-/** 子项文案：完成任务用「子任务」，养成/戒除用「子习惯」 */
+/** 子项文案：周期配额用「子项」，养成/戒除用「子习惯」 */
 export function habitSubItemsLabel(kind: 'build' | 'break' | 'task'): {
   section: string;
   singular: string;
@@ -137,14 +137,14 @@ export function habitSubItemsLabel(kind: 'build' | 'break' | 'task'): {
 } {
   if (kind === 'task') {
     return {
-      section: '子任务',
-      singular: '子任务',
-      enableTitle: '启用子任务模式',
-      enableHint: '开启后首页点击将展示子任务清单；进度按重复周期保留，全部完成后才计入父任务打卡',
-      addButton: '添加子任务',
-      editorTitle: (editing) => (editing ? '编辑子任务' : '添加子任务'),
-      emptyHint: '尚未添加子任务。添加后，首页将改为在弹窗中逐项完成。',
-      modalHint: '点选完成子任务；进度按重复周期保留，全部完成后计入父任务打卡',
+      section: '子项',
+      singular: '子项',
+      enableTitle: '启用子项模式',
+      enableHint: '开启后首页点击将展示子项清单；进度按重复周期保留，全部完成后才计入本周期配额',
+      addButton: '添加子项',
+      editorTitle: (editing) => (editing ? '编辑子项' : '添加子项'),
+      emptyHint: '尚未添加子项。添加后，首页将改为在弹窗中逐项完成。',
+      modalHint: '点选完成子项；进度按重复周期保留，全部完成后计入本周期配额',
     };
   }
   if (kind === 'break') {
@@ -313,7 +313,7 @@ async function syncParentCheckInAfterSubToggle(params: {
 
 /**
  * 切换某日子习惯/子任务完成态，并同步父习惯当日打卡：
- * - 养成 / 完成任务：全部完成 → parent count = 目标次数；未全完 → 0
+ * - 养成 / 周期配额：全部完成 → parent count = 目标次数；未全完 → 0
  * - 戒除：勾选表示该子项破戒；任一项破戒 → parent count = 破戒项数；全无破戒 → 写入保持戒除（count=0）
  */
 export async function toggleSubHabitCheckIn(params: {

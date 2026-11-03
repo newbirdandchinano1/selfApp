@@ -15,6 +15,8 @@ import { resolveWishBoardIconOption } from '@/lib/constants/wish-board-icons';
 import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
 import {
   evaluateWishBoardRedeemEligibilitySync,
+  formatAvailableFromLabel,
+  formatWishHabitConditionMeta,
   type WishBoardRedeemConditionCheck,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import { redeemWishBoardItem } from '@/lib/repositories/wish-board/wish-board';
@@ -124,9 +126,19 @@ export default function WishBoardDetailScreen() {
     }
   };
 
-  const onGapAction = (kind: string) => {
+  const onGapAction = (kind: string, id?: string) => {
     if (kind === 'net_worth') {
       router.push('/(tabs)/finance');
+    } else if (kind === 'available_from') {
+      // 时间条件只能等待，无跳转目标
+      return;
+    } else if (kind === 'habit') {
+      const habitId = id?.trim();
+      if (habitId) {
+        router.push({ pathname: '/habit-detail', params: { habitId } });
+      } else {
+        router.push('/(tabs)/tasks');
+      }
     } else {
       router.push('/(tabs)/tasks');
     }
@@ -429,19 +441,38 @@ function ConditionRow({
   animate: boolean;
 }) {
   const isNet = check.kind === 'net_worth';
+  const isTime = check.kind === 'available_from';
+  const isHabit = check.kind === 'habit';
   const { c } = useWishBoxTheme();
   const styles = useWishStyles(makeStyles);
-  const emoji = isNet ? '💰' : check.kind === 'project' ? '📁' : check.kind === 'todo' ? '📝' : '✅';
-  const iconBg = isNet ? c.coinSoft : check.done ? c.mintSoft : c.priSoft;
+  const emoji = isNet
+    ? '💰'
+    : isTime
+      ? '🕒'
+      : isHabit
+        ? check.habit_kind === 'break'
+          ? '🚫'
+          : '🌱'
+        : check.kind === 'project'
+          ? '📁'
+          : check.kind === 'todo'
+            ? '📝'
+            : '✅';
+  const iconBg = isNet || isTime || isHabit ? c.coinSoft : check.done ? c.mintSoft : c.priSoft;
   const netExcess =
     isNet && minNetWorth != null ? Math.max(0, currentNetWorth - minNetWorth) : 0;
   const netGap = isNet && minNetWorth != null ? Math.max(0, minNetWorth - currentNetWorth) : 0;
+  const timeLabel = isTime ? formatAvailableFromLabel(check.title) : '';
 
   const title = isNet
     ? minNetWorth != null
       ? `净资产 ≥ ${formatMoneyShort(minNetWorth)}`
       : '净资产达到门槛'
-    : `完成${kindLabel(check.kind)}「${check.title}」`;
+    : isTime
+      ? `自 ${timeLabel} 起开放兑换`
+      : isHabit
+        ? check.title
+        : `完成${kindLabel(check.kind)}「${check.title}」`;
 
   const stateText = check.done
     ? '✓ 已达成'
@@ -449,9 +480,17 @@ function ConditionRow({
       ? minNetWorth != null && netGap > 0
         ? `! 还差 ${formatMoneyShort(netGap)}`
         : '! 未达成'
-      : check.missing
-        ? '! 关联项已删除'
-        : '! 未完成';
+      : isTime
+        ? '! 尚未开放'
+        : isHabit
+          ? check.ineligible
+            ? '! 未设目标'
+            : check.missing
+              ? '! 习惯已删除'
+              : '! 未达成'
+          : check.missing
+            ? '! 关联项已删除'
+            : '! 未完成';
 
   const meta = isNet
     ? currentNetWorth != null && minNetWorth != null
@@ -459,17 +498,25 @@ function ConditionRow({
         ? `当前净资产 ${formatMoneyShort(currentNetWorth)} · 超出 ${formatMoneyShort(netExcess)}`
         : `当前净资产 ${formatMoneyShort(currentNetWorth)}`
       : '净资产同步后判定'
-    : check.progress
-      ? `${check.progress.done} / ${check.progress.total} 项 · ${
-          check.progress.done >= check.progress.total
-            ? check.kind === 'project'
-              ? '绑定待办全部完成'
-              : '已完成'
-            : `还差 ${Math.max(0, check.progress.total - check.progress.done)} 项子任务`
-        }`
-      : check.missing
-        ? '关联项已删除，请在编辑中重新绑定'
-        : '尚未完成';
+    : isTime
+      ? check.done
+        ? '已到开放时间，可兑换'
+        : check.missing
+          ? '开放时间无效，请在编辑中重新设置'
+          : '到点后自动解锁'
+      : isHabit
+        ? formatWishHabitConditionMeta(check)
+        : check.progress
+          ? `${check.progress.done} / ${check.progress.total} 项 · ${
+              check.progress.done >= check.progress.total
+                ? check.kind === 'project'
+                  ? '绑定待办全部完成'
+                  : '已完成'
+                : `还差 ${Math.max(0, check.progress.total - check.progress.done)} 项子任务`
+            }`
+          : check.missing
+            ? '关联项已删除，请在编辑中重新绑定'
+            : '尚未完成';
 
   const ratio = check.progress
     ? Math.max(0, Math.min(1, check.progress.done / check.progress.total))
@@ -501,6 +548,9 @@ function ConditionRow({
 function kindLabel(kind: WishBoardRedeemConditionCheck['kind']): string {
   if (kind === 'project') return '项目';
   if (kind === 'todo') return '待办';
+  if (kind === 'habit') return '小习惯';
+  if (kind === 'net_worth') return '净资产';
+  if (kind === 'available_from') return '开放时间';
   return '任务';
 }
 

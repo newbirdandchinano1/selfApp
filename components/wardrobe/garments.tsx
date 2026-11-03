@@ -1,9 +1,13 @@
 import type { WardrobeArt, WardrobeItem } from '@/components/wardrobe/data';
+import { StoredImage } from '@/components/stored-image';
 import React, { memo } from 'react';
 import Svg, { Circle, G, Path } from 'react-native-svg';
 
 type GarmentProps = {
-  item: Pick<WardrobeItem, 'art' | 'tint' | 'tint2' | 'line'>;
+  item: Pick<WardrobeItem, 'art' | 'tint' | 'tint2' | 'line'> & {
+    cutout_uri?: string;
+    image_uri?: string;
+  };
   width?: number;
   height?: number;
 };
@@ -217,12 +221,22 @@ const ART_MAP: Record<
   bag: Bag,
 };
 
-/** 衣物线稿 SVG，对齐设计稿 symbol */
+/** 优先抠图 / 主图；无图时回退线稿 SVG（对齐设计稿 symbol） */
 export const WardrobeGarment = memo(function WardrobeGarment({
   item,
   width = 72,
   height = 84,
 }: GarmentProps) {
+  const photo = item.cutout_uri?.trim() || item.image_uri?.trim();
+  if (photo) {
+    return (
+      <StoredImage
+        uri={photo}
+        style={{ width, height }}
+        contentFit="contain"
+      />
+    );
+  }
   const Art = ART_MAP[item.art] ?? Hoodie;
   return (
     <Svg width={width} height={height} viewBox="0 0 120 140">

@@ -16,6 +16,7 @@ import {
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -36,6 +37,16 @@ import {
   mergeAcceptanceChecklistIntoExtraData,
   type AcceptanceCriterionItem,
 } from '@/lib/acceptance-criteria';
+import {
+  mergeNoteImageUrisIntoExtraData,
+  noteImageUrisEqual,
+  parseNoteImageUris,
+} from '@/lib/note-image-extra';
+import {
+  bindNoteImages,
+  ensureNoteImagesRemote,
+  releaseRemovedNoteImages,
+} from '@/lib/note-images';
 import {
   mergeRewardPointsIntoExtraData,
   normalizeRewardPoints,
@@ -173,6 +184,7 @@ export default function AddTaskScreen() {
     createEmptyAcceptanceItem(),
   ]);
   const [note, setNote] = React.useState(() => firstRouteParam(params.note).trim());
+  const [noteImageUris, setNoteImageUris] = React.useState<string[]>([]);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -187,6 +199,7 @@ export default function AddTaskScreen() {
   const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
   const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const editTaskStatusRef = React.useRef<string>('todo');
+  const loadedNoteImageUrisRef = React.useRef<string[]>([]);
 
   const isStandalone =
     firstRouteParam(params.standalone) === '1' || firstRouteParam(params.standalone).toLowerCase() === 'true';
@@ -330,6 +343,9 @@ export default function AddTaskScreen() {
     const legacyAcceptance = (task.description ?? '').trim();
     const legacyNote = (task.note ?? '').trim();
     setNote(legacyNote || legacyAcceptance);
+    const loadedNoteImages = parseNoteImageUris(task.extra_data);
+    loadedNoteImageUrisRef.current = loadedNoteImages;
+    setNoteImageUris(loadedNoteImages);
     setAcceptanceItems([createEmptyAcceptanceItem()]);
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
     setPriority(taskPriorityToKey(task.priority ?? 0));
@@ -452,7 +468,17 @@ export default function AddTaskScreen() {
           DEFAULT_TODO_ICON,
         );
         const trimmedNote = note.trim() || null;
+        let nextNoteImages = [...noteImageUris];
         if (isEditStandalone) {
+          const previousNoteImages = loadedNoteImageUrisRef.current;
+          if (nextNoteImages.length > 0) {
+            nextNoteImages = await ensureNoteImagesRemote({
+              localUris: nextNoteImages,
+              owner: { table: 'tasks', id: editTaskId },
+            });
+          }
+          let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
+          nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
           await updateTask(editTaskId, {
             title: trimmedTitle,
             description: null,
@@ -460,11 +486,23 @@ export default function AddTaskScreen() {
             status: resolveStandaloneStatusOnSave(editTaskStatusRef.current, standaloneIntent),
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
-            extra_data: mergeAcceptanceChecklistIntoExtraData(extraPayload, []),
+            extra_data: nextExtra,
           });
+          await bindNoteImages({ table: 'tasks', id: editTaskId }, nextNoteImages);
+          await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
+          loadedNoteImageUrisRef.current = nextNoteImages;
+          if (!noteImageUrisEqual(nextNoteImages, noteImageUris)) setNoteImageUris(nextNoteImages);
           await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
           const id = makeTimestampEntityId('tsk_', 8);
+          if (nextNoteImages.length > 0) {
+            nextNoteImages = await ensureNoteImagesRemote({
+              localUris: nextNoteImages,
+              owner: { table: 'tasks', id },
+            });
+          }
+          let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
+          nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
           await createTask({
             id,
             project_id: null,
@@ -476,8 +514,11 @@ export default function AddTaskScreen() {
             status: shelved ? 'shelved' : 'todo',
             priority: labelToTaskPriority(priorityLabel),
             due_date: dueDate,
-            extra_data: mergeAcceptanceChecklistIntoExtraData(extraPayload, []),
+            extra_data: nextExtra,
           });
+          if (nextNoteImages.length > 0) {
+            await bindNoteImages({ table: 'tasks', id }, nextNoteImages);
+          }
           await setTaskTagIds(id, selectedTagIds);
         }
         try {
@@ -507,6 +548,13 @@ export default function AddTaskScreen() {
           ? acceptanceChecklistToLines(acceptanceItems) || null
           : null;
         const noteToSave = isLongTermTask ? null : note.trim() || null;
+        let nextNoteImages = isLongTermTask ? [] : [...noteImageUris];
+        if (nextNoteImages.length > 0) {
+          nextNoteImages = await ensureNoteImagesRemote({
+            localUris: nextNoteImages,
+            owner: { table: 'tasks', id },
+          });
+        }
         let extraPayload = mergeIconIntoExtraData(
           mergeRewardPointsIntoExtraData(
             mergeLongTermTaskIntoExtraData(
@@ -523,6 +571,7 @@ export default function AddTaskScreen() {
           DEFAULT_TODO_ICON,
         );
         extraPayload = mergeAcceptanceChecklistIntoExtraData(extraPayload, checklist) ?? extraPayload;
+        extraPayload = mergeNoteImageUrisIntoExtraData(extraPayload, nextNoteImages) ?? extraPayload;
         await createTask({
           id,
           project_id: quickProjectId,
@@ -536,6 +585,9 @@ export default function AddTaskScreen() {
           due_date: resolveDueDate(),
           extra_data: extraPayload,
         });
+        if (nextNoteImages.length > 0) {
+          await bindNoteImages({ table: 'tasks', id }, nextNoteImages);
+        }
         // 项目未贴标签时才保存任务自有标签
         if (!inheritsProjectTags && selectedTagIds.length > 0) {
           await setTaskTagIds(id, selectedTagIds);
@@ -581,6 +633,7 @@ export default function AddTaskScreen() {
         repeat: repeatText,
         repeatText: repeatText,
         note: isLongTermTask ? null : note.trim() || null,
+        noteImageUris: isLongTermTask ? [] : noteImageUris,
         acceptanceCriteria: isLongTermTask ? acceptanceChecklistToLines(acceptanceItems) : '',
         schedule: scheduleMeta,
         isLongTermTask,
@@ -810,14 +863,24 @@ export default function AddTaskScreen() {
                         },
                       ]}>
                       <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                      <TextInput
-                        value={note}
-                        onChangeText={setNote}
-                        placeholder="可选补充说明"
-                        placeholderTextColor={tf.faint}
-                        multiline
-                        style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
-                      />
+                      <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                        <TextInput
+                          value={note}
+                          onChangeText={setNote}
+                          placeholder="可选补充说明，下方可贴多图"
+                          placeholderTextColor={tf.faint}
+                          multiline
+                          style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                        />
+                        <NoteImageAttach
+                          uris={noteImageUris}
+                          onChangeUris={setNoteImageUris}
+                          disabled={formBusy}
+                          borderColor={tf.line2}
+                          mutedColor={tf.faint}
+                          surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                        />
+                      </View>
                     </View>
                   </View>
                 </FoldRiseIn>
@@ -1003,6 +1066,7 @@ export default function AddTaskScreen() {
                           const fromNote = linesToAcceptanceChecklist(note);
                           return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
                         });
+                        setNoteImageUris([]);
                       } else {
                         // 关闭长期：验收文案并入备注（若备注为空）
                         setNote((prev) => {
@@ -1187,15 +1251,24 @@ export default function AddTaskScreen() {
               ) : (
                 <View style={[styles.frow, { alignItems: 'flex-start', paddingVertical: 8 }]}>
                   <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                  <TextInput
-                    value={note}
-                    onChangeText={setNote}
-                    placeholder="可选补充说明"
-                    placeholderTextColor={tf.faint}
-                    multiline
-                    style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
-                  />
-                  <MaterialIcons name="edit" size={14} color={tf.faint} style={{ marginTop: 6 }} />
+                  <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                    <TextInput
+                      value={note}
+                      onChangeText={setNote}
+                      placeholder="可选补充说明，下方可贴多图"
+                      placeholderTextColor={tf.faint}
+                      multiline
+                      style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                    />
+                    <NoteImageAttach
+                      uris={noteImageUris}
+                      onChangeUris={setNoteImageUris}
+                      disabled={formBusy}
+                      borderColor={tf.line2}
+                      mutedColor={tf.faint}
+                      surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                    />
+                  </View>
                 </View>
               )}
               <View style={styles.hintline}>

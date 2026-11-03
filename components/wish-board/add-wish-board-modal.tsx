@@ -5,6 +5,8 @@ import {
 import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
 import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks } from '@/lib/repositories/tasks/task';
@@ -31,6 +33,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [habits, setHabits] = useState<HabitRow[]>([]);
   const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
   const [openToken, setOpenToken] = useState(0);
   const [lastVisible, setLastVisible] = useState(visible);
@@ -54,16 +57,18 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
     let cancelled = false;
     void (async () => {
       try {
-        const [nextBalance, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
+        const [nextBalance, nextProjects, nextTasks, nextHabits, nextNetWorth] = await Promise.all([
           getPointsBalance(),
           getProjects(),
           getTasks(),
+          getHabits(),
           loadWishBoardCurrentNetWorth(),
         ]);
         if (cancelled) return;
         setBalance(nextBalance);
         setProjects(nextProjects);
         setTasks(nextTasks);
+        setHabits(nextHabits);
         setCurrentNetWorth(nextNetWorth);
       } catch {
         // 上下文缺失时仍允许创建：条件选择暂不可用
@@ -115,6 +120,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
           balance={balance}
           projects={projects}
           tasks={tasks}
+          habits={habits}
           currentNetWorth={currentNetWorth}
           saving={saving}
           onUploadedUri={uri => {

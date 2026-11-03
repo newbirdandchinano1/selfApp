@@ -31,7 +31,7 @@ import {
   parseHabitConsecutiveTargetDays,
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
-import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { habitKindLabel, parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   formatHabitReminderClock,
   parseHabitReminder,
@@ -92,12 +92,6 @@ const PAGE_API_KEY = 'habit-manage';
 const MINI_HEAT_WEEKS = 18;
 const MINI_HEAT_ROWS = 3;
 const MINI_HEAT_CELLS = MINI_HEAT_WEEKS * MINI_HEAT_ROWS;
-
-function habitKindLabel(kind: HabitKind): string {
-  if (kind === 'break') return '戒除';
-  if (kind === 'task') return '完成任务';
-  return '养成';
-}
 
 function heatLevelFromCount(count: number, kind: HabitKind, dailyGoal: number | null): HeatLevel {
   if (kind === 'break') {

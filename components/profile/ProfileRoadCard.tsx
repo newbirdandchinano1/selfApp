@@ -1,5 +1,5 @@
 /**
- * 我的页「我的道路」摘要卡：对齐设计稿 MY ROAD · 今年名额 · 赌注行。
+ * 我的页「我的道路」摘要卡：总方向 + 今年焦点；完整导图在子页。
  */
 import { AppText } from '@/components/ui/app-text';
 import { MotionPressable } from '@/components/ui/motion-pressable';
@@ -10,12 +10,7 @@ import {
   Spacing,
 } from '@/constants/design-tokens';
 import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
-import { formatLifeBetDerivedCaption } from '@/lib/life-road/life-road-labels';
-import {
-  isActiveLifeBetStatus,
-  LIFE_BET_YEAR_ACTIVE_LIMIT,
-} from '@/lib/life-road/life-road-limits';
-import type { ProfileRoadBetSummary, ProfileRoadHub } from '@/lib/profile-hub-stats';
+import type { ProfileRoadHub } from '@/lib/profile-hub-stats';
 import React from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 
@@ -27,36 +22,6 @@ export type ProfileRoadCardProps = {
   onRetry?: () => void;
   onWriteDirection?: () => void;
 };
-
-function statusDotColor(status: ProfileRoadBetSummary['status'], fold: ReturnType<typeof useFoldTheme>['fold']) {
-  if (status === 'paused') return fold.amber;
-  if (status === 'arrived') return fold.sage;
-  return fold.sage;
-}
-
-function BetRow({
-  bet,
-  preferStatus,
-}: {
-  bet: ProfileRoadBetSummary;
-  preferStatus?: boolean;
-}) {
-  const { fold } = useFoldTheme();
-  const caption = formatLifeBetDerivedCaption(bet, {
-    preferStatusLabel: preferStatus ? bet.status : undefined,
-  });
-  return (
-    <View style={[styles.bet, { backgroundColor: fold.paper2, borderColor: fold.line }]}>
-      <View style={[styles.betDot, { backgroundColor: statusDotColor(bet.status, fold) }]} />
-      <Text style={[styles.betTitle, { color: fold.ink2 }]} numberOfLines={1}>
-        {bet.title}
-      </Text>
-      <Text style={[styles.betMeta, { color: fold.faint }]} numberOfLines={1}>
-        {caption}
-      </Text>
-    </View>
-  );
-}
 
 export function ProfileRoadCard({
   road,
@@ -97,12 +62,7 @@ export function ProfileRoadCard({
     );
   }
 
-  const direction = road.direction;
-  const yearTheme = road.yearTheme;
-  const yearBets = road.yearBets;
-  const fartherBets = road.fartherBets;
-  const isEmpty = !direction && yearBets.length === 0 && fartherBets.length === 0;
-  const yearUsed = yearBets.filter((b) => isActiveLifeBetStatus(b.status)).length;
+  const isEmpty = !road.direction && !road.yearFocus;
 
   if (isEmpty) {
     return (
@@ -110,13 +70,11 @@ export function ProfileRoadCard({
         <View style={styles.header}>
           <Text style={[styles.kicker, { color: fold.muted }]}>MY ROAD · 我的道路</Text>
           <View style={[styles.tag, { backgroundColor: fold.sage2 }]}>
-            <Text style={[styles.tagText, { color: fold.pine2 }]}>
-              今年 0 / {LIFE_BET_YEAR_ACTIVE_LIMIT}
-            </Text>
+            <Text style={[styles.tagText, { color: fold.pine2 }]}>年 · 季 · 月</Text>
           </View>
         </View>
         <Text style={[styles.emptyCopy, { color: fold.muted }]}>
-          还没有写下方向。用来看清未来几年押什么，不是用来排任务。
+          还没有写下方向。用来拆清年季月目标，不是用来排任务。
         </Text>
         <MotionPressable
           onPress={onWriteDirection ?? onOpen}
@@ -128,65 +86,59 @@ export function ProfileRoadCard({
             styles.primaryCta,
             { backgroundColor: fold.pineButton, minHeight: MIN_TOUCH },
           ]}>
-          <Text style={{ color: fold.onPineButton, fontWeight: '700', fontSize: 13 }}>写下总方向</Text>
+          <Text style={{ color: fold.onPineButton, fontWeight: '700', fontSize: 13 }}>
+            写下总方向
+          </Text>
         </MotionPressable>
       </View>
     );
   }
 
-  const previewYear = yearBets.slice(0, 2);
-  const fartherHint =
-    fartherBets.length > 0
-      ? `还有 ${Math.max(0, yearBets.length - previewYear.length + fartherBets.length)} 条 ›`
-      : yearBets.length > previewYear.length
-        ? `还有 ${yearBets.length - previewYear.length} 条 ›`
-        : '查看全部 ›';
-
   return (
     <MotionPressable
       onPress={onOpen}
       accessibilityRole="button"
-      accessibilityLabel="我的道路，打开编辑"
+      accessibilityLabel="我的道路，打开导图"
       pressScale={Motion.pressScaleCard}
       pressOpacity={1}
       style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
       <View style={styles.header}>
         <Text style={[styles.kicker, { color: fold.muted }]}>MY ROAD · 我的道路</Text>
         <View style={[styles.tag, { backgroundColor: fold.sage2 }]}>
-          <Text style={[styles.tagText, { color: fold.pine2 }]}>
-            今年 {yearUsed} / {LIFE_BET_YEAR_ACTIVE_LIMIT}
-          </Text>
+          <Text style={[styles.tagText, { color: fold.pine2 }]}>导图 ›</Text>
         </View>
       </View>
 
-      {direction ? (
+      {road.direction ? (
         <Text
           style={[styles.direction, { color: fold.pine, fontFamily: foldFonts.serif }]}
           numberOfLines={2}>
-          {direction}
+          {road.direction}
         </Text>
-      ) : null}
-      {yearTheme ? (
-        <Text style={[styles.yearTheme, { color: fold.sage }]} numberOfLines={1}>
-          {yearTheme}
-        </Text>
-      ) : null}
+      ) : (
+        <Text style={[styles.emptyCopy, { color: fold.muted, marginTop: 6 }]}>总方向未写</Text>
+      )}
 
-      {previewYear.length > 0 ? (
-        <View style={styles.betList}>
-          {previewYear.map((bet) => (
-            <BetRow key={bet.id} bet={bet} />
-          ))}
+      {road.yearFocus ? (
+        <View style={[styles.focusRow, { backgroundColor: fold.paper2, borderColor: fold.line }]}>
+          <Text style={[styles.focusLab, { color: fold.faint }]}>今年焦点</Text>
+          <Text style={[styles.focusTxt, { color: fold.ink2 }]} numberOfLines={1}>
+            {road.yearFocus}
+          </Text>
         </View>
       ) : (
-        <Text style={[styles.emptyCopy, { color: fold.muted, marginTop: 6 }]}>今年还没有下注</Text>
+        <Text style={[styles.emptyCopy, { color: fold.muted, marginTop: 6 }]}>
+          今年还没有拆到月
+        </Text>
       )}
 
       <View style={styles.footer}>
         <Text style={[styles.footerLeft, { color: fold.faint }]}>
-          {fartherBets.length > 0 ? `更远 · ${fartherBets.length} 条` : '更远 · 暂无'}
+          {road.aboveYearCount > 0
+            ? `更远层 · ${road.aboveYearCount} 条`
+            : '更远层 · 暂无'}
         </Text>
-        <Text style={[styles.footerRight, { color: fold.amber }]}>{fartherHint}</Text>
+        <Text style={[styles.footerRight, { color: fold.amber }]}>打开导图 ›</Text>
       </View>
     </MotionPressable>
   );
@@ -228,37 +180,21 @@ const styles = StyleSheet.create({
     marginBottom: 2,
     fontWeight: '600',
   },
-  yearTheme: {
-    fontSize: 11,
-    marginBottom: 4,
-  },
-  betList: {
-    marginTop: 6,
-    gap: 5,
-  },
-  bet: {
+  focusRow: {
+    marginTop: 8,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 6,
+    paddingVertical: 7,
     paddingHorizontal: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    gap: 2,
   },
-  betDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  betTitle: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
+  focusLab: {
+    fontSize: 10,
     fontWeight: '700',
   },
-  betMeta: {
-    fontSize: 10,
-    maxWidth: '36%',
+  focusTxt: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   footer: {
     marginTop: 8,

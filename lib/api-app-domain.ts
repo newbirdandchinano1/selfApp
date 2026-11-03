@@ -22,6 +22,15 @@ export const APP_DOMAIN_CRUD_TABLES = new Set([
   'health_records',
   'wish_board_items',
   'finance_transactions',
+  'wardrobe_closets',
+  'wardrobe_categories',
+  'wardrobe_items',
+  'wardrobe_occasions',
+  'wardrobe_outfits',
+  'wardrobe_outfit_items',
+  'wardrobe_wear_logs',
+  'wardrobe_option_values',
+  'wardrobe_body_profile',
 ]);
 
 function asRecord(row: unknown): Record<string, unknown> {
@@ -106,6 +115,48 @@ function prepareWishBoardItemBody(row: Record<string, unknown>): Record<string, 
   return stripSyncFields(row);
 }
 
+function prepareWardrobeItemBody(row: Record<string, unknown>): Record<string, unknown> {
+  const out = stripSyncFields(row);
+  if ('tags_json' in out) out.tags_json = parseJsonField(out.tags_json);
+  if ('extra_data' in out) out.extra_data = parseJsonField(out.extra_data);
+  // 穿着计数权威在 wear_logs，禁止通用 PATCH 改计数
+  delete out.wear_count;
+  delete out.last_worn_on;
+  return out;
+}
+
+function prepareWardrobeOutfitBody(row: Record<string, unknown>): Record<string, unknown> {
+  const out = stripSyncFields(row);
+  delete out.wear_count;
+  delete out.last_worn_on;
+  if ('extra_data' in out) out.extra_data = parseJsonField(out.extra_data);
+  return out;
+}
+
+async function attachOutfitItemIds(body: Record<string, unknown>, outfitId: string): Promise<Record<string, unknown>> {
+  if (Array.isArray(body.item_ids)) return body;
+  try {
+    const { listLocalOutfitItemIds } = await import('@/lib/repositories/wardrobe/wardrobe');
+    const itemIds = await listLocalOutfitItemIds(outfitId);
+    return { ...body, item_ids: itemIds };
+  } catch {
+    return body;
+  }
+}
+
+async function syncOutfitLinksViaParent(
+  outfitId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<unknown> {
+  const { listLocalOutfitItemIds } = await import('@/lib/repositories/wardrobe/wardrobe');
+  const itemIds = await listLocalOutfitItemIds(outfitId);
+  return apiRequest(`${APP_API_PREFIX}/wardrobe/outfits/${encodeURIComponent(outfitId)}`, {
+    method: 'PATCH',
+    body: { item_ids: itemIds },
+    signal: opts?.signal,
+  });
+}
+
 function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -178,6 +229,83 @@ export async function appDomainCreateRecord<T = unknown>(
         signal,
       });
     }
+    case 'wardrobe_closets':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/closets`, {
+        method: 'POST',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_categories':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/categories`, {
+        method: 'POST',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_items':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/items`, {
+        method: 'POST',
+        body: prepareWardrobeItemBody(row),
+        signal,
+      });
+    case 'wardrobe_occasions':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/occasions`, {
+        method: 'POST',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_outfits': {
+      const id = String(row.id ?? '').trim();
+      const body = await attachOutfitItemIds(prepareWardrobeOutfitBody(row), id);
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/outfits`, {
+        method: 'POST',
+        body,
+        signal,
+      });
+    }
+    case 'wardrobe_outfit_items': {
+      const outfitId = String(row.outfit_id ?? '').trim();
+      if (!outfitId) throw new Error('wardrobe_outfit_items.outfit_id 必填');
+      return (await syncOutfitLinksViaParent(outfitId, { signal })) as T;
+    }
+    case 'wardrobe_wear_logs': {
+      const source = String(row.source ?? '').trim();
+      if (source === 'outfit') {
+        const outfitId = String(row.outfit_id ?? '').trim();
+        if (!outfitId) throw new Error('wear outfit_id 必填');
+        return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/wear/outfit`, {
+          method: 'POST',
+          body: {
+            outfit_id: outfitId,
+            worn_on: row.worn_on ?? undefined,
+            note: row.note ?? undefined,
+          },
+          signal,
+        });
+      }
+      const itemId = String(row.item_id ?? '').trim();
+      if (!itemId) throw new Error('wear item_id 必填');
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/wear/item`, {
+        method: 'POST',
+        body: {
+          item_id: itemId,
+          worn_on: row.worn_on ?? undefined,
+          note: row.note ?? undefined,
+        },
+        signal,
+      });
+    }
+    case 'wardrobe_option_values':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/options`, {
+        method: 'POST',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_body_profile':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/body-profile`, {
+        method: 'PUT',
+        body: stripSyncFields(row),
+        signal,
+      });
     default:
       throw new Error(`表「${table}」无 App 专用创建接口`);
   }
@@ -240,6 +368,57 @@ export async function appDomainUpdateRecord<T = unknown>(
         signal,
       });
     }
+    case 'wardrobe_closets':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/closets/${enc}`, {
+        method: 'PATCH',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_categories':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/categories/${enc}`, {
+        method: 'PATCH',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_items':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/items/${enc}`, {
+        method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
+        body: prepareWardrobeItemBody(row),
+        signal,
+      });
+    case 'wardrobe_occasions':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/occasions/${enc}`, {
+        method: 'PATCH',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_outfits': {
+      const body = await attachOutfitItemIds(prepareWardrobeOutfitBody(row), id);
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/outfits/${enc}`, {
+        method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
+        body,
+        signal,
+      });
+    }
+    case 'wardrobe_outfit_items': {
+      const outfitId = String(row.outfit_id ?? '').trim();
+      if (!outfitId) throw new Error('wardrobe_outfit_items.outfit_id 必填');
+      return (await syncOutfitLinksViaParent(outfitId, { signal })) as T;
+    }
+    case 'wardrobe_option_values':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/options/${enc}`, {
+        method: 'PATCH',
+        body: stripSyncFields(row),
+        signal,
+      });
+    case 'wardrobe_body_profile':
+      return apiRequest<T>(`${APP_API_PREFIX}/wardrobe/body-profile`, {
+        method: 'PUT',
+        body: stripSyncFields({ ...row, id }),
+        signal,
+      });
+    case 'wardrobe_wear_logs':
+      throw new Error('穿着日志禁止直接更新，请走 /wardrobe/wear/* 或删除后重建');
     default:
       throw new Error(`表「${table}」无 App 专用更新接口`);
   }
@@ -280,6 +459,56 @@ export async function appDomainDeleteRecord(
         signal,
       });
       return;
+    case 'wardrobe_closets':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/closets/${enc}${q}`, { method: 'DELETE', signal });
+      return;
+    case 'wardrobe_categories':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/categories/${enc}${q}`, {
+        method: 'DELETE',
+        signal,
+      });
+      return;
+    case 'wardrobe_items':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/items/${enc}${q}`, { method: 'DELETE', signal });
+      return;
+    case 'wardrobe_occasions':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/occasions/${enc}${q}`, {
+        method: 'DELETE',
+        signal,
+      });
+      return;
+    case 'wardrobe_outfits':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/outfits/${enc}${q}`, { method: 'DELETE', signal });
+      return;
+    case 'wardrobe_outfit_items': {
+      // 关联表随搭配重建：读取行拿 outfit_id 后 PATCH 父搭配
+      const { getDatabase } = await import('@/lib/database');
+      const db = await getDatabase();
+      const link = db
+        ? await db.getFirstAsync<{ outfit_id: string }>(
+            `SELECT outfit_id FROM wardrobe_outfit_items WHERE id = ?`,
+            [id],
+          )
+        : null;
+      const outfitId = String(link?.outfit_id ?? '').trim();
+      if (!outfitId) return;
+      await syncOutfitLinksViaParent(outfitId, { signal });
+      return;
+    }
+    case 'wardrobe_wear_logs':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/wear/logs/${enc}${q}`, {
+        method: 'DELETE',
+        signal,
+      });
+      return;
+    case 'wardrobe_option_values':
+      await apiRequest(`${APP_API_PREFIX}/wardrobe/options/${enc}${q}`, {
+        method: 'DELETE',
+        signal,
+      });
+      return;
+    case 'wardrobe_body_profile':
+      throw new Error('身材档案无删除接口，请用 PUT 清空字段');
     default:
       throw new Error(`表「${table}」无 App 专用删除接口`);
   }
@@ -304,9 +533,30 @@ export async function appDomainGetRecord<T extends Record<string, unknown>>(
       });
       return normalizeMemoRow(data) as T;
     }
+    case 'wardrobe_items': {
+      const data = await apiRequest<T>(`${APP_API_PREFIX}/wardrobe/items/${enc}`, {
+        method: 'GET',
+        signal,
+      });
+      return normalizeWardrobeItemRow(asRecord(data)) as T;
+    }
+    case 'wardrobe_outfits': {
+      const data = await apiRequest<T>(`${APP_API_PREFIX}/wardrobe/outfits/${enc}`, {
+        method: 'GET',
+        signal,
+      });
+      return asRecord(data) as T;
+    }
     case 'recipe_categories':
     case 'health_records':
     case 'wish_board_items':
+    case 'wardrobe_closets':
+    case 'wardrobe_categories':
+    case 'wardrobe_occasions':
+    case 'wardrobe_outfit_items':
+    case 'wardrobe_wear_logs':
+    case 'wardrobe_option_values':
+    case 'wardrobe_body_profile':
       throw new AppDomainFallbackError(table, 'get');
     default:
       throw new Error(`表「${table}」无 App 专用详情接口`);
@@ -371,9 +621,84 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
       const items = Array.isArray(data?.items) ? data.items.map(asRecord) : [];
       return wrapList(items as T[]);
     }
+    case 'wardrobe_closets': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/closets`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(asRecordList(data) as T[]);
+    }
+    case 'wardrobe_categories': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/categories`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(asRecordList(data) as T[]);
+    }
+    case 'wardrobe_items': {
+      const data = await apiRequest<{ items?: unknown[] }>(
+        `${APP_API_PREFIX}/wardrobe/items?status=active&limit=500`,
+        { method: 'GET', signal },
+      );
+      const items = asRecordList(data?.items).map(normalizeWardrobeItemRow);
+      return wrapList(items as T[]);
+    }
+    case 'wardrobe_occasions': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/occasions`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(asRecordList(data) as T[]);
+    }
+    case 'wardrobe_outfits': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/outfits?status=active`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(asRecordList(data) as T[]);
+    }
+    case 'wardrobe_option_values': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/options`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(asRecordList(data) as T[]);
+    }
+    case 'wardrobe_body_profile': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/wardrobe/body-profile`, {
+        method: 'GET',
+        signal,
+      });
+      if (!data) return wrapList([] as T[]);
+      return wrapList([asRecord(data)] as T[]);
+    }
+    case 'wardrobe_outfit_items':
+    case 'wardrobe_wear_logs':
+      return null;
     default:
       return null;
   }
+}
+
+function normalizeWardrobeItemRow(row: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...row };
+  if (out.tags_json != null && typeof out.tags_json !== 'string') {
+    try {
+      out.tags_json = JSON.stringify(out.tags_json);
+    } catch {
+      out.tags_json = '[]';
+    }
+  }
+  if (out.extra_data != null && typeof out.extra_data !== 'string') {
+    try {
+      out.extra_data = JSON.stringify(out.extra_data);
+    } catch {
+      out.extra_data = null;
+    }
+  }
+  delete out.category;
+  delete out.wear_history_28d;
+  return out;
 }
 
 function normalizeRecipeItemRow(row: Record<string, unknown>): Record<string, unknown> {

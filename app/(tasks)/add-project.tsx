@@ -15,13 +15,15 @@ import {
   useComposerSchedule,
   validateRequiredTitle,
 } from '@/components/entity-form';
-import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
+import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
@@ -43,16 +45,26 @@ import {
 } from '@/lib/constants/entity-icon-choices';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { mergeLongTermProjectIntoExtraData } from '@/lib/long-term-task';
+import { mergeNoteImageUrisIntoExtraData } from '@/lib/note-image-extra';
+import { bindNoteImages, ensureNoteImagesRemote } from '@/lib/note-images';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
-import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
-import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
+import { getMonthGoalsLocal } from '@/lib/repositories/life-road/life-road-node';
+import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import {
   filterHabitsForProjectCompletionPicker,
   mergeCompletionHabitIdsIntoExtraData,
 } from '@/lib/repositories/projects/project-completion-habits';
+import {
+  filterHabitsForProjectProgressPicker,
+  mergeProgressHabitBindingsIntoExtraData,
+  stampProgressHabitBindingsSinceYmd,
+  validateProgressHabitBindingsForSave,
+  type ProjectProgressHabitBinding,
+} from '@/lib/repositories/projects/project-progress-habits';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import {
   mergePrerequisiteIdsIntoExtraData,
   validatePrerequisiteSelection,
@@ -139,6 +151,8 @@ export default function AddProjectScreen() {
     categoryId?: string | string[];
     /** 复盘建议等入口预填项目名 */
     title?: string;
+    /** 从月目标「快速创建项目」预填归属 */
+    life_month_goal_id?: string | string[];
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
@@ -150,6 +164,7 @@ export default function AddProjectScreen() {
   const [title, setTitle] = React.useState(prefillTitle);
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
+  const [noteImageUris, setNoteImageUris] = React.useState<string[]>([]);
   const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
     createEmptyAcceptanceItem(),
   ]);
@@ -161,6 +176,9 @@ export default function AddProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
+  const [progressHabitBindings, setProgressHabitBindings] = React.useState<
+    ProjectProgressHabitBinding[]
+  >([]);
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
@@ -168,9 +186,16 @@ export default function AddProjectScreen() {
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
-  const [selectedLifeBetId, setSelectedLifeBetId] = React.useState<string | null>(null);
-  const [lifeBets, setLifeBets] = React.useState<LifeBetRow[]>([]);
-  const [lifeBetsLoading, setLifeBetsLoading] = React.useState(true);
+  const routeMonthGoalId = React.useMemo(() => {
+    const raw = params.life_month_goal_id;
+    const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
+    return (s ?? '').trim() || null;
+  }, [params.life_month_goal_id]);
+  const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(
+    routeMonthGoalId,
+  );
+  const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
+  const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('20');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('urgent-not-important');
   const [initialTasks, setInitialTasks] = React.useState<InitialTaskDraft[]>([]);
@@ -200,6 +225,10 @@ export default function AddProjectScreen() {
 
   const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
   const foldCardBorder = tf.line2;
+  const logicalTodayYmd = React.useMemo(
+    () => getLogicalLocalYmd(new Date(), getDayBoundarySync()),
+    [],
+  );
   const frowBorder = {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(232,224,210,0.52)',
@@ -247,14 +276,14 @@ export default function AddProjectScreen() {
       } finally {
         setTagsLoading(false);
       }
-      setLifeBetsLoading(true);
+      setMonthGoalsLoading(true);
       try {
-        setLifeBets(await getLifeBetsLocal());
+        setMonthGoals(await getMonthGoalsLocal());
       } catch (error) {
-        console.warn('加载道路赌注失败', error);
-        setLifeBets([]);
+        console.warn('加载月目标失败', error);
+        setMonthGoals([]);
       } finally {
-        setLifeBetsLoading(false);
+        setMonthGoalsLoading(false);
       }
       setHabitsLoading(true);
       try {
@@ -285,6 +314,22 @@ export default function AddProjectScreen() {
       habits: habitsByContext.get(ctx.id) ?? [],
     }));
   }, [allHabits, completionHabitIds, habitContexts]);
+
+  const progressHabitSections = React.useMemo(() => {
+    const selectedIds = progressHabitBindings.map((b) => b.habitId);
+    const filtered = filterHabitsForProjectProgressPicker(allHabits, selectedIds);
+    const habitsByContext = new Map<string, HabitRow[]>();
+    for (const habit of filtered) {
+      const list = habitsByContext.get(habit.context) ?? [];
+      list.push(habit);
+      habitsByContext.set(habit.context, list);
+    }
+    return habitContexts.map((ctx) => ({
+      contextId: ctx.id,
+      contextName: ctx.name,
+      habits: habitsByContext.get(ctx.id) ?? [],
+    }));
+  }, [allHabits, habitContexts, progressHabitBindings]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reload);
 
@@ -345,13 +390,27 @@ export default function AddProjectScreen() {
       return;
     }
 
+    const progressValidation = validateProgressHabitBindingsForSave(progressHabitBindings);
+    if (!progressValidation.ok) {
+      toast.warn(progressValidation.message);
+      return;
+    }
+    const stampedProgressBindings = stampProgressHabitBindingsSinceYmd(
+      progressValidation.bindings,
+      logicalTodayYmd,
+      progressHabitBindings,
+    );
+
     setCreating(true);
     try {
       const projectId = buildProjectId();
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
-      const extra = mergeCompletionHabitIdsIntoExtraData(
-        mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds),
-        completionHabitIds,
+      const extra = mergeProgressHabitBindingsIntoExtraData(
+        mergeCompletionHabitIdsIntoExtraData(
+          mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds),
+          completionHabitIds,
+        ),
+        stampedProgressBindings,
       );
       const checklist = isLongTermProject ? acceptanceItems : [];
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
@@ -360,7 +419,16 @@ export default function AddProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       const withIcon = mergeIconIntoExtraData(withReward, entityIcon, DEFAULT_PROJECT_ICON);
-      const withAcceptance = mergeAcceptanceChecklistIntoExtraData(withIcon, checklist) ?? withIcon;
+      let withAcceptance = mergeAcceptanceChecklistIntoExtraData(withIcon, checklist) ?? withIcon;
+      let nextNoteImages = isLongTermProject ? [] : [...noteImageUris];
+      if (nextNoteImages.length > 0) {
+        nextNoteImages = await ensureNoteImagesRemote({
+          localUris: nextNoteImages,
+          owner: { table: 'projects', id: projectId },
+        });
+        withAcceptance =
+          mergeNoteImageUrisIntoExtraData(withAcceptance, nextNoteImages) ?? withAcceptance;
+      }
       const projectPriority = taskPriorityKeyToNumber(priority);
       const projectDueDate = dueDateFromScheduleMeta(
         scheduleToSave,
@@ -370,7 +438,8 @@ export default function AddProjectScreen() {
         id: projectId,
         name: trimmedTitle,
         category_id: selectedCategoryId,
-        life_bet_id: selectedLifeBetId,
+        life_month_goal_id: selectedMonthGoalId,
+        life_bet_id: null,
         priority: projectPriority,
         note: isLongTermProject
           ? acceptanceChecklistToLines(acceptanceItems) || null
@@ -378,6 +447,9 @@ export default function AddProjectScreen() {
         due_date: projectDueDate,
         extra_data: withAcceptance,
       });
+      if (nextNoteImages.length > 0) {
+        await bindNoteImages({ table: 'projects', id: projectId }, nextNoteImages);
+      }
       await setProjectTagIds(projectId, selectedTagIds);
 
       const seededTasks = initialTasks
@@ -430,6 +502,8 @@ export default function AddProjectScreen() {
   }, [
     allProjects,
     completionHabitIds,
+    progressHabitBindings,
+    logicalTodayYmd,
     creating,
     deadlineText,
     entityIcon,
@@ -437,6 +511,7 @@ export default function AddProjectScreen() {
     acceptanceItems,
     isLongTermProject,
     notes,
+    noteImageUris,
     notifyAncestorsDataChanged,
     playTitleShake,
     prerequisiteProjectIds,
@@ -445,7 +520,7 @@ export default function AddProjectScreen() {
     router,
     scheduleMeta,
     selectedCategoryId,
-    selectedLifeBetId,
+    selectedMonthGoalId,
     selectedTagIds,
     title,
   ]);
@@ -598,7 +673,7 @@ export default function AddProjectScreen() {
                 </View>
               </View>
               <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成习惯</Text>
+                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成条件</Text>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <BoundHabitPickerField
                     selectedHabitIds={completionHabitIds}
@@ -612,10 +687,29 @@ export default function AddProjectScreen() {
                     surfaceLow={isDark ? colors.input : '#F1EDE1'}
                     surfaceLowest={isDark ? colors.surface : tf.card}
                     isDark={isDark}
-                    emptyHint="可选；须设周期目标的养成/戒除习惯"
+                    emptyHint="可选；这些习惯的周期目标成功后，才建议结案"
                     selectedHint="全部达成周期目标后，才满足项目完成条件"
                     modalTitle="完成条件 · 小习惯"
                     modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
+                  />
+                </View>
+              </View>
+              <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>推进进度</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <ProgressHabitBindingsField
+                    bindings={progressHabitBindings}
+                    sections={progressHabitSections}
+                    loading={habitsLoading}
+                    onChange={setProgressHabitBindings}
+                    anchorYmd={logicalTodayYmd}
+                    textColor={tf.ink}
+                    outline={tf.muted}
+                    placeholderColor={tf.faint}
+                    primary={tf.pond}
+                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                    surfaceLowest={isDark ? colors.surface : tf.card}
+                    isDark={isDark}
                   />
                 </View>
               </View>
@@ -649,6 +743,7 @@ export default function AddProjectScreen() {
                         return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
                       });
                       setNotes('');
+                      setNoteImageUris([]);
                     } else {
                       setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
                       setAcceptanceItems([createEmptyAcceptanceItem()]);
@@ -707,15 +802,24 @@ export default function AddProjectScreen() {
               ) : (
                 <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
                   <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                  <TextInput
-                    value={notes}
-                    onChangeText={setNotes}
-                    placeholder="可选补充说明"
-                    placeholderTextColor={tf.faint}
-                    multiline
-                    style={[styles.frowInput, { color: tf.ink2, flex: 1, minHeight: 36 }]}
-                  />
-                  <MaterialIcons name="edit" size={14} color="#A4ADA3" style={{ marginTop: 6 }} />
+                  <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
+                    <TextInput
+                      value={notes}
+                      onChangeText={setNotes}
+                      placeholder="可选补充说明，下方可贴多图"
+                      placeholderTextColor={tf.faint}
+                      multiline
+                      style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                    />
+                    <NoteImageAttach
+                      uris={noteImageUris}
+                      onChangeUris={setNoteImageUris}
+                      disabled={creating}
+                      borderColor={tf.line2}
+                      mutedColor={tf.faint}
+                      surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                    />
+                  </View>
                 </View>
               )}
               <View style={[styles.frow, frowBorder]}>
@@ -737,20 +841,19 @@ export default function AddProjectScreen() {
                 </View>
               </View>
               <View style={[styles.frow, frowBorder]}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>道路</Text>
+                <Text style={[styles.frowLab, { color: '#8A968C' }]}>月目标</Text>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <LifeBetPickerField
-                    selectedId={selectedLifeBetId}
-                    allBets={lifeBets}
-                    loading={lifeBetsLoading}
-                    onChange={setSelectedLifeBetId}
+                  <MonthGoalPickerField
+                    selectedId={selectedMonthGoalId}
+                    monthGoals={monthGoals}
+                    loading={monthGoalsLoading}
+                    onChange={setSelectedMonthGoalId}
                     textColor={tf.ink}
                     outline={tf.muted}
                     placeholderColor={tf.faint}
                     primary={tf.pond}
                     surfaceLow={isDark ? colors.input : '#F1EDE1'}
                     surfaceLowest={colors.surface}
-                    isDark={isDark}
                   />
                 </View>
               </View>

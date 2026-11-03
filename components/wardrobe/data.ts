@@ -1,4 +1,9 @@
-/** 衣橱演示数据：对齐 `衣橱-UI重构.html` 的 items / categories / outfits */
+/**
+ * 衣橱 UI 类型与设计稿演示常量。
+ * 线上数据来自 `lib/repositories/wardrobe`（SQLite + /api/app/wardrobe）；
+ * WARDROBE_* 演示数组仅供设计对照，默认不灌入云同步。
+ */
+import type { OutfitCollagePersisted } from '@/components/wardrobe/collage-model';
 
 export type WardrobeArt =
   | 'hoodie'
@@ -32,6 +37,19 @@ export type WardrobeItem = {
   line: string;
   tags: string[];
   date: string;
+  /** 主图本地 / 远程 URI */
+  image_uri?: string;
+  /** Vision 抠图透明 PNG（统一库或本地） */
+  cutout_uri?: string;
+  /** 编辑表单用：原始购买日 YYYY-MM-DD */
+  purchased_on?: string;
+  note?: string;
+  /** 收纳位置，存 extra_data.storage_location */
+  storage_location?: string;
+  /** 单品链接，存 extra_data.product_url */
+  product_url?: string;
+  /** 备注附图，存 extra_data.note_image_uri */
+  note_image_uri?: string;
 };
 
 export type WardrobeCategory = {
@@ -50,6 +68,8 @@ export type WardrobeOutfit = {
   wear: number;
   items: string[];
   note: string;
+  /** 拼图版式，来自 wardrobe_outfits.extra_data.collage */
+  collage?: OutfitCollagePersisted | null;
 };
 
 export type ClosetLayout = 'card' | 'double' | 'single';
@@ -376,8 +396,10 @@ export const WARDROBE_OUTFITS: WardrobeOutfit[] = [
 ];
 
 export const OCCASIONS = ['全部', '工作', '正装', '休闲', '运动', '派对', '居家', '度假'] as const;
+export const UNCATEGORIZED_CATEGORY_NAME = '未分类';
+
 export const CLOSET_ORDER = [
-  '未分类',
+  UNCATEGORIZED_CATEGORY_NAME,
   '上衣',
   '下装',
   '连衣裙',
@@ -387,6 +409,10 @@ export const CLOSET_ORDER = [
   '鞋履',
   '配饰',
 ] as const;
+
+export function isUncategorizedCategory(name: string): boolean {
+  return name === UNCATEGORIZED_CATEGORY_NAME;
+}
 export const RECENT_SEARCHES = ['针织', '通勤', '雾蓝', '秋冬', '帆布鞋'];
 
 export function itemById(id: string, items: WardrobeItem[] = WARDROBE_ITEMS): WardrobeItem | undefined {

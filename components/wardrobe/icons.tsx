@@ -1,4 +1,3 @@
-import { WARDROBE } from '@/constants/wardrobe-theme';
 import React, { memo } from 'react';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
@@ -9,10 +8,13 @@ export type WardrobeIconProps = {
 
 type IconDraw = (p: { s: number; c: string }) => React.ReactNode;
 
+/** 默认色取两侧共有的 muted，避免未传 color 时钉死浅色 ink2 */
+const ICON_FALLBACK = '#8B958C';
+
 function makeIcon(draw: IconDraw, displayName: string) {
-  const Comp = memo(function WardrobeIcon({ size = 18, color = WARDROBE.ink2 }: WardrobeIconProps) {
+  const Comp = memo(function WardrobeIcon({ size = 18, color = ICON_FALLBACK }: WardrobeIconProps) {
     return (
-      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" pointerEvents="none">
         {draw({ s: size, c: color })}
       </Svg>
     );

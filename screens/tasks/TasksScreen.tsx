@@ -3,6 +3,12 @@ import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
 import { TaskCompletionHeatmap } from '@/components/tasks/TaskCompletionHeatmap';
 import { TaskListFilterBar } from '@/components/tasks/TaskListFilterBar';
+import {
+  shouldShowTaskStatusMarker,
+  taskStatusMarkerLabel,
+  useTaskStatusToneColors,
+  resolveTaskStatusTone,
+} from '@/components/tasks/task-status-tag';
 import { TasksWeekStrip } from '@/components/tasks/TasksWeekStrip';
 import {
   WeeklyFrogSchedule,
@@ -132,7 +138,7 @@ import {
   getBreakHabitDayUiState,
   isHabitDayDisplayCompleted,
 } from '@/lib/repositories/habits/habit-goal';
-import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import { habitKindBadgeLabel, parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import {
   applyHabitCheckInPointsReward,
   applyBreakHabitReward,
@@ -177,7 +183,7 @@ import {
 } from '@/lib/repositories/projects/project-completion-logs';
 import { getTagsByProjectIds } from '@/lib/repositories/projects/project-tag';
 import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
-import { getTagsByEntityIds } from '@/lib/repositories/tags/tag';
+import { getTagsByEntityIds, normalizeTagColor, tagColorWithAlpha } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
   buildProjectLockMap,
@@ -191,7 +197,7 @@ import {
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
-import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
+import { getLifeRoadNodesLocal } from '@/lib/repositories/life-road/life-road-node';
 import {
   insertFrogCompletionEvent,
   isFrogSubjectDeleted,
@@ -212,6 +218,16 @@ import {
   insertTaskExecutionEvent,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
+import { ProjectHabitProgressBlock } from '@/components/projects/ProjectHabitProgressBlock';
+import {
+  buildProgressHabitsPlaceholderEvaluation,
+  evaluateProjectProgressHabits,
+  evaluateProjectsProgressHabitsMap,
+  formatProjectProgressHabitsFullMessage,
+  formatProjectProgressHabitsRemainMessage,
+  notifyProjectsProgressHabitsAfterCheckIn,
+  type ProjectProgressHabitsEvaluation,
+} from '@/lib/repositories/projects/project-progress-habits';
 import {
   completeTasksBoundToHabitIfGoalMet,
   parseBoundHabitIdsFromExtraData,
@@ -245,6 +261,7 @@ import {
   isStandaloneTodoOpen,
   isStandaloneTodoOverdue,
   isStandaloneTodoRepeatWaiting,
+  isStandaloneTodoTomorrowPreview,
   isTaskDueOverdue,
   isTaskOverdueForList,
   isTaskRowOverdue,
@@ -328,9 +345,7 @@ function habitGridColumnsForWidth(w: number): number {
 }
 
 function habitKindLabel(kind: HabitKind): string {
-  if (kind === 'break') return '戒除';
-  if (kind === 'task') return '任务';
-  return '养成';
+  return habitKindBadgeLabel(kind);
 }
 
 /** 设计稿 `.hdots`：3px 点阵，用于行尾进度 */
@@ -682,11 +697,11 @@ type HabitSection = {
     kind: HabitKind;
     /** 用于按 `schedule` 判断今日是否在循环打卡日 */
     extraData: string | null;
-    /** 完成任务：本周期进度与展示态（仅 kind === 'task' 时有值） */
+    /** 周期配额：本周期进度与展示态（仅 kind === 'task' 时有值） */
     periodProgress: number | null;
     periodGoal: number | null;
     taskShowPeriodCheck: boolean;
-    /** 完成任务：历史周期目标达成次数（每周期计 1） */
+    /** 周期配额：历史周期目标达成次数（每周期计 1） */
     taskCompletionCount?: number;
     /** 服务端 habits-grid 返回的今日完成态 */
     displayCompleted: boolean;
@@ -731,7 +746,7 @@ function applyHabitCountPatch(
     }
   }
   const logicalTodayYmd = opts?.logicalTodayYmd;
-  // 完成任务看周期进度；养成/戒除看当日目标
+  // 周期配额看周期进度；养成/戒除看当日目标
   next.displayCompleted =
     item.kind === 'task'
       ? next.taskShowPeriodCheck
@@ -839,7 +854,7 @@ function overlayHabitSectionsWithLocalCheckIns(
   }));
 }
 
-/** 完成任务重复周期 → 卡片徽章短标签 */
+/** 周期配额重复周期 → 卡片徽章短标签 */
 function taskPeriodShortLabel(extraData: string | null): string {
   const period = parseTaskRepeatPeriod(extraData);
   if (period === '每日') return '今日';
@@ -1398,7 +1413,10 @@ function showProjectCompletionDispositionPrompt(
   );
 }
 
-/** 完成条件含小习惯时先门禁；softWaitHabits 用于任务已齐、静等习惯（不弹强制归档） */
+/**
+ * 完成条件含小习惯时先门禁；softWaitHabits 用于任务已齐、静等结案习惯（不弹强制归档）。
+ * 进度燃料未满只提示、不拦截归档；满进度 ≠ 自动结案。
+ */
 async function promptProjectCompletionWithHabitGate(
   project: ProjectRow,
   options: {
@@ -1413,28 +1431,41 @@ async function promptProjectCompletionWithHabitGate(
       formatProjectCompletionHabitsBlockMessage,
       parseCompletionHabitIds,
     } = await import('@/lib/repositories/projects/project-completion-habits');
-    if (parseCompletionHabitIds(project.extra_data).length === 0) {
-      showProjectCompletionDispositionPrompt(project, options);
-      return;
+    const hasCompletionHabits = parseCompletionHabitIds(project.extra_data).length > 0;
+    if (hasCompletionHabits) {
+      const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
+      if (!evaluation.ok) {
+        if (options.softWaitHabits) {
+          const names = evaluation.pending.map((p) => p.title).join('、');
+          toast.info(
+            names ? `任务已齐，还差小习惯：${names}` : '任务已齐，完成条件中的小习惯尚未达成',
+          );
+          return;
+        }
+        Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '仍要归档',
+            style: 'destructive',
+            onPress: () => showProjectCompletionDispositionPrompt(project, options),
+          },
+        ]);
+        return;
+      }
     }
-    const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
-    if (evaluation.ok) {
-      showProjectCompletionDispositionPrompt(project, options);
-      return;
-    }
+
+    // 结案条件已齐（或未配）：进度未满时软提示，仍允许走归档弹窗
     if (options.softWaitHabits) {
-      const names = evaluation.pending.map((p) => p.title).join('、');
-      toast.info(names ? `任务已齐，还差小习惯：${names}` : '任务已齐，完成条件中的小习惯尚未达成');
-      return;
+      try {
+        const progressEval = await evaluateProjectProgressHabits(project.extra_data);
+        const remainMsg = formatProjectProgressHabitsRemainMessage(progressEval);
+        if (remainMsg) toast.info(remainMsg);
+      } catch (progressErr) {
+        console.warn('检查项目习惯进度失败', progressErr);
+      }
     }
-    Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '仍要归档',
-        style: 'destructive',
-        onPress: () => showProjectCompletionDispositionPrompt(project, options),
-      },
-    ]);
+
+    showProjectCompletionDispositionPrompt(project, options);
   } catch (err) {
     console.warn('检查项目小习惯完成条件失败', err);
     showProjectCompletionDispositionPrompt(project, options);
@@ -1636,6 +1667,7 @@ export default function TasksScreen() {
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
   const { tf, fonts: foldFonts } = useTaskFoldTheme();
+  const taskStatusTones = useTaskStatusToneColors();
   const taskUi = getTaskUiColors(isDark);
   const habitBreakSuccess = taskUi.habitBreakSuccess;
   /** level 0..4 对应 5 档；图例多一格 heat5 表示「多」顶端 */
@@ -1651,12 +1683,16 @@ export default function TasksScreen() {
   const [projectTab, setProjectTab] = React.useState<string>('all');
   const [mainListView, setMainListView] = React.useState<TasksMainListView>('projects');
   const [projects, setProjects] = React.useState<ProjectRow[]>([]);
+  /** 项目列表习惯进度轨（仅有 progress_habit_bindings 的项目） */
+  const [projectHabitProgressById, setProjectHabitProgressById] = React.useState<
+    Map<string, ProjectProgressHabitsEvaluation>
+  >(() => new Map());
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
   const [projectTagsByProjectId, setProjectTagsByProjectId] = React.useState<
     Map<string, ProjectTagRow[]>
   >(() => new Map());
-  /** life_bets.id → 标题；任务列表归属 caption 本地 JOIN */
-  const [lifeBetTitleById, setLifeBetTitleById] = React.useState<Map<string, string>>(
+  /** life_road_nodes.id → 标题；任务列表归属 caption 本地 JOIN */
+  const [lifeRoadTitleById, setLifeRoadTitleById] = React.useState<Map<string, string>>(
     () => new Map(),
   );
   const [habitTagsByHabitId, setHabitTagsByHabitId] = React.useState<Map<string, TagRow[]>>(
@@ -1672,7 +1708,7 @@ export default function TasksScreen() {
     React.useState<TaskListFilterState>(EMPTY_TASK_LIST_FILTER);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
-  /** 周条选中日 → 驱动日程跳转到含该日的三天窗 */
+  /** 周条选中日 → 驱动日程跳转到该日课表 */
   const [weekStripSelectedYmd, setWeekStripSelectedYmd] = React.useState<string | null>(null);
   const [scheduleJumpYmd, setScheduleJumpYmd] = React.useState<string | null>(null);
   const [projectTaskTreeMap, setProjectTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
@@ -2050,17 +2086,30 @@ export default function TasksScreen() {
     null,
   );
 
+  const refreshProjectHabitProgress = React.useCallback(async (rows?: ProjectRow[]) => {
+    const list = rows ?? projectsRef.current;
+    try {
+      const map = await evaluateProjectsProgressHabitsMap(list);
+      setProjectHabitProgressById(map);
+    } catch (err) {
+      console.warn('加载项目习惯进度失败', err);
+      setProjectHabitProgressById(new Map());
+    }
+  }, []);
+
   const loadProjects = React.useCallback(async () => {
     try {
       const rows = await getProjects();
       setProjects(rows);
+      void refreshProjectHabitProgress(rows);
       return rows;
     } catch (err) {
       console.warn('加载项目列表失败', err);
       setProjects([]);
+      setProjectHabitProgressById(new Map());
       return [];
     }
-  }, []);
+  }, [refreshProjectHabitProgress]);
 
   const refreshProjectTags = React.useCallback(async (projectRows?: ProjectRow[]) => {
     const ids = (projectRows ?? projectsRef.current).map((p) => p.id);
@@ -2076,14 +2125,14 @@ export default function TasksScreen() {
     }
   }, []);
 
-  /** 道路标题缓存：life_bets 变更经 TABLE_TAB_DIRTY_MAP 触发本页 reload 后重读 */
-  const refreshLifeBetTitles = React.useCallback(async () => {
+  /** 道路标题缓存：life_road_nodes 变更经 TABLE_TAB_DIRTY_MAP 触发本页 reload 后重读 */
+  const refreshLifeRoadTitles = React.useCallback(async () => {
     try {
-      const bets = await getLifeBetsLocal();
-      setLifeBetTitleById(new Map(bets.map((b) => [b.id, b.title])));
+      const nodes = await getLifeRoadNodesLocal();
+      setLifeRoadTitleById(new Map(nodes.map((n) => [n.id, n.title])));
     } catch (err) {
       console.warn('加载道路标题失败', err);
-      setLifeBetTitleById(new Map());
+      setLifeRoadTitleById(new Map());
     }
   }, []);
 
@@ -2092,8 +2141,8 @@ export default function TasksScreen() {
   }, [projects, refreshProjectTags]);
 
   React.useEffect(() => {
-    void refreshLifeBetTitles();
-  }, [projects, refreshLifeBetTitles]);
+    void refreshLifeRoadTitles();
+  }, [projects, refreshLifeRoadTitles]);
 
   const refreshHabitTags = React.useCallback(async () => {
     const ids = habitSections.flatMap((s) => s.items.map((h) => h.id));
@@ -2477,6 +2526,7 @@ export default function TasksScreen() {
             const prevProjects = projectsRef.current;
             const nextProjects = reconcileProjectRowsForTab(prevProjects, result.projects, tab);
             setProjects(nextProjects);
+            void refreshProjectHabitProgress(nextProjects);
             setProjectTaskTreeMap((treePrev) =>
               reconcileProjectTaskTreeMapsForTab(
                 treePrev,
@@ -2487,7 +2537,11 @@ export default function TasksScreen() {
               ),
             );
           } else {
-            setProjects((prev) => mergeProjectRowsById(prev, result.projects));
+            setProjects((prev) => {
+              const merged = mergeProjectRowsById(prev, result.projects);
+              void refreshProjectHabitProgress(merged);
+              return merged;
+            });
             setProjectTaskTreeMap((prev) => mergeProjectTaskTreeMaps(prev, result.projectTaskTreeMap));
           }
         }
@@ -2503,7 +2557,7 @@ export default function TasksScreen() {
         return loadProjectTasks(tabProjects, { generation: opts?.generation });
       }
     },
-    [hideCompletedProjectTasks, loadProjectTasks],
+    [hideCompletedProjectTasks, loadProjectTasks, refreshProjectHabitProgress],
   );
   loadProjectsListFromApiRef.current = loadProjectsListFromApi;
 
@@ -2970,6 +3024,8 @@ export default function TasksScreen() {
     () =>
       standaloneTodosSorted.filter((t) => {
         if (!isStandaloneTodoOpen(t)) return false;
+        if (isStandaloneTodoTomorrowPreview(t, logicalTodayYmd)) return false;
+        if (isStandaloneTodoRepeatWaiting(t, logicalTodayYmd)) return false;
         const due = t.due_date?.slice(0, 10) ?? '';
         return !due || due === logicalTodayYmd;
       }).length,
@@ -4586,17 +4642,54 @@ export default function TasksScreen() {
         if (!habit || parseHabitKind(habit.extra_data) !== 'task') return;
         scheduleHabitsReload();
       } catch (err) {
-        console.warn('检测完成任务周期状态失败', err);
+        console.warn('检测周期配额状态失败', err);
       }
     },
     [scheduleHabitsReload]
   );
 
+  const syncProjectProgressHabitsForHabit = React.useCallback(
+    async (habitId: string, opts?: { silent?: boolean }) => {
+      try {
+        const result = await notifyProjectsProgressHabitsAfterCheckIn(habitId, {
+          silent: opts?.silent,
+        });
+        if (result.updates.length > 0) {
+          setProjectHabitProgressById((prev) => {
+            const next = new Map(prev);
+            for (const update of result.updates) {
+              // ratio=0（未打卡）也要保留，否则进度轨会消失
+              if (update.evaluation.checks.length > 0 || update.evaluation.ratio != null) {
+                next.set(update.projectId, update.evaluation);
+              } else {
+                next.delete(update.projectId);
+              }
+            }
+            return next;
+          });
+        }
+        if (opts?.silent) return;
+        const message = formatProjectProgressHabitsFullMessage(result.updates);
+        if (message) toast.info(message);
+      } catch (err) {
+        console.warn('同步项目习惯进度失败', err);
+      }
+    },
+    [],
+  );
+
+  /**
+   * 打卡副作用顺序（互不吞异常，各自 try/catch）：
+   * 1) 任务日绑定完成同步 → 2) 项目进度燃料重算 → 3) 结案习惯周期成功尝试
+   */
   const runHabitSideEffectsAfterCountChange = React.useCallback(
-    (habitId: string, nextCount: number, opts?: { skipHabitReload?: boolean }) => {
-      void maybeCompleteBreakHabit(habitId);
-      void maybeCompleteBuildHabit(habitId);
-      void syncHabitBoundTasksForHabit(habitId, nextCount);
+    (habitId: string, nextCount: number, opts?: { skipHabitReload?: boolean; progressSilent?: boolean }) => {
+      void (async () => {
+        await syncHabitBoundTasksForHabit(habitId, nextCount);
+        await syncProjectProgressHabitsForHabit(habitId, { silent: opts?.progressSilent });
+        await maybeCompleteBreakHabit(habitId);
+        await maybeCompleteBuildHabit(habitId);
+      })();
       // 先按本地打卡表回写卡片（戒除/任务都依赖，避免乐观更新被并发 loadHabits 盖掉后不再恢复）
       void refreshHabitSectionsFromLocalCheckIns();
       // 撤销 / 戒除破戒递增时跳过 habits-grid：服务端 todayCount 常滞后
@@ -4616,6 +4709,7 @@ export default function TasksScreen() {
       refreshHabitSectionsFromLocalCheckIns,
       scheduleHabitsReload,
       syncHabitBoundTasksForHabit,
+      syncProjectProgressHabitsForHabit,
     ]
   );
 
@@ -4828,7 +4922,10 @@ export default function TasksScreen() {
         }
       }
       // 跳过 habits-grid 立即重拉，避免服务端短暂旧数据把「已撤销」盖回完成态
-      runHabitSideEffectsAfterCountChange(item.id, nextCount, { skipHabitReload: true });
+      runHabitSideEffectsAfterCountChange(item.id, nextCount, {
+        skipHabitReload: true,
+        progressSilent: true,
+      });
     },
     [
       acquireHabitCheckInLock,
@@ -4970,6 +5067,7 @@ export default function TasksScreen() {
         }
         runHabitSideEffectsAfterCountChange(subHabitModal.habitId, result.parentCount, {
           skipHabitReload: habitKind === 'break',
+          progressSilent: !nextDone,
         });
       } catch (err) {
         console.warn('子习惯打卡失败', err);
@@ -5622,6 +5720,9 @@ export default function TasksScreen() {
     onChanged: onScheduleChanged,
     jumpToYmd: scheduleJumpYmd,
     onJumpToYmdConsumed: () => setScheduleJumpYmd(null),
+    onViewYmdChange: (ymd: string) => {
+      setWeekStripSelectedYmd(ymd === logicalTodayYmd ? null : ymd);
+    },
     onOpenSubject: (kind: 'task' | 'project', id: string) => {
       if (kind === 'project') openProject(id);
       else openTask(id);
@@ -6274,31 +6375,34 @@ export default function TasksScreen() {
                                 </Text>
                                 {habitTags.length > 0 ? (
                                   <View style={styles.habitTagChipRow}>
-                                    {habitTags.map((tag) => (
-                                      <View
-                                        key={tag.id}
-                                        style={[
-                                          styles.habitTagChip,
-                                          {
-                                            backgroundColor: `${tag.color}18`,
-                                            borderColor: `${tag.color}44`,
-                                          },
-                                        ]}>
+                                    {habitTags.map((tag) => {
+                                      const chipColor = normalizeTagColor(tag.color);
+                                      return (
                                         <View
-                                          style={{
-                                            width: 4,
-                                            height: 4,
-                                            borderRadius: 2,
-                                            backgroundColor: tag.color,
-                                          }}
-                                        />
-                                        <Text
-                                          style={[styles.habitTagChipText, { color: tag.color }]}
-                                          numberOfLines={1}>
-                                          {tag.name}
-                                        </Text>
-                                      </View>
-                                    ))}
+                                          key={tag.id}
+                                          style={[
+                                            styles.habitTagChip,
+                                            {
+                                              backgroundColor: tagColorWithAlpha(chipColor, '18'),
+                                              borderColor: tagColorWithAlpha(chipColor, '44'),
+                                            },
+                                          ]}>
+                                          <View
+                                            style={{
+                                              width: 4,
+                                              height: 4,
+                                              borderRadius: 2,
+                                              backgroundColor: chipColor,
+                                            }}
+                                          />
+                                          <Text
+                                            style={[styles.habitTagChipText, { color: chipColor }]}
+                                            numberOfLines={1}>
+                                            {tag.name}
+                                          </Text>
+                                        </View>
+                                      );
+                                    })}
                                   </View>
                                 ) : null}
                               </View>
@@ -6555,9 +6659,12 @@ export default function TasksScreen() {
                     const overdue = isStandaloneTodoOverdue(t, logicalTodayYmd);
                     const isRepeatWaiting =
                       !isDone && !isShelved && isStandaloneTodoRepeatWaiting(t, logicalTodayYmd);
+                    const isTomorrowPreview =
+                      !isDone && !isShelved && isStandaloneTodoTomorrowPreview(t, logicalTodayYmd);
+                    const isDeferredPreview = isRepeatWaiting || isTomorrowPreview;
                     const dueDisplayYmd = getStandaloneTodoOverdueDisplayYmd(t);
                     const effectivePriority = getEffectiveTaskPriority(t, logicalTodayYmd);
-                    const checkColor = isRepeatWaiting
+                    const checkColor = isDeferredPreview
                       ? colors.textMuted
                       : getTaskPriorityCheckColor(effectivePriority, isDark);
                     const isUpgrading = upgradingStandaloneTodoId === t.id;
@@ -6671,6 +6778,7 @@ export default function TasksScreen() {
                           {(() => {
                             const todoMetaParts: string[] = [];
                             if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
+                            else if (isTomorrowPreview) todoMetaParts.push('明天');
                             else if (isRepeatWaiting) todoMetaParts.push('未到执行日');
                             else if (hasFrogAssignment) todoMetaParts.push(frogAssignedBadgeText);
                             else if (overdue) todoMetaParts.push('已过期');
@@ -6688,10 +6796,23 @@ export default function TasksScreen() {
                             }
                             const prioLabel = formatTaskPriority(effectivePriority);
                             const prioColor = getTaskPriorityColor(effectivePriority, isDark);
-                            const statusTag = isShelved
-                              ? { label: '搁置', bg: isDark ? tf.paper3 : '#EAE6DC', fg: '#777B75' }
-                              : isDone
-                                ? { label: '已完成', bg: tf.sage2, fg: '#36594D' }
+                            /** 非默认状态优先展示任务状态；明天预览 / 入格标记次之 */
+                            const statusTag = shouldShowTaskStatusMarker(t.status)
+                              ? (() => {
+                                  const tone = resolveTaskStatusTone(t.status);
+                                  const colorsForTone = taskStatusTones[tone];
+                                  return {
+                                    label: taskStatusMarkerLabel(t.status),
+                                    bg: colorsForTone.bg,
+                                    fg: colorsForTone.fg,
+                                  };
+                                })()
+                              : isTomorrowPreview
+                                ? {
+                                    label: '明天',
+                                    bg: isDark ? tf.paper3 : '#EAE6DC',
+                                    fg: isDark ? tf.muted : '#7E8B81',
+                                  }
                                 : hasFrogAssignment
                                   ? { label: '已入格', bg: tf.sage2, fg: '#36594D' }
                                   : { label: '未入格', bg: tf.amber2, fg: tf.amberInk };
@@ -6699,7 +6820,8 @@ export default function TasksScreen() {
                             const highlighted = highlightTodoId === t.id;
                             const todoIcon = resolveTaskDisplayIcon(t.extra_data);
                             /** 与设计稿 `.hicon` / 项目头像色阶一致：过期·高优 rose，紧急 amber，其余 lily */
-                            const todoIconBg = isShelved
+                            const todoIconBg =
+                              isShelved || isDeferredPreview
                               ? isDark
                                 ? tf.paper3
                                 : '#EAE6DC'
@@ -6726,7 +6848,7 @@ export default function TasksScreen() {
                                     : 'rgba(248,236,215,0.38)'
                                   : todoListSurface,
                                 borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.52)',
-                                opacity: isRepeatWaiting ? 0.55 : 1,
+                                opacity: isDeferredPreview ? 0.55 : 1,
                                 minHeight: 39,
                               },
                             ]}>
@@ -7170,8 +7292,13 @@ export default function TasksScreen() {
                   const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
                   const projectTags = projectTagsByProjectId.get(project.id) ?? [];
-                  const lifeBetId = project.life_bet_id?.trim() || '';
-                  const lifeBetTitle = lifeBetId ? lifeBetTitleById.get(lifeBetId)?.trim() || '' : '';
+                  const lifeRoadId =
+                    project.life_month_goal_id?.trim() ||
+                    project.life_bet_id?.trim() ||
+                    '';
+                  const lifeBetTitle = lifeRoadId
+                    ? lifeRoadTitleById.get(lifeRoadId)?.trim() || ''
+                    : '';
                   const isLongTermProject = getIsLongTermProject(project.extra_data);
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
                   const hasRepeat = !!schedule?.repeatOption && schedule.repeatOption !== '不重复';
@@ -7221,6 +7348,13 @@ export default function TasksScreen() {
                     !!expandedProjectIds[project.id] ||
                     (projectFilterActive && filterMatchKind === 'task');
                   const progress = getProjectTreeTaskProgress(taskTree);
+                  const habitProgress =
+                    projectHabitProgressById.get(project.id) ??
+                    buildProgressHabitsPlaceholderEvaluation(project.extra_data);
+                  const showHabitProgress =
+                    !!habitProgress &&
+                    habitProgress.checks.length > 0 &&
+                    (habitProgress.ratio != null || habitProgress.bindings.length > 0);
 
                   const hasAnyTasks = taskTree.length > 0;
                   const isInInbox = isProjectInInboxCategory(project.category_id);
@@ -7608,38 +7742,41 @@ export default function TasksScreen() {
                                   </Text>
                                 </View>
                               ) : null}
-                              {projectTags.slice(0, 3).map((tag) => (
-                                <View
-                                  key={tag.id}
-                                  style={[
-                                    styles.projectMetaChip,
-                                    {
-                                      backgroundColor: isCompleted
-                                        ? taskUi.hairlineMuted
-                                        : `${tag.color}18`,
-                                      borderColor: isCompleted
-                                        ? taskUi.hairlineMutedBorder
-                                        : `${tag.color}44`,
-                                    },
-                                  ]}>
+                              {projectTags.slice(0, 3).map((tag) => {
+                                const chipColor = normalizeTagColor(tag.color);
+                                return (
                                   <View
-                                    style={{
-                                      width: 7,
-                                      height: 7,
-                                      borderRadius: 3.5,
-                                      backgroundColor: isCompleted ? doneMuted : tag.color,
-                                    }}
-                                  />
-                                  <Text
+                                    key={tag.id}
                                     style={[
-                                      styles.projectMetaChipText,
-                                      { color: isCompleted ? doneMuted : tag.color },
-                                    ]}
-                                    numberOfLines={1}>
-                                    {tag.name}
-                                  </Text>
-                                </View>
-                              ))}
+                                      styles.projectMetaChip,
+                                      {
+                                        backgroundColor: isCompleted
+                                          ? taskUi.hairlineMuted
+                                          : tagColorWithAlpha(chipColor, '18'),
+                                        borderColor: isCompleted
+                                          ? taskUi.hairlineMutedBorder
+                                          : tagColorWithAlpha(chipColor, '44'),
+                                      },
+                                    ]}>
+                                    <View
+                                      style={{
+                                        width: 7,
+                                        height: 7,
+                                        borderRadius: 3.5,
+                                        backgroundColor: isCompleted ? doneMuted : chipColor,
+                                      }}
+                                    />
+                                    <Text
+                                      style={[
+                                        styles.projectMetaChipText,
+                                        { color: isCompleted ? doneMuted : chipColor },
+                                      ]}
+                                      numberOfLines={1}>
+                                      {tag.name}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
                               {projectTags.length > 3 ? (
                                 <View
                                   style={[
@@ -7823,6 +7960,18 @@ export default function TasksScreen() {
                                   }
                                 />
                               </View>
+                            ) : null}
+                            {showHabitProgress ? (
+                              <ProjectHabitProgressBlock
+                                evaluation={habitProgress!}
+                                muted={tf.muted}
+                                faint={tf.faint}
+                                ink={isCompleted ? doneMuted : tf.ink}
+                                trackAccentFrom={isScheduleExpired ? '#E3B39C' : '#A9C184'}
+                                trackAccentTo={
+                                  isScheduleExpired ? tf.rose : isCompleted ? tf.sage : tf.frog
+                                }
+                              />
                             ) : null}
                           </View>
                         </View>

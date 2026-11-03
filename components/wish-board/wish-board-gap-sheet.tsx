@@ -5,10 +5,12 @@ import {
 } from '@/constants/wish-box-ui';
 import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
 import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
-import type {
-  WishBoardRedeemConditionCheck,
-  WishBoardRedeemConditionKind,
-  WishBoardRedeemEligibility,
+import {
+  formatAvailableFromLabel,
+  formatWishHabitConditionMeta,
+  type WishBoardRedeemConditionCheck,
+  type WishBoardRedeemConditionKind,
+  type WishBoardRedeemEligibility,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
 import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -22,6 +24,7 @@ type GapRow = {
   title: string;
   subtitle: string;
   actionKind: GapActionKind;
+  actionId?: string;
   actionLabel: string;
 };
 
@@ -32,12 +35,15 @@ type Props = {
   /** 当前净资产（与详情页同一口径），用于「还差 ¥X」文案 */
   currentNetWorth?: number;
   onClose: () => void;
-  /** 每行右侧行动按钮：去完成 / 去攒钱 / 去赚积分 */
-  onAction?: (kind: GapActionKind) => void;
+  /** 每行右侧行动按钮：去完成 / 去打卡 / 去攒钱 / 去赚积分 */
+  onAction?: (kind: GapActionKind, id?: string) => void;
   onGoTasks?: () => void;
 };
 
-function kindEmoji(kind: WishBoardRedeemConditionKind): string {
+function kindEmoji(
+  kind: WishBoardRedeemConditionKind,
+  habitKind?: WishBoardRedeemConditionCheck['habit_kind'],
+): string {
   switch (kind) {
     case 'project':
       return '📁';
@@ -45,8 +51,12 @@ function kindEmoji(kind: WishBoardRedeemConditionKind): string {
       return '✅';
     case 'todo':
       return '📝';
+    case 'habit':
+      return habitKind === 'break' ? '🚫' : '🌱';
     case 'net_worth':
       return '💰';
+    case 'available_from':
+      return '🕒';
     default:
       return '🔗';
   }
@@ -55,13 +65,17 @@ function kindEmoji(kind: WishBoardRedeemConditionKind): string {
 function kindLabel(kind: WishBoardRedeemConditionKind): string {
   if (kind === 'project') return '项目';
   if (kind === 'todo') return '待办';
+  if (kind === 'habit') return '小习惯';
   if (kind === 'net_worth') return '净资产';
+  if (kind === 'available_from') return '开放时间';
   return '任务';
 }
 
 function kindAction(kind: GapActionKind): string {
   if (kind === 'net_worth') return '去攒钱';
   if (kind === 'points') return '去赚积分';
+  if (kind === 'available_from') return '稍后再来';
+  if (kind === 'habit') return '去打卡';
   return '去完成';
 }
 
@@ -112,16 +126,23 @@ export function WishBoardGapSheet({
         } else {
           subtitle = current != null ? `当前 ${formatMoneyShort(current)}` : '净资产同步后判定';
         }
+      } else if (check.kind === 'available_from') {
+        rowTitle = `自 ${formatAvailableFromLabel(check.title)} 起开放兑换`;
+        subtitle = check.missing ? '开放时间无效' : '到点后自动解锁';
+      } else if (check.kind === 'habit') {
+        rowTitle = check.title;
+        subtitle = formatWishHabitConditionMeta(check);
       } else {
         rowTitle = `完成${kindLabel(check.kind)}「${check.title}」`;
         subtitle = check.missing ? '关联项已不存在' : progressSubtitle(check);
       }
       return {
         key: `${check.kind}:${check.id}`,
-        emoji: kindEmoji(check.kind),
+        emoji: kindEmoji(check.kind, check.habit_kind),
         title: rowTitle,
         subtitle,
         actionKind: check.kind,
+        actionId: check.kind === 'habit' ? check.id : undefined,
         actionLabel: kindAction(check.kind),
       };
     });
@@ -141,9 +162,9 @@ export function WishBoardGapSheet({
 
   const count = rows.length;
 
-  const runAction = (kind: GapActionKind) => {
+  const runAction = (kind: GapActionKind, id?: string) => {
     onClose();
-    onAction?.(kind);
+    onAction?.(kind, id);
   };
 
   return (
@@ -182,7 +203,7 @@ export function WishBoardGapSheet({
                   </Text>
                 </View>
                 <Pressable
-                  onPress={() => runAction(row.actionKind)}
+                  onPress={() => runAction(row.actionKind, row.actionId)}
                   style={({ pressed }) => [styles.actBtn, { opacity: pressed ? 0.75 : 1 }]}
                   accessibilityRole="button"
                   accessibilityLabel={`${row.actionLabel}${row.title}`}>

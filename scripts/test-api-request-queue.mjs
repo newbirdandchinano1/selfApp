@@ -7,7 +7,7 @@
 
 const MAX_IN_FLIGHT = 6;
 const RESERVED_READ_SLOTS = 2;
-const MAX_WAITING = 48;
+const MAX_WAITING = 64;
 
 let inFlight = 0;
 let inFlightReads = 0;
@@ -68,37 +68,45 @@ function reset() {
   waitingWrites.length = 0;
 }
 
+function dropOldestWaitingRead(reason) {
+  const dropped = waitingReads.shift();
+  if (!dropped) return false;
+  dropped.reject(new Error(reason));
+  void dropped.promise.catch(() => undefined);
+  return true;
+}
+
 function enqueueApiRequest(fn, options) {
   const kind = options?.kind === 'write' ? 'write' : 'read';
-  return new Promise((resolve, reject) => {
-    const start = () => {
-      Promise.resolve()
-        .then(fn)
-        .then(resolve, reject)
-        .finally(() => {
-          endInFlight(kind);
-          pump();
-        });
-    };
-
-    if (waitingCount() >= MAX_WAITING) {
-      if (kind === 'read') {
-        reject(new Error('API 请求排队已满，请稍后重试'));
-        return;
-      }
-      const dropped = waitingReads.shift();
-      if (dropped) {
-        dropped.reject(new Error('API 请求排队已满，请稍后重试'));
-      } else {
-        reject(new Error('API 请求排队已满，请稍后重试'));
-        return;
-      }
-    }
-
-    if (kind === 'write') waitingWrites.push({ kind, start, reject });
-    else waitingReads.push({ kind, start, reject });
-    pump();
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+
+  const start = () => {
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => {
+        endInFlight(kind);
+        pump();
+      });
+  };
+
+  if (waitingCount() >= MAX_WAITING) {
+    if (!dropOldestWaitingRead('API 请求排队已满，请稍后重试')) {
+      reject(new Error('API 请求排队已满，请稍后重试'));
+      return promise;
+    }
+  }
+
+  const entry = { kind, start, reject, promise };
+  if (kind === 'write') waitingWrites.push(entry);
+  else waitingReads.push(entry);
+  pump();
+  return promise;
 }
 
 function sleep(ms) {
@@ -154,7 +162,6 @@ async function testWritePriorityWhenUnderCap() {
 
   for (const b of blockers) b.release();
   await Promise.all([...blockers.map(b => b.job), readJob, writeJob]);
-  // 释放后仍有读在飞/在排：写优先但仍须留读槽；首个出队应是写（写未触顶）
   assert(order[0] === 'write', `write should run before queued read when under write cap, got ${order.join(',')}`);
   console.log(`[pass] write priority under cap, order = ${order.join(',')}`);
 }
@@ -162,7 +169,6 @@ async function testWritePriorityWhenUnderCap() {
 async function testReadNotStarvedByWrites() {
   reset();
   const order = [];
-  // 占满并发槽
   const blockers = Array.from({ length: MAX_IN_FLIGHT }, () => {
     let release;
     const p = new Promise(r => {
@@ -175,7 +181,6 @@ async function testReadNotStarvedByWrites() {
   });
   await sleep(10);
 
-  // 先排一个读，再连续塞大量写（旧逻辑会把读永远顶在后面）
   const readJob = enqueueApiRequest(async () => {
     order.push('read');
     return 'read';
@@ -192,7 +197,6 @@ async function testReadNotStarvedByWrites() {
 
   const readIdx = order.indexOf('read');
   assert(readIdx >= 0, 'read should eventually run');
-  // 有读保留槽时，读不会排在全部 12 个写之后（至多先放 writeCap 个写）
   assert(
     readIdx <= MAX_IN_FLIGHT - RESERVED_READ_SLOTS,
     `read should not be starved, index=${readIdx}, order=${order.join(',')}`,
@@ -220,7 +224,6 @@ async function testReservedWriteCapWhileReadsWait() {
     enqueueApiRequest(async () => 'w', { kind: 'write' }),
   );
 
-  // 释放 blocker 后立刻观察：在有读等待时，飞行中的写不应超过 MAX - RESERVED
   releaseBlockers();
   await sleep(5);
   assert(
@@ -232,12 +235,51 @@ async function testReservedWriteCapWhileReadsWait() {
   console.log(`[pass] write cap while reads wait (reserved=${RESERVED_READ_SLOTS})`);
 }
 
+async function testDropOldestReadWhenFull() {
+  reset();
+  const blockers = Array.from({ length: MAX_IN_FLIGHT }, () => {
+    let release;
+    const p = new Promise(r => {
+      release = r;
+    });
+    return {
+      release,
+      job: enqueueApiRequest(() => p.then(() => 'block'), { kind: 'read' }),
+    };
+  });
+  await sleep(5);
+
+  const waiting = Array.from({ length: MAX_WAITING }, (_, i) =>
+    enqueueApiRequest(async () => i, { kind: 'read' }).then(
+      v => ({ ok: true, v }),
+      e => ({ ok: false, message: String(e?.message || e) }),
+    ),
+  );
+  await sleep(5);
+  assert(waitingReads.length === MAX_WAITING, `waiting should be full (${MAX_WAITING})`);
+
+  const newest = enqueueApiRequest(async () => 'newest', { kind: 'read' }).then(
+    v => ({ ok: true, v }),
+    e => ({ ok: false, message: String(e?.message || e) }),
+  );
+  await sleep(5);
+  assert(waitingReads.length === MAX_WAITING, 'waiting should stay capped');
+
+  for (const b of blockers) b.release();
+  const results = await Promise.all([...waiting, newest]);
+  const dropped = results.filter(r => !r.ok);
+  assert(dropped.length >= 1, 'at least one oldest read should be dropped');
+  assert(results[results.length - 1].ok === true, 'newest read should still run');
+  console.log(`[pass] drop oldest read when full, dropped=${dropped.length}`);
+}
+
 async function main() {
   console.log('=== api-request-queue concurrency tests ===');
   await testConcurrencyCap();
   await testWritePriorityWhenUnderCap();
   await testReadNotStarvedByWrites();
   await testReservedWriteCapWhileReadsWait();
+  await testDropOldestReadWhenFull();
   console.log('=== ALL PASSED ===');
 }
 

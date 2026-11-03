@@ -9,7 +9,6 @@ import {
   IconArrow,
   IconChart,
   IconCloset,
-  IconHanger,
   IconHeart,
   IconSeason,
   IconTag,
@@ -17,83 +16,114 @@ import {
 import { PageTitleItal } from '@/components/wardrobe/page-title-ital';
 import { UsageRing } from '@/components/wardrobe/usage-ring';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeEm, wardrobeFonts, wardrobeType } from '@/constants/wardrobe-theme';
+import { useWardrobeTheme, wardrobeEm, wardrobeFonts, wardrobeType, type WardrobePalette } from '@/constants/wardrobe-theme';
 import React, { memo, useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type RefreshControlProps,
+} from 'react-native';
 
 export type MineViewProps = {
   items: WardrobeItem[];
   outfits: WardrobeOutfit[];
   categories: WardrobeCategory[];
   season: SeasonFilter;
+  closetCount: number;
+  closetName: string;
+  establishedYear: number;
+  bodySummary: string;
+  optionCount: number;
+  wornThisMonth: number;
+  sparkDayCounts: number[];
+  refreshControl?: React.ReactElement<RefreshControlProps>;
   onSeason: (season: SeasonFilter) => void;
   onOpenSheet: (key: string) => void;
 };
 
-const COLOR_GROUPS = [
-  { label: '中性色', color: '#C4B398', colors: ['藏青', '燕麦白', '燕麦色', '炭灰', '杏色', '米灰', '奶油 / 棕'] },
-  { label: '橄榄绿', color: '#839A76', colors: ['橄榄绿', '鼠尾草绿'] },
-  { label: '丹宁蓝', color: '#8FAFBB', colors: ['靛蓝', '雾蓝'] },
-  { label: '焦糖棕', color: '#BF8E62', colors: ['焦糖棕'] },
-] as const;
+const FALLBACK_SWATCHES = ['#C4B398', '#839A76', '#8FAFBB', '#BF8E62', '#A89B8C', '#9AA7B5'] as const;
 
-const MANAGE_ROWS: {
+type ColorGroup = { label: string; color: string; count: number };
+
+function buildColorGroups(items: WardrobeItem[]): ColorGroup[] {
+  const map = new Map<string, ColorGroup>();
+  for (const item of items) {
+    const raw = item.color?.trim();
+    const label = raw && raw !== '—' ? raw : '未标注';
+    const prev = map.get(label);
+    if (prev) {
+      prev.count += 1;
+      continue;
+    }
+    map.set(label, {
+      label,
+      color: item.tint?.trim() || FALLBACK_SWATCHES[map.size % FALLBACK_SWATCHES.length],
+      count: 1,
+    });
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 4);
+}
+
+function scaleSparkHeights(counts: number[]): number[] {
+  const max = Math.max(1, ...counts);
+  return counts.map((c) => (c <= 0 ? 3 : Math.round(4 + (c / max) * 14)));
+}
+
+function manageRows(w: WardrobePalette): {
   key: string;
   title: string;
-  note: (ctx: { items: number; seasonLabel: string }) => string;
+  note: (ctx: {
+    items: number;
+    closetCount: number;
+    seasonLabel: string;
+    bodySummary: string;
+    optionCount: number;
+  }) => string;
   icon: React.ReactNode;
   tile: string;
-  tone: string;
-}[] = [
-  {
-    key: 'wardrobe',
-    title: '衣橱管理',
-    note: ({ items }) => `2 个衣橱 · ${items} 件单品`,
-    icon: <IconCloset size={15} color="#41604F" />,
-    tile: '#E1E8E1',
-    tone: '#41604F',
-  },
-  {
-    key: 'options',
-    title: '选项管理',
-    note: () => '分类 · 颜色 · 品牌 · 季节',
-    icon: <IconTag size={15} color="#8C6A3C" />,
-    tile: '#F1E5D3',
-    tone: '#8C6A3C',
-  },
-  {
-    key: 'sizes',
-    title: '详细尺码管理',
-    note: () => '上装 M · 下装 27 · 鞋履 38',
-    icon: <IconHanger size={15} color="#4A5F79" />,
-    tile: '#E3E7EF',
-    tone: '#4A5F79',
-  },
-  {
-    key: 'body',
-    title: '身材数据',
-    note: () => '身高 165 · 肩宽 38 · 腰围 66',
-    icon: <IconSeason size={15} color="#77694F" />,
-    tile: '#E9E2D5',
-    tone: '#77694F',
-  },
-  {
-    key: 'stats',
-    title: '穿搭统计',
-    note: () => '按分类、季节与色系查看',
-    icon: <IconChart size={15} color="#3E6150" />,
-    tile: '#E0E9E4',
-    tone: '#3E6150',
-  },
-  {
-    key: 'season',
-    title: '衣橱季节',
-    note: ({ seasonLabel }) => `当前：${seasonLabel}`,
-    icon: <IconHeart size={15} color="#8C5541" />,
-    tile: '#F0DFD5',
-    tone: '#8C5541',
-  },
-];
+}[] {
+  return [
+    {
+      key: 'wardrobe',
+      title: '衣橱管理',
+      note: ({ closetCount, items }) => `${closetCount} 个衣橱 · ${items} 件单品`,
+      icon: <IconCloset size={15} color={w.pine} />,
+      tile: w.sage2,
+    },
+    {
+      key: 'options',
+      title: '选项管理',
+      note: ({ optionCount }) =>
+        optionCount > 0 ? `${optionCount} 个词条 · 颜色品牌季节` : '颜色 · 品牌 · 季节 · 版型',
+      icon: <IconTag size={15} color={w.amber} />,
+      tile: w.amber2,
+    },
+    {
+      key: 'body',
+      title: '身材数据',
+      note: ({ bodySummary }) => bodySummary,
+      icon: <IconSeason size={15} color={w.amber} />,
+      tile: w.amber2,
+    },
+    {
+      key: 'stats',
+      title: '穿搭统计',
+      note: () => '按分类、季节与色系查看',
+      icon: <IconChart size={15} color={w.pine} />,
+      tile: w.sage2,
+    },
+    {
+      key: 'season',
+      title: '衣橱季节',
+      note: ({ seasonLabel }) => `当前：${seasonLabel}`,
+      icon: <IconHeart size={15} color={w.clay} />,
+      tile: w.clay2,
+    },
+  ];
+}
 
 function useCountUp(target: number, animate: boolean, duration = 850) {
   const [value, setValue] = useState(animate ? 0 : target);
@@ -121,25 +151,40 @@ export const MineView = memo(function MineView({
   outfits,
   categories: _categories,
   season,
+  closetCount,
+  closetName,
+  establishedYear,
+  bodySummary,
+  optionCount,
+  wornThisMonth,
+  sparkDayCounts,
+  refreshControl,
   onSeason,
   onOpenSheet,
 }: MineViewProps) {
   void _categories;
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const { animate } = useFoldMotionGate();
   const totalValue = useMemo(() => items.reduce((sum, item) => sum + parsePrice(item.price), 0), [items]);
-  const worn = items.filter((item) => item.wear > 0).length;
+  const everWorn = items.filter((item) => item.wear > 0).length;
+  const neverWorn = Math.max(0, items.length - everWorn);
+  const usagePercent = items.length ? Math.round((everWorn / items.length) * 100) : 0;
   const seasonLabel = { all: '不限制', ss: '春夏', aw: '秋冬' }[season];
   const itemCount = useCountUp(items.length, animate);
   const outfitCount = useCountUp(outfits.length, animate);
   const valueCount = useCountUp(totalValue, animate, 950);
+  const sparkHeights = useMemo(() => scaleSparkHeights(sparkDayCounts), [sparkDayCounts]);
 
-  const groups = COLOR_GROUPS.map((group) => ({
-    ...group,
-    count: items.filter((item) => (group.colors as readonly string[]).includes(item.color)).length,
-  }));
+  const groups = useMemo(() => buildColorGroups(items), [items]);
+  const displayName = closetName.trim() || '我的衣橱';
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={refreshControl}>
       <FoldRiseIn animate={animate} index={0} fromY={16}>
         <View style={styles.intro}>
           <View style={styles.kickerRow}>
@@ -152,7 +197,8 @@ export const MineView = memo(function MineView({
             <Text style={styles.pageTitlePeriod}>。</Text>
           </View>
           <Text style={styles.pageSub}>
-            已整理 {items.length} 件单品 · {outfits.length} 套搭配</Text>
+            已整理 {items.length} 件单品 · {outfits.length} 套搭配
+          </Text>
         </View>
       </FoldRiseIn>
 
@@ -162,11 +208,13 @@ export const MineView = memo(function MineView({
             <Text style={styles.avatarText}>衣</Text>
           </View>
           <View style={styles.profileCopy}>
-            <Text style={styles.profileName}>我的衣橱</Text>
-            <Text style={styles.profileMeta}>ATELIER MEMBER · 0286</Text>
+            <Text style={styles.profileName}>{displayName}</Text>
+            <Text style={styles.profileMeta}>
+              ATELIER · {items.length} ITEMS · {closetCount} CLOSETS
+            </Text>
           </View>
           <View style={styles.profileBadge}>
-            <Text style={styles.profileBadgeText}>EST. 2025</Text>
+            <Text style={styles.profileBadgeText}>EST. {establishedYear}</Text>
           </View>
         </View>
       </FoldRiseIn>
@@ -190,22 +238,26 @@ export const MineView = memo(function MineView({
 
       <FoldRiseIn animate={animate} index={3} fromY={16}>
         <View style={styles.usageCard}>
-          <UsageRing percent={71} size={66} gradient={false} animate={animate} />
+          <UsageRing percent={usagePercent} size={66} gradient={false} animate={animate} />
           <View style={styles.useCopy}>
             <View style={styles.kickerRow}>
               <View style={[styles.kickerLine, { backgroundColor: 'rgba(245,240,227,0.24)' }]} />
               <Text style={[styles.kicker, { color: 'rgba(245,240,227,0.55)' }]}>WARDROBE USAGE</Text>
             </View>
-            <Text style={styles.useTitle}>衣橱使用率 71%</Text>
+            <Text style={styles.useTitle}>衣橱使用率 {usagePercent}%</Text>
             <Text style={styles.useNote}>
-              {worn} 件单品本月穿过 · {Math.max(0, items.length - worn)} 件仍在等待第一次出场</Text>
+              本月穿过 {wornThisMonth} 件 · {neverWorn} 件仍在等待第一次出场
+            </Text>
             <View style={styles.useBars}>
-              {[9, 14, 10, 18, 12, 16, 11, 15].map((h, i) => (
+              {sparkHeights.map((h, i) => (
                 <View
                   key={i}
                   style={[
                     styles.useBar,
-                    { height: h, backgroundColor: i % 2 ? 'rgba(245,240,227,0.22)' : 'rgba(230,184,120,0.38)' },
+                    {
+                      height: h,
+                      backgroundColor: i % 2 ? 'rgba(245,240,227,0.22)' : 'rgba(230,184,120,0.38)',
+                    },
                   ]}
                 />
               ))}
@@ -220,28 +272,34 @@ export const MineView = memo(function MineView({
             <Text style={styles.ccTitle}>色彩分布</Text>
             <Text style={styles.ccMeta}>{items.length} ITEMS</Text>
           </View>
-          <View style={styles.colorBar}>
-            {groups.map((g) => (
-              <View
-                key={g.label}
-                style={{
-                  flex: Math.max(g.count, 0.2),
-                  backgroundColor: g.color,
-                  height: 12,
-                }}
-              />
-            ))}
-          </View>
-          <View style={styles.colorLegend}>
-            {groups.map((g) => (
-              <View key={g.label} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: g.color }]} />
-                <Text style={styles.legendText}>
-                  {g.label} {g.count}
-                </Text>
+          {groups.length ? (
+            <>
+              <View style={styles.colorBar}>
+                {groups.map((g) => (
+                  <View
+                    key={g.label}
+                    style={{
+                      flex: Math.max(g.count, 0.2),
+                      backgroundColor: g.color,
+                      height: 12,
+                    }}
+                  />
+                ))}
               </View>
-            ))}
-          </View>
+              <View style={styles.colorLegend}>
+                {groups.map((g) => (
+                  <View key={g.label} style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: g.color }]} />
+                    <Text style={styles.legendText}>
+                      {g.label} {g.count}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          ) : (
+            <Text style={styles.colorEmpty}>还没有单品色彩数据</Text>
+          )}
         </View>
       </FoldRiseIn>
 
@@ -278,7 +336,7 @@ export const MineView = memo(function MineView({
               <Text style={styles.kicker}>MANAGE</Text>
             </View>
             <Text style={styles.sectionTitle}>
-              衣橱设置 <Text style={styles.sectionMeta}>6 项</Text>
+              衣橱设置 <Text style={styles.sectionMeta}>5 项</Text>
             </Text>
           </View>
           <Pressable onPress={() => onOpenSheet('about')} style={styles.ghostPill}>
@@ -289,42 +347,51 @@ export const MineView = memo(function MineView({
 
       <FoldRiseIn animate={animate} index={7} fromY={16}>
         <View style={styles.manage}>
-          {MANAGE_ROWS.map((row) => (
+          {manageRows(w).map((row) => (
             <Pressable key={row.key} style={styles.manageRow} onPress={() => onOpenSheet(row.key)}>
               <View style={[styles.manageIco, { backgroundColor: row.tile }]}>{row.icon}</View>
               <View style={styles.manageCopy}>
                 <Text style={styles.manageTitle}>{row.title}</Text>
-                <Text style={styles.manageNote}>{row.note({ items: items.length, seasonLabel })}</Text>
+                <Text style={styles.manageNote}>
+                  {row.note({
+                    items: items.length,
+                    closetCount,
+                    seasonLabel,
+                    bodySummary,
+                    optionCount,
+                  })}
+                </Text>
               </View>
-              <IconArrow size={11} color={WARDROBE.muted2} />
+              <IconArrow size={11} color={w.muted2} />
             </Pressable>
           ))}
         </View>
       </FoldRiseIn>
 
       <View style={styles.foot}>
-        <Text style={styles.footText}>ATELIER · MEMBER 0286</Text>
-        <Text style={styles.footText}>EST. 2025</Text>
+        <Text style={styles.footText}>ATELIER · {displayName}</Text>
+        <Text style={styles.footText}>EST. {establishedYear}</Text>
       </View>
     </ScrollView>
   );
 });
 
-const styles = StyleSheet.create({
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
   scroll: { flex: 1 },
   content: { paddingHorizontal: 18, paddingBottom: 122 },
   intro: { paddingTop: 7 },
   kickerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  kickerLine: { width: 14, height: 1, backgroundColor: WARDROBE.line2 },
+  kickerLine: { width: 14, height: 1, backgroundColor: w.line2 },
   kicker: {
     ...wardrobeType.kicker,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   pageTitle: {
     ...wardrobeType.pageTitle,
     marginTop: 9,
     marginBottom: 0,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   titleItalRow: {
     flexDirection: 'row',
@@ -333,16 +400,16 @@ const styles = StyleSheet.create({
   },
   pageTitlePeriod: {
     ...wardrobeType.pageTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
-  pageSub: { ...wardrobeType.pageSub, color: WARDROBE.muted },
+  pageSub: { ...wardrobeType.pageSub, color: w.muted },
   profile: {
     marginTop: 13,
     padding: 14,
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(255,253,247,0.95)',
+    borderColor: w.line,
+    backgroundColor: w.glassStrong,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -352,32 +419,32 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 17,
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { fontFamily: wardrobeFonts.serif, fontSize: 22, color: '#F6F0E1' },
+  avatarText: { fontFamily: wardrobeFonts.serif, fontSize: 22, color: w.onPine },
   profileCopy: { flex: 1 },
   profileName: {
     ...wardrobeType.profileName,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   profileMeta: {
     ...wardrobeType.profileMeta,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 4,
   },
   profileBadge: {
     paddingHorizontal: 7,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: 'rgba(211,154,85,0.12)',
+    backgroundColor: w.amberMark,
     borderWidth: 1,
-    borderColor: 'rgba(211,154,85,0.24)',
+    borderColor: w.amberMark,
   },
   profileBadgeText: {
     ...wardrobeType.profileBadge,
-    color: '#9A6A2D',
+    color: w.amber,
   },
   statStrip: {
     flexDirection: 'row',
@@ -385,21 +452,21 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: WARDROBE.line3,
+    borderColor: w.line3,
   },
   stat: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
   statMid: {
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: WARDROBE.line3,
+    borderColor: w.line3,
   },
   statNum: {
     ...wardrobeType.statNum,
-    color: WARDROBE.pine,
+    color: w.pine,
   },
   statLabel: {
     ...wardrobeType.statLabel,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 5,
   },
   usageCard: {
@@ -407,7 +474,7 @@ const styles = StyleSheet.create({
     padding: 14,
     paddingHorizontal: 15,
     borderRadius: 22,
-    backgroundColor: '#1C3A30',
+    backgroundColor: w.weekCard1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
@@ -432,21 +499,21 @@ const styles = StyleSheet.create({
     padding: 13,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.62)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   ccHead: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 9 },
   ccTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 10,
     letterSpacing: wardrobeEm(0.04, 10),
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   ccMeta: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6,
     letterSpacing: wardrobeEm(0.12, 6),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   colorBar: { flexDirection: 'row', height: 12, borderRadius: 999, overflow: 'hidden', gap: 2 },
   colorLegend: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 8, columnGap: 10 },
@@ -455,16 +522,22 @@ const styles = StyleSheet.create({
   legendText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     letterSpacing: wardrobeEm(0.03, 6.5),
+  },
+  colorEmpty: {
+    fontFamily: wardrobeFonts.sans,
+    fontSize: 7.5,
+    color: w.muted,
+    letterSpacing: wardrobeEm(0.02, 7.5),
   },
   seasonCard: {
     marginTop: 11,
     padding: 12,
     borderRadius: 19,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.62)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -474,12 +547,12 @@ const styles = StyleSheet.create({
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 10,
     letterSpacing: wardrobeEm(0.03, 10),
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   seasonNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 2,
     letterSpacing: wardrobeEm(0.02, 6.5),
   },
@@ -488,14 +561,14 @@ const styles = StyleSheet.create({
     gap: 2,
     padding: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(33,69,58,0.06)',
+    backgroundColor: w.pineWash,
     borderWidth: 1,
-    borderColor: 'rgba(33,69,58,0.07)',
+    borderColor: w.pineWash,
   },
   seg: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 999 },
   segActive: {
-    backgroundColor: WARDROBE.card2,
-    shadowColor: WARDROBE.pine,
+    backgroundColor: w.card2,
+    shadowColor: w.pine,
     shadowOpacity: 0.12,
     shadowRadius: 6,
     elevation: 2,
@@ -504,9 +577,9 @@ const styles = StyleSheet.create({
     fontFamily: wardrobeFonts.sans,
     fontSize: 7,
     letterSpacing: wardrobeEm(0.02, 7),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-  segTextActive: { color: WARDROBE.pine, fontFamily: wardrobeFonts.sansSemiBold },
+  segTextActive: { color: w.pine, fontFamily: wardrobeFonts.sansSemiBold },
   sectionHead: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -516,32 +589,32 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...wardrobeType.sectionTitle,
     marginTop: 5,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   sectionMeta: {
     ...wardrobeType.sectionMeta,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   ghostPill: {
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.6)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   ghostPillText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
-    color: WARDROBE.ink3,
+    color: w.ink3,
     letterSpacing: wardrobeEm(0.06, 8),
   },
   manage: {
     marginTop: 11,
     borderRadius: 21,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.7)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
     overflow: 'hidden',
   },
   manageRow: {
@@ -551,7 +624,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: WARDROBE.line3,
+    borderBottomColor: w.line3,
   },
   manageIco: {
     width: 32,
@@ -565,12 +638,12 @@ const styles = StyleSheet.create({
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 10.5,
     letterSpacing: wardrobeEm(0.02, 10.5),
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   manageNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 2,
     letterSpacing: wardrobeEm(0.02, 6.5),
   },
@@ -580,10 +653,11 @@ const styles = StyleSheet.create({
     marginTop: 26,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: WARDROBE.line3,
+    borderTopColor: w.line3,
   },
   footText: {
     ...wardrobeType.foot,
-    color: WARDROBE.muted2,
+    color: w.muted2,
   },
-});
+  });
+}

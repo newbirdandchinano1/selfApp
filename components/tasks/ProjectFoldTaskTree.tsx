@@ -8,10 +8,11 @@ import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
+import { TaskStatusTag } from '@/components/tasks/task-status-tag';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
-import type { TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskShelvedStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -75,10 +76,11 @@ function ProjectFoldTaskRow({
   const { tf, fonts, isDark } = useTaskFoldTheme();
   const { animate } = useFoldMotionGate();
   const done = node.status === 'done' || node.status === 'cancelled';
+  const shelved = isTaskShelvedStatus(node.status);
   const children = Array.isArray(node.children) ? node.children : [];
   const hasChildren = children.length > 0;
   const frogLeaf =
-    !done && getFrogAssignedDates(node.extra_data).length > 0
+    !done && !shelved && getFrogAssignedDates(node.extra_data).length > 0
       ? formatFrogLeaf(node.extra_data, logicalTodayYmd, formatDayLabel)
       : '';
   const tp = hasChildren
@@ -140,20 +142,27 @@ function ProjectFoldTaskRow({
 
         <Pressable
           onPress={onToggleDone}
-          disabled={locked}
+          disabled={locked || shelved}
           hitSlop={8}
           accessibilityRole="checkbox"
-          accessibilityState={{ checked: done, disabled: locked }}
+          accessibilityState={{ checked: done, disabled: locked || shelved }}
           style={({ pressed }) => [
             styles.cb,
             {
-              borderColor: done ? tf.frog : '#C8D1C0',
-              backgroundColor: done ? tf.frog : 'rgba(255,255,255,0.5)',
-              opacity: locked ? 0.55 : pressed ? 0.85 : 1,
+              borderColor: done ? tf.frog : shelved ? tf.line2 : '#C8D1C0',
+              backgroundColor: done
+                ? tf.frog
+                : shelved
+                  ? isDark
+                    ? tf.paper3
+                    : '#EAE6DC'
+                  : 'rgba(255,255,255,0.5)',
+              opacity: locked || shelved ? 0.55 : pressed ? 0.85 : 1,
             },
           ]}>
           {done ? <MaterialIcons name="check" size={10} color={tf.onPond} /> : null}
-          {locked && !done ? <MaterialIcons name="lock" size={9} color={tf.muted} /> : null}
+          {shelved && !done ? <MaterialIcons name="pause" size={9} color={tf.muted} /> : null}
+          {locked && !done && !shelved ? <MaterialIcons name="lock" size={9} color={tf.muted} /> : null}
         </Pressable>
 
         <Pressable
@@ -165,14 +174,16 @@ function ProjectFoldTaskRow({
             style={[
               styles.tn,
               {
-                color: done ? '#A8AFA6' : filterHit ? tf.pond : tf.ink2,
+                color: done || shelved ? '#A8AFA6' : filterHit ? tf.pond : tf.ink2,
                 fontWeight: filterHit ? '700' : '600',
                 textDecorationLine: done ? 'line-through' : 'none',
+                opacity: shelved ? 0.85 : 1,
               },
             ]}
             numberOfLines={1}>
             {node.title?.trim() || '（无标题）'}
           </Text>
+          <TaskStatusTag status={node.status} />
           {filterHit ? (
             <View style={[styles.filterHitChip, { backgroundColor: tf.sage2 }]}>
               <Text style={[styles.filterHitChipText, { color: tf.pond }]}>命中</Text>

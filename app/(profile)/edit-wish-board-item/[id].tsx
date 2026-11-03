@@ -2,6 +2,8 @@ import { WishBoardItemForm } from '@/components/wish-board/wish-board-item-form'
 import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
 import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks } from '@/lib/repositories/tasks/task';
@@ -44,6 +46,7 @@ export default function EditWishBoardItemScreen() {
   const [balance, setBalance] = useState(0);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [habits, setHabits] = useState<HabitRow[]>([]);
   const [currentNetWorth, setCurrentNetWorth] = useState<number | null>(null);
   const [initial, setInitial] = useState<FormInitial | null>(null);
   const [originalDescription, setOriginalDescription] = useState<string | null>(null);
@@ -54,17 +57,20 @@ export default function EditWishBoardItemScreen() {
     let cancelled = false;
     void (async () => {
       try {
-        const [row, nextBalance, nextProjects, nextTasks, nextNetWorth] = await Promise.all([
-          getWishBoardItemById(id),
-          getPointsBalance(),
-          getProjects(),
-          getTasks(),
-          loadWishBoardCurrentNetWorth(),
-        ]);
+        const [row, nextBalance, nextProjects, nextTasks, nextHabits, nextNetWorth] =
+          await Promise.all([
+            getWishBoardItemById(id),
+            getPointsBalance(),
+            getProjects(),
+            getTasks(),
+            getHabits(),
+            loadWishBoardCurrentNetWorth(),
+          ]);
         if (cancelled) return;
         setBalance(nextBalance);
         setProjects(nextProjects);
         setTasks(nextTasks);
+        setHabits(nextHabits);
         setCurrentNetWorth(nextNetWorth);
         if (!row) {
           toast.error('未找到心愿');
@@ -144,6 +150,7 @@ export default function EditWishBoardItemScreen() {
       balance={balance}
       projects={projects}
       tasks={tasks}
+      habits={habits}
       currentNetWorth={currentNetWorth}
       saving={saving}
       readOnly={redeemed}

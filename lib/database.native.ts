@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 58;
+export const DB_VERSION = 60;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -116,6 +116,202 @@ async function migrateDropPersonaPortraitCache(db: SQLite.SQLiteDatabase): Promi
 /**
  * v58：本地通知收件箱（未读列表）。无 sync_status，不进云 / REST。
  */
+/** v59：衣橱云同步本地镜像表（对齐后端 wardrobe_*） */
+async function migrateEnsureWardrobeTables(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['wardrobe_tables_v59'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS wardrobe_closets (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      tint TEXT,
+      tint2 TEXT,
+      tone TEXT,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_occasions (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      brand TEXT,
+      color TEXT,
+      season TEXT,
+      price_cents INTEGER,
+      currency TEXT NOT NULL DEFAULT 'CNY',
+      fit TEXT,
+      warmth TEXT,
+      sku_code TEXT,
+      art_key TEXT,
+      tint TEXT,
+      tint2 TEXT,
+      line TEXT,
+      tags_json TEXT,
+      image_uri TEXT,
+      cutout_uri TEXT,
+      purchased_on TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      wear_count INTEGER NOT NULL DEFAULT 0,
+      last_worn_on TEXT,
+      note TEXT,
+      extra_data TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_outfits (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      occasion_id TEXT,
+      note TEXT,
+      cover_item_id TEXT,
+      wear_count INTEGER NOT NULL DEFAULT 0,
+      last_worn_on TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_outfit_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      outfit_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_wear_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      worn_on TEXT NOT NULL,
+      source TEXT NOT NULL,
+      item_id TEXT,
+      outfit_id TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_option_values (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT,
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS wardrobe_body_profile (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT,
+      height_cm REAL,
+      weight_kg REAL,
+      shoulder_cm REAL,
+      bust_cm REAL,
+      waist_cm REAL,
+      hip_cm REAL,
+      inseam_cm REAL,
+      foot_mm REAL,
+      size_top TEXT,
+      size_bottom TEXT,
+      size_shoe TEXT,
+      note TEXT,
+      extra_data TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_closets_updated_at ON wardrobe_closets(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_categories_closet_sort ON wardrobe_categories(closet_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_categories_updated_at ON wardrobe_categories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_occasions_sort ON wardrobe_occasions(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_occasions_updated_at ON wardrobe_occasions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_closet_updated ON wardrobe_items(closet_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_category ON wardrobe_items(category_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_status ON wardrobe_items(status);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfits_closet_updated ON wardrobe_outfits(closet_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfits_occasion ON wardrobe_outfits(occasion_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfit_items_outfit ON wardrobe_outfit_items(outfit_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfit_items_item ON wardrobe_outfit_items(item_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_wear_logs_closet_day ON wardrobe_wear_logs(closet_id, worn_on);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_wear_logs_item_day ON wardrobe_wear_logs(item_id, worn_on);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_option_values_kind ON wardrobe_option_values(kind, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_body_profile_closet ON wardrobe_body_profile(closet_id);
+  `);
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'wardrobe_tables_v59',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
 async function migrateEnsureNotificationInboxLocal(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
@@ -219,6 +415,217 @@ async function migrateEnsureLifeRoadTables(db: SQLite.SQLiteDatabase): Promise<v
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/**
+ * v60：道路年季月拆解 — life_road_nodes + projects.life_month_goal_id；
+ * 并将旧 life_bets 迁入节点（幂等，见 life_road_nodes_v60 meta）。
+ */
+async function migrateEnsureLifeRoadNodesV60(db: SQLite.SQLiteDatabase): Promise<void> {
+  // 幂等补列：即使 meta 已标记完成，也要保证旧库缺列时能自愈
+  await ensureColumn(db, 'projects', 'life_month_goal_id', 'TEXT');
+  try {
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_projects_life_month_goal_id ON projects(life_month_goal_id);
+    `);
+  } catch (e) {
+    console.warn('idx_projects_life_month_goal_id ensure failed', e);
+  }
+
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['life_road_nodes_v60'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS life_road_nodes (
+      id TEXT PRIMARY KEY NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('multi', 'farther', 'year', 'quarter', 'month')),
+      title TEXT NOT NULL,
+      note TEXT,
+      calendar_year INTEGER,
+      quarter INTEGER,
+      month INTEGER,
+      parent_id TEXT,
+      status TEXT NOT NULL DEFAULT 'on_track'
+        CHECK (status IN ('on_track', 'paused', 'arrived', 'dropped')),
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_kind_year
+      ON life_road_nodes(kind, calendar_year, quarter, month, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_parent ON life_road_nodes(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_status ON life_road_nodes(status);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_updated_at ON life_road_nodes(updated_at);
+  `);
+
+  // 本地一次性迁移：旧赌注 → 节点（保留 id，便于项目挂载衔接）
+  try {
+    await migrateLifeBetsIntoRoadNodesLocal(db);
+  } catch (e) {
+    console.warn('[db] life_bets → life_road_nodes migrate failed', e);
+  }
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'life_road_nodes_v60',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 将 life_bets 迁入 life_road_nodes，并把 projects.life_bet_id 对到月目标 */
+async function migrateLifeBetsIntoRoadNodesLocal(db: SQLite.SQLiteDatabase): Promise<void> {
+  const existing = await db.getFirstAsync<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM life_road_nodes`,
+  );
+  if (Number(existing?.cnt ?? 0) > 0) return;
+
+  const bets = await db.getAllAsync<{
+    id: string;
+    title: string;
+    horizon: string;
+    year: number | null;
+    note: string | null;
+    status: string;
+    sort_order: number;
+    created_at: string;
+    updated_at: string;
+    sync_status: string;
+    extra_data: string | null;
+    server_rev: number | null;
+    mutation_id: string | null;
+    last_pushed_mutation_id: string | null;
+  }>(`SELECT * FROM life_bets WHERE sync_status != 'pending_delete'`);
+
+  if (!bets?.length) return;
+
+  const nowYear = new Date().getFullYear();
+  const nowMonth = new Date().getMonth() + 1;
+  const monthToQuarter = (m: number) =>
+    m <= 3 ? 1 : m <= 6 ? 2 : m <= 9 ? 3 : 4;
+
+  const direction = await db.getFirstAsync<{ year_theme: string | null }>(
+    `SELECT year_theme FROM life_directions
+     WHERE sync_status != 'pending_delete'
+     ORDER BY updated_at DESC LIMIT 1`,
+  );
+
+  const yearBets = bets.filter((b) => b.horizon === 'year');
+  const yearsTouched = new Set<number>();
+  for (const b of yearBets) {
+    yearsTouched.add(b.year ?? nowYear);
+  }
+  if (direction?.year_theme?.trim()) yearsTouched.add(nowYear);
+
+  for (const y of yearsTouched) {
+    const theme =
+      y === nowYear && direction?.year_theme?.trim()
+        ? direction.year_theme.trim().slice(0, 40)
+        : `${y} 年方向`;
+    const id = `lrn_y_${y}`;
+    await db.runAsync(
+      `INSERT OR IGNORE INTO life_road_nodes (
+        id, kind, title, note, calendar_year, quarter, month, parent_id, status,
+        sort_order, created_at, updated_at, sync_status, extra_data,
+        server_rev, mutation_id, last_pushed_mutation_id
+      ) VALUES (?, 'year', ?, NULL, ?, NULL, NULL, NULL, 'on_track',
+        1000, datetime('now'), datetime('now'), 'pending_create', NULL, 1, NULL, NULL)`,
+      [id, theme, y],
+    );
+  }
+
+  // 多年 / 更远：原样迁入，保留 id
+  for (const b of bets) {
+    if (b.horizon !== 'multi' && b.horizon !== 'farther') continue;
+    await db.runAsync(
+      `INSERT OR IGNORE INTO life_road_nodes (
+        id, kind, title, note, calendar_year, quarter, month, parent_id, status,
+        sort_order, created_at, updated_at, sync_status, extra_data,
+        server_rev, mutation_id, last_pushed_mutation_id
+      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        b.id,
+        b.horizon,
+        b.title,
+        b.note,
+        b.status,
+        b.sort_order,
+        b.created_at,
+        b.updated_at,
+        b.sync_status === 'synced' ? 'pending_create' : b.sync_status,
+        b.extra_data,
+        b.server_rev ?? 1,
+        b.mutation_id,
+        b.last_pushed_mutation_id,
+      ],
+    );
+  }
+
+  // 今年赌注 → 月目标：从当前月起填空月，保留原 id 以便项目挂载
+  const usedMonths = new Map<string, Set<number>>(); // year → months
+  const sortedYear = [...yearBets].sort((a, b) => a.sort_order - b.sort_order);
+  for (const b of sortedYear) {
+    const y = b.year ?? nowYear;
+    if (!usedMonths.has(String(y))) usedMonths.set(String(y), new Set());
+    const used = usedMonths.get(String(y))!;
+    let month = y === nowYear ? nowMonth : 1;
+    for (let i = 0; i < 12; i += 1) {
+      const candidate = ((month - 1 + i) % 12) + 1;
+      if (!used.has(candidate)) {
+        month = candidate;
+        break;
+      }
+    }
+    used.add(month);
+    const q = monthToQuarter(month);
+    await db.runAsync(
+      `INSERT OR IGNORE INTO life_road_nodes (
+        id, kind, title, note, calendar_year, quarter, month, parent_id, status,
+        sort_order, created_at, updated_at, sync_status, extra_data,
+        server_rev, mutation_id, last_pushed_mutation_id
+      ) VALUES (?, 'month', ?, ?, ?, ?, ?, NULL, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        b.id,
+        b.title,
+        b.note,
+        y,
+        q,
+        month,
+        b.status,
+        b.sort_order,
+        b.created_at,
+        b.updated_at,
+        b.sync_status === 'synced' ? 'pending_create' : b.sync_status,
+        b.extra_data,
+        b.server_rev ?? 1,
+        b.mutation_id,
+        b.last_pushed_mutation_id,
+      ],
+    );
+    // 项目：原挂该赌注的 → 月目标
+    await db.runAsync(
+      `UPDATE projects
+       SET life_month_goal_id = ?, updated_at = datetime('now'),
+           sync_status = CASE
+             WHEN sync_status = 'synced' THEN 'pending_update'
+             ELSE sync_status
+           END
+       WHERE life_bet_id = ?
+         AND (life_month_goal_id IS NULL OR life_month_goal_id = '')
+         AND sync_status != 'pending_delete'`,
+      [b.id, b.id],
+    );
+  }
 }
 
 /** Phase 1：业务表 server_rev / mutation_id / last_pushed_mutation_id */
@@ -913,6 +1320,7 @@ export async function initDatabase() {
       id TEXT PRIMARY KEY NOT NULL,
       category_id TEXT,
       life_bet_id TEXT,
+      life_month_goal_id TEXT,
       name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       priority INTEGER NOT NULL DEFAULT 0,
@@ -1305,6 +1713,27 @@ export async function initDatabase() {
       last_pushed_mutation_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS life_road_nodes (
+      id TEXT PRIMARY KEY NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('multi', 'farther', 'year', 'quarter', 'month')),
+      title TEXT NOT NULL,
+      note TEXT,
+      calendar_year INTEGER,
+      quarter INTEGER,
+      month INTEGER,
+      parent_id TEXT,
+      status TEXT NOT NULL DEFAULT 'on_track'
+        CHECK (status IN ('on_track', 'paused', 'arrived', 'dropped')),
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS points_ledger (
       id TEXT PRIMARY KEY NOT NULL,
       delta REAL NOT NULL,
@@ -1403,6 +1832,177 @@ export async function initDatabase() {
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'synced',
       FOREIGN KEY (category_id) REFERENCES recipe_categories(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_closets (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      tint TEXT,
+      tint2 TEXT,
+      tone TEXT,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_occasions (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      brand TEXT,
+      color TEXT,
+      season TEXT,
+      price_cents INTEGER,
+      currency TEXT NOT NULL DEFAULT 'CNY',
+      fit TEXT,
+      warmth TEXT,
+      sku_code TEXT,
+      art_key TEXT,
+      tint TEXT,
+      tint2 TEXT,
+      line TEXT,
+      tags_json TEXT,
+      image_uri TEXT,
+      cutout_uri TEXT,
+      purchased_on TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      wear_count INTEGER NOT NULL DEFAULT 0,
+      last_worn_on TEXT,
+      note TEXT,
+      extra_data TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_outfits (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      occasion_id TEXT,
+      note TEXT,
+      cover_item_id TEXT,
+      wear_count INTEGER NOT NULL DEFAULT 0,
+      last_worn_on TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_outfit_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      outfit_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_wear_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT NOT NULL,
+      worn_on TEXT NOT NULL,
+      source TEXT NOT NULL,
+      item_id TEXT,
+      outfit_id TEXT,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_option_values (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT,
+      kind TEXT NOT NULL,
+      value TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      extra_data TEXT,
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wardrobe_body_profile (
+      id TEXT PRIMARY KEY NOT NULL,
+      closet_id TEXT,
+      height_cm REAL,
+      weight_kg REAL,
+      shoulder_cm REAL,
+      bust_cm REAL,
+      waist_cm REAL,
+      hip_cm REAL,
+      inseam_cm REAL,
+      foot_mm REAL,
+      size_top TEXT,
+      size_bottom TEXT,
+      size_shoe TEXT,
+      note TEXT,
+      extra_data TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS memos (
@@ -1535,6 +2135,8 @@ export async function initDatabase() {
   await ensureColumn(db, 'task_categories', 'sort_order', 'INTEGER');
   await ensureColumn(db, 'projects', 'category_id', 'TEXT');
   await ensureColumn(db, 'projects', 'life_bet_id', 'TEXT');
+  // 须在下方 idx_projects_life_month_goal_id 之前补齐，否则旧库整段建索引会因缺列失败
+  await ensureColumn(db, 'projects', 'life_month_goal_id', 'TEXT');
   await ensureColumn(db, 'projects', 'priority', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumn(db, 'projects', 'note', 'TEXT');
   await ensureColumn(db, 'projects', 'extra_data', 'TEXT');
@@ -1767,6 +2369,12 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_life_bets_status ON life_bets(status);
     CREATE INDEX IF NOT EXISTS idx_life_bets_updated_at ON life_bets(updated_at);
     CREATE INDEX IF NOT EXISTS idx_projects_life_bet_id ON projects(life_bet_id);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_kind_year
+      ON life_road_nodes(kind, calendar_year, quarter, month, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_parent ON life_road_nodes(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_status ON life_road_nodes(status);
+    CREATE INDEX IF NOT EXISTS idx_life_road_nodes_updated_at ON life_road_nodes(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_projects_life_month_goal_id ON projects(life_month_goal_id);
 
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_scope ON review_dimensions(scope);
     CREATE INDEX IF NOT EXISTS idx_review_dimensions_sort_order ON review_dimensions(sort_order);
@@ -1787,6 +2395,23 @@ export async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_recipe_categories_updated_at ON recipe_categories(updated_at);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_category_id ON recipe_items(category_id);
     CREATE INDEX IF NOT EXISTS idx_recipe_items_updated_at ON recipe_items(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_closets_updated_at ON wardrobe_closets(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_categories_closet_sort ON wardrobe_categories(closet_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_categories_updated_at ON wardrobe_categories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_occasions_sort ON wardrobe_occasions(sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_occasions_updated_at ON wardrobe_occasions(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_closet_updated ON wardrobe_items(closet_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_category ON wardrobe_items(category_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_items_status ON wardrobe_items(status);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfits_closet_updated ON wardrobe_outfits(closet_id, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfits_occasion ON wardrobe_outfits(occasion_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfit_items_outfit ON wardrobe_outfit_items(outfit_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_outfit_items_item ON wardrobe_outfit_items(item_id);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_wear_logs_closet_day ON wardrobe_wear_logs(closet_id, worn_on);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_wear_logs_item_day ON wardrobe_wear_logs(item_id, worn_on);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_option_values_kind ON wardrobe_option_values(kind, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_wardrobe_body_profile_closet ON wardrobe_body_profile(closet_id);
 
     CREATE INDEX IF NOT EXISTS idx_memos_updated_at ON memos(updated_at);
     CREATE INDEX IF NOT EXISTS idx_memos_dimension_id ON memos(dimension_id);
@@ -1985,7 +2610,9 @@ export async function initDatabase() {
   await migrateDropLegacyAccountsLedger(db);
   await migrateEnsureSyncRevisionColumns(db);
   await migrateEnsureLifeRoadTables(db);
+  await migrateEnsureLifeRoadNodesV60(db);
   await migrateEnsureNotificationInboxLocal(db);
+  await migrateEnsureWardrobeTables(db);
 
   const { migrateLocalEntityIdsForMysqlCompatIfNeeded } = await import('@/lib/entity-id-migrate');
   await migrateLocalEntityIdsForMysqlCompatIfNeeded(db);
@@ -2046,10 +2673,20 @@ export async function resetDatabase() {
     DROP TABLE IF EXISTS memo_dimensions;
     DROP TABLE IF EXISTS recipe_items;
     DROP TABLE IF EXISTS recipe_categories;
+    DROP TABLE IF EXISTS wardrobe_wear_logs;
+    DROP TABLE IF EXISTS wardrobe_outfit_items;
+    DROP TABLE IF EXISTS wardrobe_outfits;
+    DROP TABLE IF EXISTS wardrobe_items;
+    DROP TABLE IF EXISTS wardrobe_option_values;
+    DROP TABLE IF EXISTS wardrobe_body_profile;
+    DROP TABLE IF EXISTS wardrobe_categories;
+    DROP TABLE IF EXISTS wardrobe_occasions;
+    DROP TABLE IF EXISTS wardrobe_closets;
     DROP TABLE IF EXISTS earned_rewards;
     DROP TABLE IF EXISTS points_ledger;
     DROP TABLE IF EXISTS wish_board_items;
     DROP TABLE IF EXISTS life_bets;
+    DROP TABLE IF EXISTS life_road_nodes;
     DROP TABLE IF EXISTS life_directions;
     DROP TABLE IF EXISTS points_wallet;
     DROP TABLE IF EXISTS wish_items;

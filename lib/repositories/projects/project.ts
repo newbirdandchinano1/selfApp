@@ -24,16 +24,24 @@ export async function createProject(input: CreateProjectInput) {
       throw new Error('所选道路赌注尚未同步，请稍后重试或清空归属');
     }
   }
+  let lifeMonthGoalId = input.life_month_goal_id ?? null;
+  if (lifeMonthGoalId) {
+    const nodeReady = await ensureLocalRowPresent('life_road_nodes', lifeMonthGoalId);
+    if (!nodeReady) {
+      throw new Error('所选月目标尚未同步，请稍后重试或清空归属');
+    }
+  }
   const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
   await db.runAsync(
     `INSERT INTO projects (
-      id, category_id, life_bet_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
+      id, category_id, life_bet_id, life_month_goal_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'pending_create', ?, ${inboxAtSql})`,
     [
       input.id,
       categoryId,
       lifeBetId,
+      lifeMonthGoalId,
       input.name,
       input.status ?? 'active',
       input.priority ?? 0,
@@ -122,6 +130,16 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       throw new Error('所选道路赌注尚未同步，请稍后重试或清空归属');
     }
   }
+  let nextMonthGoalId =
+    input.life_month_goal_id !== undefined
+      ? input.life_month_goal_id
+      : (current.life_month_goal_id ?? null);
+  if (input.life_month_goal_id !== undefined && nextMonthGoalId) {
+    const nodeReady = await ensureLocalRowPresent('life_road_nodes', nextMonthGoalId);
+    if (!nodeReady) {
+      throw new Error('所选月目标尚未同步，请稍后重试或清空归属');
+    }
+  }
   const wasStrictInbox = current.category_id === INBOX_PROJECT_CATEGORY_ID;
   const willStrictInbox = nextCategoryId === INBOX_PROJECT_CATEGORY_ID;
 
@@ -137,12 +155,13 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
 
   const result = await db.runAsync(
     `UPDATE projects
-     SET category_id = ?, life_bet_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
+     SET category_id = ?, life_bet_id = ?, life_month_goal_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
          sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END
      WHERE id = ?`,
     [
       nextCategoryId,
       nextLifeBetId,
+      nextMonthGoalId,
       input.name ?? current.name,
       input.status ?? current.status,
       input.priority !== undefined ? input.priority : (current.priority ?? 0),

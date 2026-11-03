@@ -60,13 +60,17 @@ export type WishRedeemRecord = {
   is_fallback: boolean;
 };
 
-/** 兑换附加条件：积分之外须完成的绑定项 / 净资产门槛 */
+/** 兑换附加条件：积分之外须完成的绑定项 / 小习惯里程碑 / 净资产门槛 / 开放兑换时间 */
 export type WishBoardRedeemConditionsInput = {
   project_ids?: string[];
   task_ids?: string[];
   todo_ids?: string[];
+  /** 须养成/戒除周期目标已达成的小习惯（周期配额不纳入） */
+  habit_ids?: string[];
   /** 当前净资产须 ≥ 该值（与资产页公式一致）；null/省略表示不限制 */
   min_net_worth?: number | null;
+  /** 到达该本地时间后才可兑换；null/省略表示不限制 */
+  available_from?: string | null;
 };
 
 export type CreateWishBoardItemInput = {

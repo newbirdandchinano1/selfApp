@@ -473,7 +473,7 @@ export default function TaskSettingsScreen() {
               <Text style={[styles.sv, { color: tf.muted }]}>{axisLabel} ›</Text>
             </Pressable>
             <Pressable
-              onPress={() => toast.info('进入任务主屏默认「今日列表」')}
+              onPress={() => toast.info('进入任务主屏默认「最简」；可切换到课表')}
               style={({ pressed }) => [
                 styles.setrow,
                 {
@@ -486,7 +486,7 @@ export default function TaskSettingsScreen() {
                 <Text style={[styles.scTitle, { color: tf.ink2 }]}>默认缩放</Text>
                 <Text style={[styles.scHint, { color: tf.faint }]}>进入任务主屏时</Text>
               </View>
-              <Text style={[styles.sv, { color: tf.muted }]}>今日列表 ›</Text>
+              <Text style={[styles.sv, { color: tf.muted }]}>最简 ›</Text>
             </Pressable>
           </View>
         </FoldRiseIn>

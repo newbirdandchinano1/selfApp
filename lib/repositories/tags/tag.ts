@@ -22,10 +22,24 @@ function normalizeTagName(name: string): string {
   return name.trim();
 }
 
-function normalizeTagColor(color: string | null | undefined): string {
+/** 保证返回 #RRGGBB；非法/空值回退默认色（读库与芯片渲染共用） */
+export function normalizeTagColor(color: string | null | undefined): string {
   const raw = (color ?? '').trim();
+  // 已是 #RRGGBBAA 时只取 RGB，避免 UI 再拼 alpha 变成非法色
+  if (/^#[0-9A-Fa-f]{8}$/.test(raw)) return raw.slice(0, 7).toUpperCase();
   if (/^#[0-9A-Fa-f]{6}$/.test(raw)) return raw.toUpperCase();
   return DEFAULT_TAG_COLOR;
+}
+
+/** 在规范化后的 #RRGGBB 上追加两位 hex alpha，供芯片半透明底/边 */
+export function tagColorWithAlpha(color: string | null | undefined, alphaHex: string): string {
+  const base = normalizeTagColor(color);
+  const a = String(alphaHex ?? '')
+    .replace(/[^0-9A-Fa-f]/g, '')
+    .slice(0, 2)
+    .padEnd(2, '0')
+    .toUpperCase();
+  return `${base}${a}`;
 }
 
 function normalizeTagWeight(weight: number | null | undefined): number {
@@ -82,6 +96,7 @@ function sortTagsByWeightDesc(rows: TagRow[]): TagRow[] {
 function coerceTagRow(row: TagRow): TagRow {
   return {
     ...row,
+    color: normalizeTagColor(row.color),
     domain: normalizeTagDomain(row.domain),
     weight: typeof row.weight === 'number' ? row.weight : Number(row.weight) || 0,
   };
@@ -284,6 +299,8 @@ export async function getTagsByEntityIds(
     const tag = tagById.get(link.tag_id);
     if (!tag) continue;
     const list = result.get(link.entity_id) ?? [];
+    // 重复 tag_links 会导致列表 key 冲突并在原生侧抛渲染错误
+    if (list.some((t) => t.id === tag.id)) continue;
     list.push(tag);
     result.set(link.entity_id, list);
   }

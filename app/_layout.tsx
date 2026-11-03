@@ -466,6 +466,7 @@ function RootLayoutInner() {
             <Stack.Screen name="edit-wish-board-item/[id]" />
             <Stack.Screen name="life-road" />
             <Stack.Screen name="edit-life-direction" />
+            <Stack.Screen name="edit-life-road-node/[id]" />
             <Stack.Screen name="add-life-bet" />
             <Stack.Screen name="edit-life-bet/[id]" />
             <Stack.Screen name="memo-list" />

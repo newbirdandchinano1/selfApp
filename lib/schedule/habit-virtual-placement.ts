@@ -43,7 +43,7 @@ export const HABIT_SCHEDULE_PLACEABLE_TABS: readonly HabitCycleTab[] = [
   '每月N天',
 ] as const;
 
-/** 任务型：允许按循环入格的重复周期 */
+/** 周期配额：允许按循环入格的重复周期 */
 export const TASK_HABIT_SCHEDULE_PLACEABLE_TABS: readonly TaskRepeatPeriod[] = [
   ...TASK_REPEAT_PERIODS,
 ] as const;
@@ -76,7 +76,7 @@ function parseActiveTab(extraData: string | null): string | null {
   }
 }
 
-/** 循环是否属于可入格白名单（养成 N 天 / 定期 / 每天；任务型 每日～每年） */
+/** 循环是否属于可入格白名单（养成节奏 / 旧 N 天；周期配额 每日～每年） */
 export function isHabitSchedulePlaceableCycle(extraData: string | null): boolean {
   const tab = parseActiveTab(extraData);
   if (!tab) return false;
@@ -147,7 +147,10 @@ export function habitSchedulePlacementEligibilityHint(extraData: string | null):
   return null;
 }
 
-/** 全天：自首工作格铺满当日可排格（对齐手动「全天」） */
+/**
+ * 全天：数据上仍记为自首格铺满当日可排格（兼容旧逻辑 / 轴重映射）。
+ * 课表 UI 将此类占用收拢到顶部「全天」专属格，不再逐格铺色。
+ */
 export function allDaySpanForAxis(axis: AxisLike): { startSlotIndex: number; spanSlots: number } {
   const count = getSlotCount(axis);
   return { startSlotIndex: 0, spanSlots: Math.max(1, count) };

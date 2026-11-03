@@ -98,7 +98,9 @@ type ExpectedGoalTab = 'none' | BuildHabitExpectedGoalType;
 
 type CycleTab = '每天' | '每周定期' | '每周N天' | '每月定期' | '每月N天';
 
-const CYCLE_TABS: CycleTab[] = ['每天', '每周N天', '每月N天', '每周定期', '每月定期'];
+/** 养成新建可选循环：节奏型；「每周/每月 N 天」已迁到周期配额，仅旧数据编辑时保留展示 */
+const CYCLE_TABS: CycleTab[] = ['每天', '每周定期', '每月定期'];
+const BUILD_N_DAYS_TABS: CycleTab[] = ['每周N天', '每月N天'];
 const TASK_CYCLE_TABS: TaskRepeatPeriod[] = [...TASK_REPEAT_PERIODS];
 const EXPECTED_GOAL_TABS: { key: ExpectedGoalTab; label: string }[] = [
   { key: 'none', label: '不限' },
@@ -240,7 +242,7 @@ export default function AddHabitScreen() {
   const [contextOptions, setContextOptions] = React.useState<string[]>([]);
   /** 新建时不预设情境；列表仅来自接口 habit_contexts */
   const [selectedContext, setSelectedContext] = React.useState(() => initialContext?.trim() ?? '');
-  const [activeTab, setActiveTab] = React.useState<CycleTab | TaskRepeatPeriod>('每周N天');
+  const [activeTab, setActiveTab] = React.useState<CycleTab | TaskRepeatPeriod>('每天');
   const [selectedDays, setSelectedDays] = React.useState<string[]>(['周一', '周二', '周三', '周四', '周五']);
   const [weeklyNDays, setWeeklyNDays] = React.useState(1);
   const [monthlyNDays, setMonthlyNDays] = React.useState(5);
@@ -508,6 +510,14 @@ export default function AddHabitScreen() {
       : DEFAULT_TASK_REPEAT_PERIOD;
   }, [habitKind, activeTab]);
 
+  /** 养成循环 tab：新建仅节奏型；旧「N 天」数据编辑时额外露出当前 tab，便于改走周期配额 */
+  const buildCycleTabs = React.useMemo((): CycleTab[] => {
+    if ((BUILD_N_DAYS_TABS as string[]).includes(activeTab as string)) {
+      return [...CYCLE_TABS, activeTab as CycleTab];
+    }
+    return CYCLE_TABS;
+  }, [activeTab]);
+
   const schedulePlacementHint = React.useMemo(() => {
     if (habitKind !== 'build' && habitKind !== 'task') return null;
     const cycleExtra = JSON.stringify({
@@ -594,7 +604,7 @@ export default function AddHabitScreen() {
         tab === 'none' || tab === 'days' || tab === 'times' || tab === 'consecutive_days' ? tab : 'days'
       );
       if ((TASK_CYCLE_TABS as string[]).includes(activeTab)) {
-        setActiveTab('每周N天');
+        setActiveTab('每天');
       }
     }
   }, [activeTab, habitKind, taskRepeatPeriod]);
@@ -1926,7 +1936,7 @@ export default function AddHabitScreen() {
           {activeTile === 'cycle' && habitKind !== 'break' ? (
               <AppCard variant="muted" padded={false} style={styles.cycleSectionOuter}>
                 <View style={[styles.tabWrap, { backgroundColor: colors.capsule }]}>
-                  {(habitKind === 'task' ? TASK_CYCLE_TABS : CYCLE_TABS).map((tab) => {
+                  {(habitKind === 'task' ? TASK_CYCLE_TABS : buildCycleTabs).map((tab) => {
                     const active = tab === activeTab;
                     return (
                       <Pressable
@@ -1951,6 +1961,12 @@ export default function AddHabitScreen() {
                 </View>
 
                 <View style={[styles.cycleBody, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+                  {habitKind === 'build' &&
+                  (activeTab === '每周N天' || activeTab === '每月N天') ? (
+                    <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
+                      「每周 / 每月 N 天」已归入周期配额；可改选上方节奏循环，或新建一条周期配额承接凑量目标
+                    </Text>
+                  ) : null}
                   {habitKind === 'task' ? (
                     <Text style={[Typography.body, styles.cycleHintText, { color: colors.textSecondary }]}>
                       在

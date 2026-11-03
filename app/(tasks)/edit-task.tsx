@@ -13,9 +13,14 @@ import {
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import {
+  resolveTaskStatusTone,
+  useTaskStatusToneColors,
+} from '@/components/tasks/task-status-tag';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -37,6 +42,17 @@ import {
 } from '@/lib/constants/entity-icon-choices';
 import { formatWriteError } from '@/lib/format-write-error';
 import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import {
+  mergeNoteImageUrisIntoExtraData,
+  noteImageUrisEqual,
+  parseNoteImageUris,
+  parseNoteImageUrisFromObject,
+} from '@/lib/note-image-extra';
+import {
+  bindNoteImages,
+  ensureNoteImagesRemote,
+  releaseRemovedNoteImages,
+} from '@/lib/note-images';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
@@ -50,12 +66,16 @@ import {
   setTaskTagIds,
 } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
+import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import { applyTaskCompletionPointsReward } from '@/lib/repositories/habits/habit-points-grant';
 import {
   mergeBoundHabitIdsIntoExtraData,
   parseBoundHabitIdsFromExtraData,
   tryCompleteTaskByBoundHabits,
 } from '@/lib/repositories/tasks/task-habit-binding';
+import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import {
+  cascadeParentTaskStatusAfterChildChange,
   countIncompleteDescendantTasks,
   createTask,
   deleteTask,
@@ -64,6 +84,8 @@ import {
   updateTask,
 } from '@/lib/repositories/tasks/task';
 import {
+  isTaskShelvedStatus,
+  isTaskTerminalStatus,
   normalizeTaskPriority,
   type TaskPriority,
   type TaskRow,
@@ -242,6 +264,7 @@ type EditTaskFormSnapshot = {
   status: TaskStatus;
   acceptanceCriteria: string;
   note: string;
+  noteImageUris: string[];
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -280,6 +303,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     status: normalizeEditTaskStatus(task.status),
     acceptanceCriteria: isLongTerm ? acceptanceChecklistToLines(checklist) : '',
     note: isLongTerm ? '' : (task.note ?? '').trim(),
+    noteImageUris: isLongTerm ? [] : parseNoteImageUris(task.extra_data),
     priority: mapPriorityTextToKey(priorityLabel),
     deadlineText,
     reminderText,
@@ -297,6 +321,7 @@ function buildFormSnapshotFromFields(input: {
   status: TaskStatus;
   acceptanceCriteria: string;
   note: string;
+  noteImageUris: string[];
   priority: PriorityKey;
   deadlineText: string;
   reminderText: string;
@@ -312,6 +337,7 @@ function buildFormSnapshotFromFields(input: {
     status: input.status,
     acceptanceCriteria: input.acceptanceCriteria.trim(),
     note: input.note.trim(),
+    noteImageUris: input.noteImageUris,
     priority: input.priority,
     deadlineText: input.deadlineText,
     reminderText: input.reminderText,
@@ -340,6 +366,7 @@ export default function EditTaskScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
   const { tf, fonts } = useTaskFoldTheme();
+  const taskStatusTones = useTaskStatusToneColors();
   const { animate: foldAnimate } = useFoldMotionGate();
 
   const taskId = typeof params.id === 'string' ? params.id : '';
@@ -358,6 +385,7 @@ export default function EditTaskScreen() {
     createEmptyAcceptanceItem(),
   ]);
   const [note, setNote] = React.useState('');
+  const [noteImageUris, setNoteImageUris] = React.useState<string[]>([]);
   const [priority, setPriority] = React.useState<PriorityKey>('urgent-important');
   const [projectPriorityLabel, setProjectPriorityLabel] = React.useState('');
   const [projectName, setProjectName] = React.useState('');
@@ -398,6 +426,7 @@ export default function EditTaskScreen() {
   const statusRef = React.useRef(status);
   const acceptanceItemsRef = React.useRef(acceptanceItems);
   const noteRef = React.useRef(note);
+  const noteImageUrisRef = React.useRef(noteImageUris);
   const priorityRef = React.useRef(priority);
   const deadlineTextRef = React.useRef(deadlineText);
   const reminderTextRef = React.useRef(reminderText);
@@ -413,6 +442,7 @@ export default function EditTaskScreen() {
   statusRef.current = status;
   acceptanceItemsRef.current = acceptanceItems;
   noteRef.current = note;
+  noteImageUrisRef.current = noteImageUris;
   priorityRef.current = priority;
   deadlineTextRef.current = deadlineText;
   reminderTextRef.current = reminderText;
@@ -476,6 +506,7 @@ export default function EditTaskScreen() {
       status,
       acceptanceCriteria: acceptanceCriteriaText,
       note: isLongTermTask ? '' : note,
+      noteImageUris: isLongTermTask ? [] : noteImageUris,
       priority,
       deadlineText,
       reminderText,
@@ -495,6 +526,7 @@ export default function EditTaskScreen() {
     loadedFormSnapshot,
     loading,
     note,
+    noteImageUris,
     priority,
     reminderText,
     repeatText,
@@ -541,6 +573,10 @@ export default function EditTaskScreen() {
 
   const openSchedulePicker = React.useCallback(() => {
     if (inheritsProjectSchedule) return;
+    if (isTaskShelvedStatus(statusRef.current)) {
+      toast.info('已搁置的任务请先改为其他状态后再设置日程');
+      return;
+    }
     const scheduleInit: SchedulePickerInitPayload | undefined = scheduleMeta
       ? {
           mode: scheduleMeta.mode,
@@ -717,6 +753,7 @@ export default function EditTaskScreen() {
       );
       setAcceptanceItems(checklist.length > 0 ? checklist : [createEmptyAcceptanceItem()]);
       setNote(longTerm ? '' : (task.note ?? '').trim());
+      setNoteImageUris(longTerm ? [] : parseNoteImageUris(task.extra_data));
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
       const priorityLabel = fromTaskPriority(task.priority);
@@ -911,6 +948,21 @@ export default function EditTaskScreen() {
     [router],
   );
 
+  /** 状态芯片：搁置时清掉本任务日程（继承项目日程的除外） */
+  const handleStatusChipPress = React.useCallback(
+    (next: Exclude<TaskStatus, 'done'>) => {
+      if (loading || saving) return;
+      setStatus(next);
+      if (next === 'shelved' && !inheritsProjectSchedule) {
+        setDeadlineText('');
+        setReminderText('');
+        setRepeatText('');
+        setScheduleMeta(null);
+      }
+    },
+    [inheritsProjectSchedule, loading, saving],
+  );
+
   const persistTask = React.useCallback(async (): Promise<boolean> => {
     if (!taskId || loading || skipAutoSaveRef.current) return true;
     const trimmedTitle = titleRef.current.trim();
@@ -981,7 +1033,23 @@ export default function EditTaskScreen() {
         }
       }
 
-      const dueDate = dueDateFromScheduleMeta(meta, extractDueDateFromDeadlineText(deadlineForDue));
+      const nextStatus = statusRef.current;
+      const prevStatus = normalizeEditTaskStatus(snapshot.status);
+      const shelving = isTaskShelvedStatus(nextStatus) && !nextInheritsSchedule;
+      if (shelving) {
+        meta = null;
+        deadlineForDue = '';
+        reminderForExtra = '';
+        repeatForExtra = '';
+        setDeadlineText('');
+        setReminderText('');
+        setRepeatText('');
+        setScheduleMeta(null);
+      }
+
+      let dueDate = shelving
+        ? null
+        : dueDateFromScheduleMeta(meta, extractDueDateFromDeadlineText(deadlineForDue));
       const parsedExtra = parseTaskExtraData(snapshot.extra_data);
       delete (parsedExtra as Record<string, unknown>).completion_reward;
       delete parsedExtra.autoPlaceIntoSchedule;
@@ -989,6 +1057,16 @@ export default function EditTaskScreen() {
       const checklist = longTerm ? acceptanceItemsRef.current : [];
       const acceptanceText = longTerm ? acceptanceChecklistToLines(checklist) : '';
       const noteToSave = longTerm ? null : noteRef.current.trim() || null;
+      const previousNoteImages = parseNoteImageUrisFromObject(parsedExtra);
+      let nextNoteImages = longTerm ? [] : [...noteImageUrisRef.current];
+      if (nextNoteImages.length > 0) {
+        nextNoteImages = await ensureNoteImagesRemote({
+          localUris: nextNoteImages,
+          owner: { table: 'tasks', id: taskId },
+        });
+      }
+      delete parsedExtra.note_image_uri;
+      delete parsedExtra.note_image_uris;
       let mergedExtra = mergeIconIntoExtraData(
         mergeRewardPointsIntoExtraData(
           mergeLongTermTaskIntoExtraData(
@@ -1009,7 +1087,7 @@ export default function EditTaskScreen() {
         DEFAULT_TODO_ICON,
       );
       mergedExtra = mergeAcceptanceChecklistIntoExtraData(mergedExtra, checklist) ?? mergedExtra;
-      const nextStatus = statusRef.current;
+      mergedExtra = mergeNoteImageUrisIntoExtraData(mergedExtra, nextNoteImages) ?? mergedExtra;
       let nextPriority = toTaskPriority(priorityKeyToLabel(priorityRef.current));
       if (snapshot.project_id) {
         const project = await getProjectById(snapshot.project_id);
@@ -1020,12 +1098,15 @@ export default function EditTaskScreen() {
           setPriority(mapPriorityTextToKey(label));
         }
       }
-      const nextCompletedAt =
-        nextStatus === 'done'
-          ? snapshot.completed_at
-          : snapshot.status === 'done'
-            ? null
-            : undefined;
+
+      const enteredDone = nextStatus === 'done' && prevStatus !== 'done';
+      const leftDone = prevStatus === 'done' && nextStatus !== 'done';
+      const nextCompletedAt = enteredDone
+        ? snapshot.completed_at || formatTaskAuditDatetimeLocal()
+        : leftDone || nextStatus === 'cancelled' || nextStatus === 'shelved'
+          ? null
+          : undefined;
+
       await updateTask(taskId, {
         title: trimmedTitle,
         description: acceptanceText || null,
@@ -1036,6 +1117,38 @@ export default function EditTaskScreen() {
         completed_at: nextCompletedAt,
         extra_data: mergedExtra,
       });
+      await bindNoteImages({ table: 'tasks', id: taskId }, nextNoteImages);
+      await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
+      if (!noteImageUrisEqual(nextNoteImages, noteImageUrisRef.current)) {
+        setNoteImageUris(nextNoteImages);
+        noteImageUrisRef.current = nextNoteImages;
+      }
+
+      if (leftDone) {
+        try {
+          await applyTaskCompletionPointsReward(taskId, 'undo', mergedExtra);
+        } catch (ptsErr) {
+          console.warn('撤销任务完成积分失败', ptsErr);
+        }
+        if (isStandaloneTodoTask(snapshot)) {
+          try {
+            await insertTaskExecutionEvent(taskId, 'reopened', trimmedTitle);
+          } catch (eventErr) {
+            console.warn('记录任务重开事件失败', eventErr);
+          }
+        }
+      }
+
+      const wasTerminal = isTaskTerminalStatus(prevStatus);
+      const nowTerminal = isTaskTerminalStatus(nextStatus);
+      if (prevStatus !== nextStatus && wasTerminal !== nowTerminal) {
+        try {
+          await cascadeParentTaskStatusAfterChildChange(taskId, nowTerminal);
+        } catch (cascadeErr) {
+          console.warn('级联更新父任务状态失败', cascadeErr);
+        }
+      }
+
       if (!snapshot.parent_task_id) {
         // 项目已贴标签 → 清空任务自有标签；否则保存任务标签
         await setTaskTagIds(taskId, nextInheritsTags ? [] : selectedTagIdsRef.current);
@@ -1046,7 +1159,7 @@ export default function EditTaskScreen() {
       });
       const tightenFrame = mergeDateLimit(parentFrame, projectDateLimit);
       // 项目已设日程时子任务已随项目继承，不必再按本任务框架收紧
-      if (!nextInheritsSchedule) {
+      if (!nextInheritsSchedule && !shelving) {
         await tightenDescendantTasksOf(taskId, tightenFrame);
       }
       await requestPush({ awaitSync: true, rethrow: true });
@@ -1057,6 +1170,7 @@ export default function EditTaskScreen() {
         status: nextStatus,
         acceptanceCriteria: acceptanceText,
         note: noteToSave ?? '',
+        noteImageUris: nextNoteImages,
         priority: mapPriorityTextToKey(fromTaskPriority(nextPriority)),
         deadlineText: deadlineForDue,
         reminderText: reminderForExtra,
@@ -1067,7 +1181,7 @@ export default function EditTaskScreen() {
         rewardPointsText: rewardPointsTextRef.current,
       });
       setLoadedFormSnapshot(nextSnapshot);
-      if (boundHabitIdsRef.current.length > 0) {
+      if (boundHabitIdsRef.current.length > 0 && !isTaskTerminalStatus(nextStatus) && !isTaskShelvedStatus(nextStatus)) {
         try {
           await tryCompleteTaskByBoundHabits(taskId);
         } catch (syncErr) {
@@ -1326,22 +1440,29 @@ export default function EditTaskScreen() {
                   <View style={styles.foldChipRow}>
                     {STATUS_CHIPS.map((chip) => {
                       const active = status === chip.key;
+                      const toneColors = taskStatusTones[resolveTaskStatusTone(chip.key)];
                       return (
                         <Pressable
                           key={chip.key}
-                          onPress={() => setStatus(chip.key)}
-                          disabled={loading}
+                          onPress={() => handleStatusChipPress(chip.key)}
+                          disabled={loading || saving}
                           accessibilityRole="button"
                           accessibilityState={{ selected: active }}
+                          accessibilityLabel={`任务状态：${chip.label}`}
                           style={[
                             styles.fchip,
-                            active && { backgroundColor: tf.pond, borderColor: tf.pond },
-                            loading && { opacity: 0.65 },
+                            active
+                              ? {
+                                  backgroundColor: toneColors.bg,
+                                  borderColor: toneColors.fg,
+                                }
+                              : null,
+                            (loading || saving) && { opacity: 0.65 },
                           ]}>
                           <Text
                             style={[
                               styles.fchipText,
-                              { color: active ? tf.onPond : '#7C897E' },
+                              { color: active ? toneColors.fg : '#7C897E' },
                             ]}>
                             {chip.label}
                           </Text>
@@ -1349,8 +1470,17 @@ export default function EditTaskScreen() {
                       );
                     })}
                     {status === 'done' ? (
-                      <View style={[styles.fchip, { backgroundColor: tf.lily2, borderColor: tf.lily }]}>
-                        <Text style={[styles.fchipText, { color: tf.frog }]}>已完成</Text>
+                      <View
+                        style={[
+                          styles.fchip,
+                          {
+                            backgroundColor: taskStatusTones.green.bg,
+                            borderColor: taskStatusTones.green.fg,
+                          },
+                        ]}>
+                        <Text style={[styles.fchipText, { color: taskStatusTones.green.fg }]}>
+                          已完成
+                        </Text>
                       </View>
                     ) : null}
                   </View>
@@ -1450,7 +1580,7 @@ export default function EditTaskScreen() {
                   ]}>
                   <Pressable
                     onPress={openSchedulePicker}
-                    disabled={loading || inheritsProjectSchedule}
+                    disabled={loading || inheritsProjectSchedule || isTaskShelvedStatus(status)}
                     accessibilityRole="button"
                     accessibilityLabel="修改日程"
                     style={({ pressed }) => [
@@ -1458,7 +1588,12 @@ export default function EditTaskScreen() {
                       {
                         borderColor: 'rgba(216,205,187,0.8)',
                         backgroundColor: isDark ? colors.input : 'rgba(255,255,255,0.55)',
-                        opacity: loading ? 0.65 : pressed && !inheritsProjectSchedule ? 0.88 : 1,
+                        opacity:
+                          loading || isTaskShelvedStatus(status)
+                            ? 0.65
+                            : pressed && !inheritsProjectSchedule
+                              ? 0.88
+                              : 1,
                       },
                     ]}>
                     <View style={[styles.calic, { backgroundColor: tf.lily2 }]}>
@@ -1466,14 +1601,18 @@ export default function EditTaskScreen() {
                     </View>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={[styles.calMain, { color: '#59685E' }]} numberOfLines={1}>
-                        {deadlineText || '设置日期 / 时间'}
+                        {isTaskShelvedStatus(status)
+                          ? '搁置中 · 暂无日程'
+                          : deadlineText || '设置日期 / 时间'}
                       </Text>
                       <Text style={[styles.calSub, { color: tf.faint }]} numberOfLines={1}>
-                        {[reminderText, repeatText].filter(Boolean).join(' · ') ||
-                          (inheritsProjectSchedule ? '继承项目日程' : '提醒 / 重复可选')}
+                        {isTaskShelvedStatus(status)
+                          ? '改回其他状态后可再设置'
+                          : [reminderText, repeatText].filter(Boolean).join(' · ') ||
+                            (inheritsProjectSchedule ? '继承项目日程' : '提醒 / 重复可选')}
                       </Text>
                     </View>
-                    {inheritsProjectSchedule ? (
+                    {inheritsProjectSchedule || isTaskShelvedStatus(status) ? (
                       <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
                     ) : (
                       <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
@@ -1535,6 +1674,7 @@ export default function EditTaskScreen() {
                             return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
                           });
                           setNote('');
+                          setNoteImageUris([]);
                         } else {
                           setNote((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
                           setAcceptanceItems([createEmptyAcceptanceItem()]);
@@ -1566,18 +1706,25 @@ export default function EditTaskScreen() {
                   ) : (
                     <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
                       <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                      <TextInput
-                        value={note}
-                        onChangeText={setNote}
-                        placeholder="可选补充说明"
-                        placeholderTextColor={tf.faint}
-                        editable={!loading}
-                        multiline
-                        style={[
-                          styles.frowInput,
-                          { color: tf.ink2, flex: 1, minHeight: 36, opacity: loading ? 0.65 : 1 },
-                        ]}
-                      />
+                      <View style={{ flex: 1, minWidth: 0, gap: 8, opacity: loading ? 0.65 : 1 }}>
+                        <TextInput
+                          value={note}
+                          onChangeText={setNote}
+                          placeholder="可选补充说明，下方可贴多图"
+                          placeholderTextColor={tf.faint}
+                          editable={!loading}
+                          multiline
+                          style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                        />
+                        <NoteImageAttach
+                          uris={noteImageUris}
+                          onChangeUris={setNoteImageUris}
+                          disabled={loading}
+                          borderColor={tf.line2}
+                          mutedColor={tf.faint}
+                          surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                        />
+                      </View>
                     </View>
                   )}
 

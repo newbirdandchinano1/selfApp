@@ -54,6 +54,7 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   life_directions: [TAB_PAGE_KEYS.profile],
   /** 道路归属名出现在任务列表；变更需刷新任务 Tab */
   life_bets: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
+  life_road_nodes: [TAB_PAGE_KEYS.profile, TAB_PAGE_KEYS.tasks],
   weekly_review_journal: [TAB_PAGE_KEYS.review],
   daily_review_journal: [TAB_PAGE_KEYS.review],
   monthly_review_journal: [TAB_PAGE_KEYS.review],
@@ -65,6 +66,15 @@ export const TABLE_TAB_DIRTY_MAP: Record<string, TabPageKey[]> = {
   review_columns: [TAB_PAGE_KEYS.review],
   recipe_categories: [TAB_PAGE_KEYS.profile],
   recipe_items: [TAB_PAGE_KEYS.profile],
+  wardrobe_closets: [TAB_PAGE_KEYS.profile],
+  wardrobe_categories: [TAB_PAGE_KEYS.profile],
+  wardrobe_items: [TAB_PAGE_KEYS.profile],
+  wardrobe_occasions: [TAB_PAGE_KEYS.profile],
+  wardrobe_outfits: [TAB_PAGE_KEYS.profile],
+  wardrobe_outfit_items: [TAB_PAGE_KEYS.profile],
+  wardrobe_wear_logs: [TAB_PAGE_KEYS.profile],
+  wardrobe_option_values: [TAB_PAGE_KEYS.profile],
+  wardrobe_body_profile: [TAB_PAGE_KEYS.profile],
 };
 
 /** 本地表写入后需刷新的子页面（非 Tab 主页面） */
@@ -76,13 +86,23 @@ export const TABLE_CHILD_PAGE_DIRTY_MAP: Record<string, string[]> = {
   points_wallet: ['points-ledger', 'wish-board'],
   points_ledger: ['points-ledger', 'wish-board'],
   wish_board_items: ['wish-board'],
-  life_directions: ['life-road', 'edit-life-bet'],
+  life_directions: ['life-road', 'edit-life-bet', 'edit-life-road-node'],
   life_bets: ['life-road', 'edit-life-bet', 'edit-project', 'add-project'],
-  projects: ['life-road', 'edit-life-bet'],
+  life_road_nodes: ['life-road', 'edit-life-road-node', 'edit-project', 'add-project'],
+  projects: ['life-road', 'edit-life-road-node'],
   memos: ['memo-list', 'memo-view', 'memo-edit'],
   tags: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
   tag_links: ['memo-list', 'memo-view', 'memo-edit', 'project-tags'],
   memo_dimensions: ['memo-list', 'memo-view', 'memo-edit'],
+  wardrobe_closets: ['my-wardrobe'],
+  wardrobe_categories: ['my-wardrobe'],
+  wardrobe_items: ['my-wardrobe'],
+  wardrobe_occasions: ['my-wardrobe'],
+  wardrobe_outfits: ['my-wardrobe'],
+  wardrobe_outfit_items: ['my-wardrobe'],
+  wardrobe_wear_logs: ['my-wardrobe'],
+  wardrobe_option_values: ['my-wardrobe'],
+  wardrobe_body_profile: ['my-wardrobe'],
 };
 
 /** 走专用 page API、禁止通用 List 全表同步的 Tab */

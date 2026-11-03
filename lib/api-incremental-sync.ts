@@ -69,6 +69,15 @@ const APP_DOMAIN_GENERIC_WRITE_FORBIDDEN = new Set([
   'recipe_categories',
   'recipe_items',
   'finance_transactions',
+  'wardrobe_closets',
+  'wardrobe_categories',
+  'wardrobe_items',
+  'wardrobe_occasions',
+  'wardrobe_outfits',
+  'wardrobe_outfit_items',
+  'wardrobe_wear_logs',
+  'wardrobe_option_values',
+  'wardrobe_body_profile',
 ]);
 
 function shouldSkipGenericRestUpload(table: string): boolean {

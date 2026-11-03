@@ -12,9 +12,9 @@ export function isTaskShelvedStatus(status: TaskStatus | string): boolean {
   return status === 'shelved';
 }
 
-/** 进行中：非终态且非搁置（统计、日历热力等活跃待办口径） */
+/** 活跃：待办 / 进行中 / 受阻（统计、日历热力等口径；不含已完成、已取消、搁置） */
 export function isTaskActiveStatus(status: TaskStatus | string): boolean {
-  return !isTaskTerminalStatus(status) && !isTaskShelvedStatus(status);
+  return status === 'todo' || status === 'doing' || status === 'blocked';
 }
 export type TaskPriority = 0 | 1 | 2 | 3 | 4;
 

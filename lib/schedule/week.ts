@@ -3,6 +3,8 @@ import { isValidYmd } from '@/lib/schedule/ymd';
 
 export { isValidYmd };
 
+export const WEEKDAY_SHORT_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const;
+
 /** 给定任意 YMD，返回该自然周周一（本地日历） */
 export function getWeekStartMondayYmd(ymd: string): string {
   const d = logicalYmdToLocalDate(ymd);
@@ -36,7 +38,7 @@ export function formatWeekRangeLabel(weekStartYmd: string): string {
   return `${a.getMonth() + 1}/${a.getDate()} – ${b.getMonth() + 1}/${b.getDate()}`;
 }
 
-/** 以 center 为中日的三天窗口：[前一天, 中日, 后一天] */
+/** @deprecated 日程表已改为单日课表；保留给旧调用方 */
 export function threeDayWindow(centerYmd: string): [string, string, string] {
   return [
     addDaysToLogicalYmd(centerYmd, -1),
@@ -45,16 +47,28 @@ export function threeDayWindow(centerYmd: string): [string, string, string] {
   ];
 }
 
-/** 周期索引 0 = 今天居中；每 ±1 周期平移 3 天 */
+/** 日偏移 0 = 今天；每 ±1 翻一天 */
 export function centerYmdForPeriod(logicalTodayYmd: string, periodIndex: number): string {
-  return addDaysToLogicalYmd(logicalTodayYmd, periodIndex * 3);
+  return addDaysToLogicalYmd(logicalTodayYmd, periodIndex);
 }
 
+/** 选中日相对今天的整日偏移（本地日历） */
+export function dayOffsetFromToday(ymd: string, logicalTodayYmd: string): number {
+  return Math.round(
+    (logicalYmdToLocalDate(ymd).getTime() - logicalYmdToLocalDate(logicalTodayYmd).getTime()) /
+      (24 * 60 * 60 * 1000),
+  );
+}
+
+export function formatDayScheduleLabel(ymd: string): string {
+  const d = logicalYmdToLocalDate(ymd);
+  const wd = WEEKDAY_SHORT_LABELS[weekdayFromYmd(ymd) - 1];
+  return `${d.getMonth() + 1}/${d.getDate()} 周${wd}`;
+}
+
+/** @deprecated 使用 formatDayScheduleLabel */
 export function formatThreeDayRangeLabel(centerYmd: string): string {
-  const [aYmd, , cYmd] = threeDayWindow(centerYmd);
-  const a = logicalYmdToLocalDate(aYmd);
-  const c = logicalYmdToLocalDate(cYmd);
-  return `${a.getMonth() + 1}/${a.getDate()} – ${c.getMonth() + 1}/${c.getDate()}`;
+  return formatDayScheduleLabel(centerYmd);
 }
 
 /** 历史周：周一早于本周周一 */
@@ -71,5 +85,3 @@ export function isEditableWeek(weekStartYmd: string, logicalTodayYmd: string): b
 export function isEditableScheduleDay(ymd: string, logicalTodayYmd: string): boolean {
   return ymd >= logicalTodayYmd;
 }
-
-export const WEEKDAY_SHORT_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const;

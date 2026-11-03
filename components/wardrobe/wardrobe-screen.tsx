@@ -1,15 +1,16 @@
 import {
-  WARDROBE_CATEGORIES,
-  WARDROBE_ITEMS,
-  WARDROBE_OUTFITS,
+  OCCASIONS,
+  isUncategorizedCategory,
   type ClosetLayout,
   type ClosetSort,
   type SeasonFilter,
+  type WardrobeCategory,
   type WardrobeItem,
   type WardrobeOutfit,
   type WardrobeTab,
 } from '@/components/wardrobe/data';
 import { ClosetView } from '@/components/wardrobe/closet-view';
+import { CollageEditor } from '@/components/wardrobe/collage-editor';
 import {
   IconBack,
   IconCloset,
@@ -30,17 +31,48 @@ import {
   WardrobeSheet,
   type SheetContent,
 } from '@/components/wardrobe/overlays';
+import {
+  WardrobeEditorHost,
+  switchDefaultCloset,
+  type WardrobeEditor,
+} from '@/components/wardrobe/wardrobe-editors';
 import { OutfitsView } from '@/components/wardrobe/outfits-view';
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import { FOLD_MOTION_EASE, FOLD_MOTION_SPRING } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeType } from '@/constants/wardrobe-theme';
+import { useWardrobeTheme, wardrobeType, type WardrobePalette } from '@/constants/wardrobe-theme';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
+import { beginApiLoading, endApiLoading } from '@/lib/api-loading-tracker';
 import { toast } from '@/lib/app-feedback/toast-events';
+import {
+  fetchAndCacheWardrobe,
+  fetchWardrobeWearWeek,
+  loadWardrobeMineWearExtras,
+  loadWardrobeScreenData,
+  recordWardrobeItemWear,
+  recordWardrobeOutfitWear,
+  type WardrobeWearWeek,
+} from '@/lib/repositories/wardrobe/wardrobe';
+import {
+  fetchItemWearHistory28,
+  listLocalCategoryMeta,
+  listLocalClosetMeta,
+  listLocalOccasionMeta,
+  listLocalOptions,
+  loadLocalBodyProfile,
+  resolveCategoryIdByName,
+} from '@/lib/repositories/wardrobe/wardrobe-writes';
+import {
+  pickWardrobeLocalImage,
+  prepareWardrobeImagesFromLocal,
+  type WardrobeImageSource,
+} from '@/lib/wardrobe-images';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   LayoutChangeEvent,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
@@ -61,6 +93,8 @@ const TABS: WardrobeTab[] = ['closet', 'outfits', 'mine'];
 
 export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
   const insets = useSafeAreaInsets();
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const { ready: fontsReady } = useWardrobeFonts();
   const [tab, setTab] = useState<WardrobeTab>('closet');
   const [prevTab, setPrevTab] = useState<WardrobeTab | null>(null);
@@ -68,9 +102,32 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
   const [sort, setSort] = useState<ClosetSort>('recent');
   const [season, setSeason] = useState<SeasonFilter>('all');
   const [occasion, setOccasion] = useState('全部');
-  const [items, setItems] = useState<WardrobeItem[]>(() => [...WARDROBE_ITEMS]);
-  const [outfits] = useState<WardrobeOutfit[]>(() => [...WARDROBE_OUTFITS]);
-  const [categories] = useState(() => [...WARDROBE_CATEGORIES]);
+  const [items, setItems] = useState<WardrobeItem[]>([]);
+  const [outfits, setOutfits] = useState<WardrobeOutfit[]>([]);
+  const outfitsRef = useRef<WardrobeOutfit[]>([]);
+  outfitsRef.current = outfits;
+  const [categories, setCategories] = useState<WardrobeCategory[]>([]);
+  const [occasionNames, setOccasionNames] = useState<string[]>(() => [...OCCASIONS]);
+  const [closetId, setClosetId] = useState('wcloset_default');
+  const [categoryMeta, setCategoryMeta] = useState<{ id: string; name: string }[]>([]);
+  const [occasionMeta, setOccasionMeta] = useState<{ id: string; name: string }[]>([]);
+  const [closetMeta, setClosetMeta] = useState<
+    { id: string; name: string; is_default: number; created_at?: string | null; item_count?: number }[]
+  >([]);
+  const [optionRows, setOptionRows] = useState<{ id: string; kind: string; value: string }[]>([]);
+  const [bodyPairs, setBodyPairs] = useState<[string, string][]>([]);
+  const [bodyProfile, setBodyProfile] = useState<Record<string, unknown> | null>(null);
+  const [wearHistory28, setWearHistory28] = useState<boolean[] | null>(null);
+  const [wearWeek, setWearWeek] = useState<WardrobeWearWeek | null>(null);
+  const [wornThisMonth, setWornThisMonth] = useState(0);
+  const [sparkDayCounts, setSparkDayCounts] = useState<number[]>(() => Array.from({ length: 8 }, () => 0));
+  const [outfitSort, setOutfitSort] = useState<'recent' | 'wear' | 'occasion'>('recent');
+  const [dataReady, setDataReady] = useState(false);
+  const [editor, setEditor] = useState<WardrobeEditor | null>(null);
+  const [collage, setCollage] = useState<{
+    outfit: WardrobeOutfit | null;
+    seedItemIds?: string[];
+  } | null>(null);
 
   const [layoutPop, setLayoutPop] = useState(false);
   const [createPop, setCreatePop] = useState(false);
@@ -103,6 +160,136 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     setCreatePop(false);
     setCreateHint(null);
   }, []);
+
+  const refreshMeta = useCallback(async (activeClosetId: string) => {
+    const [cats, occs, closets, opts, profile, mineWear] = await Promise.all([
+      listLocalCategoryMeta(activeClosetId),
+      listLocalOccasionMeta(),
+      listLocalClosetMeta(),
+      listLocalOptions(),
+      loadLocalBodyProfile(activeClosetId),
+      loadWardrobeMineWearExtras(activeClosetId),
+    ]);
+    setCategoryMeta(cats.map((c) => ({ id: c.id, name: c.name })));
+    setOccasionMeta(occs.map((o) => ({ id: o.id, name: o.name })));
+    setClosetMeta(
+      closets.map((c) => ({
+        id: c.id,
+        name: c.name,
+        is_default: c.is_default,
+        created_at: c.created_at,
+        item_count: c.item_count,
+      })),
+    );
+    setOptionRows(opts);
+    setBodyProfile(profile);
+    setWornThisMonth(mineWear.wornThisMonth);
+    setSparkDayCounts(mineWear.sparkDayCounts);
+    const fmt = (v: unknown, unit: string) =>
+      v == null || v === '' ? '—' : `${v}${unit ? ` ${unit}` : ''}`;
+    setBodyPairs([
+      ['身高', fmt(profile?.height_cm, 'cm')],
+      ['体重', fmt(profile?.weight_kg, 'kg')],
+      ['肩宽', fmt(profile?.shoulder_cm, 'cm')],
+      ['胸围', fmt(profile?.bust_cm, 'cm')],
+      ['腰围', fmt(profile?.waist_cm, 'cm')],
+      ['臀围', fmt(profile?.hip_cm, 'cm')],
+      ['腿长', fmt(profile?.inseam_cm, 'cm')],
+      ['脚长', fmt(profile?.foot_mm, 'mm')],
+      ['上装', fmt(profile?.size_top, '')],
+      ['下装', fmt(profile?.size_bottom, '')],
+      ['鞋码', fmt(profile?.size_shoe, '')],
+    ]);
+  }, []);
+
+  const applyScreenData = useCallback(
+    async (data: Awaited<ReturnType<typeof loadWardrobeScreenData>>) => {
+      setClosetId(data.closetId);
+      setItems(data.items);
+      setOutfits(data.outfits);
+      setCategories(data.categories);
+      setOccasionNames(data.occasionNames.length > 1 ? data.occasionNames : [...OCCASIONS]);
+      setSub(
+        tabRef.current === 'closet'
+          ? `WARDROBE · ${data.itemCount} ITEMS`
+          : tabRef.current === 'outfits'
+            ? `OUTFITS · ${data.outfitCount} LOOKS`
+            : TAB_META.mine.sub,
+      );
+      await refreshMeta(data.closetId);
+    },
+    [refreshMeta],
+  );
+
+  const reloadWearWeek = useCallback(async (activeClosetId: string) => {
+    try {
+      const week = await fetchWardrobeWearWeek({ closet_id: activeClosetId });
+      setWearWeek(week);
+      return week;
+    } catch (e) {
+      if (__DEV__) console.warn('[wardrobe-screen] wear week failed', e);
+      return null;
+    }
+  }, []);
+
+  const reloadLocal = useCallback(async () => {
+    const data = await loadWardrobeScreenData(closetId);
+    await applyScreenData(data);
+    await reloadWearWeek(data.closetId);
+    return data;
+  }, [applyScreenData, closetId, reloadWearWeek]);
+
+  const refreshFromNetwork = useCallback(async () => {
+    try {
+      const cached = await fetchAndCacheWardrobe({ closet_id: closetId });
+      const next = await loadWardrobeScreenData(cached.closetId);
+      await applyScreenData(next);
+      // 走 wear/week（含上周对比）；bootstrap.wear_week 仅作兜底缓存字段
+      await reloadWearWeek(cached.closetId);
+    } catch (e) {
+      if (__DEV__) console.warn('[wardrobe-screen] refresh failed', e);
+      await reloadLocal();
+    }
+  }, [applyScreenData, closetId, reloadLocal, reloadWearWeek]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(refreshFromNetwork);
+  const refreshControl = useMemo(
+    () => (
+      <RefreshControl
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        colors={[w.pine]}
+        tintColor={w.pine}
+        progressBackgroundColor={w.card}
+      />
+    ),
+    [onRefresh, refreshing, w.card, w.pine],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const local = await loadWardrobeScreenData();
+        if (!cancelled) {
+          await applyScreenData(local);
+          await reloadWearWeek(local.closetId);
+          setDataReady(true);
+        }
+        const cached = await fetchAndCacheWardrobe({ closet_id: local.closetId });
+        if (cancelled) return;
+        const next = await loadWardrobeScreenData(cached.closetId);
+        await applyScreenData(next);
+        await reloadWearWeek(cached.closetId);
+      } catch (e) {
+        if (__DEV__) console.warn('[wardrobe-screen] load failed', e);
+        if (!cancelled) setDataReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyScreenData, reloadWearWeek]);
 
   useEffect(() => {
     return () => {
@@ -209,32 +396,195 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     if (!item) return;
     closePops();
     setSearchOpen(false);
+    setWearHistory28(null);
     setSheet({ kind: 'item', item });
+    void fetchItemWearHistory28(id).then(setWearHistory28);
   };
 
   const openOutfit = (id: string) => {
-    const outfit = outfits.find((o) => o.id === id);
+    const outfit = outfitsRef.current.find((o) => o.id === id);
     if (!outfit) return;
     closePops();
     setSheet({ kind: 'outfit', outfit, items });
   };
 
-  const wearItem = (id: string) => {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, wear: item.wear + 1 } : item)));
-    setSheet((cur) => {
-      if (cur?.kind === 'item' && cur.item.id === id) {
-        return { kind: 'item', item: { ...cur.item, wear: cur.item.wear + 1 } };
+  const sortedOutfits = useMemo(() => {
+    const list = [...outfits];
+    if (outfitSort === 'wear') return list.sort((a, b) => b.wear - a.wear);
+    if (outfitSort === 'occasion') {
+      return list.sort((a, b) => a.occasion.localeCompare(b.occasion, 'zh') || a.name.localeCompare(b.name, 'zh'));
+    }
+    return list;
+  }, [outfitSort, outfits]);
+
+  const openCreateItem = useCallback(
+    async (
+      categoryHint?: string | null,
+      seeds?: { imageUri?: string; cutoutUri?: string },
+    ) => {
+      let cats = categoryMeta;
+      if (!cats.length) {
+        await fetchAndCacheWardrobe({ closet_id: closetId });
+        const data = await reloadLocal();
+        cats = await listLocalCategoryMeta(data.closetId);
+        if (!cats.length) {
+          toast.info('分类尚未同步，请检查网络后重试');
+          return;
+        }
       }
-      return cur;
-    });
-    toast.info('已记录穿着');
+      const selectable = cats.filter((c) => !isUncategorizedCategory(c.name));
+      let categoryId = selectable[0]?.id;
+      if (categoryHint && !isUncategorizedCategory(categoryHint)) {
+        categoryId =
+          (await resolveCategoryIdByName(closetId, categoryHint)) ?? categoryId;
+      }
+      setEditor({
+        type: 'item',
+        mode: 'create',
+        closetId,
+        categoryId,
+        categoryHint:
+          categoryHint && !isUncategorizedCategory(categoryHint) ? categoryHint : undefined,
+        categories: cats.map((c) => ({ id: c.id, name: c.name })),
+        options: optionRows,
+        seedImageUri: seeds?.imageUri,
+        seedCutoutUri: seeds?.cutoutUri,
+      });
+    },
+    [categoryMeta, closetId, optionRows, reloadLocal],
+  );
+
+  const openCreateOutfit = useCallback((seedItemIds?: string[]) => {
+    setCollage({ outfit: null, seedItemIds });
+  }, []);
+
+  const openEditOutfitCollage = useCallback(
+    (id: string) => {
+      const next = outfits.find((x) => x.id === id);
+      if (!next) return;
+      setCollage({ outfit: next });
+    },
+    [outfits],
+  );
+
+  const importItemFromImage = useCallback(
+    async (source: WardrobeImageSource) => {
+      const picked = await pickWardrobeLocalImage(source);
+      if (!picked.ok) {
+        if (picked.reason === 'permission') {
+          toast.info(source === 'camera' ? '需要相机权限才能拍照' : '需要相册权限才能选图');
+        }
+        return;
+      }
+      beginApiLoading();
+      try {
+        const prepared = await prepareWardrobeImagesFromLocal(picked.uri);
+        if (prepared.cutoutApplied) {
+          toast.info('已完成抠图，请完善单品信息');
+        } else {
+          toast.info('已导入原图（当前环境暂不可用抠图）');
+        }
+        await openCreateItem(createHint, {
+          imageUri: prepared.imageUri,
+          cutoutUri: prepared.cutoutUri,
+        });
+      } catch (e) {
+        toast.info(e instanceof Error ? e.message : '导入失败');
+      } finally {
+        endApiLoading();
+      }
+    },
+    [createHint, openCreateItem],
+  );
+
+  const onCreateSelect = useCallback(
+    (label: string) => {
+      if (label === '从单品组合' || label === 'AI 灵感') {
+        openCreateOutfit();
+        return;
+      }
+      if (label === '拍照上传') {
+        openCreateOutfit();
+        toast.info('可在拼图里切换照片素材');
+        return;
+      }
+      if (label === '新建衣橱') {
+        setEditor({ type: 'closet', mode: 'create' });
+        return;
+      }
+      if (label === '导入衣橱' || label === '邀请共用') {
+        toast.info('该入口后续开放，请先用「新建衣橱」');
+        return;
+      }
+      if (label === '拍照') {
+        void importItemFromImage('camera');
+        return;
+      }
+      if (label === '从相册导入') {
+        void importItemFromImage('library');
+        return;
+      }
+      void openCreateItem(createHint);
+    },
+    [createHint, importItemFromImage, openCreateItem, openCreateOutfit],
+  );
+
+  const wearItem = (id: string) => {
+    void (async () => {
+      const res = await recordWardrobeItemWear(id);
+      if (!res.ok) {
+        toast.info(res.error || '记录穿着失败');
+        return;
+      }
+      const nextData = await reloadLocal();
+      const nextItem = nextData.items.find((x) => x.id === id) ?? res.item;
+      const hist = await fetchItemWearHistory28(id);
+      setWearHistory28(hist);
+      setSheet((cur) => {
+        if (cur?.kind === 'item' && cur.item.id === id && nextItem) {
+          return { kind: 'item', item: nextItem };
+        }
+        return cur;
+      });
+      toast.info(res.created ? '已记录穿着' : '今日已记过这件');
+    })();
   };
 
+  const bodySummary = useMemo(() => {
+    const pick = (v: unknown) => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      if (Number.isFinite(n)) return String(n);
+      const s = String(v).trim();
+      return s || null;
+    };
+    const height = pick(bodyProfile?.height_cm);
+    const shoulder = pick(bodyProfile?.shoulder_cm);
+    const waist = pick(bodyProfile?.waist_cm);
+    const parts: string[] = [];
+    if (height) parts.push(`身高 ${height}`);
+    if (shoulder) parts.push(`肩宽 ${shoulder}`);
+    if (waist) parts.push(`腰围 ${waist}`);
+    return parts.length ? parts.join(' · ') : '尚未填写';
+  }, [bodyProfile]);
+
+  const establishedYear = useMemo(() => {
+    const years = closetMeta
+      .map((c) => {
+        const raw = (c.created_at ?? '').trim();
+        const y = Number(raw.slice(0, 4));
+        return Number.isFinite(y) && y >= 2000 && y <= 2100 ? y : null;
+      })
+      .filter((y): y is number => y != null);
+    if (years.length) return Math.min(...years);
+    return new Date().getFullYear();
+  }, [closetMeta]);
+
   const ctxIcon = useMemo(() => {
-    if (tab === 'closet') return <IconGrid size={16} color={WARDROBE.ink2} />;
-    if (tab === 'outfits') return <IconFilter size={16} color={WARDROBE.ink2} />;
-    return <IconGear size={16} color={WARDROBE.ink2} />;
-  }, [tab]);
+    if (tab === 'closet') return <IconGrid size={16} color={w.ink2} />;
+    if (tab === 'outfits') return <IconFilter size={16} color={w.ink2} />;
+    return <IconGear size={16} color={w.ink2} />;
+  }, [tab, w.ink2]);
 
   const onCtx = () => {
     if (tab === 'closet') {
@@ -248,12 +598,22 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
       setSheet({ kind: 'generic', key: 'occasions', outfits });
       return;
     }
-    setSheet({ kind: 'context', tab, sort, categories });
+    closePops();
+    setSheet({
+      kind: 'context',
+      tab,
+      sort,
+      categories,
+      itemCount: items.length,
+      outfitCount: outfits.length,
+    });
   };
 
   const plusRotate = fabRotate.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '135deg'] });
 
   const renderView = (which: WardrobeTab) => {
+    // 切换动画期间离开层不挂 RefreshControl，避免同一 element 双挂载
+    const rc = which === tab ? refreshControl : undefined;
     if (which === 'closet') {
       return (
         <ClosetView
@@ -262,6 +622,8 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           layout={layout}
           sort={sort}
           season={season}
+          wearWeek={wearWeek}
+          refreshControl={rc}
           onOpenItem={openItem}
           onManageCategories={() => setSheet({ kind: 'categories', categories })}
           onAddToCategory={(name) => {
@@ -277,9 +639,11 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     if (which === 'outfits') {
       return (
         <OutfitsView
-          outfits={outfits}
+          outfits={sortedOutfits}
           items={items}
           occasion={occasion}
+          occasions={occasionNames}
+          refreshControl={rc}
           onOccasion={setOccasion}
           onOpenOutfit={openOutfit}
           onSort={() => setSheet({ kind: 'generic', key: 'outfit-sort' })}
@@ -292,6 +656,14 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
         outfits={outfits}
         categories={categories}
         season={season}
+        closetCount={closetMeta.length || 1}
+        closetName={closetMeta.find((c) => c.id === closetId)?.name ?? '我的衣橱'}
+        establishedYear={establishedYear}
+        bodySummary={bodySummary}
+        optionCount={optionRows.length}
+        wornThisMonth={wornThisMonth}
+        sparkDayCounts={sparkDayCounts}
+        refreshControl={rc}
         onSeason={setSeason}
         onOpenSheet={(key) => {
           if (key === 'sort') setSheet({ kind: 'sort', sort });
@@ -302,30 +674,31 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     );
   };
 
-  if (!fontsReady) {
+  if (!fontsReady || !dataReady) {
     return (
       <View
         style={[
           styles.root,
           styles.fontBoot,
-          { paddingTop: insets.top, backgroundColor: WARDROBE.screenMid },
+          { paddingTop: insets.top, backgroundColor: w.screenMid },
         ]}>
-        <ActivityIndicator color={WARDROBE.pine} />
-        <Text style={styles.fontBootText}>加载衣橱字体…</Text>
+        <ActivityIndicator color={w.pine} />
+        <Text style={styles.fontBootText}>{!fontsReady ? '加载衣橱字体…' : '同步衣橱…'}</Text>
       </View>
     );
   }
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: WARDROBE.screenMid }]}>
+    <View style={[styles.root, { paddingTop: insets.top, backgroundColor: w.screenMid }]}>
       <View style={styles.appbar}>
-        <Pressable onPress={onBack} style={styles.iconBtn} accessibilityLabel="返回">
-          <IconBack size={16} color={WARDROBE.ink2} />
+        <Pressable onPress={onBack} style={styles.iconBtn} accessibilityLabel="返回" hitSlop={6}>
+          <IconBack size={16} color={w.ink2} />
         </Pressable>
-        <Pressable onPress={onCtx} style={styles.iconBtn} accessibilityLabel="视图选项">
+        <Pressable onPress={onCtx} style={styles.iconBtn} accessibilityLabel="视图选项" hitSlop={6}>
           {ctxIcon}
         </Pressable>
-        <View style={styles.apptitle}>
+        {/* 不接手势 + 裁剪溢出，避免宽字距副标题盖住左右按钮 */}
+        <View style={styles.apptitle} pointerEvents="none">
           <Text style={[styles.title, titleSwap && styles.titleSwap]} numberOfLines={1}>
             {title}
           </Text>
@@ -341,7 +714,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
             }}
             style={styles.actionBtn}
             accessibilityLabel="搜索">
-            <IconSearch size={15} color={WARDROBE.ink2} />
+            <IconSearch size={15} color={w.ink2} />
           </Pressable>
           <View style={styles.sep} />
           <Pressable
@@ -351,7 +724,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
             }}
             style={styles.actionBtn}
             accessibilityLabel="更多">
-            <IconMore size={15} color={WARDROBE.ink2} />
+            <IconMore size={15} color={w.ink2} />
           </Pressable>
         </View>
       </View>
@@ -393,7 +766,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           accessibilityLabel="添加">
           <View style={styles.fabBadge} />
           <Animated.View style={{ transform: [{ rotate: plusRotate }] }}>
-            <IconPlus size={21} color={WARDROBE.onPine} />
+            <IconPlus size={21} color={w.onPine} />
           </Animated.View>
         </Pressable>
       </Animated.View>
@@ -410,7 +783,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           const active = tab === key;
           return (
             <Pressable key={key} style={styles.dockBtn} onPress={() => switchTab(key)}>
-              <Icon size={18} color={active ? WARDROBE.onPine : WARDROBE.muted} />
+              <Icon size={18} color={active ? w.onPine : w.muted} />
               <Text style={[styles.dockLabel, active && styles.dockLabelActive]}>{label}</Text>
             </Pressable>
           );
@@ -425,10 +798,30 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
         onManageCategories={() => setSheet({ kind: 'categories', categories })}
         onClose={closePops}
       />
-      <CreatePop visible={createPop} tab={tab} categoryHint={createHint} onClose={closePops} />
+      <CreatePop
+        visible={createPop}
+        tab={tab}
+        categoryHint={createHint}
+        onClose={closePops}
+        onSelect={onCreateSelect}
+      />
 
       <WardrobeSheet
         content={sheet}
+        occasions={occasionNames}
+        closets={closetMeta.map((c) => ({
+          ...c,
+          item_count: c.id === closetId ? items.length : c.item_count,
+        }))}
+        optionRows={optionRows}
+        bodyPairs={bodyPairs}
+        aboutPairs={[
+          ['单品', String(items.length)],
+          ['搭配', String(outfits.length)],
+          ['分类', String(categories.length)],
+          ['数据', '云端同步'],
+        ]}
+        wearHistory28={wearHistory28}
         onClose={() => setSheet(null)}
         onSortPick={(value) => {
           setSort(value);
@@ -444,8 +837,15 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
         onOpenItem={openItem}
         onWearItem={wearItem}
         onWearOutfit={(id) => {
-          toast.info('已记录这套穿搭');
-          void id;
+          void (async () => {
+            const res = await recordWardrobeOutfitWear(id);
+            if (!res.ok) {
+              toast.info(res.error || '记录穿搭失败');
+              return;
+            }
+            await reloadLocal();
+            toast.info(res.created ? '已记录这套穿搭' : '今日已记过这套');
+          })();
         }}
         onOpenGeneric={(key) => {
           if (key === 'sort') setSheet({ kind: 'sort', sort });
@@ -456,9 +856,152 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           if (action === 'open' && name) setSheet({ kind: 'category', name, categories });
           else if (action === 'add' && name) {
             setSheet(null);
-            setCreateHint(name);
-            setCreatePop(true);
+            void openCreateItem(name);
           }
+        }}
+        onCreateItem={(hint) => void openCreateItem(hint)}
+        onEditItem={(id) => {
+          const item = items.find((x) => x.id === id);
+          if (!item) return;
+          const categoryId =
+            categoryMeta.find((c) => c.name === item.category)?.id ?? categoryMeta[0]?.id;
+          setEditor({
+            type: 'item',
+            mode: 'edit',
+            closetId,
+            categoryId,
+            categories: categoryMeta,
+            options: optionRows,
+            item: { ...item, category_id: categoryId },
+          });
+        }}
+        onDeleteItem={(id) => {
+          const item = items.find((x) => x.id === id);
+          if (!item) return;
+          setEditor({ type: 'confirm-delete', target: 'item', id, label: item.name });
+        }}
+        onCreateOutfit={(seed) => openCreateOutfit(seed)}
+        onEditOutfit={(id) => openEditOutfitCollage(id)}
+        onDeleteOutfit={(id) => {
+          const outfit = outfits.find((x) => x.id === id);
+          if (!outfit) return;
+          setEditor({ type: 'confirm-delete', target: 'outfit', id, label: outfit.name });
+        }}
+        onCreateCategory={() => setEditor({ type: 'category', mode: 'create', closetId })}
+        onRenameCategory={(name) => {
+          if (isUncategorizedCategory(name)) {
+            toast.info('「未分类」不可编辑');
+            return;
+          }
+          const cat = categoryMeta.find((c) => c.name === name);
+          if (!cat) return;
+          setEditor({
+            type: 'category',
+            mode: 'rename',
+            closetId,
+            categoryId: cat.id,
+            name,
+          });
+        }}
+        onDeleteCategory={(name) => {
+          if (isUncategorizedCategory(name)) {
+            toast.info('「未分类」不可编辑');
+            return;
+          }
+          const cat = categoryMeta.find((c) => c.name === name);
+          if (!cat) return;
+          setEditor({ type: 'confirm-delete', target: 'category', id: cat.id, label: name });
+        }}
+        onCreateOccasion={() => setEditor({ type: 'occasion', mode: 'create' })}
+        onDeleteOccasion={(name) => {
+          const occ = occasionMeta.find((o) => o.name === name);
+          if (!occ) return;
+          setEditor({ type: 'confirm-delete', target: 'occasion', id: occ.id, label: name });
+        }}
+        onCreateCloset={() => setEditor({ type: 'closet', mode: 'create' })}
+        onSelectCloset={(id) => {
+          void (async () => {
+            const res = await switchDefaultCloset(id);
+            if (!res.ok) {
+              toast.info(res.error || '切换失败');
+              return;
+            }
+            await fetchAndCacheWardrobe({ closet_id: id });
+            const next = await loadWardrobeScreenData(id);
+            await applyScreenData(next);
+            toast.info('已切换默认衣橱');
+            setSheet(null);
+          })();
+        }}
+        onDeleteCloset={(id) => {
+          const c = closetMeta.find((x) => x.id === id);
+          if (!c) return;
+          setEditor({ type: 'confirm-delete', target: 'closet', id, label: c.name });
+        }}
+        onCreateOption={(kind) => setEditor({ type: 'option', kind, closetId })}
+        onDeleteOption={(id, label) =>
+          setEditor({ type: 'confirm-delete', target: 'option', id, label })
+        }
+        onEditBody={() =>
+          setEditor({
+            type: 'body',
+            closetId,
+            profile: {
+              closet_id: closetId,
+              height_cm: bodyProfile?.height_cm as number | null | undefined,
+              weight_kg: bodyProfile?.weight_kg as number | null | undefined,
+              shoulder_cm: bodyProfile?.shoulder_cm as number | null | undefined,
+              bust_cm: bodyProfile?.bust_cm as number | null | undefined,
+              waist_cm: bodyProfile?.waist_cm as number | null | undefined,
+              hip_cm: bodyProfile?.hip_cm as number | null | undefined,
+              inseam_cm: bodyProfile?.inseam_cm as number | null | undefined,
+              foot_mm: bodyProfile?.foot_mm as number | null | undefined,
+              size_top: (bodyProfile?.size_top as string | null | undefined) ?? null,
+              size_bottom: (bodyProfile?.size_bottom as string | null | undefined) ?? null,
+              size_shoe: (bodyProfile?.size_shoe as string | null | undefined) ?? null,
+            },
+          })
+        }
+        onOutfitSort={(mode) => {
+          setOutfitSort(mode);
+          toast.info(
+            mode === 'wear' ? '按穿着次数排序' : mode === 'occasion' ? '按场合排序' : '按最近更新排序',
+          );
+        }}
+      />
+
+      <WardrobeEditorHost
+        editor={editor}
+        onClose={() => setEditor(null)}
+        onSaved={async () => {
+          await reloadLocal();
+        }}
+      />
+
+      <CollageEditor
+        visible={Boolean(collage)}
+        closetId={closetId}
+        items={items}
+        occasions={occasionMeta}
+        outfit={collage?.outfit ?? null}
+        seedItemIds={collage?.seedItemIds}
+        onClose={(opts) => {
+          const reopenId = opts?.reopenOutfitId;
+          const wasCreate = !collage?.outfit;
+          setCollage(null);
+          if (!reopenId) return;
+          void (async () => {
+            const data = await reloadLocal();
+            if (wasCreate && tabRef.current !== 'outfits') switchTab('outfits');
+            const next = data.outfits.find((o) => o.id === reopenId);
+            if (!next) return;
+            setTimeout(() => {
+              setSheet({ kind: 'outfit', outfit: next, items: data.items });
+            }, 280);
+          })();
+        }}
+        onSaved={async () => {
+          /* 关闭时统一 reload，避免与 reopen 竞态 */
         }}
       />
 
@@ -472,16 +1015,17 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
   root: { flex: 1 },
   fontBoot: { alignItems: 'center', justifyContent: 'center', gap: 10 },
   fontBootText: {
     ...wardrobeType.appSub,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   appbar: {
     height: 56,
-    paddingHorizontal: 12,
+    paddingHorizontal: 18,
     paddingBottom: 4,
     flexDirection: 'row',
     alignItems: 'center',
@@ -492,31 +1036,41 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
+    flexShrink: 0,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.66)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
-  apptitle: { flex: 1, minWidth: 0, alignItems: 'center' },
+  apptitle: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
   title: {
     ...wardrobeType.appTitle,
-    color: WARDROBE.pine,
+    color: w.pine,
+    textAlign: 'center',
   },
   titleSwap: { opacity: 0, transform: [{ translateY: 5 }] },
   sub: {
     ...wardrobeType.appSub,
-    color: WARDROBE.muted,
+    color: w.muted,
     marginTop: 3,
+    textAlign: 'center',
   },
   appActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 0,
     padding: 3,
     borderRadius: 999,
-    backgroundColor: 'rgba(252,249,241,0.66)',
+    backgroundColor: w.glass,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
+    borderColor: w.line,
   },
   actionBtn: {
     width: 29,
@@ -525,7 +1079,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sep: { width: 1, height: 13, backgroundColor: WARDROBE.line },
+  sep: { width: 1, height: 13, backgroundColor: w.line },
   viewport: { flex: 1, minHeight: 0, overflow: 'hidden' },
   viewLayer: { ...StyleSheet.absoluteFill },
   fab: {
@@ -539,10 +1093,10 @@ const styles = StyleSheet.create({
     width: 54,
     height: 54,
     borderRadius: 27,
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#1E372D',
+    shadowColor: w.shadow,
     shadowOpacity: 0.3,
     shadowRadius: 16,
     elevation: 8,
@@ -554,9 +1108,9 @@ const styles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 5,
-    backgroundColor: WARDROBE.amber,
+    backgroundColor: w.amber,
     borderWidth: 2,
-    borderColor: WARDROBE.paper,
+    borderColor: w.paper,
   },
   dock: {
     position: 'absolute',
@@ -569,9 +1123,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.72)',
-    backgroundColor: 'rgba(252,249,241,0.92)',
-    shadowColor: WARDROBE.ink,
+    borderColor: w.glassBorder,
+    backgroundColor: w.glassStrong,
+    shadowColor: w.shadow,
     shadowOpacity: 0.17,
     shadowRadius: 20,
     elevation: 10,
@@ -583,7 +1137,7 @@ const styles = StyleSheet.create({
     height: 52,
     width: 110,
     borderRadius: 19,
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
   },
   dockBtn: {
     flex: 1,
@@ -596,7 +1150,8 @@ const styles = StyleSheet.create({
   },
   dockLabel: {
     ...wardrobeType.dockLabel,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-  dockLabelActive: { color: WARDROBE.onPine },
-});
+  dockLabelActive: { color: w.onPine },
+  });
+}

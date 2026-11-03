@@ -1,6 +1,8 @@
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { fetchProfileWishBoard } from '@/lib/profile-page-api';
+import { getHabits } from '@/lib/repositories/habits/habit';
+import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getTasks } from '@/lib/repositories/tasks/task';
@@ -28,6 +30,7 @@ export const PAGE_KEY = 'wish-board';
 export type WishBoardEntityLookups = {
   projectsById: Map<string, ProjectRow>;
   tasksById: Map<string, TaskRow>;
+  habitsById: Map<string, HabitRow>;
 };
 
 export type WishBoardBlockedMeta = {
@@ -46,6 +49,7 @@ export function useWishBoardData() {
   const [redeemRecords, setRedeemRecords] = useState<WishRedeemRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [habits, setHabits] = useState<HabitRow[]>([]);
   const [currentNetWorth, setCurrentNetWorth] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -53,8 +57,9 @@ export function useWishBoardData() {
   const entityLookups = useMemo<WishBoardEntityLookups>(() => {
     const projectsById = new Map(projects.map(p => [p.id, p]));
     const tasksById = new Map(tasks.map(t => [t.id, t]));
-    return { projectsById, tasksById };
-  }, [projects, tasks]);
+    const habitsById = new Map(habits.map(h => [h.id, h]));
+    return { projectsById, tasksById, habitsById };
+  }, [projects, tasks, habits]);
 
   const eligibilityById = useMemo(() => {
     const map = new Map<string, WishBoardRedeemEligibility>();
@@ -105,20 +110,29 @@ export function useWishBoardData() {
       try {
         await wrapLoad(async () => {
           await fetchProfileWishBoard();
-          const [nextBalance, nextItems, nextRedeems, nextProjects, nextTasks, nextNetWorth] =
-            await Promise.all([
-              getPointsBalance(),
-              listWishBoardItems(),
-              listWishRedeemRecords(),
-              getProjects(),
-              getTasks(),
-              loadWishBoardCurrentNetWorth(),
-            ]);
+          const [
+            nextBalance,
+            nextItems,
+            nextRedeems,
+            nextProjects,
+            nextTasks,
+            nextHabits,
+            nextNetWorth,
+          ] = await Promise.all([
+            getPointsBalance(),
+            listWishBoardItems(),
+            listWishRedeemRecords(),
+            getProjects(),
+            getTasks(),
+            getHabits(),
+            loadWishBoardCurrentNetWorth(),
+          ]);
           setBalance(nextBalance);
           setItems(nextItems);
           setRedeemRecords(nextRedeems);
           setProjects(nextProjects);
           setTasks(nextTasks);
+          setHabits(nextHabits);
           setCurrentNetWorth(nextNetWorth);
           setMonthEarned(await getPointsEarnedThisMonth());
         }, forceRefresh);
@@ -183,6 +197,7 @@ export function useWishBoardData() {
     redeemRecords,
     projects,
     tasks,
+    habits,
     currentNetWorth,
     loading,
     loadError,

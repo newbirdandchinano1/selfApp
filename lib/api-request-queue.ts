@@ -11,6 +11,14 @@ export type EnqueueApiRequestOptions = {
   kind?: ApiRequestKind;
 };
 
+export class ApiRequestQueueFullError extends Error {
+  readonly code = 'API_REQUEST_QUEUE_FULL';
+  constructor(message = 'API 请求排队已满，请稍后重试') {
+    super(message);
+    this.name = 'ApiRequestQueueFullError';
+  }
+}
+
 /** 同时进行的 HTTP 上限（低于后端 apiMax≈50，留余量给其它客户端） */
 const MAX_IN_FLIGHT = 6;
 /**
@@ -18,13 +26,15 @@ const MAX_IN_FLIGHT = 6;
  * 例：6 槽、保留 2 → 写最多占 4，读不会被推送流饿死。
  */
 const RESERVED_READ_SLOTS = 2;
-/** 排队上限：超出时拒绝新的读 / 挤掉最旧读，避免内存与延迟无限增长 */
-const MAX_WAITING = 48;
+/** 排队上限：超出时挤掉最旧的读，避免内存与延迟无限增长 */
+const MAX_WAITING = 64;
 
 type QueueEntry = {
   kind: ApiRequestKind;
   start: () => void;
   reject: (err: unknown) => void;
+  /** 被挤出队列时用于吞掉 Uncaught (in promise) */
+  promise: Promise<unknown>;
 };
 
 let inFlight = 0;
@@ -80,42 +90,52 @@ function pump(): void {
   }
 }
 
+function dropOldestWaitingRead(reason: string): boolean {
+  const dropped = waitingReads.shift();
+  if (!dropped) return false;
+  const err = new ApiRequestQueueFullError(reason);
+  dropped.reject(err);
+  // 挤掉的过期读常常是 fire-and-forget，避免 Uncaught (in promise) 刷屏
+  void dropped.promise.catch(() => undefined);
+  return true;
+}
+
 export function enqueueApiRequest<T>(
   fn: () => Promise<T>,
   options?: EnqueueApiRequestOptions,
 ): Promise<T> {
   const kind: ApiRequestKind = options?.kind === 'write' ? 'write' : 'read';
 
-  return new Promise<T>((resolve, reject) => {
-    const start = () => {
-      Promise.resolve()
-        .then(fn)
-        .then(resolve, reject)
-        .finally(() => {
-          endInFlight(kind);
-          pump();
-        });
-    };
-
-    if (waitingCount() >= MAX_WAITING) {
-      if (kind === 'read') {
-        reject(new Error('API 请求排队已满，请稍后重试'));
-        return;
-      }
-      // 写请求：挤掉最旧的读，保证脏数据仍能推送
-      const dropped = waitingReads.shift();
-      if (dropped) {
-        dropped.reject(new Error('API 请求排队已满，请稍后重试'));
-      } else {
-        reject(new Error('API 请求排队已满，请稍后重试'));
-        return;
-      }
-    }
-
-    if (kind === 'write') waitingWrites.push({ kind, start, reject });
-    else waitingReads.push({ kind, start, reject });
-    pump();
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+
+  const start = () => {
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => {
+        endInFlight(kind);
+        pump();
+      });
+  };
+
+  if (waitingCount() >= MAX_WAITING) {
+    // 读/写都优先挤掉最旧的读：新读更新、写要保证脏数据仍能推送
+    if (!dropOldestWaitingRead('API 请求排队已满，请稍后重试')) {
+      reject(new ApiRequestQueueFullError());
+      return promise;
+    }
+  }
+
+  const entry: QueueEntry = { kind, start, reject, promise };
+  if (kind === 'write') waitingWrites.push(entry);
+  else waitingReads.push(entry);
+  pump();
+  return promise;
 }
 
 /** @internal 仅供自测 */

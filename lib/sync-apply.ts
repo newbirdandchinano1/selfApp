@@ -23,9 +23,23 @@ export {
   type PullOp,
 } from '@/lib/sync-apply-core';
 
-async function getCols(db: any, table: string): Promise<Set<string>> {
+type ColMeta = { names: Set<string>; notNull: Set<string> };
+
+async function getColMeta(db: any, table: string): Promise<ColMeta> {
   const rows = await db.getAllAsync<any>(`PRAGMA table_info(\`${table}\`)`);
-  return new Set((rows ?? []).map((r: any) => String(r.name)));
+  const names = new Set<string>();
+  const notNull = new Set<string>();
+  for (const r of rows ?? []) {
+    const name = String(r.name);
+    names.add(name);
+    // pk 列在 SQLite 里 notnull 标志可能为 0，但仍不可空
+    if (Number(r.notnull) === 1 || Number(r.pk) === 1) notNull.add(name);
+  }
+  return { names, notNull };
+}
+
+async function getCols(db: any, table: string): Promise<Set<string>> {
+  return (await getColMeta(db, table)).names;
 }
 
 async function resolvePkCol(db: any, table: string): Promise<string> {
@@ -35,6 +49,19 @@ async function resolvePkCol(db: any, table: string): Promise<string> {
     if (pk?.name) return String(pk.name);
   } catch {}
   return 'id';
+}
+
+/** SQLite bind 只接受标量；服务端 JSON 列常以 object 下发 */
+function sqliteBindValue(v: unknown): string | number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
 }
 
 export async function readLocalRowState(table: string, pk: string): Promise<LocalRowState> {
@@ -110,11 +137,18 @@ export async function applyOneEvent(table: string, pk: string, event: PullEvent,
 }
 
 async function upsertRowFromServer(db: any, table: string, pkCol: string, cols: Set<string>, row: Record<string, unknown>, rev: number): Promise<void> {
+  // 与 REST 落库共用 sanitize：补 user_id 等 NOT NULL、压平 JSON 字段；禁止网络拉父行，避免同步风暴
+  const { sanitizeRowForLocalSeed } = await import('@/lib/api-local-row-seed');
+  const sanitized = await sanitizeRowForLocalSeed(table, { ...row }, { allowNetwork: false });
+  const { notNull } = await getColMeta(db, table);
+
   // 服务端新增列（如 tasks.frog_assigned_on）老端本地表尚无该列时必须过滤，否则 prepareAsync 报 no such column
-  const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id' && cols.has(k));
+  const keys = Object.keys(sanitized).filter(
+    (k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id' && cols.has(k),
+  );
   if (!keys.includes(pkCol)) return;
-  // 父行尚未落库时将可空外键置空（task_execution_events.task_id 等为 SET NULL 语义），避免 FOREIGN KEY constraint failed；
-  // 父行到达后的后续事件会把真实引用带回来
+
+  // 父行尚未落库时：可空外键置空；NOT NULL 外键则跳过本行，等父行到达后再 apply
   const FK_PARENTS: Array<[string, string]> = [
     ['task_id', 'tasks'],
     ['project_id', 'projects'],
@@ -122,21 +156,43 @@ async function upsertRowFromServer(db: any, table: string, pkCol: string, cols: 
     ['tag_id', 'tags'],
     ['account_id', 'finance_accounts'],
     ['parent_task_id', 'tasks'],
+    ['user_id', 'users'],
+    ['flow_category_id', 'finance_flow_categories'],
+    ['category_id', 'task_categories'],
   ];
   for (const [fkCol, parentTable] of FK_PARENTS) {
     if (!keys.includes(fkCol)) continue;
-    const fkVal = (row as any)[fkCol];
-    if (fkVal == null || fkVal === '') continue;
+    const fkVal = sanitized[fkCol];
+    if (fkVal == null || fkVal === '') {
+      if (notNull.has(fkCol)) return;
+      continue;
+    }
     try {
       const parentCols = await getCols(db, parentTable);
       if (parentCols.size === 0) continue;
       const parentPk = await resolvePkCol(db, parentTable);
-      const hit = await db.getFirstAsync(`SELECT \`${parentPk}\` FROM \`${parentTable}\` WHERE \`${parentPk}\` = ? LIMIT 1`, [fkVal]);
-      if (!hit) (row as any)[fkCol] = null;
-    } catch {}
+      const hit = await db.getFirstAsync(
+        `SELECT \`${parentPk}\` FROM \`${parentTable}\` WHERE \`${parentPk}\` = ? LIMIT 1`,
+        [fkVal],
+      );
+      if (!hit) {
+        if (notNull.has(fkCol)) {
+          if (__DEV__) {
+            console.warn(
+              `[sync-apply] skip ${table}: missing NOT NULL parent ${parentTable}=${String(fkVal)}`,
+            );
+          }
+          return;
+        }
+        sanitized[fkCol] = null;
+      }
+    } catch {
+      if (notNull.has(fkCol)) return;
+    }
   }
+
   const placeholders = keys.map(() => '?').join(',');
-  const vals = keys.map((k) => (row as any)[k] ?? null);
+  const vals = keys.map((k) => sqliteBindValue(sanitized[k]));
   const updates = keys.filter((k) => k !== pkCol).map((k) => `\`${k}\`=excluded.\`${k}\``).join(',');
   const extra = [
     cols.has('sync_status') ? `, \`sync_status\`='synced'` : '',

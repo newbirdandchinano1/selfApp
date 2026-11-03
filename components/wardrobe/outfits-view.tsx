@@ -9,7 +9,7 @@ import { WardrobeGarment } from '@/components/wardrobe/garments';
 import { IconArrow } from '@/components/wardrobe/icons';
 import { PageTitleItal } from '@/components/wardrobe/page-title-ital';
 import { FoldRiseIn, FOLD_MOTION_SPRING, useFoldMotionGate } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeEm, wardrobeFonts, wardrobeType } from '@/constants/wardrobe-theme';
+import { useWardrobeTheme, wardrobeEm, wardrobeFonts, wardrobeType, type WardrobePalette } from '@/constants/wardrobe-theme';
 import React, { memo, useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
@@ -18,6 +18,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type RefreshControlProps,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
@@ -25,6 +26,8 @@ export type OutfitsViewProps = {
   outfits: WardrobeOutfit[];
   items: WardrobeItem[];
   occasion: string;
+  occasions?: readonly string[];
+  refreshControl?: React.ReactElement<RefreshControlProps>;
   onOccasion: (occasion: string) => void;
   onOpenOutfit: (id: string) => void;
   onSort?: () => void;
@@ -39,6 +42,8 @@ function Collage({
   items: WardrobeItem[];
   compact?: boolean;
 }) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const size = compact ? { w: 52, h: 66, gw: 33, gh: 41 } : { w: 64, h: 80, gw: 40, gh: 49 };
   return (
     <View style={[styles.collage, compact && styles.collageCompact]}>
@@ -72,7 +77,15 @@ function Collage({
   );
 }
 
-function EmptyHangar({ onPick }: { onPick: (o: string) => void }) {
+function EmptyHangar({
+  onPick,
+  suggestions,
+}: {
+  onPick: (o: string) => void;
+  suggestions: readonly string[];
+}) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const swing = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const loop = Animated.loop(
@@ -93,7 +106,7 @@ function EmptyHangar({ onPick }: { onPick: (o: string) => void }) {
           <Path
             d="M50 8a9 9 0 1 1 9 9c-3 0-5 2-5 5v5l34 24c5 4 2 11-4 11H16c-6 0-9-7-4-11l35-25v-4c0-5 2-8 8-8"
             fill="none"
-            stroke={WARDROBE.pine}
+            stroke={w.pine}
             strokeWidth={1.4}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -103,13 +116,11 @@ function EmptyHangar({ onPick }: { onPick: (o: string) => void }) {
       <Text style={styles.emptyTitle}>这个场合还没有搭配</Text>
       <Text style={styles.emptyCopy}>换一个场合，或把喜欢的单品组合起来，保存你的穿搭灵感。</Text>
       <View style={styles.emptyChips}>
-        {OCCASIONS.filter((v) => v !== '全部')
-          .slice(0, 4)
-          .map((value) => (
-            <Pressable key={value} onPress={() => onPick(value)} style={styles.chip}>
-              <Text style={styles.chipText}>{value}</Text>
-            </Pressable>
-          ))}
+        {suggestions.map((value) => (
+          <Pressable key={value} onPress={() => onPick(value)} style={styles.chip}>
+            <Text style={styles.chipText}>{value}</Text>
+          </Pressable>
+        ))}
       </View>
     </View>
   );
@@ -119,18 +130,27 @@ export const OutfitsView = memo(function OutfitsView({
   outfits,
   items,
   occasion,
+  occasions: occasionsProp,
+  refreshControl,
   onOccasion,
   onOpenOutfit,
   onSort,
 }: OutfitsViewProps) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const { animate } = useFoldMotionGate();
+  const occasionChips = occasionsProp?.length ? occasionsProp : OCCASIONS;
   const filtered = useMemo(
     () => (occasion === '全部' ? outfits : outfits.filter((o) => o.occasion === occasion)),
     [occasion, outfits],
   );
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={refreshControl}>
       <FoldRiseIn animate={animate} index={0} fromY={16}>
         <View style={styles.intro}>
           <View style={styles.kickerRow}>
@@ -147,7 +167,7 @@ export const OutfitsView = memo(function OutfitsView({
       </FoldRiseIn>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-        {OCCASIONS.map((o) => {
+        {occasionChips.map((o) => {
           const count = o === '全部' ? outfits.length : outfits.filter((x) => x.occasion === o).length;
           const active = occasion === o;
           return (
@@ -164,7 +184,10 @@ export const OutfitsView = memo(function OutfitsView({
 
       {!filtered.length ? (
         <FoldRiseIn animate={animate} index={1} fromY={16}>
-          <EmptyHangar onPick={onOccasion} />
+          <EmptyHangar
+            onPick={onOccasion}
+            suggestions={occasionChips.filter((v) => v !== '全部').slice(0, 4)}
+          />
         </FoldRiseIn>
       ) : (
         <>
@@ -213,7 +236,7 @@ export const OutfitsView = memo(function OutfitsView({
                   style={styles.btnPrimary}
                   onPress={() => onOpenOutfit(filtered[0].id)}>
                   <Text style={styles.btnPrimaryText}>查看搭配</Text>
-                  <IconArrow size={11} color={WARDROBE.onPine} />
+                  <IconArrow size={11} color={w.onPine} />
                 </Pressable>
               </View>
             </Pressable>
@@ -266,21 +289,22 @@ export const OutfitsView = memo(function OutfitsView({
   );
 });
 
-const styles = StyleSheet.create({
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
   scroll: { flex: 1 },
   content: { paddingHorizontal: 18, paddingBottom: 122 },
   intro: { paddingTop: 7 },
   kickerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  kickerLine: { width: 14, height: 1, backgroundColor: WARDROBE.line2 },
+  kickerLine: { width: 14, height: 1, backgroundColor: w.line2 },
   kicker: {
     ...wardrobeType.kicker,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   pageTitle: {
     ...wardrobeType.pageTitle,
     marginTop: 9,
     marginBottom: 0,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   titleItalRow: {
     flexDirection: 'row',
@@ -290,10 +314,10 @@ const styles = StyleSheet.create({
   },
   pageTitlePeriod: {
     ...wardrobeType.pageTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
     marginBottom: 0,
   },
-  pageSub: { ...wardrobeType.pageSub, color: WARDROBE.muted, maxWidth: 238 },
+  pageSub: { ...wardrobeType.pageSub, color: w.muted, maxWidth: 238 },
   chipRow: { gap: 6, paddingVertical: 13, paddingHorizontal: 2 },
   chip: {
     flexDirection: 'row',
@@ -303,25 +327,25 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.62)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   chipActive: {
-    backgroundColor: WARDROBE.pine,
-    borderColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
+    borderColor: w.pineSolid,
   },
   chipText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8.5,
-    color: WARDROBE.ink3,
+    color: w.ink3,
     letterSpacing: wardrobeEm(0.04, 8.5),
   },
-  chipTextActive: { color: WARDROBE.onPine },
+  chipTextActive: { color: w.onPine },
   chipEm: {
     fontFamily: wardrobeFonts.mono,
     fontStyle: 'normal',
     fontSize: 6,
-    color: WARDROBE.muted2,
+    color: w.muted2,
     letterSpacing: wardrobeEm(0.05, 6),
   },
   chipEmActive: { color: 'rgba(247,242,229,0.52)' },
@@ -331,8 +355,8 @@ const styles = StyleSheet.create({
     paddingBottom: 13,
     borderRadius: 26,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: '#FCF8EF',
+    borderColor: w.line,
+    backgroundColor: w.card,
     overflow: 'hidden',
   },
   fTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -343,35 +367,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: 'rgba(211,154,85,0.14)',
+    backgroundColor: w.amberMark,
     borderWidth: 1,
-    borderColor: 'rgba(211,154,85,0.28)',
+    borderColor: w.amberMark,
   },
-  fTagDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: WARDROBE.amber },
+  fTagDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: w.amber },
   fTagText: {
     fontFamily: wardrobeFonts.sansBold,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.08, 6.5),
-    color: '#8E6429',
+    color: w.amber,
   },
   fEdit: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6,
     letterSpacing: wardrobeEm(0.2, 6),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   fMain: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
   fCopy: { flex: 1, minWidth: 0, paddingRight: 4 },
   featureTitle: {
     ...wardrobeType.featureTitle,
     marginVertical: 5,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   fNote: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
     lineHeight: 13,
-    color: WARDROBE.muted,
+    color: w.muted,
     maxWidth: 146,
   },
   fItems: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 9, maxWidth: 150 },
@@ -380,13 +404,13 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(33,69,58,0.08)',
-    backgroundColor: 'rgba(255,253,247,0.5)',
+    borderColor: w.pineWash,
+    backgroundColor: w.glass,
   },
   fItemText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 5.5,
-    color: WARDROBE.ink3,
+    color: w.ink3,
     letterSpacing: wardrobeEm(0.01, 5.5),
   },
   fCollage: { width: 142, height: 144 },
@@ -396,7 +420,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     borderRadius: 13,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.66)',
+    borderColor: w.glassBorder,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
@@ -411,16 +435,16 @@ const styles = StyleSheet.create({
     marginTop: 9,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(33,69,58,0.1)',
+    borderTopColor: w.pineWash,
     gap: 8,
   },
   fMeta: { flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1 },
-  fMetaDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: WARDROBE.sage },
+  fMetaDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: w.sage },
   fMetaText: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.04, 6.5),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   btnPrimary: {
     flexDirection: 'row',
@@ -429,12 +453,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
   },
   btnPrimaryText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8.5,
-    color: WARDROBE.onPine,
+    color: w.onPine,
     letterSpacing: wardrobeEm(0.04, 8.5),
   },
   sectionHead: {
@@ -447,24 +471,24 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...wardrobeType.sectionTitle,
     marginTop: 5,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   sectionMeta: {
     ...wardrobeType.sectionMeta,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   ghostPill: {
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.6)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   ghostPillText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
-    color: WARDROBE.ink3,
+    color: w.ink3,
     letterSpacing: wardrobeEm(0.06, 8),
   },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 },
@@ -474,8 +498,8 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     borderRadius: 21,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: WARDROBE.card,
+    borderColor: w.line,
+    backgroundColor: w.card,
     overflow: 'hidden',
   },
   ocTag: {
@@ -494,21 +518,21 @@ const styles = StyleSheet.create({
     fontFamily: wardrobeFonts.sansBold,
     fontSize: 6,
     letterSpacing: wardrobeEm(0.08, 6),
-    color: WARDROBE.pine,
+    color: w.pine4,
   },
   ocTitle: {
     ...wardrobeType.outfitTitle,
     marginBottom: 4,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   ocMeta: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   ocMetaText: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6.5,
     letterSpacing: wardrobeEm(0.03, 6.5),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
-  worn: { marginLeft: 'auto', color: WARDROBE.clay },
+  worn: { marginLeft: 'auto', color: w.clay },
   empty: {
     marginTop: 14,
     padding: 38,
@@ -516,21 +540,21 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: WARDROBE.line2,
-    backgroundColor: 'rgba(252,249,241,0.42)',
+    borderColor: w.line2,
+    backgroundColor: w.glass,
     alignItems: 'center',
   },
   hanger: { marginBottom: 10 },
   emptyTitle: {
     ...wardrobeType.emptyTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
     marginBottom: 5,
   },
   emptyCopy: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8.5,
     lineHeight: 14,
-    color: WARDROBE.muted,
+    color: w.muted,
     textAlign: 'center',
     maxWidth: 190,
     marginBottom: 13,
@@ -542,10 +566,11 @@ const styles = StyleSheet.create({
     marginTop: 26,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: WARDROBE.line3,
+    borderTopColor: w.line3,
   },
   footText: {
     ...wardrobeType.foot,
-    color: WARDROBE.muted2,
+    color: w.muted2,
   },
-});
+  });
+}

@@ -107,7 +107,7 @@ export async function loadWeekSchedule(
   return view;
 }
 
-/** 加载跨周的多日窗口（三天周期等）；轴取中日所在周 */
+/** 加载跨周的多日窗口（单日课表邻日预载等）；轴取中日所在周 */
 export async function loadScheduleForDayWindow(
   dayYmds: string[],
   logicalTodayYmd: string,

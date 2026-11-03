@@ -1,12 +1,14 @@
 ﻿import { ComposerTopBar, taskPriorityKeyToNumber, taskPriorityToKey, type TaskPriorityKey } from '@/components/composer';
 import { labelsFromPickerResult, extractDueDateFromDeadlineText } from '@/components/entity-form';
-import { LifeBetPickerField } from '@/components/life-road/LifeBetPickerField';
+import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
+import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
@@ -48,11 +50,23 @@ import {
   mergeLongTermProjectIntoExtraData,
   mergeLongTermTaskIntoExtraData,
 } from '@/lib/long-term-task';
+import {
+  mergeNoteImageUrisIntoExtraData,
+  mergeNoteImageUrisIntoExtraObject,
+  noteImageUrisEqual,
+  parseNoteImageUris,
+  parseNoteImageUrisFromObject,
+} from '@/lib/note-image-extra';
+import {
+  bindNoteImages,
+  ensureNoteImagesRemote,
+  releaseRemovedNoteImages,
+} from '@/lib/note-images';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
-import { getLifeBetsLocal } from '@/lib/repositories/life-road/life-bet';
-import type { LifeBetRow } from '@/lib/repositories/life-road/life-bet.types';
+import { getMonthGoalsLocal } from '@/lib/repositories/life-road/life-road-node';
+import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import {
@@ -60,6 +74,14 @@ import {
   mergeCompletionHabitIdsIntoExtraData,
   parseCompletionHabitIds,
 } from '@/lib/repositories/projects/project-completion-habits';
+import {
+  filterHabitsForProjectProgressPicker,
+  mergeProgressHabitBindingsIntoExtraData,
+  parseProgressHabitBindings,
+  stampProgressHabitBindingsSinceYmd,
+  validateProgressHabitBindingsForSave,
+  type ProjectProgressHabitBinding,
+} from '@/lib/repositories/projects/project-progress-habits';
 import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
@@ -271,6 +293,7 @@ type Subtask = {
   repeat?: string;
   repeatText?: string;
   note?: string;
+  noteImageUris?: string[];
   acceptanceCriteria?: string;
   schedule?: ProjectScheduleMeta | null;
   boundHabitIds?: string[];
@@ -434,6 +457,7 @@ function mapTaskRowToSubtask(task: TaskRow): Subtask {
     repeat,
     repeatText: repeat,
     note: task.note ?? '',
+    noteImageUris: parseNoteImageUris(task.extra_data),
     acceptanceCriteria: task.description ?? '',
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
     isLongTermTask: getIsLongTermTask(task.extra_data),
@@ -467,10 +491,13 @@ function isProjectSubtaskUnchanged(
   const longTerm = subtask.isLongTermTask === true;
   const nextDescription = longTerm ? subtask.acceptanceCriteria?.trim() || null : null;
   const nextNote = longTerm ? null : subtask.note?.trim() || null;
+  const nextNoteImages = longTerm ? [] : (subtask.noteImageUris ?? []);
+  const existingNoteImages = parseNoteImageUrisFromObject(existingExtra);
   return (
     existing.title === (subtask.title.trim() || '未命名任务') &&
     (existing.description ?? null) === nextDescription &&
     (existing.note ?? null) === nextNote &&
+    noteImageUrisEqual(existingNoteImages, nextNoteImages) &&
     existing.status === nextStatus &&
     (existing.due_date?.slice(0, 10) ?? null) === (nextDue ?? null) &&
     (existing.extra_data ?? null) === nextExtra &&
@@ -531,6 +558,7 @@ export default function EditProjectScreen() {
   const [title, setTitle] = React.useState('');
   const [entityIcon, setEntityIcon] = React.useState(DEFAULT_PROJECT_ICON);
   const [notes, setNotes] = React.useState('');
+  const [noteImageUris, setNoteImageUris] = React.useState<string[]>([]);
   const [acceptanceItems, setAcceptanceItems] = React.useState<AcceptanceCriterionItem[]>([
     createEmptyAcceptanceItem(),
   ]);
@@ -558,6 +586,9 @@ export default function EditProjectScreen() {
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
   const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
+  const [progressHabitBindings, setProgressHabitBindings] = React.useState<
+    ProjectProgressHabitBinding[]
+  >([]);
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
@@ -565,9 +596,9 @@ export default function EditProjectScreen() {
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
-  const [selectedLifeBetId, setSelectedLifeBetId] = React.useState<string | null>(null);
-  const [lifeBets, setLifeBets] = React.useState<LifeBetRow[]>([]);
-  const [lifeBetsLoading, setLifeBetsLoading] = React.useState(true);
+  const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(null);
+  const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
+  const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
   const [saving, setSaving] = React.useState(false);
@@ -642,6 +673,13 @@ export default function EditProjectScreen() {
       const checklist = longTerm
         ? linesToAcceptanceChecklist(task.acceptanceCriteria ?? '')
         : [];
+      let nextNoteImages = longTerm ? [] : [...(task.noteImageUris ?? [])];
+      if (nextNoteImages.length > 0) {
+        nextNoteImages = await ensureNoteImagesRemote({
+          localUris: nextNoteImages,
+          owner: { table: 'tasks', id: task.id },
+        });
+      }
       let taskExtra = mergeLongTermTaskIntoExtraData(
         JSON.stringify({
           reminder: task.reminder || task.reminderText || '',
@@ -654,6 +692,7 @@ export default function EditProjectScreen() {
         longTerm,
       );
       taskExtra = mergeAcceptanceChecklistIntoExtraData(taskExtra, checklist) ?? taskExtra;
+      taskExtra = mergeNoteImageUrisIntoExtraData(taskExtra, nextNoteImages) ?? taskExtra;
       await createTask({
         id: task.id,
         project_id: projectId,
@@ -667,6 +706,9 @@ export default function EditProjectScreen() {
         due_date: dueDate,
         extra_data: taskExtra,
       });
+      if (nextNoteImages.length > 0) {
+        await bindNoteImages({ table: 'tasks', id: task.id }, nextNoteImages);
+      }
       // 项目一旦有子任务，不再可作为青蛙实体
       const snap = projectSnapshotRef.current;
       if (snap) {
@@ -720,6 +762,7 @@ export default function EditProjectScreen() {
       const checklist = parseAcceptanceChecklist(project.extra_data, longTerm ? project.note : null, null);
       setAcceptanceItems(checklist.length > 0 ? checklist : [createEmptyAcceptanceItem()]);
       setNotes(longTerm ? '' : (project.note ?? ''));
+      setNoteImageUris(longTerm ? [] : parseNoteImageUris(project.extra_data));
       const extraData = parseProjectExtraData(project.extra_data);
       setProjectExtraData(extraData);
       const loadedSchedule = (extraData.schedule ?? null) as ProjectScheduleMeta | null;
@@ -729,6 +772,7 @@ export default function EditProjectScreen() {
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
       setCompletionHabitIds(parseCompletionHabitIds(project.extra_data));
+      setProgressHabitBindings(parseProgressHabitBindings(project.extra_data));
       try {
         setSelectedTagIds(await getTagIdsByProjectId(projectId));
       } catch (tagErr) {
@@ -736,7 +780,13 @@ export default function EditProjectScreen() {
         setSelectedTagIds([]);
       }
       setIsLongTermProject(longTerm);
-      setSelectedLifeBetId(project.life_bet_id?.trim() ? project.life_bet_id : null);
+      setSelectedMonthGoalId(
+        project.life_month_goal_id?.trim()
+          ? project.life_month_goal_id
+          : project.life_bet_id?.trim()
+            ? project.life_bet_id
+            : null,
+      );
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
       setTaskTree(projectTasks);
@@ -783,14 +833,14 @@ export default function EditProjectScreen() {
         } finally {
           setTagsLoading(false);
         }
-        setLifeBetsLoading(true);
+        setMonthGoalsLoading(true);
         try {
-          setLifeBets(await getLifeBetsLocal());
+          setMonthGoals(await getMonthGoalsLocal());
         } catch (error) {
-          console.warn('加载道路赌注失败', error);
-          setLifeBets([]);
+          console.warn('加载月目标失败', error);
+          setMonthGoals([]);
         } finally {
-          setLifeBetsLoading(false);
+          setMonthGoalsLoading(false);
         }
         setHabitsLoading(true);
         try {
@@ -823,6 +873,22 @@ export default function EditProjectScreen() {
       habits: habitsByContext.get(ctx.id) ?? [],
     }));
   }, [allHabits, completionHabitIds, habitContexts]);
+
+  const progressHabitSections = React.useMemo(() => {
+    const selectedIds = progressHabitBindings.map((b) => b.habitId);
+    const filtered = filterHabitsForProjectProgressPicker(allHabits, selectedIds);
+    const habitsByContext = new Map<string, HabitRow[]>();
+    for (const habit of filtered) {
+      const list = habitsByContext.get(habit.context) ?? [];
+      list.push(habit);
+      habitsByContext.set(habit.context, list);
+    }
+    return habitContexts.map((ctx) => ({
+      contextId: ctx.id,
+      contextName: ctx.name,
+      habits: habitsByContext.get(ctx.id) ?? [],
+    }));
+  }, [allHabits, habitContexts, progressHabitBindings]);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadProjectPage);
 
@@ -1069,6 +1135,17 @@ export default function EditProjectScreen() {
       return;
     }
 
+    const progressValidation = validateProgressHabitBindingsForSave(progressHabitBindings);
+    if (!progressValidation.ok) {
+      toast.warn(progressValidation.message);
+      return;
+    }
+    const stampedProgressBindings = stampProgressHabitBindingsSinceYmd(
+      progressValidation.bindings,
+      logicalTodayYmd,
+      progressHabitBindings,
+    );
+
     setSaving(true);
     let committed = false;
     beginCloudSqliteDirtyIgnoreBatch();
@@ -1085,12 +1162,25 @@ export default function EditProjectScreen() {
         : null;
       const writeOpts = { deferSync: true as const };
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
-      const mergedExtra = mergeCompletionHabitIdsIntoExtraData(
-        mergePrerequisiteIdsIntoExtraData(
-          { ...projectExtraData, schedule: scheduleToSave },
-          prerequisiteProjectIds,
+      const previousNoteImages = parseNoteImageUrisFromObject(
+        projectExtraData as Record<string, unknown>,
+      );
+      let nextNoteImages = isLongTermProject ? [] : [...noteImageUris];
+      if (nextNoteImages.length > 0) {
+        nextNoteImages = await ensureNoteImagesRemote({
+          localUris: nextNoteImages,
+          owner: { table: 'projects', id: projectId },
+        });
+      }
+      const baseExtra = { ...projectExtraData, schedule: scheduleToSave } as Record<string, unknown>;
+      delete baseExtra.note_image_uri;
+      delete baseExtra.note_image_uris;
+      const mergedExtra = mergeProgressHabitBindingsIntoExtraData(
+        mergeCompletionHabitIdsIntoExtraData(
+          mergePrerequisiteIdsIntoExtraData(baseExtra, prerequisiteProjectIds),
+          completionHabitIds,
         ),
-        completionHabitIds,
+        stampedProgressBindings,
       );
       delete (mergedExtra as Record<string, unknown>).completion_reward;
       const withReward = mergeRewardPointsIntoExtraObject(
@@ -1098,7 +1188,11 @@ export default function EditProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       const withIcon = mergeIconIntoExtraObject(withReward, entityIcon, DEFAULT_PROJECT_ICON);
-      const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(withIcon), isLongTermProject);
+      const withNoteImage = mergeNoteImageUrisIntoExtraObject(withIcon, nextNoteImages);
+      const withLongTerm = mergeLongTermProjectIntoExtraData(
+        JSON.stringify(withNoteImage),
+        isLongTermProject,
+      );
       const checklist = isLongTermProject ? acceptanceItems : [];
       const withAcceptance =
         mergeAcceptanceChecklistIntoExtraData(withLongTerm, checklist) ?? withLongTerm;
@@ -1108,7 +1202,8 @@ export default function EditProjectScreen() {
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
-        life_bet_id: selectedLifeBetId,
+        life_month_goal_id: selectedMonthGoalId,
+        life_bet_id: null,
         name: trimmedTitle,
         priority: taskPriorityKeyToNumber(priority),
         note: isLongTermProject
@@ -1117,6 +1212,10 @@ export default function EditProjectScreen() {
         due_date: projectDueDate,
         extra_data: nextExtraAfterTasks,
       });
+      await bindNoteImages({ table: 'projects', id: projectId }, nextNoteImages);
+      await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
+      if (!noteImageUrisEqual(nextNoteImages, noteImageUris)) setNoteImageUris(nextNoteImages);
+      setProjectExtraData(parseProjectExtraData(nextExtraAfterTasks));
       await setProjectTagIds(projectId, selectedTagIds);
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: projectDueDate ?? undefined,
@@ -1141,15 +1240,27 @@ export default function EditProjectScreen() {
         const checklist = longTerm
           ? linesToAcceptanceChecklist(subtask.acceptanceCriteria ?? '')
           : [];
+        const previousNoteImages = parseNoteImageUrisFromObject(existingExtra);
+        let nextNoteImages = longTerm ? [] : [...(subtask.noteImageUris ?? [])];
+        if (nextNoteImages.length > 0) {
+          nextNoteImages = await ensureNoteImagesRemote({
+            localUris: nextNoteImages,
+            owner: { table: 'tasks', id: subtask.id },
+          });
+        }
+        const extraWithoutNoteImage = { ...existingExtra };
+        delete extraWithoutNoteImage.note_image_uri;
+        delete extraWithoutNoteImage.note_image_uris;
         let taskExtra = mergeLongTermTaskIntoExtraData(
           JSON.stringify({
-            ...existingExtra,
+            ...extraWithoutNoteImage,
             reminder: subtask.reminder || subtask.reminderText || '',
             repeat: subtask.repeat || subtask.repeatText || '',
           }),
           longTerm,
         );
         taskExtra = mergeAcceptanceChecklistIntoExtraData(taskExtra, checklist) ?? taskExtra;
+        taskExtra = mergeNoteImageUrisIntoExtraData(taskExtra, nextNoteImages) ?? taskExtra;
         const payload = {
           project_id: projectId,
           parent_task_id,
@@ -1165,6 +1276,8 @@ export default function EditProjectScreen() {
         if (existingTaskIds.has(subtask.id)) {
           if (!existingTask || !isProjectSubtaskUnchanged(existingTask, subtask, parent_task_id) || existingTask.priority !== projectPriorityValue) {
             await updateTask(subtask.id, payload, writeOpts);
+            await bindNoteImages({ table: 'tasks', id: subtask.id }, nextNoteImages);
+            await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
           }
         } else {
           await createTask(
@@ -1175,6 +1288,9 @@ export default function EditProjectScreen() {
             },
             writeOpts,
           );
+          if (nextNoteImages.length > 0) {
+            await bindNoteImages({ table: 'tasks', id: subtask.id }, nextNoteImages);
+          }
         }
       }
       // 保存后若已有任务，清除项目级青蛙标记（项目不可再作青蛙）
@@ -1264,11 +1380,13 @@ export default function EditProjectScreen() {
   }, [
     allProjects,
     completionHabitIds,
+    progressHabitBindings,
     deadlineText,
     entityIcon,
     isLongTermProject,
     acceptanceItems,
     notes,
+    noteImageUris,
     prerequisiteProjectIds,
     priority,
     projectExtraData,
@@ -1278,7 +1396,7 @@ export default function EditProjectScreen() {
     router,
     saving,
     scheduleMeta,
-    selectedLifeBetId,
+    selectedMonthGoalId,
     selectedTagIds,
     subtasks,
     title,
@@ -1552,7 +1670,7 @@ export default function EditProjectScreen() {
                     </View>
                   </View>
                   <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成习惯</Text>
+                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成条件</Text>
                     <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
                       <BoundHabitPickerField
                         selectedHabitIds={completionHabitIds}
@@ -1567,10 +1685,30 @@ export default function EditProjectScreen() {
                         surfaceLow={surfaceLow}
                         surfaceLowest={surfaceLowest}
                         isDark={isDark}
-                        emptyHint="可选；须设周期目标的养成/戒除习惯"
+                        emptyHint="可选；这些习惯的周期目标成功后，才建议结案"
                         selectedHint="全部达成周期目标后，才满足项目完成条件"
                         modalTitle="完成条件 · 小习惯"
                         modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>推进进度</Text>
+                    <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
+                      <ProgressHabitBindingsField
+                        bindings={progressHabitBindings}
+                        sections={progressHabitSections}
+                        loading={habitsLoading || loading}
+                        disabled={formBusy}
+                        onChange={setProgressHabitBindings}
+                        anchorYmd={logicalTodayYmd}
+                        textColor={tf.ink}
+                        outline={outline}
+                        placeholderColor={tf.faint}
+                        primary={primary}
+                        surfaceLow={surfaceLow}
+                        surfaceLowest={surfaceLowest}
+                        isDark={isDark}
                       />
                     </View>
                   </View>
@@ -1634,19 +1772,25 @@ export default function EditProjectScreen() {
                   ) : (
                     <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
                       <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                      <TextInput
-                        value={notes}
-                        onChangeText={setNotes}
-                        placeholder="可选补充说明"
-                        placeholderTextColor={tf.faint}
-                        editable={!formBusy}
-                        multiline
-                        style={[
-                          styles.frowInput,
-                          { color: tf.ink2, flex: 1, minHeight: 36, opacity: formBusy ? 0.65 : 1 },
-                        ]}
-                      />
-                      <MaterialIcons name="edit" size={14} color="#A4ADA3" style={{ marginTop: 6 }} />
+                      <View style={{ flex: 1, minWidth: 0, gap: 8, opacity: formBusy ? 0.65 : 1 }}>
+                        <TextInput
+                          value={notes}
+                          onChangeText={setNotes}
+                          placeholder="可选补充说明，下方可贴多图"
+                          placeholderTextColor={tf.faint}
+                          editable={!formBusy}
+                          multiline
+                          style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                        />
+                        <NoteImageAttach
+                          uris={noteImageUris}
+                          onChangeUris={setNoteImageUris}
+                          disabled={formBusy}
+                          borderColor={tf.line2}
+                          mutedColor={tf.faint}
+                          surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                        />
+                      </View>
                     </View>
                   )}
                 </View>
@@ -1782,21 +1926,20 @@ export default function EditProjectScreen() {
                     <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
                   </Pressable>
                   <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>道路</Text>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>月目标</Text>
                     <View style={{ flex: 1, minWidth: 0 }}>
-                      <LifeBetPickerField
-                        selectedId={selectedLifeBetId}
-                        allBets={lifeBets}
-                        loading={lifeBetsLoading || loading}
+                      <MonthGoalPickerField
+                        selectedId={selectedMonthGoalId}
+                        monthGoals={monthGoals}
+                        loading={monthGoalsLoading || loading}
                         disabled={formBusy}
-                        onChange={setSelectedLifeBetId}
+                        onChange={setSelectedMonthGoalId}
                         textColor={tf.ink}
                         outline={outline}
                         placeholderColor={tf.faint}
                         primary={primary}
                         surfaceLow={surfaceLow}
                         surfaceLowest={surfaceLowest}
-                        isDark={isDark}
                       />
                     </View>
                   </View>
@@ -1831,6 +1974,7 @@ export default function EditProjectScreen() {
                             return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
                           });
                           setNotes('');
+                          setNoteImageUris([]);
                         } else {
                           setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
                           setAcceptanceItems([createEmptyAcceptanceItem()]);

@@ -1,8 +1,10 @@
-import {
+  import {
   CLOSET_ORDER,
+  isUncategorizedCategory,
   matchSeason,
   pad2,
   sortItems,
+  UNCATEGORIZED_CATEGORY_NAME,
   type ClosetLayout,
   type ClosetSort,
   type SeasonFilter,
@@ -13,9 +15,19 @@ import { EmptyCategoryCard, ItemCard } from '@/components/wardrobe/item-card';
 import { IconArrow, IconFlame, IconMore, IconPlus } from '@/components/wardrobe/icons';
 import { UsageRing } from '@/components/wardrobe/usage-ring';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
-import { WARDROBE, wardrobeEm, wardrobeFonts, wardrobeType } from '@/constants/wardrobe-theme';
+import { useWardrobeTheme, wardrobeEm, wardrobeFonts, wardrobeType, type WardrobePalette } from '@/constants/wardrobe-theme';
+import { formatYmd, parseYmd } from '@/lib/date';
+import type { WardrobeWearWeek } from '@/lib/repositories/wardrobe/wardrobe';
 import React, { memo, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type RefreshControlProps,
+} from 'react-native';
 
 export type ClosetViewProps = {
   items: WardrobeItem[];
@@ -23,6 +35,8 @@ export type ClosetViewProps = {
   layout: ClosetLayout;
   sort: ClosetSort;
   season: SeasonFilter;
+  wearWeek?: WardrobeWearWeek | null;
+  refreshControl?: React.ReactElement<RefreshControlProps>;
   onOpenItem: (id: string) => void;
   onManageCategories: () => void;
   onAddToCategory: (name: string) => void;
@@ -32,30 +46,45 @@ export type ClosetViewProps = {
 };
 
 const DAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'] as const;
-const WORN_OFFSETS = new Set([0, 1, 2, 3, 5]);
+const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+const MONTH_EN = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'] as const;
 
-function WeekStrip({ onTip }: { onTip: (text: string, x: number) => void }) {
-  const today = useMemo(() => new Date(2026, 10, 2), []);
+function WeekStrip({
+  wearWeek,
+  todayYmd,
+  onTip,
+}: {
+  wearWeek: WardrobeWearWeek | null | undefined;
+  todayYmd: string;
+  onTip: (text: string, x: number) => void;
+}) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const days = useMemo(() => {
-    const start = new Date(today);
-    start.setDate(today.getDate() - 6);
-    return Array.from({ length: 7 }, (_, index) => {
-      const day = new Date(start);
-      day.setDate(start.getDate() + index);
-      return { day, index };
+    if (wearWeek?.days?.length === 7) return wearWeek.days;
+    // 接口未就绪时仍按本周一～日占位，避免再写死演示穿着点
+    const anchor = todayYmd;
+    const d = parseYmd(anchor) ?? new Date();
+    const weekday = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - weekday);
+    return Array.from({ length: 7 }, (_, i) => {
+      const day = new Date(d);
+      day.setDate(d.getDate() + i);
+      return { ymd: formatYmd(day), worn: false };
     });
-  }, [today]);
+  }, [todayYmd, wearWeek]);
 
   return (
     <View style={styles.weekStrip}>
-      {days.map(({ day, index }) => {
+      {days.map((entry, index) => {
+        const day = parseYmd(entry.ymd) ?? new Date();
         const weekday = (day.getDay() + 6) % 7;
-        const isToday = index === 6;
-        const worn = WORN_OFFSETS.has(index);
+        const isToday = entry.ymd === todayYmd;
+        const worn = Boolean(entry.worn);
         return (
           <Pressable
-            key={index}
-            onPress={(e) => {
+            key={entry.ymd}
+            onPress={() => {
               const label = worn
                 ? `${day.getMonth() + 1}/${day.getDate()} · 已穿搭`
                 : `${day.getMonth() + 1}/${day.getDate()} · 未记录`;
@@ -72,49 +101,109 @@ function WeekStrip({ onTip }: { onTip: (text: string, x: number) => void }) {
   );
 }
 
+function weekCopy(worn: number, prev: number): string {
+  if (prev <= 0 && worn <= 0) return '本周还没有穿搭记录';
+  if (prev <= 0) return '本周已穿搭 · 开了个好头';
+  const delta = worn - prev;
+  if (delta > 0) return `本周已穿搭 · 比上周多 ${delta} 次`;
+  if (delta < 0) return `本周已穿搭 · 比上周少 ${Math.abs(delta)} 次`;
+  return '本周已穿搭 · 与上周持平';
+}
+
+function streakFoot(streak: number): string {
+  if (streak <= 0) return '今天还没记录 · 穿一套记一下';
+  if (streak === 1) return '今天已记录 · 明天接着来';
+  return `已连续记录 ${streak} 天 · 保持得很好`;
+}
+
 export const ClosetView = memo(function ClosetView({
   items,
   categories,
   layout,
   sort,
   season,
+  wearWeek,
+  refreshControl,
   onOpenItem,
   onManageCategories,
   onAddToCategory,
   onCategoryMore,
   onJumpMine,
 }: ClosetViewProps) {
+  const { w } = useWardrobeTheme();
+  const styles = useMemo(() => createStyles(w), [w]);
   const { animate } = useFoldMotionGate();
   const [tip, setTip] = useState<{ text: string; ratio: number } | null>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const todayYmd = useMemo(() => formatYmd(new Date()), []);
+  const wornDays = wearWeek?.wornDaysThisWeek ?? 0;
+  const streakDays = wearWeek?.streakDays ?? 0;
+  const prevWornDays = wearWeek?.prevWornDays ?? 0;
+  const weekPercent = Math.round((wornDays / 7) * 100);
 
-  const visibleCats = useMemo(
-    () =>
-      categories.filter((c) => (CLOSET_ORDER as readonly string[]).includes(c.name)).filter((category) => {
+  const visibleCats = useMemo(() => {
+    const hasVisibleItem = (ids: string[]) =>
+      ids.some((id) => {
+        const item = items.find((i) => i.id === id);
+        return item ? matchSeason(item, season) : false;
+      });
+
+    const ordered = categories
+      .filter((c) => (CLOSET_ORDER as readonly string[]).includes(c.name))
+      .filter((category) => {
+        // 「未分类」无单品时默认不展示；其余空分类仍保留「添加第一件」
+        if (isUncategorizedCategory(category.name)) return hasVisibleItem(category.ids);
         if (season === 'all') return true;
-        return category.ids.some((id) => {
-          const item = items.find((i) => i.id === id);
-          return item ? matchSeason(item, season) : false;
-        });
-      }),
-    [categories, items, season],
-  );
+        return hasVisibleItem(category.ids);
+      });
+
+    // 分类行已删、单品还在（如手滑删「未分类」）时，合成兜底分类，避免列表空白
+    const linked = new Set(categories.flatMap((c) => c.ids));
+    const orphanIds = items
+      .filter((item) => !linked.has(item.id) && matchSeason(item, season))
+      .map((item) => item.id);
+    if (!orphanIds.length) return ordered;
+
+    const existingUncategorized = ordered.find((c) => isUncategorizedCategory(c.name));
+    if (existingUncategorized) {
+      return ordered.map((c) =>
+        isUncategorizedCategory(c.name)
+          ? { ...c, ids: [...new Set([...c.ids, ...orphanIds])] }
+          : c,
+      );
+    }
+    return [
+      {
+        name: UNCATEGORIZED_CATEGORY_NAME,
+        ids: orphanIds,
+        tint: '#DCE8E5',
+        tint2: '#C3D6D0',
+        tone: '#36584F',
+      },
+      ...ordered,
+    ];
+  }, [categories, items, season]);
 
   const total = useMemo(() => {
     if (season === 'all') return items.length;
     return items.filter((item) => matchSeason(item, season)).length;
   }, [items, season]);
 
+  /** 双列 / 单列：全量季节匹配单品（含孤儿），不再只靠 category.ids */
+  const flatItems = useMemo(
+    () => sortItems(items.filter((item) => matchSeason(item, season)), sort),
+    [items, season, sort],
+  );
+
   const heroDate = useMemo(() => {
-    const d = new Date(2026, 10, 2);
-    const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const d = parseYmd(todayYmd) ?? new Date();
     return {
       stampDay: pad2(d.getDate()),
-      stampMon: 'NOV',
-      kicker: `NOV ${pad2(d.getDate())}`,
-      line: `${d.getMonth() + 1}月${d.getDate()}日 ${days[d.getDay()]}`,
+      stampMon: MONTH_EN[d.getMonth()],
+      kicker: `${MONTH_EN[d.getMonth()]} ${pad2(d.getDate())}`,
+      line: `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKDAY_CN[d.getDay()]}`,
     };
-  }, []);
+  }, [todayYmd]);
 
   const showTip = (text: string, ratio: number) => {
     if (tipTimer.current) clearTimeout(tipTimer.current);
@@ -138,7 +227,8 @@ export const ClosetView = memo(function ClosetView({
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}>
+      showsVerticalScrollIndicator={false}
+      refreshControl={refreshControl}>
       <FoldRiseIn animate={animate} index={0} fromY={16}>
         <View style={styles.hero}>
           <View style={{ flex: 1 }}>
@@ -152,8 +242,6 @@ export const ClosetView = memo(function ClosetView({
             </View>
             <View style={styles.heroSub}>
               <Text style={styles.heroSubText}>{heroDate.line}</Text>
-              <View style={styles.dot} />
-              <Text style={styles.heroSubText}>晴 18°C</Text>
               <View style={styles.dot} />
               <Text style={styles.heroSubText}>
                 已整理 <Text style={styles.heroSubBold}>{total}</Text> 件</Text>
@@ -169,7 +257,7 @@ export const ClosetView = memo(function ClosetView({
 
       <FoldRiseIn animate={animate} index={1} fromY={16} style={styles.weekRise}>
         <View style={styles.weekWrap}>
-          <WeekStrip onTip={showTip} />
+          <WeekStrip wearWeek={wearWeek} todayYmd={todayYmd} onTip={showTip} />
           {/* 常驻预留 tip 槽位，避免盖住下方卡片 / 弹出时再顶开布局 */}
           <View style={styles.dayTipSlot} pointerEvents="none">
             {tip ? (
@@ -187,21 +275,23 @@ export const ClosetView = memo(function ClosetView({
             <Text style={styles.wcKicker}>THIS WEEK · 本周穿搭</Text>
             <View style={styles.streak}>
               <IconFlame size={9} color="#F0D5A9" />
-              <Text style={styles.streakText}>连续 9 天</Text>
+              <Text style={styles.streakText}>
+                {streakDays > 0 ? `连续 ${streakDays} 天` : '待开启'}
+              </Text>
             </View>
           </View>
           <View style={styles.wcBody}>
             <View>
               <View style={styles.wcBigRow}>
-                <Text style={styles.wcBig}>5</Text>
+                <Text style={styles.wcBig}>{wornDays}</Text>
                 <Text style={styles.wcBigEm}>/ 7 天</Text>
               </View>
-              <Text style={styles.wcCopy}>本周已穿搭 · 比上周多 2 次</Text>
+              <Text style={styles.wcCopy}>{weekCopy(wornDays, prevWornDays)}</Text>
             </View>
-            <UsageRing percent={71} size={78} gradient animate={animate} />
+            <UsageRing percent={weekPercent} size={78} gradient animate={animate} />
           </View>
           <View style={styles.wcFoot}>
-            <Text style={styles.wcFootText}>已连续记录 9 天 · 保持得很好</Text>
+            <Text style={styles.wcFootText}>{streakFoot(streakDays)}</Text>
             <Pressable onPress={onJumpMine} style={styles.wcFootBtn} hitSlop={8}>
               <Text style={styles.wcFootBtnText}>查看统计</Text>
               <IconArrow size={9} color="#F0D5A9" />
@@ -252,14 +342,16 @@ export const ClosetView = memo(function ClosetView({
                       onPress={() => onAddToCategory(category.name)}
                       style={styles.tinyBtn}
                       accessibilityLabel={`添加到${category.name}`}>
-                      <IconPlus size={13} color={WARDROBE.muted} />
+                      <IconPlus size={13} color={w.muted} />
                     </Pressable>
-                    <Pressable
-                      onPress={() => onCategoryMore(category.name)}
-                      style={styles.tinyBtn}
-                      accessibilityLabel={`${category.name}选项`}>
-                      <IconMore size={13} color={WARDROBE.muted} />
-                    </Pressable>
+                    {isUncategorizedCategory(category.name) ? null : (
+                      <Pressable
+                        onPress={() => onCategoryMore(category.name)}
+                        style={styles.tinyBtn}
+                        accessibilityLabel={`${category.name}选项`}>
+                        <IconMore size={13} color={w.muted} />
+                      </Pressable>
+                    )}
                   </View>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
@@ -280,16 +372,16 @@ export const ClosetView = memo(function ClosetView({
           );
         })
       ) : (
-        <View style={layout === 'double' ? styles.flatGrid : styles.flatList}>
-          {renderItems(
-            sortItems(
-              visibleCats
-                .flatMap((c) => c.ids.map((id) => items.find((i) => i.id === id)))
-                .filter((item): item is WardrobeItem => !!item && matchSeason(item, season)),
-              sort,
-            ),
-            layout === 'double' ? 'grid' : 'list',
-          )}
+        <View
+          key={layout}
+          style={layout === 'double' ? styles.flatGrid : styles.flatList}>
+          {flatItems.length
+            ? renderItems(flatItems, layout === 'double' ? 'grid' : 'list')
+            : (
+              <Text style={styles.flatEmpty}>
+                {season === 'all' ? '还没有单品，先添加一件吧' : '当前季节筛选下暂无单品'}
+              </Text>
+            )}
         </View>
       )}
 
@@ -301,7 +393,8 @@ export const ClosetView = memo(function ClosetView({
   );
 });
 
-const styles = StyleSheet.create({
+function createStyles(w: WardrobePalette) {
+  return StyleSheet.create({
   scroll: { flex: 1 },
   content: { paddingHorizontal: 18, paddingBottom: 122 },
   hero: {
@@ -312,10 +405,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   kickerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  kickerLine: { width: 14, height: 1, backgroundColor: WARDROBE.line2 },
+  kickerLine: { width: 14, height: 1, backgroundColor: w.line2 },
   kicker: {
     ...wardrobeType.kicker,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   heroTitleRow: {
     flexDirection: 'row',
@@ -327,28 +420,28 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     ...wardrobeType.heroTitle,
-    color: WARDROBE.ink,
+    color: w.ink,
     overflow: 'visible',
   },
   heroQ: {
     ...wardrobeType.heroQ,
-    color: WARDROBE.amber,
+    color: w.amber,
     // 独立 Text 才能吃到 skew；Android 无 Georgia 斜体面
     ...(Platform.OS === 'android'
       ? { fontStyle: 'normal' as const, transform: [{ skewX: '-14deg' }] }
       : null),
   },
   heroSub: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
-  heroSubText: { ...wardrobeType.heroSub, color: WARDROBE.muted },
-  heroSubBold: { fontFamily: wardrobeFonts.sansSemiBold, color: WARDROBE.ink2 },
-  dot: { width: 3, height: 3, borderRadius: 2, backgroundColor: WARDROBE.line2 },
+  heroSubText: { ...wardrobeType.heroSub, color: w.muted },
+  heroSubBold: { fontFamily: wardrobeFonts.sansSemiBold, color: w.ink2 },
+  dot: { width: 3, height: 3, borderRadius: 2, backgroundColor: w.line2 },
   stamp: {
     width: 74,
     height: 74,
     borderRadius: 37,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: '#F3ECDD',
+    borderColor: w.line,
+    backgroundColor: w.paper2,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,
@@ -360,16 +453,16 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: WARDROBE.amber,
+    backgroundColor: w.amber,
   },
   stampDay: {
     ...wardrobeType.stampDay,
-    color: WARDROBE.pine,
+    color: w.pine,
     textAlign: 'center',
   },
   stampMon: {
     ...wardrobeType.stampMon,
-    color: WARDROBE.clay,
+    color: w.clay,
     marginTop: 4,
     textAlign: 'center',
   },
@@ -386,25 +479,25 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   wdayToday: {
-    backgroundColor: WARDROBE.pine,
+    backgroundColor: w.pineSolid,
     transform: [{ translateY: -2 }],
   },
   wd: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 7.5,
     letterSpacing: wardrobeEm(0.05, 7.5),
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   wdToday: { color: '#F6F2E6' },
   wn: {
     fontFamily: wardrobeFonts.monoSemiBold,
     fontSize: 12,
-    color: WARDROBE.ink2,
+    color: w.ink2,
   },
   wnToday: { color: '#FFF8EA' },
   wdot: { width: 3, height: 3, borderRadius: 2, backgroundColor: 'transparent' },
-  wdotWorn: { backgroundColor: WARDROBE.sage },
-  wdotToday: { backgroundColor: WARDROBE.amber },
+  wdotWorn: { backgroundColor: w.sage },
+  wdotToday: { backgroundColor: w.amber },
   /** 提前预留 tip 高度，与下方 week-card 分隔 */
   dayTipSlot: {
     height: 28,
@@ -434,7 +527,7 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 13,
     borderRadius: 26,
-    backgroundColor: WARDROBE.weekCard1,
+    backgroundColor: w.weekCard1,
     overflow: 'hidden',
   },
   wcTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -453,8 +546,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(211,154,85,0.34)',
-    backgroundColor: 'rgba(211,154,85,0.13)',
+    borderColor: w.amberMark,
+    backgroundColor: w.amberMark,
   },
   streakText: {
     fontFamily: wardrobeFonts.sans,
@@ -521,24 +614,24 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...wardrobeType.sectionTitle,
     marginTop: 5,
-    color: WARDROBE.ink,
+    color: w.ink,
   },
   sectionMeta: {
     ...wardrobeType.sectionMeta,
-    color: WARDROBE.muted,
+    color: w.muted,
   },
   ghostPill: {
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: WARDROBE.line,
-    backgroundColor: 'rgba(252,249,241,0.6)',
+    borderColor: w.line,
+    backgroundColor: w.glass,
   },
   ghostPillText: {
     fontFamily: wardrobeFonts.sans,
     fontSize: 8,
-    color: WARDROBE.ink3,
+    color: w.ink3,
     letterSpacing: wardrobeEm(0.06, 8),
   },
   catBlock: { marginTop: 15 },
@@ -553,21 +646,21 @@ const styles = StyleSheet.create({
   catTitle: {
     fontFamily: wardrobeFonts.sansSemiBold,
     fontSize: 12.5,
-    color: WARDROBE.ink2,
+    color: w.ink2,
     letterSpacing: wardrobeEm(0.04, 12.5),
   },
   catNum: {
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 999,
-    backgroundColor: 'rgba(252,249,241,0.8)',
+    backgroundColor: w.glass,
     borderWidth: 1,
-    borderColor: WARDROBE.line3,
+    borderColor: w.line3,
   },
   catNumText: {
     fontFamily: wardrobeFonts.mono,
     fontSize: 6.5,
-    color: WARDROBE.muted,
+    color: w.muted,
     letterSpacing: wardrobeEm(0.06, 6.5),
   },
   catTools: { flexDirection: 'row', gap: 3 },
@@ -577,19 +670,31 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(252,249,241,0.5)',
+    backgroundColor: w.glass,
   },
   rail: { gap: 9, paddingVertical: 2, paddingBottom: 9 },
   flatGrid: {
+    width: '100%',
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
+    alignContent: 'flex-start',
     rowGap: 10,
     marginTop: 8,
   },
   flatList: {
+    width: '100%',
     gap: 8,
     marginTop: 8,
+  },
+  flatEmpty: {
+    width: '100%',
+    paddingVertical: 28,
+    textAlign: 'center',
+    fontFamily: wardrobeFonts.sans,
+    fontSize: 12,
+    color: w.muted,
+    letterSpacing: wardrobeEm(0.04, 12),
   },
   foot: {
     flexDirection: 'row',
@@ -598,10 +703,11 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: WARDROBE.line3,
+    borderTopColor: w.line3,
   },
   footText: {
     ...wardrobeType.foot,
-    color: WARDROBE.muted2,
+    color: w.muted2,
   },
-});
+  });
+}

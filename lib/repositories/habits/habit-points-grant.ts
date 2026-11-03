@@ -189,7 +189,7 @@ function applyBreakReward(extraData: string | null | undefined, field: 'penalty'
 }
 
 /**
- * 任务类小习惯：根据周期目标是否刚达成 / 刚回退，发整包积分或扣回。
+ * 周期配额小习惯：根据周期目标是否刚达成 / 刚回退，发整包积分或扣回。
  * @returns 实际变动积分；0 表示无配置或未跨过达成边界
  */
 export async function syncTaskHabitPeriodPointsReward(params: {

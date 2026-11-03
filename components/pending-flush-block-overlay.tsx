@@ -21,19 +21,21 @@ export function PendingFlushBlockOverlay({
         { paddingTop: Math.max(insets.top, 24), paddingBottom: Math.max(insets.bottom, 24) },
       ]}
     >
-          <Text style={styles.errorText}>{message}</Text>
-      <Text style={styles.hintText}>可先进入应用，未上传的修改会在后台继续同步。</Text>
-      <View style={styles.errorActions}>
-        <Pressable
-          disabled={retrying}
-          onPress={onRetry}
-          style={({ pressed }) => [
-            styles.errorButton,
-            { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
-          ]}
-        >
-          <Text style={styles.errorButtonText}>{retrying ? '正在进入…' : '进入应用'}</Text>
-        </Pressable>
+      <View style={styles.errorContent}>
+        <Text style={styles.errorText}>{message}</Text>
+        <Text style={styles.hintText}>可先进入应用，未上传的修改会在后台继续同步。</Text>
+        <View style={styles.errorActions}>
+          <Pressable
+            disabled={retrying}
+            onPress={onRetry}
+            style={({ pressed }) => [
+              styles.errorButton,
+              { opacity: retrying ? 0.5 : pressed ? 0.82 : 1 },
+            ]}
+          >
+            <Text style={styles.errorButtonText}>{retrying ? '正在进入…' : '进入应用'}</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -48,7 +50,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
+  errorContent: {
+    width: '100%',
+    maxWidth: 360,
+    alignItems: 'center',
+  },
   errorText: {
+    width: '100%',
     fontSize: 14,
     fontWeight: '700',
     color: '#131b2e',
@@ -57,6 +65,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   hintText: {
+    width: '100%',
     marginTop: 10,
     fontSize: 13,
     fontWeight: '600',
@@ -67,6 +76,7 @@ const styles = StyleSheet.create({
   },
   errorActions: {
     flexDirection: 'row',
+    justifyContent: 'center',
     gap: 10,
     marginTop: 14,
   },

@@ -7,8 +7,10 @@ export type ProjectApiPatch = {
   extra_data?: string | null;
   status?: string;
   category_id?: string | null;
-  /** 归属道路赌注；null 表示摘除 */
+  /** 归属道路赌注（旧）；null 表示摘除 */
   life_bet_id?: string | null;
+  /** 归属月目标；null 表示摘除 */
+  life_month_goal_id?: string | null;
   name?: string;
   note?: string | null;
   due_date?: string | null;

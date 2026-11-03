@@ -251,7 +251,7 @@ export function isBreakHabitDayCompleted(ctx: BreakHabitDayContext): boolean {
 }
 
 /**
- * 任务页展示用「已处理」：养成/完成任务看达标；
+ * 任务页展示用「已处理」：养成/周期配额看达标；
  * 戒除：保持与破戒均为当日状态确认，有记录即不再计入待完成。
  */
 export function isHabitDayDisplayCompleted(params: {
@@ -331,7 +331,7 @@ export function buildProgressBadgeColor(todayCount: number, dailyGoal: number | 
   return `rgba(0,108,73,${0.6 + strength * 0.35})`;
 }
 
-/** 养成/完成任务打卡递增上限；戒除习惯不设上限（记录每次破戒） */
+/** 养成/周期配额打卡递增上限；戒除习惯不设上限（记录每次破戒） */
 export function parseHabitIncrementCap(extraData: string | null, kind?: HabitKind): number | null {
   const resolvedKind = kind ?? parseHabitKind(extraData);
   if (resolvedKind === 'break') return null;
