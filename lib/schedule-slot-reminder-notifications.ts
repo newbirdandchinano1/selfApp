@@ -4,7 +4,13 @@
  */
 
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
-import { getNotificationCenterSettings } from '@/lib/notification-center-settings';
+import {
+  getNotificationCenterSettings,
+  resolveScheduleAdvanceMinutes,
+  type ScheduleSlotSubjectKind,
+} from '@/lib/notification-center-settings';
+import { parseScheduleMetaFromExtra } from '@/lib/schedule/meta';
+import { clampAdvanceMinutesOverride } from '@/lib/task-reminder-schedule';
 import {
   cancelScheduledByPrefixes,
   isLocalNotificationSchedulingUnavailable,
@@ -108,6 +114,19 @@ function groupYmdsByWeekMonday(dayYmds: string[]): Map<string, string[]> {
   return ymdsByWeek;
 }
 
+function slotReminderCopy(kind: ScheduleSlotSubjectKind, title: string): {
+  notifTitle: string;
+  typeLabel: string;
+} {
+  if (kind === 'project') {
+    return { notifTitle: '推进项目', typeLabel: '项目' };
+  }
+  if (kind === 'habit') {
+    return { notifTitle: '习惯时段', typeLabel: '习惯' };
+  }
+  return { notifTitle: '该做', typeLabel: '待办' };
+}
+
 /** 收集虚拟入格日程提醒参数（不登记）。 */
 async function collectVirtualHabitSlotReminderParams(params: {
   habits: HabitRow[];
@@ -165,6 +184,7 @@ async function collectVirtualHabitSlotReminderParams(params: {
       const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
       const id = scheduleSlotReminderIdentifier(placementId);
       const startHm = formatMinutesAsHm(startMins);
+      const copy = slotReminderCopy('habit', v.name);
       const fingerprint = `${placementId}|${v.name}|${v.assignYmd}|${startHm}|${advanceMinutes}`;
 
       items.push({
@@ -179,13 +199,13 @@ async function collectVirtualHabitSlotReminderParams(params: {
           subjectId: v.habitId,
         },
         fallback: {
-          title: '日程表提醒',
+          title: copy.notifTitle,
           body: v.name,
         },
         fingerprint,
         contextBlock: [
           '【频道】日程表提醒',
-          '【类型】习惯',
+          `【类型】${copy.typeLabel}`,
           `【标题】${v.name}`,
           `【开始】${v.assignYmd} ${startHm}`,
           `【提前】${advanceMinutes} 分钟`,
@@ -306,11 +326,10 @@ function resolveSubjectTitle(
 /** 收集任务/项目占用提醒参数（不登记）。 */
 async function collectPlacementReminderParams(params: {
   placements: SchedulePlacementRow[];
-  advanceMs: number;
-  advanceMinutes: number;
+  advanceByKind: { task: number; project: number; habit: number };
   axisCache: Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>;
 }): Promise<ScheduleDateReminderParams[]> {
-  const { placements, advanceMs, advanceMinutes, axisCache } = params;
+  const { placements, advanceByKind, axisCache } = params;
   const items: ScheduleDateReminderParams[] = [];
   const subjectLookup = await loadSubjectTitleLookup(placements);
 
@@ -325,15 +344,29 @@ async function collectPlacementReminderParams(params: {
 
     const startAt = placementStartDate(placement, axis);
     if (!startAt || Number.isNaN(startAt.getTime())) continue;
-    const fireAt = new Date(startAt.getTime() - advanceMs);
 
+    const kind: ScheduleSlotSubjectKind =
+      placement.subjectKind === 'project' ? 'project' : 'task';
     const subject = resolveSubjectTitle(placement.subjectKind, placement.subjectId, subjectLookup);
     if (!subject || subject.skip) continue;
+
+    let advanceMinutes = Math.max(5, Math.min(60, advanceByKind[kind]));
+    const row =
+      kind === 'project'
+        ? subjectLookup.projects.get(placement.subjectId)
+        : subjectLookup.tasks.get(placement.subjectId);
+    const override = clampAdvanceMinutesOverride(
+      parseScheduleMetaFromExtra(row?.extra_data ?? null)?.advanceMinutesOverride,
+    );
+    if (override != null) advanceMinutes = override;
+    const advanceMs = advanceMinutes * 60_000;
+    const fireAt = new Date(startAt.getTime() - advanceMs);
 
     const id = scheduleSlotReminderIdentifier(placement.id);
     const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
     const dayYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
-    const fingerprint = `${placement.id}|${subject.title}|${dayYmd}|${startHm}|${advanceMinutes}`;
+    const copy = slotReminderCopy(kind, subject.title);
+    const fingerprint = `${placement.id}|${subject.title}|${dayYmd}|${startHm}|${advanceMinutes}|${kind}`;
 
     items.push({
       category: 'schedule-slot-reminder',
@@ -347,13 +380,13 @@ async function collectPlacementReminderParams(params: {
         subjectId: placement.subjectId,
       },
       fallback: {
-        title: '日程表提醒',
+        title: copy.notifTitle,
         body: subject.title,
       },
       fingerprint,
       contextBlock: [
         '【频道】日程表提醒',
-        `【类型】${placement.subjectKind === 'project' ? '项目' : '待办'}`,
+        `【类型】${copy.typeLabel}`,
         `【标题】${subject.title}`,
         `【开始】${dayYmd} ${startHm}`,
         `【提前】${advanceMinutes} 分钟`,
@@ -387,14 +420,18 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
     const thisMonday = getWeekStartMondayYmd(todayYmd);
     const placements = await listPlacementsForEditableWeeks(thisMonday);
 
-    const advanceMinutes = Math.max(5, Math.min(60, settings.schedule.advanceMinutes));
-    const advanceMs = advanceMinutes * 60_000;
+    const advanceByKind = {
+      task: resolveScheduleAdvanceMinutes(settings.schedule, 'task'),
+      project: resolveScheduleAdvanceMinutes(settings.schedule, 'project'),
+      habit: resolveScheduleAdvanceMinutes(settings.schedule, 'habit'),
+    };
+    const habitAdvanceMinutes = advanceByKind.habit;
+    const habitAdvanceMs = habitAdvanceMinutes * 60_000;
     const axisCache = new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
 
     const placementItems = await collectPlacementReminderParams({
       placements,
-      advanceMs,
-      advanceMinutes,
+      advanceByKind,
       axisCache,
     });
 
@@ -406,8 +443,8 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
         checkInsByHabit: checkInsMaps,
         todayYmd,
         boundary,
-        advanceMs,
-        advanceMinutes,
+        advanceMs: habitAdvanceMs,
+        advanceMinutes: habitAdvanceMinutes,
         axisCache,
       });
     } catch (e) {
@@ -458,7 +495,7 @@ export async function syncScheduleSlotRemindersForHabit(
 
     const boundary = await loadTasksDayBoundary();
     const todayYmd = getLogicalLocalYmd(new Date(), boundary);
-    const advanceMinutes = Math.max(5, Math.min(60, settings.schedule.advanceMinutes));
+    const advanceMinutes = resolveScheduleAdvanceMinutes(settings.schedule, 'habit');
     const advanceMs = advanceMinutes * 60_000;
 
     return await scheduleVirtualHabitSlotReminders({
@@ -494,7 +531,11 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
   const todayYmd = getLogicalLocalYmd(new Date(), boundary);
   const thisMonday = getWeekStartMondayYmd(todayYmd);
   const placements = await listPlacementsForEditableWeeks(thisMonday);
-  const advanceMs = Math.max(5, Math.min(60, settings.schedule.advanceMinutes)) * 60_000;
+  const advanceByKind = {
+    task: resolveScheduleAdvanceMinutes(settings.schedule, 'task'),
+    project: resolveScheduleAdvanceMinutes(settings.schedule, 'project'),
+    habit: resolveScheduleAdvanceMinutes(settings.schedule, 'habit'),
+  };
   const axisCache = new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
   const subjectLookup = await loadSubjectTitleLookup(placements);
   const items: {
@@ -518,14 +559,27 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     }
     const startAt = placementStartDate(placement, axis);
     if (!startAt) continue;
-    const fireAt = new Date(startAt.getTime() - advanceMs);
-    if (fireAt.getTime() <= now) continue;
+    const kind: ScheduleSlotSubjectKind =
+      placement.subjectKind === 'project' ? 'project' : 'task';
     const subject = resolveSubjectTitle(placement.subjectKind, placement.subjectId, subjectLookup);
     if (!subject || subject.skip) continue;
+    let advanceMinutes = advanceByKind[kind];
+    const row =
+      kind === 'project'
+        ? subjectLookup.projects.get(placement.subjectId)
+        : subjectLookup.tasks.get(placement.subjectId);
+    const override = clampAdvanceMinutesOverride(
+      parseScheduleMetaFromExtra(row?.extra_data ?? null)?.advanceMinutesOverride,
+    );
+    if (override != null) advanceMinutes = override;
+    const advanceMs = advanceMinutes * 60_000;
+    const fireAt = new Date(startAt.getTime() - advanceMs);
+    if (fireAt.getTime() <= now) continue;
     const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
+    const copy = slotReminderCopy(kind, subject.title);
     items.push({
       identifier: scheduleSlotReminderIdentifier(placement.id),
-      title: '日程表提醒',
+      title: copy.notifTitle,
       body: `${subject.title} · ${formatLocalYmdFromDate(startAt)} ${startHm}`,
       subjectKind: placement.subjectKind,
       subjectId: placement.subjectId,
@@ -565,6 +619,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
         dayBoundary: boundary,
         checkInsByHabit: checkInsMaps,
       });
+      const habitAdvanceMs = advanceByKind.habit * 60_000;
       for (const v of virtuals) {
         if (v.done) continue;
         const startMins = slotStartMinutes(axis, v.startSlotIndex);
@@ -578,12 +633,13 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
           0,
           0,
         );
-        const fireAt = new Date(startAt.getTime() - advanceMs);
+        const fireAt = new Date(startAt.getTime() - habitAdvanceMs);
         if (fireAt.getTime() <= now) continue;
         const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
+        const copy = slotReminderCopy('habit', v.name);
         items.push({
           identifier: scheduleSlotReminderIdentifier(placementId),
-          title: '日程表提醒',
+          title: copy.notifTitle,
           body: `${v.name} · ${v.assignYmd} ${formatMinutesAsHm(startMins)}`,
           subjectKind: 'habit',
           subjectId: v.habitId,

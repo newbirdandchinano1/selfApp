@@ -28,6 +28,7 @@ import {
   getScheduledExpenseIdFromTxnExtra,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { getFinanceTransactions } from '@/lib/repositories/finance/finance';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import type {
   FinanceAccountBalanceRow,
   FinanceTransactionRow,
@@ -250,6 +251,7 @@ export default function ScheduledExpensesScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      void acknowledgeInboxSources({ anchors: ['scheduled-expense'] });
       scheduleRunScheduledFinanceExpenses('scheduled-expenses-focus');
       void reload();
     }, [reload]),
@@ -320,6 +322,14 @@ export default function ScheduledExpensesScreen() {
         setItems((prev) => prev.map((row) => (row.id === item.id ? { ...row, enabled } : row)));
         setNextFlash((prev) => ({ ...prev, [item.id]: (prev[item.id] ?? 0) + 1 }));
         if (enabled) scheduleRunScheduledFinanceExpenses('toggle-on');
+        try {
+          const { syncFinanceScheduledExpenseReminders } = await import(
+            '@/lib/finance-reminder-notifications'
+          );
+          await syncFinanceScheduledExpenseReminders();
+        } catch {
+          /* ignore */
+        }
       } catch (e) {
         toast.error(toUserMessage(e, '保存失败，请稍后重试'));
       }
@@ -338,6 +348,14 @@ export default function ScheduledExpensesScreen() {
             try {
               await deleteScheduledFinanceExpense(item.id);
               setItems((prev) => prev.filter((row) => row.id !== item.id));
+              try {
+                const { syncFinanceScheduledExpenseReminders } = await import(
+                  '@/lib/finance-reminder-notifications'
+                );
+                await syncFinanceScheduledExpenseReminders();
+              } catch {
+                /* ignore */
+              }
               toast.success('已删除该定时支出');
             } catch (e) {
               toast.error(toUserMessage(e, '删除失败，请稍后重试'));

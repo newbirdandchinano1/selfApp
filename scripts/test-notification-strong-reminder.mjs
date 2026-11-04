@@ -29,6 +29,7 @@ test('strong categories', () => {
   assert.equal(isStrongReminderCategory('habit-reminder'), true);
   assert.equal(isStrongReminderCategory('schedule-slot-reminder'), true);
   assert.equal(isStrongReminderCategory('daily-review-reminder'), true);
+  assert.equal(isStrongReminderCategory('weekly-review-reminder'), true);
   assert.equal(isStrongReminderCategory('health-intake-reminder'), false);
   assert.equal(isStrongReminderCategory('auto-ledger'), false);
 });

@@ -9,7 +9,8 @@ import Vision
  * 仅实机可靠；模拟器上 VNGeneratePersonSegmentationRequest 通常不可用。
  */
 public class ZhengVisionCutoutModule: Module {
-  private let ciContext = CIContext(options: nil)
+  /// workingColorSpace=NSNull 避免额外色彩转换把透明像素压成不透明底
+  private let ciContext = CIContext(options: [.workingColorSpace: NSNull()])
 
   public func definition() -> ModuleDefinition {
     Name("ZhengVisionCutout")
@@ -91,20 +92,20 @@ public class ZhengVisionCutoutModule: Module {
       throw Exception(name: "NO_PERSON", description: "未检测到人物，请换一张带人的穿搭照片。")
     }
 
+    // CIImage.empty() 在部分机型上会落到不透明底；显式透明色才是纯净抠图
+    let clearBackground = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+      .cropped(to: inputCI.extent)
+
     let blend = CIFilter.blendWithMask()
     blend.inputImage = inputCI
     blend.maskImage = scaledMask
-    blend.backgroundImage = CIImage.empty()
+    blend.backgroundImage = clearBackground
 
     guard let output = blend.outputImage?.cropped(to: inputCI.extent) else {
       throw Exception(name: "BLEND_FAILED", description: "蒙版合成失败。")
     }
 
-    guard let outCG = ciContext.createCGImage(output, from: inputCI.extent) else {
-      throw Exception(name: "RENDER_FAILED", description: "无法渲染透明 PNG。")
-    }
-
-    guard let pngData = UIImage(cgImage: outCG).pngData() else {
+    guard let pngData = encodeTransparentPng(output, extent: inputCI.extent, context: ciContext) else {
       throw Exception(name: "PNG_ENCODE_FAILED", description: "PNG 编码失败。")
     }
 
@@ -120,6 +121,58 @@ public class ZhengVisionCutoutModule: Module {
     }
 
     return ["uri": outURL.absoluteString]
+  }
+
+  /// 用带 alpha 的 RGBA8 渲染，再经 opaque=false 的 renderer 导出 PNG，避免默认 createCGImage 把透明区压成实色底。
+  private static func encodeTransparentPng(
+    _ image: CIImage,
+    extent: CGRect,
+    context: CIContext
+  ) -> Data? {
+    let width = max(Int(extent.width.rounded(.toNearestOrAwayFromZero)), 1)
+    let height = max(Int(extent.height.rounded(.toNearestOrAwayFromZero)), 1)
+    let bytesPerRow = width * 4
+    var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let renderRect = CGRect(x: 0, y: 0, width: width, height: height)
+    let shifted = image.transformed(by: CGAffineTransform(
+      translationX: -extent.origin.x,
+      y: -extent.origin.y
+    ))
+
+    context.render(
+      shifted,
+      toBitmap: &pixels,
+      rowBytes: bytesPerRow,
+      bounds: renderRect,
+      format: .RGBA8,
+      colorSpace: colorSpace
+    )
+
+    guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+    guard let cgImage = CGImage(
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bitsPerPixel: 32,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+      provider: provider,
+      decode: nil,
+      shouldInterpolate: true,
+      intent: .defaultIntent
+    ) else { return nil }
+
+    let format = UIGraphicsImageRendererFormat()
+    format.opaque = false
+    format.scale = 1
+    let size = CGSize(width: width, height: height)
+    let renderer = UIGraphicsImageRenderer(size: size, format: format)
+    let uiImage = renderer.image { _ in
+      UIImage(cgImage: cgImage).draw(in: CGRect(origin: .zero, size: size))
+    }
+    return uiImage.pngData()
   }
 
   @available(iOS 15.0, *)

@@ -24,9 +24,14 @@ import {
   shouldSuppressDailyReviewReminderNotification,
 } from '@/lib/daily-review-reminder-notifications';
 import {
+  shouldSuppressWeeklyReviewReminderNotification,
+} from '@/lib/weekly-review-reminder-notifications';
+import {
   shouldSuppressHabitReminderNotification,
 } from '@/lib/habit-reminder-notifications';
 import { shouldSuppressHealthIntakeReminderNotification } from '@/lib/health-intake-reminder-notifications';
+import { shouldSuppressTaskDeadlineReminderNotification } from '@/lib/task-deadline-reminder-notifications';
+import { shouldSuppressProjectProgressReminderNotification } from '@/lib/project-progress-reminder-notifications';
 import { resyncAppNotificationsAfterPreferenceChange } from '@/lib/notification-center';
 import { DayBoundaryProvider } from '@/contexts/day-boundary-context';
 import { ThemePreferenceProvider } from '@/contexts/theme-preference-context';
@@ -99,8 +104,17 @@ if (Platform.OS !== 'web') {
         const record = data as Record<string, unknown>;
         if (record.type === 'habit-reminder' && typeof record.habitId === 'string') {
           suppress = await shouldSuppressHabitReminderNotification(record.habitId);
+        } else if (record.type === 'task-deadline-reminder' && typeof record.taskId === 'string') {
+          suppress = await shouldSuppressTaskDeadlineReminderNotification(record.taskId);
+        } else if (
+          record.type === 'project-progress-reminder' &&
+          typeof record.projectId === 'string'
+        ) {
+          suppress = await shouldSuppressProjectProgressReminderNotification(record.projectId);
         } else if (record.type === 'daily-review-reminder') {
           suppress = await shouldSuppressDailyReviewReminderNotification();
+        } else if (record.type === 'weekly-review-reminder') {
+          suppress = await shouldSuppressWeeklyReviewReminderNotification();
         } else if (record.type === 'health-intake-reminder') {
           suppress = await shouldSuppressHealthIntakeReminderNotification();
         }
@@ -389,8 +403,29 @@ function RootLayoutInner() {
       if (next !== 'active') return;
       if (isExpoSandboxNotificationDisabled()) return;
       void resyncAppNotificationsAfterPreferenceChange();
+      if (Platform.OS === 'ios') {
+        void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
+          scheduleAllHomeWidgetsSync('app-active'),
+        );
+      }
     });
     return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    let unsub = () => {};
+    void import('@/lib/schedule-events').then(({ subscribeFrogScheduleChanged }) => {
+      unsub = subscribeFrogScheduleChanged(() => {
+        void import('@/lib/widgets/frog-schedule-widget-sync').then(({ scheduleFrogScheduleWidgetSync }) =>
+          scheduleFrogScheduleWidgetSync('schedule-event'),
+        );
+      });
+    });
+    void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
+      scheduleAllHomeWidgetsSync('bootstrap'),
+    );
+    return () => unsub();
   }, []);
 
   useEffect(() => {
@@ -475,6 +510,7 @@ function RootLayoutInner() {
             <Stack.Screen name="messages" />
             <Stack.Screen name="notification-center" />
             <Stack.Screen name="notification-center-scheduled" />
+            <Stack.Screen name="notification-channel/[id]" />
             <Stack.Screen
               name="reminder-dispose"
               options={{
@@ -503,6 +539,8 @@ function RootLayoutInner() {
             {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
             <Stack.Screen name="api-request-monitor" />
             <Stack.Screen name="vision-cutout-test" />
+            <Stack.Screen name="widgets-center" />
+            <Stack.Screen name="widgets-center/[id]" />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />

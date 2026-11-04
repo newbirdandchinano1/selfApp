@@ -553,6 +553,69 @@ export function maxSpanFromSlot(axis: AxisLike, startSlotIndex: number): number 
   return slots.length - startSlotIndex;
 }
 
+export type SlotSpanCover = {
+  startSlotIndex: number;
+  spanSlots: number;
+};
+
+/**
+ * 阶段 G：分钟区间 → 覆盖到 endMinutes 的连续工作格段（双写 slot 用）。
+ * - 起点必须落在某个工作格内（半开）；落在断开/轴外 → null。
+ * - 向后扩展连续工作格直到盖住 endMinutes（中间跳过断开行）。
+ */
+export function deriveSlotSpanForMinutes(
+  axis: AxisLike,
+  startMinutes: number,
+  endMinutes: number,
+): SlotSpanCover | null {
+  if (!(endMinutes > startMinutes)) return null;
+  const slots = listWorkSlots(axis);
+  if (slots.length === 0) return null;
+
+  let startSlotIndex: number | null = null;
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i]!;
+    if (startMinutes >= s.startMinutes && startMinutes < s.endMinutes) {
+      startSlotIndex = i;
+      break;
+    }
+  }
+  if (startSlotIndex == null) return null;
+
+  let spanSlots = 1;
+  let coveredEnd = slots[startSlotIndex]!.endMinutes;
+  while (coveredEnd < endMinutes && startSlotIndex + spanSlots < slots.length) {
+    coveredEnd = slots[startSlotIndex + spanSlots]!.endMinutes;
+    spanSlots += 1;
+  }
+  return { startSlotIndex, spanSlots };
+}
+
+/** 轴内首个工作格开始 → 最后一个工作格结束（全天区间）；无工作格返回 null。 */
+export function workCoverageMinutes(
+  axis: AxisLike,
+): { startMinutes: number; endMinutes: number } | null {
+  const slots = listWorkSlots(axis);
+  if (slots.length === 0) return null;
+  return {
+    startMinutes: slots[0]!.startMinutes,
+    endMinutes: slots[slots.length - 1]!.endMinutes,
+  };
+}
+
+/** 区间是否与任一断开时段相交（半开）；相交/跨越均返回命中的断开。 */
+export function breakIntersectingInterval(
+  axis: AxisLike,
+  startMinutes: number,
+  endMinutes: number,
+): ScheduleBreak | null {
+  const breaks = normalizeBreaks(axis.breaks, axis.startMinutes, axis.endMinutes);
+  for (const b of breaks) {
+    if (startMinutes < b.endMinutes && b.startMinutes < endMinutes) return b;
+  }
+  return null;
+}
+
 /** 格高基准：2h 参考格宽对应单格高度 */
 export const SCHEDULE_REF_SLOT_HOURS = 2;
 /**

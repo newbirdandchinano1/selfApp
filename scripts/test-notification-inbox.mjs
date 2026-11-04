@@ -4,13 +4,23 @@
  */
 
 import assert from 'node:assert/strict';
-import { formatInboxBadgeCount } from '../lib/notification-inbox-badge.ts';
+import {
+  formatInboxBadgeCount,
+  formatInboxBadgeDot,
+  INBOX_TAB_BADGE_DOT,
+} from '../lib/notification-inbox-badge.ts';
 import { shouldSkipInboxIngestByGate } from '../lib/notification-inbox-ingest-rules.ts';
 import { moduleTabForNotificationCategory } from '../lib/notification-inbox-mapping.ts';
 import {
   NOTIFICATION_INBOX_MAX_ROWS,
   pickInboxIdsToPrune,
 } from '../lib/notification-inbox-prune.ts';
+import {
+  aggregateUnreadSourceSnapshot,
+  extractInboxSourceEntity,
+  inboxRowMatchesAcknowledge,
+  sourceAnchorForCategory,
+} from '../lib/notification-inbox-source.ts';
 import { stripReminderAccessorySuffix } from '../lib/notification-strong-reminder.ts';
 
 let passed = 0;
@@ -25,6 +35,7 @@ test('category → moduleTab', () => {
   assert.equal(moduleTabForNotificationCategory('habit-reminder'), 'tasks');
   assert.equal(moduleTabForNotificationCategory('schedule-slot-reminder'), 'tasks');
   assert.equal(moduleTabForNotificationCategory('daily-review-reminder'), 'review');
+  assert.equal(moduleTabForNotificationCategory('weekly-review-reminder'), 'review');
   assert.equal(moduleTabForNotificationCategory('auto-ledger'), 'finance');
   assert.equal(moduleTabForNotificationCategory('unknown-remote'), 'profile');
   assert.equal(moduleTabForNotificationCategory(null), 'profile');
@@ -95,6 +106,70 @@ test('badge format caps at 99+', () => {
   assert.equal(formatInboxBadgeCount(1), '1');
   assert.equal(formatInboxBadgeCount(99), '99');
   assert.equal(formatInboxBadgeCount(100), '99+');
+});
+
+test('tab badge uses red-dot sentinel', () => {
+  assert.equal(formatInboxBadgeDot(0), undefined);
+  assert.equal(formatInboxBadgeDot(1), INBOX_TAB_BADGE_DOT);
+  assert.equal(formatInboxBadgeDot(12), INBOX_TAB_BADGE_DOT);
+});
+
+test('category → source anchor + entity extract', () => {
+  assert.equal(sourceAnchorForCategory('health-intake-reminder'), 'health');
+  assert.equal(sourceAnchorForCategory('habit-reminder'), 'habit');
+  assert.equal(sourceAnchorForCategory('finance-budget-threshold-reminder'), 'budget');
+  assert.equal(sourceAnchorForCategory('unknown'), null);
+  assert.deepEqual(extractInboxSourceEntity({ habitId: 'h1' }), { kind: 'habit', id: 'h1' });
+  assert.deepEqual(extractInboxSourceEntity({ subjectKind: 'task', subjectId: 't1' }), {
+    kind: 'task',
+    id: 't1',
+  });
+  assert.equal(extractInboxSourceEntity({ type: 'daily-review-reminder' }), null);
+});
+
+test('aggregate unread source snapshot + acknowledge match', () => {
+  const snap = aggregateUnreadSourceSnapshot([
+    { category: 'habit-reminder', data: { habitId: 'h1' } },
+    { category: 'habit-reminder', data: { habitId: 'h1' } },
+    { category: 'schedule-slot-reminder', data: { subjectKind: 'habit', subjectId: 'h2' } },
+    { category: 'daily-review-reminder', dataJson: '{}' },
+    { category: 'finance-scheduled-expense-reminder', data: { expenseId: 'e1' } },
+  ]);
+  assert.equal(snap.byAnchor.habit, 2);
+  assert.equal(snap.byAnchor.schedule, 1);
+  assert.equal(snap.byAnchor['daily-review'], 1);
+  assert.equal(snap.byAnchor['scheduled-expense'], 1);
+  assert.deepEqual(snap.entities.habit.sort(), ['h1', 'h2']);
+  assert.deepEqual(snap.entities.scheduledExpense, ['e1']);
+
+  assert.equal(
+    inboxRowMatchesAcknowledge(
+      { category: 'habit-reminder', data: { habitId: 'h1' } },
+      { entity: { kind: 'habit', id: 'h1' } },
+    ),
+    true,
+  );
+  assert.equal(
+    inboxRowMatchesAcknowledge(
+      { category: 'schedule-slot-reminder', data: { subjectKind: 'habit', subjectId: 'h1' } },
+      { entity: { kind: 'habit', id: 'h1' } },
+    ),
+    true,
+  );
+  assert.equal(
+    inboxRowMatchesAcknowledge(
+      { category: 'daily-review-reminder', data: {} },
+      { anchors: ['daily-review'] },
+    ),
+    true,
+  );
+  assert.equal(
+    inboxRowMatchesAcknowledge(
+      { category: 'habit-reminder', data: { habitId: 'h9' } },
+      { anchors: ['daily-review'] },
+    ),
+    false,
+  );
 });
 
 // —— 阶段 G：suppress / 频道关闭不进列表；强提醒同 dedupe ——

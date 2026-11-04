@@ -1,8 +1,16 @@
 /**
- * 统一通知路由：送达写入收件箱；点击先消息页再业务；强提醒处置 / 完成 / 贪睡。
+ * 统一通知路由：送达写入收件箱；点击先消息页再业务；强提醒处置 / 完成 / 贪睡；健康稍后再说 / 今日不催。
  */
 
 import type { NotificationCategoryId } from '@/lib/notification-catalog';
+import {
+  ensureHealthIntakeReminderCategory,
+  HEALTH_ACTION_MUTE_TODAY,
+  HEALTH_ACTION_SNOOZE,
+  healthIntakePrimaryKeyFromData,
+  muteHealthIntakeKeysForToday,
+  snoozeHealthIntakeReminder,
+} from '@/lib/health-intake-reminder-notifications';
 import {
   ingestNotificationIntoInbox,
   resolveInboxDedupeKey,
@@ -121,6 +129,7 @@ export function NotificationRouter() {
     if (Platform.OS === 'web') return;
 
     void ensureStrongReminderNotificationCategory();
+    void ensureHealthIntakeReminderCategory();
 
     const handleResponse = (response: Notifications.NotificationResponse) => {
       const responseId = `${response.notification.request.identifier}:${response.actionIdentifier}`;
@@ -134,6 +143,25 @@ export function NotificationRouter() {
 
       if (actionId === STRONG_ACTION_SNOOZE) {
         void handleSnoozeAction(response);
+        return;
+      }
+
+      if (actionId === HEALTH_ACTION_SNOOZE) {
+        void ingestNotificationIntoInbox(response.notification).then(() =>
+          snoozeHealthIntakeReminder(),
+        );
+        return;
+      }
+
+      if (actionId === HEALTH_ACTION_MUTE_TODAY) {
+        const primary = healthIntakePrimaryKeyFromData(record);
+        const ymd =
+          typeof record?.logicalYmd === 'string' && record.logicalYmd
+            ? record.logicalYmd
+            : undefined;
+        void ingestNotificationIntoInbox(response.notification).then(() =>
+          muteHealthIntakeKeysForToday(primary ? [primary] : ['hydration', 'protein', 'carbohydrate', 'calories'], ymd),
+        );
         return;
       }
 

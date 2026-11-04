@@ -1,14 +1,20 @@
 /**
- * 习惯打卡本地提醒：业务只决定「哪天几点、哪个习惯」；权限/通道/排期走 scheduler。
- * 入格已与提醒解耦且一律全天，不再走日程格提醒通道（habitUsesScheduleSlotReminderChannel 恒为 false）。
+ * 习惯打卡本地提醒：行为锚点。
+ * - soft：到点一次
+ * - normal：到点 + 未完成傍晚收口
+ * - strong：到点强提醒（升级链）+ 未完成傍晚收口
+ * 养成/任务型看 dailyGoal；戒除看当日是否已标记。
  */
 
 import { isHabitScheduledOnLogicalYmd } from '@/lib/habit-schedule';
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
 import {
   cancelScheduledByIdentifier,
+  cancelScheduledByPrefixes,
   isLocalNotificationSchedulingUnavailable,
   scheduleDateReminder,
+  scheduleDateRemindersBulk,
+  type ScheduleDateReminderParams,
 } from '@/lib/notification-scheduler';
 import { getHabits, getHabitById } from '@/lib/repositories/habits/habit';
 import {
@@ -17,8 +23,15 @@ import {
 } from '@/lib/repositories/habits/habit-check-in';
 import { isHabitDayGoalMet, parseHabitDailyGoal } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
+import {
+  buildHabitEveningWrapFireAt,
+  habitReminderNeedsEveningWrap,
+  type HabitReminderIntensity,
+} from '@/lib/habit-reminder-logic';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
+
+export { buildHabitEveningWrapFireAt, habitReminderNeedsEveningWrap };
 
 const ANDROID_CHANNEL = {
   id: 'habit-reminders',
@@ -34,9 +47,24 @@ export function habitReminderIdentifier(habitId: string): string {
   return buildNotificationIdentifier('habit-reminder', habitId) ?? `selfapp-habit-reminder:${habitId}`;
 }
 
-/** 取消某习惯的本地提醒（删除习惯或关闭提醒时调用）。 */
+export function habitReminderWrapIdentifier(habitId: string): string {
+  return `${habitReminderIdentifier(habitId)}:wrap`;
+}
+
+/** 取消某习惯的本地提醒（主提醒 + 收口）。 */
 export async function cancelScheduledHabitReminder(habitId: string): Promise<void> {
-  await cancelScheduledByIdentifier(habitReminderIdentifier(habitId));
+  // 收口标识 …:wrap 或误带实体后缀时剥掉，避免只清半截
+  const key = habitId.trim().replace(/:wrap$/i, '');
+  if (!key) return;
+  const base = habitReminderIdentifier(key);
+  try {
+    await cancelScheduledByIdentifier(base);
+    await cancelScheduledByIdentifier(habitReminderWrapIdentifier(key));
+    // 清强提醒升级链附属
+    await cancelScheduledByPrefixes([`${base}:`]);
+  } catch (e) {
+    console.warn('取消习惯提醒失败', key, e);
+  }
 }
 
 /**
@@ -118,6 +146,9 @@ export type SyncHabitReminderParams = {
   /** 可选：避免重复读库；未传则内部加载 */
   extraData?: string | null;
   checkIns?: Record<string, number>;
+  intensity?: HabitReminderIntensity;
+  eveningWrapHour?: number;
+  eveningWrapMinute?: number;
 };
 
 /**
@@ -133,8 +164,7 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   }
 
   const { habitId, enabled, hour, minute, title } = params;
-  const id = habitReminderIdentifier(habitId);
-  await cancelScheduledByIdentifier(id);
+  await cancelScheduledHabitReminder(habitId);
 
   if (!enabled) {
     return { scheduled: false, permissionDenied: false };
@@ -153,6 +183,26 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   if (habitUsesScheduleSlotReminderChannel(extraData)) {
     return { scheduled: false, permissionDenied: false };
   }
+
+  const parsed = parseHabitReminder(
+    extraData ??
+      JSON.stringify({
+        reminder: {
+          enabled: true,
+          hour,
+          minute,
+          intensity: params.intensity,
+          eveningWrapHour: params.eveningWrapHour,
+          eveningWrapMinute: params.eveningWrapMinute,
+        },
+      }),
+  );
+  const intensity: HabitReminderIntensity =
+    params.intensity ?? (parsed.enabled ? parsed.intensity : 'normal');
+  const wrapHour =
+    params.eveningWrapHour ?? (parsed.enabled ? parsed.eveningWrapHour : 20);
+  const wrapMinute =
+    params.eveningWrapMinute ?? (parsed.enabled ? parsed.eveningWrapMinute : 0);
 
   const h = Math.max(0, Math.min(23, Math.floor(hour)));
   const m = Math.max(0, Math.min(59, Math.floor(minute)));
@@ -174,21 +224,65 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   }
 
   const habitName = title.trim() || '习惯';
-  const fingerprint = `${habitId}|${habitName}|${h}:${m}|${fireAt.toISOString().slice(0, 16)}`;
+  const strong = intensity === 'strong';
+  const id = habitReminderIdentifier(habitId);
+  const fingerprint = `${habitId}|${habitName}|${h}:${m}|${intensity}|${fireAt.toISOString().slice(0, 16)}`;
 
-  return scheduleDateReminder({
-    category: 'habit-reminder',
-    identifier: id,
-    fireAt,
-    channel: ANDROID_CHANNEL,
-    data: { type: 'habit-reminder', habitId },
-    fallback: {
-      title: '习惯打卡提醒',
-      body: `${habitName}，该打卡啦`,
+  const items: ScheduleDateReminderParams[] = [
+    {
+      category: 'habit-reminder',
+      identifier: id,
+      fireAt,
+      channel: ANDROID_CHANNEL,
+      data: { type: 'habit-reminder', habitId, intensity, wave: 'primary' },
+      fallback: {
+        title: intensity === 'strong' ? '习惯 · 重点提醒' : '习惯打卡提醒',
+        body: `${habitName}，该打卡啦`,
+      },
+      fingerprint,
+      strong,
+      contextBlock: [
+        '【频道】习惯打卡提醒',
+        `【习惯名】${habitName}`,
+        `【强度】${intensity}`,
+        `【类型】${kind}`,
+      ].join('\n'),
     },
-    fingerprint,
-    contextBlock: [`【频道】习惯打卡提醒`, `【习惯名】${habitName}`].join('\n'),
-  });
+  ];
+
+  if (habitReminderNeedsEveningWrap(intensity)) {
+    const wrapAt = buildHabitEveningWrapFireAt({
+      primaryFireAt: fireAt,
+      wrapHour,
+      wrapMinute,
+    });
+    if (wrapAt) {
+      items.push({
+        category: 'habit-reminder',
+        identifier: habitReminderWrapIdentifier(habitId),
+        fireAt: wrapAt,
+        channel: ANDROID_CHANNEL,
+        data: { type: 'habit-reminder', habitId, intensity, wave: 'evening_wrap' },
+        fallback: {
+          title: '习惯收口',
+          body: `${habitName}，今天还没完成哦`,
+        },
+        fingerprint: `${fingerprint}|wrap|${wrapAt.toISOString().slice(0, 16)}`,
+        strong: false,
+        contextBlock: [
+          '【频道】习惯打卡提醒',
+          '【波次】傍晚收口',
+          `【习惯名】${habitName}`,
+        ].join('\n'),
+      });
+    }
+  }
+
+  const result = await scheduleDateRemindersBulk(items, { skipCancel: true });
+  return {
+    scheduled: result.scheduledCount > 0 || items.length > 0,
+    permissionDenied: result.permissionDenied,
+  };
 }
 
 /** 按当前习惯与打卡状态，重新登记所有已开启提醒的习惯。 */
@@ -218,6 +312,9 @@ export async function resyncAllHabitReminders(): Promise<void> {
         title: habit.name,
         extraData: habit.extra_data,
         checkIns: checkInsMaps.get(habit.id) ?? {},
+        intensity: reminder.intensity,
+        eveningWrapHour: reminder.eveningWrapHour,
+        eveningWrapMinute: reminder.eveningWrapMinute,
       });
     }),
   );
@@ -250,6 +347,9 @@ export async function resyncHabitReminderForHabitId(habitId: string): Promise<vo
     minute: reminder.minute,
     title: habit.name,
     extraData: habit.extra_data,
+    intensity: reminder.intensity,
+    eveningWrapHour: reminder.eveningWrapHour,
+    eveningWrapMinute: reminder.eveningWrapMinute,
   });
 }
 

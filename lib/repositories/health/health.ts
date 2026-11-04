@@ -98,6 +98,11 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
+  void import('@/lib/widgets/health-intake-widget-sync')
+    .then(({ scheduleHealthIntakeWidgetSync }) =>
+      scheduleHealthIntakeWidgetSync('health-create'),
+    )
+    .catch(() => {});
 }
 
 export async function getHealthRecordById(id: string) {
@@ -153,7 +158,14 @@ export async function getHealthDayMetricsForUser(
   });
   const dayRows = rows.filter(r => healthRecordBelongsToUser(r, userId) && healthRecordYmd(r) === recordDateYmd);
   if (dayRows.length === 0) return null;
-  const latest = [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at))[0]!;
+  // 提醒间隔锚点取最近创建；目标值仍取最近更新行
+  const byCreated = [...dayRows].sort((a, b) => compareDatetimeDesc(a.created_at, b.created_at));
+  const byUpdated = [...dayRows].sort((a, b) => compareDatetimeDesc(a.updated_at, b.updated_at));
+  const latest = {
+    ...(byUpdated[0]!),
+    // 把最新创建时间挂到 latest，供健康提醒「从上次摄入起算」
+    created_at: byCreated[0]?.created_at ?? byUpdated[0]!.created_at,
+  };
   return { totals: sumHealthIntakeDayTotals(dayRows), latest };
 }
 
@@ -344,6 +356,11 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
+  void import('@/lib/widgets/health-intake-widget-sync')
+    .then(({ scheduleHealthIntakeWidgetSync }) =>
+      scheduleHealthIntakeWidgetSync('health-update'),
+    )
+    .catch(() => {});
 }
 
 export async function deleteHealthRecord(id: string) {
@@ -374,6 +391,11 @@ export async function deleteHealthRecord(id: string) {
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
+  void import('@/lib/widgets/health-intake-widget-sync')
+    .then(({ scheduleHealthIntakeWidgetSync }) =>
+      scheduleHealthIntakeWidgetSync('health-delete'),
     )
     .catch(() => {});
 }

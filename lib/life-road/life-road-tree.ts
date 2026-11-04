@@ -168,8 +168,27 @@ export function expandKeyForKind(
   return kind;
 }
 
+export type YearFocusKind = 'month' | 'quarter' | 'year';
+
+export type YearFocusDetail = {
+  kind: YearFocusKind;
+  /** 节点标题（摘要卡主句） */
+  title: string;
+  /** 「今年焦点」旁的短标签，如「11 月」 */
+  focusTag: string;
+  /** 卡片右上角 glance，如「11 月 · 月目标」 */
+  glance: string;
+  /** 焦点节点，用于验收进度 */
+  node: LifeRoadNodeRow | null;
+};
+
 /** 摘要卡：今年焦点优先取当前月标题，其次当前季，再次年目标 */
 export function resolveYearFocusLine(model: RoadMindMapModel): string | null {
+  return resolveYearFocusDetail(model)?.title ?? null;
+}
+
+/** 摘要卡富信息：层级标签 + glance + 节点（验收进度） */
+export function resolveYearFocusDetail(model: RoadMindMapModel): YearFocusDetail | null {
   const year = model.years.find((y) => y.isCurrent) ?? model.years[0];
   if (!year) return null;
   const cm = currentCalendarMonth();
@@ -178,12 +197,36 @@ export function resolveYearFocusLine(model: RoadMindMapModel): string | null {
     .flatMap((q) => q.months)
     .find((m) => m.month === cm);
   const monthTitle = monthSlot?.node?.title?.trim();
-  if (monthTitle) return monthTitle;
+  if (monthTitle) {
+    return {
+      kind: 'month',
+      title: monthTitle,
+      focusTag: `${cm} 月`,
+      glance: `${cm} 月 · 月目标`,
+      node: monthSlot?.node ?? null,
+    };
+  }
   const qSlot = year.quarters.find((q) => q.quarter === cq);
   const qTitle = qSlot?.node?.title?.trim();
-  if (qTitle) return qTitle;
+  if (qTitle) {
+    return {
+      kind: 'quarter',
+      title: qTitle,
+      focusTag: `Q${cq}`,
+      glance: `Q${cq} · 季目标`,
+      node: qSlot?.node ?? null,
+    };
+  }
   const yearTitle = year.node?.title?.trim();
-  if (yearTitle) return yearTitle;
+  if (yearTitle) {
+    return {
+      kind: 'year',
+      title: yearTitle,
+      focusTag: String(year.year),
+      glance: `${year.year} · 年目标`,
+      node: year.node,
+    };
+  }
   return null;
 }
 

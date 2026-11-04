@@ -680,3 +680,16 @@ export function reviewDayFactsPreviewLines(facts: ReviewDayFacts): string[] {
   }
   return out.slice(0, PREVIEW_MAX);
 }
+
+/** 日复盘通知正文用的未完成摘要；全完成则 null */
+export function formatReviewReminderOpenTasksHint(facts: ReviewDayFacts): string | null {
+  const frogPending = facts.frogs.filter(f => !f.done).length;
+  const todoPending = facts.todos.filter(t => !t.done).length;
+  const habitPending = facts.habits.filter(h => !h.done).length;
+  const bits: string[] = [];
+  if (frogPending > 0) bits.push(`${frogPending} 只青蛙未收口`);
+  if (todoPending > 0) bits.push(`${todoPending} 件待办未完`);
+  if (habitPending > 0) bits.push(`${habitPending} 个习惯未打卡`);
+  if (bits.length === 0) return null;
+  return bits.join(' · ');
+}

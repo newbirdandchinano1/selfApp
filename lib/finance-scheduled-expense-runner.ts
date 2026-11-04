@@ -169,6 +169,15 @@ export function scheduleRunScheduledFinanceExpenses(reason: string): void {
       if (__DEV__ && (result.createdCount > 0 || result.skippedCount > 0)) {
         console.log('[scheduled-expense]', reason, result);
       }
+      // 入账后重排应记提醒（已入账日应跳过）
+      try {
+        const { syncFinanceScheduledExpenseReminders } = await import(
+          '@/lib/finance-reminder-notifications'
+        );
+        await syncFinanceScheduledExpenseReminders();
+      } catch (e) {
+        if (__DEV__) console.warn('[scheduled-expense] reminder resync failed', e);
+      }
     } catch (e) {
       if (__DEV__) console.warn('[scheduled-expense] run failed', reason, e);
     }

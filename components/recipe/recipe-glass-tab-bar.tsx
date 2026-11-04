@@ -650,7 +650,9 @@ function TabItem({
               {renderIcon({ active: true, color: activeColor })}
             </Animated.View>
           </Animated.View>
-          {badge ? (
+          {badge === '•' ? (
+            <View style={styles.badgeDot} accessibilityLabel="有未读提醒" />
+          ) : badge ? (
             <View style={styles.badge}>
               <Text style={styles.badgeText} numberOfLines={1}>
                 {badge}
@@ -788,6 +790,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#ef4444',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  /** 业务 Tab 未读：纯红点（哨兵 `•`） */
+  badgeDot: {
+    position: 'absolute',
+    top: -1,
+    right: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: 'rgba(255,255,255,0.92)',
   },
   badgeText: {
     color: '#ffffff',

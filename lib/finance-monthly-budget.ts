@@ -115,6 +115,11 @@ export async function loadBudgetRefreshDay(): Promise<number> {
 
 export async function persistBudgetRefreshDay(day: number): Promise<void> {
   await setAppSetting(AppSettingKey.financeBudgetRefreshDay, clampBudgetRefreshDay(day));
+  void import('@/lib/widgets/finance-glance-widget-sync')
+    .then(({ scheduleFinanceGlanceWidgetSync }) =>
+      scheduleFinanceGlanceWidgetSync('budget-refresh-day'),
+    )
+    .catch(() => {});
 }
 
 export type MonthBudgetSetting = {
@@ -209,4 +214,9 @@ export async function loadMonthBudgetSettings(): Promise<Record<string, MonthBud
 
 export async function persistMonthBudgetSettings(map: Record<string, MonthBudgetSetting>): Promise<void> {
   await setAppSetting(AppSettingKey.financeMonthlyBudget, map);
+  void import('@/lib/widgets/finance-glance-widget-sync')
+    .then(({ scheduleFinanceGlanceWidgetSync }) =>
+      scheduleFinanceGlanceWidgetSync('budget-settings'),
+    )
+    .catch(() => {});
 }

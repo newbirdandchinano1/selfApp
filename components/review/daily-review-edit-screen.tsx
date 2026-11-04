@@ -1,5 +1,6 @@
 import { DailyReviewGridView } from '@/components/review/daily-review-grid-view';
 import { useFoldTheme } from '@/constants/review-fold-theme';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { reviewContentMaxWidth } from '@/lib/review-layout';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -12,8 +13,10 @@ export function DailyReviewEditScreen() {
   const router = useRouter();
   const { palette } = useFoldTheme();
   const { width } = useWindowDimensions();
-  const params = useLocalSearchParams<{ ymd?: string | string[] }>();
+  const params = useLocalSearchParams<{ ymd?: string | string[]; focusEmpty?: string | string[] }>();
   const paramYmd = (Array.isArray(params.ymd) ? params.ymd[0] : params.ymd)?.trim() ?? '';
+  const focusEmptyRaw = Array.isArray(params.focusEmpty) ? params.focusEmpty[0] : params.focusEmpty;
+  const focusEmpty = focusEmptyRaw === '1' || focusEmptyRaw?.toLowerCase() === 'true';
   /** 切日只改本地状态，避免 router.replace 触发切屏动画与整页重挂 */
   const [ymd, setYmd] = useState(paramYmd);
   const contentMaxWidth = useMemo(() => reviewContentMaxWidth(width), [width]);
@@ -21,6 +24,11 @@ export function DailyReviewEditScreen() {
   useEffect(() => {
     if (paramYmd) setYmd(paramYmd);
   }, [paramYmd]);
+
+  useEffect(() => {
+    if (!ymd) return;
+    void acknowledgeInboxSources({ anchors: ['daily-review'] });
+  }, [ymd]);
 
   const onYmdChange = useCallback((next: string) => {
     setYmd(next);
@@ -46,7 +54,12 @@ export function DailyReviewEditScreen() {
       style={[styles.safe, { backgroundColor: palette.paper }]}
       edges={['left', 'right']}>
       <View style={[styles.content, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
-        <DailyReviewGridView ymd={ymd} onYmdChange={onYmdChange} pageApiKey={PAGE_API_KEY} />
+        <DailyReviewGridView
+          ymd={ymd}
+          onYmdChange={onYmdChange}
+          pageApiKey={PAGE_API_KEY}
+          focusEmpty={focusEmpty}
+        />
       </View>
     </SafeAreaView>
   );

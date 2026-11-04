@@ -3,10 +3,18 @@
  */
 
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import { syncWeeklyReviewReminderNotification } from '@/lib/weekly-review-reminder-notifications';
+import { syncAllFinanceReminders } from '@/lib/finance-reminder-notifications';
+import { syncHealthIntakeReminderNotifications } from '@/lib/health-intake-reminder-notifications';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
-import type { Router } from 'expo-router';
+import { resyncTaskDeadlineReminderForTaskId } from '@/lib/task-deadline-reminder-notifications';
+import { syncProjectProgressReminderNotifications } from '@/lib/project-progress-reminder-notifications';
+import { formatYmd } from '@/lib/date';
+import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 
-type AppRouter = Pick<Router, 'push'>;
+type AppRouter = {
+  push: (href: string | { pathname: string; params?: Record<string, string> }) => void;
+};
 
 function notificationDataRecord(data: unknown): Record<string, unknown> | null {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
@@ -21,8 +29,44 @@ export function resyncReminderAfterAcknowledge(data: unknown): void {
     void resyncHabitReminderForHabitId(record.habitId);
     return;
   }
+  if (record.type === 'task-deadline-reminder' && typeof record.taskId === 'string' && record.taskId) {
+    void resyncTaskDeadlineReminderForTaskId(record.taskId);
+    return;
+  }
+  if (record.type === 'project-progress-reminder') {
+    void syncProjectProgressReminderNotifications();
+    return;
+  }
   if (record.type === 'daily-review-reminder') {
     void syncDailyReviewReminderNotification();
+    return;
+  }
+  if (record.type === 'weekly-review-reminder') {
+    void syncWeeklyReviewReminderNotification();
+    return;
+  }
+  if (record.type === 'health-intake-reminder') {
+    void syncHealthIntakeReminderNotifications();
+    return;
+  }
+  if (
+    record.type === 'finance-scheduled-expense-reminder' ||
+    record.type === 'finance-savings-nudge-reminder' ||
+    record.type === 'finance-ledger-wrap-reminder' ||
+    record.type === 'finance-budget-threshold-reminder'
+  ) {
+    void syncAllFinanceReminders();
+  }
+}
+
+async function resolveReviewLogicalYmd(record: Record<string, unknown>): Promise<string> {
+  const fromData = typeof record.ymd === 'string' ? record.ymd.trim() : '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fromData)) return fromData;
+  try {
+    const boundary = await resolveDayBoundaryForPage('review');
+    return getLogicalLocalYmd(new Date(), boundary);
+  } catch {
+    return formatYmd(new Date());
   }
 }
 
@@ -44,11 +88,21 @@ export function navigateByNotificationType(router: AppRouter, data: unknown): vo
       return;
     }
     case 'health-intake-reminder': {
-      router.push('/' as never);
+      router.push('/');
       return;
     }
     case 'daily-review-reminder': {
-      router.push('/(tabs)/review');
+      void (async () => {
+        const ymd = await resolveReviewLogicalYmd(record);
+        router.push({
+          pathname: '/daily-review/[ymd]',
+          params: { ymd, focusEmpty: '1' },
+        });
+      })();
+      return;
+    }
+    case 'weekly-review-reminder': {
+      router.push({ pathname: '/(tabs)/review', params: { focus: 'weekly' } });
       return;
     }
     case 'habit-reminder': {
@@ -58,10 +112,39 @@ export function navigateByNotificationType(router: AppRouter, data: unknown): vo
       }
       return;
     }
+    case 'task-deadline-reminder': {
+      const taskId = typeof record.taskId === 'string' ? record.taskId.trim() : '';
+      if (taskId) {
+        router.push({ pathname: '/edit-task', params: { id: taskId } });
+      }
+      return;
+    }
+    case 'project-progress-reminder': {
+      const projectId = typeof record.projectId === 'string' ? record.projectId.trim() : '';
+      if (projectId) {
+        router.push({ pathname: '/edit-project', params: { id: projectId } });
+      }
+      return;
+    }
     case 'auto-ledger':
     case 'auto-ledger-hint':
     case 'auto-ledger-failure': {
-      router.push('/auto-ledger' as never);
+      router.push('/auto-ledger');
+      return;
+    }
+    case 'finance-scheduled-expense-reminder': {
+      const expenseId = typeof record.expenseId === 'string' ? record.expenseId.trim() : '';
+      if (expenseId) {
+        router.push({ pathname: '/add-scheduled-expense', params: { id: expenseId } });
+      } else {
+        router.push('/scheduled-expenses');
+      }
+      return;
+    }
+    case 'finance-budget-threshold-reminder':
+    case 'finance-savings-nudge-reminder':
+    case 'finance-ledger-wrap-reminder': {
+      router.push('/(tabs)/finance');
       return;
     }
     default:

@@ -221,6 +221,22 @@ const ART_MAP: Record<
   bag: Bag,
 };
 
+/** 是否已有透明抠图（优先于原图展示）。 */
+export function wardrobeItemHasCutout(item: { cutout_uri?: string | null }): boolean {
+  return Boolean(item.cutout_uri?.trim());
+}
+
+/**
+ * 抠图用干净底，避免 pastel tint 透出看起来像「默认背景」；
+ * 线稿 / 未抠原图仍用分类色。
+ */
+export function wardrobeItemPhotoSurface(
+  item: { cutout_uri?: string | null; tint: string },
+  cleanBg: string,
+): string {
+  return wardrobeItemHasCutout(item) ? cleanBg : item.tint;
+}
+
 /** 优先抠图 / 主图；无图时回退线稿 SVG（对齐设计稿 symbol） */
 export const WardrobeGarment = memo(function WardrobeGarment({
   item,

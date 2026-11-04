@@ -20,8 +20,8 @@ import type { ScheduleBreak, SchedulePlacementRow } from '@/lib/schedule/types';
 import {
   formatMinutesAsHm,
   placementEndMinutes,
-  slotStartMinutes,
 } from '@/lib/schedule/axis';
+import { resolvePlacementInterval } from '@/lib/schedule/timeline/from-placement';
 import { ymdForWeekday } from '@/lib/schedule/week';
 import { resolveAcceptanceCriteria } from '@/lib/acceptance-criteria';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -328,8 +328,9 @@ export function SchedulePlacementDetailSheet({
     if (virtualSlot) {
       return virtualSlot.hour * 60 + virtualSlot.minute;
     }
-    if (placement && placement.startSlotIndex != null && !placement.orphaned) {
-      return slotStartMinutes(axis, placement.startSlotIndex);
+    if (placement && !placement.orphaned) {
+      const iv = resolvePlacementInterval(placement, axis);
+      if (iv) return iv.startMinutes;
     }
     return null;
   })();
@@ -337,8 +338,9 @@ export function SchedulePlacementDetailSheet({
     if (virtualSlot) {
       return placementEndMinutes(axis, virtualSlot.startSlotIndex, virtualSlot.spanSlots);
     }
-    if (placement && placement.startSlotIndex != null && !placement.orphaned) {
-      return placementEndMinutes(axis, placement.startSlotIndex, placement.spanSlots);
+    if (placement && !placement.orphaned) {
+      const iv = resolvePlacementInterval(placement, axis);
+      if (iv) return iv.endMinutes;
     }
     return null;
   })();

@@ -92,7 +92,93 @@
       "expo-asset",
       "expo-image",
       "expo-secure-store",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-widgets",
+        {
+          "bundleIdentifier": "com.myselfManage.appdemo.ExpoWidgetsTarget",
+          "groupIdentifier": "group.com.myselfManage.appdemo",
+          "enableAndroid": false,
+          "frequentUpdates": true,
+          "widgets": [
+            {
+              "name": "FrogScheduleWidget",
+              "displayName": "今日青蛙",
+              "description": "下一只青蛙与当前入格倒计时",
+              "ios": {
+                "supportedFamilies": [
+                  "systemSmall",
+                  "systemMedium",
+                  "accessoryRectangular",
+                  "accessoryInline"
+                ],
+                "contentMarginsDisabled": true,
+                "initialLayout": "./widgets/FrogScheduleWidget.tsx"
+              }
+            },
+            {
+              "name": "HabitsTodayWidget",
+              "displayName": "今日习惯",
+              "description": "小习惯今日进度与未完成清单",
+              "ios": {
+                "supportedFamilies": [
+                  "systemSmall",
+                  "systemMedium",
+                  "accessoryRectangular",
+                  "accessoryInline"
+                ],
+                "contentMarginsDisabled": true,
+                "initialLayout": "./widgets/HabitsTodayWidget.tsx"
+              }
+            },
+            {
+              "name": "HealthIntakeWidget",
+              "displayName": "健康摄入",
+              "description": "关注项进度环与下次摄入提醒",
+              "ios": {
+                "supportedFamilies": [
+                  "systemSmall",
+                  "systemMedium",
+                  "accessoryRectangular",
+                  "accessoryInline"
+                ],
+                "contentMarginsDisabled": true,
+                "initialLayout": "./widgets/HealthIntakeWidget.tsx"
+              }
+            },
+            {
+              "name": "FinanceGlanceWidget",
+              "displayName": "财务一眼",
+              "description": "今日已花、预算剩余与下一笔定时支出",
+              "ios": {
+                "supportedFamilies": [
+                  "systemSmall",
+                  "systemMedium",
+                  "accessoryRectangular",
+                  "accessoryInline"
+                ],
+                "contentMarginsDisabled": true,
+                "initialLayout": "./widgets/FinanceGlanceWidget.tsx"
+              }
+            },
+            {
+              "name": "UrgencyWidget",
+              "displayName": "紧急度",
+              "description": "逾期、今日截止与临期项目计数",
+              "ios": {
+                "supportedFamilies": [
+                  "systemSmall",
+                  "systemMedium",
+                  "accessoryRectangular",
+                  "accessoryInline"
+                ],
+                "contentMarginsDisabled": true,
+                "initialLayout": "./widgets/UrgencyWidget.tsx"
+              }
+            }
+          ]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

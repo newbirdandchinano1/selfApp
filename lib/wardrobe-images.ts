@@ -11,6 +11,9 @@ import { cutOutPerson, isVisionCutoutAvailable } from 'zheng-vision-cutout';
 
 const PURPOSE = 'wardrobe-item';
 const OWNER_TABLE = 'wardrobe_items';
+const COLLAGE_PURPOSE = 'wardrobe-collage';
+const COLLAGE_OWNER_TABLE = 'wardrobe_outfits';
+const COLLAGE_OWNER_FIELD = 'collage.photo';
 
 export type WardrobeImageSource = 'camera' | 'library';
 
@@ -109,6 +112,43 @@ export async function uploadWardrobeOwnedImage(input: {
       : {}),
   });
   return saved.uri;
+}
+
+/** 拼图照片：本地临时图升到统一库；已是库路径则原样返回。 */
+export async function uploadWardrobeCollagePhoto(input: {
+  localUri: string;
+  outfitId?: string | null;
+}): Promise<string> {
+  const raw = input.localUri.trim();
+  if (!raw) throw new Error('图片路径为空');
+  if (isRemoteOrStored(raw)) return raw;
+
+  const data = await readLocalImageDataUrl(raw);
+  const outfitId = input.outfitId?.trim() || '';
+  const saved = await uploadStoredImage({
+    data,
+    purpose: COLLAGE_PURPOSE,
+    ...(outfitId
+      ? {
+          owner_table: COLLAGE_OWNER_TABLE,
+          owner_id: outfitId,
+          owner_field: COLLAGE_OWNER_FIELD,
+        }
+      : {}),
+  });
+  return saved.uri;
+}
+
+export async function bindWardrobeCollagePhoto(outfitId: string, uri: string): Promise<void> {
+  const id = outfitId.trim();
+  const imageId = uri ? storedImageIdFromUri(uri) : null;
+  if (!id || !imageId) return;
+  await bindStoredImage(imageId, {
+    purpose: COLLAGE_PURPOSE,
+    owner_table: COLLAGE_OWNER_TABLE,
+    owner_id: id,
+    owner_field: COLLAGE_OWNER_FIELD,
+  }).catch(() => undefined);
 }
 
 export async function bindWardrobeItemImages(

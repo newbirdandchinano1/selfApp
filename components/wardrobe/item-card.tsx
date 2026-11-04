@@ -1,5 +1,9 @@
 import type { WardrobeItem } from '@/components/wardrobe/data';
-import { WardrobeGarment } from '@/components/wardrobe/garments';
+import {
+  WardrobeGarment,
+  wardrobeItemHasCutout,
+  wardrobeItemPhotoSurface,
+} from '@/components/wardrobe/garments';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import {
   useWardrobeTheme,
@@ -217,6 +221,8 @@ export const ItemCard = memo(function ItemCard({
   const isGrid = variant === 'grid';
   const garmentW = isList ? 50 : isGrid ? 82 : 72;
   const garmentH = isList ? 58 : isGrid ? 96 : 84;
+  const hasCutout = wardrobeItemHasCutout(item);
+  const thumbBg = wardrobeItemPhotoSurface(item, w.card);
 
   const wrapStyle = isGrid ? styles.gridWrap : isList ? styles.listWrap : undefined;
 
@@ -237,10 +243,14 @@ export const ItemCard = memo(function ItemCard({
           styles.thumb,
           isList && styles.thumbList,
           isGrid && styles.thumbGrid,
-          { backgroundColor: item.tint },
+          { backgroundColor: thumbBg },
         ]}>
-        <View style={[styles.thumbGlow, { backgroundColor: item.tint2 }]} />
-        <View style={styles.thumbHighlight} />
+        {!hasCutout ? (
+          <>
+            <View style={[styles.thumbGlow, { backgroundColor: item.tint2 }]} />
+            <View style={styles.thumbHighlight} />
+          </>
+        ) : null}
         <View style={styles.tag}>
           <Text style={styles.tagText} numberOfLines={1}>
             {item.category.toUpperCase()}

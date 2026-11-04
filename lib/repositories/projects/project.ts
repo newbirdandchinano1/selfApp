@@ -50,6 +50,9 @@ export async function createProject(input: CreateProjectInput) {
       input.extra_data ?? null,
     ],
   );
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-create'))
+    .catch(() => {});
 }
 
 async function readLocalProjectsVisible(): Promise<ProjectRow[]> {
@@ -182,6 +185,9 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       )
       .catch(() => {});
   }
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-update'))
+    .catch(() => {});
 }
 
 export async function deleteProject(id: string) {
@@ -204,6 +210,9 @@ export async function deleteProject(id: string) {
   if ((result.changes ?? 0) === 0) {
     throw new Error('项目删除失败，请返回列表刷新后重试');
   }
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-delete'))
+    .catch(() => {});
 }
 
 /** 收集箱内超过保留期的项目：先确保完成履历，再软删实体（含下属任务）。 */

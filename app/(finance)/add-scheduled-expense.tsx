@@ -368,6 +368,14 @@ export default function AddScheduledExpenseScreen() {
         enabled,
       });
       scheduleRunScheduledFinanceExpenses('save');
+      try {
+        const { syncFinanceScheduledExpenseReminders } = await import(
+          '@/lib/finance-reminder-notifications'
+        );
+        await syncFinanceScheduledExpenseReminders();
+      } catch {
+        /* 提醒同步失败不阻断保存 */
+      }
       setSavePop(true);
       toast.success('已保存并重新计算下次执行');
       router.back();

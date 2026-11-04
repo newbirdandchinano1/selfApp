@@ -20,15 +20,18 @@ import {
 import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-goal-block';
 import { FoldCountUpText, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
+import { InboxSourceDot } from '@/components/ui/inbox-source-dot';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
+import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { shouldSkipDuplicateAutoLedgerImage } from '@/lib/auto-ledger-dedupe';
 import {
     subscribeAutoLedgerCompleted,
@@ -83,6 +86,10 @@ import {
 } from '@/lib/finance-scheduled-expense';
 import { computeScheduledWithholdingRemaining } from '@/lib/finance-scheduled-withholding';
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
+import {
+  getFinanceReminderStatusSummary,
+  syncAllFinanceReminders,
+} from '@/lib/finance-reminder-notifications';
 import {
     consumeFinanceSheetLaunchIntent,
     notifyFinanceSheetSaved,
@@ -538,6 +545,7 @@ export default function FinanceScreen() {
   } = useHomeSkeletonReveal(initialFinanceLoadPending);
   const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
   const { animate: foldAnimate } = useFoldMotionGate();
+  const sourceBadges = useNotificationSourceBadges();
 
   const bg = ff.paper;
   const surface = isDark ? ff.paper2 : ff.card;
@@ -567,8 +575,10 @@ export default function FinanceScreen() {
   const headerDateLabel = `${today.getMonth() + 1}月${today.getDate()}日 · ${weekdayCn[today.getDay()]}`;
   const calendarMonthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
   const daysToMonthEnd = Math.max(0, calendarMonthEnd - today.getDate());
-  const headerSubLabel =
+  const monthCountdownLabel =
     daysToMonthEnd <= 0 ? '本月最后一天' : `距离本月结束还有 ${daysToMonthEnd} 天`;
+  const [financeReminderLine, setFinanceReminderLine] = React.useState<string | null>(null);
+  const headerSubLabel = financeReminderLine ?? monthCountdownLabel;
 
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
     const prefix = value < 0 ? '-¥' : '¥';
@@ -811,6 +821,14 @@ export default function FinanceScreen() {
       // 经 wrapLoad 读本地，与自动记账一致；勿裸调 load*（会强制 REST，列表不及时更新）
       void reloadFinanceTransactions();
       void reloadFinanceAccounts();
+      void syncAllFinanceReminders().then(async () => {
+        try {
+          const summary = await getFinanceReminderStatusSummary();
+          setFinanceReminderLine(summary.kind === 'off' ? null : summary.line);
+        } catch {
+          /* ignore */
+        }
+      });
     });
   }, [markPageDirty, reloadFinanceAccounts, reloadFinanceTransactions]);
 
@@ -2381,9 +2399,20 @@ export default function FinanceScreen() {
     }, [isSheetVisible, calendarTodayYmd, financeDayBoundary]),
   );
 
+  const refreshFinanceReminderLine = React.useCallback(async () => {
+    try {
+      const summary = await getFinanceReminderStatusSummary();
+      setFinanceReminderLine(summary.kind === 'off' ? null : summary.line);
+    } catch (e) {
+      console.warn('加载财务提醒状态失败', e);
+      setFinanceReminderLine(null);
+    }
+  }, []);
+
   useFocusEffect(
     React.useCallback(() => {
       scheduleRunScheduledFinanceExpenses('finance-tab-focus');
+      void syncAllFinanceReminders().then(() => refreshFinanceReminderLine());
       // 从「定时支出」返回时重读，避免预扣栏仍用旧列表
       void loadScheduledFinanceExpenses().then(setScheduledExpenses);
 
@@ -2412,7 +2441,7 @@ export default function FinanceScreen() {
       return () => {
         cancelled = true;
       };
-    }, [applyManualOrTransferSheetIntent, reloadFinanceAccounts]),
+    }, [applyManualOrTransferSheetIntent, refreshFinanceReminderLine, reloadFinanceAccounts]),
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
@@ -2432,6 +2461,7 @@ export default function FinanceScreen() {
   }, []);
 
   const openBudgetAdjust = React.useCallback(() => {
+    void acknowledgeInboxSources({ anchors: ['budget', 'ledger-wrap'] });
     const row = monthBudgetSettings[currentMonthKey];
     const base = row ? row.baseAmount : 0;
     const inc = row?.includeLastBalance ?? false;
@@ -3377,9 +3407,34 @@ export default function FinanceScreen() {
                 numberOfLines={1}>
                 {headerDateLabel}
               </Text>
-              <Text style={[styles.headerSubFold, { color: subtle }]} numberOfLines={1}>
-                {headerSubLabel}
-              </Text>
+              <Pressable
+                onPress={() => {
+                  if (financeReminderLine) {
+                    void acknowledgeInboxSources({
+                      anchors: ['budget', 'savings', 'scheduled-expense', 'ledger-wrap', 'auto-ledger'],
+                    });
+                    router.push('/notification-channel/finance' as never);
+                  }
+                }}
+                disabled={!financeReminderLine}
+                accessibilityRole={financeReminderLine ? 'button' : undefined}
+                accessibilityLabel={
+                  financeReminderLine
+                    ? sourceBadges.hasFinanceHomeUnread
+                      ? '打开财务提醒设置，有未读提醒'
+                      : '打开财务提醒设置'
+                    : undefined
+                }
+                style={styles.headerSubFoldRow}>
+                <Text style={[styles.headerSubFold, { color: subtle, flexShrink: 1 }]} numberOfLines={1}>
+                  {headerSubLabel}
+                </Text>
+                <InboxSourceDot
+                  visible={sourceBadges.hasFinanceHomeUnread}
+                  size={7}
+                  style={{ position: 'relative', top: 0, right: 0, marginLeft: 6 }}
+                />
+              </Pressable>
             </View>
             <View style={styles.headerFoldActions}>
               <Pressable
@@ -3429,7 +3484,16 @@ export default function FinanceScreen() {
                 },
               ]}
               accessibilityRole="button"
-              accessibilityLabel="调整预算">
+              accessibilityLabel={
+                sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')
+                  ? '调整预算，有未读提醒'
+                  : '调整预算'
+              }>
+              <InboxSourceDot
+                visible={sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')}
+                size={8}
+                style={{ top: 10, right: 10 }}
+              />
               <View style={styles.budgetFoldMain}>
                 <View style={styles.budgetFoldLabelRow}>
                   <Text style={[styles.budgetFoldLabel, { color: ff.budgetLabel }]}>
@@ -3583,6 +3647,12 @@ export default function FinanceScreen() {
           </FoldRiseIn>
 
           <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={1} fromY={11}>
+            <View style={{ position: 'relative' }}>
+            <InboxSourceDot
+              visible={sourceBadges.hasAnchor('savings')}
+              size={8}
+              style={{ top: 8, right: 8, zIndex: 3 }}
+            />
             <FinanceSavingsGoalBlock
               currentNetWorth={netTotalForTrend}
               today={today}
@@ -3600,6 +3670,9 @@ export default function FinanceScreen() {
               secondary={secondary}
               outlineVariant={outlineVariant}
               tertiary={tertiary}
+              onOpenEditor={() => {
+                void acknowledgeInboxSources({ anchors: ['savings'] });
+              }}
               scheduledDrainUntilTarget={scheduledWithholdingRemaining}
               scheduledBudgetDeduction={scheduledWithholdingRemaining}
               logicalTodayYmd={calendarTodayYmd}
@@ -3607,6 +3680,7 @@ export default function FinanceScreen() {
               dayBoundaryMinute={financeDayBoundary.minute}
               onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
             />
+            </View>
           </FoldRiseIn>
 
           <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={2} fromY={11}>
@@ -3801,16 +3875,26 @@ export default function FinanceScreen() {
                 </View>
               </Pressable>
               <Pressable
-                onPress={() => router.push('/scheduled-expenses')}
+                onPress={() => {
+                  void acknowledgeInboxSources({ anchors: ['scheduled-expense'] });
+                  router.push('/scheduled-expenses');
+                }}
                 style={({ pressed }) => [
                   styles.quickBtn,
                   { backgroundColor: surface, borderColor: outlineVariant },
                   pressed && { opacity: 0.9 },
                 ]}
                 accessibilityRole="button"
-                accessibilityLabel="定时支出">
+                accessibilityLabel={
+                  sourceBadges.hasAnchor('scheduled-expense') ? '定时支出，有未读提醒' : '定时支出'
+                }>
                 <View style={[styles.quickIcon, { backgroundColor: ff.amber2 }]}>
                   <MaterialIcons name="event-repeat" size={14} color={ff.amberInk} />
+                  <InboxSourceDot
+                    visible={sourceBadges.hasAnchor('scheduled-expense')}
+                    size={7}
+                    style={{ top: -2, right: -2 }}
+                  />
                 </View>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={[styles.quickTitle, { color: text }]}>定时支出</Text>
@@ -4792,6 +4876,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     letterSpacing: 0.2,
   },
+  headerSubFoldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+    maxWidth: '100%',
+  },
   headerFoldActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -4827,6 +4917,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
   budgetCardFold: {
+    position: 'relative',
     borderRadius: 20,
     borderWidth: 1,
     paddingVertical: 13,
@@ -4971,11 +5062,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   quickIcon: {
+    position: 'relative',
     width: 26,
     height: 26,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'visible',
   },
   quickTitle: {
     fontSize: 11,

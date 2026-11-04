@@ -4,7 +4,10 @@
  */
 
 import { shouldSuppressDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import { shouldSuppressWeeklyReviewReminderNotification } from '@/lib/weekly-review-reminder-notifications';
 import { shouldSuppressHabitReminderNotification } from '@/lib/habit-reminder-notifications';
+import { shouldSuppressTaskDeadlineReminderNotification } from '@/lib/task-deadline-reminder-notifications';
+import { shouldSuppressProjectProgressReminderNotification } from '@/lib/project-progress-reminder-notifications';
 import { shouldSuppressHealthIntakeReminderNotification } from '@/lib/health-intake-reminder-notifications';
 import {
   resolveNotificationCategoryFromData,
@@ -57,8 +60,17 @@ async function resolveSuppressedForData(data: unknown): Promise<boolean> {
   if (record.type === 'habit-reminder' && typeof record.habitId === 'string') {
     return shouldSuppressHabitReminderNotification(record.habitId);
   }
+  if (record.type === 'task-deadline-reminder' && typeof record.taskId === 'string') {
+    return shouldSuppressTaskDeadlineReminderNotification(record.taskId);
+  }
+  if (record.type === 'project-progress-reminder' && typeof record.projectId === 'string') {
+    return shouldSuppressProjectProgressReminderNotification(record.projectId);
+  }
   if (record.type === 'daily-review-reminder') {
     return shouldSuppressDailyReviewReminderNotification();
+  }
+  if (record.type === 'weekly-review-reminder') {
+    return shouldSuppressWeeklyReviewReminderNotification();
   }
   if (record.type === 'health-intake-reminder') {
     return shouldSuppressHealthIntakeReminderNotification();

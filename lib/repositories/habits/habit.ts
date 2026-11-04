@@ -19,6 +19,9 @@ async function pushHabitChangesToApi(): Promise<void> {
   // 与 createTask 一致：本地已落库，后台推送即可，勿 awaitSync 阻塞新建/编辑页返回
   const { requestPush } = await import('@/lib/sync-manager');
   void requestPush();
+  void import('@/lib/widgets/habits-today-widget-sync')
+    .then(({ scheduleHabitsTodayWidgetSync }) => scheduleHabitsTodayWidgetSync('habit-crud'))
+    .catch(() => {});
 }
 
 export async function createHabit(input: CreateHabitInput) {

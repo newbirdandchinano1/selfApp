@@ -1,5 +1,6 @@
 import { FinanceDeeplinkLoading } from '@/components/finance/finance-deeplink-loading';
 import { scheduleConsumeAutoLedger } from '@/lib/auto-ledger-runner';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { prepareShortcutHandoffLaunchIntent } from '@/lib/shortcut-auto-ledger-handoff';
 import { notifyShortcutHandoffConsume } from '@/lib/shortcut-auto-ledger-route-bridge';
 import { Stack, useRouter } from 'expo-router';
@@ -13,6 +14,7 @@ export default function AutoLedgerRedirectScreen() {
   const router = useRouter();
 
   useEffect(() => {
+    void acknowledgeInboxSources({ anchors: ['auto-ledger'] });
     const goFinance = () => {
       void prepareShortcutHandoffLaunchIntent();
       scheduleConsumeAutoLedger('handoff');

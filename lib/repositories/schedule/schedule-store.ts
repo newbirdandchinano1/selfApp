@@ -32,10 +32,15 @@ function markScheduleDirty(): void {
   // 不会经 /api/data 通用推送。线上权威写仍走 schedule-api → frog-schedule。
   markCloudSqliteTableDirty('schedule_placements');
   markCloudSqliteTableDirty('schedule_week_axis_snapshot');
-  // 入格/移格/改轴后立刻重同步课程表占用提醒
+  // 入格/移格/改轴后立刻重同步课程表占用提醒 + iOS 桌面组件
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) =>
+      scheduleFrogScheduleWidgetSync('schedule-dirty'),
     )
     .catch(() => {});
 }
@@ -46,6 +51,9 @@ type PlacementDbRow = {
   weekday: number;
   start_slot_index: number | null;
   span_slots: number;
+  start_minutes?: number | null;
+  end_minutes?: number | null;
+  all_day?: number | null;
   subject_kind: string;
   subject_id: string;
   orphaned: number;
@@ -54,6 +62,12 @@ type PlacementDbRow = {
   sync_status: SyncStatus;
 };
 
+function asNullableInt(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
 function mapPlacement(row: PlacementDbRow): SchedulePlacementRow {
   return {
     id: row.id,
@@ -61,6 +75,10 @@ function mapPlacement(row: PlacementDbRow): SchedulePlacementRow {
     weekday: row.weekday,
     startSlotIndex: row.start_slot_index,
     spanSlots: row.span_slots,
+    // 缺列 / NULL → null（旧库热更新补列前也安全）
+    startMinutes: asNullableInt(row.start_minutes),
+    endMinutes: asNullableInt(row.end_minutes),
+    allDay: asNullableInt(row.all_day),
     subjectKind: (row.subject_kind === 'project' ? 'project' : 'task') as ScheduleSubjectKind,
     subjectId: row.subject_id,
     orphaned: row.orphaned ? 1 : 0,
@@ -97,6 +115,11 @@ export async function saveScheduleAxisSettingsLocal(
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
+    )
+    .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) =>
+      scheduleFrogScheduleWidgetSync('axis-saved'),
     )
     .catch(() => {});
   return payload;
@@ -216,21 +239,39 @@ export async function getPlacementById(id: string): Promise<SchedulePlacementRow
   return row ? mapPlacement(row) : null;
 }
 
+function resolveMinuteFields(input: {
+  startMinutes?: number | null;
+  endMinutes?: number | null;
+  allDay?: number | null;
+}): { startMinutes: number | null; endMinutes: number | null; allDay: number | null } {
+  return {
+    startMinutes: input.startMinutes == null ? null : asNullableInt(input.startMinutes),
+    endMinutes: input.endMinutes == null ? null : asNullableInt(input.endMinutes),
+    allDay: input.allDay == null ? null : asNullableInt(input.allDay),
+  };
+}
+
 export async function insertPlacement(input: SchedulePlacementInput): Promise<SchedulePlacementRow> {
   const db = await getDatabase();
   const id = createSchedulePlacementId();
   const now = sqlNow();
+  const spanSlots = Math.max(1, input.spanSlots);
+  const mins = resolveMinuteFields(input);
   await db.runAsync(
     `INSERT INTO schedule_placements (
       id, week_start_ymd, weekday, start_slot_index, span_slots,
+      start_minutes, end_minutes, all_day,
       subject_kind, subject_id, orphaned, created_at, updated_at, sync_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending_create')`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending_create')`,
     [
       id,
       input.weekStartYmd,
       input.weekday,
       input.startSlotIndex,
-      Math.max(1, input.spanSlots),
+      spanSlots,
+      mins.startMinutes,
+      mins.endMinutes,
+      mins.allDay,
       input.subjectKind,
       input.subjectId,
       now,
@@ -243,7 +284,10 @@ export async function insertPlacement(input: SchedulePlacementInput): Promise<Sc
     weekStartYmd: input.weekStartYmd,
     weekday: input.weekday,
     startSlotIndex: input.startSlotIndex,
-    spanSlots: Math.max(1, input.spanSlots),
+    spanSlots,
+    startMinutes: mins.startMinutes,
+    endMinutes: mins.endMinutes,
+    allDay: mins.allDay,
     subjectKind: input.subjectKind,
     subjectId: input.subjectId,
     orphaned: 0,
@@ -265,23 +309,31 @@ export async function upsertPlacementFromRemote(input: {
   subjectKind: ScheduleSubjectKind;
   subjectId: string;
   orphaned?: number;
+  startMinutes?: number | null;
+  endMinutes?: number | null;
+  allDay?: number | null;
 }): Promise<SchedulePlacementRow> {
   const db = await getDatabase();
   const now = sqlNow();
   const spanSlots = Math.max(1, input.spanSlots);
   const orphaned = input.orphaned || input.startSlotIndex == null ? 1 : 0;
+  const mins = resolveMinuteFields(input);
   beginCloudSqliteDirtyIgnoreBatch();
   try {
     await db.runAsync(
       `INSERT INTO schedule_placements (
         id, week_start_ymd, weekday, start_slot_index, span_slots,
+        start_minutes, end_minutes, all_day,
         subject_kind, subject_id, orphaned, created_at, updated_at, sync_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
       ON CONFLICT(id) DO UPDATE SET
         week_start_ymd = excluded.week_start_ymd,
         weekday = excluded.weekday,
         start_slot_index = excluded.start_slot_index,
         span_slots = excluded.span_slots,
+        start_minutes = excluded.start_minutes,
+        end_minutes = excluded.end_minutes,
+        all_day = excluded.all_day,
         subject_kind = excluded.subject_kind,
         subject_id = excluded.subject_id,
         orphaned = excluded.orphaned,
@@ -297,6 +349,9 @@ export async function upsertPlacementFromRemote(input: {
         input.weekday,
         input.startSlotIndex,
         spanSlots,
+        mins.startMinutes,
+        mins.endMinutes,
+        mins.allDay,
         input.subjectKind,
         input.subjectId,
         orphaned,
@@ -313,6 +368,9 @@ export async function upsertPlacementFromRemote(input: {
     weekday: input.weekday,
     startSlotIndex: input.startSlotIndex,
     spanSlots,
+    startMinutes: mins.startMinutes,
+    endMinutes: mins.endMinutes,
+    allDay: mins.allDay,
     subjectKind: input.subjectKind,
     subjectId: input.subjectId,
     orphaned,
@@ -330,34 +388,79 @@ export async function updatePlacementSlots(
     orphaned: boolean;
     weekStartYmd?: string;
     weekday?: number;
+    /** 传 undefined 不改；传 null 清空 */
+    startMinutes?: number | null;
+    endMinutes?: number | null;
+    allDay?: number | null;
   },
 ): Promise<void> {
   const db = await getDatabase();
   const now = sqlNow();
-  await db.runAsync(
-    `UPDATE schedule_placements SET
-      week_start_ymd = COALESCE(?, week_start_ymd),
-      weekday = COALESCE(?, weekday),
-      start_slot_index = ?,
-      span_slots = COALESCE(?, span_slots),
-      orphaned = ?,
-      updated_at = ?,
-      sync_status = CASE
-        WHEN sync_status = 'pending_create' THEN 'pending_create'
-        WHEN sync_status = 'pending_delete' THEN 'pending_delete'
-        ELSE 'pending_update'
-      END
-     WHERE id = ?`,
-    [
-      patch.weekStartYmd ?? null,
-      patch.weekday ?? null,
-      patch.startSlotIndex,
-      patch.spanSlots ?? null,
-      patch.orphaned ? 1 : 0,
-      now,
-      id,
-    ],
-  );
+  const touchMinutes =
+    patch.startMinutes !== undefined ||
+    patch.endMinutes !== undefined ||
+    patch.allDay !== undefined;
+
+  if (touchMinutes) {
+    await db.runAsync(
+      `UPDATE schedule_placements SET
+        week_start_ymd = COALESCE(?, week_start_ymd),
+        weekday = COALESCE(?, weekday),
+        start_slot_index = ?,
+        span_slots = COALESCE(?, span_slots),
+        start_minutes = CASE WHEN ? THEN ? ELSE start_minutes END,
+        end_minutes = CASE WHEN ? THEN ? ELSE end_minutes END,
+        all_day = CASE WHEN ? THEN ? ELSE all_day END,
+        orphaned = ?,
+        updated_at = ?,
+        sync_status = CASE
+          WHEN sync_status = 'pending_create' THEN 'pending_create'
+          WHEN sync_status = 'pending_delete' THEN 'pending_delete'
+          ELSE 'pending_update'
+        END
+       WHERE id = ?`,
+      [
+        patch.weekStartYmd ?? null,
+        patch.weekday ?? null,
+        patch.startSlotIndex,
+        patch.spanSlots ?? null,
+        patch.startMinutes !== undefined ? 1 : 0,
+        patch.startMinutes !== undefined ? patch.startMinutes : null,
+        patch.endMinutes !== undefined ? 1 : 0,
+        patch.endMinutes !== undefined ? patch.endMinutes : null,
+        patch.allDay !== undefined ? 1 : 0,
+        patch.allDay !== undefined ? patch.allDay : null,
+        patch.orphaned ? 1 : 0,
+        now,
+        id,
+      ],
+    );
+  } else {
+    await db.runAsync(
+      `UPDATE schedule_placements SET
+        week_start_ymd = COALESCE(?, week_start_ymd),
+        weekday = COALESCE(?, weekday),
+        start_slot_index = ?,
+        span_slots = COALESCE(?, span_slots),
+        orphaned = ?,
+        updated_at = ?,
+        sync_status = CASE
+          WHEN sync_status = 'pending_create' THEN 'pending_create'
+          WHEN sync_status = 'pending_delete' THEN 'pending_delete'
+          ELSE 'pending_update'
+        END
+       WHERE id = ?`,
+      [
+        patch.weekStartYmd ?? null,
+        patch.weekday ?? null,
+        patch.startSlotIndex,
+        patch.spanSlots ?? null,
+        patch.orphaned ? 1 : 0,
+        now,
+        id,
+      ],
+    );
+  }
   markScheduleDirty();
 }
 
@@ -417,6 +520,76 @@ export async function listPendingSchedulePlacements(): Promise<SchedulePlacement
      ORDER BY updated_at ASC`,
   );
   return rows.map(mapPlacement);
+}
+
+/**
+ * 阶段 D：缺存库分钟、未 orphan、有 slot 的占用（不含 pending_delete）。
+ * 条件对齐方案：`start_minutes IS NULL` 且未 orphan。
+ */
+export async function listPlacementsMissingStoredMinutes(): Promise<SchedulePlacementRow[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<PlacementDbRow>(
+    `SELECT * FROM schedule_placements
+     WHERE sync_status != 'pending_delete'
+       AND orphaned = 0
+       AND start_slot_index IS NOT NULL
+       AND start_minutes IS NULL
+     ORDER BY week_start_ymd ASC, weekday ASC, start_slot_index ASC, created_at ASC`,
+  );
+  return rows.map(mapPlacement);
+}
+
+/**
+ * 阶段 D 批量回填分钟列：写 pending_update，保留 slot / orphaned 不变。
+ * 整批一次脏标记，避免逐条触发提醒/组件同步风暴。
+ */
+export async function applyPlacementMinutesBackfillBatch(
+  patches: Array<{
+    id: string;
+    startMinutes: number;
+    endMinutes: number;
+    allDay: number;
+  }>,
+): Promise<number> {
+  if (patches.length === 0) return 0;
+  const db = await getDatabase();
+  const now = sqlNow();
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    await db.execAsync('BEGIN');
+    try {
+      for (const p of patches) {
+        await db.runAsync(
+          `UPDATE schedule_placements SET
+            start_minutes = ?,
+            end_minutes = ?,
+            all_day = ?,
+            updated_at = ?,
+            sync_status = CASE
+              WHEN sync_status = 'pending_create' THEN 'pending_create'
+              WHEN sync_status = 'pending_delete' THEN 'pending_delete'
+              ELSE 'pending_update'
+            END
+           WHERE id = ?
+             AND sync_status != 'pending_delete'
+             AND orphaned = 0`,
+          [p.startMinutes, p.endMinutes, p.allDay, now, p.id],
+        );
+      }
+      await db.execAsync('COMMIT');
+    } catch (err) {
+      try {
+        await db.execAsync('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
+  }
+  markScheduleDirty();
+  return patches.length;
 }
 
 export async function softDeletePlacementsForWeek(weekStartYmd: string): Promise<number> {
@@ -483,6 +656,9 @@ export async function ensureScheduleTables(): Promise<void> {
       weekday INTEGER NOT NULL,
       start_slot_index INTEGER,
       span_slots INTEGER NOT NULL DEFAULT 1,
+      start_minutes INTEGER,
+      end_minutes INTEGER,
+      all_day INTEGER,
       subject_kind TEXT NOT NULL,
       subject_id TEXT NOT NULL,
       orphaned INTEGER NOT NULL DEFAULT 0,
@@ -494,13 +670,26 @@ export async function ensureScheduleTables(): Promise<void> {
       ON schedule_placements(week_start_ymd, weekday);
   `);
   // 存量库补列
-  const cols = await db.getAllAsync<{ name: string }>(
+  const axisCols = await db.getAllAsync<{ name: string }>(
     `PRAGMA table_info(schedule_week_axis_snapshot)`,
   );
-  if (!cols.some((c) => c.name === 'breaks_json')) {
+  if (!axisCols.some((c) => c.name === 'breaks_json')) {
     await db.execAsync(
       `ALTER TABLE schedule_week_axis_snapshot ADD COLUMN breaks_json TEXT`,
     );
+  }
+  const placementCols = await db.getAllAsync<{ name: string }>(
+    `PRAGMA table_info(schedule_placements)`,
+  );
+  const has = (name: string) => placementCols.some((c) => c.name === name);
+  if (!has('start_minutes')) {
+    await db.execAsync(`ALTER TABLE schedule_placements ADD COLUMN start_minutes INTEGER`);
+  }
+  if (!has('end_minutes')) {
+    await db.execAsync(`ALTER TABLE schedule_placements ADD COLUMN end_minutes INTEGER`);
+  }
+  if (!has('all_day')) {
+    await db.execAsync(`ALTER TABLE schedule_placements ADD COLUMN all_day INTEGER`);
   }
 }
 

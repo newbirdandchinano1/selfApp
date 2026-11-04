@@ -12,6 +12,7 @@ import { addDaysToYmd } from '@/lib/date';
 import { syncHabitDetailDataFromApi } from '@/lib/habit-detail-api';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import { playHabitCheckInDing } from '@/lib/play-habit-check-in-ding';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
@@ -537,6 +538,9 @@ export default function HabitDetailScreen() {
   // 只用稳定回调：勿依赖 reload/habit，否则 setHabit 后会反复触发 focus 重载，概览数据乱跳
   useFocusEffect(
     React.useCallback(() => {
+      if (habitId) {
+        void acknowledgeInboxSources({ entity: { kind: 'habit', id: habitId } });
+      }
       void reloadRef.current();
       setFocusDate((prev) => {
         const ymd = toYMD(prev);
@@ -546,7 +550,7 @@ export default function HabitDetailScreen() {
         }
         return prev;
       });
-    }, [])
+    }, [habitId])
   );
 
   const extraParsed = habit ? parseExtra(habit.extra_data) : {};

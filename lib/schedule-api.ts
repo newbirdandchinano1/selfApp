@@ -1,5 +1,8 @@
 import { apiRequest } from '@/lib/api-client';
 import type { ScheduleAxisSettings, SchedulePlacementRow, ScheduleSubjectKind } from '@/lib/schedule/types';
+import { serializeFrogSchedulePlacementUpsert } from '@/lib/schedule/timeline/serialize-placement-upsert';
+
+export { serializeFrogSchedulePlacementUpsert } from '@/lib/schedule/timeline/serialize-placement-upsert';
 
 export type FrogScheduleWeekPayload = {
   weekStartYmd: string;
@@ -16,6 +19,10 @@ export type FrogScheduleWeekPayload = {
     weekday: number;
     startSlotIndex: number | null;
     spanSlots: number;
+    /** 阶段 E 起服务端会回传；缺省兼容旧 payload */
+    startMinutes?: number | null;
+    endMinutes?: number | null;
+    allDay?: number | null;
     subjectKind: ScheduleSubjectKind;
     subjectId: string;
     orphaned: number;
@@ -66,7 +73,9 @@ export async function pushFrogSchedulePlacement(body: {
     method: 'POST',
     body: {
       action: body.action,
-      placement: body.placement,
+      placement: body.placement
+        ? serializeFrogSchedulePlacementUpsert(body.placement)
+        : undefined,
       id: body.id,
     },
     signal: body.signal,

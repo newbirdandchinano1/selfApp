@@ -15,16 +15,18 @@ import { ReviewListSkeleton } from '@/components/skeletons/review';
 import { Typography } from '@/constants/design-tokens';
 import { useFoldTheme } from '@/constants/review-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { resetTabBarAutoHide } from '@/lib/tab-bar-auto-hide';
 import { reviewContentMaxWidth } from '@/lib/review-layout';
 import { WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -43,7 +45,7 @@ const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
 /** 主切换：日 / 周 / 月 三个尺度并列 */
 type ReviewScope = 'daily' | 'weekly' | 'monthly';
 
-const SCOPE_OPTIONS = [
+const SCOPE_OPTIONS_BASE = [
   { value: 'daily' as const, label: '日' },
   { value: 'weekly' as const, label: '周' },
   { value: 'monthly' as const, label: '月' },
@@ -201,8 +203,48 @@ export function ReviewHubScreen() {
   const { width } = useWindowDimensions();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
+  const sourceBadges = useNotificationSourceBadges();
+  const params = useLocalSearchParams<{ focus?: string | string[] }>();
+  const focusRaw = Array.isArray(params.focus) ? params.focus[0] : params.focus;
+  const focusParam = (focusRaw ?? '').trim().toLowerCase();
 
-  const [scope, setScope] = useState<ReviewScope>('daily');
+  const [scope, setScope] = useState<ReviewScope>(() =>
+    focusParam === 'weekly' ? 'weekly' : focusParam === 'monthly' ? 'monthly' : 'daily',
+  );
+
+  const scopeOptions = useMemo(
+    () =>
+      SCOPE_OPTIONS_BASE.map(opt => ({
+        ...opt,
+        badge:
+          opt.value === 'daily'
+            ? sourceBadges.hasAnchor('daily-review')
+            : opt.value === 'weekly'
+              ? sourceBadges.hasAnchor('weekly-review')
+              : false,
+      })),
+    [sourceBadges],
+  );
+
+  const acknowledgeReviewScope = useCallback((next: ReviewScope) => {
+    if (next === 'daily') {
+      void acknowledgeInboxSources({ anchors: ['daily-review'] });
+    } else if (next === 'weekly') {
+      void acknowledgeInboxSources({ anchors: ['weekly-review'] });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (focusParam === 'weekly') {
+      setScope('weekly');
+      acknowledgeReviewScope('weekly');
+    } else if (focusParam === 'monthly') {
+      setScope('monthly');
+    } else if (focusParam === 'daily') {
+      setScope('daily');
+      acknowledgeReviewScope('daily');
+    }
+  }, [acknowledgeReviewScope, focusParam]);
   const [loading, setLoading] = useState(true);
   const [weekRangeLabel, setWeekRangeLabel] = useState('');
   const [monthLabel, setMonthLabel] = useState('');
@@ -300,6 +342,7 @@ export function ReviewHubScreen() {
 
   const openDay = useCallback(
     (ymd: string) => {
+      void acknowledgeInboxSources({ anchors: ['daily-review'] });
       router.push({ pathname: '/daily-review/[ymd]', params: { ymd } });
     },
     [router],
@@ -359,10 +402,11 @@ export function ReviewHubScreen() {
           />
 
           <FoldSegment
-            options={SCOPE_OPTIONS}
+            options={scopeOptions}
             value={scope}
             onChange={next => {
               setScope(next);
+              acknowledgeReviewScope(next);
             }}
             style={styles.segment}
           />

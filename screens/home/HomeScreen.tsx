@@ -22,10 +22,12 @@ import {
 } from '@/components/skeletons/health';
 import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { AppIconButton } from '@/components/ui/app-icon-button';
+import { InboxSourceDot } from '@/components/ui/inbox-source-dot';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
 import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
+import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -35,6 +37,7 @@ import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { shouldSkipPageFocusApiRefresh, clearPageLoadedInSession } from '@/lib/page-api-session';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 
 import { toast, toUserMessage } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -65,6 +68,7 @@ import {
   loadHealthMetricPointsSettings,
   type HealthMetricPointsSettings,
 } from '@/lib/health-metric-points-settings';
+import { getHealthIntakeReminderStatusSummary } from '@/lib/health-intake-reminder-notifications';
 import {
   getIntakeAssistantSelection,
   setIntakeAssistantSelection,
@@ -858,6 +862,7 @@ export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
   const { hh, fonts: hhFonts } = useHealthHomeTheme();
+  const sourceBadges = useNotificationSourceBadges();
   const {
     logicalTodayYmd: calendarTodayYmd,
     logicalTodayDate: calendarTodayDate,
@@ -876,6 +881,7 @@ export default function HealthScreen() {
   const [metricPointsSettings, setMetricPointsSettings] = React.useState<HealthMetricPointsSettings>(
     DEFAULT_HEALTH_METRIC_POINTS_SETTINGS,
   );
+  const [healthReminderLine, setHealthReminderLine] = React.useState<string | null>(null);
   const [assistantTab, setAssistantTab] = React.useState<'水分' | '蛋白质' | '碳水' | '热量'>('水分');
   const [intakeTargetTick, setIntakeTargetTick] = React.useState(0);
   const intakeTargetsSnapshot = React.useMemo(
@@ -1023,6 +1029,29 @@ export default function HealthScreen() {
     }, [])
   );
 
+  /** 健康提醒状态行（下次提醒 / 已达标 / 稍后再说） */
+  const refreshHealthReminderLine = React.useCallback(async () => {
+    try {
+      const summary = await getHealthIntakeReminderStatusSummary();
+      setHealthReminderLine(summary.line);
+    } catch (e) {
+      console.warn('加载健康提醒状态失败', e);
+      setHealthReminderLine(null);
+    }
+  }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void refreshHealthReminderLine().then(() => {
+        if (cancelled) return;
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [refreshHealthReminderLine]),
+  );
+
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
@@ -1052,6 +1081,10 @@ export default function HealthScreen() {
   const [prevWeekHealthRecords, setPrevWeekHealthRecords] = React.useState<HealthRecordRow[]>([]);
   /** 选中日在本地库中各维度摄入合计（同日多条 health_records 会相加）。 */
   const [selectedDayIntakeTotals, setSelectedDayIntakeTotals] = React.useState<HealthIntakeDayTotals | null>(null);
+
+  React.useEffect(() => {
+    void refreshHealthReminderLine();
+  }, [refreshHealthReminderLine, healthRecords, intakeTargetTick, calendarTodayYmd]);
   /** 选中日的原始记录行（用于摄入时间线）。 */
   const [selectedDayRecords, setSelectedDayRecords] = React.useState<HealthRecordRow[]>([]);
   /** AI/拍照/快捷卡写入过程中的列表占位 */
@@ -2449,6 +2482,7 @@ export default function HealthScreen() {
     if (pageLoadError) return '云端数据加载失败 · 本地缓存';
     if (skeletonPending) return '正在同步健康数据…';
     if (quickAddEmpty) return '还没有快捷卡，先建一张';
+    if (selectedIsToday && healthReminderLine) return healthReminderLine;
     const boundaryLabel = `逻辑日 ${pad2(healthDayBoundary.hour)}:${pad2(healthDayBoundary.minute)} 起`;
     if (selectedIsToday) {
       const parts = ['今天'];
@@ -2468,6 +2502,7 @@ export default function HealthScreen() {
     selectedDate,
     selectedIsToday,
     todayScheduleLabel,
+    healthReminderLine,
   ]);
 
   const refreshQuickAddLists = React.useCallback(async () => {
@@ -2779,7 +2814,23 @@ export default function HealthScreen() {
             <Text style={[styles.headerTitle, { color: hh.ink, fontFamily: hhFonts.serif }]}>
               {formatHeaderDate(selectedDate)}
             </Text>
-            <View style={styles.headerStatusRow}>
+            <Pressable
+              onPress={() => {
+                if (selectedIsToday && healthReminderLine) {
+                  void acknowledgeInboxSources({ anchors: ['health'] });
+                  router.push('/notification-channel/health' as never);
+                }
+              }}
+              disabled={!(selectedIsToday && healthReminderLine) || intakeParseLocked}
+              style={styles.headerStatusRow}
+              accessibilityRole="button"
+              accessibilityLabel={
+                selectedIsToday && healthReminderLine
+                  ? sourceBadges.hasAnchor('health')
+                    ? '打开健康提醒设置，有未读提醒'
+                    : '打开健康提醒设置'
+                  : undefined
+              }>
               <HealthPulseDot
                 color={headerStatusDotColor}
                 active={intakeParseLocked}
@@ -2789,7 +2840,12 @@ export default function HealthScreen() {
               <Text style={[styles.headerStatusText, { color: hh.inkSoft }]} numberOfLines={1}>
                 {headerStatusLine}
               </Text>
-            </View>
+              <InboxSourceDot
+                visible={sourceBadges.hasAnchor('health')}
+                size={7}
+                style={{ position: 'relative', top: 0, right: 0, marginLeft: 4 }}
+              />
+            </Pressable>
           </View>
           <AppIconButton
             icon="settings"

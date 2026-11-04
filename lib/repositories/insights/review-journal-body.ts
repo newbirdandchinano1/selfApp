@@ -359,3 +359,15 @@ export function countFilledReviewDimensions(
   ).length;
   return { filled, total };
 }
+
+/** 模板顺序下第一个「任一栏都空」的维度 id；全部已填则 null */
+export function findFirstEmptyReviewDimensionId(
+  template: ReviewDimensionTemplate[],
+  fields: ReviewFieldValues,
+): string | null {
+  for (const dim of template) {
+    const filled = dim.columns.some(col => (fields[col.id] ?? '').trim().length > 0);
+    if (!filled) return dim.id;
+  }
+  return null;
+}

@@ -39,6 +39,7 @@ function toPickedMeta(schedule: ScheduleMetaLike): PickedScheduleMeta {
     reminderOption: schedule.reminderOption ?? '不提前',
     reminderHour: schedule.reminderHour,
     reminderMinute: schedule.reminderMinute,
+    advanceMinutesOverride: schedule.advanceMinutesOverride,
     repeatOption: (schedule.repeatOption as PickedScheduleMeta['repeatOption']) ?? '不重复',
     repeatSummary: schedule.repeatSummary ?? '不重复',
     weeklyDays: schedule.weeklyDays ?? [],

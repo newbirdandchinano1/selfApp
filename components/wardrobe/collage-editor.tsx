@@ -13,6 +13,7 @@ import {
   clampPct,
   collageUid,
   fitArtboardSize,
+  defaultCollagePhoto,
   hydrateCollageRuntime,
   serializeCollageExtra,
   type CollageBgSub,
@@ -26,8 +27,17 @@ import {
   type CollageTool,
 } from '@/components/wardrobe/collage-model';
 import type { WardrobeItem, WardrobeOutfit } from '@/components/wardrobe/data';
-import { WardrobeGarment } from '@/components/wardrobe/garments';
+import { WardrobeGarment, wardrobeItemHasCutout } from '@/components/wardrobe/garments';
+import { StoredImage } from '@/components/stored-image';
 import { toast } from '@/lib/app-feedback/toast-events';
+import { toUserMessage } from '@/lib/app-feedback/to-user-message';
+import {
+  bindWardrobeCollagePhoto,
+  pickWardrobeLocalImage,
+  prepareWardrobeImagesFromLocal,
+  uploadWardrobeCollagePhoto,
+  type WardrobeImageSource,
+} from '@/lib/wardrobe-images';
 import {
   createWardrobeOutfit,
   updateWardrobeOutfit,
@@ -36,10 +46,10 @@ import { wardrobeEm, wardrobeFonts } from '@/constants/wardrobe-theme';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Modal,
-  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -47,9 +57,8 @@ import {
   TextInput,
   View,
   type LayoutChangeEvent,
-  type GestureResponderEvent,
-  type PanResponderGestureState,
 } from 'react-native';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, {
   Circle,
@@ -78,6 +87,8 @@ export type CollageEditorProps = {
   occasions: { id: string; name: string }[];
   outfit: WardrobeOutfit | null;
   seedItemIds?: string[];
+  /** 新建时种子照片（本地 URI，优先抠图结果） */
+  seedPhotoUri?: string;
   onClose: (opts?: { reopenOutfitId?: string }) => void;
   onSaved: (outfitId: string) => void | Promise<void>;
 };
@@ -88,7 +99,7 @@ function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
 
-function PhotoSvg({ kind, w, h }: { kind: Exclude<CollagePhotoKind, 'none'>; w: number; h: number }) {
+function PhotoSvg({ kind, w, h }: { kind: 'portrait' | 'detail'; w: number; h: number }) {
   if (kind === 'detail') {
     return (
       <Svg width={w} height={h} viewBox="0 0 180 225">
@@ -251,6 +262,10 @@ function StickerVisual({ type, preview }: { type: CollageStickerType; preview?: 
   );
 }
 
+function clampScale(n: number, min = 0.35, max = 2.8) {
+  return Math.min(max, Math.max(min, n));
+}
+
 type DragLayerProps = {
   dragKey: DragKey;
   x: number;
@@ -262,10 +277,13 @@ type DragLayerProps = {
   boardH: number;
   onSelect: (key: DragKey | null) => void;
   onMove: (key: DragKey, x: number, y: number) => void;
+  onScale?: (key: DragKey, scale: number) => void;
   onRemove: (key: DragKey) => void;
   style?: object;
   children: React.ReactNode;
   zIndex?: number;
+  /** 抠图纯净层：去掉纸色底与重阴影，避免看起来像「还有背景」 */
+  pure?: boolean;
 };
 
 function DraggableLayer({
@@ -279,96 +297,113 @@ function DraggableLayer({
   boardH,
   onSelect,
   onMove,
+  onScale,
   onRemove,
   style,
   children,
   zIndex = 3,
+  pure = false,
 }: DragLayerProps) {
-  const start = useRef({ x: 0, y: 0 });
+  const start = useRef({ x: 0, y: 0, scale: 1 });
   const sizeRef = useRef({ w: 80, h: 100 });
   const [size, setSize] = useState({ w: 80, h: 100 });
-  // 拖动中 x/y 每帧都会变；若写入 PanResponder deps 会中途重建手势导致拖不动。
+  // 拖动 / 缩放中每帧都会变；用 ref 固定手势，避免重建打断双指。
   const posRef = useRef({ x, y });
   posRef.current = { x, y };
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const boardRef = useRef({ w: boardW, h: boardH });
   boardRef.current = { w: boardW, h: boardH };
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
+  const onScaleRef = useRef(onScale);
+  onScaleRef.current = onScale;
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
 
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) + Math.abs(g.dy) > 2,
-        onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => true,
-        onPanResponderGrant: () => {
-          onSelectRef.current(dragKey);
-          start.current = { ...posRef.current };
-        },
-        onPanResponderMove: (_: GestureResponderEvent, g: PanResponderGestureState) => {
-          const { w, h } = boardRef.current;
-          if (!w || !h) return;
-          onMoveRef.current(
-            dragKey,
-            clampPct(start.current.x + (g.dx / w) * 100),
-            clampPct(start.current.y + (g.dy / h) * 100),
-          );
-        },
-      }),
-    [dragKey],
-  );
+  const gesture = useMemo(() => {
+    const pan = Gesture.Pan()
+      .runOnJS(true)
+      .minPointers(1)
+      .maxPointers(1)
+      .onBegin(() => {
+        onSelectRef.current(dragKey);
+        start.current = { x: posRef.current.x, y: posRef.current.y, scale: scaleRef.current };
+      })
+      .onUpdate((e) => {
+        const { w, h } = boardRef.current;
+        if (!w || !h) return;
+        onMoveRef.current(
+          dragKey,
+          clampPct(start.current.x + (e.translationX / w) * 100),
+          clampPct(start.current.y + (e.translationY / h) * 100),
+        );
+      });
+
+    const pinch = Gesture.Pinch()
+      .runOnJS(true)
+      .onBegin(() => {
+        onSelectRef.current(dragKey);
+        start.current.scale = scaleRef.current;
+      })
+      .onUpdate((e) => {
+        if (!onScaleRef.current) return;
+        onScaleRef.current(dragKey, clampScale(start.current.scale * e.scale));
+      });
+
+    return Gesture.Simultaneous(pan, pinch);
+  }, [dragKey]);
 
   const cx = (x / 100) * boardW;
   const cy = (y / 100) * boardH;
 
   return (
-    <View
-      {...pan.panHandlers}
-      onLayout={(e) => {
-        const { width, height } = e.nativeEvent.layout;
-        if (width > 0 && height > 0) {
-          sizeRef.current = { w: width, h: height };
-          setSize({ w: width, h: height });
-        }
-      }}
-      style={[
-        {
-          position: 'absolute',
-          left: cx - size.w / 2,
-          top: cy - size.h / 2,
-          transform: [{ rotate: `${rot}deg` }, { scale }],
-          zIndex: selected ? 15 : zIndex,
-          shadowColor: '#000',
-          shadowOpacity: selected ? 0.31 : 0.22,
-          shadowRadius: selected ? 16 : 11,
-          shadowOffset: { width: 0, height: selected ? 15 : 10 },
-          elevation: selected ? 12 : 6,
-        },
-        selected
-          ? {
-              borderWidth: 1.5,
-              borderColor: CE.gold,
-              shadowColor: CE.gold,
-            }
-          : null,
-        style,
-      ]}>
-      {selected ? (
-        <Pressable
-          onPress={() => onRemove(dragKey)}
-          hitSlop={8}
-          style={styles.deleteBtn}
-          accessibilityLabel="移除">
-          <Svg width={8} height={8} viewBox="0 0 24 24">
-            <Path d="M6 6l12 12M18 6L6 18" stroke="#FFF7E8" strokeWidth={1.8} strokeLinecap="round" />
-          </Svg>
-        </Pressable>
-      ) : null}
-      {children}
-    </View>
+    <GestureDetector gesture={gesture}>
+      <View
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          if (width > 0 && height > 0) {
+            sizeRef.current = { w: width, h: height };
+            setSize({ w: width, h: height });
+          }
+        }}
+        style={[
+          {
+            position: 'absolute',
+            left: cx - size.w / 2,
+            top: cy - size.h / 2,
+            transform: [{ rotate: `${rot}deg` }, { scale }],
+            zIndex: selected ? 15 : zIndex,
+            shadowColor: pure ? 'transparent' : '#000',
+            shadowOpacity: pure ? 0 : selected ? 0.31 : 0.22,
+            shadowRadius: pure ? 0 : selected ? 16 : 11,
+            shadowOffset: { width: 0, height: pure ? 0 : selected ? 15 : 10 },
+            elevation: pure ? 0 : selected ? 12 : 6,
+          },
+          selected
+            ? {
+                borderWidth: pure ? 1 : 1.5,
+                borderColor: CE.gold,
+                borderStyle: pure ? 'dashed' : 'solid',
+                shadowColor: pure ? 'transparent' : CE.gold,
+              }
+            : null,
+          style,
+        ]}>
+        {selected ? (
+          <Pressable
+            onPress={() => onRemove(dragKey)}
+            hitSlop={8}
+            style={styles.deleteBtn}
+            accessibilityLabel="移除">
+            <Svg width={8} height={8} viewBox="0 0 24 24">
+              <Path d="M6 6l12 12M18 6L6 18" stroke="#FFF7E8" strokeWidth={1.8} strokeLinecap="round" />
+            </Svg>
+          </Pressable>
+        ) : null}
+        {children}
+      </View>
+    </GestureDetector>
   );
 }
 
@@ -379,6 +414,7 @@ export function CollageEditor({
   occasions,
   outfit,
   seedItemIds,
+  seedPhotoUri,
   onClose,
   onSaved,
 }: CollageEditorProps) {
@@ -407,6 +443,7 @@ export function CollageEditor({
   const [editorTip, setEditorTip] = useState<string | null>(null);
   const editorTipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [boardBox, setBoardBox] = useState({ w: 318, h: 318 });
   const [wrapSize, setWrapSize] = useState({ w: 360, h: 400 });
   const [name, setName] = useState('');
@@ -428,13 +465,18 @@ export function CollageEditor({
       outfit?.items?.length ? outfit.items : seedItemIds ?? [],
       outfit?.name,
     );
+    const seedUri = seedPhotoUri?.trim() || '';
+    const photoSeeded =
+      !outfit && seedUri
+        ? defaultCollagePhoto('custom', seedUri)
+        : runtime.photo;
     setRatio(runtime.ratio);
     setBg(runtime.bg);
-    setPhoto(runtime.photo);
+    setPhoto(photoSeeded);
     setCaption(runtime.caption);
     setPieces(runtime.items);
     setStickers(runtime.stickers);
-    setSelected(null);
+    setSelected(photoSeeded.kind === 'custom' ? 'photo' : null);
     setTool('');
     setSub('bg');
     setTrayOpen(false);
@@ -446,7 +488,7 @@ export function CollageEditor({
     const occ =
       occasions.find((o) => o.name === outfit?.occasion)?.id ?? occasions[0]?.id ?? '';
     setOccasionId(occ);
-  }, [occasions, outfit, seedItemIds]);
+  }, [occasions, outfit, seedItemIds, seedPhotoUri]);
 
   useEffect(() => {
     if (visible) {
@@ -561,8 +603,17 @@ export function CollageEditor({
     }
   }, []);
 
+  const onScale = useCallback((key: DragKey, next: number) => {
+    const scale = clampScale(next);
+    if (key === 'photo') setPhoto((p) => ({ ...p, scale }));
+    else if (key.startsWith('item:')) {
+      const uid = key.slice(5);
+      setPieces((list) => list.map((p) => (p.uid === uid ? { ...p, scale } : p)));
+    }
+  }, []);
+
   const onRemove = useCallback((key: DragKey) => {
-    if (key === 'photo') setPhoto((p) => ({ ...p, kind: 'none' }));
+    if (key === 'photo') setPhoto(defaultCollagePhoto('none'));
     else if (key === 'caption') setCaption((c) => ({ ...c, text: '' }));
     else if (key.startsWith('item:')) {
       const uid = key.slice(5);
@@ -573,6 +624,55 @@ export function CollageEditor({
     }
     setSelected(null);
   }, []);
+
+  const clearPhoto = useCallback(() => {
+    setPhoto(defaultCollagePhoto('none'));
+    setSelected(null);
+  }, []);
+
+  const applyPhotoFromSource = useCallback(
+    async (source: WardrobeImageSource) => {
+      if (photoBusy) return;
+      setPhotoBusy(true);
+      try {
+        const picked = await pickWardrobeLocalImage(source);
+        if (!picked.ok) {
+          if (picked.reason === 'permission') {
+            toast.info(source === 'camera' ? '需要相机权限才能拍照' : '需要相册权限才能选图');
+          }
+          return;
+        }
+        const prepared = await prepareWardrobeImagesFromLocal(picked.uri);
+        const uri = prepared.cutoutUri?.trim() || prepared.imageUri;
+        setPhoto((prev) => ({
+          ...defaultCollagePhoto('custom', uri),
+          x: prev.kind === 'none' ? 70 : prev.x,
+          y: prev.kind === 'none' ? 32 : prev.y,
+          rot: prev.kind === 'none' ? 2 : prev.rot,
+          scale: prev.kind === 'none' ? 1 : prev.scale,
+        }));
+        setSelected('photo');
+        if (prepared.cutoutApplied) {
+          toast.info('已完成抠图，可拖动或双指缩放');
+        } else {
+          toast.info('已加入原图（当前环境暂不可用抠图）');
+        }
+      } catch (e) {
+        toast.error(toUserMessage(e, '导入照片失败'));
+      } finally {
+        setPhotoBusy(false);
+      }
+    },
+    [photoBusy],
+  );
+
+  const promptPhotoSource = useCallback(() => {
+    Alert.alert('导入照片', undefined, [
+      { text: '拍照', onPress: () => void applyPhotoFromSource('camera') },
+      { text: '从相册选择', onPress: () => void applyPhotoFromSource('library') },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [applyPhotoFromSource]);
 
   const handleDone = () => {
     if (!pieces.length) {
@@ -615,20 +715,33 @@ export function CollageEditor({
       .split(/[,，]/)
       .map((t) => t.trim())
       .filter(Boolean);
-    const extra = serializeCollageExtra({
-      ratio,
-      bg,
-      photo,
-      caption,
-      items: pieces,
-      stickers,
-      seasons,
-      tags,
-    });
     const saveName = name.trim() || '未命名搭配';
     const saveNote = note.trim() || '在拼图里保存的一套新搭配。';
     setBusy(true);
     try {
+      let photoToSave = photo;
+      if (photo.kind === 'custom' && photo.uri?.trim()) {
+        const remoteUri = await uploadWardrobeCollagePhoto({
+          localUri: photo.uri,
+          outfitId: outfit?.id,
+        });
+        photoToSave = { ...photo, kind: 'custom', uri: remoteUri };
+        setPhoto(photoToSave);
+      } else if (photo.kind === 'custom') {
+        photoToSave = defaultCollagePhoto('none');
+      }
+
+      const extra = serializeCollageExtra({
+        ratio,
+        bg,
+        photo: photoToSave,
+        caption,
+        items: pieces,
+        stickers,
+        seasons,
+        tags,
+      });
+
       const res = outfit
         ? await updateWardrobeOutfit(outfit.id, {
             name: saveName,
@@ -654,10 +767,15 @@ export function CollageEditor({
         toast.info('保存失败');
         return;
       }
+      if (photoToSave.kind === 'custom' && photoToSave.uri) {
+        await bindWardrobeCollagePhoto(id, photoToSave.uri);
+      }
       toast.info(`搭配已保存：${saveName}`);
       setSaveOpen(false);
       await onSaved(id);
       onClose({ reopenOutfitId: id });
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败'));
     } finally {
       setBusy(false);
     }
@@ -670,6 +788,7 @@ export function CollageEditor({
 
   return (
     <Modal visible={mounted} animationType="none" transparent onRequestClose={handleClose} statusBarTranslucent>
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <Animated.View
         style={[
           styles.root,
@@ -729,7 +848,7 @@ export function CollageEditor({
             </Pressable>
             {!selected ? (
               <View style={styles.boardTip} pointerEvents="none">
-                <Text style={styles.boardTipText}>拖动 · 编辑 · 轻点选中</Text>
+                <Text style={styles.boardTipText}>拖动 · 双指缩放 · 轻点选中</Text>
               </View>
             ) : null}
 
@@ -745,15 +864,38 @@ export function CollageEditor({
                 boardH={boardBox.h}
                 onSelect={setSelected}
                 onMove={onMove}
+                onScale={onScale}
                 onRemove={onRemove}
                 style={styles.photoCard}
                 zIndex={4}>
-                <PhotoSvg kind={photo.kind} w={boardBox.w * 0.45 - 10} h={(boardBox.w * 0.45 - 10) * 1.25} />
+                {(() => {
+                  const pw = boardBox.w * 0.45 - 10;
+                  const ph = pw * 1.25;
+                  if (photo.kind === 'custom' && photo.uri) {
+                    return (
+                      <StoredImage
+                        uri={photo.uri}
+                        style={{ width: pw, height: ph, borderRadius: 3 }}
+                        contentFit="cover"
+                      />
+                    );
+                  }
+                  if (photo.kind === 'portrait' || photo.kind === 'detail') {
+                    return <PhotoSvg kind={photo.kind} w={pw} h={ph} />;
+                  }
+                  return null;
+                })()}
                 <View style={styles.pcCaption}>
                   <Text style={styles.pcCaptionB}>
-                    {photo.kind === 'detail' ? 'FABRIC / 02' : 'PORTRAIT / 01'}
+                    {photo.kind === 'detail'
+                      ? 'FABRIC / 02'
+                      : photo.kind === 'custom'
+                        ? 'PHOTO'
+                        : 'PORTRAIT / 01'}
                   </Text>
-                  <Text style={styles.pcCaptionS}>11 / 02</Text>
+                  <Text style={styles.pcCaptionS}>
+                    {photo.kind === 'custom' ? 'IMPORT' : '11 / 02'}
+                  </Text>
                 </View>
               </DraggableLayer>
             ) : null}
@@ -762,6 +904,7 @@ export function CollageEditor({
               const item = itemById(piece.id);
               if (!item) return null;
               const key = `item:${piece.uid}` as DragKey;
+              const isCutout = wardrobeItemHasCutout(item);
               return (
                 <DraggableLayer
                   key={piece.uid}
@@ -775,22 +918,33 @@ export function CollageEditor({
                   boardH={boardBox.h}
                   onSelect={setSelected}
                   onMove={onMove}
+                  onScale={onScale}
                   onRemove={onRemove}
-                  style={styles.piece}
+                  pure={isCutout}
+                  style={isCutout ? styles.pieceCutout : styles.piece}
                   zIndex={5 + index}>
                   <View
                     style={[
                       styles.ciArt,
-                      { backgroundColor: item.tint },
+                      isCutout && styles.ciArtCutout,
+                      {
+                        backgroundColor: isCutout ? 'transparent' : item.tint,
+                      },
                     ]}>
-                    <WardrobeGarment item={item} width={48} height={56} />
+                    <WardrobeGarment
+                      item={item}
+                      width={isCutout ? 78 : 48}
+                      height={isCutout ? 96 : 56}
+                    />
                   </View>
-                  <View style={styles.ciMeta}>
-                    <Text style={styles.ciMetaB}>
-                      {pad2(index + 1)} · {item.category}
-                    </Text>
-                    <Text style={styles.ciMetaS}>{item.fit}</Text>
-                  </View>
+                  {!isCutout ? (
+                    <View style={styles.ciMeta}>
+                      <Text style={styles.ciMetaB}>
+                        {pad2(index + 1)} · {item.category}
+                      </Text>
+                      <Text style={styles.ciMetaS}>{item.fit}</Text>
+                    </View>
+                  ) : null}
                 </DraggableLayer>
               );
             })}
@@ -990,10 +1144,19 @@ export function CollageEditor({
                           <View
                             style={[
                               styles.ctiArt,
-                              { backgroundColor: item.tint },
+                              wardrobeItemHasCutout(item) && styles.ctiArtCutout,
+                              {
+                                backgroundColor: wardrobeItemHasCutout(item)
+                                  ? 'transparent'
+                                  : item.tint,
+                              },
                               on && styles.ctiArtOn,
                             ]}>
-                            <WardrobeGarment item={item} width={36} height={42} />
+                            <WardrobeGarment
+                              item={item}
+                              width={wardrobeItemHasCutout(item) ? 44 : 36}
+                              height={wardrobeItemHasCutout(item) ? 54 : 42}
+                            />
                           </View>
                           <Text style={[styles.ctItemName, on && { color: '#F2E7D4' }]} numberOfLines={1}>
                             {item.name}
@@ -1007,36 +1170,41 @@ export function CollageEditor({
 
               {tool === 'photo' ? (
                 <>
-                  <Text style={styles.ctLabel}>CHOOSE A FRAME</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowGap}>
-                    {(
-                      [
-                        ['portrait', '街头人像'],
-                        ['detail', '面料细节'],
-                        ['none', '留白版式'],
-                      ] as const
-                    ).map(([kind, label]) => {
-                      const on = photo.kind === kind;
-                      return (
-                        <Pressable
-                          key={kind}
-                          style={[styles.photoOpt, on && styles.photoOptOn]}
-                          onPress={() => {
-                            setPhoto((p) => ({ ...p, kind }));
-                            if (kind === 'none') setSelected(null);
-                          }}>
-                          <View style={[styles.ctpPreview, kind === 'none' && styles.ctpEmpty]}>
-                            {kind === 'none' ? (
-                              <Text style={{ color: 'rgba(255,255,255,0.25)', fontSize: 18 }}>×</Text>
-                            ) : (
-                              <PhotoSvg kind={kind} w={74} h={62} />
-                            )}
-                          </View>
-                          <Text style={[styles.photoOptLabel, on && { color: '#F2E7D4' }]}>{label}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </ScrollView>
+                  <Text style={styles.ctLabel}>PHOTO · 导入到画布</Text>
+                  <View style={styles.photoActions}>
+                    <Pressable
+                      style={[styles.photoActionBtn, photoBusy && styles.photoActionBtnDisabled]}
+                      disabled={photoBusy || busy}
+                      onPress={promptPhotoSource}>
+                      {photoBusy ? (
+                        <ActivityIndicator color="#F2E7D4" size="small" />
+                      ) : (
+                        <Text style={styles.photoActionText}>拍照 / 相册</Text>
+                      )}
+                    </Pressable>
+                    {photo.kind !== 'none' ? (
+                      <Pressable
+                        style={styles.photoClearBtn}
+                        disabled={photoBusy || busy}
+                        onPress={clearPhoto}>
+                        <Text style={styles.photoClearText}>清除照片</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {photo.kind === 'custom' && photo.uri ? (
+                    <View style={styles.photoTrayPreview}>
+                      <StoredImage
+                        uri={photo.uri}
+                        style={styles.photoTrayThumb}
+                        contentFit="cover"
+                      />
+                      <Text style={styles.photoEmptyHint}>已在画布上 · 可拖动与双指缩放</Text>
+                    </View>
+                  ) : photo.kind === 'none' ? (
+                    <Text style={styles.photoEmptyHint}>从相机或相册选一张图放到拼图画布</Text>
+                  ) : (
+                    <Text style={styles.photoEmptyHint}>画布上仍有旧预设图，可清除后重新导入</Text>
+                  )}
                 </>
               ) : null}
 
@@ -1249,6 +1417,7 @@ export function CollageEditor({
           </Animated.View>
         ) : null}
       </Animated.View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -1523,12 +1692,26 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: '#FFFDF8',
   },
+  pieceCutout: {
+    width: 96,
+    padding: 0,
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+  },
   ciArt: {
     aspectRatio: 1,
     borderRadius: 4,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
+  },
+  ciArtCutout: {
+    aspectRatio: undefined,
+    width: 96,
+    height: 118,
+    borderRadius: 0,
+    overflow: 'visible',
+    backgroundColor: 'transparent',
   },
   ciMeta: {
     flexDirection: 'row',
@@ -1690,9 +1873,16 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.18)',
     overflow: 'hidden',
   },
+  ctiArtCutout: {
+    backgroundColor: 'transparent',
+    borderColor: 'rgba(255,255,255,0.12)',
+    borderStyle: 'dashed',
+    overflow: 'visible',
+  },
   ctiArtOn: {
     borderWidth: 2,
     borderColor: '#E6BC7A',
+    borderStyle: 'solid',
   },
   ctItemName: {
     marginTop: 5,
@@ -1700,37 +1890,59 @@ const styles = StyleSheet.create({
     color: 'rgba(246,241,229,0.48)',
     fontFamily: wardrobeFonts.sans,
   },
-  photoOpt: {
-    width: 82,
-    padding: 4,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  photoOptOn: {
-    borderColor: '#E6BC7A',
-    backgroundColor: 'rgba(230,188,122,0.09)',
-  },
-  ctpPreview: {
-    height: 62,
-    borderRadius: 7,
-    overflow: 'hidden',
-    marginBottom: 5,
-    backgroundColor: '#CDDCD5',
-  },
-  ctpEmpty: {
+  photoActions: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    borderStyle: 'dashed',
+    gap: 8,
+    marginTop: 2,
   },
-  photoOptLabel: {
-    fontSize: 5.8,
-    color: 'rgba(246,241,229,0.54)',
+  photoActionBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(230,188,122,0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(230,188,122,0.42)',
+    minWidth: 108,
+    alignItems: 'center',
+  },
+  photoActionBtnDisabled: { opacity: 0.55 },
+  photoActionText: {
+    color: '#F2E7D4',
+    fontSize: 11,
     fontFamily: wardrobeFonts.sansBold,
+  },
+  photoEmptyHint: {
+    marginTop: 8,
+    color: 'rgba(246,241,229,0.42)',
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: wardrobeFonts.sans,
+  },
+  photoClearBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  photoClearText: {
+    color: '#F2E7D4',
+    fontSize: 11,
+    fontFamily: wardrobeFonts.sansBold,
+  },
+  photoTrayPreview: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  photoTrayThumb: {
+    width: 42,
+    height: 52,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   textbox: {
     flexDirection: 'row',

@@ -133,24 +133,24 @@ WHERE life_month_goal_id IS NOT NULL AND life_month_goal_id != ''
 
 | 表面 | 路由 / 文件 | 职责 |
 |---|---|---|
-| 「我的」摘要卡 | `ProfileScreen` + `ProfileRoadCard` | 总方向一句 + 今年焦点；点进导图；空态 CTA「写下总方向」 |
-| 道路导图子页 | `/life-road` → `LifeRoadScreen` | 可折叠树：总方向 → 今年之上 → 年 → 季 → 月 → 项目 |
-| 编辑总方向 | `/edit-life-direction` | 长文总方向 |
+| 「我的」摘要卡 | `ProfileScreen` + `ProfileRoadCard` + `ProfileRoadBelow` | 对齐设计稿深色 content / 浅色 empty·error；总方向 + 今年焦点 + glance / 验收进度；卡下三项统计与「今年的节奏」月轨；点卡进导图；空态 CTA 进编辑总方向 |
+| 道路导图子页 | `/life-road` → `LifeRoadScreen` | 同步条 + north-card + 可折叠道路树：今年之上 → 年 → 季 → 月 → 项目 |
+| 编辑总方向 | `/edit-life-direction` | 字数环、年度主题、关键词芯片、实时预览、底栏保存 |
 | 编辑 / 新建节点 | `/edit-life-road-node/[id]` → `EditLifeRoadNodeScreen` | 标题 / 说明 / 状态；`id=new` + query 带 kind/年/季/月 |
 | 新建项目（预填月） | `/add-project?life_month_goal_id=` | 道路「+ 从此月建项目」跳入 |
 | 编辑项目 | `/edit-project` | 表单行「月目标」=`MonthGoalPickerField` |
 | 旧赌注页（遗留） | `/add-life-bet`、`edit-life-bet` | 兼容旧路径；产品主路径应走节点编辑 |
 
-摘要卡「今年焦点」取值（`resolveYearFocusLine`）：**当前月标题 → 当前季 → 年目标**。
+视觉令牌：`constants/life-road-theme.ts`（对照根目录 `我的道路-UI重构.html`）。摘要卡「今年焦点」取值（`resolveYearFocusDetail`）：**当前月标题 → 当前季 → 年目标**，并带 glance / 验收进度。
 
 ### 3.2 导图交互（`LifeRoadScreen`）
 
 - 默认展开键：`above`、当前年、当前季、当前月。
-- 行组件 `NodeRow`：左 chevron 折叠，右侧点标题进编辑 / 建空槽。
-- 月行：有挂载项目才给折叠钮；meta 显示「N 个项目」。
-- 项目行 depth=3，点进 `/edit-project`。
-- 顶栏「+ 多年」；底部「+ 下一年目标」；今年之上内「+ 更远」。
-- 文案提示：「浏览与定位年季月拆解。具体做法与推进在项目里完成。」
+- 行组件 `NodeRow`：左 chevron 折叠，右侧点标题进编辑 / 建空槽；状态 pill + NOW 标签。
+- 月行：有挂载项目或验收标准才给折叠钮；meta / chip 显示验收与项目数。
+- 项目以卡片形式挂在月下，点进 `/edit-project`。
+- 顶栏松绿 pill「+ 多年」；底部「+ 下一年目标」；今年之上内「+ 更远」。
+- 提示：「点标题编辑 · 左箭头展开 · 下拉刷新 · 验收可直接勾选」。
 
 ### 3.3 节点编辑表单（`EditLifeRoadNodeScreen`）
 
@@ -158,9 +158,9 @@ WHERE life_month_goal_id IS NOT NULL AND life_month_goal_id != ''
 
 ### 3.4 项目侧对接 UI
 
-- `MonthGoalPickerField`：按年 · 季 · 月分组单选，可清除；说明「一条月目标可挂多个项目；跨月请改挂到当前推进月」。
+- `MonthGoalPickerField`：对齐设计稿 picker-field + 年/季分段 + 月目标底栏；可清除；预填横幅支持从道路「从此月建项目」带入。
 - 保存时写 `life_month_goal_id`，并常把 `life_bet_id` 置 `null`（新路径）。
-- 任务 Tab 项目卡可用 `life_month_goal_id || life_bet_id` 显示道路标题（`TasksScreen` + `lifeRoadTitleById`），与导图数据源不完全一致。
+- 任务 Tab 项目卡用 `ProjectRoadLinkBar` 展示「道路归属 · N 月 · 标题」，点按进 `/life-road?focus_month_id=` 并展开对应月（`life_month_goal_id || life_bet_id` + `lifeRoadTitleById`）。
 
 ### 3.5 数据流（读）
 

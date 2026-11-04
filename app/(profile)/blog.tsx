@@ -14,9 +14,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-/** 统一走 www，避免 apex/www 双 origin 导致 cookie/storage 隔离 */
-const BLOG_ORIGIN = 'https://www.jaxz.xyz';
-const BLOG_FALLBACK = 'https://jaxz.xyz';
+/** 统一走裸域；www 证书与主机名不匹配，WebView 会直接失败 */
+const BLOG_ORIGIN = 'https://jaxz.xyz';
 const ALLOWED_HOSTS = new Set(['jaxz.xyz', 'www.jaxz.xyz']);
 const LOAD_TIMEOUT_MS = 20000;
 /** 博客站把 token 放在 sessionStorage，WebView 销毁即丢；由 App 侧持久化 */
@@ -184,14 +183,13 @@ export default function BlogScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [errorDetail, setErrorDetail] = useState('');
-  const [currentUri, setCurrentUri] = useState(BLOG_ORIGIN);
   const [reloadKey, setReloadKey] = useState(0);
   const [authCache, setAuthCache] = useState<BlogAuthCache | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedAuthRef = useRef<string>('');
 
-  const source = useMemo(() => ({ uri: currentUri }), [currentUri]);
+  const source = useMemo(() => ({ uri: BLOG_ORIGIN }), []);
 
   const beforeContentJs = useMemo(
     () => `${DISABLE_ZOOM_JS}\n${buildRestoreAuthJs(authCache)}`,
@@ -297,23 +295,17 @@ export default function BlogScreen() {
   }, []);
 
   const handleOpenExternal = useCallback(() => {
-    void Linking.openURL(currentUri).catch(() => {});
-  }, [currentUri]);
+    void Linking.openURL(BLOG_ORIGIN).catch(() => {});
+  }, []);
 
   const armTimeout = useCallback(() => {
     clearTimer();
     timeoutRef.current = global.setTimeout(() => {
-      // 超时再尝试裸域兜底一次，避免 www 解析/DNS 局部问题被误判为无网
-      if (currentUri === BLOG_ORIGIN) {
-        setCurrentUri(BLOG_FALLBACK);
-        setReloadKey((k) => k + 1);
-      } else {
-        setLoading(false);
-        setErrorDetail('加载超时（20s），可能是网络较慢或站点响应慢');
-        setLoadError(true);
-      }
+      setLoading(false);
+      setErrorDetail('加载超时（20s），可能是网络较慢或站点响应慢');
+      setLoadError(true);
     }, LOAD_TIMEOUT_MS);
-  }, [clearTimer, currentUri]);
+  }, [clearTimer]);
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right']}>

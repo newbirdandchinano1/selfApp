@@ -269,6 +269,9 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
+  const [reminderIntensity, setReminderIntensity] = React.useState<'soft' | 'normal' | 'strong'>(
+    'normal',
+  );
   const [expectedGoalOpen, setExpectedGoalOpen] = React.useState(false);
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(false);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
@@ -484,8 +487,13 @@ export default function AddHabitScreen() {
                 d.setHours(Math.max(0, Math.min(23, Math.round(hh))), Math.max(0, Math.min(59, Math.round(mm))), 0, 0);
                 return d;
               });
+              const inten = (rem as { intensity?: unknown }).intensity;
+              setReminderIntensity(
+                inten === 'soft' || inten === 'strong' || inten === 'normal' ? inten : 'normal',
+              );
             } else {
               setReminderEnabled(false);
+              setReminderIntensity('normal');
             }
             const subMeta = parseHabitSubHabitsMeta(row.extra_data);
             setSubHabitsEnabled(subMeta.enabled);
@@ -654,7 +662,12 @@ export default function AddHabitScreen() {
     const unitResolved = unitInput.trim() || DEFAULT_QUANTIFY_UNIT;
 
     const reminderPayload = reminderEnabled
-      ? { enabled: true as const, hour: reminderTime.getHours(), minute: reminderTime.getMinutes() }
+      ? {
+          enabled: true as const,
+          hour: reminderTime.getHours(),
+          minute: reminderTime.getMinutes(),
+          intensity: reminderIntensity,
+        }
       : { enabled: false as const };
 
     const resolvedDailyGoal =
@@ -859,6 +872,7 @@ export default function AddHabitScreen() {
           title: reminderTitle,
           extraData: reminderExtraData,
           checkIns,
+          intensity: reminderIntensity,
         });
         let schedulePermDenied = false;
         try {
@@ -908,6 +922,7 @@ export default function AddHabitScreen() {
     notifyAncestorsDataChanged,
     quantifyEnabled,
     reminderEnabled,
+    reminderIntensity,
     reminderTime,
     router,
     saving,
@@ -1928,6 +1943,43 @@ export default function AddHabitScreen() {
                         ) : null}
                       </View>
                     </Pressable>
+                    <View style={{ paddingHorizontal: Spacing.md, paddingBottom: Spacing.sm, gap: 8 }}>
+                      <Text style={[Typography.caption, { color: colors.textSecondary }]}>
+                        强度：轻=到点一次 · 标准=+傍晚收口 · 强=强提醒
+                      </Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        {(
+                          [
+                            { id: 'soft' as const, label: '轻' },
+                            { id: 'normal' as const, label: '标准' },
+                            { id: 'strong' as const, label: '强' },
+                          ] as const
+                        ).map((opt) => {
+                          const on = reminderIntensity === opt.id;
+                          return (
+                            <Pressable
+                              key={opt.id}
+                              onPress={() => setReminderIntensity(opt.id)}
+                              style={{
+                                paddingHorizontal: 12,
+                                paddingVertical: 6,
+                                borderRadius: 999,
+                                borderWidth: StyleSheet.hairlineWidth,
+                                borderColor: on ? colors.primary : colors.outline,
+                                backgroundColor: on ? colors.primaryMuted : colors.surfaceSubtle,
+                              }}>
+                              <Text
+                                style={[
+                                  Typography.caption,
+                                  { color: on ? colors.primary : colors.textSecondary, fontWeight: '700' },
+                                ]}>
+                                {opt.label}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
                   </View>
                 ) : null}
               </AppCard>

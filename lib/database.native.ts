@@ -2044,6 +2044,9 @@ export async function initDatabase() {
       weekday INTEGER NOT NULL,
       start_slot_index INTEGER,
       span_slots INTEGER NOT NULL DEFAULT 1,
+      start_minutes INTEGER,
+      end_minutes INTEGER,
+      all_day INTEGER,
       subject_kind TEXT NOT NULL,
       subject_id TEXT NOT NULL,
       orphaned INTEGER NOT NULL DEFAULT 0,
@@ -2568,6 +2571,9 @@ export async function initDatabase() {
         weekday INTEGER NOT NULL,
         start_slot_index INTEGER,
         span_slots INTEGER NOT NULL DEFAULT 1,
+        start_minutes INTEGER,
+        end_minutes INTEGER,
+        all_day INTEGER,
         subject_kind TEXT NOT NULL,
         subject_id TEXT NOT NULL,
         orphaned INTEGER NOT NULL DEFAULT 0,
@@ -2581,8 +2587,21 @@ export async function initDatabase() {
         ON schedule_placements(subject_kind, subject_id);
     `);
     await ensureColumn(db, 'schedule_week_axis_snapshot', 'breaks_json', 'TEXT');
+    await ensureColumn(db, 'schedule_placements', 'start_minutes', 'INTEGER');
+    await ensureColumn(db, 'schedule_placements', 'end_minutes', 'INTEGER');
+    await ensureColumn(db, 'schedule_placements', 'all_day', 'INTEGER');
   } catch (e) {
     console.warn('schedule tables ensure failed', e);
+  }
+
+  // 阶段 D：存量 placement 分钟回填（版本号防重入；失败下次启动可重试）
+  try {
+    const { migratePlacementMinutesBackfillIfNeeded } = await import(
+      '@/lib/schedule/timeline/backfill-minutes'
+    );
+    await migratePlacementMinutesBackfillIfNeeded();
+  } catch (e) {
+    console.warn('schedule placement minutes backfill failed', e);
   }
 
   const {

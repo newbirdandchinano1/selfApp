@@ -3,6 +3,7 @@
  */
 import { FoldCard } from '@/components/review/fold-ui';
 import { useFoldTheme } from '@/constants/review-fold-theme';
+import { formatYmd } from '@/lib/date';
 import {
   BUILTIN_REVIEW_DIMENSION_IDS,
 } from '@/lib/repositories/insights/review-template-defaults';
@@ -10,6 +11,18 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+function buildReviewFeedTodoDefaultSchedule(): string {
+  const today = formatYmd(new Date());
+  return JSON.stringify({
+    mode: 'date',
+    date: today,
+    allDay: true,
+    reminderOption: '自动临期',
+    reminderHour: 9,
+    reminderMinute: 0,
+  });
+}
 
 const ACTION_FEED_DIMENSION_IDS = new Set<string>([
   BUILTIN_REVIEW_DIMENSION_IDS.daily.defects,
@@ -66,10 +79,18 @@ export function ReviewActionFeedStrip({
         key: 'todo',
         label: '新建待办',
         icon: 'check-box-outline-blank',
-        onPress: () => router.push({ pathname: '/add-task', params: { standalone: '1' } }),
+        onPress: () =>
+          router.push({
+            pathname: '/add-task',
+            params: {
+              standalone: '1',
+              ...(hint?.trim() ? { title: hint.trim().slice(0, 80) } : {}),
+              defaultSchedule: buildReviewFeedTodoDefaultSchedule(),
+            },
+          }),
       },
     ];
-  }, [router]);
+  }, [hint, router]);
 
   if (!isReviewActionFeedDimension(dimensionId)) return null;
 

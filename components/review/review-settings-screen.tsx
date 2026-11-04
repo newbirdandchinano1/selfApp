@@ -26,6 +26,14 @@ import {
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { formatPoints, normalizeRewardPoints } from '@/lib/reward-points';
 import { setWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
+import {
+  formatWeeklyReviewReminderClock,
+  getWeeklyReviewReminderSettings,
+  readWeeklyReviewReminderTimeFromDate,
+  setWeeklyReviewReminderSettings,
+  weeklyReviewReminderTimeToDate,
+} from '@/lib/weekly-review-reminder-settings';
+import { syncWeeklyReviewReminderNotification } from '@/lib/weekly-review-reminder-notifications';
 import { resetPageApiSession, shouldSkipPageFocusApiRefresh } from '@/lib/page-api-session';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
@@ -164,6 +172,10 @@ export function ReviewSettingsScreen() {
   const [dailyReminderTime, setDailyReminderTime] = useState(() => dailyReviewReminderTimeToDate(21, 0));
   const [dailyReminderTimePickerOpen, setDailyReminderTimePickerOpen] = useState(false);
   const [dailyReminderBusy, setDailyReminderBusy] = useState(false);
+  const [weeklyReminderEnabled, setWeeklyReminderEnabled] = useState(false);
+  const [weeklyReminderTime, setWeeklyReminderTime] = useState(() => weeklyReviewReminderTimeToDate(20, 0));
+  const [weeklyReminderTimePickerOpen, setWeeklyReminderTimePickerOpen] = useState(false);
+  const [weeklyReminderBusy, setWeeklyReminderBusy] = useState(false);
   const [pointsSettings, setPointsSettings] = useState<ReviewPointsSettings>(DEFAULT_REVIEW_POINTS_SETTINGS);
   const [dailyRewardText, setDailyRewardText] = useState(
     formatPoints(DEFAULT_REVIEW_POINTS_SETTINGS.dailyRewardPoints),
@@ -178,9 +190,10 @@ export function ReviewSettingsScreen() {
       setLoading(true);
       try {
         await wrapLoad(async () => {
-          const [snapshot, reminderSettings, reviewPoints] = await Promise.all([
+          const [snapshot, reminderSettings, weeklyReminderSettings, reviewPoints] = await Promise.all([
             loadReviewPeriodSnapshot(todayYmd),
             getDailyReviewReminderSettings(),
+            getWeeklyReviewReminderSettings(),
             loadReviewPointsSettings(),
           ]);
           setConfiguredDow(snapshot.configuredDow);
@@ -202,6 +215,10 @@ export function ReviewSettingsScreen() {
           );
           setDailyReminderEnabled(reminderSettings.enabled);
           setDailyReminderTime(dailyReviewReminderTimeToDate(reminderSettings.hour, reminderSettings.minute));
+          setWeeklyReminderEnabled(weeklyReminderSettings.enabled);
+          setWeeklyReminderTime(
+            weeklyReviewReminderTimeToDate(weeklyReminderSettings.hour, weeklyReminderSettings.minute),
+          );
           setPointsSettings(reviewPoints);
           setDailyRewardText(formatPoints(reviewPoints.dailyRewardPoints));
           setStreak7BonusText(formatPoints(reviewPoints.streak7BonusPoints));
@@ -235,6 +252,8 @@ export function ReviewSettingsScreen() {
       setDailyReminderBusy(true);
       try {
         await setDailyReviewReminderSettings(next);
+        setDailyReminderEnabled(next.enabled);
+        setDailyReminderTime(dailyReviewReminderTimeToDate(next.hour, next.minute));
         const { permissionDenied, scheduled } = await syncDailyReviewReminderNotification(next);
         if (next.enabled && permissionDenied) {
           Alert.alert(
@@ -252,6 +271,37 @@ export function ReviewSettingsScreen() {
       }
     },
     [],
+  );
+
+  const persistWeeklyReminder = useCallback(
+    async (next: { enabled: boolean; hour: number; minute: number }) => {
+      setWeeklyReminderBusy(true);
+      try {
+        await setWeeklyReviewReminderSettings(next);
+        setWeeklyReminderEnabled(next.enabled);
+        setWeeklyReminderTime(weeklyReviewReminderTimeToDate(next.hour, next.minute));
+        const { permissionDenied, scheduled } = await syncWeeklyReviewReminderNotification(next);
+        if (next.enabled && permissionDenied) {
+          Alert.alert(
+            '需要通知权限',
+            '已保存提醒设置，但系统未授予通知权限，提醒将无法送达。请在系统设置中为本应用开启通知。',
+          );
+        } else if (next.enabled && !scheduled && Platform.OS !== 'web') {
+          Alert.alert(
+            '提醒未生效',
+            configuredDow === null
+              ? '请先选定每周复盘日，再开启周复盘提醒。'
+              : '请稍后再试，或检查系统通知设置。',
+          );
+        }
+      } catch (e) {
+        console.warn('weekly review reminder', e);
+        toast.error(toUserMessage(e, '保存失败，请稍后重试'));
+      } finally {
+        setWeeklyReminderBusy(false);
+      }
+    },
+    [configuredDow],
   );
 
   const persistPointsSettings = useCallback(async (next: ReviewPointsSettings) => {
@@ -333,6 +383,8 @@ export function ReviewSettingsScreen() {
         await setWeeklyReviewConfiguredWeekday(d);
         setConfiguredDow(d);
         toast.success(`周复盘日已设为每${WEEKLY_REVIEW_WEEKDAY_LABELS[d]}`);
+        void syncDailyReviewReminderNotification();
+        void syncWeeklyReviewReminderNotification();
         void reload();
       } catch (e) {
         toast.error(toUserMessage(e, '保存失败，请稍后重试'));
@@ -341,6 +393,35 @@ export function ReviewSettingsScreen() {
       }
     },
     [configuredDow, reload, weekdayBusy],
+  );
+
+  const onToggleWeeklyReminder = useCallback(() => {
+    const nextEnabled = !weeklyReminderEnabled;
+    const { hour, minute } = readWeeklyReviewReminderTimeFromDate(weeklyReminderTime);
+    void persistWeeklyReminder({ enabled: nextEnabled, hour, minute });
+  }, [persistWeeklyReminder, weeklyReminderEnabled, weeklyReminderTime]);
+
+  const onConfirmWeeklyReminderTime = useCallback(() => {
+    const { hour, minute } = readWeeklyReviewReminderTimeFromDate(weeklyReminderTime);
+    setWeeklyReminderTimePickerOpen(false);
+    void persistWeeklyReminder({ enabled: weeklyReminderEnabled, hour, minute });
+  }, [persistWeeklyReminder, weeklyReminderEnabled, weeklyReminderTime]);
+
+  const onWeeklyReminderTimePickerChange = useCallback(
+    (event: DateTimePickerEvent, date?: Date) => {
+      if (Platform.OS === 'android') {
+        setWeeklyReminderTimePickerOpen(false);
+      }
+      if (event.type === 'dismissed') return;
+      if (!date) return;
+      const { hour, minute } = readWeeklyReviewReminderTimeFromDate(date);
+      const normalized = weeklyReviewReminderTimeToDate(hour, minute);
+      setWeeklyReminderTime(normalized);
+      if (Platform.OS === 'android') {
+        void persistWeeklyReminder({ enabled: weeklyReminderEnabled, hour, minute });
+      }
+    },
+    [persistWeeklyReminder, weeklyReminderEnabled],
   );
 
   const todayDow = useMemo(() => ymdToDate(todayYmd).getDay(), [todayYmd]);
@@ -547,7 +628,71 @@ export function ReviewSettingsScreen() {
             <View style={styles.hintLine}>
               <MaterialIcons name="notifications-active" size={12} color={palette.sage} />
               <Text style={[styles.hintText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
-                通知权限正常 · 当天若已填写会自动跳过，不打扰。
+                点通知会打开当日复盘，并尽量进入第一个未写维度。
+              </Text>
+            </View>
+          </FoldCard>
+
+          <FoldCard style={styles.card}>
+            <CardHead title="周复盘提醒" hint="仅复盘日 · 写完停催" />
+            <View style={styles.toggleRow}>
+              <View style={[styles.rowIcon, { backgroundColor: fold.sage2 }]}>
+                <MaterialIcons name="event-note" size={18} color={fold.pine} />
+              </View>
+              <View style={styles.toggleText}>
+                <Text style={[styles.rowTitle, { color: fold.ink }]} maxFontSizeMultiplier={1.3}>
+                  复盘日提醒我写周刊
+                </Text>
+                <Text style={[styles.rowSub, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                  {configuredDow === null
+                    ? '请先选定上方每周复盘日'
+                    : `每${WEEKLY_REVIEW_WEEKDAY_LABELS[configuredDow]}催一次`}
+                </Text>
+              </View>
+              <FoldSwitch
+                value={weeklyReminderEnabled}
+                onValueChange={onToggleWeeklyReminder}
+                disabled={weeklyReminderBusy || configuredDow === null}
+                accessibilityLabel="周复盘提醒开关"
+              />
+            </View>
+
+            <Pressable
+              onPress={() => {
+                if (Platform.OS === 'web') return;
+                if (!weeklyReminderEnabled || configuredDow === null) return;
+                setWeeklyReminderTimePickerOpen(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="设置周复盘提醒时间"
+              style={({ pressed }) => [styles.timeRow, { opacity: pressed ? 0.85 : 1 }]}>
+              <Text style={[styles.timeLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.25}>
+                提醒时间
+              </Text>
+              <View style={styles.timeRight}>
+                <View
+                  style={[
+                    styles.timeChip,
+                    {
+                      backgroundColor: fold.paper2,
+                      borderColor: fold.line,
+                      opacity: weeklyReminderEnabled ? 1 : 0.55,
+                    },
+                  ]}>
+                  <Text style={[styles.timeValue, { color: fold.ink }]} maxFontSizeMultiplier={1.25}>
+                    {formatWeeklyReviewReminderClock(
+                      weeklyReminderTime.getHours(),
+                      weeklyReminderTime.getMinutes(),
+                    )}
+                  </Text>
+                </View>
+              </View>
+            </Pressable>
+
+            <View style={styles.hintLine}>
+              <MaterialIcons name="notifications-active" size={12} color={palette.sage} />
+              <Text style={[styles.hintText, { color: fold.muted }]} maxFontSizeMultiplier={1.3}>
+                复盘日当天只推周提醒，不推日提醒。
               </Text>
             </View>
           </FoldCard>
@@ -789,6 +934,69 @@ export function ReviewSettingsScreen() {
               </Pressable>
               <Pressable
                 onPress={onConfirmDailyReminderTime}
+                style={({ pressed }) => [
+                  styles.reminderPickerBtn,
+                  {
+                    backgroundColor: fold.pine,
+                    borderColor: fold.pine,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}>
+                <Text style={[styles.reminderPickerBtnText, { color: fold.onPineButton }]}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {weeklyReminderTimePickerOpen && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={weeklyReminderTime}
+          mode="time"
+          display="default"
+          is24Hour
+          onChange={onWeeklyReminderTimePickerChange}
+        />
+      ) : null}
+
+      <Modal
+        visible={weeklyReminderTimePickerOpen && Platform.OS === 'ios'}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWeeklyReminderTimePickerOpen(false)}>
+        <View style={styles.reminderTimeModalRoot}>
+          <Pressable
+            style={[styles.reminderTimeModalBackdrop, { backgroundColor: 'rgba(18,26,22,0.35)' }]}
+            onPress={() => setWeeklyReminderTimePickerOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭"
+          />
+          <View
+            style={[
+              styles.reminderTimePickerCard,
+              { backgroundColor: fold.card, borderColor: fold.line },
+            ]}>
+            <Text style={[styles.modalTitle, { color: fold.ink }]}>选择周复盘提醒时间</Text>
+            <DateTimePicker
+              value={weeklyReminderTime}
+              mode="time"
+              display="spinner"
+              is24Hour
+              themeVariant={isDark ? 'dark' : 'light'}
+              locale="zh_CN"
+              onChange={onWeeklyReminderTimePickerChange}
+            />
+            <View style={styles.reminderPickerActions}>
+              <Pressable
+                onPress={() => setWeeklyReminderTimePickerOpen(false)}
+                style={({ pressed }) => [
+                  styles.reminderPickerBtn,
+                  { borderColor: fold.line, opacity: pressed ? 0.85 : 1 },
+                ]}>
+                <Text style={[styles.reminderPickerBtnText, { color: fold.muted }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={onConfirmWeeklyReminderTime}
                 style={({ pressed }) => [
                   styles.reminderPickerBtn,
                   {

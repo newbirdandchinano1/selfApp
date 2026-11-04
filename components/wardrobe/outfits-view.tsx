@@ -5,7 +5,7 @@ import {
   type WardrobeItem,
   type WardrobeOutfit,
 } from '@/components/wardrobe/data';
-import { WardrobeGarment } from '@/components/wardrobe/garments';
+import { WardrobeGarment, wardrobeItemPhotoSurface } from '@/components/wardrobe/garments';
 import { IconArrow } from '@/components/wardrobe/icons';
 import { PageTitleItal } from '@/components/wardrobe/page-title-ital';
 import { FoldRiseIn, FOLD_MOTION_SPRING, useFoldMotionGate } from '@/components/review/fold-motion';
@@ -59,7 +59,7 @@ function Collage({
               {
                 width: big ? 72 : size.w,
                 height: big ? 90 : size.h,
-                backgroundColor: item.tint,
+                backgroundColor: wardrobeItemPhotoSurface(item, w.card),
               },
               index === 0 && styles.mini0,
               index === 1 && styles.mini1,

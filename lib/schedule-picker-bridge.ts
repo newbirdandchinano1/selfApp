@@ -16,6 +16,8 @@ export type SchedulePickerResult = {
   /** 提醒触发的本地时刻；仅当 reminderOption !== '不提前' 时有效 */
   reminderHour?: number;
   reminderMinute?: number;
+  /** 入格开始前提前量覆盖（分钟）；缺省用通知中心默认 */
+  advanceMinutesOverride?: number;
   repeatOption: SchedulePickerRepeatOption;
   repeatSummary: string;
   weeklyDays: number[];
@@ -36,6 +38,7 @@ export type SchedulePickerInitPayload = {
   reminderOption?: SchedulePickerReminderOption;
   reminderHour?: number;
   reminderMinute?: number;
+  advanceMinutesOverride?: number;
   repeatOption?: SchedulePickerRepeatOption;
   repeatSummary?: string;
   weeklyDays?: number[];

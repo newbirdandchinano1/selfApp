@@ -170,7 +170,7 @@ export function FoldSegment<T extends string>({
   onChange,
   style,
 }: {
-  options: readonly { value: T; label: string }[];
+  options: readonly { value: T; label: string; badge?: boolean }[];
   value: T;
   onChange: (next: T) => void;
   style?: StyleProp<ViewStyle>;
@@ -232,13 +232,16 @@ export function FoldSegment<T extends string>({
             onPress={() => onChange(option.value)}
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
-            accessibilityLabel={option.label}
+            accessibilityLabel={option.badge ? `${option.label}，有未读提醒` : option.label}
             style={({ pressed }) => [styles.segmentItem, { opacity: pressed ? 0.8 : 1 }]}>
-            <Text
-              style={[styles.segmentText, { color: active ? fold.ink : fold.muted }]}
-              maxFontSizeMultiplier={1.3}>
-              {option.label}
-            </Text>
+            <View style={styles.segmentLabelWrap}>
+              <Text
+                style={[styles.segmentText, { color: active ? fold.ink : fold.muted }]}
+                maxFontSizeMultiplier={1.3}>
+                {option.label}
+              </Text>
+              {option.badge ? <View style={styles.segmentBadgeDot} /> : null}
+            </View>
           </Pressable>
         );
       })}
@@ -558,6 +561,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  segmentLabelWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  segmentBadgeDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#EF4444',
   },
   tag: {
     height: 19,

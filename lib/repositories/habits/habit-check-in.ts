@@ -10,6 +10,12 @@ export function habitCheckInRowId(habitId: string, recordDateYmd: string): strin
   return makeCompositeEntityId('hci_', habitId, recordDateYmd.replace(/-/g, ''));
 }
 
+function notifyHabitsTodayWidget(): void {
+  void import('@/lib/widgets/habits-today-widget-sync')
+    .then(({ scheduleHabitsTodayWidgetSync }) => scheduleHabitsTodayWidgetSync('habit-check-in'))
+    .catch(() => {});
+}
+
 let habitCheckInApiSyncChain: Promise<void> = Promise.resolve();
 
 /** 将 habit_check_ins 待同步行推送到 REST；补卡/撤销后应 `awaitSync: true` 再 reload */
@@ -207,6 +213,7 @@ export async function upsertHabitDayCount(
     }
     invalidateInflightApiTableFetch('habit_check_ins');
     await pushHabitCheckInChangesToApi({ awaitSync: true });
+    notifyHabitsTodayWidget();
     return;
   }
 
@@ -258,6 +265,7 @@ export async function upsertHabitDayCount(
     }
     invalidateInflightApiTableFetch('habit_check_ins');
     await pushHabitCheckInChangesToApi({ awaitSync: true });
+    notifyHabitsTodayWidget();
     return;
   }
 
@@ -271,6 +279,7 @@ export async function upsertHabitDayCount(
   );
   invalidateInflightApiTableFetch('habit_check_ins');
   await pushHabitCheckInChangesToApi({ awaitSync: true });
+  notifyHabitsTodayWidget();
 }
 
 /**

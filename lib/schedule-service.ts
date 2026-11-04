@@ -1,12 +1,16 @@
 import { assignFrogForDay, unassignFrogForDay } from '@/lib/frog-candidates-api';
 import {
   axisFromSnapshot,
+  breakIntersectingInterval,
   breaksEqual,
+  deriveSlotSpanForMinutes,
+  formatScheduleAxisTimeLabel,
   getSlotCount,
   maxSpanFromSlot,
   normalizeAxisSettings,
   remapPlacementsForSlotHours,
   validateAxisRange,
+  workCoverageMinutes,
 } from '@/lib/schedule/axis';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import type {
@@ -52,6 +56,8 @@ import {
 } from '@/lib/schedule-api';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { clampSlotHours } from '@/lib/schedule/axis';
+import { normalizePlacementsMinutesInMemory, resolvePlacementInterval } from '@/lib/schedule/timeline/from-placement';
+import { mergeRemotePlacementMinutes } from '@/lib/schedule/timeline/merge-remote-minutes';
 
 export type WeekScheduleView = {
   weekStartYmd: string;
@@ -88,7 +94,9 @@ export async function loadWeekSchedule(
   const { axis, fromSnapshot } = await resolveAxisForWeek(weekStartYmd, logicalTodayYmd);
 
   // 本地优先：展示绝不阻塞在远程请求上（远程慢/挂起会导致「改完不刷新」）
-  const placements = await listPlacementsForWeek(weekStartYmd);
+  const rawPlacements = await listPlacementsForWeek(weekStartYmd);
+  // 阶段 C：内存填充 derived 分钟，不回写 DB
+  const placements = normalizePlacementsMinutesInMemory(rawPlacements, axis);
   const orphanedCount = placements.filter((p) => p.orphaned || p.startSlotIndex == null).length;
   const view: WeekScheduleView = {
     weekStartYmd,
@@ -142,7 +150,9 @@ export async function loadScheduleForDayWindow(
       byId.set(p.id, p);
     }
   }
-  const placements = [...byId.values()];
+  // 各周已在 loadWeekSchedule 内按**该周轴** normalize；跨周窗口再按展示轴补一遍，
+  // 避免邻周快照轴与当前展示轴不一致时分钟缺失（仍不回写 DB）。
+  const placements = normalizePlacementsMinutesInMemory([...byId.values()], axis);
   return {
     weekStartYmd: axisWeek,
     editable: isEditableWeek(axisWeek, logicalTodayYmd),
@@ -226,12 +236,17 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
       if (!p.id) continue;
       if (pendingIds.has(p.id)) continue;
       const existing = localById.get(p.id);
+      // 远端缺/null 分钟时不抹本地已有分钟（阶段 E / 决议桌面不覆盖为 null）
+      const mergedMins = mergeRemotePlacementMinutes(p, existing);
       if (
         existing &&
         existing.weekStartYmd === p.weekStartYmd &&
         existing.weekday === p.weekday &&
         existing.startSlotIndex === p.startSlotIndex &&
         existing.spanSlots === p.spanSlots &&
+        existing.startMinutes === mergedMins.startMinutes &&
+        existing.endMinutes === mergedMins.endMinutes &&
+        existing.allDay === mergedMins.allDay &&
         existing.subjectKind === p.subjectKind &&
         existing.subjectId === p.subjectId &&
         existing.orphaned === (p.orphaned ? 1 : 0) &&
@@ -245,6 +260,9 @@ async function hydrateWeekFromRemote(weekStartYmd: string): Promise<number> {
         weekday: p.weekday,
         startSlotIndex: p.startSlotIndex,
         spanSlots: p.spanSlots,
+        startMinutes: mergedMins.startMinutes,
+        endMinutes: mergedMins.endMinutes,
+        allDay: mergedMins.allDay,
         subjectKind: p.subjectKind,
         subjectId: p.subjectId,
         orphaned: p.orphaned,
@@ -399,6 +417,161 @@ export async function placeFrogOnSchedule(params: {
   return row;
 }
 
+/** 阶段 G：同主体同日分钟区间是否冲突（半开；可排除自身） */
+async function assertSubjectNotAlreadyInInterval(params: {
+  axis: Omit<ScheduleAxisSettings, 'updatedAt'>;
+  weekStartYmd: string;
+  weekday: number;
+  startMinutes: number;
+  endMinutes: number;
+  subjectKind: ScheduleSubjectKind;
+  subjectId: string;
+  excludePlacementId?: string;
+}): Promise<void> {
+  const existing = await listSubjectPlacementsOnDay(
+    params.weekStartYmd,
+    params.weekday,
+    params.subjectKind,
+    params.subjectId,
+  );
+  const conflict = existing.find((p) => {
+    if (params.excludePlacementId && p.id === params.excludePlacementId) return false;
+    if (p.orphaned) return false;
+    const iv = resolvePlacementInterval(p, params.axis);
+    if (!iv) return false;
+    return params.startMinutes < iv.endMinutes && iv.startMinutes < params.endMinutes;
+  });
+  if (conflict) {
+    throw new Error('该项在该时段已有占用，请选择其他时间');
+  }
+}
+
+/** 阶段 G：分钟写入的校验 + 派生 slot（双写）。返回可直接入库的区间与格段。 */
+function resolveMinuteWriteInterval(params: {
+  axis: Omit<ScheduleAxisSettings, 'updatedAt'>;
+  startMinutes: number;
+  endMinutes: number;
+  allDay?: boolean;
+}): {
+  startMinutes: number;
+  endMinutes: number;
+  allDay: number;
+  startSlotIndex: number;
+  spanSlots: number;
+} {
+  const coverage = workCoverageMinutes(params.axis);
+  if (!coverage) throw new Error('当前时间轴没有可排时段');
+
+  let startMinutes: number;
+  let endMinutes: number;
+  let allDay = 0;
+
+  if (params.allDay) {
+    startMinutes = coverage.startMinutes;
+    endMinutes = coverage.endMinutes;
+    allDay = 1;
+  } else {
+    startMinutes = Math.round(params.startMinutes);
+    endMinutes = Math.round(params.endMinutes);
+    if (!(endMinutes > startMinutes)) {
+      throw new Error('结束时间须晚于开始时间');
+    }
+    if (
+      startMinutes < params.axis.startMinutes ||
+      endMinutes > params.axis.endMinutes
+    ) {
+      throw new Error(
+        `所选时段须落在 ${formatScheduleAxisTimeLabel(params.axis.startMinutes)}–${formatScheduleAxisTimeLabel(params.axis.endMinutes)} 内`,
+      );
+    }
+    const brk = breakIntersectingInterval(params.axis, startMinutes, endMinutes);
+    if (brk) {
+      throw new Error(
+        `该时段跨越「${brk.label?.trim() || '休息'}」${formatScheduleAxisTimeLabel(brk.startMinutes)}–${formatScheduleAxisTimeLabel(brk.endMinutes)}，请避开`,
+      );
+    }
+  }
+
+  const cover = deriveSlotSpanForMinutes(params.axis, startMinutes, endMinutes);
+  if (!cover) throw new Error('开始时间须落在可排时段内（避开休息）');
+
+  return {
+    startMinutes,
+    endMinutes,
+    allDay,
+    startSlotIndex: cover.startSlotIndex,
+    spanSlots: cover.spanSlots,
+  };
+}
+
+/**
+ * 阶段 G：按分钟入格（可自由起止；allDay=true 铺满当日可排时段）。
+ * 写入同时派生 slot 双写，旧课表仍可读；禁跨 break / 同主体重叠。
+ */
+export async function placeFrogOnScheduleAt(params: {
+  weekStartYmd: string;
+  weekday: number;
+  startMinutes: number;
+  endMinutes: number;
+  allDay?: boolean;
+  subjectKind: ScheduleSubjectKind;
+  subjectId: string;
+  logicalTodayYmd: string;
+}): Promise<SchedulePlacementRow> {
+  await ensureScheduleTables();
+  const assignYmd = ymdForWeekday(params.weekStartYmd, params.weekday);
+  if (!isEditableScheduleDay(assignYmd, params.logicalTodayYmd)) {
+    throw new Error('过去日程不可编辑');
+  }
+  const { axis } = await resolveAxisForWeek(params.weekStartYmd, params.logicalTodayYmd);
+  const resolved = resolveMinuteWriteInterval({
+    axis,
+    startMinutes: params.startMinutes,
+    endMinutes: params.endMinutes,
+    allDay: params.allDay,
+  });
+
+  await assertSubjectNotAlreadyInInterval({
+    axis,
+    weekStartYmd: params.weekStartYmd,
+    weekday: params.weekday,
+    startMinutes: resolved.startMinutes,
+    endMinutes: resolved.endMinutes,
+    subjectKind: params.subjectKind,
+    subjectId: params.subjectId,
+  });
+
+  const input: SchedulePlacementInput = {
+    weekStartYmd: params.weekStartYmd,
+    weekday: params.weekday,
+    startSlotIndex: resolved.startSlotIndex,
+    spanSlots: resolved.spanSlots,
+    startMinutes: resolved.startMinutes,
+    endMinutes: resolved.endMinutes,
+    allDay: resolved.allDay,
+    subjectKind: params.subjectKind,
+    subjectId: params.subjectId,
+  };
+  const row = await insertPlacement(input);
+  notifyFrogScheduleChanged();
+
+  try {
+    await assignFrogForDay({
+      kind: params.subjectKind,
+      id: params.subjectId,
+      assignYmd,
+    });
+  } catch (err) {
+    await softDeletePlacement(row.id);
+    notifyFrogScheduleChanged();
+    throw err;
+  }
+
+  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  notifyFrogScheduleChanged();
+  return row;
+}
+
 /** 未入格占用重新落入时间格（可改日）；已指派日按需迁移 */
 export async function rematerializeOrphanedPlacement(params: {
   placementId: string;
@@ -474,6 +647,100 @@ export async function rematerializeOrphanedPlacement(params: {
         startSlotIndex: null,
         spanSlots: placement.spanSlots,
         orphaned: true,
+      });
+      notifyFrogScheduleChanged();
+      throw err;
+    }
+  }
+
+  const row = (await getPlacementById(placement.id))!;
+  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  notifyFrogScheduleChanged();
+  return row;
+}
+
+/** 阶段 G：未入格占用按分钟重新落入时段（可改日）；已指派日按需迁移 */
+export async function rematerializeOrphanedPlacementAtMinutes(params: {
+  placementId: string;
+  assignYmd: string;
+  startMinutes: number;
+  endMinutes: number;
+  allDay?: boolean;
+  logicalTodayYmd: string;
+}): Promise<SchedulePlacementRow> {
+  await ensureScheduleTables();
+  const placement = await getPlacementById(params.placementId);
+  if (!placement) throw new Error('占用不存在');
+  if (!(placement.orphaned || placement.startSlotIndex == null)) {
+    throw new Error('该项已在时段内');
+  }
+  if (!isEditableScheduleDay(params.assignYmd, params.logicalTodayYmd)) {
+    throw new Error('过去日程不可编辑');
+  }
+
+  const weekStartYmd = getWeekStartMondayYmd(params.assignYmd);
+  const weekday = weekdayFromYmd(params.assignYmd);
+  const { axis } = await resolveAxisForWeek(weekStartYmd, params.logicalTodayYmd);
+  const resolved = resolveMinuteWriteInterval({
+    axis,
+    startMinutes: params.startMinutes,
+    endMinutes: params.endMinutes,
+    allDay: params.allDay,
+  });
+
+  await assertSubjectNotAlreadyInInterval({
+    axis,
+    weekStartYmd,
+    weekday,
+    startMinutes: resolved.startMinutes,
+    endMinutes: resolved.endMinutes,
+    subjectKind: placement.subjectKind,
+    subjectId: placement.subjectId,
+    excludePlacementId: placement.id,
+  });
+
+  const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+
+  await updatePlacementSlots(placement.id, {
+    weekStartYmd,
+    weekday,
+    startSlotIndex: resolved.startSlotIndex,
+    spanSlots: resolved.spanSlots,
+    orphaned: false,
+    startMinutes: resolved.startMinutes,
+    endMinutes: resolved.endMinutes,
+    allDay: resolved.allDay,
+  });
+
+  if (oldYmd !== params.assignYmd) {
+    const remainOnOld = (
+      await listSubjectPlacementsOnDay(
+        placement.weekStartYmd,
+        placement.weekday,
+        placement.subjectKind,
+        placement.subjectId,
+      )
+    ).filter((p) => p.id !== placement.id).length;
+    if (remainOnOld === 0) {
+      await unassignSubjectDay(placement.subjectKind, placement.subjectId, oldYmd);
+    }
+    try {
+      await assignFrogForDay({
+        kind: placement.subjectKind,
+        id: placement.subjectId,
+        assignYmd: params.assignYmd,
+      });
+    } catch (err) {
+      // 回滚为未入格，避免「时段内但未指派」
+      await updatePlacementSlots(placement.id, {
+        weekStartYmd: placement.weekStartYmd,
+        weekday: placement.weekday,
+        startSlotIndex: null,
+        spanSlots: placement.spanSlots,
+        orphaned: true,
+        startMinutes: null,
+        endMinutes: null,
+        allDay: null,
       });
       notifyFrogScheduleChanged();
       throw err;

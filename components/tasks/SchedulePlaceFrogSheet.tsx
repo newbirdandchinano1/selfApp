@@ -13,7 +13,9 @@ import {
 import { fetchFrogCandidates, type FrogCandidate } from '@/lib/frog-candidates-api';
 import { DEFAULT_PROJECT_TAG_COLOR } from '@/lib/repositories/projects/project-tag.types';
 import { getProjectTags } from '@/lib/repositories/projects/project-tag';
-import type { ScheduleSubjectKind } from '@/lib/schedule/types';
+import { breakIntersectingInterval, formatMinutesAsHm } from '@/lib/schedule/axis';
+import { formatEventDuration } from '@/lib/schedule/timeline/layout';
+import type { ScheduleBreak, ScheduleSubjectKind } from '@/lib/schedule/types';
 import { isTaskDueOverdue } from '@/lib/standalone-todo-visibility';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -40,6 +42,18 @@ export type SchedulePlaceResult = {
   assignYmd: string;
   /** 占用当日全部可排格（从第 0 格起）；父级应忽略点选格的 startSlotIndex */
   allDay?: boolean;
+  /** 阶段 G：按分钟写入时的开始分钟（逻辑日轴；全天时省略） */
+  startMinutes?: number;
+  /** 阶段 G：按分钟写入时的结束分钟（半开；全天时省略） */
+  endMinutes?: number;
+};
+
+/** 阶段 G：分钟写入所需的时间轴 */
+export type ScheduleMinuteAxis = {
+  startMinutes: number;
+  endMinutes: number;
+  slotHours: number;
+  breaks?: ScheduleBreak[];
 };
 
 export type SchedulePlaceTag = { name: string; color: string };
@@ -73,6 +87,14 @@ type Props = {
   lockedProjectIds?: Set<string>;
   /** 已选定主体时跳过列表，只选占用格数 */
   preselected?: SchedulePlacePreselected | null;
+  /** 阶段 G：按分钟选择起止（时间线 write 开关开时启用） */
+  minuteMode?: boolean;
+  /** 阶段 G：分钟模式下的时间轴（校验起止 / 禁跨 break） */
+  axis?: ScheduleMinuteAxis | null;
+  /** 阶段 G：分钟模式默认开始分钟（通常为点选格起点） */
+  defaultStartMinutes?: number;
+  /** 阶段 G：分钟模式默认结束分钟（通常为点选格终点） */
+  defaultEndMinutes?: number;
   onConfirm: (result: SchedulePlaceResult) => Promise<void> | void;
 };
 
@@ -229,6 +251,129 @@ function isLockedByProjects(it: FrogCandidate, locked: Set<string>): boolean {
   if (it.kind === 'task' && it.projectId && locked.has(it.projectId)) return true;
   if (it.kind === 'project' && locked.has(it.id)) return true;
   return false;
+}
+
+/** 轴分钟 → HH:MM 输入串（支持跨午夜，如 25:30） */
+function axisTimeInputValue(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+/** HH:MM / HHMM / HH → 轴分钟；非法返回 null（小时上限 47 支持跨午夜） */
+function parseAxisTimeInput(text: string): number | null {
+  const m = /^(\d{1,2}):?(\d{0,2})$/.exec(text.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = m[2] ? Number(m[2]) : 0;
+  if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 47 || min < 0 || min > 59) {
+    return null;
+  }
+  return h * 60 + min;
+}
+
+/** 阶段 G：单个时刻输入（−5 / HH:MM / +5）；支持自由分钟与跨午夜 */
+function AxisTimeField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  tf,
+  fonts,
+  isDark,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+  tf: TaskFoldPalette;
+  fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
+  isDark: boolean;
+}) {
+  const [text, setText] = React.useState(() => axisTimeInputValue(value));
+  const [focused, setFocused] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!focused) setText(axisTimeInputValue(value));
+  }, [value, focused]);
+
+  const clampToRange = (n: number) => Math.min(max, Math.max(min, n));
+
+  const commit = React.useCallback(() => {
+    const parsed = parseAxisTimeInput(text);
+    if (parsed == null) {
+      setText(axisTimeInputValue(value));
+      return;
+    }
+    const next = clampToRange(parsed);
+    onChange(next);
+    setText(axisTimeInputValue(next));
+    // clampToRange 依赖 min/max；按值变化重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, value, min, max, onChange]);
+
+  const step = (delta: number) => {
+    const next = clampToRange(value + delta);
+    onChange(next);
+    setText(axisTimeInputValue(next));
+  };
+
+  return (
+    <View style={styles.timeFieldRow}>
+      <Text style={[styles.timeFieldLabel, { color: tf.muted }]}>{label}</Text>
+      <Pressable
+        onPress={() => step(-5)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}减5分钟`}
+        style={({ pressed }) => [
+          styles.timeStepBtn,
+          { borderColor: tf.line2, opacity: pressed ? 0.8 : 1 },
+        ]}>
+        <Text style={{ color: tf.ink2, fontWeight: '700', fontFamily: fonts.mono }}>−5</Text>
+      </Pressable>
+      <View
+        style={[
+          styles.timeInputWrap,
+          {
+            borderColor: focused ? tf.pond : tf.line2,
+            backgroundColor: isDark ? tf.paper3 : 'rgba(255,252,245,0.72)',
+          },
+        ]}>
+        <TextInput
+          value={text}
+          onChangeText={(next) => {
+            setText(next);
+            // 输入过程中即向上同步可解析值，避免用户输入后直接点确认时读到旧值
+            const parsed = parseAxisTimeInput(next);
+            if (parsed != null) onChange(clampToRange(parsed));
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            commit();
+          }}
+          onSubmitEditing={commit}
+          keyboardType="numbers-and-punctuation"
+          returnKeyType="done"
+          maxLength={5}
+          placeholder="HH:MM"
+          placeholderTextColor={tf.faint}
+          style={[styles.timeInput, { color: tf.ink2, fontFamily: fonts.mono }]}
+        />
+      </View>
+      <Pressable
+        onPress={() => step(5)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}加5分钟`}
+        style={({ pressed }) => [
+          styles.timeStepBtn,
+          { borderColor: tf.line2, opacity: pressed ? 0.8 : 1 },
+        ]}>
+        <Text style={{ color: tf.ink2, fontWeight: '700', fontFamily: fonts.mono }}>+5</Text>
+      </Pressable>
+    </View>
+  );
 }
 
 /** 圆形 lily 底 frogmark；入场跳一次 */
@@ -478,6 +623,10 @@ export function SchedulePlaceFrogSheet({
   initialAllDay = false,
   lockedProjectIds,
   preselected,
+  minuteMode = false,
+  axis,
+  defaultStartMinutes,
+  defaultEndMinutes,
   onConfirm,
 }: Props) {
   const insets = useSafeAreaInsets();
@@ -501,6 +650,12 @@ export function SchedulePlaceFrogSheet({
   const [query, setQuery] = React.useState('');
   const [onlyEligible, setOnlyEligible] = React.useState(false);
   const [blockedOpen, setBlockedOpen] = React.useState(false);
+
+  const axisStart = axis?.startMinutes ?? 8 * 60;
+  const axisEnd = axis?.endMinutes ?? 22 * 60;
+  const slotSpanMins = Math.max(30, Math.round((axis?.slotHours ?? 2) * 60));
+  const [startM, setStartM] = React.useState(axisStart);
+  const [endM, setEndM] = React.useState(Math.min(axisEnd, axisStart + slotSpanMins));
 
   const scrim = React.useRef(new Animated.Value(0)).current;
   const sheetY = React.useRef(new Animated.Value(1)).current;
@@ -545,7 +700,25 @@ export function SchedulePlaceFrogSheet({
     const preferAllDay = !!initialAllDay;
     setAllDay(preferAllDay);
     setSpan(preferAllDay ? fullDaySlots : 1);
-  }, [visible, assignYmd, initialAllDay, fullDaySlots]);
+
+    const initStart =
+      defaultStartMinutes != null
+        ? Math.min(axisEnd, Math.max(axisStart, defaultStartMinutes))
+        : axisStart;
+    const initEndRaw = defaultEndMinutes != null ? defaultEndMinutes : initStart + slotSpanMins;
+    setStartM(initStart);
+    setEndM(Math.min(axisEnd, Math.max(initStart + 5, initEndRaw)));
+  }, [
+    visible,
+    assignYmd,
+    initialAllDay,
+    fullDaySlots,
+    defaultStartMinutes,
+    defaultEndMinutes,
+    axisStart,
+    axisEnd,
+    slotSpanMins,
+  ]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -635,12 +808,34 @@ export function SchedulePlaceFrogSheet({
   }, [visible, tagColorByName, preselected, logicalToday, assignYmd]);
 
   const effectiveSpan = allDay ? fullDaySlots : span;
+  const minuteRangeValid = React.useMemo(() => {
+    if (!minuteMode) return true;
+    if (allDay) return true;
+    if (!(endM > startM)) return false;
+    if (startM < axisStart || endM > axisEnd) return false;
+    if (axis && breakIntersectingInterval(axis, startM, endM)) return false;
+    return true;
+  }, [minuteMode, allDay, endM, startM, axisStart, axisEnd, axis]);
+  const minuteConflictLabel = React.useMemo(() => {
+    if (!minuteMode || allDay) return '';
+    if (!(endM > startM)) return '结束时间须晚于开始';
+    if (startM < axisStart || endM > axisEnd) return '超出可排时间轴';
+    if (axis) {
+      const brk = breakIntersectingInterval(axis, startM, endM);
+      if (brk) return `与「${brk.label?.trim() || '休息'}」重叠，请避开`;
+    }
+    return '';
+  }, [minuteMode, allDay, endM, startM, axisStart, axisEnd, axis]);
+  const minuteDurationLabel =
+    minuteMode && !allDay && endM > startM ? formatEventDuration(startM, endM) : '';
   const canConfirm =
     !!picked &&
     !saving &&
     (allDay
       ? canAssignAllDay
-      : span >= 1 && span <= maxSpan);
+      : minuteMode
+        ? minuteRangeValid
+        : span >= 1 && span <= maxSpan);
   const showList = !preselected && !picked;
   const dateLabel = formatAssignTitle(assignYmd);
 
@@ -691,6 +886,7 @@ export function SchedulePlaceFrogSheet({
         spanSlots: effectiveSpan,
         assignYmd,
         allDay: allDay || undefined,
+        ...(minuteMode && !allDay ? { startMinutes: startM, endMinutes: endM } : {}),
       });
       onClose();
     } catch (err) {
@@ -698,7 +894,7 @@ export function SchedulePlaceFrogSheet({
     } finally {
       setSaving(false);
     }
-  }, [picked, canConfirm, onConfirm, effectiveSpan, assignYmd, allDay, onClose]);
+  }, [picked, canConfirm, onConfirm, effectiveSpan, assignYmd, allDay, minuteMode, startM, endM, onClose]);
 
   const sheetBg = isDark ? tf.paper2 : tf.card;
   const translateY = sheetY.interpolate({
@@ -735,11 +931,80 @@ export function SchedulePlaceFrogSheet({
       </FoldPopIn>
 
       <Text style={[styles.spanHint, { color: tf.muted }]}>
-        {allDay
-          ? '全天 · 放入顶部全天格，不占用时段'
-          : `连续占用格数（最多 ${maxSpan}）`}
+        {minuteMode
+          ? allDay
+            ? '全天 · 铺满当日可排时段'
+            : '选择开始 / 结束时刻（精确到分钟）'
+          : allDay
+            ? '全天 · 放入顶部全天格，不占用时段'
+            : `连续占用格数（最多 ${maxSpan}）`}
       </Text>
+
+      {minuteMode && !allDay ? (
+        <View style={styles.timeFields}>
+          <AxisTimeField
+            label="开始"
+            value={startM}
+            min={axisStart}
+            max={Math.max(axisStart, axisEnd - 5)}
+            onChange={(v) => {
+              setStartM(v);
+              if (v >= endM) setEndM(Math.min(axisEnd, v + 5));
+            }}
+            tf={tf}
+            fonts={fonts}
+            isDark={isDark}
+          />
+          <AxisTimeField
+            label="结束"
+            value={endM}
+            min={Math.min(axisEnd, axisStart + 5)}
+            max={axisEnd}
+            onChange={(v) => {
+              setEndM(v);
+              if (v <= startM) setStartM(Math.max(axisStart, v - 5));
+            }}
+            tf={tf}
+            fonts={fonts}
+            isDark={isDark}
+          />
+          <View style={styles.timeHintRow}>
+            <MaterialIcons
+              name={minuteConflictLabel ? 'error-outline' : 'schedule'}
+              size={13}
+              color={minuteConflictLabel ? tf.rose : tf.faint}
+            />
+            <Text
+              style={[styles.timeHintText, { color: minuteConflictLabel ? tf.rose : tf.faint }]}
+              numberOfLines={2}>
+              {minuteConflictLabel ||
+                `${minuteDurationLabel ? `${minuteDurationLabel} · ` : ''}${
+                  axis ? `可排 ${formatMinutesAsHm(axisStart)}–${formatMinutesAsHm(axisEnd)}` : ''
+                }`}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
       <View style={styles.spanRow}>
+        {minuteMode ? (
+          <Pressable
+            onPress={() => setAllDay(false)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !allDay }}
+            style={[
+              styles.spanChip,
+              {
+                borderColor: !allDay ? tf.pond : tf.line2,
+                backgroundColor: !allDay ? tf.lily2 : 'transparent',
+              },
+            ]}>
+            <MaterialIcons name="schedule" size={14} color={!allDay ? tf.pond : tf.muted} />
+            <Text style={{ color: !allDay ? tf.pond : tf.ink, fontWeight: '700', fontSize: 13 }}>
+              指定时段
+            </Text>
+          </Pressable>
+        ) : null}
         {canAssignAllDay ? (
           <Pressable
             onPress={() => {
@@ -772,33 +1037,35 @@ export function SchedulePlaceFrogSheet({
             </Text>
           </Pressable>
         ) : null}
-        {Array.from({ length: maxSpan }, (_, i) => i + 1).map((n) => {
-          const active = !allDay && span === n;
-          return (
-            <Pressable
-              key={n}
-              onPress={() => {
-                setAllDay(false);
-                setSpan(n);
-              }}
-              style={[
-                styles.spanChip,
-                {
-                  borderColor: active ? tf.pond : tf.line2,
-                  backgroundColor: active ? tf.lily2 : 'transparent',
-                },
-              ]}>
-              <Text
-                style={{
-                  color: active ? tf.pond : tf.ink,
-                  fontWeight: '700',
-                  fontFamily: fonts.mono,
-                }}>
-                {n}
-              </Text>
-            </Pressable>
-          );
-        })}
+        {!minuteMode
+          ? Array.from({ length: maxSpan }, (_, i) => i + 1).map((n) => {
+              const active = !allDay && span === n;
+              return (
+                <Pressable
+                  key={n}
+                  onPress={() => {
+                    setAllDay(false);
+                    setSpan(n);
+                  }}
+                  style={[
+                    styles.spanChip,
+                    {
+                      borderColor: active ? tf.pond : tf.line2,
+                      backgroundColor: active ? tf.lily2 : 'transparent',
+                    },
+                  ]}>
+                  <Text
+                    style={{
+                      color: active ? tf.pond : tf.ink,
+                      fontWeight: '700',
+                      fontFamily: fonts.mono,
+                    }}>
+                    {n}
+                  </Text>
+                </Pressable>
+              );
+            })
+          : null}
       </View>
 
       <View style={styles.foot2}>
@@ -836,7 +1103,7 @@ export function SchedulePlaceFrogSheet({
             <>
               <MaterialIcons name="cruelty-free" size={18} color={tf.onPond} />
               <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
-                {allDay ? '指派全天' : '确认入格'}
+                {allDay ? '指派全天' : minuteMode ? '确认时段' : '确认入格'}
               </Text>
             </>
           )}
@@ -878,12 +1145,14 @@ export function SchedulePlaceFrogSheet({
                   styles.sheetTitle,
                   { color: tf.pond, fontFamily: fonts.serif },
                 ]}>
-                {showList ? `把这件事放进 ${dateLabel}` : '选择占用格数'}
+                {showList ? `把这件事放进 ${dateLabel}` : minuteMode ? '选择时段' : '选择占用格数'}
               </Text>
               <Text style={[styles.sheetSub, { color: tf.muted }]}>
                 {showList
                   ? '先选任务或项目 · 已完成 / 搁置 / 未开始项目不可入格'
-                  : `放入 ${dateLabel} · 选格数或指派全天`}
+                  : minuteMode
+                    ? `放入 ${dateLabel} · 选起止时刻或指派全天`
+                    : `放入 ${dateLabel} · 选格数或指派全天`}
               </Text>
             </View>
             <Pressable
@@ -1228,6 +1497,47 @@ const styles = StyleSheet.create({
   previewTagText: { fontSize: 11, fontWeight: '700' },
   spanHint: { fontSize: 12 },
   spanRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  timeFields: { gap: 8 },
+  timeFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  timeFieldLabel: {
+    width: 34,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  timeStepBtn: {
+    width: 40,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  timeInputWrap: {
+    flex: 1,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  timeInput: {
+    fontSize: 16,
+    fontWeight: '700',
+    paddingVertical: 0,
+    textAlign: 'center',
+    letterSpacing: 1,
+  },
+  timeHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 2,
+  },
+  timeHintText: { flex: 1, fontSize: 11, lineHeight: 15 },
   spanChip: {
     minWidth: 44,
     height: 40,

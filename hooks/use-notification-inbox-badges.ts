@@ -1,4 +1,7 @@
-import { formatInboxBadgeCount } from '@/lib/notification-inbox-badge';
+import {
+  formatInboxBadgeCount,
+  formatInboxBadgeDot,
+} from '@/lib/notification-inbox-badge';
 import { subscribeNotificationInboxChanged } from '@/lib/notification-inbox-events';
 import {
   countUnreadByModuleTab,
@@ -6,7 +9,7 @@ import {
 } from '@/lib/repositories/notifications/notification-inbox';
 import { useCallback, useEffect, useState } from 'react';
 
-export { formatInboxBadgeCount };
+export { formatInboxBadgeCount, formatInboxBadgeDot };
 
 const EMPTY_COUNTS: UnreadCountByModuleTab = {
   index: 0,

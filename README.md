@@ -2,15 +2,17 @@
 
 Expo Router + React Native 自我管理应用（健康 / 任务 / 财务 / 复盘 / 我的）。
 
-**我的 · 道路**（年 / 季 / 月拆解）：`life_directions` + `life_road_nodes`（kind: multi / farther / year / quarter / month）；项目挂 `life_month_goal_id`。节点除标题 / 说明 / 状态外，可写**验收标准** checklist（`extra_data.acceptance_criteria`；编辑页增删勾选，导图展开勾选）。摘要卡极简（总方向 + 今年焦点），子页 `/life-road` 可折叠导图默认展开当下；节点编辑 `/edit-life-road-node/[id]`。本地 schema v60；后端 migration `021_life_road_nodes`。旧 `life_bets` 仅迁移兼容，已取消今年五条限额。`initDatabase` 在建 `idx_projects_life_month_goal_id` 之前就会 `ensureColumn(projects.life_month_goal_id)`，避免旧库缺列导致整段初始化失败；v60 迁移对缺列也可幂等自愈。业务 / UI 梳理见桌面 `我的道路-业务与UI梳理.md`（`docs/我的道路-业务与UI梳理.md`）。
+**我的 · 道路**（年 / 季 / 月拆解）：`life_directions` + `life_road_nodes`（kind: multi / farther / year / quarter / month）；项目挂 `life_month_goal_id`。节点除标题 / 说明 / 状态外，可写**验收标准** checklist（`extra_data.acceptance_criteria`；编辑页增删勾选，导图展开勾选）。摘要卡 / 导图 / 编辑总方向 UI 对齐根目录设计稿 `我的道路-UI重构.html`（纸色 ATELIER：深色摘要卡、north-card、道路树、字数环与实时预览）；令牌见 `constants/life-road-theme.ts`，排印复用衣橱 Noto / Mono 字族。摘要卡展示总方向 + 今年焦点（含 glance / 验收进度）；卡下三项统计（今年节点 / 已抵达 / 更远层）+「今年的节奏」12 月轨；空态 CTA 进 `/edit-life-direction`，有内容点卡进 `/life-road`。子页可折叠导图默认展开当下；节点编辑 `/edit-life-road-node/[id]`。
+
+**道路归属 × 项目 / 任务**：新建 / 编辑项目用 `MonthGoalPickerField`（年·季分段 + 月目标 Sheet，对齐设计稿）；从道路「从此月建项目」带 `life_month_goal_id` 预填。任务 Tab 项目卡与任务详情页（`/task/[id]`）均展示 `ProjectRoadLinkBar`（「道路归属 · N 月 · 标题」），点按打开 `/life-road?focus_month_id=` 并展开对应月。本地 schema v60；后端 migration `021_life_road_nodes`。旧 `life_bets` 仅迁移兼容，已取消今年五条限额。`initDatabase` 在建 `idx_projects_life_month_goal_id` 之前就会 `ensureColumn(projects.life_month_goal_id)`，避免旧库缺列导致整段初始化失败；v60 迁移对缺列也可幂等自愈。业务 / UI 梳理见 `docs/我的道路-业务与UI梳理.md`。
 
 侧边栏 **个人管理 → 我的衣柜** 路由为 `/my-wardrobe`，UI 对齐根目录设计稿 `衣橱-UI重构.html`（纸色 / 松绿 / 琥珀 ATELIER 风格）：衣橱 / 搭配 / 我的三 Tab、底栏 Dock、FAB 添加菜单（衣橱 Tab 仅「拍照 / 从相册导入」）、搜索、底栏 Sheet 详情与布局切换；左上角上下文按钮在搭配 Tab 打开「管理场合」，穿搭统计 Sheet 进度条带 growX 入场。
 
-**搭配 · 拼图编辑器**：对齐 `衣橱-UI重构-拼图版.html`。搭配 Tab「从单品组合 / AI 灵感 / 拍照上传」、详情「编辑拼图」、单品「加入搭配」均打开全屏拼图页（深色画布、比例 / 背景色板与纹理、拖拽单品 / 照片 / 文字 / 贴纸、底栏五工具 Tray、完成保存 Sheet）。版式写入 `wardrobe_outfits.extra_data.collage`（后端 create/update 已透传 `extra_data`）。`DraggableLayer` 用 ref 固定 `PanResponder`（不因拖动中 x/y 重建），避免拼图元素拖不动。点「完成」打开保存 Sheet 时延迟武装遮罩点击，避免同一次触摸穿透立刻关闭；缺单品时在 Modal 内提示并打开单品 Tray（根级 Toast 会被 Modal 盖住）。新建画布不预置照片 / 文字 / 贴纸，需从对应 Tray 添加；有种子单品或已保存版式时仍按数据还原。
+**搭配 · 拼图编辑器**：对齐 `衣橱-UI重构-拼图版.html`。搭配 Tab「从单品组合 / 拍照上传」、详情「编辑拼图」、单品「加入搭配」均打开全屏拼图页（深色画布、比例 / 背景色板与纹理、拖拽单品 / 照片 / 文字 / 贴纸、底栏五工具 Tray、完成保存 Sheet）。版式写入 `wardrobe_outfits.extra_data.collage`（后端 create/update 已透传 `extra_data`）。`DraggableLayer` 用 Gesture Handler 固定 pan + pinch（ref 避免重建打断），单指拖动、双指缩放单品 / 照片。有抠图的单品在画布与 Tray 去掉纸色卡底，只留透明 PNG。点「完成」打开保存 Sheet 时延迟武装遮罩点击，避免同一次触摸穿透立刻关闭；缺单品时在 Modal 内提示并打开单品 Tray（根级 Toast 会被 Modal 盖住）。新建画布不预置照片 / 文字 / 贴纸，需从对应 Tray 添加；有种子单品或已保存版式时仍按数据还原。「拍照上传」与照片 Tray 均走与衣橱相同的选图 + `zheng-vision-cutout` 抠图流水线（优先透明 PNG，不可用时保留原图），种子写入 `seedPhotoUri`；保存时上传统一图片库并写入 `extra_data.collage.photo`；可清除。旧 portrait/detail 预设仅读兼容。
 
 **数据 / 云同步**：本地 SQLite 镜像 9 张 `wardrobe_*` 表（`database.native.ts` v59）；白名单 / 禁通用写 / `api-app-domain` 专用上传与后端一致。首屏 `GET /api/app/wardrobe/bootstrap`；CRUD 与穿着写路径见 `lib/repositories/wardrobe/*` + `lib/api/endpoints/wardrobe.ts` + `components/wardrobe/wardrobe-editors.tsx`（单品 / 搭配 / 分类 / 场合 / 衣橱 / 选项 / 身材）。「穿这件 / 穿这套」走 `/wardrobe/wear/*`；衣橱首页周历与「本周穿搭」卡对接 `GET /wardrobe/wear/week`（失败回退本地 `wardrobe_wear_logs`）；28 天点阵走 history 接口；统计 Sheet 按本地聚合。演示数组仅作设计对照，默认不灌云。
 
-**单品图片流水线**（`lib/wardrobe-images.ts`）：衣橱 Tab FAB「拍照 / 从相册导入」先选图，再调 `zheng-vision-cutout`（iOS 实机可用时抠透明 PNG，否则保留原图），随后打开创建单品表单并带入种子图。表单主图也可再选拍照 / 相册并重跑抠图。保存时本地 URI 上传至 `/api/app/images`（`purpose: wardrobe-item`），写入 `image_uri` / `cutout_uri`；列表与详情优先展示抠图，无图回退线稿 SVG。
+**单品图片流水线**（`lib/wardrobe-images.ts`）：衣橱 Tab FAB「拍照 / 从相册导入」先选图，再调 `zheng-vision-cutout`（iOS 实机可用时抠透明 PNG，否则保留原图），随后打开创建单品表单并带入种子图。表单主图也可再选拍照 / 相册并重跑抠图。保存时本地 URI 上传至 `/api/app/images`（`purpose: wardrobe-item`），写入 `image_uri` / `cutout_uri`；列表与详情优先展示抠图，无图回退线稿 SVG。原生合成用显式透明底 + RGBA8 导出，避免透明区被压成实色底；有 `cutout_uri` 时列表 / 详情 / 拼图不再垫 pastel tint，创建表单主图用棋盘格衬透明 PNG。
 
 **单品表单**（结构对齐参考「创建单品」页，色板 / 字族仍为纸色 ATELIER）：顶栏返回 + 居中标题 + 松绿「保存」；顶部主图卡；分组列表为名称 / 分类 / 季节 / 颜色 · 品牌 / 价格 / 尺码 / 购买日期 · 备注。分类来自衣橱分类（表单隐藏「未分类」，未分类仅作删分类后的归宿）；季节 / 颜色 / 品牌 / 尺码（版型 `fit`）来自衣橱设置词条；购买日期为纸色自定义月历底栏（今天 / 清除）。主图 `image_uri`、抠图 `cutout_uri`；备注图写入 `extra_data`。
 
@@ -61,6 +63,12 @@ npx expo start
 - `npm run android` / `npm run ios` — 本地原生运行
 - `npm run lint` — ESLint
 - `npm run test:memo-richdoc` — 备忘录 RichDoc 契约 / 往返 / 边界单测
+- `npm run test:task-reminder` — 待办截止提醒纯规则（fireAt / 临期 / 抑制）
+- `npm run test:frog-schedule-glance` — 今日青蛙桌面组件纯规则（焦点 / 倒计时文案 / Live Activity 条件）
+- `npm run test:habits-today-glance` — 今日习惯桌面组件纯规则（进度 / 未完成列表 / 收齐态）
+- `npm run test:health-intake-glance` — 健康摄入桌面组件纯规则（选环 / 百分比 / 收口态）
+- `npm run test:finance-glance` — 财务一眼桌面组件纯规则（今日已花 / 预算剩余 / 脱敏）
+- `npm run test:health-intake-reminder` — 健康摄入提醒纯规则
 
 ## 备忘录 RichDoc（镜像同步）
 
@@ -121,9 +129,35 @@ npx expo start
 - **Dirty 合并**：`sync-pull` 短时合并 dirty 通知，减轻 UI 重载风暴。
 - **请求闸门**（`lib/api-request-queue.ts`）：排队满时挤掉最旧读而非拒新读；`ApiRequestQueueFullError` 对过期读吞掉 Uncaught。自测：`node scripts/test-api-request-queue.mjs`。
 
+## 博客内嵌
+
+个人管理「博客」走 WebView / 桌面 iframe，地址统一为 **`https://jaxz.xyz`（无 www）**。站点证书未覆盖 `www.jaxz.xyz`，带 www 会 SSL 失败。登录态仍由 App 侧 AsyncStorage 桥接（`@selfapp/blog-auth-v1`）。
+
 ## 消息 · 资讯（TrendRadar）
 
 「我的 → 消息 → 资讯」拉取 `GET /api/app/news/latest`（`lib/api/endpoints/news.ts` + `lib/api/remote-inbox.ts`），列表 UI 在 `MessagesFeedPanel`：搜索栏 + 按 `platformName` 渠道分类 Tab、本机已读、点击打开原文。完整接口说明见仓库根目录 `TrendRadar热点接口使用报告.md`。
+
+**提醒设置**：主页保留权限 / 总开关 / 已预约入口；频道按页面分为健康 / 财务 / 任务 / 复盘（底层类别并入：摄入→健康，截图记账+财务预约提醒→财务，入格+截止+习惯→任务，日/周复盘→复盘）。点标题进 `/notification-channel/[id]`（`health|finance|tasks|review`；旧类别 id 深链仍兼容）。页面开关按「至少一类开启」判定。
+
+**来源红点角标**：本地提醒送达后写入消息「通知」Tab；底部健康 / 任务 / 财务 / 复盘 Tab 显示红色小点（「我的」不打角标，铃铛仍用数字）。页内来源入口同步打红点（健康状态行、财务预算 / 储蓄 / 定时支出、任务习惯 / 待办 / 项目行、复盘日 / 周分段）。用户点进对应功能确认后，`acknowledgeInboxSources` 标已读，红点与 Tab 角标一并消失；消息列表点开标已读行为不变。规则：`lib/notification-inbox-source.ts`；自测：`npm run test:notification-inbox`。
+
+**健康摄入提醒**（`lib/health-intake-reminder-logic.ts` 纯规则 + `lib/health-intake-reminder-notifications.ts` 排期）：默认「餐次窗口 + 傍晚收口」双轨，亦可仅傍晚收口或水分轻间隔（从最近一次摄入起算）。按「我关心」关注项催最大缺口，文案带进度与动作提示；每日最多 2 条未来预约（免打扰延后不吃配额）。通知可「稍后再说」（90 分）/「今日不催这项」。健康页状态行展示下次提醒 / 已达标 / 已推迟，点按进频道设置。旧 `fixed`/`interval` 偏好读兼容为 `evening_wrap`/`hydration_interval`。单测：`npm run test:health-intake-reminder`。
+
+**财务提醒**（方案见仓库根目录 `财务提醒对接方案.md`；`lib/finance-reminder-logic.ts` + `lib/finance-reminder-notifications.ts`）：① 定时支出应记前提醒（默认提前 30 分，可选傍晚收口；已入账静默）；② 预算阈值（默认 80% + 超支，每档每周期一次）；③ 储蓄目标周轻催（默认关）；④ 当日未记账收口（默认关）。财务页副标题展示下次提醒，点按进财务频道。单测：`npm run test:finance-reminder`。
+
+**任务提醒（按锚点分策略）**：方案见仓库根目录 `任务提醒规则重构方案.md`（P0–P2 已落地）。
+- **入格** `schedule-slot-reminder`：分类型默认提前量；单条可经日程 `advanceMinutesOverride` 覆盖。文案区分「该做」与「推进项目」。
+- **截止** `task-deadline-reminder`：主路径「自动临期」（窗口 1/2/3 天可配）；高级仍可自定义提前 N 天；过期可推「今日滞留」。青蛙 / 高优先偏强提醒。
+- **项目推进** `project-progress-reminder`：活跃项目多日无入格（或临近截止）催「推进」；暂停 / 归档静默。
+- **习惯** `habit-reminder`：轻 / 标准 / 强；标准与强带傍晚收口；养成看日目标，戒除看当日是否已标记。
+- 纯函数单测：`npm run test:task-reminder`。
+
+**桌面组件（仅 iOS）**：方案见仓库根目录 `桌面与状态栏组件方案.md`。
+- **§3.1 今日青蛙**：`FrogScheduleWidget`（主屏小/中号 + 锁屏）+ `FrogScheduleLiveActivity`（入格进行中上岛）。规则 `lib/widgets/frog-schedule-glance.ts`，推送 `frog-schedule-widget-sync.ts`。
+- **§3.2 今日习惯**：`HabitsTodayWidget`。规则 `lib/widgets/habits-today-glance.ts`，推送 `habits-today-widget-sync.ts`（打卡 / 习惯 CRUD / 回前台 / 设置变更）。默认纳入养成 + 戒除，周期配额可选；组件内不打卡，深链任务页。
+- **§3.3 健康摄入**：`HealthIntakeWidget`。规则 `lib/widgets/health-intake-glance.ts`，推送 `health-intake-widget-sync.ts`（摄入 CRUD / 目标变更 / 回前台 / 设置变更）。环口径跟「我关心」或手动最多 2 项；副行复用 `getHealthIntakeReminderStatusSummary`；深链健康首页。
+- **§3.4 财务一眼**：`FinanceGlanceWidget`。规则 `lib/widgets/finance-glance.ts`，推送 `finance-glance-widget-sync.ts`（流水 / 预算 / 定时支出 / 回前台）。主数字今日已花或预算剩余%；下一笔跳过已入账槽位；脱敏 follow/force/plain，锁屏默认关且开启强制脱敏；深链 `zheng://finance`。
+- 控制中心：侧边栏 **系统管理 → 桌面与状态栏**（`/widgets-center`、`frog-schedule` / `habits-today` / `health-intake` / `finance-glance`）。改 widgets 插件后须重打 **iOS** 包；Expo Go 不可用。单测：`test:frog-schedule-glance`、`test:habits-today-glance`、`test:health-intake-glance`、`test:finance-glance`。
 
 ## AI
 
@@ -137,4 +171,5 @@ App **不直连**智谱。场景请求经 `lib/ai-api-client.ts` → **Agent** `
 - **排版规范（日 / 周 / 月共用）**（`lib/review-day-facts.ts`）：区块用【】、列表用「· 」、块间空行。健康只写摄入汇总（+ 体重），不含逐条记录 / AI 点评；任务分【任务（青蛙）】【待办】【小习惯】并列出未完成；财务为周期汇总 + 流水。日复盘「一键写入」；周/月空栏 rollup 时健康/任务/财务优先写结构化周期事实（`rollupWeekly*` / `rollupMonthly*`），日常/缺陷/新想法仍拼接子周期原文。
 - **完成门禁**：当日模板全部维度格子写完后才发放日复盘积分（`review-points-grant`），且才允许打开 / 生成 AI 复盘分析。
 - **AI 入口**：日复盘维度预览下方底部展示「AI 复盘分析」大按钮（写完全部维度后可生成）；更多菜单同入口须等系统 Alert 关闭后再开 Modal（避免 Android 卡住）。客户端传 `review_type` + 维度原文，并附带拼好的 `user_prompt`（兼容线上仍只认该字段的旧 Agent）。**JSON 契约以 App 为准**：`lib/review-ai-json-contract.ts`（title / overview / tags / suggestions ↔ 分析页 UI）；Agent `review_prompts.py` 按该契约约束模型。云端失败时**不**做本地模板兜底，直接失败提示。
-- **反哺执行**：缺陷 / 新想法维度详情提供快捷入口（新建备忘 / 项目 / 小习惯 / 待办），见 `components/review/review-action-feed.tsx`。AI 分析页每条建议仅一个「+」图标；「落到哪里」在分析页 Modal 内以全屏遮罩 + 正中卡片展示（不做淡入透明度动画，避免 iOS 上看不见）。
+- **反哺执行**：缺陷 / 新想法维度详情提供快捷入口（新建备忘 / 项目 / 小习惯 / 待办），见 `components/review/review-action-feed.tsx`。从复盘新建待办默认带当日全天 +「自动临期」提醒。AI 分析页每条建议仅一个「+」图标；「落到哪里」在分析页 Modal 内以全屏遮罩 + 正中卡片展示（不做淡入透明度动画，避免 iOS 上看不见）。
+- **复盘提醒**（方案见仓库根目录 `复盘提醒对接方案.md`）：`daily-review-reminder` 到点催日刊（已填 / 周复盘日跳过）；`weekly-review-reminder` 在配置的周复盘日催周刊。通知点击进 `/daily-review/[ymd]?focusEmpty=1`（或 Hub `focus=weekly`），尽量打开首个未写维度；日提醒正文可附未完成青蛙 / 待办 / 习惯摘要。写完后 sync 停催。设置入口：复盘设置 + 通知中心「复盘」频道。

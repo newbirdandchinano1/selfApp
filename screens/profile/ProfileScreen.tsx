@@ -1,4 +1,5 @@
 import { ProfileMoreSheet, type ProfileMoreMenuItem } from '@/components/profile/ProfileMoreSheet';
+import { ProfileRoadBelow } from '@/components/profile/ProfileRoadBelow';
 import { ProfileRoadCard } from '@/components/profile/ProfileRoadCard';
 import {
   FoldCountUpText,
@@ -392,6 +393,7 @@ export default function ProfileScreen() {
   };
   const openWishBoard = () => router.push('/wish-board');
   const openLifeRoad = () => router.push('/life-road');
+  const openEditDirection = () => router.push('/edit-life-direction');
   const retryHub = () => {
     void reloadPage(true);
   };
@@ -466,7 +468,7 @@ export default function ProfileScreen() {
       {
         key: 'blog',
         title: '博客',
-        subtitle: '内嵌浏览 · www.jaxz.xyz',
+        subtitle: '内嵌浏览 · jaxz.xyz',
         meta: '›',
         icon: 'menu-book',
         onPress: () => router.push('/blog'),
@@ -731,14 +733,18 @@ export default function ProfileScreen() {
         <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
           <ProfileRoadCard
             road={hub?.road}
+            loading={hub == null}
             onOpen={openLifeRoad}
             onRetry={retryHub}
-            onWriteDirection={openLifeRoad}
+            onWriteDirection={openEditDirection}
           />
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={10}>
+          <ProfileRoadBelow road={hub?.road} animate={motionOn} />
         </FoldRiseIn>
 
         {/* 本周节奏 */}
-        <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={12}>
+        <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
           <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
             <View style={[styles.rowBetween, { marginBottom: 6 }]}>
               <Text style={[styles.cardTitle, { color: fold.ink2 }]}>本周节奏</Text>
@@ -811,7 +817,7 @@ export default function ProfileScreen() {
         </FoldRiseIn>
 
         {/* 档案摘要 */}
-        <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
+        <FoldRiseIn animate={motionOn} index={7} staggerMs={45} fromY={12}>
           <Pressable
             onPress={() => openEdit('basic')}
             accessibilityRole="button"
@@ -866,7 +872,7 @@ export default function ProfileScreen() {
         </FoldRiseIn>
 
         {/* 身体数据 */}
-        <FoldRiseIn animate={motionOn} index={7} staggerMs={45} fromY={12}>
+        <FoldRiseIn animate={motionOn} index={8} staggerMs={45} fromY={12}>
           <Pressable
             onPress={() => openEdit('body')}
             accessibilityRole="button"

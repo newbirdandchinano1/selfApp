@@ -434,12 +434,22 @@ export async function upsertScheduledFinanceExpense(
       created_at: normalized.createdAt,
     });
   }
+  void import('@/lib/widgets/finance-glance-widget-sync')
+    .then(({ scheduleFinanceGlanceWidgetSync }) =>
+      scheduleFinanceGlanceWidgetSync('scheduled-expense-upsert'),
+    )
+    .catch(() => {});
   return normalized;
 }
 
 export async function deleteScheduledFinanceExpense(id: string): Promise<void> {
   await migrateScheduledExpensesFromAppSettingsIfNeeded();
   await softDeleteFinanceScheduledExpenseRow(id);
+  void import('@/lib/widgets/finance-glance-widget-sync')
+    .then(({ scheduleFinanceGlanceWidgetSync }) =>
+      scheduleFinanceGlanceWidgetSync('scheduled-expense-delete'),
+    )
+    .catch(() => {});
 }
 
 export function scheduledExpenseToTaskRepeatSchedule(item: ScheduledFinanceExpense): TaskRepeatSchedule {

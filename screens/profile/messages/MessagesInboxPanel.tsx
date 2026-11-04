@@ -123,7 +123,10 @@ function filterBucket(category: string): Exclude<FilterId, 'all' | 'unread'> {
   if (
     c === 'habit-reminder' ||
     c === 'schedule-slot-reminder' ||
+    c === 'task-deadline-reminder' ||
+    c === 'project-progress-reminder' ||
     c === 'daily-review-reminder' ||
+    c === 'weekly-review-reminder' ||
     c.includes('points') ||
     c.includes('wish')
   ) {
@@ -143,10 +146,22 @@ function iconForCategory(category: string): { name: AppIconName; bg: string; fg:
   if (c === 'schedule-slot-reminder') {
     return { name: 'event', bg: '#E8EFEA', fg: '#3E6556' };
   }
-  if (c === 'daily-review-reminder') {
+  if (c === 'task-deadline-reminder') {
+    return { name: 'notifications', bg: '#F5E8D6', fg: '#8B5A1E' };
+  }
+  if (c === 'project-progress-reminder') {
+    return { name: 'flag', bg: '#E8EFEA', fg: '#3E6556' };
+  }
+  if (c === 'daily-review-reminder' || c === 'weekly-review-reminder') {
     return { name: 'menu-book', bg: '#E6EBF0', fg: '#2F4557' };
   }
-  if (c === 'auto-ledger') {
+  if (
+    c === 'auto-ledger' ||
+    c === 'finance-scheduled-expense-reminder' ||
+    c === 'finance-budget-threshold-reminder' ||
+    c === 'finance-savings-nudge-reminder' ||
+    c === 'finance-ledger-wrap-reminder'
+  ) {
     return { name: 'receipt-long', bg: '#F0E7DF', fg: '#6B3A26' };
   }
   if (c.includes('wish') || c.includes('points')) {

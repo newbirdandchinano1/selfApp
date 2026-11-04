@@ -16,6 +16,15 @@ import {
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
 import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import {
+  formatWeeklyReviewReminderClock,
+  getWeeklyReviewReminderSettings,
+} from '@/lib/weekly-review-reminder-settings';
+import { syncWeeklyReviewReminderNotification } from '@/lib/weekly-review-reminder-notifications';
+import {
+  cancelAllFinanceReminders,
+  syncAllFinanceReminders,
+} from '@/lib/finance-reminder-notifications';
 import { cancelScheduledHabitReminder, resyncAllHabitReminders } from '@/lib/habit-reminder-notifications';
 import { syncHealthIntakeReminderNotifications } from '@/lib/health-intake-reminder-notifications';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
@@ -34,6 +43,16 @@ import {
   listScheduleSlotReminderBusinessItems,
   syncScheduleSlotReminderNotifications,
 } from '@/lib/schedule-slot-reminder-notifications';
+import {
+  cancelScheduledTaskDeadlineReminder,
+  listTaskDeadlineReminderBusinessItems,
+  syncTaskDeadlineReminderNotifications,
+} from '@/lib/task-deadline-reminder-notifications';
+import {
+  cancelScheduledProjectProgressReminder,
+  listProjectProgressReminderBusinessItems,
+  syncProjectProgressReminderNotifications,
+} from '@/lib/project-progress-reminder-notifications';
 import { Linking, Platform } from 'react-native';
 
 export type NotificationPermissionSnapshot = {
@@ -200,13 +219,16 @@ export async function openSystemNotificationSettings(): Promise<void> {
  * 列出各功能中「已开启」的提醒，并标注是否已写入系统预约队列。
  */
 export async function listScheduledAppNotifications(): Promise<ScheduledAppNotificationItem[]> {
-  const [settings, osMap, habits, dailySettings, scheduleItems] = await Promise.all([
-    getNotificationCenterSettings(),
-    readOsScheduledMap(),
-    getHabits().catch(() => []),
-    getDailyReviewReminderSettings().catch(() => null),
-    listScheduleSlotReminderBusinessItems().catch(() => []),
-  ]);
+  const [settings, osMap, habits, dailySettings, scheduleItems, deadlineItems, projectItems] =
+    await Promise.all([
+      getNotificationCenterSettings(),
+      readOsScheduledMap(),
+      getHabits().catch(() => []),
+      getDailyReviewReminderSettings().catch(() => null),
+      listScheduleSlotReminderBusinessItems().catch(() => []),
+      listTaskDeadlineReminderBusinessItems().catch(() => []),
+      listProjectProgressReminderBusinessItems().catch(() => []),
+    ]);
 
   const osIdentifiers = new Set(osMap.keys());
   const sandboxDisabled = isExpoSandboxNotificationDisabled();
@@ -223,6 +245,8 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     const meta = getNotificationCategoryMeta('habit-reminder');
     const clock =
       formatHabitReminderClock(reminder) ?? `${pad2(reminder.hour)}:${pad2(reminder.minute)}`;
+    const intensityHint =
+      reminder.intensity === 'soft' ? '轻' : reminder.intensity === 'strong' ? '强' : '标准';
     const osFire = osMap.get(identifier) ?? null;
     const { status, statusLabel } = resolveItemStatus({
       identifier,
@@ -234,7 +258,7 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     items.push({
       identifier,
       title: meta.title,
-      body: `${habit.name?.trim() || '习惯'} · 每日 ${clock}`,
+      body: `${habit.name?.trim() || '习惯'} · 每日 ${clock} · ${intensityHint}`,
       category: 'habit-reminder',
       sourceLabel: meta.sourceLabel,
       customizeHref: `/habit-detail?habitId=${encodeURIComponent(habit.id)}`,
@@ -259,12 +283,64 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
     });
     items.push({
       identifier: slot.identifier,
-      title: meta.title,
+      title: slot.title || meta.title,
       body: slot.body,
       category: 'schedule-slot-reminder',
       sourceLabel: meta.sourceLabel,
       customizeHref: slot.customizeHref,
       entityId: slot.subjectId,
+      fireAtIso: fireAt && !Number.isNaN(fireAt.getTime()) ? fireAt.toISOString() : null,
+      fireAtLabel: fireAt ? formatFireAtLabel(fireAt) : '时间待定',
+      status,
+      statusLabel,
+    });
+  }
+
+  for (const deadline of deadlineItems) {
+    const meta = getNotificationCategoryMeta('task-deadline-reminder');
+    const osFire = osMap.get(deadline.identifier) ?? null;
+    const fireAt = osFire ?? deadline.fireAt;
+    const { status, statusLabel } = resolveItemStatus({
+      identifier: deadline.identifier,
+      category: 'task-deadline-reminder',
+      settings,
+      osIdentifiers,
+      sandboxDisabled,
+    });
+    items.push({
+      identifier: deadline.identifier,
+      title: meta.title,
+      body: deadline.body,
+      category: 'task-deadline-reminder',
+      sourceLabel: meta.sourceLabel,
+      customizeHref: deadline.customizeHref,
+      entityId: deadline.taskId,
+      fireAtIso: fireAt && !Number.isNaN(fireAt.getTime()) ? fireAt.toISOString() : null,
+      fireAtLabel: fireAt ? formatFireAtLabel(fireAt) : '时间待定',
+      status,
+      statusLabel,
+    });
+  }
+
+  for (const project of projectItems) {
+    const meta = getNotificationCategoryMeta('project-progress-reminder');
+    const osFire = osMap.get(project.identifier) ?? null;
+    const fireAt = osFire ?? project.fireAt;
+    const { status, statusLabel } = resolveItemStatus({
+      identifier: project.identifier,
+      category: 'project-progress-reminder',
+      settings,
+      osIdentifiers,
+      sandboxDisabled,
+    });
+    items.push({
+      identifier: project.identifier,
+      title: meta.title,
+      body: project.body,
+      category: 'project-progress-reminder',
+      sourceLabel: meta.sourceLabel,
+      customizeHref: project.customizeHref,
+      entityId: project.projectId,
       fireAtIso: fireAt && !Number.isNaN(fireAt.getTime()) ? fireAt.toISOString() : null,
       fireAtLabel: fireAt ? formatFireAtLabel(fireAt) : '时间待定',
       status,
@@ -290,7 +366,7 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
       body: '今日摄入未达标提醒',
       category: 'health-intake-reminder',
       sourceLabel: meta.sourceLabel,
-      customizeHref: '/notification-center',
+      customizeHref: meta.customizeHref,
       entityId: null,
       fireAtIso: fireAt ? fireAt.toISOString() : null,
       fireAtLabel: formatFireAtLabel(fireAt),
@@ -321,6 +397,34 @@ export async function listScheduledAppNotifications(): Promise<ScheduledAppNotif
       entityId: null,
       fireAtIso: osFire ? osFire.toISOString() : null,
       fireAtLabel: osFire ? formatFireAtLabel(osFire) : `每日 ${clock}`,
+      status,
+      statusLabel,
+    });
+  }
+
+  const weeklySettings = await getWeeklyReviewReminderSettings().catch(() => null);
+  if (weeklySettings?.enabled) {
+    const identifier = 'selfapp-weekly-review-reminder';
+    const meta = getNotificationCategoryMeta('weekly-review-reminder');
+    const clock = formatWeeklyReviewReminderClock(weeklySettings.hour, weeklySettings.minute);
+    const osFire = osMap.get(identifier) ?? null;
+    const { status, statusLabel } = resolveItemStatus({
+      identifier,
+      category: 'weekly-review-reminder',
+      settings,
+      osIdentifiers,
+      sandboxDisabled,
+    });
+    items.push({
+      identifier,
+      title: meta.title,
+      body: `周复盘日 ${clock} · 记得完成本周复盘`,
+      category: 'weekly-review-reminder',
+      sourceLabel: meta.sourceLabel,
+      customizeHref: meta.customizeHref,
+      entityId: null,
+      fireAtIso: osFire ? osFire.toISOString() : null,
+      fireAtLabel: osFire ? formatFireAtLabel(osFire) : `周复盘日 ${clock}`,
       status,
       statusLabel,
     });
@@ -381,6 +485,14 @@ export async function deleteScheduledAppNotification(identifier: string): Promis
     const habitId = extractEntityIdFromIdentifier(category, id);
     if (habitId) await cancelScheduledHabitReminder(habitId);
   }
+  if (category === 'task-deadline-reminder') {
+    const taskId = extractEntityIdFromIdentifier(category, id);
+    if (taskId) await cancelScheduledTaskDeadlineReminder(taskId);
+  }
+  if (category === 'project-progress-reminder') {
+    const projectId = extractEntityIdFromIdentifier(category, id);
+    if (projectId) await cancelScheduledProjectProgressReminder(projectId);
+  }
 }
 
 /** 重新允许某条标识登记（从静音列表移除并触发对应同步）。 */
@@ -433,13 +545,33 @@ export async function resyncAppNotificationsAfterPreferenceChange(
 
   if (!resolved.categories['schedule-slot-reminder']) {
     await cancelScheduledByCategory('schedule-slot-reminder');
-    // 清历史截止日待办前缀残留
-    await cancelByPrefix('selfapp-task-reminder:');
   } else {
     try {
       await syncScheduleSlotReminderNotifications();
     } catch (e) {
       console.warn('重同步日程表提醒失败', e);
+    }
+  }
+
+  if (!resolved.categories['task-deadline-reminder']) {
+    await cancelScheduledByCategory('task-deadline-reminder');
+    // 清历史截止日待办前缀残留
+    await cancelByPrefix('selfapp-task-reminder:');
+  } else {
+    try {
+      await syncTaskDeadlineReminderNotifications();
+    } catch (e) {
+      console.warn('重同步待办截止提醒失败', e);
+    }
+  }
+
+  if (!resolved.categories['project-progress-reminder']) {
+    await cancelScheduledByCategory('project-progress-reminder');
+  } else {
+    try {
+      await syncProjectProgressReminderNotifications();
+    } catch (e) {
+      console.warn('重同步项目推进提醒失败', e);
     }
   }
 
@@ -460,7 +592,44 @@ export async function resyncAppNotificationsAfterPreferenceChange(
     try {
       await syncDailyReviewReminderNotification();
     } catch (e) {
-      console.warn('重同步复盘提醒失败', e);
+      console.warn('重同步日复盘提醒失败', e);
+    }
+  }
+
+  if (!resolved.categories['weekly-review-reminder']) {
+    const id = getNotificationCategoryMeta('weekly-review-reminder').identifierPrefix;
+    if (id) await cancelScheduledByIdentifier(id);
+  } else {
+    try {
+      await syncWeeklyReviewReminderNotification();
+    } catch (e) {
+      console.warn('重同步周复盘提醒失败', e);
+    }
+  }
+
+  const financeScheduledCats: Array<
+    | 'finance-scheduled-expense-reminder'
+    | 'finance-budget-threshold-reminder'
+    | 'finance-savings-nudge-reminder'
+    | 'finance-ledger-wrap-reminder'
+  > = [
+    'finance-scheduled-expense-reminder',
+    'finance-budget-threshold-reminder',
+    'finance-savings-nudge-reminder',
+    'finance-ledger-wrap-reminder',
+  ];
+  const anyFinanceReminderOn = financeScheduledCats.some((id) => resolved.categories[id] !== false);
+  if (!anyFinanceReminderOn) {
+    try {
+      await cancelAllFinanceReminders();
+    } catch (e) {
+      console.warn('取消财务提醒失败', e);
+    }
+  } else {
+    try {
+      await syncAllFinanceReminders(resolved);
+    } catch (e) {
+      console.warn('重同步财务提醒失败', e);
     }
   }
 }

@@ -32,7 +32,11 @@ import {
   formatDailyReviewReminderClock,
   getDailyReviewReminderSettings,
 } from '@/lib/daily-review-reminder-settings';
-import { syncDailyReviewReminderNotification } from '@/lib/daily-review-reminder-notifications';
+import {
+  findNextDailyReviewReminderFireAt,
+  syncDailyReviewReminderNotification,
+} from '@/lib/daily-review-reminder-notifications';
+import { formatYmd } from '@/lib/date';
 import { loadReviewDayFacts, builtinDailyReviewFieldPatch, reviewDayFactsIsEmpty, type ReviewDayFacts } from '@/lib/review-day-facts';
 import { reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
@@ -42,6 +46,7 @@ import {
   areAllReviewDimensionsFilled,
   collectColumnIds,
   emptyFieldValues,
+  findFirstEmptyReviewDimensionId,
   parseDailyReviewBody,
   parseDailyReviewJournal,
   serializeReviewBody,
@@ -88,6 +93,14 @@ function countFilledDimensions(template: ReviewDimensionTemplate[], fields: Revi
   return template.filter(dim => dim.columns.some(col => (fields[col.id] ?? '').trim().length > 0)).length;
 }
 
+function formatNextReminderShort(fireAt: Date): string {
+  const clock = formatDailyReviewReminderClock(fireAt.getHours(), fireAt.getMinutes());
+  const today = formatYmd(new Date());
+  const fireYmd = formatYmd(fireAt);
+  if (fireYmd === today) return `今日 ${clock}`;
+  return `周${WEEKDAY_LABELS[fireAt.getDay()]} ${clock}`;
+}
+
 export function DailyReviewGridView({
   ymd,
   onYmdChange,
@@ -95,6 +108,7 @@ export function DailyReviewGridView({
   refreshControl,
   onRegisterReload,
   onSwitchToWeekly,
+  focusEmpty = false,
 }: {
   ymd: string;
   onYmdChange?: (ymd: string) => void;
@@ -102,6 +116,8 @@ export function DailyReviewGridView({
   refreshControl?: React.ReactElement<RefreshControlProps>;
   onRegisterReload?: (reload: () => Promise<void>) => void;
   onSwitchToWeekly?: () => void;
+  /** 通知落地：水合后打开第一个未写维度 */
+  focusEmpty?: boolean;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -123,6 +139,7 @@ export function DailyReviewGridView({
   const [facts, setFacts] = useState<ReviewDayFacts | null>(null);
   const [dailyReminderEnabled, setDailyReminderEnabled] = useState(false);
   const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
+  const [highlightDimensionId, setHighlightDimensionId] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
 
   const hydratedRef = useRef(false);
@@ -132,6 +149,7 @@ export function DailyReviewGridView({
   const skipFirstFocusReloadRef = useRef(true);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
+  const focusEmptyDoneRef = useRef(false);
 
   const skipped = isDailySkipped(ymd, reviewCycleEndYmd, configuredDow);
   const canEdit = !skipped && isDailyReviewEditableYmd(ymd, todayYmd);
@@ -181,11 +199,17 @@ export function DailyReviewGridView({
           ]);
           if (gen !== loadGenRef.current) return;
           setDailyReminderEnabled(reminderSettings.enabled);
-          setDailyReminderTimeLabel(
-            reminderSettings.enabled
-              ? formatDailyReviewReminderClock(reminderSettings.hour, reminderSettings.minute)
-              : null,
-          );
+          let nextLabel: string | null = null;
+          if (reminderSettings.enabled) {
+            const nextFire = await findNextDailyReviewReminderFireAt(
+              reminderSettings.hour,
+              reminderSettings.minute,
+            ).catch(() => null);
+            nextLabel = nextFire
+              ? formatNextReminderShort(nextFire)
+              : formatDailyReviewReminderClock(reminderSettings.hour, reminderSettings.minute);
+          }
+          setDailyReminderTimeLabel(nextLabel);
           setDailyTemplate(snapshot.dailyTemplate.length ? snapshot.dailyTemplate : dailyTpl);
           setReviewCycleEndYmd(snapshot.reviewCycleEndYmd);
           setConfiguredDow(snapshot.configuredDow);
@@ -244,6 +268,10 @@ export function DailyReviewGridView({
       void reload({ silent: true });
     }, [reload]),
   );
+
+  useEffect(() => {
+    focusEmptyDoneRef.current = false;
+  }, [ymd, focusEmpty]);
 
   const setMetaPatch = useCallback(
     (patch: Partial<ReviewJournalMeta>) => {
@@ -310,6 +338,22 @@ export function DailyReviewGridView({
     },
     [router, ymd],
   );
+
+  useEffect(() => {
+    if (!focusEmpty || focusEmptyDoneRef.current || loading || !hydratedRef.current) return;
+    if (skipped || !canEdit) {
+      focusEmptyDoneRef.current = true;
+      return;
+    }
+    const emptyId = findFirstEmptyReviewDimensionId(dailyTemplate, fields);
+    focusEmptyDoneRef.current = true;
+    if (!emptyId) return;
+    setHighlightDimensionId(emptyId);
+    const t = setTimeout(() => {
+      openDimension(emptyId);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [canEdit, dailyTemplate, fields, focusEmpty, loading, openDimension, skipped]);
 
   const templateColumnIds = useMemo(() => new Set(collectColumnIds(dailyTemplate)), [dailyTemplate]);
 
@@ -503,6 +547,7 @@ export function DailyReviewGridView({
                 fields={fields}
                 canEdit={canEdit}
                 onOpenDimension={openDimension}
+                highlightDimensionId={highlightDimensionId}
               />
             )}
 

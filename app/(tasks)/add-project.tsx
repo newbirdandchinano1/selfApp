@@ -196,6 +196,13 @@ export default function AddProjectScreen() {
   );
   const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
+  const monthGoalPrefillBanner = React.useMemo(() => {
+    if (!routeMonthGoalId) return null;
+    const g = monthGoals.find((n) => n.id === routeMonthGoalId);
+    if (!g) return '已从道路月目标创建，归属已预填';
+    const m = g.month != null ? `${g.month} 月` : '月目标';
+    return `已从「${m} · ${g.title}」创建，归属已预填`;
+  }, [monthGoals, routeMonthGoalId]);
   const [rewardPointsText, setRewardPointsText] = React.useState('20');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('urgent-not-important');
   const [initialTasks, setInitialTasks] = React.useState<InitialTaskDraft[]>([]);
@@ -840,27 +847,30 @@ export default function AddProjectScreen() {
                   />
                 </View>
               </View>
-              <View style={[styles.frow, frowBorder]}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>月目标</Text>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <MonthGoalPickerField
-                    selectedId={selectedMonthGoalId}
-                    monthGoals={monthGoals}
-                    loading={monthGoalsLoading}
-                    onChange={setSelectedMonthGoalId}
-                    textColor={tf.ink}
-                    outline={tf.muted}
-                    placeholderColor={tf.faint}
-                    primary={tf.pond}
-                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                    surfaceLowest={colors.surface}
-                  />
-                </View>
-              </View>
             </View>
           </FoldRiseIn>
 
           <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+            <View
+              style={[
+                styles.fcard,
+                styles.fcardTight,
+                { backgroundColor: foldCardBg, borderColor: foldCardBorder, paddingVertical: 12 },
+              ]}>
+              <MonthGoalPickerField
+                selectedId={selectedMonthGoalId}
+                monthGoals={monthGoals}
+                loading={monthGoalsLoading}
+                onChange={setSelectedMonthGoalId}
+                prefillBanner={monthGoalPrefillBanner}
+              />
+              <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
+                道路归属只影响导图里的挂载位置，不会改变项目自身的任务、日历与积分。
+              </Text>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
             <View
               style={[
                 styles.fbox,
@@ -874,7 +884,7 @@ export default function AddProjectScreen() {
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+          <FoldRiseIn animate={foldAnimate} index={6} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
             <View
               style={[
                 styles.fcard,
@@ -943,7 +953,7 @@ export default function AddProjectScreen() {
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate} index={6} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+          <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
             <View
               style={[
                 styles.fbox,
@@ -957,7 +967,7 @@ export default function AddProjectScreen() {
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+          <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
             <View style={styles.hintline}>
               <MaterialIcons name="sync" size={13} color={tf.faint} />
               <Text style={{ fontSize: 11, color: tf.faint }}>创建时会先写本机，联网后再同步。</Text>

@@ -3,7 +3,8 @@
  */
 
 export type CollageRatio = '1:1' | '9:16' | '2:3' | '3:2' | '3:4' | '4:3';
-export type CollagePhotoKind = 'portrait' | 'detail' | 'none';
+/** portrait/detail 为旧演示预设；custom 为用户导入照片 */
+export type CollagePhotoKind = 'portrait' | 'detail' | 'none' | 'custom';
 export type CollageStickerType = 'sparkle' | 'tape' | 'stamp' | 'label' | 'heart' | 'asterisk';
 export type CollageTool = 'background' | 'items' | 'photo' | 'text' | 'material' | '';
 export type CollageBgSub = 'bg' | 'ratio';
@@ -19,6 +20,8 @@ export type CollagePiece = {
 
 export type CollagePhoto = {
   kind: CollagePhotoKind;
+  /** custom 时的本地 file URI 或统一库 `/uploads/images/...` */
+  uri?: string;
   x: number;
   y: number;
   rot: number;
@@ -138,8 +141,34 @@ export function defaultCollageStickers(): CollageSticker[] {
   return [];
 }
 
-export function defaultCollagePhoto(kind: CollagePhotoKind = 'portrait'): CollagePhoto {
-  return { kind, x: 70, y: 32, rot: 2, scale: 1 };
+export function defaultCollagePhoto(kind: CollagePhotoKind = 'none', uri?: string): CollagePhoto {
+  return {
+    kind,
+    ...(kind === 'custom' && uri?.trim() ? { uri: uri.trim() } : {}),
+    x: 70,
+    y: 32,
+    rot: 2,
+    scale: 1,
+  };
+}
+
+export function normalizeCollagePhoto(raw: Partial<CollagePhoto> | null | undefined): CollagePhoto {
+  const kindRaw = typeof raw?.kind === 'string' ? raw.kind : 'none';
+  const kind = (
+    ['portrait', 'detail', 'none', 'custom'].includes(kindRaw) ? kindRaw : 'none'
+  ) as CollagePhotoKind;
+  const uri = typeof raw?.uri === 'string' ? raw.uri.trim() : '';
+  if (kind === 'custom' && !uri) {
+    return defaultCollagePhoto('none');
+  }
+  return {
+    kind,
+    ...(kind === 'custom' ? { uri } : {}),
+    x: Number(raw?.x) || 70,
+    y: Number(raw?.y) || 32,
+    rot: Number(raw?.rot) || 0,
+    scale: Number(raw?.scale) || 1,
+  };
 }
 
 export function defaultCollageCaption(text = '新的搭配'): CollageCaption {
@@ -159,13 +188,7 @@ export function parseOutfitCollage(extra: unknown): OutfitCollagePersisted | nul
   return {
     ratio: (COLLAGE_RATIOS.includes(c.ratio as CollageRatio) ? c.ratio : '1:1') as CollageRatio,
     bg: String(c.bg),
-    photo: {
-      kind: (['portrait', 'detail', 'none'].includes(c.photo.kind) ? c.photo.kind : 'portrait') as CollagePhotoKind,
-      x: Number(c.photo.x) || 70,
-      y: Number(c.photo.y) || 32,
-      rot: Number(c.photo.rot) || 0,
-      scale: Number(c.photo.scale) || 1,
-    },
+    photo: normalizeCollagePhoto(c.photo),
     caption: {
       text: String(c.caption.text ?? ''),
       x: Number(c.caption.x) || 48,
@@ -230,11 +253,12 @@ export function serializeCollageExtra(input: {
   seasons: string[];
   tags: string[];
 }): { collage: OutfitCollagePersisted } {
+  const photo = normalizeCollagePhoto(input.photo);
   return {
     collage: {
       ratio: input.ratio,
       bg: input.bg,
-      photo: { ...input.photo },
+      photo,
       caption: { ...input.caption },
       items: input.items.map(({ uid: _uid, ...piece }) => piece),
       stickers: input.stickers.map(({ uid: _uid, ...s }) => s),

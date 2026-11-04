@@ -709,6 +709,7 @@ function ItemForm({
 
   const categoryName = editor.categories.find((c) => c.id === categoryId)?.name ?? '';
   const colorSwatch = guessColorSwatch(color, w.pine);
+  const hasCutout = Boolean(cutoutUri.trim());
   const heroPreviewUri = cutoutUri.trim() || imageUri.trim();
   const seasonValues = useMemo(
     () => optionValuesFor(editor.options, 'season', season),
@@ -866,15 +867,31 @@ function ItemForm({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}>
         <Pressable
-          style={styles.heroCard}
+          style={[styles.heroCard, hasCutout && styles.heroCardCutout]}
           onPress={pickHero}
           disabled={imageBusy || busy}
           accessibilityLabel="添加或更换单品图片">
+          {hasCutout ? (
+            <View style={styles.heroChecker} pointerEvents="none">
+              {Array.from({ length: 64 }).map((_, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.heroCheckerCell,
+                    {
+                      backgroundColor:
+                        (Math.floor(i / 8) + (i % 8)) % 2 === 0 ? w.paper2 : w.card,
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+          ) : null}
           {heroPreviewUri ? (
             <Image
               source={{ uri: heroPreviewUri }}
               style={styles.heroImage}
-              resizeMode={cutoutUri ? 'contain' : 'cover'}
+              resizeMode={hasCutout ? 'contain' : 'cover'}
             />
           ) : (
             <View style={styles.heroEmpty}>
@@ -888,7 +905,7 @@ function ItemForm({
               <Text style={styles.heroBusyText}>处理中…</Text>
             </View>
           ) : null}
-          {cutoutUri && !imageBusy ? (
+          {hasCutout && !imageBusy ? (
             <View style={styles.heroCutoutBadge}>
               <Text style={styles.heroCutoutBadgeText}>已抠图</Text>
             </View>
@@ -1476,6 +1493,18 @@ function createStyles(w: WardrobePalette) {
       backgroundColor: w.card,
       borderWidth: 1,
       borderColor: w.line,
+    },
+    heroCardCutout: {
+      backgroundColor: 'transparent',
+    },
+    heroChecker: {
+      ...StyleSheet.absoluteFillObject,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+    },
+    heroCheckerCell: {
+      width: '12.5%',
+      height: '12.5%',
     },
     heroImage: { width: '100%', height: '100%' },
     heroEmpty: {

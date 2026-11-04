@@ -82,6 +82,8 @@ export type FinanceSavingsGoalBlockProps = {
   dayBoundaryHour?: number;
   dayBoundaryMinute?: number;
   onGoalChange?: (goal: FinanceSavingsGoal | null) => void;
+  /** 打开编辑 Sheet 时回调（用于确认储蓄提醒已读） */
+  onOpenEditor?: () => void;
 };
 
 export function FinanceSavingsGoalBlock({
@@ -106,6 +108,7 @@ export function FinanceSavingsGoalBlock({
   logicalTodayYmd,
   dayBoundaryHour,
   dayBoundaryMinute,
+  onOpenEditor,
   onGoalChange,
 }: FinanceSavingsGoalBlockProps) {
   const insets = useSafeAreaInsets();
@@ -185,7 +188,8 @@ export function FinanceSavingsGoalBlock({
     }
     setShowDatePicker(false);
     setSheetVisible(true);
-  }, [goal, today]);
+    onOpenEditor?.();
+  }, [goal, onOpenEditor, today]);
 
   const closeSheet = React.useCallback(() => {
     Keyboard.dismiss();

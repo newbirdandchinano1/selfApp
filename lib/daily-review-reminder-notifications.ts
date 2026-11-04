@@ -20,6 +20,10 @@ import { listReviewTemplate } from '@/lib/repositories/insights/review-template'
 import { getRollingSevenDayRangeEndingOnNextReviewDay } from '@/lib/repositories/insights/weekly-review';
 import { getWeeklyReviewConfiguredWeekday } from '@/lib/weekly-review-settings';
 import { formatYmd } from '@/lib/date';
+import {
+  formatReviewReminderOpenTasksHint,
+  loadReviewDayFacts,
+} from '@/lib/review-day-facts';
 import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 
 const ANDROID_CHANNEL = {
@@ -118,7 +122,22 @@ async function buildWeekProgressBodyHint(now: Date = new Date()): Promise<string
   }
 }
 
-async function findNextDailyReviewReminderFireAt(
+/** 进度句 + 未完成任务摘要（P2） */
+async function buildDailyReviewReminderBody(fireAt: Date): Promise<string> {
+  const progressHint = await buildWeekProgressBodyHint(fireAt);
+  try {
+    const boundary = await resolveDayBoundaryForPage('review');
+    const logicalYmd = getLogicalLocalYmd(fireAt, boundary);
+    const facts = await loadReviewDayFacts(logicalYmd);
+    const openHint = formatReviewReminderOpenTasksHint(facts);
+    if (openHint) return `${progressHint.replace(/。$/, '')}。还有 ${openHint}。`;
+  } catch {
+    // 事实加载失败不影响主文案
+  }
+  return progressHint;
+}
+
+export async function findNextDailyReviewReminderFireAt(
   hour: number,
   minute: number,
   now: Date = new Date(),
@@ -192,7 +211,9 @@ export async function syncDailyReviewReminderNotification(
   }
 
   const fingerprint = `daily-review|${hour}:${minute}|${fireAt.toISOString().slice(0, 16)}`;
-  const progressHint = await buildWeekProgressBodyHint(new Date());
+  const boundary = await resolveDayBoundaryForPage('review');
+  const logicalYmd = getLogicalLocalYmd(fireAt, boundary);
+  const body = await buildDailyReviewReminderBody(fireAt);
 
   return scheduleDateReminder({
     category: 'daily-review-reminder',
@@ -201,17 +222,20 @@ export async function syncDailyReviewReminderNotification(
     channel: ANDROID_CHANNEL,
     data: {
       type: 'daily-review-reminder',
-      href: '/(tabs)/review',
+      href: `/(review)/daily-review/${logicalYmd}?focusEmpty=1`,
+      ymd: logicalYmd,
+      focusEmpty: '1',
     },
     fallback: {
       title: '今日复盘',
-      body: progressHint,
+      body,
     },
     fingerprint,
     contextBlock: [
       '【频道】每日复盘提醒',
       '【语境】提醒用户填写今日日复盘',
-      `【进度提示】${progressHint}`,
+      `【逻辑日】${logicalYmd}`,
+      `【正文】${body}`,
     ].join('\n'),
   });
 }

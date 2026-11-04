@@ -40,6 +40,7 @@ export type ScheduleSubjectKind = 'task' | 'project';
  * 一条占用实例（自然周）。
  * orphaned=1 或 startSlotIndex=null：改轴后无法落入新格，数据保留为「未入格」。
  * startSlotIndex 相对「可排工作格」列表（不含断开行）。
+ * startMinutes/endMinutes/allDay：时间线过渡列（阶段 B）；业务暂可不传（NULL）。
  */
 export type SchedulePlacementRow = {
   id: string;
@@ -48,6 +49,12 @@ export type SchedulePlacementRow = {
   weekday: number;
   startSlotIndex: number | null;
   spanSlots: number;
+  /** 逻辑日轴开始分钟；NULL=未存，由 slot 派生 */
+  startMinutes: number | null;
+  /** 逻辑日轴结束分钟（半开）；NULL=未存 */
+  endMinutes: number | null;
+  /** 1=全天；null=未声明 */
+  allDay: number | null;
   subjectKind: ScheduleSubjectKind;
   subjectId: string;
   orphaned: number;
@@ -63,6 +70,10 @@ export type SchedulePlacementInput = {
   spanSlots: number;
   subjectKind: ScheduleSubjectKind;
   subjectId: string;
+  /** 可选；阶段 B 业务暂不传 → 库内 NULL */
+  startMinutes?: number | null;
+  endMinutes?: number | null;
+  allDay?: number | null;
 };
 
 export const DEFAULT_SCHEDULE_AXIS: Omit<ScheduleAxisSettings, 'updatedAt'> = {

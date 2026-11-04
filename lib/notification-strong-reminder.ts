@@ -22,6 +22,7 @@ const STRONG_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set([
   'habit-reminder',
   'schedule-slot-reminder',
   'daily-review-reminder',
+  'weekly-review-reminder',
 ]);
 
 const ACCESSORY_SUFFIX_RE = /:(?:esc:\d+|snooze)$/i;

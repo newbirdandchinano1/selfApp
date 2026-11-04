@@ -22,6 +22,7 @@ import {
   maxSpanFromSlot,
   placementEndMinutes,
   SCHEDULE_BASE_SLOT_H,
+  slotEndMinutes,
   slotStartMinutes,
   wallClockToAxisMinutes,
 } from '@/lib/schedule/axis';
@@ -63,12 +64,18 @@ import {
   copyPreviousWeekToThisWeek,
   loadScheduleForDayWindow,
   placeFrogOnSchedule,
+  placeFrogOnScheduleAt,
   rematerializeOrphanedPlacement,
+  rematerializeOrphanedPlacementAtMinutes,
   removePlacementSegment,
   type WeekScheduleView,
 } from '@/lib/schedule-service';
 import { subscribeFrogScheduleChanged } from '@/lib/schedule-events';
 import { subscribeSyncDirty } from '@/lib/sync-pull';
+import { buildTimelineEventsForDay, type PlacementDisplayResolver } from '@/lib/schedule/timeline/events';
+import type { TimelineEvent } from '@/lib/schedule/timeline/types';
+import { DayTimelineSchedule } from '@/components/tasks/timeline/DayTimelineSchedule';
+import { resolveProjectDisplayIcon, resolveTaskDisplayIcon } from '@/lib/constants/entity-icon-choices';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
@@ -111,7 +118,12 @@ import {
   SCHEDULE_SLOT_NOTE_MAX_LEN,
   type ScheduleSlotNotesMap,
 } from '@/lib/schedule/slot-notes';
+import { SCHEDULE_DEPRECATED_ENTRY, loadScheduleTimelineUiEnabled, loadScheduleTimelineWriteEnabled } from '@/lib/schedule/timeline-flags';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/** 阶段 A：藏入口；阶段 L 再删相关逻辑 */
+const SHOW_COPY_LAST_WEEK = SCHEDULE_DEPRECATED_ENTRY.copyLastWeek;
+const SHOW_SLOT_NOTES = SCHEDULE_DEPRECATED_ENTRY.slotNotes;
 
 /** 日程表缩放：最简（当前时段）↔ 单日课表 */
 export type ScheduleZoomMode = 'minimal' | 'grid';
@@ -672,6 +684,57 @@ export function WeeklyFrogSchedule({
   const successTint = tf.frog;
   const sunAmber = tf.sun;
 
+  /** 阶段 F：是否用新时间线渲染「课表」分支（最简态不变）。缺省关。 */
+  const [timelineUi, setTimelineUi] = React.useState(false);
+  /** 阶段 G：是否按分钟写入。缺省关（旧选格）。 */
+  const [timelineWrite, setTimelineWrite] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    void loadScheduleTimelineUiEnabled().then((on) => {
+      if (!cancelled) setTimelineUi(on);
+    });
+    void loadScheduleTimelineWriteEnabled().then((on) => {
+      if (!cancelled) setTimelineWrite(on);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** 时间线事件展示解析：复用课表 resolveSubject + 实体自带图标 */
+  const resolveTimelineDisplay = React.useCallback<PlacementDisplayResolver>(
+    ({ kind, id, assignYmd }) => {
+      const info = resolveSubject(kind, id, subjects, assignYmd);
+      if (!info) return null;
+      if (kind === 'project') {
+        const due = info.dueDate?.slice(0, 10) ?? '';
+        const overdue =
+          !info.done && /^\d{4}-\d{2}-\d{2}$/.test(due) && due < logicalTodayYmd;
+        return {
+          title: info.title,
+          done: info.done,
+          priority: info.priority,
+          blockKind: 'proj',
+          icon: resolveProjectDisplayIcon(info.title, info.extraData),
+          overdue,
+        };
+      }
+      const task = subjects.tasks.find((t) => t.id === id);
+      const blockKind = task && isStandaloneTodoTask(task) ? 'todo' : 'frog';
+      const overdue =
+        !info.done && task ? isTaskOverdueForList(task, logicalTodayYmd) : false;
+      return {
+        title: info.title,
+        done: info.done,
+        priority: info.priority,
+        blockKind,
+        icon: resolveTaskDisplayIcon(info.extraData),
+        overdue,
+      };
+    },
+    [subjects, logicalTodayYmd],
+  );
+
   /** 0 = 今天；±1 翻一天 */
   const [periodIndex, setPeriodIndex] = React.useState(0);
   /** 课表块 FoldRiseIn 错峰序号（每次绘网格重置） */
@@ -794,6 +857,10 @@ export function WeeklyFrogSchedule({
   const insets = useSafeAreaInsets();
 
   React.useEffect(() => {
+    if (!SHOW_SLOT_NOTES) {
+      setSlotNotes({});
+      return;
+    }
     let cancelled = false;
     void loadScheduleSlotNotes().then((notes) => {
       if (!cancelled) setSlotNotes(notes);
@@ -804,7 +871,7 @@ export function WeeklyFrogSchedule({
   }, []);
 
   React.useEffect(() => {
-    if (!slotNoteEditor) {
+    if (!SHOW_SLOT_NOTES || !slotNoteEditor) {
       setSlotNoteKeyboardH(0);
       return;
     }
@@ -1030,9 +1097,11 @@ export function WeeklyFrogSchedule({
     };
   }, [subjects.tasks, subjects.projects, view, logicalTodayYmd]);
 
-  // 任意本地课表变更（含设置弹窗改轴）立即静默重载
+  // 任意本地课表变更（含设置弹窗改轴 / 开关切换）立即静默重载
   React.useEffect(() => {
     return subscribeFrogScheduleChanged(() => {
+      void loadScheduleTimelineUiEnabled().then(setTimelineUi);
+      void loadScheduleTimelineWriteEnabled().then(setTimelineWrite);
       void reload(loadDayYmdsRef.current, { silent: true });
     });
   }, [reload]);
@@ -1070,6 +1139,31 @@ export function WeeklyFrogSchedule({
     () => (view ? computeScheduleSlotLayout(view.axis) : null),
     [view],
   );
+
+  /** 阶段 F：邻日三页的时间线事件（与左右滑日复用同一套分页） */
+  const timelinePages = React.useMemo(() => {
+    if (!timelineUi || !view) return null;
+    return [periodIndex - 1, periodIndex, periodIndex + 1].map((pIdx) => {
+      const ymd = centerYmdForPeriod(logicalTodayYmd, pIdx);
+      const events = buildTimelineEventsForDay({
+        dayYmd: ymd,
+        axis: view.axis,
+        placements: view.placements,
+        virtualHabits,
+        virtualTasks,
+        resolvePlacement: resolveTimelineDisplay,
+      });
+      return { pIdx, ymd, events };
+    });
+  }, [
+    timelineUi,
+    view,
+    virtualHabits,
+    virtualTasks,
+    resolveTimelineDisplay,
+    logicalTodayYmd,
+    periodIndex,
+  ]);
   const slotCount = layout?.slotCount ?? 0;
   const timeline = layout?.timeline ?? [];
   /** 外框高度对齐设计稿 `.tt` 表体；内容更高时内滚（含顶部全天栏） */
@@ -1204,8 +1298,10 @@ export function WeeklyFrogSchedule({
       const base = layout.rowHeights[i] ?? SCHEDULE_BASE_SLOT_H;
       if (row.kind !== 'work') return base;
       let need = base;
-      const note = getSlotNote(slotNotes, row.startMinutes);
-      if (note) need = Math.max(need, 36);
+      if (SHOW_SLOT_NOTES) {
+        const note = getSlotNote(slotNotes, row.startMinutes);
+        if (note) need = Math.max(need, 36);
+      }
       for (const ymd of loadDayYmds) {
         const key = cellKey(ymd, row.slotIndex);
         const n =
@@ -1341,6 +1437,7 @@ export function WeeklyFrogSchedule({
 
   const openSlotNoteEditor = React.useCallback(
     (startMinutes: number) => {
+      if (!SHOW_SLOT_NOTES) return;
       setSlotNoteEditor({
         startMinutes,
         draft: getSlotNote(slotNotes, startMinutes),
@@ -1432,34 +1529,56 @@ export function WeeklyFrogSchedule({
 
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
+    const useMinutePath = timelineWrite && timelineUi;
     const daySlots = getSlotCount(view.axis);
     const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
-    const spanSlots = result.allDay
-      ? Math.max(1, daySlots)
-      : result.spanSlots;
+    const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
     if (placeTarget.rematerializePlacementId) {
-      await rematerializeOrphanedPlacement({
-        placementId: placeTarget.rematerializePlacementId,
-        assignYmd: placeTarget.assignYmd,
-        startSlotIndex,
-        spanSlots,
-        logicalTodayYmd,
-      });
+      if (useMinutePath) {
+        await rematerializeOrphanedPlacementAtMinutes({
+          placementId: placeTarget.rematerializePlacementId,
+          assignYmd: placeTarget.assignYmd,
+          startMinutes: result.startMinutes ?? 0,
+          endMinutes: result.endMinutes ?? 0,
+          allDay: result.allDay,
+          logicalTodayYmd,
+        });
+      } else {
+        await rematerializeOrphanedPlacement({
+          placementId: placeTarget.rematerializePlacementId,
+          assignYmd: placeTarget.assignYmd,
+          startSlotIndex,
+          spanSlots,
+          logicalTodayYmd,
+        });
+      }
       setPlaceTarget(null);
       setReassignPending(null);
       await reload(loadDayYmds, { silent: true });
       onChanged?.();
       return;
     }
-    const row = await placeFrogOnSchedule({
-      weekStartYmd: placeTarget.weekStartYmd,
-      weekday: placeTarget.weekday,
-      startSlotIndex,
-      spanSlots,
-      subjectKind: result.kind,
-      subjectId: result.id,
-      logicalTodayYmd,
-    });
+
+    const row = useMinutePath
+      ? await placeFrogOnScheduleAt({
+          weekStartYmd: placeTarget.weekStartYmd,
+          weekday: placeTarget.weekday,
+          startMinutes: result.startMinutes ?? 0,
+          endMinutes: result.endMinutes ?? 0,
+          allDay: result.allDay,
+          subjectKind: result.kind,
+          subjectId: result.id,
+          logicalTodayYmd,
+        })
+      : await placeFrogOnSchedule({
+          weekStartYmd: placeTarget.weekStartYmd,
+          weekday: placeTarget.weekday,
+          startSlotIndex,
+          spanSlots,
+          subjectKind: result.kind,
+          subjectId: result.id,
+          logicalTodayYmd,
+        });
     setView((prev) =>
       prev
         ? {
@@ -1606,6 +1725,23 @@ export function WeeklyFrogSchedule({
     [subjects],
   );
 
+  /** 阶段 F：点时间线事件 → 复用现有详情 / 习惯打卡 / 待办详情 */
+  const handleTimelineEventPress = React.useCallback(
+    (event: TimelineEvent) => {
+      const src = event.source;
+      if (src.type === 'placement') {
+        openDetail(src.placement);
+        return;
+      }
+      if (src.type === 'habit') {
+        tapVirtualHabit(src.habit);
+        return;
+      }
+      tapVirtualTask(src.task);
+    },
+    [openDetail, tapVirtualHabit, tapVirtualTask],
+  );
+
   const handleCellPress = (assignYmd: string, slotIndex: number) => {
     const key = cellKey(assignYmd, slotIndex);
     const list = placementsByCell.get(key) ?? [];
@@ -1727,6 +1863,7 @@ export function WeeklyFrogSchedule({
   };
 
   const onCopyLastWeek = () => {
+    if (!SHOW_COPY_LAST_WEEK) return;
     if (!isEditableWeek(thisMonday, logicalTodayYmd)) return;
     const run = async (overwrite: boolean) => {
       try {
@@ -2273,7 +2410,9 @@ export function WeeklyFrogSchedule({
             const covering = placementsByCell.get(key) ?? [];
             const cellHabits = habitsByCell.get(key) ?? [];
             const cellVirtualTasks = virtualTasksByCell.get(key) ?? [];
-            const slotNote = getSlotNote(slotNotes, row.startMinutes);
+            const slotNote = SHOW_SLOT_NOTES
+              ? getSlotNote(slotNotes, row.startMinutes)
+              : '';
             const isEmpty =
               covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0;
             /** 截断短行：收紧内边距；多项时按条数叠放 */
@@ -2413,8 +2552,98 @@ export function WeeklyFrogSchedule({
     );
   };
 
+  const renderTimelineGrid = () => {
+    if (!view || !timelinePages) return null;
+    const pw = pageWidth || colWidth;
+    /** 时间线视口高度：比旧课表压缩视口更高（约 0.85px/分钟），并做上下限 */
+    const timelineViewportH = Math.max(
+      260,
+      Math.min((view.axis.endMinutes - view.axis.startMinutes) * 0.85, 560),
+    );
+    const headerRow = (
+      <View
+        style={[
+          styles.gridWrap,
+          styles.gridHeaderChrome,
+          { backgroundColor: theme.surface, borderBottomColor: gridLineSoft },
+        ]}>
+        <View style={{ width: TIME_GUTTER, height: DAY_HEADER_H }} />
+        <View style={{ flex: 1 }} onLayout={onGridLayout}>
+          {gridWidth > 0 ? (
+            <ScrollView
+              ref={headerPagerRef}
+              horizontal
+              pagingEnabled
+              scrollEnabled={false}
+              showsHorizontalScrollIndicator={false}
+              style={{ width: pw }}>
+              {timelinePages.map((p) => renderPeriodHeaders(p.pIdx, pw))}
+            </ScrollView>
+          ) : null}
+        </View>
+      </View>
+    );
+
+    const bodyPager = (
+      <ScrollView
+        ref={hPagerRef}
+        horizontal
+        pagingEnabled
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        onScroll={onPagerScroll}
+        onMomentumScrollEnd={onPagerScrollEnd}
+        scrollEventThrottle={16}
+        style={{ width: pw || undefined, flexGrow: 1 }}>
+        {timelinePages.map((p) => (
+          <View key={`tl-${p.pIdx}`} style={{ width: pw, flexDirection: 'row' }}>
+            <DayTimelineSchedule
+              dayYmd={p.ymd}
+              axis={view.axis}
+              events={p.events}
+              nowMinutes={p.ymd === logicalTodayYmd ? axisNowMins : null}
+              maxHeight={timelineViewportH}
+              width={pw}
+              onPressEvent={handleTimelineEventPress}
+              onRequestAdd={(ymd) => openPlace(ymd, 0)}
+            />
+          </View>
+        ))}
+      </ScrollView>
+    );
+
+    return (
+      <View key={`${axisKey}-timeline`}>
+        {headerRow}
+        <View>{gridWidth > 0 ? bodyPager : null}</View>
+        <View
+          style={[
+            styles.scFoot,
+            { borderTopColor: isDark ? tf.line : 'rgba(230,221,206,0.55)' },
+          ]}>
+          <View
+            style={[
+              styles.scFootRing,
+              {
+                borderColor: isDark ? tf.line2 : '#E4E1D5',
+                borderTopColor: tf.frog,
+                borderRightColor: tf.frog,
+              },
+            ]}
+          />
+          <Text style={[styles.scFootText, { color: tf.faint }]} numberOfLines={1}>
+            时间线 · 语义分时段 · 同刻可横滑多栏
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
   const renderScheduleGrid = () => {
     if (!view || !layout) return null;
+    if (timelineUi && timelinePages) {
+      return renderTimelineGrid();
+    }
     bloomBlockIndex.current = 0;
     const pages = [periodIndex - 1, periodIndex, periodIndex + 1];
     const pw = pageWidth || colWidth;
@@ -2495,7 +2724,30 @@ export function WeeklyFrogSchedule({
               </View>
             );
           }
-          const note = getSlotNote(slotNotes, row.startMinutes);
+          const note = SHOW_SLOT_NOTES ? getSlotNote(slotNotes, row.startMinutes) : '';
+          if (!SHOW_SLOT_NOTES) {
+            return (
+              <View
+                key={`tg-work-${row.slotIndex}`}
+                accessibilityLabel={rangeLabel}
+                style={[
+                  styles.timeCell,
+                  {
+                    height: rowH,
+                    borderColor: gridLineSoft,
+                    backgroundColor: 'transparent',
+                  },
+                ]}>
+                {rowH >= 12 ? (
+                  <Text
+                    style={[styles.timeHourText, { color: outline, fontSize: hourFont }]}
+                    numberOfLines={1}>
+                    {hourLabel}
+                  </Text>
+                ) : null}
+              </View>
+            );
+          }
           return (
             <Pressable
               key={`tg-work-${row.slotIndex}`}
@@ -2817,25 +3069,27 @@ export function WeeklyFrogSchedule({
               </Text>
             </Pressable>
           ) : null}
-          <Pressable
-            onPress={() => onCopyLastWeek()}
-            disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
-            accessibilityRole="button"
-            accessibilityLabel="复制上周"
-            style={({ pressed }) => [
-              styles.copyBtn,
-              {
-                backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
-                borderColor: isDark ? tf.line : 'rgba(216,205,187,0.6)',
-                opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
-                  ? 0.4
-                  : pressed
-                    ? 0.8
-                    : 1,
-              },
-            ]}>
-            <MaterialIcons name="content-copy" size={14} color={tf.muted} />
-          </Pressable>
+          {SHOW_COPY_LAST_WEEK ? (
+            <Pressable
+              onPress={() => onCopyLastWeek()}
+              disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
+              accessibilityRole="button"
+              accessibilityLabel="复制上周"
+              style={({ pressed }) => [
+                styles.copyBtn,
+                {
+                  backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.6)',
+                  opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
+                    ? 0.4
+                    : pressed
+                      ? 0.8
+                      : 1,
+                },
+              ]}>
+              <MaterialIcons name="content-copy" size={14} color={tf.muted} />
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={() => setSettingsOpen(true)}
             hitSlop={8}
@@ -3056,25 +3310,27 @@ export function WeeklyFrogSchedule({
                     本日 {frogPlaceStats.inGrid}/{Math.max(frogPlaceStats.total, frogPlaceStats.inGrid)}{' '}
                     已入格
                   </Text>
-                  <Pressable
-                    onPress={() => onCopyLastWeek()}
-                    disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
-                    hitSlop={6}
-                    accessibilityRole="button"
-                    accessibilityLabel="复制上周"
-                    style={({ pressed }) => [
-                      styles.scFootGrow,
-                      {
-                        opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
-                          ? 0.4
-                          : pressed
-                            ? 0.7
-                            : 1,
-                      },
-                    ]}>
-                    <MaterialIcons name="auto-awesome" size={11} color={tf.muted} />
-                    <Text style={[styles.scFootGrowText, { color: tf.muted }]}>复制上周</Text>
-                  </Pressable>
+                  {SHOW_COPY_LAST_WEEK ? (
+                    <Pressable
+                      onPress={() => onCopyLastWeek()}
+                      disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
+                      hitSlop={6}
+                      accessibilityRole="button"
+                      accessibilityLabel="复制上周"
+                      style={({ pressed }) => [
+                        styles.scFootGrow,
+                        {
+                          opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
+                            ? 0.4
+                            : pressed
+                              ? 0.7
+                              : 1,
+                        },
+                      ]}>
+                      <MaterialIcons name="auto-awesome" size={11} color={tf.muted} />
+                      <Text style={[styles.scFootGrowText, { color: tf.muted }]}>复制上周</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               </View>
             ) : null}
@@ -3096,6 +3352,18 @@ export function WeeklyFrogSchedule({
         lockedProjectIds={lockedProjectIds}
         preselected={
           placeTarget?.rematerializePreselected ?? pendingPlace ?? null
+        }
+        minuteMode={timelineWrite && timelineUi}
+        axis={view?.axis ?? null}
+        defaultStartMinutes={
+          view && placeTarget
+            ? slotStartMinutes(view.axis, placeTarget.startSlotIndex)
+            : undefined
+        }
+        defaultEndMinutes={
+          view && placeTarget
+            ? slotEndMinutes(view.axis, placeTarget.startSlotIndex)
+            : undefined
         }
         onConfirm={handlePlaceConfirm}
       />
@@ -3522,7 +3790,7 @@ export function WeeklyFrogSchedule({
       />
 
       <Modal
-        visible={!!slotNoteEditor}
+        visible={SHOW_SLOT_NOTES && !!slotNoteEditor}
         transparent
         animationType="fade"
         onRequestClose={() => {

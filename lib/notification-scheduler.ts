@@ -45,6 +45,11 @@ export type ScheduleDateReminderParams = {
    * 默认：习惯 / 日程格 / 每日复盘为 true。
    */
   strong?: boolean;
+  /**
+   * 非强提醒时可选挂自定义 Action 类别（如健康「稍后再说 / 今日不催」）。
+   * 强提醒开启时忽略，仍用强提醒类别。
+   */
+  categoryIdentifier?: string;
 };
 
 export type ScheduleDateReminderResult = {
@@ -355,6 +360,11 @@ export async function scheduleDateReminder(
     contextBlock: params.contextBlock,
   };
 
+  const softCategoryId =
+    !useStrong && typeof params.categoryIdentifier === 'string' && params.categoryIdentifier.trim()
+      ? params.categoryIdentifier.trim()
+      : null;
+
   const iosStrong = useStrong && Platform.OS === 'ios';
   const contentBase = {
     title: copy.title,
@@ -364,7 +374,9 @@ export async function scheduleDateReminder(
       : params.sound !== false,
     ...(useStrong
       ? { categoryIdentifier: STRONG_REMINDER_CATEGORY_ID }
-      : {}),
+      : softCategoryId
+        ? { categoryIdentifier: softCategoryId }
+        : {}),
     ...(iosStrong ? { interruptionLevel: 'timeSensitive' as const } : {}),
   };
 

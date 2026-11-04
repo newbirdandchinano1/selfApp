@@ -40,6 +40,9 @@ export const AppSettingKey = {
   dailyReviewReminderEnabled: 'daily_review_reminder_enabled_v1',
   dailyReviewReminderHour: 'daily_review_reminder_hour_v1',
   dailyReviewReminderMinute: 'daily_review_reminder_minute_v1',
+  weeklyReviewReminderEnabled: 'weekly_review_reminder_enabled_v1',
+  weeklyReviewReminderHour: 'weekly_review_reminder_hour_v1',
+  weeklyReviewReminderMinute: 'weekly_review_reminder_minute_v1',
   /** 日复盘极简默认模板迁移标记 */
   reviewMinimalDailyTemplateV1: 'review_minimal_daily_template_v1',
   /** 日复盘内置健康/任务/财务模块迁移标记 */
@@ -72,6 +75,12 @@ export const AppSettingKey = {
   tasksLocalEncrypt: '@selfapp/tasks_local_encrypt_v1',
   /** 任务设置：减弱动效（覆盖系统偏好，默认关） */
   tasksPreferReduceMotion: '@selfapp/tasks_prefer_reduce_motion_v1',
+  /** 日程表时间线：是否展示新日视图（默认关 → 旧课表） */
+  scheduleTimelineUiV1: '@selfapp/schedule_timeline_ui_v1',
+  /** 日程表时间线：是否允许按分钟写入（默认关 → 旧选格） */
+  scheduleTimelineWriteV1: '@selfapp/schedule_timeline_write_v1',
+  /** 阶段 D：存量 placement 分钟回填版本号（值为迁移版本字符串，如 "1"） */
+  schedulePlacementMinutesBackfillV1: '@selfapp/schedule_placement_minutes_backfill_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

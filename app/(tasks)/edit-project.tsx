@@ -949,6 +949,11 @@ export default function EditProjectScreen() {
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
+      if (projectId) {
+        void import('@/lib/repositories/notifications/notification-inbox').then(({ acknowledgeInboxSources }) =>
+          acknowledgeInboxSources({ entity: { kind: 'project', id: projectId } }),
+        );
+      }
       void (async () => {
         const consumedSchedule = readScheduleResultRef.current();
         const consumedAddTask = await readAddTaskResultRef.current();
@@ -1100,6 +1105,7 @@ export default function EditProjectScreen() {
           reminderOption: scheduleMeta.reminderOption,
           reminderHour: scheduleMeta.reminderHour,
           reminderMinute: scheduleMeta.reminderMinute,
+          advanceMinutesOverride: scheduleMeta.advanceMinutesOverride,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,
@@ -1926,24 +1932,6 @@ export default function EditProjectScreen() {
                     <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
                   </Pressable>
                   <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>月目标</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <MonthGoalPickerField
-                        selectedId={selectedMonthGoalId}
-                        monthGoals={monthGoals}
-                        loading={monthGoalsLoading || loading}
-                        disabled={formBusy}
-                        onChange={setSelectedMonthGoalId}
-                        textColor={tf.ink}
-                        outline={outline}
-                        placeholderColor={tf.faint}
-                        primary={primary}
-                        surfaceLow={surfaceLow}
-                        surfaceLowest={surfaceLowest}
-                      />
-                    </View>
-                  </View>
-                  <View style={[styles.frow, frowBorder]}>
                     <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.frowValBold, { color: tf.ink2 }]}>
@@ -1988,8 +1976,33 @@ export default function EditProjectScreen() {
                 </View>
               </FoldRiseIn>
 
+              <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    {
+                      backgroundColor: foldCardBg,
+                      borderColor: foldCardBorder,
+                      paddingVertical: 12,
+                      opacity: formBusy ? 0.65 : 1,
+                    },
+                  ]}>
+                  <MonthGoalPickerField
+                    selectedId={selectedMonthGoalId}
+                    monthGoals={monthGoals}
+                    loading={monthGoalsLoading || loading}
+                    disabled={formBusy}
+                    onChange={setSelectedMonthGoalId}
+                  />
+                  <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
+                    道路归属只影响导图里的挂载位置，不会改变项目自身的任务、日历与积分。
+                  </Text>
+                </View>
+              </FoldRiseIn>
+
               {hasChildTasks ? (
-                <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                   <View
                     style={[
                       styles.lockBanner,
@@ -2020,7 +2033,7 @@ export default function EditProjectScreen() {
                 </FoldRiseIn>
               ) : null}
 
-              <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+              <FoldRiseIn animate={foldAnimate} index={9} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                 <View style={styles.hintline}>
                   <MaterialIcons name="lightbulb-outline" size={13} color={tf.faint} />
                   <Text style={{ flex: 1, fontSize: 11, color: tf.faint, lineHeight: 15 }}>
@@ -2029,7 +2042,7 @@ export default function EditProjectScreen() {
                 </View>
               </FoldRiseIn>
 
-              <FoldRiseIn animate={foldAnimate} index={9} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+              <FoldRiseIn animate={foldAnimate} index={10} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                 <View style={styles.deleteRow}>
                   <Pressable
                     onPress={removeProject}

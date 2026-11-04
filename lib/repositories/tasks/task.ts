@@ -416,6 +416,9 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
     // SQL 脏标已会 requestPush；此处仅兜底后台推，勿 awaitSync 阻塞 UI
     void requestPush();
   }
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-create'))
+    .catch(() => {});
 }
 
 export async function getTaskById(id: string) {
@@ -660,6 +663,9 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
       )
       .catch(() => {});
   }
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-update'))
+    .catch(() => {});
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */
@@ -755,6 +761,9 @@ export async function deleteTask(id: string) {
   const idList = [...subtreeIds];
   const placeholders = idList.map(() => '?').join(', ');
   await db.runAsync(`DELETE FROM tasks WHERE id IN (${placeholders})`, idList);
+  void import('@/lib/widgets/urgency-widget-sync')
+    .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-delete'))
+    .catch(() => {});
 }
 
 export async function createTaskCategory(input: CreateTaskCategoryInput) {

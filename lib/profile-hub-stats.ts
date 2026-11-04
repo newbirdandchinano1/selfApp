@@ -7,7 +7,14 @@ import {
 import { getDatabase } from '@/lib/database';
 import { isYmdInRange } from '@/lib/date';
 import { ymdFromAuditDatetime } from '@/lib/api-mysql-datetime';
-import { buildRoadMindMap, resolveYearFocusLine } from '@/lib/life-road/life-road-tree';
+import { acceptanceProgress, parseAcceptanceCriteria } from '@/lib/life-road/life-road-acceptance';
+import { currentCalendarYear } from '@/lib/life-road/life-road-limits';
+import {
+  buildRoadMindMap,
+  resolveYearFocusDetail,
+  resolveYearFocusLine,
+  type YearFocusKind,
+} from '@/lib/life-road/life-road-tree';
 import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-review-journal';
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
@@ -88,8 +95,23 @@ export type ProfileRoadHub = {
   direction: string | null;
   /** 当前月 / 季 / 年目标短句，择一 */
   yearFocus: string | null;
+  /** 焦点层级（有 yearFocus 时有值） */
+  focusKind: YearFocusKind | null;
+  /** 「今年焦点」旁短标签，如「11 月」 */
+  focusTag: string | null;
+  /** 卡片右上角 glance，如「11 月 · 月目标」 */
+  glance: string | null;
+  /** 焦点验收进度；无验收标准时 total=0 */
+  focusDone: number;
+  focusTotal: number;
   /** 高于今年的节点条数（多年 + 更远） */
   aboveYearCount: number;
+  /** 今年年/季/月节点数（未放弃） */
+  yearNodeCount: number;
+  /** 今年已抵达节点数 */
+  arrivedCount: number;
+  /** 有内容的月（1–12），供节奏轨点亮 */
+  monthsWithContent: number[];
   /** 读缓存失败时非空；UI 显示错误+重试，不编造清单 */
   error: string | null;
 };
@@ -120,7 +142,15 @@ export type ProfileHubStats = {
 const EMPTY_ROAD: ProfileRoadHub = {
   direction: null,
   yearFocus: null,
+  focusKind: null,
+  focusTag: null,
+  glance: null,
+  focusDone: 0,
+  focusTotal: 0,
   aboveYearCount: 0,
+  yearNodeCount: 0,
+  arrivedCount: 0,
+  monthsWithContent: [],
   error: null,
 };
 
@@ -154,10 +184,34 @@ async function loadRoadHub(): Promise<ProfileRoadHub> {
       }
     }
     const model = buildRoadMindMap(nodes, projectsByMonthId);
+    const focus = resolveYearFocusDetail(model);
+    const progress = focus?.node
+      ? acceptanceProgress(parseAcceptanceCriteria(focus.node.extra_data))
+      : { done: 0, total: 0 };
+    const cy = currentCalendarYear();
+    const yearScoped = nodes.filter(
+      (n) =>
+        (n.kind === 'year' || n.kind === 'quarter' || n.kind === 'month') &&
+        n.calendar_year === cy &&
+        n.status !== 'dropped',
+    );
+    const currentYearBranch = model.years.find((y) => y.isCurrent) ?? model.years[0];
+    const monthsWithContent = (currentYearBranch?.quarters ?? [])
+      .flatMap((q) => q.months)
+      .filter((m) => Boolean(m.node?.title?.trim()) || m.projects.length > 0)
+      .map((m) => m.month);
     return {
       direction: direction?.body?.trim() || null,
-      yearFocus: resolveYearFocusLine(model),
+      yearFocus: focus?.title ?? resolveYearFocusLine(model),
+      focusKind: focus?.kind ?? null,
+      focusTag: focus?.focusTag ?? null,
+      glance: focus?.glance ?? null,
+      focusDone: progress.done,
+      focusTotal: progress.total,
       aboveYearCount: model.aboveYear.length,
+      yearNodeCount: yearScoped.length,
+      arrivedCount: yearScoped.filter((n) => n.status === 'arrived').length,
+      monthsWithContent,
       error: null,
     };
   } catch (e) {

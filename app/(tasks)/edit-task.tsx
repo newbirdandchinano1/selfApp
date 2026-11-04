@@ -119,7 +119,12 @@ import {
 } from '@/lib/schedule-picker-bridge';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { requestPush } from '@/lib/sync-manager';
-import { formatTaskReminderLabel } from '@/lib/task-reminder-schedule';
+import {
+  formatNextTaskReminderLine,
+  formatTaskReminderLabel,
+} from '@/lib/task-reminder-schedule';
+import { resyncTaskDeadlineReminderForTaskId } from '@/lib/task-deadline-reminder-notifications';
+import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
 import { tightenDescendantTasksOf } from '@/lib/tighten-task-schedules';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect, useIsFocused, useNavigation, usePreventRemove } from 'expo-router/react-navigation';
@@ -289,7 +294,10 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
 
   if (loadedSchedule) {
     scheduleMeta = loadedSchedule;
-    reminderText = formatTaskReminderLabel(loadedSchedule);
+    const dueYmd = dueDateFromScheduleMeta(loadedSchedule, task.due_date);
+    reminderText =
+      formatNextTaskReminderLine({ dueYmd, schedule: loadedSchedule }) ||
+      formatTaskReminderLabel(loadedSchedule);
     repeatText = loadedSchedule.repeatOption === '不重复' ? '' : loadedSchedule.repeatSummary;
     deadlineText =
       buildDeadlineTextFromSchedule(loadedSchedule) || (task.due_date ? formatDate(task.due_date) : '');
@@ -586,6 +594,7 @@ export default function EditTaskScreen() {
           reminderOption: scheduleMeta.reminderOption,
           reminderHour: scheduleMeta.reminderHour,
           reminderMinute: scheduleMeta.reminderMinute,
+          advanceMinutesOverride: scheduleMeta.advanceMinutesOverride,
           repeatOption: scheduleMeta.repeatOption,
           repeatSummary: scheduleMeta.repeatSummary,
           weeklyDays: scheduleMeta.weeklyDays,
@@ -932,12 +941,17 @@ export default function EditTaskScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (taskId) {
+        void import('@/lib/repositories/notifications/notification-inbox').then(({ acknowledgeInboxSources }) =>
+          acknowledgeInboxSources({ entity: { kind: 'task', id: taskId } }),
+        );
+      }
       const consumedSchedule = readScheduleResult();
       void readPickParentTaskResult();
       if (!consumedSchedule) {
         void reload();
       }
-    }, [readPickParentTaskResult, readScheduleResult, reload])
+    }, [readPickParentTaskResult, readScheduleResult, reload, taskId])
   );
 
   const openEditSubtask = React.useCallback(
@@ -1163,6 +1177,13 @@ export default function EditTaskScreen() {
         await tightenDescendantTasksOf(taskId, tightenFrame);
       }
       await requestPush({ awaitSync: true, rethrow: true });
+
+      try {
+        await resyncTaskDeadlineReminderForTaskId(taskId);
+        void syncScheduleSlotReminderNotifications();
+      } catch (remindErr) {
+        console.warn('刷新待办提醒预约失败', remindErr);
+      }
 
       const nextSnapshot = buildFormSnapshotFromFields({
         title: trimmedTitle,

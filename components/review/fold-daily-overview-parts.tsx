@@ -642,11 +642,14 @@ export function FoldDimensionGrid({
   fields,
   canEdit,
   onOpenDimension,
+  highlightDimensionId = null,
 }: {
   dimensions: ReviewDimensionTemplate[];
   fields: Record<string, string>;
   canEdit: boolean;
   onOpenDimension: (dimensionId: string) => void;
+  /** 通知落地时轻量强调待填维度 */
+  highlightDimensionId?: string | null;
 }) {
   const { palette } = useFoldTheme();
 
@@ -676,14 +679,21 @@ export function FoldDimensionGrid({
         <View key={`row-${index}`} style={styles.dimRow}>
           {pair.map(item => {
             const { glyph, tint } = dimensionGlyph(item.dim.title);
+            const highlighted = highlightDimensionId != null && item.dim.id === highlightDimensionId;
             return (
               <Pressable
                 key={item.dim.id}
                 onPress={() => onOpenDimension(item.dim.id)}
                 accessibilityRole="button"
-                accessibilityLabel={`${item.dim.title}，${item.hasAny ? '已填' : '待填'}，点击${canEdit ? '进入编辑' : '查看'}`}
+                accessibilityLabel={`${item.dim.title}，${item.hasAny ? '已填' : '待填'}${highlighted ? '，建议先写' : ''}，点击${canEdit ? '进入编辑' : '查看'}`}
                 style={({ pressed }) => [styles.dimPress, pressed && { opacity: 0.9 }]}>
-                <FoldCard style={styles.dimCard}>
+                <FoldCard
+                  style={[
+                    styles.dimCard,
+                    highlighted
+                      ? { borderColor: palette.pine, borderWidth: 1.5 }
+                      : null,
+                  ]}>
                   <View style={styles.dimHead}>
                     <View style={styles.dimNameRow}>
                       <View style={[styles.dimGlyph, { backgroundColor: palette[tint] as string }]}>
@@ -698,8 +708,8 @@ export function FoldDimensionGrid({
                         {item.dim.title}
                       </Text>
                     </View>
-                    <FoldTag tone={item.hasAny ? 'green' : 'gray'}>
-                      {item.hasAny ? '已填' : '待填'}
+                    <FoldTag tone={highlighted ? 'amber' : item.hasAny ? 'green' : 'gray'}>
+                      {highlighted ? '先写' : item.hasAny ? '已填' : '待填'}
                     </FoldTag>
                   </View>
                   <Text

@@ -52,6 +52,7 @@ import {
   getWeeklyReviewJournalByWeek,
   upsertWeeklyReviewJournal,
 } from '@/lib/repositories/insights/weekly-review-journal';
+import { syncWeeklyReviewReminderNotification } from '@/lib/weekly-review-reminder-notifications';
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -228,6 +229,7 @@ export function WeeklyReviewGridView({
         adjust_savings: meta.adjust_savings,
         adjust_plans: meta.adjust_plans,
       });
+      void syncWeeklyReviewReminderNotification();
       setSummarizedAt(new Date());
     } catch (e) {
       console.warn('weekly review save', e);

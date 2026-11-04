@@ -1,4 +1,5 @@
-﻿import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
+﻿import { ProjectRoadLinkBar } from '@/components/life-road/ProjectRoadLinkBar';
+import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
 import { TaskCompletionHeatmap } from '@/components/tasks/TaskCompletionHeatmap';
@@ -28,6 +29,7 @@ import {
   TasksStandaloneSectionSkeleton,
 } from '@/components/skeletons/tasks';
 import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
+import { InboxSourceDot } from '@/components/ui/inbox-source-dot';
 import {
   Layout,
   Radius,
@@ -53,10 +55,12 @@ import {
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
+import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
+import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
@@ -270,6 +274,8 @@ import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
 import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { syncScheduleSlotReminderNotifications } from '@/lib/schedule-slot-reminder-notifications';
+import { syncTaskDeadlineReminderNotifications } from '@/lib/task-deadline-reminder-notifications';
+import { syncProjectProgressReminderNotifications } from '@/lib/project-progress-reminder-notifications';
 import {
   applyRepeatingTaskRollovers,
   patchExtraDataOnRepeatTaskComplete,
@@ -1557,6 +1563,7 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
 export default function TasksScreen() {
   const { wrapLoad, resetSync } = usePageApiSync(PAGE_API_KEY);
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  const sourceBadges = useNotificationSourceBadges();
   const { width: windowWidth } = useWindowDimensions();
   const habitGridColumns = habitGridColumnsForWidth(windowWidth);
   /** 桌面端（web 宽屏）：两栏布局——左列日程表，右列 Tab 窗格（小习惯/待办/项目） */
@@ -2129,7 +2136,17 @@ export default function TasksScreen() {
   const refreshLifeRoadTitles = React.useCallback(async () => {
     try {
       const nodes = await getLifeRoadNodesLocal();
-      setLifeRoadTitleById(new Map(nodes.map((n) => [n.id, n.title])));
+      setLifeRoadTitleById(
+        new Map(
+          nodes.map((n) => {
+            const caption =
+              n.kind === 'month' && n.month != null
+                ? `${n.month} 月 · ${n.title}`
+                : n.title;
+            return [n.id, caption];
+          }),
+        ),
+      );
     } catch (err) {
       console.warn('加载道路标题失败', err);
       setLifeRoadTitleById(new Map());
@@ -2721,6 +2738,8 @@ export default function TasksScreen() {
   React.useEffect(() => {
     if (Platform.OS === 'web') return;
     void syncScheduleSlotReminderNotifications();
+    void syncTaskDeadlineReminderNotifications();
+    void syncProjectProgressReminderNotifications();
   }, [standaloneTodos, matrixWeekTasks]);
 
   React.useEffect(() => {
@@ -3112,6 +3131,7 @@ export default function TasksScreen() {
   }, [projectCategories]);
 
   const openProject = (id: string) => {
+    void acknowledgeInboxSources({ entity: { kind: 'project', id } });
     router.push({ pathname: '/edit-project', params: { id } });
   };
 
@@ -3120,6 +3140,7 @@ export default function TasksScreen() {
       openProject(id);
       return;
     }
+    void acknowledgeInboxSources({ entity: { kind: 'task', id } });
     const row = findVisibleTask(id);
     if (row && isStandaloneTodoTask(row)) {
       router.push(standaloneTodoEditorHref(id));
@@ -6269,11 +6290,16 @@ export default function TasksScreen() {
                           const metaLine = metaParts.join(' · ');
                           const habitTags = (habitTagsByHabitId.get(item.id) ?? []).slice(0, 2);
 
-                          const openHabitDetail = () =>
+                          const openHabitDetail = () => {
+                            void acknowledgeInboxSources({
+                              entity: { kind: 'habit', id: item.id },
+                            });
                             router.push({
                               pathname: '/habit-detail',
                               params: { habitId: item.id },
                             });
+                          };
+                          const habitHasUnread = sourceBadges.hasEntity('habit', item.id);
 
                           const tickOn = goalMet || breakChallengeDone;
                           const tickPart =
@@ -6348,6 +6374,7 @@ export default function TasksScreen() {
                                   },
                                 ]}>
                                 <Text style={styles.habitCardIcon}>{item.icon}</Text>
+                                <InboxSourceDot visible={habitHasUnread} size={7} />
                                 {!scheduleAllowsToday ? (
                                   <View style={styles.habitCardLockMark} pointerEvents="none">
                                     <MaterialIcons name="lock" size={12} color={colors.textSecondary} />
@@ -6902,6 +6929,7 @@ export default function TasksScreen() {
                             accessibilityElementsHidden
                             importantForAccessibility="no-hide-descendants">
                             <Text style={styles.habitCardIcon}>{todoIcon}</Text>
+                            <InboxSourceDot visible={sourceBadges.hasEntity('task', t.id)} size={7} />
                           </View>
                           <Pressable
                             style={[styles.habitCardBody, { flex: 1 }]}
@@ -7424,6 +7452,11 @@ export default function TasksScreen() {
                               opacity: hasFrogAssignment && !isCompleted ? 0.72 : 1,
                             },
                           ]}>
+                      <InboxSourceDot
+                        visible={sourceBadges.hasEntity('project', project.id)}
+                        size={8}
+                        style={{ top: 10, right: 10 }}
+                      />
                       <View
                         pointerEvents="none"
                         style={[
@@ -7607,21 +7640,10 @@ export default function TasksScreen() {
                               ) : null}
                             </View>
                             {lifeBetTitle ? (
-                              <Pressable
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  router.push('/life-road');
-                                }}
-                                hitSlop={6}
-                                accessibilityRole="button"
-                                accessibilityLabel={`道路 ${lifeBetTitle}`}
-                                style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}>
-                                <Text
-                                  style={[styles.projectLifeBetCaption, { color: outline }]}
-                                  numberOfLines={1}>
-                                  {lifeBetTitle}
-                                </Text>
-                              </Pressable>
+                              <ProjectRoadLinkBar
+                                caption={lifeBetTitle}
+                                monthGoalId={lifeRoadId || null}
+                              />
                             ) : null}
                             <View style={styles.projectSubRow}>
                               <View
@@ -9462,12 +9484,14 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   habitCardIconWrap: {
+    position: 'relative',
     width: 40,
     height: 40,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    overflow: 'visible',
   },
   habitCardIcon: { fontSize: 22 },
   habitCardLockMark: {

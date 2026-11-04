@@ -1,4 +1,5 @@
 ﻿import { AddSubtaskSheet, type AddSubtaskDraft } from '@/components/entity-form';
+import { ProjectRoadLinkBar } from '@/components/life-road/ProjectRoadLinkBar';
 import {
   FoldRiseIn,
   useFoldMotionGate,
@@ -31,6 +32,7 @@ import { clearFrogSessionCompletedOn, getIsLongTermTask } from '@/lib/long-term-
 import { parseNoteImageUris } from '@/lib/note-image-extra';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
 import { applyTaskCompletionPointsReward } from '@/lib/repositories/habits/habit-points-grant';
+import { getLifeRoadNodeById } from '@/lib/repositories/life-road/life-road-node';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import {
   cascadeParentTaskStatusAfterChildChange,
@@ -63,7 +65,14 @@ import {
 import type { ScheduleMeta } from '@/lib/schedule/meta';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { requestPush } from '@/lib/sync-manager';
-import { formatTaskReminderLabel, TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import {
+  formatNextTaskReminderLine,
+  formatTaskReminderLabel,
+  formatTaskReminderOptionLabel,
+  TASK_REMINDER_OPTIONS,
+  type TaskReminderOption,
+} from '@/lib/task-reminder-schedule';
+import { resyncTaskDeadlineReminderForTaskId } from '@/lib/task-deadline-reminder-notifications';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
 import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -109,7 +118,8 @@ declare global {
 
 type ReminderOption = TaskReminderOption;
 type RepeatOption = '不重复' | '每天' | '每周' | '每月' | '每年';
-type SettingPickerType = 'reminder' | 'repeat' | null;
+/** 提醒统一走日程选择器；此处弹层仅保留重复（兼容旧入口） */
+type SettingPickerType = 'repeat' | null;
 type TaskScheduleMeta = ScheduleMeta;
 
 type TaskMetaExtra = Record<string, unknown> & {
@@ -453,6 +463,9 @@ export default function TaskDetailScreen() {
   const [projectId, setProjectId] = React.useState<string | null>(null);
   const [categoryId, setCategoryId] = React.useState<string | null>(null);
   const [projectName, setProjectName] = React.useState('');
+  /** 所属项目挂到的月目标：展示「道路归属」条 */
+  const [roadMonthGoalId, setRoadMonthGoalId] = React.useState<string | null>(null);
+  const [roadCaption, setRoadCaption] = React.useState('');
   const [parentTitle, setParentTitle] = React.useState('');
   const [parentTaskId, setParentTaskId] = React.useState<string | null>(null);
   const [rewardPoints, setRewardPoints] = React.useState(0);
@@ -538,9 +551,12 @@ export default function TaskDetailScreen() {
       startTime: picked.startTime,
       endTime: picked.endTime,
     };
+    const dueYmd = dueDateFromScheduleMeta(scheduleMeta, dueDateFromSchedulePick(picked));
     const nextMeta: TaskMetaExtra = {
       ...currentMeta,
-      reminder: formatTaskReminderLabel(scheduleMeta),
+      reminder:
+        formatNextTaskReminderLine({ dueYmd, schedule: scheduleMeta }) ||
+        formatTaskReminderLabel(scheduleMeta),
       repeat: picked.repeatOption === '不重复' ? '' : picked.repeatSummary,
       schedule: scheduleMeta,
     };
@@ -623,11 +639,39 @@ export default function TaskDetailScreen() {
         try {
           const project = await getProjectById(row.project_id);
           setProjectName(project?.name?.trim() || '');
+          const monthGoalId =
+            project?.life_month_goal_id?.trim() ||
+            project?.life_bet_id?.trim() ||
+            '';
+          if (monthGoalId) {
+            setRoadMonthGoalId(monthGoalId);
+            try {
+              const node = await getLifeRoadNodeById(monthGoalId, { serverFallback: true });
+              if (node?.title?.trim()) {
+                setRoadCaption(
+                  node.kind === 'month' && node.month != null
+                    ? `${node.month} 月 · ${node.title.trim()}`
+                    : node.title.trim(),
+                );
+              } else {
+                setRoadCaption('');
+              }
+            } catch {
+              setRoadCaption('');
+            }
+          } else {
+            setRoadMonthGoalId(null);
+            setRoadCaption('');
+          }
         } catch {
           setProjectName('');
+          setRoadMonthGoalId(null);
+          setRoadCaption('');
         }
       } else {
         setProjectName('');
+        setRoadMonthGoalId(null);
+        setRoadCaption('');
       }
 
       setParentTaskId(row.parent_task_id ?? null);
@@ -851,6 +895,11 @@ export default function TaskDetailScreen() {
       });
       // quiet：仍 await 推送，但不挂全屏「正在同步」蒙层，避免离开时闪一下
       await requestPush({ awaitSync: true, rethrow: true, quiet: true });
+      try {
+        await resyncTaskDeadlineReminderForTaskId(taskId);
+      } catch (remindErr) {
+        console.warn('刷新待办截止提醒失败', remindErr);
+      }
       setLoadedScheduleSnapshot({ dueDate: nextDue, extraData: nextExtra });
       return true;
     } catch (error) {
@@ -1144,9 +1193,9 @@ export default function TaskDetailScreen() {
         : formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate),
     [monthlyDays, repeatOption, weeklyDays, yearlyDate],
   );
-  const settingPickerTitle = settingPickerType === 'reminder' ? '提醒设置' : '重复设置';
-  const settingPickerOptions = settingPickerType === 'reminder' ? REMINDER_OPTIONS : REPEAT_OPTIONS;
-  const settingPickerValue = settingPickerType === 'reminder' ? reminderOption : repeatOption;
+  const settingPickerTitle = '重复设置';
+  const settingPickerOptions = REPEAT_OPTIONS;
+  const settingPickerValue = repeatOption;
 
   const restoreRepeatFromExtra = React.useCallback(() => {
     const repeatSchedule = parseTaskRepeatSchedule(extraData);
@@ -1189,6 +1238,7 @@ export default function TaskDetailScreen() {
           reminderOption: schedule.reminderOption,
           reminderHour: schedule.reminderHour,
           reminderMinute: schedule.reminderMinute,
+          advanceMinutesOverride: schedule.advanceMinutesOverride,
           repeatOption: schedule.repeatOption,
           repeatSummary: schedule.repeatSummary,
           weeklyDays: schedule.weeklyDays,
@@ -1392,6 +1442,12 @@ export default function TaskDetailScreen() {
                     </Pressable>
                   ) : null}
                 </View>
+                {roadCaption ? (
+                  <ProjectRoadLinkBar
+                    caption={roadCaption}
+                    monthGoalId={roadMonthGoalId}
+                  />
+                ) : null}
               </View>,
             )}
 
@@ -1613,12 +1669,12 @@ export default function TaskDetailScreen() {
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={[styles.schedMain, { color: '#536155' }]} numberOfLines={1}>
                     {meta.reminder?.trim() || reminderOption !== '不提前'
-                      ? `${repeatSummary} · ${meta.reminder?.trim() || reminderOption}`
+                      ? `${repeatSummary} · ${meta.reminder?.trim() || formatTaskReminderOptionLabel(reminderOption)}`
                       : dueLabel || '未设置日程'}
                   </Text>
                   <Text style={{ fontSize: 10, color: '#9CA59C', marginTop: 2 }}>
                     {repeatOption === '不重复'
-                      ? '点击修改提醒与重复'
+                      ? '点击修改截止提醒与重复'
                       : '重复任务 · 完成后生成下一次实例'}
                   </Text>
                 </View>
@@ -1813,21 +1869,7 @@ export default function TaskDetailScreen() {
                     ]}
                     onPress={() => {
                       const currentMeta = parseTaskMeta(extraData);
-                      if (settingPickerType === 'reminder') {
-                        const next = option as ReminderOption;
-                        setReminderOption(next);
-                        const schedule = { ...(currentMeta.schedule ?? {}), reminderOption: next };
-                        if (next === '不提前') {
-                          delete schedule.reminderHour;
-                          delete schedule.reminderMinute;
-                        }
-                        const nextMeta: TaskMetaExtra = {
-                          ...currentMeta,
-                          reminder: formatTaskReminderLabel(schedule),
-                          schedule,
-                        };
-                        setExtraData(JSON.stringify(nextMeta));
-                      } else {
+                      {
                         const next = option as RepeatOption;
                         setRepeatOption(next);
                         if (next === '每周' || next === '每月' || next === '每年') {

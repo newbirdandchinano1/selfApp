@@ -18,6 +18,11 @@ export type ScheduleMeta = {
   reminderOption?: TaskReminderOption;
   reminderHour?: number;
   reminderMinute?: number;
+  /**
+   * 入格开始前提前量覆盖（分钟，5–60）。
+   * 缺省用通知中心分类型默认（待办/项目）。
+   */
+  advanceMinutesOverride?: number;
   repeatOption?: TaskRepeatOption;
   repeatSummary?: string;
   weeklyDays?: number[];

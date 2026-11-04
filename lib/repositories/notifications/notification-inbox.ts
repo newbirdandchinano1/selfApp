@@ -6,6 +6,14 @@ import {
   NOTIFICATION_INBOX_READ_RETENTION_DAYS,
   pickInboxIdsToPrune,
 } from '@/lib/notification-inbox-prune';
+import {
+  aggregateUnreadSourceSnapshot,
+  emptyUnreadSourceSnapshot,
+  inboxRowMatchesAcknowledge,
+  type InboxSourceAnchor,
+  type InboxSourceEntityRef,
+  type UnreadSourceSnapshot,
+} from '@/lib/notification-inbox-source';
 import { stripReminderAccessorySuffix } from '@/lib/notification-strong-reminder';
 import { newMutationId } from '@/lib/sync-write-meta';
 
@@ -452,4 +460,50 @@ export async function replaceRemoteInboxMirror(
 
   await pruneInbox();
   emitNotificationInboxChanged();
+}
+
+/** 本地未读 → 来源锚点 / 实体红点快照 */
+export async function getUnreadSourceSnapshot(): Promise<UnreadSourceSnapshot> {
+  const rows = await listInbox({ onlyUnread: true, source: 'local', limit: NOTIFICATION_INBOX_MAX_ROWS });
+  if (rows.length === 0) return emptyUnreadSourceSnapshot();
+  return aggregateUnreadSourceSnapshot(rows);
+}
+
+/**
+ * 用户点进对应功能后确认已读：按来源锚点与/或实体匹配未读 local 行。
+ * 与消息页点开标已读共用同一 read_at，红点 / Tab 角标一并消失。
+ */
+export async function acknowledgeInboxSources(opts: {
+  anchors?: readonly InboxSourceAnchor[];
+  entity?: InboxSourceEntityRef | null;
+}): Promise<number> {
+  const anchors = opts.anchors ?? [];
+  const entity = opts.entity ?? null;
+  if (anchors.length === 0 && !entity?.id) return 0;
+
+  const rows = await listInbox({ onlyUnread: true, source: 'local', limit: NOTIFICATION_INBOX_MAX_ROWS });
+  const ids = rows
+    .filter(row => inboxRowMatchesAcknowledge(row, { anchors, entity }))
+    .map(row => row.id);
+  if (ids.length === 0) return 0;
+
+  await ensureNotificationInboxTable();
+  const db = await getDatabase();
+  if (!db) return 0;
+  const now = new Date().toISOString();
+  let changed = 0;
+  const chunkSize = 50;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    const result = await db.runAsync(
+      `UPDATE notification_inbox
+       SET read_at = ?
+       WHERE id IN (${placeholders}) AND read_at IS NULL`,
+      [now, ...chunk],
+    );
+    changed += result?.changes ?? 0;
+  }
+  if (changed > 0) emitNotificationInboxChanged();
+  return changed;
 }

@@ -11,10 +11,8 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
-import {
-  formatInboxBadgeCount,
-  useNotificationInboxBadges,
-} from '@/hooks/use-notification-inbox-badges';
+import { useNotificationInboxBadges } from '@/hooks/use-notification-inbox-badges';
+import { formatInboxBadgeDot } from '@/lib/notification-inbox-badge';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -79,28 +77,28 @@ export default function TabLayout() {
             name="index"
             options={{
               title: '健康',
-              tabBarBadge: formatInboxBadgeCount(badges.index),
+              tabBarBadge: formatInboxBadgeDot(badges.index),
             }}
           />
           <Tabs.Screen
             name="tasks"
             options={{
               title: '任务',
-              tabBarBadge: formatInboxBadgeCount(badges.tasks),
+              tabBarBadge: formatInboxBadgeDot(badges.tasks),
             }}
           />
           <Tabs.Screen
             name="finance"
             options={{
               title: '财务',
-              tabBarBadge: formatInboxBadgeCount(badges.finance),
+              tabBarBadge: formatInboxBadgeDot(badges.finance),
             }}
           />
           <Tabs.Screen
             name="review"
             options={{
               title: '复盘',
-              tabBarBadge: formatInboxBadgeCount(badges.review),
+              tabBarBadge: formatInboxBadgeDot(badges.review),
             }}
           />
           <Tabs.Screen

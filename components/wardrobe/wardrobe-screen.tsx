@@ -69,6 +69,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   LayoutChangeEvent,
   Pressable,
@@ -127,6 +128,8 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
   const [collage, setCollage] = useState<{
     outfit: WardrobeOutfit | null;
     seedItemIds?: string[];
+    /** 拍照上传：抠图或原图本地 URI，写入拼图 photo */
+    seedPhotoUri?: string;
   } | null>(null);
 
   const [layoutPop, setLayoutPop] = useState(false);
@@ -454,8 +457,12 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     [categoryMeta, closetId, optionRows, reloadLocal],
   );
 
-  const openCreateOutfit = useCallback((seedItemIds?: string[]) => {
-    setCollage({ outfit: null, seedItemIds });
+  const openCreateOutfit = useCallback((opts?: { seedItemIds?: string[]; seedPhotoUri?: string }) => {
+    setCollage({
+      outfit: null,
+      seedItemIds: opts?.seedItemIds,
+      seedPhotoUri: opts?.seedPhotoUri,
+    });
   }, []);
 
   const openEditOutfitCollage = useCallback(
@@ -497,15 +504,51 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     [createHint, openCreateItem],
   );
 
+  /** 搭配页「拍照上传」：选图 → Vision 抠图 → 种子打开拼图编辑器 */
+  const importOutfitFromImage = useCallback(
+    async (source: WardrobeImageSource) => {
+      const picked = await pickWardrobeLocalImage(source);
+      if (!picked.ok) {
+        if (picked.reason === 'permission') {
+          toast.info(source === 'camera' ? '需要相机权限才能拍照' : '需要相册权限才能选图');
+        }
+        return;
+      }
+      beginApiLoading();
+      try {
+        const prepared = await prepareWardrobeImagesFromLocal(picked.uri);
+        const seedPhotoUri = prepared.cutoutUri?.trim() || prepared.imageUri;
+        if (prepared.cutoutApplied) {
+          toast.info('已完成抠图，可继续搭配单品');
+        } else {
+          toast.info('已导入原图（当前环境暂不可用抠图）');
+        }
+        openCreateOutfit({ seedPhotoUri });
+      } catch (e) {
+        toast.info(e instanceof Error ? e.message : '导入失败');
+      } finally {
+        endApiLoading();
+      }
+    },
+    [openCreateOutfit],
+  );
+
+  const promptOutfitPhotoUpload = useCallback(() => {
+    Alert.alert('拍照上传', '选择照片来源，导入后将尝试抠图', [
+      { text: '拍照', onPress: () => void importOutfitFromImage('camera') },
+      { text: '从相册选择', onPress: () => void importOutfitFromImage('library') },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [importOutfitFromImage]);
+
   const onCreateSelect = useCallback(
     (label: string) => {
-      if (label === '从单品组合' || label === 'AI 灵感') {
+      if (label === '从单品组合') {
         openCreateOutfit();
         return;
       }
       if (label === '拍照上传') {
-        openCreateOutfit();
-        toast.info('可在拼图里切换照片素材');
+        promptOutfitPhotoUpload();
         return;
       }
       if (label === '新建衣橱') {
@@ -526,7 +569,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
       }
       void openCreateItem(createHint);
     },
-    [createHint, importItemFromImage, openCreateItem, openCreateOutfit],
+    [createHint, importItemFromImage, openCreateItem, openCreateOutfit, promptOutfitPhotoUpload],
   );
 
   const wearItem = (id: string) => {
@@ -880,7 +923,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           if (!item) return;
           setEditor({ type: 'confirm-delete', target: 'item', id, label: item.name });
         }}
-        onCreateOutfit={(seed) => openCreateOutfit(seed)}
+        onCreateOutfit={(seed) => openCreateOutfit(seed?.length ? { seedItemIds: seed } : undefined)}
         onEditOutfit={(id) => openEditOutfitCollage(id)}
         onDeleteOutfit={(id) => {
           const outfit = outfits.find((x) => x.id === id);
@@ -985,6 +1028,7 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
         occasions={occasionMeta}
         outfit={collage?.outfit ?? null}
         seedItemIds={collage?.seedItemIds}
+        seedPhotoUri={collage?.seedPhotoUri}
         onClose={(opts) => {
           const reopenId = opts?.reopenOutfitId;
           const wasCreate = !collage?.outfit;

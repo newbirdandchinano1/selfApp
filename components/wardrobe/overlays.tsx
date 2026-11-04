@@ -11,7 +11,10 @@ import {
   type WardrobeOutfit,
   type WardrobeTab,
 } from '@/components/wardrobe/data';
-import { WardrobeGarment } from '@/components/wardrobe/garments';
+import {
+  WardrobeGarment,
+  wardrobeItemPhotoSurface,
+} from '@/components/wardrobe/garments';
 import {
   IconArrow,
   IconBox,
@@ -32,7 +35,6 @@ import {
   IconSeason,
   IconSingleCol,
   IconSort,
-  IconSparkle,
   IconTag,
 } from '@/components/wardrobe/icons';
 import { FOLD_MOTION_EASE, FOLD_MOTION_SPRING } from '@/components/review/fold-motion';
@@ -222,10 +224,9 @@ export const LayoutPop = memo(function LayoutPop({
 
 /* ─── CreatePop ─── */
 
-function createOptsFor(
-  tab: WardrobeTab,
-  w: WardrobePalette,
-): { label: string; note: string; icon: React.ReactNode; tile: string }[] {
+type CreateOpt = { label: string; note: string; icon: React.ReactNode; tile: string };
+
+function createOptsFor(tab: WardrobeTab, w: WardrobePalette): CreateOpt[] {
   if (tab === 'closet') {
     return [
       { label: '拍照', note: '用相机记录今天的穿搭', icon: <IconCamera size={14} color={w.pine} />, tile: w.sage2 },
@@ -235,10 +236,10 @@ function createOptsFor(
   if (tab === 'outfits') {
     return [
       { label: '从单品组合', note: '挑选衣橱里的单品', icon: <IconLayers size={14} color={w.pine} />, tile: w.sage2 },
-      { label: '拍照上传', note: '记录今天的造型', icon: <IconCamera size={14} color={w.amber} />, tile: w.amber2 },
-      { label: 'AI 灵感', note: '根据场合生成搭配', icon: <IconSparkle size={14} color={w.sky} />, tile: w.sky2 },
+      { label: '拍照上传', note: '拍照或相册导入并抠图', icon: <IconCamera size={14} color={w.amber} />, tile: w.amber2 },
     ];
   }
+  // mine Tab：管理衣橱入口（无 AI / Sparkle）
   return [
     { label: '新建衣橱', note: '为旅行或季节单独整理', icon: <IconBox size={14} color={w.pine} />, tile: w.sage2 },
     { label: '导入衣橱', note: '从备份恢复数据', icon: <IconClip size={14} color={w.amber} />, tile: w.amber2 },
@@ -485,7 +486,11 @@ export const WardrobeSheet = memo(function WardrobeSheet({
           : Array.from({ length: 28 }, () => false);
       return (
         <View>
-          <View style={[styles.detailVisual, { backgroundColor: item.tint }]}>
+          <View
+            style={[
+              styles.detailVisual,
+              { backgroundColor: wardrobeItemPhotoSurface(item, w.card) },
+            ]}>
             <Text style={styles.dvLabel}>ARCHIVE · {item.code}</Text>
             <View style={styles.dvSeason}>
               <Text style={styles.dvSeasonText}>{item.season}</Text>
@@ -580,7 +585,7 @@ export const WardrobeSheet = memo(function WardrobeSheet({
                     key={id}
                     style={[
                       styles.outfitMini,
-                      { backgroundColor: item.tint },
+                      { backgroundColor: wardrobeItemPhotoSurface(item, w.card) },
                       index === 0 && { left: '10%', transform: [{ rotate: '-8deg' }] },
                       index === 1 && { left: '50%', marginLeft: -35, top: '18%', zIndex: 2 },
                       index === 2 && { right: '10%', left: undefined, transform: [{ rotate: '8deg' }] },
@@ -609,7 +614,11 @@ export const WardrobeSheet = memo(function WardrobeSheet({
               if (!item) return null;
               return (
                 <Pressable key={id} style={styles.sheetRow} onPress={() => onOpenItem?.(id)}>
-                  <View style={[styles.srThumb, { backgroundColor: item.tint }]}>
+                  <View
+                    style={[
+                      styles.srThumb,
+                      { backgroundColor: wardrobeItemPhotoSurface(item, w.card) },
+                    ]}>
                     <WardrobeGarment item={item} width={28} height={34} />
                   </View>
                   <View style={styles.srCopy}>
@@ -1345,10 +1354,11 @@ export const SearchOverlay = memo(function SearchOverlay({
 });
 
 function SearchRow({ item, onPress }: { item: WardrobeItem; onPress: () => void }) {
-  const { styles } = useWardrobeStyles();
+  const { w, styles } = useWardrobeStyles();
   return (
     <Pressable style={styles.searchRow} onPress={onPress}>
-      <View style={[styles.srThumb, { backgroundColor: item.tint }]}>
+      <View
+        style={[styles.srThumb, { backgroundColor: wardrobeItemPhotoSurface(item, w.card) }]}>
         <WardrobeGarment item={item} width={28} height={34} />
       </View>
       <View style={styles.srCopy}>

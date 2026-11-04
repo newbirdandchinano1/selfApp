@@ -18,6 +18,13 @@ import {
   saveScheduleAxisWithRemap,
 } from '@/lib/schedule-service';
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
+import {
+  loadScheduleTimelineUiEnabled,
+  loadScheduleTimelineWriteEnabled,
+  saveScheduleTimelineUiEnabled,
+  saveScheduleTimelineWriteEnabled,
+} from '@/lib/schedule/timeline-flags';
+import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
@@ -26,6 +33,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -104,6 +112,8 @@ export function FrogScheduleSettingsCard({
   const [orphanedCount, setOrphanedCount] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
+  const [timelineUi, setTimelineUi] = React.useState(false);
+  const [timelineWrite, setTimelineWrite] = React.useState(false);
 
   const [pickerTarget, setPickerTarget] = React.useState<PickerTarget | null>(null);
 
@@ -121,6 +131,8 @@ export function FrogScheduleSettingsCard({
     setSlotHours(axis.slotHours);
     setBreaks(axis.breaks ?? []);
     setOrphanedCount(await getOrphanedPlacementCount());
+    setTimelineUi(await loadScheduleTimelineUiEnabled());
+    setTimelineWrite(await loadScheduleTimelineWriteEnabled());
     setLoaded(true);
   }, [maxEndMinutes]);
 
@@ -200,6 +212,28 @@ export function FrogScheduleSettingsCard({
   const removeBreak = (index: number) => {
     setBreaks((prev) => prev.filter((_, i) => i !== index));
   };
+
+  const toggleTimelineUi = React.useCallback(async (next: boolean) => {
+    setTimelineUi(next);
+    try {
+      await saveScheduleTimelineUiEnabled(next);
+      notifyFrogScheduleChanged();
+    } catch (err) {
+      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
+      setTimelineUi(await loadScheduleTimelineUiEnabled());
+    }
+  }, []);
+
+  const toggleTimelineWrite = React.useCallback(async (next: boolean) => {
+    setTimelineWrite(next);
+    try {
+      await saveScheduleTimelineWriteEnabled(next);
+      notifyFrogScheduleChanged();
+    } catch (err) {
+      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
+      setTimelineWrite(await loadScheduleTimelineWriteEnabled());
+    }
+  }, []);
 
   const onSave = React.useCallback(async () => {
     setSaving(true);
@@ -352,6 +386,36 @@ export function FrogScheduleSettingsCard({
                 </Pressable>
               );
             })}
+          </View>
+
+          <Text style={[styles.sectionLabel, { color: text }]}>时间线（试验）</Text>
+          <View style={[styles.toggleRow, { borderColor: cardBorder }]}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ color: text, fontWeight: '600' }}>新时间线日视图</Text>
+              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
+                按真实时刻展示，同刻可横滑多栏
+              </Text>
+            </View>
+            <Switch
+              value={timelineUi}
+              onValueChange={(v) => void toggleTimelineUi(v)}
+              trackColor={{ false: '#cbd5e1', true: primary }}
+              thumbColor="#ffffff"
+            />
+          </View>
+          <View style={[styles.toggleRow, { borderColor: cardBorder }]}>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ color: text, fontWeight: '600' }}>按分钟写入</Text>
+              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
+                自由起止时刻，禁跨断开时段；关则回到选格
+              </Text>
+            </View>
+            <Switch
+              value={timelineWrite}
+              onValueChange={(v) => void toggleTimelineWrite(v)}
+              trackColor={{ false: '#cbd5e1', true: primary }}
+              thumbColor="#ffffff"
+            />
           </View>
 
           <View style={styles.breakHeader}>
@@ -527,6 +591,15 @@ const styles = StyleSheet.create({
   timeValue: { fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   sectionLabel: { fontSize: 14, fontWeight: '600', marginTop: 4 },
   slotRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
   slotChip: {
     minWidth: 52,
     height: 40,

@@ -15,7 +15,14 @@ import {
   setSchedulePickerResult,
   type SchedulePickerResult,
 } from '@/lib/schedule-picker-bridge';
-import { TASK_REMINDER_OPTIONS, type TaskReminderOption } from '@/lib/task-reminder-schedule';
+import {
+  clampAdvanceMinutesOverride,
+  formatTaskReminderOptionLabel,
+  TASK_REMINDER_ADVANCED_OPTIONS,
+  TASK_REMINDER_OPTIONS,
+  TASK_REMINDER_PRIMARY_OPTIONS,
+  type TaskReminderOption,
+} from '@/lib/task-reminder-schedule';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -78,6 +85,9 @@ const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_PAGE_SPAN = 481;
 const MONTH_PAGE_CENTER_INDEX = Math.floor(MONTH_PAGE_SPAN / 2);
 const REMINDER_OPTIONS: ReminderOption[] = TASK_REMINDER_OPTIONS;
+const REMINDER_PRIMARY: ReminderOption[] = TASK_REMINDER_PRIMARY_OPTIONS;
+const REMINDER_ADVANCED: ReminderOption[] = TASK_REMINDER_ADVANCED_OPTIONS;
+const SLOT_ADVANCE_OPTIONS = [5, 10, 15, 20, 30, 45, 60] as const;
 
 /** 亚像素宽度会导致 paging/snap 停在两月之间（左右各露一半） */
 function roundCalendarWidth(width: number): number {
@@ -418,6 +428,8 @@ export default function SchedulePickerScreen() {
   }
   const displaySettingType = settingPickerType || lastSettingPickerType.current;
   const [reminderOption, setReminderOption] = React.useState<ReminderOption>('不提前');
+  const [showAdvancedReminder, setShowAdvancedReminder] = React.useState(false);
+  const [advanceMinutesOverride, setAdvanceMinutesOverride] = React.useState<number | null>(null);
   const defaultReminderTime = React.useMemo(() => {
     const t = new Date(todayStart);
     t.setHours(9, 0, 0, 0);
@@ -797,6 +809,9 @@ export default function SchedulePickerScreen() {
       ...(reminderOption !== '不提前' && reminderTimeUserSetRef.current
         ? { reminderHour: reminderTime.getHours(), reminderMinute: reminderTime.getMinutes() }
         : {}),
+      ...(advanceMinutesOverride != null
+        ? { advanceMinutesOverride }
+        : {}),
       repeatOption,
       repeatSummary: currentRepeatSummary,
       weeklyDays: [...weeklyDays],
@@ -850,6 +865,7 @@ export default function SchedulePickerScreen() {
       ...(selectedDate ? { date: toLocalYMD(selectedDate) } : {}),
     };
   }, [
+    advanceMinutesOverride,
     allDay,
     endTime,
     hasExactTime,
@@ -934,17 +950,25 @@ export default function SchedulePickerScreen() {
           ? '选择每月重复日期'
           : '选择每年重复日期'
       : displaySettingType === 'reminder'
-        ? '提醒设置'
+        ? '截止提醒'
         : '重复设置';
-  const settingPickerOptions = displaySettingType === 'reminder' ? REMINDER_OPTIONS : REPEAT_OPTIONS;
+  const settingPickerOptions =
+    displaySettingType === 'reminder'
+      ? showAdvancedReminder
+        ? [...REMINDER_PRIMARY, ...REMINDER_ADVANCED]
+        : REMINDER_PRIMARY
+      : REPEAT_OPTIONS;
   const settingPickerValue = displaySettingType === 'reminder' ? reminderOption : repeatOption;
   const startTimeLabel = formatTime(startTime);
   const endTimeLabel = formatTime(endTime);
   const timePickerTitle = timePickerTarget === 'start' ? '选择开始时间' : '选择结束时间';
   const repeatSummary = formatRepeatSummary(repeatOption, weeklyDays, monthlyDays, yearlyDate);
   const reminderTimeLabel = formatTime(reminderTime);
+  const reminderOptionLabel = formatTaskReminderOptionLabel(reminderOption) || reminderOption;
   const reminderSettingHint =
-    reminderOption === '不提前' ? reminderOption : `${reminderOption} · ${reminderTimeLabel}`;
+    reminderOption === '不提前'
+      ? reminderOptionLabel
+      : `${reminderOptionLabel} · ${reminderTimeLabel}`;
 
   const openReminderTimePicker = () => {
     setReminderTimeDraft(reminderTime);
@@ -1012,7 +1036,10 @@ export default function SchedulePickerScreen() {
       const selectedReminder = parsed.reminderOption;
       if (selectedReminder && REMINDER_OPTIONS.includes(selectedReminder)) {
         setReminderOption(selectedReminder);
+        if (REMINDER_ADVANCED.includes(selectedReminder)) setShowAdvancedReminder(true);
       }
+      const override = clampAdvanceMinutesOverride(parsed.advanceMinutesOverride);
+      if (override != null) setAdvanceMinutesOverride(override);
       if (typeof parsed.reminderHour === 'number' && typeof parsed.reminderMinute === 'number') {
         const t = new Date(todayStart);
         t.setHours(parsed.reminderHour, parsed.reminderMinute, 0, 0);
@@ -1671,7 +1698,7 @@ export default function SchedulePickerScreen() {
           ) : null}
 
           <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={() => openSettingPicker('reminder')}>
-            <Text style={[styles.pl, { color: tf.muted }]}>提醒</Text>
+            <Text style={[styles.pl, { color: tf.muted }]}>截止提醒</Text>
             <View style={styles.pv}>
               <MaterialIcons name="notifications-none" size={14} color={tf.muted} />
               <Text style={{ fontSize: 13, fontWeight: '600', color: tf.ink2 }} numberOfLines={1}>
@@ -1690,6 +1717,33 @@ export default function SchedulePickerScreen() {
               <Text style={{ fontSize: 11, color: tf.muted }}>›</Text>
             </Pressable>
           ) : null}
+          <Pressable
+            style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]}
+            onPress={() => {
+              Alert.alert(
+                '入格提前量',
+                '覆盖通知中心默认：入格开始前多少分钟提醒。选「跟随默认」则用待办/项目频道设置。',
+                [
+                  { text: '取消', style: 'cancel' },
+                  {
+                    text: '跟随默认',
+                    onPress: () => setAdvanceMinutesOverride(null),
+                  },
+                  ...SLOT_ADVANCE_OPTIONS.map((mins) => ({
+                    text: `${mins} 分`,
+                    onPress: () => setAdvanceMinutesOverride(mins),
+                  })),
+                ],
+              );
+            }}>
+            <Text style={[styles.pl, { color: tf.muted }]}>入格提前</Text>
+            <View style={styles.pv}>
+              <Text style={{ fontSize: 13, fontWeight: '600', color: tf.ink2 }}>
+                {advanceMinutesOverride == null ? '跟随默认' : `${advanceMinutesOverride} 分`}
+              </Text>
+            </View>
+            <Text style={{ fontSize: 11, color: tf.muted }}>›</Text>
+          </Pressable>
           <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={() => openSettingPicker('repeat')}>
             <Text style={[styles.pl, { color: tf.muted }]}>重复</Text>
             <View style={styles.pv}>
@@ -1915,11 +1969,24 @@ export default function SchedulePickerScreen() {
                           }
                         }}
                       >
-                        <Text style={[styles.optionText, { color: selected ? colors.primary : colors.text }]}>{option}</Text>
+                        <Text style={[styles.optionText, { color: selected ? colors.primary : colors.text }]}>
+                          {displaySettingType === 'reminder'
+                            ? formatTaskReminderOptionLabel(option) || option
+                            : option}
+                        </Text>
                         {selected ? <MaterialIcons name="check" size={18} color={colors.primary} /> : null}
                       </Pressable>
                     );
                   })}
+                  {displaySettingType === 'reminder' && !showAdvancedReminder ? (
+                    <Pressable
+                      style={[styles.optionRow, { borderColor: colors.outline }]}
+                      onPress={() => setShowAdvancedReminder(true)}>
+                      <Text style={[styles.optionText, { color: colors.textSecondary }]}>
+                        高级：自定义提前天数…
+                      </Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : (
                 <>

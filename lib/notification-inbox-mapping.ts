@@ -10,8 +10,15 @@ const CATEGORY_MODULE_TAB: Record<NotificationCategoryId, NotificationModuleTab>
   'health-intake-reminder': 'index',
   'habit-reminder': 'tasks',
   'schedule-slot-reminder': 'tasks',
+  'task-deadline-reminder': 'tasks',
+  'project-progress-reminder': 'tasks',
   'daily-review-reminder': 'review',
+  'weekly-review-reminder': 'review',
   'auto-ledger': 'finance',
+  'finance-scheduled-expense-reminder': 'finance',
+  'finance-budget-threshold-reminder': 'finance',
+  'finance-savings-nudge-reminder': 'finance',
+  'finance-ledger-wrap-reminder': 'finance',
 };
 
 /** 未知 / remote 默认落 profile（「我的」Tab 本期不打角标，仅参与铃铛聚合）。 */

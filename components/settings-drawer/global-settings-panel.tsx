@@ -671,7 +671,7 @@ export function GlobalSettingsPanel({
                 icon="public"
                 tone="pine"
                 title="博客"
-                hint="站内阅读 www.jaxz.xyz，打不开时可用浏览器打开"
+                hint="站内阅读 jaxz.xyz，打不开时可用浏览器打开"
                 onPress={() => go('/blog')}
                 palette={palette}
               />
@@ -681,6 +681,15 @@ export function GlobalSettingsPanel({
           <View>
             <SectionTitle title="系统管理" color={palette.inkSoft} />
             <GroupCard palette={palette}>
+              <NavRow
+                icon="dashboard"
+                tone="pine"
+                title="桌面与状态栏"
+                hint="今日青蛙小组件、锁屏与灵动岛（仅 iOS）"
+                onPress={() => go('/widgets-center')}
+                palette={palette}
+                showDivider
+              />
               <NavRow
                 icon="bug-report"
                 tone="sage"

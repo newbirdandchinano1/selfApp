@@ -37,6 +37,11 @@ async function persistToDisk() {
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
+  void import('@/lib/widgets/health-intake-widget-sync')
+    .then(({ scheduleHealthIntakeWidgetSync }) =>
+      scheduleHealthIntakeWidgetSync('intake-targets'),
+    )
+    .catch(() => {});
 }
 
 function coerceTarget(value: unknown, fallback: number): number {
