@@ -1,8 +1,7 @@
-﻿import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
+﻿import { FOLD_MOTION_EASE } from '@/components/review/fold-motion';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
 import {
   TaskFoldMotion,
-  taskFoldFonts,
   useTaskFoldTheme,
 } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -14,14 +13,11 @@ import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   buildScheduleTimeline,
-  computeScheduleSlotLayout,
-  formatMinuteRangeLabel,
   formatMinutesAsHm,
   getSlotCount,
   listWorkSlots,
   maxSpanFromSlot,
   placementEndMinutes,
-  SCHEDULE_BASE_SLOT_H,
   slotEndMinutes,
   slotStartMinutes,
   wallClockToAxisMinutes,
@@ -46,7 +42,6 @@ import {
   formatDayScheduleLabel,
   getWeekStartMondayYmd,
   isEditableScheduleDay,
-  isEditableWeek,
   WEEKDAY_SHORT_LABELS,
   weekdayFromYmd,
   ymdForWeekday,
@@ -54,14 +49,12 @@ import {
 import {
   formatLocalYmdFromDate,
   getLogicalLocalYmd,
-  logicalYmdToLocalDate,
   loadTasksDayBoundary,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import {
   cancelAssignForPlacementDay,
-  copyPreviousWeekToThisWeek,
   loadScheduleForDayWindow,
   placeFrogOnSchedule,
   placeFrogOnScheduleAt,
@@ -81,20 +74,13 @@ import React from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Easing,
-  Keyboard,
-  KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   type LayoutChangeEvent,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
 } from 'react-native';
 import {
   SchedulePlaceFrogSheet,
@@ -109,24 +95,10 @@ import {
   type ScheduleVirtualSlot,
   buildAcceptance,
 } from '@/components/tasks/SchedulePlacementDetailSheet';
-import {
-  getSlotNote,
-  loadScheduleSlotNotes,
-  normalizeSlotNote,
-  saveScheduleSlotNote,
-  SCHEDULE_SLOT_NOTE_IME_SOFT_MAX,
-  SCHEDULE_SLOT_NOTE_MAX_LEN,
-  type ScheduleSlotNotesMap,
-} from '@/lib/schedule/slot-notes';
-import { SCHEDULE_DEPRECATED_ENTRY, loadScheduleTimelineUiEnabled, loadScheduleTimelineWriteEnabled } from '@/lib/schedule/timeline-flags';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { loadScheduleTimelineWriteEnabled } from '@/lib/schedule/timeline-flags';
 
-/** 阶段 A：藏入口；阶段 L 再删相关逻辑 */
-const SHOW_COPY_LAST_WEEK = SCHEDULE_DEPRECATED_ENTRY.copyLastWeek;
-const SHOW_SLOT_NOTES = SCHEDULE_DEPRECATED_ENTRY.slotNotes;
-
-/** 日程表缩放：最简（当前时段）↔ 单日课表 */
-export type ScheduleZoomMode = 'minimal' | 'grid';
+/** 日程表缩放：最简（当前时段）↔ 时间线日视图 */
+export type ScheduleZoomMode = 'minimal' | 'day';
 
 type TodayCompactItem = {
   /** 青蛙占用；习惯/虚拟待办块时为空 */
@@ -181,28 +153,6 @@ function remainSecondsUntil(
 /** 对齐设计稿 `.tt`：窄时间轴 + 矮日头 */
 const TIME_GUTTER = 28;
 const DAY_HEADER_H = 22;
-/** 全天专属顶栏：空/单指派基准高；多项时按条数加高 */
-const ALL_DAY_BASE_H = 38;
-const ALL_DAY_STACK_ITEM_H = 26;
-const ALL_DAY_STACK_GAP = 2;
-/** 时段格多指派叠放：每条色块高度与间距 */
-const CELL_STACK_ITEM_H = 22;
-const CELL_STACK_GAP = 2;
-/** cellList / 点击用：全天顶栏哨兵格号 */
-const ALL_DAY_SLOT = -1;
-/** 横向分页：左=上一周期 / 中=当前 / 右=下一周期 */
-const MIDDLE_PAGE = 1;
-
-function isAllDaySpan(
-  startSlotIndex: number | null | undefined,
-  spanSlots: number,
-  daySlotCount: number,
-  allDayFlag?: boolean,
-): boolean {
-  if (allDayFlag) return true;
-  if (startSlotIndex == null) return false;
-  return startSlotIndex === 0 && Math.max(1, spanSlots) >= Math.max(1, daySlotCount);
-}
 
 type SubjectLookup = {
   tasks: TaskRow[];
@@ -252,12 +202,6 @@ type Props = {
   /** 课表当前查看日变化（滑动 / 跳转），供顶部周条高亮同步 */
   onViewYmdChange?: (ymd: string) => void;
 };
-
-type CellKey = string; // `${ymd}-${slot}`
-
-function cellKey(ymd: string, slot: number): CellKey {
-  return `${ymd}-${slot}`;
-}
 
 function resolveSubject(
   kind: 'task' | 'project',
@@ -337,125 +281,11 @@ function resolveSubject(
   };
 }
 
-/** 同一格内多占用：未完成优先的第一只；count = 未完成主体数（角标口径） */
-function pickDisplayPlacement(
-  list: SchedulePlacementRow[],
-  lookup: SubjectLookup,
-  assignYmd: string,
-): { primary: SchedulePlacementRow; count: number; done: boolean; title: string } | null {
-  if (list.length === 0) return null;
-  const enriched = list.map((p) => {
-    const sub = resolveSubject(p.subjectKind, p.subjectId, lookup, assignYmd);
-    return { p, sub, done: !!sub?.done };
-  });
-  enriched.sort((a, b) => {
-    if (a.done !== b.done) return a.done ? 1 : -1;
-    return (b.sub?.priority ?? 0) - (a.sub?.priority ?? 0);
-  });
-  const first = enriched[0]!;
-  const unfinishedCount = enriched.filter((x) => !x.done).length;
-  return {
-    primary: first.p,
-    count: unfinishedCount,
-    done: first.done,
-    title: first.sub?.title ?? '青蛙',
-  };
-}
-
-/** 同一格按主体去重（跨段占用同一青蛙只算一只） */
-function uniquePlacementsBySubject(list: SchedulePlacementRow[]): SchedulePlacementRow[] {
-  return [...new Map(list.map((p) => [`${p.subjectKind}:${p.subjectId}`, p])).values()];
-}
-
 /**
  * 对齐设计稿 `.blk`：
  * habit 浅绿虚线 · todo 琥珀黄 · proj 浅灰绿 · frog 深绿
  */
 type ScheduleBlockKind = 'frog' | 'habit' | 'todo' | 'proj';
-
-/** 叠放色块所需高度：内边距 + N 条 + 间距 */
-function heightForStackedCount(
-  count: number,
-  itemH: number,
-  gap: number,
-  pad: number,
-): number {
-  if (count <= 0) return 0;
-  return pad * 2 + count * itemH + Math.max(0, count - 1) * gap;
-}
-
-type CellStackItem = {
-  key: string;
-  kind: ScheduleBlockKind;
-  title: string;
-  done: boolean;
-  meta: string;
-};
-
-function buildCellStackItems(input: {
-  placements: SchedulePlacementRow[];
-  habits: VirtualHabitPlacement[];
-  virtualTasks: VirtualTaskPlacement[];
-  subjects: SubjectLookup;
-  assignYmd: string;
-  startHm: string;
-  endHm: string;
-  allDay?: boolean;
-}): CellStackItem[] {
-  const items: CellStackItem[] = [];
-  for (const p of uniquePlacementsBySubject(input.placements)) {
-    const sub = resolveSubject(p.subjectKind, p.subjectId, input.subjects, input.assignYmd);
-    const kind = blockKindForPlacement(p, input.subjects);
-    const done = !!sub?.done;
-    const meta = input.allDay
-      ? `全天${done ? ' · 已完成' : ''}`
-      : kind === 'todo'
-        ? `${input.startHm} · 待办${done ? ' · 已完成' : ''}`
-        : p.subjectKind === 'project'
-          ? `${input.startHm}–${input.endHm} · 项目${done ? ' · 已完成' : ''}`
-          : `${input.startHm}–${input.endHm}${done ? ' · 已完成' : ' · 进行中'}`;
-    items.push({
-      key: `p-${p.id}`,
-      kind,
-      title: (sub?.title ?? '').trim() || '青蛙',
-      done,
-      meta,
-    });
-  }
-  for (const h of input.habits) {
-    items.push({
-      key: `h-${h.habitId}-${h.startSlotIndex}`,
-      kind: 'habit',
-      title: (h.name ?? '').trim() || '习惯',
-      done: !!h.done,
-      meta: input.allDay
-        ? `全天 · 习惯${h.done ? ' · 已完成' : ''}`
-        : `${input.startHm} · 习惯${h.done ? ' · 已完成' : ''}`,
-    });
-  }
-  for (const t of input.virtualTasks) {
-    const kind: ScheduleBlockKind =
-      t.carrySubjectKind === 'project'
-        ? 'proj'
-        : t.carrySubjectKind === 'task'
-          ? 'frog'
-          : 'todo';
-    const meta = input.allDay
-      ? `全天${t.done ? ' · 已完成' : ''}`
-      : t.carrySubjectKind
-        ? `${input.startHm} · 过期${t.done ? ' · 已完成' : ''}`
-        : `${input.startHm} · 待办${t.done ? ' · 已完成' : ''}`;
-    items.push({
-      key: `vt-${t.taskId}-${t.startSlotIndex}`,
-      kind,
-      title: (t.title ?? '').trim() || '待办',
-      done: !!t.done,
-      meta,
-    });
-  }
-  items.sort((a, b) => Number(a.done) - Number(b.done));
-  return items;
-}
 
 /** Alert / Modal 关闭后再改状态，避免 Android 触摸层与 LayoutAnimation 抢焦点卡死 */
 function runAfterUiSettles(action: () => void) {
@@ -595,65 +425,6 @@ function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
     };
   }
 
-/** 预选空档：2s 琥珀呼吸轮廓（preselGlow） */
-function PreselGlowOutline({
-  active,
-  color,
-  reduceMotion,
-}: {
-  active: boolean;
-  color: string;
-  reduceMotion: boolean;
-}) {
-  const glow = React.useRef(new Animated.Value(0.55)).current;
-  React.useEffect(() => {
-    if (!active || reduceMotion) {
-      glow.stopAnimation();
-      glow.setValue(1);
-      return;
-    }
-    glow.setValue(0.45);
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(glow, {
-          toValue: 1,
-          duration: TaskFoldMotion.preselGlow / 2,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(glow, {
-          toValue: 0.45,
-          duration: TaskFoldMotion.preselGlow / 2,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      glow.stopAnimation();
-    };
-  }, [active, glow, reduceMotion]);
-  if (!active) return null;
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[
-        StyleSheet.absoluteFill,
-        {
-          margin: 1,
-          borderRadius: Radius.xs,
-          borderWidth: 1.5,
-          borderStyle: 'dashed',
-          borderColor: color,
-          opacity: glow,
-        },
-      ]}
-    />
-  );
-}
-
 export function WeeklyFrogSchedule({
   logicalTodayYmd,
   now,
@@ -674,25 +445,16 @@ export function WeeklyFrogSchedule({
 }: Props) {
   const { colors: theme, isDark, shadows } = useAppTheme();
   const { tf, fonts: foldFonts } = useTaskFoldTheme();
-  const { animate: foldAnimate } = useFoldMotionGate();
   const primary = tf.pond;
   const outline = tf.muted;
   const surfaceLow = isDark ? tf.paper2 : tf.paper3;
   const gridLineSoft = tf.line;
   const todayWash = isDark ? tf.lily2 : 'rgba(232,239,217,0.55)';
-  const todayWashStrong = isDark ? 'rgba(201,217,163,0.28)' : 'rgba(111,149,98,0.22)';
-  const successTint = tf.frog;
-  const sunAmber = tf.sun;
 
-  /** 阶段 F：是否用新时间线渲染「课表」分支（最简态不变）。缺省关。 */
-  const [timelineUi, setTimelineUi] = React.useState(false);
-  /** 阶段 G：是否按分钟写入。缺省关（旧选格）。 */
-  const [timelineWrite, setTimelineWrite] = React.useState(false);
+  /** 阶段 G：是否按分钟写入。缺省关（旧选格；J 完成前保持）。 */
+  const [timelineWrite, setTimelineWrite] = React.useState(true);
   React.useEffect(() => {
     let cancelled = false;
-    void loadScheduleTimelineUiEnabled().then((on) => {
-      if (!cancelled) setTimelineUi(on);
-    });
     void loadScheduleTimelineWriteEnabled().then((on) => {
       if (!cancelled) setTimelineWrite(on);
     });
@@ -737,27 +499,14 @@ export function WeeklyFrogSchedule({
 
   /** 0 = 今天；±1 翻一天 */
   const [periodIndex, setPeriodIndex] = React.useState(0);
-  /** 课表块 FoldRiseIn 错峰序号（每次绘网格重置） */
-  const bloomBlockIndex = React.useRef(0);
-  const wasGridRef = React.useRef(false);
+  const wasDayRef = React.useRef(false);
   const centerYmd = React.useMemo(
     () => centerYmdForPeriod(logicalTodayYmd, periodIndex),
     [logicalTodayYmd, periodIndex],
   );
   const dayYmds = React.useMemo(() => [centerYmd], [centerYmd]);
-  /** 预加载左右邻日，滑动时邻页也有数据 */
-  const loadDayYmds = React.useMemo(() => {
-    const set = new Set<string>();
-    for (const p of [periodIndex - 1, periodIndex, periodIndex + 1]) {
-      set.add(centerYmdForPeriod(logicalTodayYmd, p));
-    }
-    return [...set].sort();
-  }, [logicalTodayYmd, periodIndex]);
-  const thisMonday = React.useMemo(
-    () => getWeekStartMondayYmd(logicalTodayYmd),
-    [logicalTodayYmd],
-  );
-
+  /** 切日仅走上方周条/日历；日程内横滑留给同刻多栏，不再预取邻日分页 */
+  const loadDayYmds = dayYmds;
   const [view, setView] = React.useState<WeekScheduleView | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [virtualHabits, setVirtualHabits] = React.useState<VirtualHabitPlacement[]>([]);
@@ -769,9 +518,8 @@ export function WeeklyFrogSchedule({
   const subjectsRef = React.useRef(subjects);
   subjectsRef.current = subjects;
   const [gridWidth, setGridWidth] = React.useState(0);
-  const hPagerRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
-  const headerPagerRef = React.useRef<React.ComponentRef<typeof ScrollView>>(null);
-  const pagingLock = React.useRef(false);
+  /** 时间线视口：默认半高，点按展开完整高度 */
+  const [timelineHeightExpanded, setTimelineHeightExpanded] = React.useState(false);
 
   const [placeTarget, setPlaceTarget] = React.useState<{
     weekStartYmd: string;
@@ -784,15 +532,6 @@ export function WeeklyFrogSchedule({
     /** 未入格重新落入 */
     rematerializePlacementId?: string;
     rematerializePreselected?: SchedulePlacePreselected;
-  } | null>(null);
-
-  const [cellList, setCellList] = React.useState<{
-    assignYmd: string;
-    slotIndex: number;
-    placements: SchedulePlacementRow[];
-    habits: VirtualHabitPlacement[];
-    virtualTasks: VirtualTaskPlacement[];
-    editable: boolean;
   } | null>(null);
 
   const [orphanListOpen, setOrphanListOpen] = React.useState(false);
@@ -811,16 +550,19 @@ export function WeeklyFrogSchedule({
     /** 习惯虚拟块：完成走打卡 / 撤销 */
     habitId?: string;
   } | null>(null);
-  /** 首页默认最简：当前时段 + 倒计时；可展开单日课表 */
+  /** 首页默认最简：当前时段 + 倒计时；可展开时间线日视图 */
   const [zoomMode, setZoomMode] = React.useState<ScheduleZoomMode>('minimal');
   const zoomModeRef = React.useRef(zoomMode);
   zoomModeRef.current = zoomMode;
-  const isGrid = zoomMode === 'grid';
+  const isDay = zoomMode === 'day';
   const isMinimal = zoomMode === 'minimal';
   const zoomBusyRef = React.useRef(false);
   const bodyOpacity = React.useRef(new Animated.Value(1)).current;
   const bodyScale = React.useRef(new Animated.Value(1)).current;
   const bodyTranslateY = React.useRef(new Animated.Value(0)).current;
+  /** 日历切日横向滑入（替代原三日分页手势动画） */
+  const bodyTranslateX = React.useRef(new Animated.Value(0)).current;
+  const prevCenterYmdRef = React.useRef(centerYmd);
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
 
   /** 墙钟：最简态每秒刷新倒计时；课表「现在」线每 30s（勿用默认 now=new Date()，否则每渲染新引用会炸更新环） */
@@ -847,47 +589,6 @@ export function WeeklyFrogSchedule({
     [wallNow, logicalTodayYmd, dayBoundary],
   );
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [slotNotes, setSlotNotes] = React.useState<ScheduleSlotNotesMap>({});
-  const [slotNoteEditor, setSlotNoteEditor] = React.useState<{
-    startMinutes: number;
-    draft: string;
-  } | null>(null);
-  const [slotNoteSaving, setSlotNoteSaving] = React.useState(false);
-  const [slotNoteKeyboardH, setSlotNoteKeyboardH] = React.useState(0);
-  const insets = useSafeAreaInsets();
-
-  React.useEffect(() => {
-    if (!SHOW_SLOT_NOTES) {
-      setSlotNotes({});
-      return;
-    }
-    let cancelled = false;
-    void loadScheduleSlotNotes().then((notes) => {
-      if (!cancelled) setSlotNotes(notes);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  React.useEffect(() => {
-    if (!SHOW_SLOT_NOTES || !slotNoteEditor) {
-      setSlotNoteKeyboardH(0);
-      return;
-    }
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const onShow = (e: { endCoordinates?: { height?: number } }) => {
-      setSlotNoteKeyboardH(Math.max(0, Math.round(e.endCoordinates?.height ?? 0)));
-    };
-    const onHide = () => setSlotNoteKeyboardH(0);
-    const subShow = Keyboard.addListener(showEvent, onShow);
-    const subHide = Keyboard.addListener(hideEvent, onHide);
-    return () => {
-      subShow.remove();
-      subHide.remove();
-    };
-  }, [slotNoteEditor]);
 
   const goZoom = React.useCallback(
     (next: ScheduleZoomMode) => {
@@ -899,9 +600,11 @@ export function WeeklyFrogSchedule({
         bodyOpacity.stopAnimation();
         bodyScale.stopAnimation();
         bodyTranslateY.stopAnimation();
+        bodyTranslateX.stopAnimation();
         bodyOpacity.setValue(1);
         bodyScale.setValue(1);
         bodyTranslateY.setValue(0);
+        bodyTranslateX.setValue(0);
         setZoomMode(next);
         zoomBusyRef.current = false;
       };
@@ -911,12 +614,12 @@ export function WeeklyFrogSchedule({
         return;
       }
 
-      const enteringGrid = next === 'grid';
-      const leavingGrid = prev === 'grid';
+      const enteringDay = next === 'day';
+      const leavingDay = prev === 'day';
 
       // 退场：淡出 + 按方向位移/缩放
-      const exitScale = enteringGrid ? 0.94 : leavingGrid ? 1.06 : 1;
-      const exitTY = leavingGrid ? 10 : 0;
+      const exitScale = enteringDay ? 0.94 : leavingDay ? 1.06 : 1;
+      const exitTY = leavingDay ? 10 : 0;
 
       Animated.parallel([
         Animated.timing(bodyOpacity, {
@@ -941,8 +644,8 @@ export function WeeklyFrogSchedule({
         }
         setZoomMode(next);
 
-        const enterFromScale = enteringGrid ? 0.86 : leavingGrid ? 1.1 : 1;
-        const enterFromTY = enteringGrid ? 16 : leavingGrid ? -12 : 0;
+        const enterFromScale = enteringDay ? 0.86 : leavingDay ? 1.1 : 1;
+        const enterFromTY = enteringDay ? 16 : leavingDay ? -12 : 0;
         bodyOpacity.setValue(0);
         bodyScale.setValue(enterFromScale);
         bodyTranslateY.setValue(enterFromTY);
@@ -974,13 +677,54 @@ export function WeeklyFrogSchedule({
         });
       });
     },
-    [bodyOpacity, bodyScale, bodyTranslateY, motionReady, reduceMotion],
+    [bodyOpacity, bodyScale, bodyTranslateY, bodyTranslateX, motionReady, reduceMotion],
   );
 
-  /** 长按项目指派：自动展开课表并提示点选空格 */
+  /** 日历 / 回今天切日：横向滑入（方向跟日期先后一致） */
+  React.useEffect(() => {
+    const prev = prevCenterYmdRef.current;
+    if (prev === centerYmd) return;
+    prevCenterYmdRef.current = centerYmd;
+
+    if (!isDay || zoomBusyRef.current || !motionReady || reduceMotion) {
+      bodyTranslateX.setValue(0);
+      return;
+    }
+
+    const dir = centerYmd > prev ? 1 : -1;
+    const distance = Math.min(Math.max(gridWidth, 240), 360);
+    bodyTranslateX.stopAnimation();
+    bodyOpacity.stopAnimation();
+    bodyTranslateX.setValue(dir * distance * 0.42);
+    bodyOpacity.setValue(0.45);
+    Animated.parallel([
+      Animated.timing(bodyTranslateX, {
+        toValue: 0,
+        duration: 280,
+        easing: FOLD_MOTION_EASE,
+        useNativeDriver: true,
+      }),
+      Animated.timing(bodyOpacity, {
+        toValue: 1,
+        duration: 280,
+        easing: FOLD_MOTION_EASE,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [
+    centerYmd,
+    isDay,
+    motionReady,
+    reduceMotion,
+    gridWidth,
+    bodyTranslateX,
+    bodyOpacity,
+  ]);
+
+  /** 长按/详情预选入格：切到时间线日视图（今日） */
   React.useEffect(() => {
     if (!pendingPlace) return;
-    goZoom('grid');
+    goZoom('day');
     setPeriodIndex(0);
   }, [pendingPlace, goZoom]);
 
@@ -988,7 +732,7 @@ export function WeeklyFrogSchedule({
   React.useEffect(() => {
     if (!jumpToYmd) return;
     setPeriodIndex(dayOffsetFromToday(jumpToYmd, logicalTodayYmd));
-    goZoom('grid');
+    goZoom('day');
     onJumpToYmdConsumed?.();
   }, [jumpToYmd, goZoom, onJumpToYmdConsumed, logicalTodayYmd]);
 
@@ -1100,7 +844,6 @@ export function WeeklyFrogSchedule({
   // 任意本地课表变更（含设置弹窗改轴 / 开关切换）立即静默重载
   React.useEffect(() => {
     return subscribeFrogScheduleChanged(() => {
-      void loadScheduleTimelineUiEnabled().then(setTimelineUi);
       void loadScheduleTimelineWriteEnabled().then(setTimelineWrite);
       void reload(loadDayYmdsRef.current, { silent: true });
     });
@@ -1135,39 +878,26 @@ export function WeeklyFrogSchedule({
     setPeriodIndex(0);
   }, [logicalTodayYmd]);
 
-  const layout = React.useMemo(
-    () => (view ? computeScheduleSlotLayout(view.axis) : null),
-    [view],
-  );
-
-  /** 阶段 F：邻日三页的时间线事件（与左右滑日复用同一套分页） */
-  const timelinePages = React.useMemo(() => {
-    if (!timelineUi || !view) return null;
-    return [periodIndex - 1, periodIndex, periodIndex + 1].map((pIdx) => {
-      const ymd = centerYmdForPeriod(logicalTodayYmd, pIdx);
-      const events = buildTimelineEventsForDay({
-        dayYmd: ymd,
-        axis: view.axis,
-        placements: view.placements,
-        virtualHabits,
-        virtualTasks,
-        resolvePlacement: resolveTimelineDisplay,
-      });
-      return { pIdx, ymd, events };
+  /** 当前选中日的时间线事件（切日由上方周条/日历驱动，不在此横滑翻日） */
+  const timelineDay = React.useMemo(() => {
+    if (!view) return null;
+    const ymd = centerYmd;
+    const events = buildTimelineEventsForDay({
+      dayYmd: ymd,
+      axis: view.axis,
+      placements: view.placements,
+      virtualHabits,
+      virtualTasks,
+      resolvePlacement: resolveTimelineDisplay,
     });
+    return { ymd, events };
   }, [
-    timelineUi,
     view,
     virtualHabits,
     virtualTasks,
     resolveTimelineDisplay,
-    logicalTodayYmd,
-    periodIndex,
+    centerYmd,
   ]);
-  const slotCount = layout?.slotCount ?? 0;
-  const timeline = layout?.timeline ?? [];
-  /** 外框高度对齐设计稿 `.tt` 表体；内容更高时内滚（含顶部全天栏） */
-  const fixedBodyH = layout?.fixedBodyH ?? 52;
   const axisKey = view
     ? `${view.axis.startMinutes}-${view.axis.endMinutes}-${view.axis.slotHours}-${JSON.stringify(view.axis.breaks ?? [])}`
     : 'none';
@@ -1179,305 +909,6 @@ export function WeeklyFrogSchedule({
     const w = Math.floor(e.nativeEvent.layout.width);
     if (w > 0 && w !== gridWidth) setGridWidth(w);
   }, [gridWidth]);
-
-  const snapPagerToMiddle = React.useCallback(
-    (animated: boolean) => {
-      if (pageWidth <= 0) return;
-      const x = pageWidth * MIDDLE_PAGE;
-      requestAnimationFrame(() => {
-        hPagerRef.current?.scrollTo({ x, animated });
-        headerPagerRef.current?.scrollTo({ x, animated });
-      });
-    },
-    [pageWidth],
-  );
-
-  React.useEffect(() => {
-    if (!isGrid || gridWidth <= 0) return;
-    snapPagerToMiddle(false);
-  }, [isGrid, gridWidth, periodIndex, axisKey, snapPagerToMiddle]);
-
-  const daySlotCountForGrid = slotCount > 0 ? slotCount : view ? getSlotCount(view.axis) : 1;
-
-  const placementsByCell = React.useMemo(() => {
-    const map = new Map<CellKey, SchedulePlacementRow[]>();
-    if (!view) return map;
-    const daySlots = getSlotCount(view.axis);
-    for (const p of view.placements) {
-      if (p.orphaned || p.startSlotIndex == null) continue;
-      if (isAllDaySpan(p.startSlotIndex, p.spanSlots, daySlots)) continue;
-      const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
-      for (let i = 0; i < p.spanSlots; i++) {
-        const key = cellKey(ymd, p.startSlotIndex + i);
-        const list = map.get(key) ?? [];
-        list.push(p);
-        map.set(key, list);
-      }
-    }
-    return map;
-  }, [view]);
-
-  const habitsByCell = React.useMemo(() => {
-    const map = new Map<CellKey, VirtualHabitPlacement[]>();
-    const daySlots = view ? getSlotCount(view.axis) : daySlotCountForGrid;
-    for (const h of virtualHabits) {
-      if (isAllDaySpan(h.startSlotIndex, h.spanSlots, daySlots, h.allDay)) continue;
-      const span = Math.max(1, h.spanSlots);
-      for (let i = 0; i < span; i++) {
-        const key = cellKey(h.assignYmd, h.startSlotIndex + i);
-        const list = map.get(key) ?? [];
-        list.push(h);
-        map.set(key, list);
-      }
-    }
-    return map;
-  }, [virtualHabits, view, daySlotCountForGrid]);
-
-  const virtualTasksByCell = React.useMemo(() => {
-    const map = new Map<CellKey, VirtualTaskPlacement[]>();
-    const daySlots = view ? getSlotCount(view.axis) : daySlotCountForGrid;
-    for (const t of virtualTasks) {
-      if (isAllDaySpan(t.startSlotIndex, t.spanSlots, daySlots, t.allDay)) continue;
-      const span = Math.max(1, t.spanSlots);
-      for (let i = 0; i < span; i++) {
-        const key = cellKey(t.assignYmd, t.startSlotIndex + i);
-        const list = map.get(key) ?? [];
-        list.push(t);
-        map.set(key, list);
-      }
-    }
-    return map;
-  }, [virtualTasks, view, daySlotCountForGrid]);
-
-  const allDayPlacementsByYmd = React.useMemo(() => {
-    const map = new Map<string, SchedulePlacementRow[]>();
-    if (!view) return map;
-    const daySlots = getSlotCount(view.axis);
-    for (const p of view.placements) {
-      if (p.orphaned || p.startSlotIndex == null) continue;
-      if (!isAllDaySpan(p.startSlotIndex, p.spanSlots, daySlots)) continue;
-      const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
-      const list = map.get(ymd) ?? [];
-      list.push(p);
-      map.set(ymd, list);
-    }
-    return map;
-  }, [view]);
-
-  const allDayHabitsByYmd = React.useMemo(() => {
-    const map = new Map<string, VirtualHabitPlacement[]>();
-    const daySlots = view ? getSlotCount(view.axis) : daySlotCountForGrid;
-    for (const h of virtualHabits) {
-      if (!isAllDaySpan(h.startSlotIndex, h.spanSlots, daySlots, h.allDay)) continue;
-      const list = map.get(h.assignYmd) ?? [];
-      list.push(h);
-      map.set(h.assignYmd, list);
-    }
-    return map;
-  }, [virtualHabits, view, daySlotCountForGrid]);
-
-  const allDayVirtualTasksByYmd = React.useMemo(() => {
-    const map = new Map<string, VirtualTaskPlacement[]>();
-    const daySlots = view ? getSlotCount(view.axis) : daySlotCountForGrid;
-    for (const t of virtualTasks) {
-      if (!isAllDaySpan(t.startSlotIndex, t.spanSlots, daySlots, t.allDay)) continue;
-      const list = map.get(t.assignYmd) ?? [];
-      list.push(t);
-      map.set(t.assignYmd, list);
-    }
-    return map;
-  }, [virtualTasks, view, daySlotCountForGrid]);
-
-  /**
-   * 行高随邻日（含当前）该时段指派条数抬高，保证时间轴与左右预载页对齐；
-   * 空格仍按时长基准，有备注至少抬到可读高度。
-   */
-  const rowHeights = React.useMemo(() => {
-    if (!layout) return [] as number[];
-    return layout.timeline.map((row, i) => {
-      const base = layout.rowHeights[i] ?? SCHEDULE_BASE_SLOT_H;
-      if (row.kind !== 'work') return base;
-      let need = base;
-      if (SHOW_SLOT_NOTES) {
-        const note = getSlotNote(slotNotes, row.startMinutes);
-        if (note) need = Math.max(need, 36);
-      }
-      for (const ymd of loadDayYmds) {
-        const key = cellKey(ymd, row.slotIndex);
-        const n =
-          uniquePlacementsBySubject(placementsByCell.get(key) ?? []).length +
-          (habitsByCell.get(key) ?? []).length +
-          (virtualTasksByCell.get(key) ?? []).length;
-        if (n <= 0) continue;
-        const pad = base < 20 ? 1 : 2;
-        need = Math.max(
-          need,
-          heightForStackedCount(n, CELL_STACK_ITEM_H, CELL_STACK_GAP, pad),
-        );
-      }
-      return need;
-    });
-  }, [
-    layout,
-    slotNotes,
-    loadDayYmds,
-    placementsByCell,
-    habitsByCell,
-    virtualTasksByCell,
-  ]);
-
-  /** 全天顶栏：按邻日最大指派条数加高 */
-  const allDayRowH = React.useMemo(() => {
-    let maxN = 0;
-    for (const ymd of loadDayYmds) {
-      const n =
-        uniquePlacementsBySubject(allDayPlacementsByYmd.get(ymd) ?? []).length +
-        (allDayHabitsByYmd.get(ymd) ?? []).length +
-        (allDayVirtualTasksByYmd.get(ymd) ?? []).length;
-      if (n > maxN) maxN = n;
-    }
-    if (maxN <= 1) return ALL_DAY_BASE_H;
-    return Math.max(
-      ALL_DAY_BASE_H,
-      heightForStackedCount(maxN, ALL_DAY_STACK_ITEM_H, ALL_DAY_STACK_GAP, 2),
-    );
-  }, [loadDayYmds, allDayPlacementsByYmd, allDayHabitsByYmd, allDayVirtualTasksByYmd]);
-
-  const totalBodyH = React.useMemo(
-    () => (rowHeights.length ? rowHeights.reduce((a, b) => a + b, 0) : layout?.totalBodyH ?? 52),
-    [rowHeights, layout],
-  );
-  const gridBodyH = totalBodyH + allDayRowH;
-  const bodyScrollable = gridBodyH > fixedBodyH + 1;
-
-  // 指派/打卡后 virtualHabits、virtualTasks、placements 会变：同步已打开的「本格内容」列表里的完成态
-  React.useEffect(() => {
-    setCellList((prev) => {
-      if (!prev) return prev;
-      if (prev.slotIndex === ALL_DAY_SLOT) {
-        return {
-          ...prev,
-          habits: [...(allDayHabitsByYmd.get(prev.assignYmd) ?? [])],
-          virtualTasks: [...(allDayVirtualTasksByYmd.get(prev.assignYmd) ?? [])],
-          placements: uniquePlacementsBySubject(allDayPlacementsByYmd.get(prev.assignYmd) ?? []),
-        };
-      }
-      const key = cellKey(prev.assignYmd, prev.slotIndex);
-      const habits = habitsByCell.get(key) ?? [];
-      const vTasks = virtualTasksByCell.get(key) ?? [];
-      const covering = placementsByCell.get(key) ?? [];
-      return {
-        ...prev,
-        habits: [...habits],
-        virtualTasks: [...vTasks],
-        placements: uniquePlacementsBySubject(covering),
-      };
-    });
-  }, [
-    habitsByCell,
-    virtualTasksByCell,
-    placementsByCell,
-    allDayHabitsByYmd,
-    allDayVirtualTasksByYmd,
-    allDayPlacementsByYmd,
-  ]);
-
-  const nowLineTop = React.useMemo(() => {
-    if (!view || !layout || !dayYmds.includes(logicalTodayYmd)) return null;
-    const mins = axisNowMins;
-    if (mins == null || mins < view.axis.startMinutes || mins > view.axis.endMinutes) {
-      return null;
-    }
-    let top = allDayRowH;
-    for (let i = 0; i < layout.timeline.length; i++) {
-      const row = layout.timeline[i]!;
-      const h = rowHeights[i] ?? layout.rowHeights[i] ?? 0;
-      if (mins < row.endMinutes) {
-        const frac =
-          row.endMinutes > row.startMinutes
-            ? (mins - row.startMinutes) / (row.endMinutes - row.startMinutes)
-            : 0;
-        return top + Math.max(0, Math.min(1, frac)) * h;
-      }
-      top += h;
-    }
-    return top;
-  }, [view, layout, rowHeights, allDayRowH, dayYmds, logicalTodayYmd, axisNowMins]);
-
-  const goPeriod = (delta: number) => {
-    setPeriodIndex((i) => i + delta);
-  };
-
-  const onPagerScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (pagingLock.current || pageWidth <= 0) return;
-    const x = e.nativeEvent.contentOffset.x;
-    const page = Math.round(x / pageWidth);
-    if (page === MIDDLE_PAGE) {
-      headerPagerRef.current?.scrollTo({ x: pageWidth * MIDDLE_PAGE, animated: false });
-      return;
-    }
-    pagingLock.current = true;
-    const delta = page < MIDDLE_PAGE ? -1 : 1;
-    setPeriodIndex((i) => i + delta);
-    const midX = pageWidth * MIDDLE_PAGE;
-    hPagerRef.current?.scrollTo({ x: midX, animated: false });
-    headerPagerRef.current?.scrollTo({ x: midX, animated: false });
-    requestAnimationFrame(() => {
-      pagingLock.current = false;
-    });
-  };
-
-  const onPagerScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (pagingLock.current || pageWidth <= 0) return;
-    headerPagerRef.current?.scrollTo({
-      x: e.nativeEvent.contentOffset.x,
-      animated: false,
-    });
-  };
-
-  const openSlotNoteEditor = React.useCallback(
-    (startMinutes: number) => {
-      if (!SHOW_SLOT_NOTES) return;
-      setSlotNoteEditor({
-        startMinutes,
-        draft: getSlotNote(slotNotes, startMinutes),
-      });
-    },
-    [slotNotes],
-  );
-
-  const saveSlotNoteEditor = React.useCallback(async () => {
-    if (!slotNoteEditor) return;
-    setSlotNoteSaving(true);
-    try {
-      const next = await saveScheduleSlotNote(
-        slotNoteEditor.startMinutes,
-        slotNoteEditor.draft,
-      );
-      setSlotNotes(next);
-      setSlotNoteEditor(null);
-      toast.success('已保存');
-    } catch (err) {
-      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
-    } finally {
-      setSlotNoteSaving(false);
-    }
-  }, [slotNoteEditor]);
-
-  const clearSlotNoteEditor = React.useCallback(async () => {
-    if (!slotNoteEditor) return;
-    setSlotNoteSaving(true);
-    try {
-      const next = await saveScheduleSlotNote(slotNoteEditor.startMinutes, '');
-      setSlotNotes(next);
-      setSlotNoteEditor(null);
-      toast.success('已清除');
-    } catch (err) {
-      toast.error(toUserMessage(err, '清除失败，请稍后重试'));
-    } finally {
-      setSlotNoteSaving(false);
-    }
-  }, [slotNoteEditor]);
 
   const orphanedPlacements = React.useMemo(() => {
     if (!view) return [] as SchedulePlacementRow[];
@@ -1499,8 +930,6 @@ export function WeeklyFrogSchedule({
     for (const v of map.values()) if (v) inGrid += 1;
     return { inGrid, total: map.size };
   }, [view]);
-
-  const placingMode = !!(pendingPlace || reassignPending);
 
   const openPlace = (
     assignYmd: string,
@@ -1527,9 +956,49 @@ export function WeeklyFrogSchedule({
     });
   };
 
+  /**
+   * 阶段 L 已无「空格」可点：预选后自动打开入格 Sheet（选时段）。
+   * 关闭 Sheet 不取消预选；可点横幅或「添加安排」再开。
+   */
+  const autoOpenedPendingKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!view) return;
+    const key = reassignPending
+      ? `reassign:${reassignPending.placement.id}`
+      : pendingPlace
+        ? `place:${pendingPlace.kind}:${pendingPlace.id}`
+        : null;
+    if (!key) {
+      autoOpenedPendingKeyRef.current = null;
+      return;
+    }
+    if (autoOpenedPendingKeyRef.current === key) return;
+    if (placeTarget) return;
+    autoOpenedPendingKeyRef.current = key;
+    const ymd = centerYmdForPeriod(logicalTodayYmd, 0);
+    if (reassignPending) {
+      openPlace(ymd, 0, {
+        rematerializePlacementId: reassignPending.placement.id,
+        rematerializePreselected: {
+          kind: reassignPending.subject.kind,
+          id: reassignPending.subject.id,
+          title: reassignPending.subject.title,
+          priority: reassignPending.subject.priority,
+          dueDate: reassignPending.subject.dueDate,
+          acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
+          projectName: reassignPending.subject.projectName,
+        },
+      });
+      return;
+    }
+    openPlace(ymd, 0);
+    // openPlace / placeTarget 有意不入 deps：只在预选身份变化时自动弹一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPlace, reassignPending, view, logicalTodayYmd]);
+
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
-    const useMinutePath = timelineWrite && timelineUi;
+    const useMinutePath = timelineWrite;
     const daySlots = getSlotCount(view.axis);
     const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
     const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
@@ -1603,33 +1072,13 @@ export function WeeklyFrogSchedule({
   const startReassignTime = (placement: SchedulePlacementRow, subject: ScheduleSubjectInfo) => {
     setDetail(null);
     setOrphanListOpen(false);
-    setCellList(null);
-    goZoom('grid');
+    goZoom('day');
     const assignYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
     setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
     setReassignPending({ placement, subject });
   };
 
-  const openCellList = (
-    assignYmd: string,
-    slotIndex: number,
-    list: SchedulePlacementRow[],
-    habits: VirtualHabitPlacement[],
-    vTasks: VirtualTaskPlacement[],
-    editable: boolean,
-  ) => {
-    setCellList({
-      assignYmd,
-      slotIndex,
-      placements: uniquePlacementsBySubject(list),
-      habits: [...habits],
-      virtualTasks: [...vTasks],
-      editable,
-    });
-  };
-
   const openVirtualHabitDetail = React.useCallback((habit: VirtualHabitPlacement) => {
-    setCellList(null);
     setOrphanListOpen(false);
     setDetail({
       surface: 'habit',
@@ -1663,7 +1112,6 @@ export function WeeklyFrogSchedule({
       const kind = task.carrySubjectKind ?? 'task';
       const subject = resolveSubject(kind, task.taskId, subjects, task.assignYmd);
       if (!subject) return;
-      setCellList(null);
       setOrphanListOpen(false);
       setDetail({
         surface: task.carrySubjectKind ? 'frog' : 'todo',
@@ -1718,7 +1166,6 @@ export function WeeklyFrogSchedule({
       if (!subject) return;
       const surface: ScheduleDetailSurface =
         blockKindForPlacement(p, subjects) === 'todo' ? 'todo' : 'frog';
-      setCellList(null);
       setOrphanListOpen(false);
       setDetail({ surface, placement: p, subject, virtualSlot: null });
     },
@@ -1742,170 +1189,6 @@ export function WeeklyFrogSchedule({
     [openDetail, tapVirtualHabit, tapVirtualTask],
   );
 
-  const handleCellPress = (assignYmd: string, slotIndex: number) => {
-    const key = cellKey(assignYmd, slotIndex);
-    const list = placementsByCell.get(key) ?? [];
-    const habits = habitsByCell.get(key) ?? [];
-    const vTasks = virtualTasksByCell.get(key) ?? [];
-    const editable = dayEditable(assignYmd, logicalTodayYmd);
-
-    if (reassignPending && editable) {
-      openPlace(assignYmd, slotIndex, {
-        rematerializePlacementId: reassignPending.placement.id,
-        rematerializePreselected: {
-          kind: reassignPending.subject.kind,
-          id: reassignPending.subject.id,
-          title: reassignPending.subject.title,
-          priority: reassignPending.subject.priority,
-          dueDate: reassignPending.subject.dueDate,
-          acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
-          projectName: reassignPending.subject.projectName,
-        },
-      });
-      return;
-    }
-
-    if (list.length === 0 && habits.length === 0 && vTasks.length === 0) {
-      if (editable) openPlace(assignYmd, slotIndex);
-      return;
-    }
-    /** 预选入格模式下，已占用格仍允许再添加 */
-    if (pendingPlace && editable) {
-      openPlace(assignYmd, slotIndex);
-      return;
-    }
-    const unique = uniquePlacementsBySubject(list);
-    const totalItems = unique.length + habits.length + vTasks.length;
-    /** 多只 / 含习惯或虚拟待办 / 只读：先弹出列表 */
-    if (totalItems > 1 || !editable) {
-      openCellList(assignYmd, slotIndex, list, habits, vTasks, editable);
-      return;
-    }
-    if (habits.length === 1 && unique.length === 0 && vTasks.length === 0) {
-      tapVirtualHabit(habits[0]!);
-      return;
-    }
-    if (vTasks.length === 1 && unique.length === 0 && habits.length === 0) {
-      tapVirtualTask(vTasks[0]!);
-      return;
-    }
-    const display = pickDisplayPlacement(unique, subjects, assignYmd);
-    if (!display?.primary) return;
-    // 与习惯/待办虚拟块一致：进格内详情 Sheet，完成确认用设计稿弹窗，不用系统 Alert
-    openDetail(display.primary);
-  };
-
-  const handleCellLongPress = (assignYmd: string, slotIndex: number) => {
-    if (reassignPending) {
-      handleCellPress(assignYmd, slotIndex);
-      return;
-    }
-    const key = cellKey(assignYmd, slotIndex);
-    const list = placementsByCell.get(key) ?? [];
-    const habits = habitsByCell.get(key) ?? [];
-    const vTasks = virtualTasksByCell.get(key) ?? [];
-    const editable = dayEditable(assignYmd, logicalTodayYmd);
-    if (list.length === 0 && habits.length === 0 && vTasks.length === 0) {
-      if (editable) openPlace(assignYmd, slotIndex);
-      return;
-    }
-    openCellList(assignYmd, slotIndex, list, habits, vTasks, editable);
-  };
-
-  const handleAllDayPress = (assignYmd: string) => {
-    const list = allDayPlacementsByYmd.get(assignYmd) ?? [];
-    const habits = allDayHabitsByYmd.get(assignYmd) ?? [];
-    const vTasks = allDayVirtualTasksByYmd.get(assignYmd) ?? [];
-    const editable = dayEditable(assignYmd, logicalTodayYmd);
-
-    if (reassignPending && editable) {
-      openPlace(assignYmd, 0, {
-        preferAllDay: true,
-        rematerializePlacementId: reassignPending.placement.id,
-        rematerializePreselected: {
-          kind: reassignPending.subject.kind,
-          id: reassignPending.subject.id,
-          title: reassignPending.subject.title,
-          priority: reassignPending.subject.priority,
-          dueDate: reassignPending.subject.dueDate,
-          acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
-          projectName: reassignPending.subject.projectName,
-        },
-      });
-      return;
-    }
-
-    if (list.length === 0 && habits.length === 0 && vTasks.length === 0) {
-      if (editable) openPlace(assignYmd, 0, { preferAllDay: true });
-      return;
-    }
-    if (pendingPlace && editable) {
-      openPlace(assignYmd, 0, { preferAllDay: true });
-      return;
-    }
-    const unique = uniquePlacementsBySubject(list);
-    const totalItems = unique.length + habits.length + vTasks.length;
-    if (totalItems > 1 || !editable) {
-      openCellList(assignYmd, ALL_DAY_SLOT, list, habits, vTasks, editable);
-      return;
-    }
-    if (habits.length === 1 && unique.length === 0 && vTasks.length === 0) {
-      tapVirtualHabit(habits[0]!);
-      return;
-    }
-    if (vTasks.length === 1 && unique.length === 0 && habits.length === 0) {
-      tapVirtualTask(vTasks[0]!);
-      return;
-    }
-    const display = pickDisplayPlacement(unique, subjects, assignYmd);
-    if (!display?.primary) return;
-    openDetail(display.primary);
-  };
-
-  const onCopyLastWeek = () => {
-    if (!SHOW_COPY_LAST_WEEK) return;
-    if (!isEditableWeek(thisMonday, logicalTodayYmd)) return;
-    const run = async (overwrite: boolean) => {
-      try {
-        const result = await copyPreviousWeekToThisWeek({
-          thisWeekStartYmd: thisMonday,
-          logicalTodayYmd,
-          overwrite,
-        });
-        const skipMsg =
-          result.skipped.length > 0
-            ? `\n跳过 ${result.skipped.length} 项：${result.skipped
-                .slice(0, 5)
-                .map((s) => s.reason)
-                .join('；')}${result.skipped.length > 5 ? '…' : ''}`
-            : '';
-        toast.success(
-          `已复制 ${result.copied} 条${result.overwritten ? `（覆盖 ${result.overwritten}）` : ''}${skipMsg ? '，部分跳过' : ''}`,
-        );
-        await reload(loadDayYmds, { silent: true });
-        onChanged?.();
-      } catch (err) {
-        if (err instanceof Error && err.message === 'NEED_CONFIRM_OVERWRITE') {
-          Alert.alert('本周已有占用', '复制将覆盖本周全部日程表占用，是否继续？', [
-            { text: '取消', style: 'cancel' },
-            { text: '覆盖并复制', style: 'destructive', onPress: () => void run(true) },
-          ]);
-          return;
-        }
-        toast.error(toUserMessage(err, '复制失败，请稍后重试'));
-      }
-    };
-    void run(false);
-  };
-
-  const todayHasPlacement =
-    (view?.placements.some((p) => {
-      if (p.orphaned || p.startSlotIndex == null) return false;
-      return ymdForWeekday(p.weekStartYmd, p.weekday) === logicalTodayYmd;
-    }) ?? false) ||
-    virtualHabits.some((h) => h.assignYmd === logicalTodayYmd) ||
-    virtualTasks.some((t) => t.assignYmd === logicalTodayYmd);
-
   const todayCompactItems = React.useMemo(() => {
     if (!view) return [];
     const daySlotCount = getSlotCount(view.axis);
@@ -1920,9 +1203,22 @@ export function WeeklyFrogSchedule({
       if (assignYmd !== logicalTodayYmd) continue;
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
       const span = Math.max(1, p.spanSlots);
-      const startMins = slotStartMinutes(view.axis, p.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, p.startSlotIndex, span);
-      const allDay = p.startSlotIndex === 0 && span >= daySlotCount;
+      const hasMins =
+        typeof p.startMinutes === 'number' &&
+        typeof p.endMinutes === 'number' &&
+        p.endMinutes > p.startMinutes;
+      const startMins = hasMins
+        ? p.startMinutes!
+        : slotStartMinutes(view.axis, p.startSlotIndex);
+      const endMins = hasMins
+        ? p.endMinutes!
+        : placementEndMinutes(view.axis, p.startSlotIndex, span);
+      const allDay =
+        p.allDay === 1 ||
+        (p.startSlotIndex === 0 && span >= daySlotCount) ||
+        (hasMins &&
+          startMins <= view.axis.startMinutes &&
+          endMins >= view.axis.endMinutes);
       const done = !!sub?.done;
       let overdue = false;
       if (!done) {
@@ -1973,9 +1269,17 @@ export function WeeklyFrogSchedule({
     for (const t of virtualTasks) {
       if (t.assignYmd !== logicalTodayYmd) continue;
       const span = Math.max(1, t.spanSlots);
-      const startMins = slotStartMinutes(view.axis, t.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, t.startSlotIndex, span);
-      const allDay = t.allDay || (t.startSlotIndex === 0 && span >= daySlotCount);
+      const hasMins =
+        typeof t.startMinutes === 'number' &&
+        typeof t.endMinutes === 'number' &&
+        t.endMinutes > t.startMinutes;
+      const startMins = hasMins
+        ? t.startMinutes!
+        : slotStartMinutes(view.axis, t.startSlotIndex);
+      const endMins = hasMins
+        ? t.endMinutes!
+        : placementEndMinutes(view.axis, t.startSlotIndex, span);
+      const allDay = t.allDay || (!hasMins && t.startSlotIndex === 0 && span >= daySlotCount);
       const overdue = !t.done && (!!t.overdue || !!t.carrySubjectKind);
       items.push({
         placement: null,
@@ -2111,13 +1415,13 @@ export function WeeklyFrogSchedule({
     };
   }, [todayCompactItems, axisNowMins, view]);
 
-  // 从课表折回最简时归位今天（避免跳转过程中被清掉）
+  // 从时间线折回最简时归位今天（避免跳转过程中被清掉）
   React.useEffect(() => {
-    if (wasGridRef.current && !isGrid) {
+    if (wasDayRef.current && !isDay) {
       setPeriodIndex(0);
     }
-    wasGridRef.current = isGrid;
-  }, [isGrid]);
+    wasDayRef.current = isDay;
+  }, [isDay]);
 
   const renderDayHeader = (ymd: string, width: number) => {
     const isTodayCol = ymd === logicalTodayYmd;
@@ -2152,414 +1456,17 @@ export function WeeklyFrogSchedule({
     );
   };
 
-  const renderDaySlots = (ymd: string, width: number) => {
-    if (!view || !layout) return null;
-    const isTodayCol = ymd === logicalTodayYmd;
-    const isPastCol = ymd < logicalTodayYmd;
-    const editable = dayEditable(ymd, logicalTodayYmd);
-    /** 暖纸色休息带 / 空格，对齐设计稿 `.tt-day`（忌 slate 蓝灰） */
-    const breakBg = isDark ? 'rgba(61,72,64,0.45)' : 'rgba(236,230,216,0.95)';
-    const breakFg = isDark ? 'rgba(168,178,168,0.95)' : '#9AA49B';
-    const emptyCellBg = isPastCol
-      ? isDark
-        ? 'rgba(50,58,52,0.4)'
-        : 'rgba(241,237,226,0.7)'
-      : isTodayCol
-        ? todayWash
-        : isDark
-          ? 'rgba(32,40,36,0.35)'
-          : 'rgba(255,252,245,0.4)';
-    const dayAllDayPlacements = allDayPlacementsByYmd.get(ymd) ?? [];
-    const dayAllDayHabits = allDayHabitsByYmd.get(ymd) ?? [];
-    const dayAllDayVirtualTasks = allDayVirtualTasksByYmd.get(ymd) ?? [];
-    const allDayEmpty =
-      dayAllDayPlacements.length === 0 &&
-      dayAllDayHabits.length === 0 &&
-      dayAllDayVirtualTasks.length === 0;
-
-    const renderStackedBlocks = (
-      items: CellStackItem[],
-      opts: { itemH: number; gap: number; showMeta: boolean; compact: boolean },
-    ) => (
-      <View
-        pointerEvents="none"
-        style={[styles.stackCol, { gap: opts.gap }]}>
-        {items.map((item) => {
-          const fill = scheduleBlockStyle(item.kind, {
-            isPast: isPastCol,
-            allDone: item.done,
-            isDark,
-          });
-          const drawCk =
-            item.done ||
-            item.kind === 'frog' ||
-            item.kind === 'todo' ||
-            item.kind === 'proj';
-          const ckFill = item.done
-            ? fill.doneOnLight
-              ? 'rgba(255,255,255,0.92)'
-              : item.kind === 'frog'
-                ? '#DDE9CB'
-                : fill.titleColor
-            : 'transparent';
-          const ckIconColor = fill.doneOnLight
-            ? primary
-            : item.kind === 'frog'
-              ? '#35604A'
-              : '#fff';
-          const riseIndex = bloomBlockIndex.current++;
-          return (
-            <FoldRiseIn
-              key={item.key}
-              animate={foldAnimate}
-              index={riseIndex}
-              staggerMs={TaskFoldMotion.schedBlockStagger}
-              fromY={8}
-              duration={360}
-              style={{ width: '100%' }}>
-              <View
-                style={[
-                  styles.blockStacked,
-                  {
-                    height: opts.itemH,
-                    backgroundColor: fill.backgroundColor,
-                    borderColor: fill.borderColor,
-                    borderStyle: fill.borderStyle,
-                    opacity: item.done ? 0.88 : 1,
-                  },
-                ]}>
-                <View
-                  style={[
-                    styles.blockBody,
-                    item.kind === 'habit' && !item.done && styles.blockBodyHabit,
-                    (opts.compact || items.length > 1) && styles.blockBodyCompact,
-                  ]}>
-                  {item.kind === 'habit' && !item.done ? (
-                    <View style={[styles.blockFrogDot, { backgroundColor: '#87A566' }]} />
-                  ) : null}
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.blockTitle,
-                      (opts.compact || items.length > 1) && styles.blockTitleCompact,
-                      {
-                        color: fill.titleColor,
-                        textDecorationLine: item.done ? 'line-through' : 'none',
-                        opacity: item.done ? 0.78 : 1,
-                      },
-                    ]}>
-                    {item.title}
-                  </Text>
-                  {opts.showMeta && items.length === 1 ? (
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.blockMeta, { color: fill.metaColor, fontSize: 9 }]}>
-                      {item.meta}
-                    </Text>
-                  ) : null}
-                  {drawCk ? (
-                    <View
-                      style={[
-                        styles.blockCk,
-                        item.done && styles.blockCkDone,
-                        {
-                          borderColor: item.done
-                            ? fill.doneOnLight
-                              ? 'rgba(255,255,255,0.92)'
-                              : fill.titleColor
-                            : fill.titleColor,
-                          backgroundColor: ckFill,
-                          opacity: item.done ? 1 : 0.55,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        },
-                      ]}>
-                      {item.done ? (
-                        <MaterialIcons name="check" size={7} color={ckIconColor} />
-                      ) : null}
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-            </FoldRiseIn>
-          );
-        })}
-      </View>
-    );
-
-    const renderAllDayRow = () => {
-      const blockPad = 2;
-      const covering = dayAllDayPlacements;
-      const cellHabits = dayAllDayHabits;
-      const cellVirtualTasks = dayAllDayVirtualTasks;
-      const stackItems = buildCellStackItems({
-        placements: covering,
-        habits: cellHabits,
-        virtualTasks: cellVirtualTasks,
-        subjects,
-        assignYmd: ymd,
-        startHm: '',
-        endHm: '',
-        allDay: true,
-      });
-      const a11yTitle = stackItems[0]?.title ?? '全天';
-      /** 行高可能按邻日 max 对齐；本日本条数较少时把剩余高度分给色块，避免顶栏与首时段之间留白 */
-      const stackN = stackItems.length;
-      const stackGap = ALL_DAY_STACK_GAP;
-      const availableH = Math.max(12, allDayRowH - blockPad * 2);
-      const stackedItemH =
-        stackN <= 1
-          ? availableH
-          : Math.max(
-              ALL_DAY_STACK_ITEM_H,
-              Math.floor((availableH - (stackN - 1) * stackGap) / stackN),
-            );
-      return (
-        <Pressable
-          onPress={() => handleAllDayPress(ymd)}
-          onLongPress={() => {
-            if (reassignPending) {
-              handleAllDayPress(ymd);
-              return;
-            }
-            if (allDayEmpty) {
-              if (editable) openPlace(ymd, 0, { preferAllDay: true });
-              return;
-            }
-            openCellList(ymd, ALL_DAY_SLOT, covering, cellHabits, cellVirtualTasks, editable);
-          }}
-          delayLongPress={280}
-          accessibilityRole="button"
-          accessibilityLabel={
-            allDayEmpty
-              ? '全天格，点击添加全天指派'
-              : `全天 · ${a11yTitle}${stackItems.length > 1 ? ` 等${stackItems.length}项` : ''}`
-          }
-          style={[
-            styles.slotCell,
-            styles.allDayCell,
-            {
-              height: allDayRowH,
-              borderColor: gridLineSoft,
-              backgroundColor: emptyCellBg,
-              padding: blockPad,
-            },
-          ]}>
-          <PreselGlowOutline
-            active={placingMode && allDayEmpty && editable}
-            color={sunAmber}
-            reduceMotion={!foldAnimate}
-          />
-          {allDayEmpty ? (
-            <Text style={[styles.allDayEmptyHint, { color: outline }]} numberOfLines={1}>
-              {placingMode && editable ? '＋ 放入全天' : '全天'}
-            </Text>
-          ) : (
-            renderStackedBlocks(stackItems, {
-              itemH: stackedItemH,
-              gap: stackGap,
-              showMeta: true,
-              compact: true,
-            })
-          )}
-        </Pressable>
-      );
-    };
-
-    return (
-      <View key={ymd} style={{ width, opacity: isPastCol ? 0.7 : 1 }}>
-        <View style={{ height: gridBodyH, position: 'relative' }}>
-          {renderAllDayRow()}
-          {timeline.map((row, rowIndex) => {
-            const rowH = rowHeights[rowIndex] ?? 52;
-            if (row.kind === 'break') {
-              return (
-                <View
-                  key={`break-${row.startMinutes}-${rowIndex}`}
-                  accessibilityLabel={`${row.label} ${formatMinuteRangeLabel(row.startMinutes, row.endMinutes)}，不可入格`}
-                  style={[
-                    styles.slotCell,
-                    {
-                      height: rowH,
-                      borderColor: gridLineSoft,
-                      backgroundColor: breakBg,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      opacity: 0.92,
-                      paddingVertical: rowH < 20 ? 0 : 2,
-                    },
-                  ]}>
-                  {rowH >= 14 ? (
-                    <Text
-                      style={{
-                        color: breakFg,
-                        fontSize: rowH < 20 ? 8 : rowH < 28 ? 9 : 11,
-                        fontWeight: '700',
-                        textAlign: 'center',
-                      }}
-                      numberOfLines={rowH < 22 ? 1 : 2}>
-                      {row.label}
-                    </Text>
-                  ) : null}
-                </View>
-              );
-            }
-
-            const slotIndex = row.slotIndex;
-            const key = cellKey(ymd, slotIndex);
-            const covering = placementsByCell.get(key) ?? [];
-            const cellHabits = habitsByCell.get(key) ?? [];
-            const cellVirtualTasks = virtualTasksByCell.get(key) ?? [];
-            const slotNote = SHOW_SLOT_NOTES
-              ? getSlotNote(slotNotes, row.startMinutes)
-              : '';
-            const isEmpty =
-              covering.length === 0 && cellHabits.length === 0 && cellVirtualTasks.length === 0;
-            /** 截断短行：收紧内边距；多项时按条数叠放 */
-            const blockPad = rowH < 20 ? 1 : 2;
-            const blockH = Math.max(10, rowH - blockPad * 2);
-            const showMeta = rowH >= 34;
-            const startHm = formatMinutesAsHm(row.startMinutes);
-            const endHm = formatMinutesAsHm(row.endMinutes);
-            const stackItems = buildCellStackItems({
-              placements: covering,
-              habits: cellHabits,
-              virtualTasks: cellVirtualTasks,
-              subjects,
-              assignYmd: ymd,
-              startHm,
-              endHm,
-            });
-            return (
-              <Pressable
-                key={`work-${slotIndex}`}
-                onPress={() => handleCellPress(ymd, slotIndex)}
-                onLongPress={() => handleCellLongPress(ymd, slotIndex)}
-                delayLongPress={280}
-                style={[
-                  styles.slotCell,
-                  {
-                    height: rowH,
-                    borderColor: gridLineSoft,
-                    backgroundColor: emptyCellBg,
-                    padding: blockPad,
-                  },
-                ]}>
-                <PreselGlowOutline
-                  active={placingMode && isEmpty && editable}
-                  color={sunAmber}
-                  reduceMotion={!foldAnimate}
-                />
-                {isEmpty ? (
-                  slotNote && rowH >= 16 ? (
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        styles.noteBlock,
-                        {
-                          height: blockH,
-                          borderColor: isDark
-                            ? 'rgba(205,196,180,0.45)'
-                            : 'rgba(205,196,180,0.9)',
-                        },
-                      ]}>
-                      <Text
-                        numberOfLines={rowH >= 28 ? 2 : 1}
-                        style={[
-                          styles.noteBlockText,
-                          {
-                            color: isDark ? 'rgba(155,156,145,0.9)' : '#9B9C91',
-                            fontSize: rowH < 22 ? 8 : 9,
-                          },
-                        ]}>
-                        {slotNote}
-                      </Text>
-                    </View>
-                  ) : null
-                ) : (
-                  renderStackedBlocks(stackItems, {
-                    itemH:
-                      stackItems.length <= 1
-                        ? blockH
-                        : Math.max(
-                            CELL_STACK_ITEM_H,
-                            Math.floor(
-                              (blockH - (stackItems.length - 1) * CELL_STACK_GAP) /
-                                stackItems.length,
-                            ),
-                          ),
-                    gap: CELL_STACK_GAP,
-                    showMeta,
-                    compact: rowH < 22 || stackItems.length > 1,
-                  })
-                )}
-
-                {isEmpty &&
-                !slotNote &&
-                isTodayCol &&
-                editable &&
-                !todayHasPlacement &&
-                slotIndex === Math.floor(slotCount / 2) ? (
-                  <Text style={[styles.emptyHint, { color: outline }]}>
-                    点击添加
-                  </Text>
-                ) : null}
-              </Pressable>
-            );
-          })}
-
-          {isTodayCol && nowLineTop != null ? (
-            <View
-              pointerEvents="none"
-              style={[styles.nowLine, { top: nowLineTop }]}>
-              <View
-                style={[
-                  styles.nowDot,
-                  { backgroundColor: sunAmber },
-                ]}
-              />
-              <View
-                style={[
-                  styles.nowBar,
-                  { backgroundColor: sunAmber, opacity: 0.75 },
-                ]}
-              />
-              <View style={[styles.nowPill, { backgroundColor: isDark ? tf.paper2 : tf.cream }]}>
-                <Text style={[styles.nowPillText, { color: tf.sun }]}>现在</Text>
-              </View>
-            </View>
-          ) : null}
-        </View>
-      </View>
-    );
-  };
-
-  const renderPeriodHeaders = (pagePeriodIndex: number, width: number) => {
-    const ymd = centerYmdForPeriod(logicalTodayYmd, pagePeriodIndex);
-    return (
-      <View key={`ph-${pagePeriodIndex}`} style={{ width, flexDirection: 'row' }}>
-        {renderDayHeader(ymd, width)}
-      </View>
-    );
-  };
-
-  const renderPeriodSlots = (pagePeriodIndex: number, width: number) => {
-    const ymd = centerYmdForPeriod(logicalTodayYmd, pagePeriodIndex);
-    return (
-      <View key={`ps-${pagePeriodIndex}`} style={{ width, flexDirection: 'row' }}>
-        {renderDaySlots(ymd, width)}
-      </View>
-    );
-  };
-
   const renderTimelineGrid = () => {
-    if (!view || !timelinePages) return null;
+    if (!view || !timelineDay) return null;
     const pw = pageWidth || colWidth;
-    /** 时间线视口高度：比旧课表压缩视口更高（约 0.85px/分钟），并做上下限 */
-    const timelineViewportH = Math.max(
+    /** 完整高度：约 0.85px/分钟，夹在 260–560；默认半高，展开由 DayTimelineSchedule 做高度动画 */
+    const timelineFullH = Math.max(
       260,
       Math.min((view.axis.endMinutes - view.axis.startMinutes) * 0.85, 560),
     );
+    const timelineViewportH = timelineHeightExpanded
+      ? timelineFullH
+      : Math.max(130, Math.round(timelineFullH * 0.5));
     const headerRow = (
       <View
         style={[
@@ -2569,57 +1476,59 @@ export function WeeklyFrogSchedule({
         ]}>
         <View style={{ width: TIME_GUTTER, height: DAY_HEADER_H }} />
         <View style={{ flex: 1 }} onLayout={onGridLayout}>
-          {gridWidth > 0 ? (
-            <ScrollView
-              ref={headerPagerRef}
-              horizontal
-              pagingEnabled
-              scrollEnabled={false}
-              showsHorizontalScrollIndicator={false}
-              style={{ width: pw }}>
-              {timelinePages.map((p) => renderPeriodHeaders(p.pIdx, pw))}
-            </ScrollView>
-          ) : null}
+          {gridWidth > 0 ? renderDayHeader(timelineDay.ymd, pw) : null}
         </View>
       </View>
     );
 
-    const bodyPager = (
-      <ScrollView
-        ref={hPagerRef}
-        horizontal
-        pagingEnabled
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        onScroll={onPagerScroll}
-        onMomentumScrollEnd={onPagerScrollEnd}
-        scrollEventThrottle={16}
-        style={{ width: pw || undefined, flexGrow: 1 }}>
-        {timelinePages.map((p) => (
-          <View key={`tl-${p.pIdx}`} style={{ width: pw, flexDirection: 'row' }}>
-            <DayTimelineSchedule
-              dayYmd={p.ymd}
-              axis={view.axis}
-              events={p.events}
-              nowMinutes={p.ymd === logicalTodayYmd ? axisNowMins : null}
-              maxHeight={timelineViewportH}
-              width={pw}
-              onPressEvent={handleTimelineEventPress}
-              onRequestAdd={(ymd) => openPlace(ymd, 0)}
-            />
-          </View>
-        ))}
-      </ScrollView>
+    const body = (
+      <View style={{ width: pw, flexDirection: 'row' }}>
+        <DayTimelineSchedule
+          dayYmd={timelineDay.ymd}
+          axis={view.axis}
+          events={timelineDay.events}
+          nowMinutes={timelineDay.ymd === logicalTodayYmd ? axisNowMins : null}
+          maxHeight={timelineViewportH}
+          width={pw}
+          onPressEvent={handleTimelineEventPress}
+          onRequestAdd={(ymd) => {
+            if (reassignPending) {
+              openPlace(ymd, 0, {
+                rematerializePlacementId: reassignPending.placement.id,
+                rematerializePreselected: {
+                  kind: reassignPending.subject.kind,
+                  id: reassignPending.subject.id,
+                  title: reassignPending.subject.title,
+                  priority: reassignPending.subject.priority,
+                  dueDate: reassignPending.subject.dueDate,
+                  acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
+                  projectName: reassignPending.subject.projectName,
+                },
+              });
+              return;
+            }
+            openPlace(ymd, 0);
+          }}
+        />
+      </View>
     );
 
     return (
       <View key={`${axisKey}-timeline`}>
         {headerRow}
-        <View>{gridWidth > 0 ? bodyPager : null}</View>
-        <View
-          style={[
+        <View>{gridWidth > 0 ? body : null}</View>
+        <Pressable
+          onPress={() => setTimelineHeightExpanded((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={
+            timelineHeightExpanded ? '收起时间线为一半高度' : '展开时间线完整高度'
+          }
+          style={({ pressed }) => [
             styles.scFoot,
-            { borderTopColor: isDark ? tf.line : 'rgba(230,221,206,0.55)' },
+            {
+              borderTopColor: isDark ? tf.line : 'rgba(230,221,206,0.55)',
+              opacity: pressed ? 0.82 : 1,
+            },
           ]}>
           <View
             style={[
@@ -2632,198 +1541,23 @@ export function WeeklyFrogSchedule({
             ]}
           />
           <Text style={[styles.scFootText, { color: tf.faint }]} numberOfLines={1}>
-            时间线 · 语义分时段 · 同刻可横滑多栏
+            {timelineHeightExpanded
+              ? '完整高度 · 点此收起为一半'
+              : '半高预览 · 点此展开完整高度'}
           </Text>
-        </View>
+          <MaterialIcons
+            name={timelineHeightExpanded ? 'unfold-less' : 'unfold-more'}
+            size={16}
+            color={tf.pond}
+          />
+        </Pressable>
       </View>
     );
   };
 
   const renderScheduleGrid = () => {
-    if (!view || !layout) return null;
-    if (timelineUi && timelinePages) {
-      return renderTimelineGrid();
-    }
-    bloomBlockIndex.current = 0;
-    const pages = [periodIndex - 1, periodIndex, periodIndex + 1];
-    const pw = pageWidth || colWidth;
-
-    const headerRow = (
-      <View
-        style={[
-          styles.gridWrap,
-          styles.gridHeaderChrome,
-          {
-            backgroundColor: theme.surface,
-            borderBottomColor: gridLineSoft,
-          },
-        ]}>
-        <View style={[styles.timeGutterCorner, { width: TIME_GUTTER, height: DAY_HEADER_H }]} />
-        <View style={{ flex: 1 }} onLayout={onGridLayout}>
-          {gridWidth > 0 ? (
-            <ScrollView
-              ref={headerPagerRef}
-              horizontal
-              pagingEnabled
-              scrollEnabled={false}
-              showsHorizontalScrollIndicator={false}
-              style={{ width: pw }}>
-              {pages.map((pIdx) => renderPeriodHeaders(pIdx, pw))}
-            </ScrollView>
-          ) : null}
-        </View>
-      </View>
-    );
-
-    const timeColumn = (
-      <View style={[styles.timeGutter, { width: TIME_GUTTER, borderRightColor: gridLineSoft }]}>
-        <View
-          style={[
-            styles.timeCell,
-            styles.allDayTimeCell,
-            {
-              height: allDayRowH,
-              borderColor: gridLineSoft,
-              backgroundColor: isDark ? 'rgba(61,72,64,0.28)' : 'rgba(244,239,226,0.9)',
-              justifyContent: 'center',
-            },
-          ]}>
-          <Text style={[styles.allDayTimeText, { color: outline }]} numberOfLines={1}>
-            全天
-          </Text>
-        </View>
-        {timeline.map((row, rowIndex) => {
-          const rowH = rowHeights[rowIndex] ?? 52;
-          const rangeLabel = formatMinuteRangeLabel(row.startMinutes, row.endMinutes);
-          /** 设计稿 `.tt-t`：仅起始小时两位；备注改画在日列 `.blk.note` */
-          const hourLabel = String(Math.floor(Math.max(0, row.startMinutes) / 60) % 24).padStart(
-            2,
-            '0',
-          );
-          const hourFont = rowH < 18 ? 7 : rowH < 24 ? 8 : 9;
-          if (row.kind === 'break') {
-            return (
-              <View
-                key={`tg-break-${row.startMinutes}-${rowIndex}`}
-                style={[
-                  styles.timeCell,
-                  {
-                    height: rowH,
-                    borderColor: gridLineSoft,
-                    backgroundColor: isDark ? 'rgba(61,72,64,0.4)' : 'rgba(236,230,216,0.7)',
-                    justifyContent: 'flex-start',
-                  },
-                ]}>
-                {rowH >= 12 ? (
-                  <Text
-                    style={[styles.timeHourText, { color: outline, fontSize: hourFont }]}
-                    numberOfLines={1}>
-                    {hourLabel}
-                  </Text>
-                ) : null}
-              </View>
-            );
-          }
-          const note = SHOW_SLOT_NOTES ? getSlotNote(slotNotes, row.startMinutes) : '';
-          if (!SHOW_SLOT_NOTES) {
-            return (
-              <View
-                key={`tg-work-${row.slotIndex}`}
-                accessibilityLabel={rangeLabel}
-                style={[
-                  styles.timeCell,
-                  {
-                    height: rowH,
-                    borderColor: gridLineSoft,
-                    backgroundColor: 'transparent',
-                  },
-                ]}>
-                {rowH >= 12 ? (
-                  <Text
-                    style={[styles.timeHourText, { color: outline, fontSize: hourFont }]}
-                    numberOfLines={1}>
-                    {hourLabel}
-                  </Text>
-                ) : null}
-              </View>
-            );
-          }
-          return (
-            <Pressable
-              key={`tg-work-${row.slotIndex}`}
-              onPress={() => openSlotNoteEditor(row.startMinutes)}
-              accessibilityRole="button"
-              accessibilityLabel={`${rangeLabel} 时段备注${note ? `：${note}` : ''}`}
-              accessibilityHint="点击添加或修改时段备注，最多六个字"
-              style={({ pressed }) => [
-                styles.timeCell,
-                {
-                  height: rowH,
-                  borderColor: gridLineSoft,
-                  opacity: pressed ? 0.75 : 1,
-                  backgroundColor: note ? todayWash : 'transparent',
-                },
-              ]}>
-              {rowH >= 12 ? (
-                <Text
-                  style={[
-                    styles.timeHourText,
-                    { color: note ? primary : outline, fontSize: hourFont },
-                  ]}
-                  numberOfLines={1}>
-                  {hourLabel}
-                </Text>
-              ) : null}
-            </Pressable>
-          );
-        })}
-      </View>
-    );
-
-    const bodyPager = (
-      <ScrollView
-        ref={hPagerRef}
-        horizontal
-        pagingEnabled
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        onScroll={onPagerScroll}
-        onMomentumScrollEnd={onPagerScrollEnd}
-        scrollEventThrottle={16}
-        style={{ width: pw || undefined, flexGrow: 1 }}>
-        {pages.map((pIdx) => renderPeriodSlots(pIdx, pw))}
-      </ScrollView>
-    );
-
-    const bodyRow = (
-      <View style={styles.gridWrap}>
-        {timeColumn}
-        <View style={{ flex: 1, width: pw }}>
-          {gridWidth > 0 ? bodyPager : null}
-        </View>
-      </View>
-    );
-
-    /** 外框锁定设计稿高度；内容行更高时表体内上下滑动 */
-    const body = (
-      <ScrollView
-        style={{ height: fixedBodyH }}
-        contentContainerStyle={{ minHeight: Math.max(gridBodyH, fixedBodyH) }}
-        nestedScrollEnabled
-        scrollEnabled={bodyScrollable}
-        showsVerticalScrollIndicator={bodyScrollable}
-        keyboardShouldPersistTaps="handled"
-        bounces={bodyScrollable}>
-        {bodyRow}
-      </ScrollView>
-    );
-
-    return (
-      <View key={axisKey}>
-        {headerRow}
-        {body}
-      </View>
-    );
+    if (!view || !timelineDay) return null;
+    return renderTimelineGrid();
   };
 
   const renderCompactRow = (
@@ -2979,14 +1713,14 @@ export function WeeklyFrogSchedule({
 
   const zoomSegOptions: { key: ScheduleZoomMode; label: string }[] = [
     { key: 'minimal', label: '最简' },
-    { key: 'grid', label: '课表' },
+    { key: 'day', label: '时间线' },
   ];
 
   return (
     <View style={styles.section}>
       <View
         style={
-          isGrid
+          isDay
             ? [
                 sectionCardStyle,
                 {
@@ -3057,7 +1791,7 @@ export function WeeklyFrogSchedule({
               );
             })}
           </View>
-          {isGrid && orphanedPlacements.length > 0 ? (
+          {isDay && orphanedPlacements.length > 0 ? (
             <Pressable
               onPress={() => setOrphanListOpen(true)}
               hitSlop={6}
@@ -3067,27 +1801,6 @@ export function WeeklyFrogSchedule({
               <Text style={{ color: tf.rose, fontSize: 11, fontWeight: '700' }}>
                 未入格 {orphanedPlacements.length}
               </Text>
-            </Pressable>
-          ) : null}
-          {SHOW_COPY_LAST_WEEK ? (
-            <Pressable
-              onPress={() => onCopyLastWeek()}
-              disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
-              accessibilityRole="button"
-              accessibilityLabel="复制上周"
-              style={({ pressed }) => [
-                styles.copyBtn,
-                {
-                  backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
-                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.6)',
-                  opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
-                    ? 0.4
-                    : pressed
-                      ? 0.8
-                      : 1,
-                },
-              ]}>
-              <MaterialIcons name="content-copy" size={14} color={tf.muted} />
             </Pressable>
           ) : null}
           <Pressable
@@ -3129,13 +1842,32 @@ export function WeeklyFrogSchedule({
                 borderColor: isDark ? tf.line2 : '#E8CDA2',
               },
             ]}>
-            <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
-                重新指派「{reassignPending.subject.title}」· 点空档放入
-              </Text>
-            </View>
-            <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
+            <Pressable
+              onPress={() => {
+                openPlace(centerYmd, 0, {
+                  rematerializePlacementId: reassignPending.placement.id,
+                  rematerializePreselected: {
+                    kind: reassignPending.subject.kind,
+                    id: reassignPending.subject.id,
+                    title: reassignPending.subject.title,
+                    priority: reassignPending.subject.priority,
+                    dueDate: reassignPending.subject.dueDate,
+                    acceptanceCriteria: reassignPending.subject.acceptanceCriteria,
+                    projectName: reassignPending.subject.projectName,
+                  },
+                });
+              }}
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}
+              accessibilityRole="button"
+              accessibilityLabel="打开入格确认">
+              <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                  重新指派「{reassignPending.subject.title}」· 点此确认时段
+                </Text>
+              </View>
+              <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
+            </Pressable>
             <Pressable
               onPress={() => setReassignPending(null)}
               hitSlop={10}
@@ -3155,13 +1887,19 @@ export function WeeklyFrogSchedule({
                 borderColor: isDark ? tf.line2 : '#E8CDA2',
               },
             ]}>
-            <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
-                已预选「{pendingPlace.title}」· 点空档放入
-              </Text>
-            </View>
-            <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
+            <Pressable
+              onPress={() => openPlace(centerYmd, 0)}
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}
+              accessibilityRole="button"
+              accessibilityLabel="打开入格确认">
+              <MaterialIcons name="cruelty-free" size={16} color={tf.amberInk} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                  已预选「{pendingPlace.title}」· 点此确认时段
+                </Text>
+              </View>
+              <Text style={{ color: tf.sun, fontWeight: '700' }}>→</Text>
+            </Pressable>
             <Pressable
               onPress={() => onClearPendingPlace?.()}
               hitSlop={10}
@@ -3176,7 +1914,11 @@ export function WeeklyFrogSchedule({
         <Animated.View
           style={{
             opacity: bodyOpacity,
-            transform: [{ scale: bodyScale }, { translateY: bodyTranslateY }],
+            transform: [
+              { translateX: bodyTranslateX },
+              { scale: bodyScale },
+              { translateY: bodyTranslateY },
+            ],
             paddingHorizontal: Spacing['2xl'],
             paddingBottom: Spacing.xl,
             paddingTop: Spacing.md,
@@ -3235,7 +1977,7 @@ export function WeeklyFrogSchedule({
                 </View>
               ) : minimalFocus.kind === 'empty' || minimalFocus.kind === 'finished' ? (
                 <Pressable
-                  onPress={() => goZoom('grid')}
+                  onPress={() => goZoom('day')}
                   style={({ pressed }) => [
                     styles.todayEmpty,
                     styles.todayEmptyCompact,
@@ -3247,8 +1989,8 @@ export function WeeklyFrogSchedule({
                   ]}>
                   <Text style={[styles.todayEmptyHint, { color: outline }]}>
                     {minimalFocus.kind === 'finished'
-                      ? '点开完整课表查看今日安排'
-                      : '点开课表添加或查看安排'}
+                      ? '点开时间线查看今日安排'
+                      : '点开时间线添加或查看安排'}
                   </Text>
                 </Pressable>
               ) : null}
@@ -3256,32 +1998,18 @@ export function WeeklyFrogSchedule({
           )
         ) : null}
 
-        {isGrid ? (
+        {isDay ? (
           <>
             {periodIndex !== 0 ? (
               <View style={styles.weekNavCompact}>
                 <Pressable
-                  onPress={() => goPeriod(-1)}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="前一天"
-                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, padding: 4 }]}>
-                  <MaterialIcons name="chevron-left" size={18} color={primary} />
-                </Pressable>
-                <Pressable
                   onPress={() => setPeriodIndex(0)}
+                  accessibilityRole="button"
+                  accessibilityLabel="回到今天"
                   style={styles.weekTitleHit}>
                   <Text style={[styles.weekSub, { color: primary }]}>
                     {formatDayScheduleLabel(centerYmd)} · 回今天
                   </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => goPeriod(1)}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="后一天"
-                  style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, padding: 4 }]}>
-                  <MaterialIcons name="chevron-right" size={18} color={primary} />
                 </Pressable>
               </View>
             ) : null}
@@ -3289,50 +2017,7 @@ export function WeeklyFrogSchedule({
             {loading && !view ? (
               <ActivityIndicator color={primary} style={{ marginVertical: 24 }} />
             ) : view ? (
-              <View style={styles.gridFrame}>
-                {renderScheduleGrid()}
-                <View
-                  style={[
-                    styles.scFoot,
-                    { borderTopColor: isDark ? tf.line : 'rgba(230,221,206,0.55)' },
-                  ]}>
-                  <View
-                    style={[
-                      styles.scFootRing,
-                      {
-                        borderColor: isDark ? tf.line2 : '#E4E1D5',
-                        borderTopColor: tf.frog,
-                        borderRightColor: tf.frog,
-                      },
-                    ]}
-                  />
-                  <Text style={[styles.scFootText, { color: tf.faint }]} numberOfLines={1}>
-                    本日 {frogPlaceStats.inGrid}/{Math.max(frogPlaceStats.total, frogPlaceStats.inGrid)}{' '}
-                    已入格
-                  </Text>
-                  {SHOW_COPY_LAST_WEEK ? (
-                    <Pressable
-                      onPress={() => onCopyLastWeek()}
-                      disabled={!isEditableWeek(thisMonday, logicalTodayYmd)}
-                      hitSlop={6}
-                      accessibilityRole="button"
-                      accessibilityLabel="复制上周"
-                      style={({ pressed }) => [
-                        styles.scFootGrow,
-                        {
-                          opacity: !isEditableWeek(thisMonday, logicalTodayYmd)
-                            ? 0.4
-                            : pressed
-                              ? 0.7
-                              : 1,
-                        },
-                      ]}>
-                      <MaterialIcons name="auto-awesome" size={11} color={tf.muted} />
-                      <Text style={[styles.scFootGrowText, { color: tf.muted }]}>复制上周</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
+              <View style={styles.gridFrame}>{renderScheduleGrid()}</View>
             ) : null}
           </>
         ) : null}
@@ -3353,7 +2038,7 @@ export function WeeklyFrogSchedule({
         preselected={
           placeTarget?.rematerializePreselected ?? pendingPlace ?? null
         }
-        minuteMode={timelineWrite && timelineUi}
+        minuteMode={timelineWrite}
         axis={view?.axis ?? null}
         defaultStartMinutes={
           view && placeTarget
@@ -3521,168 +2206,6 @@ export function WeeklyFrogSchedule({
         </Pressable>
       </Modal>
 
-      <Modal
-        visible={!!cellList}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCellList(null)}>
-        <Pressable style={styles.listBackdrop} onPress={() => setCellList(null)}>
-          <Pressable
-            onPress={() => {}}
-            style={[
-              styles.listCard,
-              shadows.card,
-              { backgroundColor: theme.surface, borderColor: theme.outline },
-            ]}>
-            <Text style={[styles.listTitle, { color: theme.text }]}>
-              {cellList?.slotIndex === ALL_DAY_SLOT
-                ? (cellList?.placements.length ?? 0) +
-                    (cellList?.habits.length ?? 0) +
-                    (cellList?.virtualTasks.length ?? 0) >
-                  1
-                  ? '选择全天内容'
-                  : '全天占用'
-                : (cellList?.placements.length ?? 0) +
-                      (cellList?.habits.length ?? 0) +
-                      (cellList?.virtualTasks.length ?? 0) >
-                    1
-                  ? '选择本格内容'
-                  : '本格占用'}
-            </Text>
-            <ScrollView style={{ maxHeight: 280 }}>
-              {(cellList?.habits ?? []).map((h) => (
-                <Pressable
-                  key={`habit-${h.habitId}`}
-                  onPress={() => {
-                    setCellList(null);
-                    runAfterUiSettles(() => tapVirtualHabit(h));
-                  }}
-                  style={({ pressed }) => [
-                    styles.listRow,
-                    {
-                      backgroundColor: surfaceLow,
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}>
-                  <View
-                    style={[
-                      styles.listRowRail,
-                      { backgroundColor: h.done ? `${outline}66` : primary },
-                    ]}
-                  />
-                  <Text
-                    style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }}
-                    numberOfLines={2}>
-                    习惯 · {h.name}
-                  </Text>
-                  {h.done ? (
-                    <MaterialIcons name="check-circle" size={16} color={successTint} />
-                  ) : null}
-                </Pressable>
-              ))}
-              {(cellList?.virtualTasks ?? []).map((t) => (
-                <Pressable
-                  key={`vtask-${t.taskId}`}
-                  onPress={() => {
-                    setCellList(null);
-                    runAfterUiSettles(() => tapVirtualTask(t));
-                  }}
-                  style={({ pressed }) => [
-                    styles.listRow,
-                    {
-                      backgroundColor: surfaceLow,
-                      opacity: pressed ? 0.88 : 1,
-                    },
-                  ]}>
-                  <View
-                    style={[
-                      styles.listRowRail,
-                      {
-                        backgroundColor: t.done
-                          ? `${outline}66`
-                          : t.carrySubjectKind
-                            ? successTint
-                            : sunAmber,
-                      },
-                    ]}
-                  />
-                  <Text
-                    style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }}
-                    numberOfLines={2}>
-                    {t.carrySubjectKind === 'project'
-                      ? '过期项目'
-                      : t.carrySubjectKind === 'task'
-                        ? '过期青蛙'
-                        : '待办'}{' '}
-                    · {t.title}
-                  </Text>
-                  {t.done ? (
-                    <MaterialIcons name="check-circle" size={16} color={successTint} />
-                  ) : null}
-                </Pressable>
-              ))}
-              {(cellList?.placements ?? []).map((p) => {
-                const sub = resolveSubject(
-                  p.subjectKind,
-                  p.subjectId,
-                  subjects,
-                  cellList?.assignYmd ?? '',
-                );
-                return (
-                  <Pressable
-                    key={p.id}
-                    onPress={() => {
-                      setCellList(null);
-                      runAfterUiSettles(() => openDetail(p));
-                    }}
-                    style={({ pressed }) => [
-                      styles.listRow,
-                      {
-                        backgroundColor: surfaceLow,
-                        opacity: pressed ? 0.88 : 1,
-                      },
-                    ]}>
-                    <View
-                      style={[
-                        styles.listRowRail,
-                        { backgroundColor: sub?.done ? `${outline}66` : primary },
-                      ]}
-                    />
-                    <Text style={{ color: theme.text, flex: 1, fontWeight: '700', fontSize: 14 }} numberOfLines={2}>
-                      {sub?.title ?? '青蛙'}
-                    </Text>
-                    {sub?.done ? <MaterialIcons name="check-circle" size={16} color={successTint} /> : null}
-                    <MaterialIcons name="chevron-right" size={18} color={outline} />
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            {cellList?.editable ? (
-              <Pressable
-                onPress={() => {
-                  if (!cellList) return;
-                  const slot = cellList.slotIndex;
-                  const ymd = cellList.assignYmd;
-                  const preferAllDay = slot === ALL_DAY_SLOT;
-                  setCellList(null);
-                  openPlace(ymd, preferAllDay ? 0 : slot, { preferAllDay });
-                }}
-                style={({ pressed }) => [
-                  styles.addMoreBtn,
-                  {
-                    borderColor: todayWashStrong,
-                    backgroundColor: todayWash,
-                    opacity: pressed ? 0.88 : 1,
-                  },
-                ]}>
-                <MaterialIcons name="add" size={18} color={primary} />
-                <Text style={{ color: primary, fontWeight: '800' }}>再添加一只</Text>
-              </Pressable>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
       <SchedulePlacementDetailSheet
         visible={!!detail}
         onClose={() => setDetail(null)}
@@ -3789,132 +2312,6 @@ export function WeeklyFrogSchedule({
         }
       />
 
-      <Modal
-        visible={SHOW_SLOT_NOTES && !!slotNoteEditor}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          Keyboard.dismiss();
-          setSlotNoteEditor(null);
-        }}>
-        <KeyboardAvoidingView
-          style={styles.noteKav}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={0}>
-          <Pressable
-            style={styles.noteBackdropFill}
-            onPress={() => {
-              Keyboard.dismiss();
-              setSlotNoteEditor(null);
-            }}
-          />
-          <View
-            style={[
-              styles.noteCard,
-              {
-                backgroundColor: theme.surface,
-                borderColor: theme.outline,
-                paddingBottom:
-                  Math.max(insets.bottom, 16) +
-                  (Platform.OS === 'android' ? slotNoteKeyboardH : 0),
-              },
-            ]}>
-            <View style={[styles.noteHandle, { backgroundColor: `${outline}55` }]} />
-            <Text style={[styles.noteTitle, { color: theme.text }]}>
-              {slotNoteEditor && view
-                ? `${(() => {
-                    const slot = (layout?.timeline ?? []).find(
-                      (r) =>
-                        r.kind === 'work' && r.startMinutes === slotNoteEditor.startMinutes,
-                    );
-                    const end =
-                      slot && slot.kind === 'work'
-                        ? slot.endMinutes
-                        : slotNoteEditor.startMinutes + view.axis.slotHours * 60;
-                    return formatMinuteRangeLabel(slotNoteEditor.startMinutes, end);
-                  })()} 时段备注`
-                : '时段备注'}
-            </Text>
-            <Text style={{ color: outline, fontSize: 13, marginBottom: 8, lineHeight: 18 }}>
-              显示在时段下方，最多 {SCHEDULE_SLOT_NOTE_MAX_LEN} 个字（如：学习时间）
-            </Text>
-            <TextInput
-              value={slotNoteEditor?.draft ?? ''}
-              onChangeText={(text) =>
-                setSlotNoteEditor((prev) =>
-                  // 输入中不截断：拼音中间态（如 xuexishijian）会超过 6 字母，
-                  // 若此处 slice/maxLength=6，汉字无法上屏。成字后由 onEndEditing/保存再规范化。
-                  prev ? { ...prev, draft: text } : prev,
-                )
-              }
-              onEndEditing={(e) => {
-                const next = normalizeSlotNote(e.nativeEvent.text);
-                setSlotNoteEditor((prev) =>
-                  prev ? { ...prev, draft: next } : prev,
-                );
-              }}
-              placeholder="例如：学习"
-              placeholderTextColor={outline}
-              maxLength={SCHEDULE_SLOT_NOTE_IME_SOFT_MAX}
-              autoFocus
-              style={[
-                styles.noteInput,
-                {
-                  color: theme.text,
-                  borderColor: theme.outline,
-                  backgroundColor: surfaceLow,
-                },
-              ]}
-            />
-            <Text
-              style={{
-                color:
-                  (slotNoteEditor?.draft ?? '').length > SCHEDULE_SLOT_NOTE_MAX_LEN
-                    ? '#dc2626'
-                    : outline,
-                fontSize: 11,
-                alignSelf: 'flex-end',
-              }}>
-              {(slotNoteEditor?.draft ?? '').length}/{SCHEDULE_SLOT_NOTE_MAX_LEN}
-            </Text>
-            <View style={styles.noteActions}>
-              <Pressable
-                onPress={() => void clearSlotNoteEditor()}
-                disabled={slotNoteSaving}
-                style={({ pressed }) => [
-                  styles.noteGhostBtn,
-                  { opacity: pressed ? 0.7 : 1 },
-                ]}>
-                <Text style={{ color: outline, fontWeight: '600' }}>清除</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setSlotNoteEditor(null);
-                }}
-                style={({ pressed }) => [
-                  styles.noteGhostBtn,
-                  { opacity: pressed ? 0.7 : 1 },
-                ]}>
-                <Text style={{ color: outline, fontWeight: '600' }}>取消</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void saveSlotNoteEditor()}
-                disabled={slotNoteSaving}
-                style={({ pressed }) => [
-                  styles.notePrimaryBtn,
-                  { backgroundColor: primary, opacity: slotNoteSaving ? 0.5 : pressed ? 0.9 : 1 },
-                ]}>
-                {slotNoteSaving ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>保存</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </View>
   );
 }
@@ -4203,87 +2600,9 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '500',
   },
-  scFootGrow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  scFootGrowText: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
   gridWrap: { flexDirection: 'row' },
   gridHeaderChrome: {
     zIndex: 2,
-  },
-  timeGutter: {
-    borderRightWidth: StyleSheet.hairlineWidth,
-  },
-  timeGutterCorner: {
-    alignItems: 'flex-end',
-    justifyContent: 'flex-end',
-  },
-  timeCell: {
-    justifyContent: 'flex-start',
-    alignItems: 'flex-end',
-    paddingTop: 0,
-    paddingRight: 3,
-  },
-  timeHourText: {
-    fontSize: 9,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-    letterSpacing: -0.2,
-    textAlign: 'right',
-    transform: [{ translateY: -2 }],
-  },
-  noteKav: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(15,23,42,0.45)',
-  },
-  noteBackdropFill: {
-    ...StyleSheet.absoluteFill,
-  },
-  noteCard: {
-    borderTopLeftRadius: Radius.sheet,
-    borderTopRightRadius: Radius.sheet,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['3xl'],
-    paddingTop: Spacing.md,
-    gap: Spacing.sm,
-  },
-  noteHandle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    marginBottom: Spacing.sm,
-  },
-  noteTitle: { fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
-  noteInput: {
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xl,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  noteActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: Spacing.md,
-    marginTop: Spacing.md,
-  },
-  noteGhostBtn: { paddingVertical: Spacing.xl, paddingHorizontal: Spacing.lg },
-  notePrimaryBtn: {
-    minWidth: 88,
-    height: Layout.minTouchTarget,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing['3xl'],
   },
   dayHeader: {
     alignItems: 'center',
@@ -4294,114 +2613,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 0.3,
     fontVariant: ['tabular-nums'],
-  },
-  slotCell: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    padding: 2,
-    overflow: 'visible',
-  },
-  allDayCell: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    justifyContent: 'flex-start',
-    overflow: 'hidden',
-  },
-  allDayEmptyHint: {
-    fontSize: 11,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  allDayTimeCell: {
-    alignItems: 'center',
-    paddingRight: 0,
-  },
-  allDayTimeText: {
-    fontSize: 8,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-    textAlign: 'center',
-  },
-  /** 格内叠放色块：文档流排布，高度由调用方按可用空间均分 */
-  blockStacked: {
-    position: 'relative',
-    width: '100%',
-    borderRadius: 7,
-    borderWidth: 1,
-    overflow: 'hidden',
-    zIndex: 2,
-  },
-  stackCol: {
-    width: '100%',
-    justifyContent: 'flex-start',
-  },
-  blockBody: {
-    flex: 1,
-    paddingHorizontal: 4,
-    paddingVertical: 3,
-    paddingRight: 12,
-    justifyContent: 'flex-start',
-  },
-  blockBodyHabit: {
-    paddingLeft: 10,
-  },
-  blockTitle: {
-    fontWeight: '700',
-    fontSize: 11,
-    lineHeight: 14,
-  },
-  blockTitleCompact: {
-    fontSize: 9,
-    lineHeight: 11,
-  },
-  blockBodyCompact: {
-    paddingVertical: 1,
-    paddingHorizontal: 3,
-    paddingRight: 10,
-  },
-  blockMeta: {
-    fontSize: 9,
-    lineHeight: 12,
-    marginTop: 1,
-    fontWeight: '500',
-  },
-  /** 设计稿 `.blk.note`：空格虚线备注 */
-  noteBlock: {
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: 7,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 3,
-    backgroundColor: 'transparent',
-  },
-  noteBlockText: {
-    fontWeight: '600',
-    textAlign: 'center',
-    lineHeight: 12,
-  },
-  blockCk: {
-    position: 'absolute',
-    right: 3,
-    top: 3,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    borderWidth: 1,
-  },
-  /** 完成态勾选略放大，浅底上更易辨认 */
-  blockCkDone: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  blockFrogDot: {
-    position: 'absolute',
-    left: 4,
-    top: 6,
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    zIndex: 1,
   },
   dlRow: {
     flexDirection: 'row',
@@ -4460,54 +2671,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
   },
-  emptyHint: {
-    fontSize: 11,
-    fontWeight: '600',
-    textAlign: 'center',
-    paddingHorizontal: 4,
-  },
-  badge: {
-    position: 'absolute',
-    top: 3,
-    right: 3,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-    zIndex: 3,
-  },
-  badgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  nowLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 0,
-    /** 压在空格底色上，但低于色块标题，避免挡住字 */
-    zIndex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  nowDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginLeft: 0,
-  },
-  nowBar: {
-    flex: 1,
-    height: 2,
-  },
-  nowPill: {
-    position: 'absolute',
-    left: 6,
-    top: -8,
-  },
-  nowPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
   listBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15,23,42,0.45)',
@@ -4551,15 +2714,5 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: Radius.sm,
     paddingVertical: Spacing.md,
-  },
-  addMoreBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    paddingVertical: Spacing.xl,
-    marginTop: Spacing.xs,
   },
 });

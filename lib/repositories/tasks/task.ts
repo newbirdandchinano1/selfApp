@@ -419,6 +419,9 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-create'))
     .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('task-create'))
+    .catch(() => {});
 }
 
 export async function getTaskById(id: string) {
@@ -666,6 +669,9 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-update'))
     .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('task-update'))
+    .catch(() => {});
 }
 
 /** 将根任务及其所有子任务挂到同一项目（用于待办升级为项目等场景） */
@@ -763,6 +769,9 @@ export async function deleteTask(id: string) {
   await db.runAsync(`DELETE FROM tasks WHERE id IN (${placeholders})`, idList);
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('task-delete'))
+    .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('task-delete'))
     .catch(() => {});
 }
 

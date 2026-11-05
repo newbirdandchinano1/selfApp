@@ -420,7 +420,11 @@ export type AxisConflict = {
   reason: string;
 };
 
-/** 改日开始/结束时：用旧轴算出占用绝对时间，再对照新起止校验是否会被裁掉 */
+/**
+ * 改日开始/结束时：用旧轴解析绝对时间（分钟优先，无则 slot 派生），
+ * 再对照新起止校验是否会被裁掉。
+ * 注：实际保存走 `remapPlacementsForMinutes`；本函数供预检/调试。
+ */
 export function findAxisRangeConflicts(
   oldAxis: AxisLike,
   newAxis: { startMinutes: number; endMinutes: number },
@@ -428,9 +432,22 @@ export function findAxisRangeConflicts(
 ): AxisConflict[] {
   const conflicts: AxisConflict[] = [];
   for (const p of placements) {
-    if (p.orphaned || p.startSlotIndex == null) continue;
-    const start = slotStartMinutes(oldAxis, p.startSlotIndex);
-    const end = placementEndMinutes(oldAxis, p.startSlotIndex, p.spanSlots);
+    if (p.orphaned) continue;
+    const hasStored =
+      typeof p.startMinutes === 'number' &&
+      typeof p.endMinutes === 'number' &&
+      p.endMinutes > p.startMinutes;
+    let start: number;
+    let end: number;
+    if (hasStored) {
+      start = Math.trunc(p.startMinutes!);
+      end = Math.trunc(p.endMinutes!);
+    } else if (p.startSlotIndex != null) {
+      start = slotStartMinutes(oldAxis, p.startSlotIndex);
+      end = placementEndMinutes(oldAxis, p.startSlotIndex, p.spanSlots);
+    } else {
+      continue;
+    }
     if (start < newAxis.startMinutes || end > newAxis.endMinutes) {
       conflicts.push({
         placementId: p.id,

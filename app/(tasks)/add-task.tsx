@@ -63,7 +63,12 @@ import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants
 import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
-import type { TaskPriority, TaskRow, TaskStatus } from '@/lib/repositories/tasks/task.types';
+import {
+  isTaskTerminalStatus,
+  type TaskPriority,
+  type TaskRow,
+  type TaskStatus,
+} from '@/lib/repositories/tasks/task.types';
 import {
   getTagIdsByEntity,
   getTagIdsByProjectId,
@@ -81,6 +86,7 @@ import {
     resolveInheritedDefaultSchedule,
 } from '@/lib/schedule-inherit';
 import { normalizeRouteParam, type SchedulePickerResult, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
+import { setPendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -656,6 +662,53 @@ export default function AddTaskScreen() {
   const foldCardBorder = tf.line2;
   const rewardN = Math.round(Number(rewardPointsText) || 0);
 
+  const beginPlaceStandaloneOnSchedule = React.useCallback(() => {
+    if (!isEditStandalone || !editTaskId || formBusy) return;
+    if (standaloneIntent === 'shelved') {
+      Alert.alert('无法入格', '已搁置的待办请先激活后再指派到日程表。');
+      return;
+    }
+    if (isTaskTerminalStatus(editTaskStatusRef.current)) {
+      Alert.alert('无法入格', '已完成/已取消的待办不能指派为青蛙。');
+      return;
+    }
+    const trimmed = title.trim();
+    if (!trimmed) {
+      Alert.alert('无法入格', '请先填写待办名称。');
+      return;
+    }
+    setPendingSchedulePlace({
+      kind: 'task',
+      id: editTaskId,
+      title: trimmed,
+      priority: taskPriorityKeyToNumber(priority),
+      dueDate: resolveDueDate()?.slice(0, 10) ?? null,
+      acceptanceCriteria: isLongTermTask
+        ? acceptanceItems
+            .map((i) => i.text.trim())
+            .filter(Boolean)
+            .join('\n')
+        : note.trim(),
+      rewardPoints: normalizeRewardPoints(rewardPointsText),
+      projectId: null,
+      projectName: null,
+    });
+    router.push('/(tabs)/tasks');
+  }, [
+    acceptanceItems,
+    editTaskId,
+    formBusy,
+    isEditStandalone,
+    isLongTermTask,
+    note,
+    priority,
+    resolveDueDate,
+    rewardPointsText,
+    router,
+    standaloneIntent,
+    title,
+  ]);
+
   const removeStandaloneTodo = React.useCallback(() => {
     if (!editTaskId || formBusy) return;
     const titleLabel = title.trim() || '该待办';
@@ -911,21 +964,41 @@ export default function AddTaskScreen() {
                       </Text>
                     </View>
                     {isEditStandalone ? (
-                      <Pressable
-                        onPress={removeStandaloneTodo}
-                        disabled={formBusy}
-                        accessibilityRole="button"
-                        style={({ pressed }) => [
-                          styles.deleteBtn,
-                          {
-                            marginTop: 10,
-                            borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
-                            opacity: formBusy ? 0.55 : pressed ? 0.8 : 1,
-                          },
-                        ]}>
-                        <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
-                        <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除待办</Text>
-                      </Pressable>
+                      <>
+                        <Pressable
+                          onPress={beginPlaceStandaloneOnSchedule}
+                          disabled={formBusy || standaloneIntent === 'shelved'}
+                          accessibilityRole="button"
+                          accessibilityLabel="放入日程"
+                          style={({ pressed }) => [
+                            styles.deleteBtn,
+                            {
+                              marginTop: 10,
+                              borderColor: isDark ? 'rgba(127,166,149,0.45)' : 'rgba(95,131,88,0.35)',
+                              backgroundColor: isDark ? 'rgba(127,166,149,0.12)' : 'rgba(232,239,217,0.55)',
+                              opacity:
+                                formBusy || standaloneIntent === 'shelved' ? 0.55 : pressed ? 0.8 : 1,
+                            },
+                          ]}>
+                          <MaterialIcons name="event-available" size={18} color={tf.frog} />
+                          <Text style={[styles.deleteText, { color: tf.frog }]}>放入日程</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={removeStandaloneTodo}
+                          disabled={formBusy}
+                          accessibilityRole="button"
+                          style={({ pressed }) => [
+                            styles.deleteBtn,
+                            {
+                              marginTop: 10,
+                              borderColor: isDark ? 'rgba(248,113,113,0.45)' : 'rgba(186,26,26,0.35)',
+                              opacity: formBusy ? 0.55 : pressed ? 0.8 : 1,
+                            },
+                          ]}>
+                          <MaterialIcons name="delete-outline" size={18} color={isDark ? '#f87171' : '#ba1a1a'} />
+                          <Text style={[styles.deleteText, { color: isDark ? '#f87171' : '#ba1a1a' }]}>删除待办</Text>
+                        </Pressable>
+                      </>
                     ) : null}
                   </View>
                 </FoldRiseIn>

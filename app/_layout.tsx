@@ -190,6 +190,14 @@ function RootLayoutInner() {
             } else {
               void resyncAppNotificationsAfterPreferenceChange();
             }
+            if (Platform.OS === 'ios') {
+              const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
+              markHomeWidgetsDbReady();
+              void import('@/lib/widgets/schedule-all-widget-sync').then(
+                ({ scheduleAllHomeWidgetsSync }) =>
+                  scheduleAllHomeWidgetsSync('deferred-bootstrap'),
+              );
+            }
           } else {
             void import('@/lib/sync-manager').then((m) => m.SyncManager.start());
           }
@@ -401,8 +409,10 @@ function RootLayoutInner() {
     if (Platform.OS === 'web') return;
     const sub = AppState.addEventListener('change', next => {
       if (next !== 'active') return;
-      if (isExpoSandboxNotificationDisabled()) return;
-      void resyncAppNotificationsAfterPreferenceChange();
+      // 通知与桌面组件解耦：Expo Go 沙盒可跳过通知，但仍应刷新小组件（真机 development 包）
+      if (!isExpoSandboxNotificationDisabled()) {
+        void resyncAppNotificationsAfterPreferenceChange();
+      }
       if (Platform.OS === 'ios') {
         void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
           scheduleAllHomeWidgetsSync('app-active'),
@@ -411,6 +421,17 @@ function RootLayoutInner() {
     });
     return () => sub.remove();
   }, []);
+
+  // 库迁移完成后再放行组件推送，并立刻刷一遍（避免停在 INITIAL「打开 App 后同步」）
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !isDbReady) return;
+    void import('@/lib/widgets/widget-sync-ready').then(({ markHomeWidgetsDbReady }) => {
+      markHomeWidgetsDbReady();
+    });
+    void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
+      scheduleAllHomeWidgetsSync('db-ready'),
+    );
+  }, [isDbReady]);
 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
@@ -422,9 +443,8 @@ function RootLayoutInner() {
         );
       });
     });
-    void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
-      scheduleAllHomeWidgetsSync('bootstrap'),
-    );
+    // 预注册 Live Activity 布局（createLiveActivity 需在进程内至少 import 一次）
+    void import('@/widgets/FrogScheduleLiveActivity').catch(() => {});
     return () => unsub();
   }, []);
 

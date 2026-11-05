@@ -26,6 +26,7 @@ import {
   type UrgencyWidgetProps,
 } from '@/lib/widgets/urgency-glance';
 import { getWidgetsSettings, shouldPushUrgencyWidget } from '@/lib/widgets/widgets-settings';
+import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
 let syncChain: Promise<void> = Promise.resolve();
 let lastFingerprint = '';
@@ -147,12 +148,18 @@ export async function buildTodayUrgencyGlance(now = new Date()) {
 
 async function syncUrgencyWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  await whenHomeWidgetsDbReady();
   const settings = await getWidgetsSettings();
   const UrgencyWidget = (await import('@/widgets/UrgencyWidget')).default;
 
   if (!shouldPushUrgencyWidget(settings)) {
     try {
-      await UrgencyWidget.updateSnapshot(pausedProps());
+      UrgencyWidget.updateSnapshot(pausedProps());
+      try {
+        UrgencyWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       if (__DEV__) console.warn('[widgets] urgency pause failed', e);
     }
@@ -175,7 +182,12 @@ async function syncUrgencyWidgetNow(reason: string): Promise<void> {
   lastFingerprint = fp;
 
   try {
-    await UrgencyWidget.updateSnapshot(props);
+    UrgencyWidget.updateSnapshot(props);
+    try {
+      UrgencyWidget.reload();
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     if (__DEV__) console.warn('[widgets] urgency snapshot failed', reason, e);
   }

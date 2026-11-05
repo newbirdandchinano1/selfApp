@@ -11,8 +11,8 @@
 - [ ] 分钟语义：逻辑日 axis 分钟（可跨午夜）；区间半开 `[start, end)`
 - [ ] break 仍为禁排来源；新写入不得跨 / 与 break 相交（write 开启后）
 - [ ] 最简态 minimal 路径未改坏
-- [ ] 特性开关默认关时与阶段 A 基线一致
-- [ ] 未开 write 前：不删旧 grid；不 DROP slot 列
+- [ ] 阶段 L 后：App 日视图固定时间线；无 `ScheduleZoomMode='grid'`
+- [ ] 未停双写 / 未 DROP slot 列（待桌面写入稳定 ≥14 天 + 决议 #17）
 
 ## 回归（按阶段勾选）
 

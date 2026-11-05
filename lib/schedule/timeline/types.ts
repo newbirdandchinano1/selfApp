@@ -56,4 +56,6 @@ export type TimedEventLayout = {
   column: number;
   /** 该重叠簇的总栏数 */
   columns: number;
+  /** 传递重叠簇 id（同簇共享列坐标） */
+  clusterId: number;
 };

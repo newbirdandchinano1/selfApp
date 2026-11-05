@@ -12,6 +12,7 @@ import {
   validateAxisRange,
   workCoverageMinutes,
 } from '@/lib/schedule/axis';
+import { remapPlacementsForMinutes } from '@/lib/schedule/timeline/remap-minutes';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
 import type {
   ScheduleAxisSettings,
@@ -821,8 +822,16 @@ export async function saveScheduleAxisWithRemap(
     breaks?: ScheduleBreak[];
   },
   logicalTodayYmd: string,
-  /** @deprecated 日程轴与日界已解耦；保留字段以免旧调用方报错 */
-  _opts?: { orphanOnRangeConflict?: boolean; dayBoundary?: TasksDayBoundary },
+  /**
+   * `remapMode`：阶段 H 默认 `minutes`（绝对分钟 + 双写 slot）；
+   * 紧急回滚可传 `slots` 走旧 `remapPlacementsForSlotHours`。
+   * 其余字段保留以免旧调用方报错（日程轴与日界已解耦）。
+   */
+  opts?: {
+    orphanOnRangeConflict?: boolean;
+    dayBoundary?: TasksDayBoundary;
+    remapMode?: 'minutes' | 'slots';
+  },
 ): Promise<SaveAxisResult> {
   await ensureScheduleTables();
   const next = normalizeAxisSettings({
@@ -837,6 +846,7 @@ export async function saveScheduleAxisWithRemap(
   const thisMonday = getWeekStartMondayYmd(logicalTodayYmd);
   const oldAxis = normalizeAxisSettings(await getScheduleAxisSettings());
   const editablePlacements = await listPlacementsForEditableWeeks(thisMonday);
+  const remapMode = opts?.remapMode ?? 'minutes';
 
   let remappedCount = 0;
   let orphanedCount = 0;
@@ -848,7 +858,7 @@ export async function saveScheduleAxisWithRemap(
     !breaksEqual(next.breaks, oldAxis.breaks);
 
   if (axisChanged) {
-    // 按绝对开始时间重映射到新轴；落在新范围外的占用标为未入格（不阻塞保存）
+    // 按绝对时间（或旧格派生）重映射到新轴；落在范围外 / 跨 break → 未入格（不阻塞保存）
     const byWeek = new Map<string, typeof editablePlacements>();
     for (const p of editablePlacements) {
       const list = byWeek.get(p.weekStartYmd) ?? [];
@@ -856,20 +866,60 @@ export async function saveScheduleAxisWithRemap(
       byWeek.set(p.weekStartYmd, list);
     }
     for (const [, list] of byWeek) {
-      const results = remapPlacementsForSlotHours(oldAxis, next, list);
+      if (remapMode === 'slots') {
+        const results = remapPlacementsForSlotHours(oldAxis, next, list);
+        for (const r of results) {
+          if (r.orphaned) {
+            orphanedCount += 1;
+            await updatePlacementSlots(r.placementId, {
+              startSlotIndex: null,
+              orphaned: true,
+            });
+          } else if (r.nextStartSlotIndex != null) {
+            remappedCount += 1;
+            await updatePlacementSlots(r.placementId, {
+              startSlotIndex: r.nextStartSlotIndex,
+              spanSlots: r.nextSpanSlots,
+              orphaned: false,
+            });
+          }
+        }
+        continue;
+      }
+
+      const results = remapPlacementsForMinutes(oldAxis, next, list);
       for (const r of results) {
         if (r.orphaned) {
+          if (r.reason === 'already_orphaned') continue;
           orphanedCount += 1;
+          if (__DEV__ && r.reason) {
+            console.log('[schedule-remap]', r.placementId, r.reason);
+          }
           await updatePlacementSlots(r.placementId, {
             startSlotIndex: null,
             orphaned: true,
+            startMinutes: null,
+            endMinutes: null,
+            allDay: null,
           });
         } else if (r.nextStartSlotIndex != null) {
           remappedCount += 1;
+          if (__DEV__ && r.reason) {
+            console.log(
+              '[schedule-remap]',
+              r.placementId,
+              r.reason,
+              `${r.startMinutes}–${r.endMinutes}`,
+              `slot=${r.nextStartSlotIndex}+${r.nextSpanSlots}`,
+            );
+          }
           await updatePlacementSlots(r.placementId, {
             startSlotIndex: r.nextStartSlotIndex,
             spanSlots: r.nextSpanSlots,
             orphaned: false,
+            startMinutes: r.startMinutes,
+            endMinutes: r.endMinutes,
+            allDay: r.allDay,
           });
         }
       }
@@ -905,6 +955,7 @@ export type CopyWeekResult = {
   overwritten: number;
 };
 
+/** @deprecated 阶段 L：复制上周 UI 已删；保留函数供脚本/应急，勿再接产品入口 */
 export async function copyPreviousWeekToThisWeek(params: {
   thisWeekStartYmd: string;
   logicalTodayYmd: string;

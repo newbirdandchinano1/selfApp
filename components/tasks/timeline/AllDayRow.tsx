@@ -27,7 +27,7 @@ export function AllDayRow({ events, onPress }: Props) {
           <Text style={[styles.empty, { color: tf.faint }]}>—</Text>
         ) : (
           events.map((event) => {
-            const tone = resolveTimelineTone(event.kind, {
+            const tone = resolveTimelineTone(event.id, {
               done: event.done,
               isDark,
               tf,

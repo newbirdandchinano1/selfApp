@@ -3,11 +3,14 @@
  * 左：竖线 + 彩点 + 语义时段标签；右：浅底圆角事件卡，同刻横向多栏。
  * 全天独立顶栏；break 禁排区仅弱提示，不画旧课表厚休息行。
  */
-import { useTaskFoldTheme } from '@/constants/task-fold-theme';
+import { FOLD_MOTION_EASE } from '@/components/review/fold-motion';
+import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import type { AxisLike } from '@/lib/schedule/axis';
+import { useReducedMotionState } from '@/hooks/use-reduced-motion';
+import { formatMinutesAsHm, type AxisLike } from '@/lib/schedule/axis';
 import {
-  eventHeightPx,
+  eventFrameInAxis,
+  layoutCardsHorizontally,
   layoutOverlappingEvents,
   splitAllDayEvents,
   timelineBodyHeightPx,
@@ -18,6 +21,7 @@ import type { TimelineEvent } from '@/lib/schedule/timeline/types';
 import type { ScheduleBreak } from '@/lib/schedule/types';
 import React from 'react';
 import {
+  Animated,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -28,10 +32,16 @@ import {
 
 import { AllDayRow } from '@/components/tasks/timeline/AllDayRow';
 import { TimelineEventCard } from '@/components/tasks/timeline/TimelineEventCard';
-import { TimelineRail } from '@/components/tasks/timeline/TimelineRail';
+import { TimelineRail, TIMELINE_RAIL_W } from '@/components/tasks/timeline/TimelineRail';
 import { resolveTimelineTone } from '@/components/tasks/timeline/timeline-tone';
 
 const COLUMN_GAP = 4;
+/** 单卡最大宽至少盖住可视区，长标题可铺满 */
+const TIMELINE_MIN_FALLBACK_MAX = 160;
+
+function areaWidthFromTotal(totalWidth: number): number {
+  return Math.max(0, Math.floor(totalWidth) - TIMELINE_RAIL_W);
+}
 
 type Props = {
   dayYmd: string;
@@ -58,7 +68,50 @@ export function DayTimelineSchedule({
 }: Props) {
   const { isDark } = useAppTheme();
   const { tf } = useTaskFoldTheme();
-  const [areaWidth, setAreaWidth] = React.useState(0);
+  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
+  // 先用总宽估算，避免等 onLayout 之前事件层空白（长时段尤其像「消失了」）
+  const [areaWidth, setAreaWidth] = React.useState(() => areaWidthFromTotal(width));
+  /** 视口高度动画（半高 ↔ 完整）；height 不能走 native driver */
+  const viewportHeightAnim = React.useRef(new Animated.Value(maxHeight)).current;
+  const viewportHeightAnimRef = React.useRef(maxHeight);
+  /** ScrollView 内容高：展开先撑满，收起等裁切动画结束再缩小 */
+  const [scrollMaxH, setScrollMaxH] = React.useState(maxHeight);
+
+  React.useEffect(() => {
+    const next = areaWidthFromTotal(width);
+    setAreaWidth((prev) => (prev === next ? prev : next));
+  }, [width]);
+
+  React.useEffect(() => {
+    const from = viewportHeightAnimRef.current;
+    const to = maxHeight;
+    if (Math.abs(from - to) < 0.5) {
+      viewportHeightAnimRef.current = to;
+      setScrollMaxH(to);
+      return;
+    }
+    if (!motionReady || reduceMotion) {
+      viewportHeightAnim.stopAnimation();
+      viewportHeightAnim.setValue(to);
+      viewportHeightAnimRef.current = to;
+      setScrollMaxH(to);
+      return;
+    }
+    const expanding = to > from;
+    if (expanding) setScrollMaxH(to);
+    viewportHeightAnim.stopAnimation();
+    viewportHeightAnim.setValue(from);
+    Animated.timing(viewportHeightAnim, {
+      toValue: to,
+      duration: TaskFoldMotion.zoomMorph,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      viewportHeightAnimRef.current = to;
+      if (!expanding) setScrollMaxH(to);
+    });
+  }, [maxHeight, motionReady, reduceMotion, viewportHeightAnim]);
 
   const { allDay, timed } = React.useMemo(() => splitAllDayEvents(events), [events]);
   const laidOut = React.useMemo(() => layoutOverlappingEvents(timed), [timed]);
@@ -73,19 +126,73 @@ export function DayTimelineSchedule({
     if (w > 0) setAreaWidth((prev) => (prev === w ? prev : w));
   }, []);
 
+  const framed = React.useMemo(() => {
+    const out: {
+      event: TimelineEvent;
+      column: number;
+      columns: number;
+      clusterId: number;
+      top: number;
+      height: number;
+    }[] = [];
+    for (const item of laidOut) {
+      const frame = eventFrameInAxis(item.event, axis);
+      if (!frame) continue;
+      out.push({
+        event: item.event,
+        column: item.column,
+        columns: item.columns,
+        clusterId: item.clusterId,
+        top: frame.top,
+        height: frame.height,
+      });
+    }
+    return out;
+  }, [laidOut, axis]);
+
+  /** 卡片宽随标题长度自适应；同簇列占位取列内最大宽，超出可视区可横滑 */
+  const clusterLayout = React.useMemo(() => {
+    const horiz = layoutCardsHorizontally(framed, {
+      gap: COLUMN_GAP,
+      maxW: Math.max(TIMELINE_MIN_FALLBACK_MAX, areaWidth),
+    });
+    return {
+      frames: horiz.frames,
+      contentWidth: Math.max(areaWidth, horiz.contentWidth),
+    };
+  }, [framed, areaWidth]);
+
   const dots = React.useMemo(
     () =>
-      timed.map((event) => {
-        const tone = resolveTimelineTone(event.kind, {
-          done: event.done,
+      framed.map((item) => {
+        const tone = resolveTimelineTone(item.event.id, {
+          done: item.event.done,
           isDark,
           tf,
-          overdue: event.overdue,
+          overdue: item.event.overdue,
         });
-        return { top: offsetOf(event.startMinutes), color: tone.dotColor };
+        return { top: item.top, color: tone.dotColor };
       }),
-    // offsetOf depends on axisStart via closure; include axisStart
-    [timed, isDark, tf, axisStart],
+    [framed, isDark, tf],
+  );
+
+  /** 时间轴上标出每条指派的结束时刻（半开区间底边） */
+  const endMarks = React.useMemo(
+    () =>
+      framed.map((item) => {
+        const tone = resolveTimelineTone(item.event.id, {
+          done: item.event.done,
+          isDark,
+          tf,
+          overdue: item.event.overdue,
+        });
+        return {
+          top: item.top + item.height,
+          label: formatMinutesAsHm(item.event.endMinutes),
+          color: tone.dotColor,
+        };
+      }),
+    [framed, isDark, tf],
   );
 
   const breaks = (axis.breaks ?? []).filter(
@@ -99,93 +206,152 @@ export function DayTimelineSchedule({
       ? offsetOf(nowMinutes)
       : null;
 
+  const areaScrollable =
+    areaWidth > 0 && clusterLayout.contentWidth > areaWidth + 0.5;
+
+  const eventsLayer =
+    areaWidth > 0
+      ? framed.map((item) => {
+          const horiz = clusterLayout.frames.get(item.event.id) ?? {
+            left: 0,
+            width: Math.min(areaWidth, 160),
+          };
+          return (
+            <View
+              key={item.event.id}
+              style={{
+                position: 'absolute',
+                top: item.top,
+                left: horiz.left,
+                width: horiz.width,
+                height: item.height,
+              }}>
+              <TimelineEventCard
+                event={item.event}
+                height={item.height}
+                onPress={onPressEvent}
+              />
+            </View>
+          );
+        })
+      : null;
+
   return (
     <View style={{ width }}>
       <AllDayRow events={allDay} onPress={onPressEvent} />
-      <ScrollView
-        style={{ height: maxHeight }}
-        contentContainerStyle={{ minHeight: Math.max(bodyHeight, maxHeight) }}
-        nestedScrollEnabled
-        showsVerticalScrollIndicator={bodyHeight > maxHeight}
-        bounces={false}>
-        <View style={{ flexDirection: 'row', height: bodyHeight }}>
-          <TimelineRail
-            bodyHeight={bodyHeight}
-            buckets={buckets}
-            axisStartMinutes={axisStart}
-            minutePx={TIMELINE_MINUTE_PX}
-            nowMinutes={nowTop != null ? nowMinutes : null}
-            dots={dots}
-          />
-          <View
-            style={{ flex: 1, position: 'relative' }}
-            onLayout={onAreaLayout}>
-            {breaks.map((b, i) => (
-              <View
-                key={`break-${i}`}
-                pointerEvents="none"
-                style={[
-                  styles.breakBand,
-                  {
-                    top: offsetOf(Math.max(b.startMinutes, axis.startMinutes)),
-                    height: Math.max(
-                      0,
-                      (Math.min(b.endMinutes, axis.endMinutes) -
-                        Math.max(b.startMinutes, axis.startMinutes)) *
-                        TIMELINE_MINUTE_PX,
-                    ),
-                    backgroundColor: isDark
-                      ? 'rgba(180,170,150,0.08)'
-                      : 'rgba(214,205,190,0.18)',
-                    borderColor: isDark ? 'rgba(180,170,150,0.25)' : 'rgba(200,190,170,0.5)',
-                  },
-                ]}>
-                <Text style={[styles.breakLabel, { color: tf.faint }]} numberOfLines={1}>
-                  {b.label?.trim() || '休息'}
-                </Text>
-              </View>
-            ))}
-
-            {areaWidth > 0
-              ? laidOut.map((item) => {
-                  const { event, column, columns } = item;
-                  const colW = (areaWidth - COLUMN_GAP * (columns - 1)) / columns;
-                  const height = eventHeightPx(event);
-                  return (
-                    <View
-                      key={event.id}
-                      style={{
-                        position: 'absolute',
-                        top: offsetOf(event.startMinutes),
-                        left: column * (colW + COLUMN_GAP),
-                        width: colW,
-                        height,
-                      }}>
-                      <TimelineEventCard
-                        event={event}
-                        height={height}
-                        columns={columns}
-                        onPress={onPressEvent}
+      <Animated.View style={{ height: viewportHeightAnim, overflow: 'hidden' }}>
+        <ScrollView
+          style={{ height: scrollMaxH }}
+          contentContainerStyle={{ minHeight: Math.max(bodyHeight, scrollMaxH) }}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={bodyHeight > scrollMaxH}
+          bounces={false}>
+          <View style={{ flexDirection: 'row', height: bodyHeight }}>
+            <TimelineRail
+              bodyHeight={bodyHeight}
+              buckets={buckets}
+              axisStartMinutes={axisStart}
+              minutePx={TIMELINE_MINUTE_PX}
+              nowMinutes={nowTop != null ? nowMinutes : null}
+              dots={dots}
+              endMarks={endMarks}
+            />
+            <View style={{ flex: 1 }} onLayout={onAreaLayout}>
+              {areaScrollable ? (
+                <ScrollView
+                  horizontal
+                  nestedScrollEnabled
+                  bounces={false}
+                  showsHorizontalScrollIndicator
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{
+                    width: clusterLayout.contentWidth,
+                    height: bodyHeight,
+                  }}>
+                  <View style={{ width: clusterLayout.contentWidth, height: bodyHeight }}>
+                    {breaks.map((b, i) => (
+                      <View
+                        key={`break-${i}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.breakBand,
+                          {
+                            top: offsetOf(Math.max(b.startMinutes, axis.startMinutes)),
+                            height: Math.max(
+                              0,
+                              (Math.min(b.endMinutes, axis.endMinutes) -
+                                Math.max(b.startMinutes, axis.startMinutes)) *
+                                TIMELINE_MINUTE_PX,
+                            ),
+                            backgroundColor: isDark
+                              ? 'rgba(180,170,150,0.08)'
+                              : 'rgba(214,205,190,0.18)',
+                            borderColor: isDark
+                              ? 'rgba(180,170,150,0.25)'
+                              : 'rgba(200,190,170,0.5)',
+                          },
+                        ]}>
+                        <Text style={[styles.breakLabel, { color: tf.faint }]} numberOfLines={1}>
+                          {b.label?.trim() || '休息'}
+                        </Text>
+                      </View>
+                    ))}
+                    {eventsLayer}
+                    {nowTop != null ? (
+                      <View
+                        pointerEvents="none"
+                        style={[styles.nowLine, { top: nowTop, backgroundColor: tf.sun }]}
                       />
+                    ) : null}
+                  </View>
+                </ScrollView>
+              ) : (
+                <View style={{ flex: 1, position: 'relative', height: bodyHeight }}>
+                  {breaks.map((b, i) => (
+                    <View
+                      key={`break-${i}`}
+                      pointerEvents="none"
+                      style={[
+                        styles.breakBand,
+                        {
+                          top: offsetOf(Math.max(b.startMinutes, axis.startMinutes)),
+                          height: Math.max(
+                            0,
+                            (Math.min(b.endMinutes, axis.endMinutes) -
+                              Math.max(b.startMinutes, axis.startMinutes)) *
+                              TIMELINE_MINUTE_PX,
+                          ),
+                          backgroundColor: isDark
+                            ? 'rgba(180,170,150,0.08)'
+                            : 'rgba(214,205,190,0.18)',
+                          borderColor: isDark
+                            ? 'rgba(180,170,150,0.25)'
+                            : 'rgba(200,190,170,0.5)',
+                        },
+                      ]}>
+                      <Text style={[styles.breakLabel, { color: tf.faint }]} numberOfLines={1}>
+                        {b.label?.trim() || '休息'}
+                      </Text>
                     </View>
-                  );
-                })
-              : null}
-
-            {nowTop != null ? (
-              <View
-                pointerEvents="none"
-                style={[styles.nowLine, { top: nowTop, backgroundColor: tf.sun }]}
-              />
-            ) : null}
+                  ))}
+                  {eventsLayer}
+                  {nowTop != null ? (
+                    <View
+                      pointerEvents="none"
+                      style={[styles.nowLine, { top: nowTop, backgroundColor: tf.sun }]}
+                    />
+                  ) : null}
+                </View>
+              )}
+            </View>
           </View>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </Animated.View>
       {onRequestAdd ? (
         <Pressable
           onPress={() => onRequestAdd(dayYmd)}
           accessibilityRole="button"
-          accessibilityLabel="添加安排"
+          accessibilityLabel="添加安排或入格"
           style={({ pressed }) => [
             styles.addBtn,
             {
@@ -194,7 +360,7 @@ export function DayTimelineSchedule({
               opacity: pressed ? 0.82 : 1,
             },
           ]}>
-          <Text style={[styles.addBtnText, { color: tf.pond }]}>＋ 添加安排</Text>
+          <Text style={[styles.addBtnText, { color: tf.pond }]}>＋ 添加安排 / 入格</Text>
         </Pressable>
       ) : null}
     </View>

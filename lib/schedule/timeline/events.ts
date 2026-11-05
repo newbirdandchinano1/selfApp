@@ -137,8 +137,17 @@ export function buildTimelineEventsForDay(params: {
     let startMinutes = axis.startMinutes;
     let endMinutes = axis.endMinutes;
     if (!t.allDay) {
-      startMinutes = slotStartMinutes(axis, t.startSlotIndex);
-      endMinutes = placementEndMinutes(axis, t.startSlotIndex, Math.max(1, t.spanSlots));
+      if (
+        typeof t.startMinutes === 'number' &&
+        typeof t.endMinutes === 'number' &&
+        t.endMinutes > t.startMinutes
+      ) {
+        startMinutes = t.startMinutes;
+        endMinutes = t.endMinutes;
+      } else {
+        startMinutes = slotStartMinutes(axis, t.startSlotIndex);
+        endMinutes = placementEndMinutes(axis, t.startSlotIndex, Math.max(1, t.spanSlots));
+      }
     }
     events.push({
       id: `vt-${t.taskId}-${t.assignYmd}`,

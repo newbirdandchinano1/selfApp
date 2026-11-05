@@ -309,8 +309,9 @@ import {
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import { getPointsBalance } from '@/lib/repositories/points/points';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React from 'react';
+import { consumePendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import {
   ActivityIndicator,
   Animated,
@@ -1216,7 +1217,7 @@ function formatFrogAssignedBadgeText(extraData: string | null, todayYmd: string)
 function getFrogAssignedHint(
   extraData: string | null,
   todayYmd: string,
-  longPressHint = '长按可将待办指派到日程表格子',
+  longPressHint = '长按可将待办放入日程时间线',
 ): string {
   const dates = getFrogAssignedDates(extraData);
   if (dates.length === 0) return longPressHint;
@@ -3163,8 +3164,16 @@ export default function TasksScreen() {
   const beginSchedulePlace = React.useCallback((subject: SchedulePendingPlace) => {
     setPendingSchedulePlace(subject);
     mainScrollRef.current?.scrollToOffset({ offset: 0, animated: true });
-    toast.info('请在上方日程表点选格子');
+    toast.info('请确认入格时段');
   }, []);
+
+  /** 详情页「放入日程」经 bridge 回任务 Tab 后接上预选入格 */
+  useFocusEffect(
+    React.useCallback(() => {
+      const payload = consumePendingSchedulePlace();
+      if (payload) beginSchedulePlace(payload);
+    }, [beginSchedulePlace]),
+  );
 
   const beginSchedulePlaceForTask = React.useCallback(
     (task: TaskRow, projectName?: string | null) => {
@@ -7489,7 +7498,7 @@ export default function TasksScreen() {
                         accessibilityHint={getFrogAssignedHint(
                           project.extra_data,
                           logicalTodayYmd,
-                          '长按可将项目或任务指派到日程表格子',
+                          '长按可将项目或任务放入日程时间线',
                         )}>
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>

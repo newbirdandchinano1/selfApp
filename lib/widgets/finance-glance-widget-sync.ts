@@ -224,12 +224,19 @@ export async function buildTodayFinanceGlance(now = new Date()) {
 
 async function syncFinanceGlanceWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  const { whenHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
+  await whenHomeWidgetsDbReady();
   const settings = await getWidgetsSettings();
   const FinanceGlanceWidget = (await import('@/widgets/FinanceGlanceWidget')).default;
 
   if (!shouldPushFinanceGlanceWidget(settings)) {
     try {
-      await FinanceGlanceWidget.updateSnapshot(pausedProps());
+      FinanceGlanceWidget.updateSnapshot(pausedProps());
+      try {
+        FinanceGlanceWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       if (__DEV__) console.warn('[widgets] finance pause failed', e);
     }
@@ -255,7 +262,12 @@ async function syncFinanceGlanceWidgetNow(reason: string): Promise<void> {
   lastFingerprint = fp;
 
   try {
-    await FinanceGlanceWidget.updateSnapshot(props);
+    FinanceGlanceWidget.updateSnapshot(props);
+    try {
+      FinanceGlanceWidget.reload();
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     if (__DEV__) console.warn('[widgets] finance snapshot failed', reason, e);
   }

@@ -4,10 +4,16 @@
  */
 import assert from 'node:assert/strict';
 import {
+  clampTimedEventToAxis,
+  columnWidthForCluster,
+  eventFrameInAxis,
   eventHeightPx,
   formatEventDuration,
+  layoutCardsHorizontally,
   layoutOverlappingEvents,
+  preferredEventCardWidth,
   splitAllDayEvents,
+  TIMELINE_MIN_COLUMN_W,
   TIMELINE_MIN_EVENT_H,
   TIMELINE_MINUTE_PX,
   timelineBodyHeightPx,
@@ -80,6 +86,70 @@ const ev = (id, startMinutes, endMinutes, allDay = false) => ({
   assert.equal(eventHeightPx(ev('x', 0, 30)), TIMELINE_MIN_EVENT_H);
   assert.ok(Math.abs(eventHeightPx(ev('x', 0, 120)) - 120 * TIMELINE_MINUTE_PX) < 1e-6);
   assert.ok(Math.abs(timelineBodyHeightPx({ startMinutes: 480, endMinutes: 1320 }) - 840 * TIMELINE_MINUTE_PX) < 1e-6);
+}
+
+// 长跨度裁进轴：不溢出 body；轴外返回 null
+{
+  const axis = { startMinutes: 480, endMinutes: 1320 };
+  const clipped = clampTimedEventToAxis(ev('L', 400, 1400), axis);
+  assert.deepEqual(clipped, { startMinutes: 480, endMinutes: 1320 });
+  const frame = eventFrameInAxis(ev('L', 400, 1400), axis);
+  assert.ok(frame);
+  assert.equal(frame.top, 0);
+  const body = timelineBodyHeightPx(axis);
+  assert.ok(frame.height <= body + 1e-6);
+  assert.equal(clampTimedEventToAxis(ev('O', 0, 100), axis), null);
+
+  // 旧均分 API：够宽则不横滑；过窄保底
+  const fits = columnWidthForCluster(300, 2, { gap: 4, minColW: TIMELINE_MIN_COLUMN_W });
+  assert.equal(fits.scrollable, false);
+  assert.ok(Math.abs(fits.colW - (300 - 4) / 2) < 1e-6);
+  const squeezed = columnWidthForCluster(200, 8, { gap: 4, minColW: TIMELINE_MIN_COLUMN_W });
+  assert.equal(squeezed.colW, TIMELINE_MIN_COLUMN_W);
+  assert.equal(squeezed.scrollable, true);
+}
+
+// 卡片宽随标题长度自适应
+{
+  const short = preferredEventCardWidth({ title: '短', icon: null, done: false });
+  const long = preferredEventCardWidth({
+    title: '这是一个比较长的日程标题用来测宽度',
+    icon: '🐸',
+    done: false,
+  });
+  assert.ok(short >= TIMELINE_MIN_COLUMN_W);
+  assert.ok(long > short);
+  const capped = preferredEventCardWidth(
+    { title: '一二三四五六七八九十'.repeat(8), icon: null, done: false },
+    { maxW: 200 },
+  );
+  assert.equal(capped, 200);
+}
+
+// 同簇横排：短卡窄、长卡宽；列不重叠
+{
+  const items = [
+    {
+      event: { id: 'a', title: '短', icon: null, done: false },
+      column: 0,
+      columns: 2,
+      clusterId: 0,
+    },
+    {
+      event: { id: 'b', title: '这是一个很长的标题内容', icon: '📌', done: false },
+      column: 1,
+      columns: 2,
+      clusterId: 0,
+    },
+  ];
+  const { frames, contentWidth } = layoutCardsHorizontally(items, { gap: 4, maxW: 280 });
+  const a = frames.get('a');
+  const b = frames.get('b');
+  assert.ok(a && b);
+  assert.ok(a.width < b.width);
+  assert.equal(a.left, 0);
+  assert.equal(b.left, a.width + 4);
+  assert.equal(contentWidth, a.width + 4 + b.width);
 }
 
 // 友好时长

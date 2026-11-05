@@ -32,6 +32,8 @@ export type FrogScheduleGlance = {
 
 export type FrogScheduleWidgetProps = {
   headline: string;
+  /** 锁屏标题；隐私收紧时可隐藏具体待办名 */
+  lockHeadline: string;
   kindLabel: string;
   kindColor: string;
   timeRange: string;
@@ -167,7 +169,7 @@ export function frogScheduleGlanceToWidgetProps(
     kindLabel: '',
     kindColor: '#5A6B5E',
     timeRange: '',
-    statusLine: '打开 App 排一只青蛙',
+    statusLine: '在任务页把青蛙拖入今日时段',
     summaryLine: '',
     upcoming1: '',
     upcoming2: '',

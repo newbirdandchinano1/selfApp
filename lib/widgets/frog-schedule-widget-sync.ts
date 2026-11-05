@@ -9,7 +9,7 @@ import { getProjectsByIds } from '@/lib/repositories/projects/project';
 import { listPlacementsForWeek } from '@/lib/repositories/schedule/schedule-store';
 import { getTasksByIds } from '@/lib/repositories/tasks/task';
 import { isTaskTerminalStatus } from '@/lib/repositories/tasks/task.types';
-import { placementEndMinutes, slotStartMinutes } from '@/lib/schedule/axis';
+import { resolvePlacementInterval } from '@/lib/schedule/timeline/from-placement';
 import { getWeekStartMondayYmd, weekdayFromYmd } from '@/lib/schedule/week';
 import { loadWeekSchedule } from '@/lib/schedule-service';
 import {
@@ -31,6 +31,7 @@ import {
   shouldPushFrogScheduleWidget,
   shouldRunFrogScheduleLiveActivity,
 } from '@/lib/widgets/widgets-settings';
+import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
 let syncChain: Promise<void> = Promise.resolve();
 let lastWidgetFingerprint = '';
@@ -64,7 +65,7 @@ export async function buildTodayFrogScheduleGlance(now = new Date()): Promise<Fr
 
   const view = await loadWeekSchedule(weekStart, todayYmd, { hydrateRemote: false });
   const placements = (await listPlacementsForWeek(weekStart)).filter(
-    (p) => p.weekday === weekday && !p.orphaned && p.startSlotIndex != null,
+    (p) => p.weekday === weekday && !p.orphaned,
   );
 
   const taskIds = placements.filter((p) => p.subjectKind === 'task').map((p) => p.subjectId);
@@ -77,9 +78,11 @@ export async function buildTodayFrogScheduleGlance(now = new Date()): Promise<Fr
   const blocks: FrogScheduleBlock[] = [];
 
   for (const p of placements) {
-    if (p.startSlotIndex == null) continue;
-    const startMins = slotStartMinutes(axis, p.startSlotIndex);
-    const endMins = placementEndMinutes(axis, p.startSlotIndex, p.spanSlots);
+    // 阶段 I：分钟优先；无存库分钟则 slot 派生；无法解析则跳过
+    const iv = resolvePlacementInterval(p, axis);
+    if (!iv) continue;
+    const startMins = iv.startMinutes;
+    const endMins = iv.endMinutes;
 
     if (p.subjectKind === 'task') {
       const task = taskMap.get(p.subjectId);
@@ -126,24 +129,24 @@ export async function buildTodayFrogScheduleGlance(now = new Date()): Promise<Fr
   });
 }
 
+function dayZeroMs(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+}
+
 async function pushWidgetTimeline(
   props: FrogScheduleWidgetProps,
   glance: FrogScheduleGlance,
   now: Date,
 ) {
   const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
+  // 先立刻写一帧，避免只排 timeline 时 WidgetKit 仍停在 INITIAL
+  FrogScheduleWidget.updateSnapshot(props);
+
   const entries: { date: Date; props: FrogScheduleWidgetProps }[] = [{ date: now, props }];
+  const day0 = dayZeroMs(now);
 
   if (glance.status === 'active' && glance.focus) {
-    const endAt = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      0,
-      0,
-      0,
-      0,
-    ).getTime() + glance.focus.endMins * 60_000;
+    const endAt = day0 + glance.focus.endMins * 60_000;
 
     for (let i = 1; i <= 8; i += 1) {
       const tMs = now.getTime() + i * 5 * 60_000;
@@ -164,6 +167,7 @@ async function pushWidgetTimeline(
         props: {
           ...props,
           headline: glance.upcoming[0]?.title.slice(0, 40) || '今日入格已清',
+          lockHeadline: glance.upcoming[0]?.title.slice(0, 40) || '今日入格已清',
           statusLine: glance.upcoming[0]
             ? `下一场 · ${formatRemainLabel(0, { untilStart: true })}`
             : '时段结束',
@@ -176,9 +180,7 @@ async function pushWidgetTimeline(
       });
     }
   } else if (glance.status === 'upcoming' && glance.focus && glance.focus.startMins > glance.nowMins) {
-    const startAt =
-      new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime() +
-      glance.focus.startMins * 60_000;
+    const startAt = day0 + glance.focus.startMins * 60_000;
     if (startAt > now.getTime() + 10_000) {
       entries.push({
         date: new Date(startAt),
@@ -192,10 +194,15 @@ async function pushWidgetTimeline(
     }
   }
 
-  await FrogScheduleWidget.updateTimeline(entries);
+  FrogScheduleWidget.updateTimeline(entries);
+  try {
+    FrogScheduleWidget.reload();
+  } catch {
+    /* reload 在部分构建上可能不可用 */
+  }
 }
 
-async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean) {
+async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean, now: Date) {
   const FrogScheduleLiveActivity = (await import('@/widgets/FrogScheduleLiveActivity')).default;
   const desired = enabled ? frogScheduleGlanceToLiveActivityProps(glance) : null;
   const instances = FrogScheduleLiveActivity.getInstances?.() ?? [];
@@ -213,24 +220,35 @@ async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean) {
   }
 
   const deepLink = `zheng://tasks?placement=${encodeURIComponent(desired.placementId)}`;
+  const staleDate =
+    glance.focus != null
+      ? new Date(dayZeroMs(now) + glance.focus.endMins * 60_000)
+      : undefined;
+
   let updated = false;
   for (const inst of instances) {
-    const placementId = (inst as { props?: { placementId?: string } }).props?.placementId;
-    if (!updated && placementId === desired.placementId) {
-      await inst.update(desired);
-      updated = true;
-    } else {
+    // ActivityKit 实例不一定带回 props；同 placement 优先 update，否则结束旧实例
+    const placementId =
+      (inst as { props?: { placementId?: string } }).props?.placementId ?? lastLivePlacementId;
+    if (!updated && (placementId === desired.placementId || instances.length === 1)) {
       try {
-        await inst.end('immediate');
-      } catch {
-        /* ignore */
+        await inst.update(desired, staleDate);
+        updated = true;
+        continue;
+      } catch (e) {
+        if (__DEV__) console.warn('[widgets] Live Activity update failed', e);
       }
+    }
+    try {
+      await inst.end('immediate');
+    } catch {
+      /* ignore */
     }
   }
 
   if (!updated) {
     try {
-      FrogScheduleLiveActivity.start(desired, deepLink);
+      FrogScheduleLiveActivity.start(desired, deepLink, staleDate);
     } catch (e) {
       if (__DEV__) console.warn('[widgets] Live Activity start failed', e);
     }
@@ -240,6 +258,7 @@ async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean) {
 
 async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  await whenHomeWidgetsDbReady();
 
   const settings = await getWidgetsSettings();
   const now = new Date();
@@ -247,11 +266,16 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   if (!shouldPushFrogScheduleWidget(settings)) {
     try {
       const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
-      await FrogScheduleWidget.updateSnapshot(pausedWidgetProps());
+      FrogScheduleWidget.updateSnapshot(pausedWidgetProps());
+      try {
+        FrogScheduleWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       if (__DEV__) console.warn('[widgets] pause snapshot failed', e);
     }
-    await syncLiveActivity(emptyGlance(), false);
+    await syncLiveActivity(emptyGlance(), false, now);
     return;
   }
 
@@ -259,7 +283,7 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   const props = frogScheduleGlanceToWidgetProps(glance, {
     lockScreenStrict: settings.privacy.lockScreenStrict,
   });
-  const fp = `${props.headline}|${props.lockHeadline}|${props.statusLine}|${props.summaryLine}|${props.upcoming1}|${lastLivePlacementId ?? ''}`;
+  const fp = `${props.headline}|${props.lockHeadline}|${props.statusLine}|${props.summaryLine}|${props.upcoming1}|${glance.status}|${lastLivePlacementId ?? ''}`;
   if (fp === lastWidgetFingerprint && reason === 'debounce') return;
   lastWidgetFingerprint = fp;
 
@@ -269,14 +293,19 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
     if (__DEV__) console.warn('[widgets] timeline update failed', reason, e);
     try {
       const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
-      await FrogScheduleWidget.updateSnapshot(props);
+      FrogScheduleWidget.updateSnapshot(props);
+      try {
+        FrogScheduleWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e2) {
       if (__DEV__) console.warn('[widgets] snapshot fallback failed', e2);
     }
   }
 
   try {
-    await syncLiveActivity(glance, shouldRunFrogScheduleLiveActivity(settings));
+    await syncLiveActivity(glance, shouldRunFrogScheduleLiveActivity(settings), now);
   } catch (e) {
     if (__DEV__) console.warn('[widgets] live activity sync failed', e);
   }
@@ -285,6 +314,7 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
     console.log('[widgets] frog-schedule synced', reason, {
       status: glance.status,
       title: props.headline,
+      placed: glance.placedCount,
       la: lastLivePlacementId,
     });
   }

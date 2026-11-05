@@ -308,7 +308,31 @@ export default function WidgetsCenterScreen() {
                   可搜索：「{namesLine}」。
                   {'\n'}
                   配置好后，请到主屏或锁屏添加「小郑的自我修养」小组件（App 无法一键安装）。
+                  {'\n\n'}
+                  「今日青蛙」看的是课表入格，不是只点了今日青蛙标记。灵动岛仅在入格进行中出现。
                 </Text>
+              ) : null}
+              {Platform.OS === 'ios' ? (
+                <Pressable
+                  disabled={busy}
+                  onPress={() => {
+                    scheduleAllHomeWidgetsSync('manual-refresh');
+                    toast('已推送最新快照到桌面组件');
+                  }}
+                  style={({ pressed }) => [
+                    styles.pillBtn,
+                    {
+                      alignSelf: 'flex-start',
+                      marginTop: 12,
+                      borderColor: fold.line,
+                      backgroundColor: fold.paper2,
+                      opacity: busy ? 0.5 : pressed ? 0.86 : 1,
+                    },
+                  ]}>
+                  <Text style={{ color: fold.ink2, fontWeight: '700', fontSize: 12 }}>
+                    立即刷新桌面组件
+                  </Text>
+                </Pressable>
               ) : null}
             </View>
           </FoldRiseIn>

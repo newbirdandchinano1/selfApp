@@ -19,6 +19,8 @@
     "test:schedule-placement-api-minutes": "npx --yes tsx scripts/test-schedule-placement-api-minutes.mjs",
     "test:schedule-timeline-layout": "npx --yes tsx scripts/test-schedule-timeline-layout.mjs",
     "test:schedule-timed-placement": "npx --yes tsx scripts/test-schedule-timed-placement.mjs",
+    "test:schedule-axis-remap-minutes": "npx --yes tsx scripts/test-schedule-axis-remap-minutes.mjs",
+    "test:schedule-reminder-minutes": "npx --yes tsx scripts/test-schedule-reminder-minutes.mjs",
     "test:habits-today-glance": "node --experimental-strip-types scripts/test-habits-today-glance.mjs",
     "test:health-intake-glance": "node --experimental-strip-types scripts/test-health-intake-glance.mjs",
     "test:finance-glance": "node --experimental-strip-types scripts/test-finance-glance.mjs",

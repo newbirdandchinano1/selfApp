@@ -18,6 +18,7 @@ import { formatEventDuration } from '@/lib/schedule/timeline/layout';
 import type { ScheduleBreak, ScheduleSubjectKind } from '@/lib/schedule/types';
 import { isTaskDueOverdue } from '@/lib/standalone-todo-visibility';
 import { MaterialIcons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import React from 'react';
 import {
   ActivityIndicator,
@@ -253,25 +254,42 @@ function isLockedByProjects(it: FrogCandidate, locked: Set<string>): boolean {
   return false;
 }
 
-/** 轴分钟 → HH:MM 输入串（支持跨午夜，如 25:30） */
-function axisTimeInputValue(minutes: number): string {
+/** 轴分钟 → HH:MM 展示串（支持跨午夜，如 25:30） */
+function axisTimeDisplayValue(minutes: number): string {
   const m = Math.max(0, Math.round(minutes));
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
 
-/** HH:MM / HHMM / HH → 轴分钟；非法返回 null（小时上限 47 支持跨午夜） */
-function parseAxisTimeInput(text: string): number | null {
-  const m = /^(\d{1,2}):?(\d{0,2})$/.exec(text.trim());
-  if (!m) return null;
-  const h = Number(m[1]);
-  const min = m[2] ? Number(m[2]) : 0;
-  if (!Number.isFinite(h) || !Number.isFinite(min) || h < 0 || h > 47 || min < 0 || min > 59) {
-    return null;
-  }
-  return h * 60 + min;
+/** 轴分钟 → 给 DateTimePicker 的墙钟 Date（小时对 24 取模） */
+function axisMinutesToPickerDate(minutes: number): Date {
+  const m = Math.max(0, Math.round(minutes));
+  const d = new Date();
+  d.setSeconds(0, 0);
+  d.setHours(Math.floor(m / 60) % 24, m % 60, 0, 0);
+  return d;
 }
 
-/** 阶段 G：单个时刻输入（−5 / HH:MM / +5）；支持自由分钟与跨午夜 */
+/**
+ * 滚轮选出的墙钟分钟映射回逻辑日轴分钟。
+ * 轴可跨午夜（≥24h）：在 [min,max] 内优先贴近当前值。
+ */
+function resolveAxisMinutesFromClock(
+  clockMins: number,
+  prev: number,
+  min: number,
+  max: number,
+): number {
+  const normalized = ((clockMins % (24 * 60)) + 24 * 60) % (24 * 60);
+  const candidates = [normalized, normalized + 24 * 60].filter((m) => m >= min && m <= max);
+  if (candidates.length === 0) {
+    return Math.min(max, Math.max(min, normalized));
+  }
+  return candidates.reduce((best, m) =>
+    Math.abs(m - prev) < Math.abs(best - prev) ? m : best,
+  );
+}
+
+/** 阶段 G：单个时刻（−5 / 时间选择器 / +5）；滚轮选分，支持跨午夜轴 */
 function AxisTimeField({
   label,
   value,
@@ -291,32 +309,24 @@ function AxisTimeField({
   fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
   isDark: boolean;
 }) {
-  const [text, setText] = React.useState(() => axisTimeInputValue(value));
-  const [focused, setFocused] = React.useState(false);
-
-  React.useEffect(() => {
-    if (!focused) setText(axisTimeInputValue(value));
-  }, [value, focused]);
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [draft, setDraft] = React.useState(() => axisMinutesToPickerDate(value));
 
   const clampToRange = (n: number) => Math.min(max, Math.max(min, n));
 
-  const commit = React.useCallback(() => {
-    const parsed = parseAxisTimeInput(text);
-    if (parsed == null) {
-      setText(axisTimeInputValue(value));
-      return;
-    }
-    const next = clampToRange(parsed);
-    onChange(next);
-    setText(axisTimeInputValue(next));
-    // clampToRange 依赖 min/max；按值变化重建
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, value, min, max, onChange]);
+  const openPicker = () => {
+    setDraft(axisMinutesToPickerDate(value));
+    setPickerOpen(true);
+  };
+
+  const commitDraft = () => {
+    const clock = draft.getHours() * 60 + draft.getMinutes();
+    onChange(resolveAxisMinutesFromClock(clock, value, min, max));
+    setPickerOpen(false);
+  };
 
   const step = (delta: number) => {
-    const next = clampToRange(value + delta);
-    onChange(next);
-    setText(axisTimeInputValue(next));
+    onChange(clampToRange(value + delta));
   };
 
   return (
@@ -332,36 +342,23 @@ function AxisTimeField({
         ]}>
         <Text style={{ color: tf.ink2, fontWeight: '700', fontFamily: fonts.mono }}>−5</Text>
       </Pressable>
-      <View
-        style={[
+      <Pressable
+        onPress={openPicker}
+        accessibilityRole="button"
+        accessibilityLabel={`选择${label}时间`}
+        style={({ pressed }) => [
           styles.timeInputWrap,
           {
-            borderColor: focused ? tf.pond : tf.line2,
+            borderColor: pickerOpen ? tf.pond : tf.line2,
             backgroundColor: isDark ? tf.paper3 : 'rgba(255,252,245,0.72)',
+            opacity: pressed ? 0.88 : 1,
           },
         ]}>
-        <TextInput
-          value={text}
-          onChangeText={(next) => {
-            setText(next);
-            // 输入过程中即向上同步可解析值，避免用户输入后直接点确认时读到旧值
-            const parsed = parseAxisTimeInput(next);
-            if (parsed != null) onChange(clampToRange(parsed));
-          }}
-          onFocus={() => setFocused(true)}
-          onBlur={() => {
-            setFocused(false);
-            commit();
-          }}
-          onSubmitEditing={commit}
-          keyboardType="numbers-and-punctuation"
-          returnKeyType="done"
-          maxLength={5}
-          placeholder="HH:MM"
-          placeholderTextColor={tf.faint}
-          style={[styles.timeInput, { color: tf.ink2, fontFamily: fonts.mono }]}
-        />
-      </View>
+        <Text style={[styles.timeInput, { color: tf.ink2, fontFamily: fonts.mono }]}>
+          {axisTimeDisplayValue(value)}
+        </Text>
+        <MaterialIcons name="schedule" size={14} color={tf.muted} style={{ marginLeft: 4 }} />
+      </Pressable>
       <Pressable
         onPress={() => step(5)}
         accessibilityRole="button"
@@ -372,6 +369,59 @@ function AxisTimeField({
         ]}>
         <Text style={{ color: tf.ink2, fontWeight: '700', fontFamily: fonts.mono }}>+5</Text>
       </Pressable>
+
+      <Modal
+        visible={pickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPickerOpen(false)}>
+        <View style={styles.timePickerBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPickerOpen(false)} />
+          <View
+            style={[
+              styles.timePickerCard,
+              {
+                backgroundColor: isDark ? tf.paper2 : '#FFFCF5',
+                borderColor: isDark ? tf.line2 : 'rgba(216,205,187,0.7)',
+              },
+            ]}>
+            <Text style={[styles.timePickerTitle, { color: tf.ink2 }]}>选择{label}时间</Text>
+            <DateTimePicker
+              value={draft}
+              mode="time"
+              // Modal 内必须用 spinner：Android default 是系统对话框，组件本身空白
+              display="spinner"
+              is24Hour
+              locale="zh-CN"
+              themeVariant={isDark ? 'dark' : 'light'}
+              textColor={tf.ink2}
+              onChange={(_, date) => {
+                if (date) {
+                  const next = new Date(date);
+                  next.setSeconds(0, 0);
+                  setDraft(next);
+                }
+              }}
+              style={styles.nativeTimePicker}
+            />
+            <View style={styles.timePickerActions}>
+              <Pressable
+                onPress={() => setPickerOpen(false)}
+                style={[
+                  styles.timePickerBtn,
+                  { backgroundColor: isDark ? tf.paper3 : 'rgba(241,237,225,0.9)' },
+                ]}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: tf.muted }}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={commitDraft}
+                style={[styles.timePickerBtn, { backgroundColor: tf.pond }]}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: tf.onPond }}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -934,7 +984,7 @@ export function SchedulePlaceFrogSheet({
         {minuteMode
           ? allDay
             ? '全天 · 铺满当日可排时段'
-            : '选择开始 / 结束时刻（精确到分钟）'
+            : '点时刻打开时间选择器（精确到分钟）'
           : allDay
             ? '全天 · 放入顶部全天格，不占用时段'
             : `连续占用格数（最多 ${maxSpan}）`}
@@ -1521,6 +1571,8 @@ const styles = StyleSheet.create({
     height: 38,
     borderRadius: 10,
     borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 10,
   },
@@ -1530,6 +1582,43 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     textAlign: 'center',
     letterSpacing: 1,
+  },
+  timePickerBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+    backgroundColor: 'rgba(20, 30, 24, 0.45)',
+  },
+  timePickerCard: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  timePickerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  nativeTimePicker: {
+    alignSelf: 'center',
+    width: '100%',
+    height: 180,
+  },
+  timePickerActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  timePickerBtn: {
+    minWidth: 72,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
   },
   timeHintRow: {
     flexDirection: 'row',

@@ -15,16 +15,15 @@ type Props = {
   event: TimelineEvent;
   /** 由父容器给定的像素高度 */
   height: number;
-  /** 同一簇横向栏数（>1 时收紧排版） */
-  columns: number;
   onPress: (event: TimelineEvent) => void;
 };
 
-export function TimelineEventCard({ event, height, columns, onPress }: Props) {
+export function TimelineEventCard({ event, height, onPress }: Props) {
   const { isDark } = useAppTheme();
   const { tf } = useTaskFoldTheme();
-  const compact = height < 38 || columns > 1;
-  const tone = resolveTimelineTone(event.kind, {
+  /** 多栏已按全宽横滑，不再因栏数压缩文案；仅矮卡收紧 */
+  const compact = height < 38;
+  const tone = resolveTimelineTone(event.id, {
     done: event.done,
     isDark,
     tf,

@@ -22,7 +22,13 @@ const DATETIME_FIELD_RE =
   /(_at|_date|At|Date|happened_at|due_date|record_date|review_at|generated_at|fulfilled_at|last_ai_at|inbox_entered_at|completed_at|earned_at|redeemed_at|assigned_ymd|cache_date_ymd|startTime|endTime|fetchedAt)$/i;
 
 /** 上传时强制按墙上时钟写出（与界面一致） */
-const WALL_CLOCK_DATETIME_FIELDS = new Set(['happened_at', 'completed_at']);
+const WALL_CLOCK_DATETIME_FIELDS = new Set([
+  'happened_at',
+  'completed_at',
+  /** 任务/项目 extra_data.schedule 的起止时刻：本地墙钟，禁止按 UTC 截断 */
+  'startTime',
+  'endTime',
+]);
 const WALL_CLOCK_DATETIME_TABLES = new Set([
   'tasks',
   'task_execution_events',

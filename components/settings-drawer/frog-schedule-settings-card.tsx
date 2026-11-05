@@ -19,9 +19,7 @@ import {
 } from '@/lib/schedule-service';
 import { getScheduleAxisSettings } from '@/lib/repositories/schedule/schedule-store';
 import {
-  loadScheduleTimelineUiEnabled,
   loadScheduleTimelineWriteEnabled,
-  saveScheduleTimelineUiEnabled,
   saveScheduleTimelineWriteEnabled,
 } from '@/lib/schedule/timeline-flags';
 import { notifyFrogScheduleChanged } from '@/lib/schedule-events';
@@ -48,8 +46,6 @@ type Props = {
   /** 为 false 时不加载；弹窗打开时传 true 以刷新 */
   active?: boolean;
 };
-
-const SLOT_OPTIONS: ScheduleSlotHours[] = [1, 2, 3, 4];
 
 type PickerTarget =
   | 'start'
@@ -112,8 +108,8 @@ export function FrogScheduleSettingsCard({
   const [orphanedCount, setOrphanedCount] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
-  const [timelineUi, setTimelineUi] = React.useState(false);
-  const [timelineWrite, setTimelineWrite] = React.useState(false);
+  /** 阶段 K/J：write 默认开；仍可关回选格 + 双写 slot */
+  const [timelineWrite, setTimelineWrite] = React.useState(true);
 
   const [pickerTarget, setPickerTarget] = React.useState<PickerTarget | null>(null);
 
@@ -131,7 +127,6 @@ export function FrogScheduleSettingsCard({
     setSlotHours(axis.slotHours);
     setBreaks(axis.breaks ?? []);
     setOrphanedCount(await getOrphanedPlacementCount());
-    setTimelineUi(await loadScheduleTimelineUiEnabled());
     setTimelineWrite(await loadScheduleTimelineWriteEnabled());
     setLoaded(true);
   }, [maxEndMinutes]);
@@ -212,17 +207,6 @@ export function FrogScheduleSettingsCard({
   const removeBreak = (index: number) => {
     setBreaks((prev) => prev.filter((_, i) => i !== index));
   };
-
-  const toggleTimelineUi = React.useCallback(async (next: boolean) => {
-    setTimelineUi(next);
-    try {
-      await saveScheduleTimelineUiEnabled(next);
-      notifyFrogScheduleChanged();
-    } catch (err) {
-      toast.error(toUserMessage(err, '保存失败，请稍后重试'));
-      setTimelineUi(await loadScheduleTimelineUiEnabled());
-    }
-  }, []);
 
   const toggleTimelineWrite = React.useCallback(async (next: boolean) => {
     setTimelineWrite(next);
@@ -367,47 +351,13 @@ export function FrogScheduleSettingsCard({
             <MaterialIcons name="chevron-right" size={20} color={outline} />
           </Pressable>
 
-          <Text style={[styles.sectionLabel, { color: text }]}>格宽（小时）</Text>
-          <View style={styles.slotRow}>
-            {SLOT_OPTIONS.map((n) => {
-              const on = slotHours === n;
-              return (
-                <Pressable
-                  key={n}
-                  onPress={() => setSlotHours(n)}
-                  style={[
-                    styles.slotChip,
-                    {
-                      borderColor: on ? primary : cardBorder,
-                      backgroundColor: on ? `${primary}18` : 'transparent',
-                    },
-                  ]}>
-                  <Text style={{ color: on ? primary : text, fontWeight: '700' }}>{n}h</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <Text style={[styles.sectionLabel, { color: text }]}>时间线（试验）</Text>
-          <View style={[styles.toggleRow, { borderColor: cardBorder }]}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ color: text, fontWeight: '600' }}>新时间线日视图</Text>
-              <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
-                按真实时刻展示，同刻可横滑多栏
-              </Text>
-            </View>
-            <Switch
-              value={timelineUi}
-              onValueChange={(v) => void toggleTimelineUi(v)}
-              trackColor={{ false: '#cbd5e1', true: primary }}
-              thumbColor="#ffffff"
-            />
-          </View>
+          {/* 阶段 L：格宽 / 经典课表入口已退役；slotHours 仍随轴保存供双写派生 */}
+          <Text style={[styles.sectionLabel, { color: text }]}>日程写入</Text>
           <View style={[styles.toggleRow, { borderColor: cardBorder }]}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ color: text, fontWeight: '600' }}>按分钟写入</Text>
               <Text style={{ color: outline, fontSize: 11, marginTop: 2 }}>
-                自由起止时刻，禁跨断开时段；关则回到选格
+                自由起止时刻，禁跨断开时段；默认开。关则回选格写入（仍双写 slot）
               </Text>
             </View>
             <Switch
@@ -498,7 +448,9 @@ export function FrogScheduleSettingsCard({
               ]}>
               <MaterialIcons name="warning-amber" size={18} color="#ef4444" />
               <Text style={{ color: text, flex: 1, fontSize: 13, lineHeight: 18 }}>
-                当前有 {orphanedCount} 条占用「未入格」。调整格宽、起止或断开后可再次尝试入格。
+                当前有 {orphanedCount} 条占用「未入格」。调整
+                {timelineWrite ? '起止或断开' : '格宽、起止或断开'}
+                后可再次尝试入时。
               </Text>
             </View>
           ) : null}
@@ -590,7 +542,6 @@ const styles = StyleSheet.create({
   timeLabel: { fontSize: 14, fontWeight: '600', flex: 1 },
   timeValue: { fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   sectionLabel: { fontSize: 14, fontWeight: '600', marginTop: 4 },
-  slotRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -599,15 +550,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-  },
-  slotChip: {
-    minWidth: 52,
-    height: 40,
-    borderRadius: 10,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
   },
   breakHeader: {
     flexDirection: 'row',

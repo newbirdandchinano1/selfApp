@@ -37,15 +37,21 @@ import {
   buildVirtualHabitPlacementsForDays,
   virtualHabitScheduleReminderId,
 } from '@/lib/schedule/habit-virtual-placement';
+import {
+  axisMinutesToLocalDate,
+  resolvePlacementReminderStart,
+} from '@/lib/schedule/timeline/reminder-start';
 import type { ScheduleAxisSettings, SchedulePlacementRow } from '@/lib/schedule/types';
-import { getWeekStartMondayYmd, ymdForWeekday } from '@/lib/schedule/week';
+import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 import {
   addDaysToLogicalYmd,
   formatLocalYmdFromDate,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
-  logicalYmdToLocalDate,
 } from '@/lib/tasks-logical-day';
+import { AppSettingKey, getAppSettingRaw, setAppSetting } from '@/lib/app-settings-store';
+
+export { axisMinutesToLocalDate, resolvePlacementReminderStart } from '@/lib/schedule/timeline/reminder-start';
 
 type SubjectTitleLookup = {
   tasks: Map<string, TaskRow>;
@@ -169,16 +175,7 @@ async function collectVirtualHabitSlotReminderParams(params: {
       // 全天入格不走日程格提醒；有提醒时刻由习惯提醒通道负责
       if (v.allDay) continue;
       const startMins = slotStartMinutes(axis, v.startSlotIndex);
-      const day = logicalYmdToLocalDate(v.assignYmd);
-      const startAt = new Date(
-        day.getFullYear(),
-        day.getMonth(),
-        day.getDate(),
-        Math.floor(startMins / 60),
-        startMins % 60,
-        0,
-        0,
-      );
+      const startAt = axisMinutesToLocalDate(v.assignYmd, startMins);
       const fireAt = new Date(startAt.getTime() - advanceMs);
 
       const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
@@ -261,30 +258,12 @@ async function resolveAxisForWeek(weekStartYmd: string): Promise<{
   };
 }
 
-function placementStartDate(
-  placement: SchedulePlacementRow,
-  axis: {
-    startMinutes: number;
-    endMinutes: number;
-    slotHours: number;
-    breaks?: ScheduleAxisSettings['breaks'];
-  },
-): Date | null {
-  if (placement.orphaned || placement.startSlotIndex == null) return null;
-  const ymd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
-  const day = logicalYmdToLocalDate(ymd);
-  const startMins = slotStartMinutes(axis, placement.startSlotIndex);
-  const h = Math.floor(startMins / 60);
-  const m = startMins % 60;
-  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, m, 0, 0);
-}
-
 /** 本批占用涉及的 task/project 一次 IN 查询装入 Map，避免逐条 getById。 */
 async function loadSubjectTitleLookup(placements: SchedulePlacementRow[]): Promise<SubjectTitleLookup> {
   const taskIds: string[] = [];
   const projectIds: string[] = [];
   for (const p of placements) {
-    if (p.orphaned || p.startSlotIndex == null) continue;
+    if (p.orphaned) continue;
     if (p.subjectKind === 'task') taskIds.push(p.subjectId);
     else if (p.subjectKind === 'project') projectIds.push(p.subjectId);
   }
@@ -334,7 +313,7 @@ async function collectPlacementReminderParams(params: {
   const subjectLookup = await loadSubjectTitleLookup(placements);
 
   for (const placement of placements) {
-    if (placement.orphaned || placement.startSlotIndex == null) continue;
+    if (placement.orphaned) continue;
 
     let axis = axisCache.get(placement.weekStartYmd);
     if (!axis) {
@@ -342,8 +321,9 @@ async function collectPlacementReminderParams(params: {
       axisCache.set(placement.weekStartYmd, axis);
     }
 
-    const startAt = placementStartDate(placement, axis);
-    if (!startAt || Number.isNaN(startAt.getTime())) continue;
+    const resolved = resolvePlacementReminderStart(placement, axis);
+    if (!resolved || Number.isNaN(resolved.startAt.getTime())) continue;
+    const { startAt, startMinutes: startMins, assignYmd: dayYmd } = resolved;
 
     const kind: ScheduleSlotSubjectKind =
       placement.subjectKind === 'project' ? 'project' : 'task';
@@ -363,8 +343,7 @@ async function collectPlacementReminderParams(params: {
     const fireAt = new Date(startAt.getTime() - advanceMs);
 
     const id = scheduleSlotReminderIdentifier(placement.id);
-    const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
-    const dayYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+    const startHm = formatMinutesAsHm(startMins);
     const copy = slotReminderCopy(kind, subject.title);
     const fingerprint = `${placement.id}|${subject.title}|${dayYmd}|${startHm}|${advanceMinutes}|${kind}`;
 
@@ -399,7 +378,7 @@ async function collectPlacementReminderParams(params: {
 
 /**
  * 按当前课程表占用重新登记：每条有效占用一条，开始前 advanceMinutes 分钟。
- * 未入格（orphaned / 无 startSlotIndex）完全不推送。
+ * 未入格（orphaned / 无法解析区间）完全不推送；开始时刻分钟优先。
  * 外层一次清前缀后，占用 + 虚拟入格合并 bulk 登记（skipCancel + 有限并发）。
  */
 export async function syncScheduleSlotReminderNotifications(): Promise<void> {
@@ -551,14 +530,15 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
   const now = Date.now();
 
   for (const placement of placements) {
-    if (placement.orphaned || placement.startSlotIndex == null) continue;
+    if (placement.orphaned) continue;
     let axis = axisCache.get(placement.weekStartYmd);
     if (!axis) {
       axis = await resolveAxisForWeek(placement.weekStartYmd);
       axisCache.set(placement.weekStartYmd, axis);
     }
-    const startAt = placementStartDate(placement, axis);
-    if (!startAt) continue;
+    const resolved = resolvePlacementReminderStart(placement, axis);
+    if (!resolved) continue;
+    const { startAt, startMinutes: startMins } = resolved;
     const kind: ScheduleSlotSubjectKind =
       placement.subjectKind === 'project' ? 'project' : 'task';
     const subject = resolveSubjectTitle(placement.subjectKind, placement.subjectId, subjectLookup);
@@ -575,7 +555,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     const advanceMs = advanceMinutes * 60_000;
     const fireAt = new Date(startAt.getTime() - advanceMs);
     if (fireAt.getTime() <= now) continue;
-    const startHm = formatMinutesAsHm(slotStartMinutes(axis, placement.startSlotIndex));
+    const startHm = formatMinutesAsHm(startMins);
     const copy = slotReminderCopy(kind, subject.title);
     items.push({
       identifier: scheduleSlotReminderIdentifier(placement.id),
@@ -622,17 +602,9 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
       const habitAdvanceMs = advanceByKind.habit * 60_000;
       for (const v of virtuals) {
         if (v.done) continue;
+        if (v.allDay) continue;
         const startMins = slotStartMinutes(axis, v.startSlotIndex);
-        const day = logicalYmdToLocalDate(v.assignYmd);
-        const startAt = new Date(
-          day.getFullYear(),
-          day.getMonth(),
-          day.getDate(),
-          Math.floor(startMins / 60),
-          startMins % 60,
-          0,
-          0,
-        );
+        const startAt = axisMinutesToLocalDate(v.assignYmd, startMins);
         const fireAt = new Date(startAt.getTime() - habitAdvanceMs);
         if (fireAt.getTime() <= now) continue;
         const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
@@ -654,4 +626,29 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
   }
 
   return items;
+}
+
+/** 阶段 I：强制按分钟重注册日程提醒的版本号 */
+export const SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_VERSION = '1';
+
+export const SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_KEY =
+  AppSettingKey.scheduleSlotReminderMinutesResyncV1;
+
+/**
+ * 一次性：升级到分钟优先触发后，强制清旧预约并按 resolve 重登记。
+ * 已跑过版本则跳过；失败不写版本号，下次启动可重试。
+ */
+export async function migrateScheduleSlotRemindersMinutesResyncIfNeeded(): Promise<boolean> {
+  const flag = await getAppSettingRaw(SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_KEY);
+  if (flag === SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_VERSION) return false;
+
+  await syncScheduleSlotReminderNotifications();
+  await setAppSetting(
+    SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_KEY,
+    SCHEDULE_SLOT_REMINDER_MINUTES_RESYNC_VERSION,
+  );
+  if (__DEV__) {
+    console.log('[schedule-reminder] minutes resync done (phase I)');
+  }
+  return true;
 }

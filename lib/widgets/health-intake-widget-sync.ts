@@ -109,12 +109,19 @@ export async function buildTodayHealthIntakeGlance(now = new Date()) {
 
 async function syncHealthIntakeWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  const { whenHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
+  await whenHomeWidgetsDbReady();
   const settings = await getWidgetsSettings();
   const HealthIntakeWidget = (await import('@/widgets/HealthIntakeWidget')).default;
 
   if (!shouldPushHealthIntakeWidget(settings)) {
     try {
-      await HealthIntakeWidget.updateSnapshot(pausedProps());
+      HealthIntakeWidget.updateSnapshot(pausedProps());
+      try {
+        HealthIntakeWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       if (__DEV__) console.warn('[widgets] health pause failed', e);
     }
@@ -136,7 +143,12 @@ async function syncHealthIntakeWidgetNow(reason: string): Promise<void> {
   lastFingerprint = fp;
 
   try {
-    await HealthIntakeWidget.updateSnapshot(props);
+    HealthIntakeWidget.updateSnapshot(props);
+    try {
+      HealthIntakeWidget.reload();
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     if (__DEV__) console.warn('[widgets] health snapshot failed', reason, e);
   }

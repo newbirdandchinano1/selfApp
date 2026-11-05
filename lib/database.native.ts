@@ -2604,6 +2604,16 @@ export async function initDatabase() {
     console.warn('schedule placement minutes backfill failed', e);
   }
 
+  // 阶段 I：提醒触发改分钟后强制重注册一次（须在回填之后）
+  try {
+    const { migrateScheduleSlotRemindersMinutesResyncIfNeeded } = await import(
+      '@/lib/schedule-slot-reminder-notifications'
+    );
+    await migrateScheduleSlotRemindersMinutesResyncIfNeeded();
+  } catch (e) {
+    console.warn('schedule slot reminder minutes resync failed', e);
+  }
+
   const {
     ensureBuiltinCascadeReviewModules,
     ensureReviewTemplateDefaults,

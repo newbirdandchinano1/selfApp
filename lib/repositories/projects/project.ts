@@ -53,6 +53,9 @@ export async function createProject(input: CreateProjectInput) {
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-create'))
     .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('project-create'))
+    .catch(() => {});
 }
 
 async function readLocalProjectsVisible(): Promise<ProjectRow[]> {
@@ -188,6 +191,9 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-update'))
     .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('project-update'))
+    .catch(() => {});
 }
 
 export async function deleteProject(id: string) {
@@ -212,6 +218,9 @@ export async function deleteProject(id: string) {
   }
   void import('@/lib/widgets/urgency-widget-sync')
     .then(({ scheduleUrgencyWidgetSync }) => scheduleUrgencyWidgetSync('project-delete'))
+    .catch(() => {});
+  void import('@/lib/widgets/frog-schedule-widget-sync')
+    .then(({ scheduleFrogScheduleWidgetSync }) => scheduleFrogScheduleWidgetSync('project-delete'))
     .catch(() => {});
 }
 

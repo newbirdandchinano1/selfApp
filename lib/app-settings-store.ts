@@ -81,6 +81,8 @@ export const AppSettingKey = {
   scheduleTimelineWriteV1: '@selfapp/schedule_timeline_write_v1',
   /** 阶段 D：存量 placement 分钟回填版本号（值为迁移版本字符串，如 "1"） */
   schedulePlacementMinutesBackfillV1: '@selfapp/schedule_placement_minutes_backfill_v1',
+  /** 阶段 I：日程提醒按分钟重注册版本号（值为迁移版本字符串，如 "1"） */
+  scheduleSlotReminderMinutesResyncV1: '@selfapp/schedule_slot_reminder_minutes_resync_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

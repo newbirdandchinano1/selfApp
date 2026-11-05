@@ -75,7 +75,8 @@ async function loadLastPlacementYmdByProjectId(params: {
   const weeks = await Promise.all([...mondays].map(m => listPlacementsForWeek(m)));
   for (const placements of weeks) {
     for (const p of placements) {
-      if (p.subjectKind !== 'project' || p.orphaned || p.startSlotIndex == null) continue;
+      // 阶段 I：未入格跳过；有分钟无 slot 的占用仍计「最近入时」
+      if (p.subjectKind !== 'project' || p.orphaned) continue;
       const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
       const prev = lastByProject.get(p.subjectId);
       if (!prev || ymd > prev) lastByProject.set(p.subjectId, ymd);

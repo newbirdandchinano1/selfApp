@@ -265,7 +265,7 @@ export default function WidgetsFrogScheduleDetailScreen() {
               liveActivityDisabled={!settings.liveActivityEnabled || !settings.masterEnabled}
               liveActivityHint={
                 settings.liveActivityEnabled
-                  ? '入格开始自动上岛；结束后消失'
+                  ? '仅「进行中」入格会上岛；未到点或未入格看不到。需开通知权限，并在时段内打开过 App'
                   : '灵动岛总闸已关 · 仍可预配置'
               }
               onLiveActivityChange={(v) => void applyFrog({ liveActivity: v })}

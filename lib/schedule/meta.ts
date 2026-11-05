@@ -3,6 +3,7 @@
  * 课表 placement 不走此结构（见 types.ts / schedule-service）。
  */
 
+import { formatStoredDatetimeHm, parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import type { TaskReminderOption } from '@/lib/task-reminder-schedule';
 import type { TaskRepeatOption } from '@/lib/task-repeat-rollover';
 import {
@@ -10,6 +11,42 @@ import {
   scheduleDateToYmd,
   toYmd,
 } from '@/lib/schedule/ymd';
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * 日程起止时刻 → 本地墙钟 ISO 形（无 Z）。
+ * 禁止 toISOString()：东八区 12:00 会写成 04:00Z，同步后再读就变成 4 点。
+ */
+export function formatScheduleLocalDateTime(date: Date): string {
+  const y = date.getFullYear();
+  const mo = pad2(date.getMonth() + 1);
+  const d = pad2(date.getDate());
+  const h = pad2(date.getHours());
+  const mi = pad2(date.getMinutes());
+  const s = pad2(date.getSeconds());
+  return `${y}-${mo}-${d}T${h}:${mi}:${s}`;
+}
+
+/** 展示用 HH:mm；兼容旧 Z/UTC 串与 naive 墙钟 */
+export function formatScheduleTimeHm(value: string | null | undefined): string {
+  const raw = (value ?? '').trim();
+  if (!raw) return '';
+  return formatStoredDatetimeHm(raw);
+}
+
+/** 从 schedule.startTime / endTime 解析本地时分 */
+export function parseScheduleTimeHm(
+  value: string | null | undefined,
+): { hour: number; minute: number } | null {
+  const raw = (value ?? '').trim();
+  if (!raw) return null;
+  const d = parseStoredDatetime(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return { hour: d.getHours(), minute: d.getMinutes() };
+}
 
 export type ScheduleMeta = {
   mode?: 'date' | 'time';

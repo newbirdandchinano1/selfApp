@@ -27,6 +27,7 @@ import {
   type HabitsTodayWidgetProps,
 } from '@/lib/widgets/habits-today-glance';
 import { getWidgetsSettings, shouldPushHabitsTodayWidget } from '@/lib/widgets/widgets-settings';
+import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
 let syncChain: Promise<void> = Promise.resolve();
 let lastFingerprint = '';
@@ -128,12 +129,18 @@ export async function buildTodayHabitsGlance(now = new Date()) {
 
 async function syncHabitsTodayWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  await whenHomeWidgetsDbReady();
   const settings = await getWidgetsSettings();
   const HabitsTodayWidget = (await import('@/widgets/HabitsTodayWidget')).default;
 
   if (!shouldPushHabitsTodayWidget(settings)) {
     try {
-      await HabitsTodayWidget.updateSnapshot(pausedProps());
+      HabitsTodayWidget.updateSnapshot(pausedProps());
+      try {
+        HabitsTodayWidget.reload();
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       if (__DEV__) console.warn('[widgets] habits pause failed', e);
     }
@@ -149,7 +156,12 @@ async function syncHabitsTodayWidgetNow(reason: string): Promise<void> {
   lastFingerprint = fp;
 
   try {
-    await HabitsTodayWidget.updateSnapshot(props);
+    HabitsTodayWidget.updateSnapshot(props);
+    try {
+      HabitsTodayWidget.reload();
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     if (__DEV__) console.warn('[widgets] habits snapshot failed', reason, e);
   }

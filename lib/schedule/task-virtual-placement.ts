@@ -8,16 +8,22 @@
  * - 同日已有手动占用则不再叠虚拟块
  * - 定点时刻落在轴外时回退全天，避免整条消失
  */
-import type { AxisLike } from '@/lib/schedule/axis';
+import {
+  clockHmToAxisMinutes,
+  listWorkSlots,
+  type AxisLike,
+} from '@/lib/schedule/axis';
 import {
   allDaySpanForAxis,
   mapHabitTimeToWorkSlotIndex,
 } from '@/lib/schedule/habit-virtual-placement';
 import {
   parseScheduleMetaFromExtra,
+  parseScheduleTimeHm,
   scheduleMetaToYmdBounds,
   type ScheduleMeta,
 } from '@/lib/schedule/meta';
+import { isAllDayByWorkCoverage } from '@/lib/schedule/timeline/from-placement';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import { ymdForWeekday } from '@/lib/schedule/week';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
@@ -47,6 +53,9 @@ export type VirtualTaskPlacement = {
   spanSlots: number;
   hour: number;
   minute: number;
+  /** 有具体起止时写入轴分钟，时间线按此时长算高度（不再整格拉伸） */
+  startMinutes?: number;
+  endMinutes?: number;
   done: boolean;
   priority: number;
   extraData: string | null;
@@ -59,6 +68,64 @@ export type VirtualTaskPlacement = {
    */
   carrySubjectKind?: 'task' | 'project';
 };
+
+/** 默认定点时长（仅有开始、无有效结束时） */
+const DEFAULT_TIMED_SPAN_MINUTES = 30;
+
+/** 开始落在断开/缝隙时，取最近可排格索引（仅占位；时间线以分钟为准） */
+function nearestWorkSlotIndex(axis: AxisLike, axisMinutes: number): number {
+  const slots = listWorkSlots(axis);
+  if (slots.length === 0) return 0;
+  for (const slot of slots) {
+    if (axisMinutes >= slot.startMinutes && axisMinutes < slot.endMinutes) {
+      return slot.slotIndex;
+    }
+  }
+  for (const slot of slots) {
+    if (slot.startMinutes >= axisMinutes) return slot.slotIndex;
+  }
+  return slots[slots.length - 1]!.slotIndex;
+}
+
+function resolveTimedAxisInterval(
+  axis: AxisLike,
+  schedule: ScheduleMeta,
+): {
+  hour: number;
+  minute: number;
+  slotIndex: number;
+  startMinutes: number;
+  endMinutes: number;
+} | null {
+  const startHm = parseScheduleTimeHm(schedule.startTime);
+  if (!startHm) return null;
+  const startMinutes = clockHmToAxisMinutes(axis, startHm.hour, startHm.minute);
+  if (startMinutes == null) return null;
+  // 开始落在午休等断开时段时仍保留定点展示（13:00–17:00 不应整条消失）
+  const slotIndex =
+    mapHabitTimeToWorkSlotIndex(axis, startHm.hour, startHm.minute) ??
+    nearestWorkSlotIndex(axis, startMinutes);
+
+  let endMinutes = startMinutes + DEFAULT_TIMED_SPAN_MINUTES;
+  const endHm = parseScheduleTimeHm(schedule.endTime);
+  if (endHm) {
+    const endAxis = clockHmToAxisMinutes(axis, endHm.hour, endHm.minute);
+    if (endAxis != null && endAxis > startMinutes) endMinutes = endAxis;
+  }
+  endMinutes = Math.min(endMinutes, axis.endMinutes);
+  if (!(endMinutes > startMinutes)) {
+    endMinutes = Math.min(startMinutes + 1, axis.endMinutes);
+  }
+  if (!(endMinutes > startMinutes)) return null;
+
+  return {
+    hour: startHm.hour,
+    minute: startHm.minute,
+    slotIndex,
+    startMinutes,
+    endMinutes,
+  };
+}
 
 function parseExtraObject(extraData: string | null | undefined): Record<string, unknown> {
   if (!extraData) return {};
@@ -89,11 +156,7 @@ export function scheduleMetaHasExactTimeForAutoPlace(
 }
 
 export function parseStartTimeHm(startTimeIsoOrEmpty: string): { hour: number; minute: number } | null {
-  const raw = startTimeIsoOrEmpty.trim();
-  if (!raw) return null;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
-  return { hour: d.getHours(), minute: d.getMinutes() };
+  return parseScheduleTimeHm(startTimeIsoOrEmpty);
 }
 
 /** @deprecated 自动入格开关已移除 */
@@ -242,13 +305,15 @@ export function buildVirtualTaskPlacementsForDays(params: {
     const schedule = parseScheduleMetaFromExtra(task.extra_data);
     const hasExactTime = scheduleMetaHasExactTimeForAutoPlace(schedule);
     /** 定点时刻落在轴外时回退全天，避免过期/当日待办整条消失 */
-    let timedSlot: { hour: number; minute: number; slotIndex: number } | null = null;
-    if (hasExactTime) {
-      const hm = parseStartTimeHm(schedule!.startTime!);
-      if (hm) {
-        const slotIndex = mapHabitTimeToWorkSlotIndex(axis, hm.hour, hm.minute);
-        if (slotIndex != null) timedSlot = { ...hm, slotIndex };
-      }
+    let timedSlot: {
+      hour: number;
+      minute: number;
+      slotIndex: number;
+      startMinutes: number;
+      endMinutes: number;
+    } | null = null;
+    if (hasExactTime && schedule) {
+      timedSlot = resolveTimedAxisInterval(axis, schedule);
     }
 
     for (const ymd of dayYmds) {
@@ -267,7 +332,12 @@ export function buildVirtualTaskPlacementsForDays(params: {
       const done = isTaskDoneOnAssignYmd(task, ymd);
       const overdue = !done && isTaskOverdueForList(task, logicalTodayYmd);
 
-      if (timedSlot) {
+      // 起止盖住当日全部可排格 → 走全天顶栏，避免超长条盖住整条时间线
+      const treatAsAllDay =
+        !timedSlot ||
+        isAllDayByWorkCoverage(axis, timedSlot.startMinutes, timedSlot.endMinutes);
+
+      if (timedSlot && !treatAsAllDay) {
         out.push({
           taskId: task.id,
           title: task.title?.trim() || '待办',
@@ -276,6 +346,8 @@ export function buildVirtualTaskPlacementsForDays(params: {
           spanSlots: 1,
           hour: timedSlot.hour,
           minute: timedSlot.minute,
+          startMinutes: timedSlot.startMinutes,
+          endMinutes: timedSlot.endMinutes,
           done,
           priority: task.priority ?? 0,
           extraData: task.extra_data,
@@ -289,8 +361,8 @@ export function buildVirtualTaskPlacementsForDays(params: {
           assignYmd: ymd,
           startSlotIndex: allDay.startSlotIndex,
           spanSlots: allDay.spanSlots,
-          hour: axisStartH,
-          minute: axisStartM,
+          hour: timedSlot?.hour ?? axisStartH,
+          minute: timedSlot?.minute ?? axisStartM,
           done,
           priority: task.priority ?? 0,
           extraData: task.extra_data,

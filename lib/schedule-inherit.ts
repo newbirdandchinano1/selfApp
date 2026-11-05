@@ -1,6 +1,7 @@
 import { formatTaskReminderLabel, type TaskReminderOption } from '@/lib/task-reminder-schedule';
 import {
   dueDateFromScheduleMeta as dueDateFromMeta,
+  formatScheduleTimeHm,
   parseScheduleMetaFromExtra,
   scheduleMetaHasConcreteDates,
   type ScheduleMeta,
@@ -133,11 +134,7 @@ export function formatDate(value: string): string {
 }
 
 export function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
+  return formatScheduleTimeHm(value) || value.trim().slice(11, 16);
 }
 
 export function buildDeadlineTextFromSchedule(schedule: ScheduleMetaLike | null | undefined): string {

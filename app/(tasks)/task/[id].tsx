@@ -46,7 +46,12 @@ import {
   updateTask,
   type TaskTreeNode,
 } from '@/lib/repositories/tasks/task';
-import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
+import {
+  isTaskShelvedStatus,
+  isTaskTerminalStatus,
+  normalizeTaskPriority,
+} from '@/lib/repositories/tasks/task.types';
+import { setPendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import {
   getRecentExecutionEventsForTaskIds,
   insertTaskExecutionEvent,
@@ -62,7 +67,7 @@ import {
   type PickedScheduleMeta,
   type SchedulePickerResult,
 } from '@/lib/schedule-picker-bridge';
-import type { ScheduleMeta } from '@/lib/schedule/meta';
+import { formatScheduleTimeHm, type ScheduleMeta } from '@/lib/schedule/meta';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { requestPush } from '@/lib/sync-manager';
 import {
@@ -192,11 +197,7 @@ function formatDate(value: string): string {
 
 function formatTime(value: string): string {
   if (!value?.trim()) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
+  return formatScheduleTimeHm(value) || value.slice(11, 16);
 }
 
 function formatAssignYmdLabel(ymd: string) {
@@ -1286,6 +1287,55 @@ export default function TaskDetailScreen() {
     ]);
   }, [latestFrogYmd, reloadTaskDetail, taskId, unassigning]);
 
+  const canPlaceOnSchedule =
+    !!taskId &&
+    isLeaf &&
+    !isTaskTerminalStatus(status) &&
+    !isTaskShelvedStatus(status);
+  const showFrogCard = hasFrog || canPlaceOnSchedule;
+
+  const beginPlaceOnSchedule = React.useCallback(() => {
+    if (!taskId || !canPlaceOnSchedule) {
+      if (!isLeaf) {
+        Alert.alert('无法入格', '该任务仍有未完成的子任务，请先完成子任务或选择叶子任务。');
+      } else if (isTaskShelvedStatus(status)) {
+        Alert.alert('无法入格', '已搁置的待办请先激活后再指派到日程表。');
+      } else if (isTaskTerminalStatus(status)) {
+        Alert.alert('无法入格', '已完成/已取消的任务不能指派为青蛙。');
+      }
+      return;
+    }
+    const acceptance = acceptanceItems
+      .map((i) => i.text.trim())
+      .filter(Boolean)
+      .join('\n');
+    setPendingSchedulePlace({
+      kind: 'task',
+      id: taskId,
+      title: title.trim() || '未命名任务',
+      priority,
+      dueDate: dueDate?.slice(0, 10) ?? null,
+      acceptanceCriteria: acceptance,
+      rewardPoints,
+      projectId,
+      projectName: projectName || null,
+    });
+    router.push('/(tabs)/tasks');
+  }, [
+    acceptanceItems,
+    canPlaceOnSchedule,
+    dueDate,
+    isLeaf,
+    priority,
+    projectId,
+    projectName,
+    rewardPoints,
+    router,
+    status,
+    taskId,
+    title,
+  ]);
+
   const toggleChildDone = React.useCallback(
     async (child: TaskTreeNode) => {
       if (togglingId) return;
@@ -1451,15 +1501,17 @@ export default function TaskDetailScreen() {
               </View>,
             )}
 
-            {hasFrog
+            {showFrogCard
               ? rise(
                   1,
                   <View
                     style={[
                       styles.fcard,
                       {
-                        backgroundColor: 'rgba(232,239,217,0.36)',
-                        borderColor: '#C8D8B1',
+                        backgroundColor: hasFrog
+                          ? 'rgba(232,239,217,0.36)'
+                          : foldCardBg,
+                        borderColor: hasFrog ? '#C8D8B1' : foldCardBorder,
                       },
                     ]}>
                     <View style={styles.frogRow}>
@@ -1470,28 +1522,50 @@ export default function TaskDetailScreen() {
                       </FrogMarkHop>
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={[styles.frogTitle, { color: '#445E45' }]} numberOfLines={1}>
-                          {buildFrogSlotLabel(meta.schedule, latestFrogYmd)}
+                          {hasFrog
+                            ? buildFrogSlotLabel(meta.schedule, latestFrogYmd)
+                            : '尚未入格'}
                         </Text>
                         <Text style={{ fontSize: 11, color: '#7F947B', marginTop: 2 }}>
-                          {latestFrogYmd === logicalToday ? '今日指派' : '已指派'} · 与其他占用请在日程中核对
+                          {hasFrog
+                            ? `${latestFrogYmd === logicalToday ? '今日指派' : '已指派'} · 可再放入其它日`
+                            : '点右侧放入日程时间线'}
                         </Text>
                       </View>
-                      <Pressable
-                        onPress={cancelFrogPlacement}
-                        disabled={unassigning}
-                        style={({ pressed }) => [
-                          styles.fchipBtn,
-                          {
-                            backgroundColor: 'rgba(255,255,255,0.6)',
-                            opacity: unassigning ? 0.55 : pressed ? 0.8 : 1,
-                          },
-                        ]}>
-                        {unassigning ? (
-                          <ActivityIndicator size="small" color={tf.frog} />
-                        ) : (
-                          <Text style={{ fontSize: 11, color: '#4F6152', fontWeight: '650' }}>取消指派</Text>
-                        )}
-                      </Pressable>
+                      {canPlaceOnSchedule ? (
+                        <Pressable
+                          onPress={beginPlaceOnSchedule}
+                          style={({ pressed }) => [
+                            styles.fchipBtn,
+                            {
+                              backgroundColor: tf.lily,
+                              opacity: pressed ? 0.8 : 1,
+                              marginRight: hasFrog ? 6 : 0,
+                            },
+                          ]}>
+                          <Text style={{ fontSize: 11, color: tf.frog, fontWeight: '700' }}>
+                            {hasFrog ? '再入一日' : '放入日程'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      {hasFrog ? (
+                        <Pressable
+                          onPress={cancelFrogPlacement}
+                          disabled={unassigning}
+                          style={({ pressed }) => [
+                            styles.fchipBtn,
+                            {
+                              backgroundColor: 'rgba(255,255,255,0.6)',
+                              opacity: unassigning ? 0.55 : pressed ? 0.8 : 1,
+                            },
+                          ]}>
+                          {unassigning ? (
+                            <ActivityIndicator size="small" color={tf.frog} />
+                          ) : (
+                            <Text style={{ fontSize: 11, color: '#4F6152', fontWeight: '650' }}>取消指派</Text>
+                          )}
+                        </Pressable>
+                      ) : null}
                     </View>
                   </View>,
                 )
@@ -1499,7 +1573,7 @@ export default function TaskDetailScreen() {
 
             {isLongTermTask
               ? rise(
-                  hasFrog ? 2 : 1,
+                  showFrogCard ? 2 : 1,
                   <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                     <View style={styles.sectionHead}>
                       <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>验收标准</Text>
@@ -1543,7 +1617,7 @@ export default function TaskDetailScreen() {
                 )
               : taskNote || taskNoteImageUris.length > 0
                 ? rise(
-                    hasFrog ? 2 : 1,
+                    showFrogCard ? 2 : 1,
                     <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                       <View style={styles.sectionHead}>
                         <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>备注</Text>
@@ -1571,7 +1645,7 @@ export default function TaskDetailScreen() {
                 : null}
 
             {rise(
-              hasFrog ? 3 : 2,
+              showFrogCard ? 3 : 2,
               <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                 <View style={styles.sectionHead}>
                   <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>子任务</Text>
@@ -1651,7 +1725,7 @@ export default function TaskDetailScreen() {
             )}
 
             {rise(
-              hasFrog ? 4 : 3,
+              showFrogCard ? 4 : 3,
               <Pressable
                 onPress={openSchedulePicker}
                 style={({ pressed }) => [
@@ -1684,7 +1758,7 @@ export default function TaskDetailScreen() {
 
             {/* 设计稿 shot13 底部三栏：活动记录 / 关联 / 依赖与后续 */}
             {rise(
-              hasFrog ? 5 : 4,
+              showFrogCard ? 5 : 4,
               <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                 <View style={styles.sectionHead}>
                   <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>活动记录</Text>
@@ -1728,7 +1802,7 @@ export default function TaskDetailScreen() {
             )}
 
             {rise(
-              hasFrog ? 6 : 5,
+              showFrogCard ? 6 : 5,
               <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                 <View style={styles.sectionHead}>
                   <Text style={[styles.sectionTitle, { color: '#536155' }]}>关联</Text>
@@ -1772,7 +1846,7 @@ export default function TaskDetailScreen() {
             )}
 
             {rise(
-              hasFrog ? 7 : 6,
+              showFrogCard ? 7 : 6,
               <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                 <View style={styles.sectionHead}>
                   <Text style={[styles.sectionTitle, { color: tf.ink2 }]}>依赖与后续</Text>

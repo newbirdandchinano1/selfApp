@@ -44,6 +44,8 @@ import { getDatabase } from '@/lib/database.native';
 import { formatWriteError } from '@/lib/format-write-error';
 import { addDaysToYmd } from '@/lib/date';
 import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
+import { isProjectEligibleAsFrog } from '@/lib/project-frog';
+import { setPendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import {
   getIsLongTermProject,
   getIsLongTermTask,
@@ -67,7 +69,10 @@ import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getMonthGoalsLocal } from '@/lib/repositories/life-road/life-road-node';
 import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
-import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
+import {
+  INBOX_PROJECT_CATEGORY_ID,
+  isProjectInInboxCategory,
+} from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import {
   filterHabitsForProjectCompletionPicker,
@@ -109,6 +114,7 @@ import {
   scheduleMetaToDateLimit,
   toYmd,
 } from '@/lib/schedule-inherit';
+import { formatScheduleTimeHm } from '@/lib/schedule/meta';
 import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 import {
   consumeSchedulePickerResult,
@@ -217,11 +223,7 @@ function collectLeafTasks(nodes: TaskTreeNode[]): TaskTreeNode[] {
 }
 
 function formatHmFromScheduleTime(raw: string | null | undefined): string {
-  const t = (raw ?? '').trim();
-  if (!t) return '';
-  const m = /(\d{1,2}):(\d{2})/.exec(t);
-  if (!m) return t.slice(0, 5);
-  return `${m[1]!.padStart(2, '0')}:${m[2]}`;
+  return formatScheduleTimeHm(raw);
 }
 
 function formatActivityWhen(createdAt: string, todayYmd: string): string {
@@ -329,11 +331,7 @@ function formatDate(value: string): string {
 }
 
 function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.slice(11, 16);
-  const hour = String(date.getHours()).padStart(2, '0');
-  const minute = String(date.getMinutes()).padStart(2, '0');
-  return `${hour}:${minute}`;
+  return formatScheduleTimeHm(value) || value.slice(11, 16);
 }
 
 function normalizeProjectCategoryId(categoryId: string | null | undefined): string | null {
@@ -1484,6 +1482,57 @@ export default function EditProjectScreen() {
     .map((id) => allProjects.find((p) => p.id === id)?.name)
     .filter(Boolean) as string[];
 
+  const beginPlaceProjectOnSchedule = React.useCallback(() => {
+    const snap = projectSnapshotRef.current;
+    if (!projectId || !snap) return;
+    if (isProjectInInboxCategory(selectedCategoryId ?? snap.category_id)) {
+      Alert.alert('无法入格', '收集箱中的项目请先移到正式分类后再指派。');
+      return;
+    }
+    if (snap.status !== 'active') {
+      Alert.alert('无法入格', '仅进行中的项目可指派为青蛙。');
+      return;
+    }
+    if (hasChildTasks) {
+      Alert.alert('无法直接入格', '该项目已有任务，请打开叶子任务详情后点「放入日程」。');
+      return;
+    }
+    if (!isProjectEligibleAsFrog(snap, progress.total, false)) {
+      Alert.alert('无法入格', '该项目当前不可指派为青蛙。');
+      return;
+    }
+    const acceptance = isLongTermProject
+      ? acceptanceItems
+          .map((i) => i.text.trim())
+          .filter(Boolean)
+          .join('\n')
+      : notes.trim();
+    setPendingSchedulePlace({
+      kind: 'project',
+      id: projectId,
+      title: title.trim() || snap.name || '未命名项目',
+      priority: taskPriorityKeyToNumber(priority),
+      dueDate: snap.due_date?.slice(0, 10) ?? null,
+      acceptanceCriteria: acceptance,
+      rewardPoints: normalizeRewardPoints(rewardPointsText),
+      projectId,
+      projectName: title.trim() || snap.name,
+    });
+    router.push('/(tabs)/tasks');
+  }, [
+    acceptanceItems,
+    hasChildTasks,
+    isLongTermProject,
+    notes,
+    priority,
+    progress.total,
+    projectId,
+    rewardPointsText,
+    router,
+    selectedCategoryId,
+    title,
+  ]);
+
   const openAddTask = () => {
     router.push({
       pathname: '/add-task',
@@ -1591,6 +1640,17 @@ export default function EditProjectScreen() {
                     <Text style={{ fontSize: 11, color: tf.faint, fontFamily: fonts.mono }}>
                       {rewardN > 0 ? `+${rewardN}` : String(rewardN)} 积分
                     </Text>
+                    {!hasChildTasks ? (
+                      <Pressable
+                        onPress={beginPlaceProjectOnSchedule}
+                        disabled={formBusy}
+                        hitSlop={8}
+                        style={{ marginLeft: 'auto', opacity: formBusy ? 0.55 : 1 }}>
+                        <Text style={{ fontSize: 11, color: tf.frog, fontWeight: '700' }}>
+                          放入日程 ›
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 </View>
               </FoldRiseIn>

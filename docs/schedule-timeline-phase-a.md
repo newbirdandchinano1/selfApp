@@ -77,8 +77,8 @@
 - [ ] 分钟语义：逻辑日 axis 分钟（可跨午夜）；区间 **半开 `[start, end)`**（决议 #12/#13）
 - [ ] break 仍为禁排来源；新写入不得跨 / 与 break 相交（决议 #6；write 开关开启后强制）
 - [ ] 最简态 `WeeklyFrogSchedule` minimal 路径未改坏（决议 #2）
-- [ ] 特性开关默认关时：行为与阶段 A 基线一致（无新 UI / 无分钟写入）
-- [ ] 未开 write 开关前：不删旧 grid 代码；不 DROP slot 列
+- [ ] 阶段 K 后：`timeline_ui` 默认开（时间线路径）；关 UI 可回经典课表
+- [ ] `timeline_write` 默认关时：仍为选格写入；未默认开 write 前不删旧 grid、不 DROP slot 列
 ```
 
 模板文件：`selfApp/.github/PULL_REQUEST_TEMPLATE/schedule-timeline.md`
@@ -89,19 +89,20 @@
 
 | Key | 读写 | 默认 | 阶段接线 |
 |-----|------|------|----------|
-| `@selfapp/schedule_timeline_ui_v1` | `load/saveScheduleTimelineUiEnabled` | **关** | F |
-| `@selfapp/schedule_timeline_write_v1` | `load/saveScheduleTimelineWriteEnabled` | **关** | G |
+| `@selfapp/schedule_timeline_ui_v1` | 阶段 L 起 App 不再读取（日视图固定时间线）；键位保留防同步冲突 | — | L 退役 UI 开关 |
+| `@selfapp/schedule_timeline_write_v1` | `load/saveScheduleTimelineWriteEnabled` | **关**（J 完成后再默认开） | G |
 
 实现：`selfApp/lib/schedule/timeline-flags.ts`  
 存储：`app_settings`（`AppSettingKey.scheduleTimelineUiV1` / `scheduleTimelineWriteV1`）
 
 ---
 
-## 4. 已藏入口（阶段 A；代码阶段 L 再删）
+## 4. 已删入口（阶段 L）
 
-| 入口 | 位置 | 控制 |
-|------|------|------|
-| 复制上周 | 课表标题栏按钮 + 表底「复制上周」 | `SCHEDULE_DEPRECATED_ENTRY.copyLastWeek === false` |
-| 格备注 | 左侧时刻列点击编辑 + 空格备注展示 + 编辑 Modal | `SCHEDULE_DEPRECATED_ENTRY.slotNotes === false` |
+| 入口 | 状态 |
+|------|------|
+| 复制上周 UI | 已删；`copyPreviousWeekToThisWeek` 标 `@deprecated` |
+| 格备注 | 已删 `slot-notes.ts` |
+| 经典课表 / 格宽设置 | 设置页已移除 |
 
-服务函数 `copyPreviousWeekToThisWeek` / `slot-notes.ts` 仍保留，仅 UI 不可达。
+详见 `schedule-timeline-phase-l.md`。

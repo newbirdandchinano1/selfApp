@@ -8,6 +8,7 @@ import { Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens'
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { toast, Alert } from '@/lib/app-feedback';
+import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
 import { addDays } from '@/lib/date';
 import {
@@ -15,6 +16,7 @@ import {
   setSchedulePickerResult,
   type SchedulePickerResult,
 } from '@/lib/schedule-picker-bridge';
+import { formatScheduleLocalDateTime } from '@/lib/schedule/meta';
 import {
   clampAdvanceMinutesOverride,
   formatTaskReminderOptionLabel,
@@ -268,7 +270,7 @@ function clampRangeInLimit(range: DateRange, limit: DateLimit | null): DateRange
 
 function parseDateTime(value: string | undefined, fallbackDate: Date): Date {
   if (value) {
-    const parsed = new Date(value);
+    const parsed = parseStoredDatetime(value);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
   return new Date(fallbackDate);
@@ -817,8 +819,8 @@ export default function SchedulePickerScreen() {
       weeklyDays: [...weeklyDays],
       monthlyDays: [...monthlyDays],
       yearlyDate: toLocalYMD(yearlyDate),
-      startTime: hasExactTime ? startTime.toISOString() : '',
-      endTime: hasExactTime ? endTime.toISOString() : '',
+      startTime: hasExactTime ? formatScheduleLocalDateTime(startTime) : '',
+      endTime: hasExactTime ? formatScheduleLocalDateTime(endTime) : '',
     };
 
     if (tab === 'time') {
@@ -1822,16 +1824,22 @@ export default function SchedulePickerScreen() {
      
       <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
         <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
-          <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
+          {/* 弹层用实心底：半透明 surface 会让滚轮文字与背景糊成一团 */}
+          <View style={[styles.pickerCard, { backgroundColor: isDark ? tf.paper2 : tf.card }]}>
             <Text style={[styles.pickerTitle, { color: colors.text }]}>{timePickerTitle}</Text>
             <DateTimePicker
               value={timeDraft}
               mode="time"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              // Modal 内必须用 spinner：Android default 是系统对话框，组件本身空白
+              display="spinner"
               is24Hour
+              locale="zh-CN"
+              themeVariant={isDark ? 'dark' : 'light'}
+              textColor={colors.text}
               onChange={(_, date) => {
                 if (date) setTimeDraft(date);
               }}
+              style={styles.nativeTimePicker}
             />
             <View style={styles.pickerActions}>
               <Pressable
@@ -1862,16 +1870,20 @@ export default function SchedulePickerScreen() {
         onRequestClose={() => setReminderTimePickerVisible(false)}
       >
         <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
-          <View style={[styles.pickerCard, { backgroundColor: colors.surface }]}>
+          <View style={[styles.pickerCard, { backgroundColor: isDark ? tf.paper2 : tf.card }]}>
             <Text style={[styles.pickerTitle, { color: colors.text }]}>选择提醒时间</Text>
             <DateTimePicker
               value={reminderTimeDraft}
               mode="time"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              display="spinner"
               is24Hour
+              locale="zh-CN"
+              themeVariant={isDark ? 'dark' : 'light'}
+              textColor={colors.text}
               onChange={(_, date) => {
                 if (date) setReminderTimeDraft(date);
               }}
+              style={styles.nativeTimePicker}
             />
             <View style={styles.pickerActions}>
               <Pressable
@@ -2256,6 +2268,11 @@ const styles = StyleSheet.create({
   pickerBackdrop: { flex: 1, justifyContent: 'center', paddingHorizontal: Spacing['6xl'] },
   pickerCard: { borderRadius: Radius.xl, padding: Spacing['3xl'], gap: Spacing.xl, ...Shadows.sheet },
   pickerTitle: { ...Typography.title, textAlign: 'center' },
+  nativeTimePicker: {
+    alignSelf: 'stretch',
+    width: '100%',
+    height: Platform.OS === 'ios' ? 216 : 180,
+  },
   pickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.lg },
   pickerBtn: {
     borderRadius: Radius.sm,
