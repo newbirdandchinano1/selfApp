@@ -7,7 +7,8 @@ import {
   gaugeStyle,
   padding,
 } from '@expo/ui/swift-ui/modifiers';
-import { createWidget, type WidgetEnvironment } from '@/lib/widgets/expo-widgets-compat';
+// 必须直连 'expo-widgets'：iOS LayoutRegistry Metro 只 stub 该模块名来捕获 layout。
+import { createWidget, type WidgetEnvironment } from 'expo-widgets';
 
 export type HealthIntakeWidgetProps = {
   title: string;

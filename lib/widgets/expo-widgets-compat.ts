@@ -2,6 +2,10 @@
  * Expo Go / 无 Widget Extension 的沙盒没有原生 ExpoWidgets。
  * 禁止顶层 import 'expo-widgets'（其 .native 入口会 requireNativeModule 硬抛）。
  * 仅在探测到原生模块后再 require；否则返回 no-op stub。
+ *
+ * 注意：widgets/*.tsx 布局入口必须直连 import 'expo-widgets'，不能走本兼容层。
+ * iOS LayoutRegistry 构建只把模块名 'expo-widgets' stub 成 createWidget 捕获器；
+ * 走 @/ 别名会被 layout-registry Metro 解析成 empty，触发 createWidget is not a function。
  */
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import type { ReactNode } from 'react';

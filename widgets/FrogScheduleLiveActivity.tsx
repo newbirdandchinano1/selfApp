@@ -1,6 +1,7 @@
 import { HStack, Image, Text, VStack } from '@expo/ui/swift-ui';
 import { font, foregroundStyle, padding } from '@expo/ui/swift-ui/modifiers';
-import { createLiveActivity, type LiveActivityEnvironment } from '@/lib/widgets/expo-widgets-compat';
+// 必须直连 'expo-widgets'：iOS LayoutRegistry Metro 只 stub 该模块名来捕获 layout。
+import { createLiveActivity, type LiveActivityEnvironment } from 'expo-widgets';
 
 export type FrogScheduleLiveActivityProps = {
   title: string;
