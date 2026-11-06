@@ -1314,6 +1314,158 @@ export async function aiLifeRoadPlanFromDirection(body: {
   return agentAiRequest(`${AI_PREFIX}/life-road/plan-from-direction`, { method: 'POST', body });
 }
 
+// --- 我的页 P1：验收 / 节点更新 / nudge / 识图 / 关联 ---
+
+export type LifeRoadAcceptanceDraftJson = {
+  acceptance_items: LifeRoadPlanAcceptanceItemJson[];
+};
+
+export async function aiLifeRoadAcceptanceDraft(body: {
+  title: string;
+  note?: string;
+  kind?: string;
+  existing_acceptance?: string[];
+  direction_body?: string;
+}): Promise<LifeRoadAcceptanceDraftJson> {
+  return agentAiRequest(`${AI_PREFIX}/life-road/acceptance-draft`, { method: 'POST', body });
+}
+
+export type LifeRoadNodeUpdatePatchJson = {
+  status?: 'on_track' | 'paused' | 'arrived' | 'dropped' | string;
+  title?: string;
+  note?: string | null;
+  acceptance_items?: LifeRoadPlanAcceptanceItemJson[];
+};
+
+export async function aiLifeRoadParseNodeUpdate(body: {
+  text: string;
+  node?: Record<string, unknown>;
+}): Promise<LifeRoadNodeUpdatePatchJson> {
+  return agentAiRequest(`${AI_PREFIX}/life-road/parse-node-update`, { method: 'POST', body });
+}
+
+export type ProfileFillChipKey = 'persona' | 'dietary' | 'birthday' | 'body';
+
+export type ProfileCompletenessNudgeJson = {
+  primary_chip: ProfileFillChipKey | string;
+  reason: string;
+  example_fill: string;
+};
+
+export async function aiProfileCompletenessNudge(body: {
+  fill_chips?: Array<Record<string, unknown>>;
+  filled_summary?: Record<string, unknown>;
+  completeness_percent?: number;
+}): Promise<ProfileCompletenessNudgeJson> {
+  return agentAiRequest(`${AI_PREFIX}/profile/completeness-nudge`, { method: 'POST', body });
+}
+
+export type LifeRoadParseFromImageJson = {
+  direction_body: string | null;
+  year_theme: string | null;
+  nodes: LifeRoadPlanNodeJson[];
+};
+
+export async function aiLifeRoadParseFromImage(body: {
+  image_base64: string;
+  image_mime_type?: string;
+  supplement_text?: string;
+  calendar_year?: number;
+}): Promise<LifeRoadParseFromImageJson> {
+  return agentAiRequest(`${AI_PREFIX}/life-road/parse-from-image`, { method: 'POST', body });
+}
+
+export type LifeRoadSuggestLinksJson = {
+  suggested_task_ids: string[];
+  suggested_habit_ids: string[];
+  suggested_project_ids: string[];
+  reason: string;
+};
+
+export async function aiLifeRoadSuggestLinks(body: {
+  focus_node?: Record<string, unknown>;
+  candidate_tasks?: Array<{ id: string; title?: string }>;
+  candidate_habits?: Array<{ id: string; title?: string }>;
+  candidate_projects?: Array<{ id: string; title?: string }>;
+}): Promise<LifeRoadSuggestLinksJson> {
+  return agentAiRequest(`${AI_PREFIX}/life-road/suggest-links`, { method: 'POST', body });
+}
+
+// --- 我的页 P2：体重短评 / 履历短评 / 通知文案 / 季末回顾 ---
+
+export type ProfileWeightCommentJson = {
+  comment: string;
+  caution: string | null;
+};
+
+export async function aiProfileWeightComment(body: {
+  points: Array<{ ymd: string; kg: number }>;
+  goal?: string;
+  height_cm?: number;
+}): Promise<ProfileWeightCommentJson> {
+  return agentAiRequest(`${AI_PREFIX}/profile/weight-comment`, { method: 'POST', body });
+}
+
+export type ProfileCompletionLogCommentJson = {
+  comment: string;
+};
+
+export async function aiProfileCompletionLogComment(body: {
+  project_title: string;
+  archive_summary?: string;
+  duration_label?: string;
+  points_delta?: number;
+  source?: string;
+}): Promise<ProfileCompletionLogCommentJson> {
+  return agentAiRequest(`${AI_PREFIX}/profile/completion-log-comment`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export type ProfileNotificationCopyItemJson = {
+  identifier: string;
+  fingerprint: string;
+  title: string;
+  body: string;
+};
+
+export type ProfileNotificationCopyJson = {
+  copies: ProfileNotificationCopyItemJson[];
+};
+
+export async function aiProfileNotificationCopy(body: {
+  items: Array<{
+    identifier: string;
+    fingerprint: string;
+    context_block: string;
+    fallback_title?: string;
+    fallback_body?: string;
+  }>;
+}): Promise<ProfileNotificationCopyJson> {
+  return agentAiRequest(`${AI_PREFIX}/profile/notification-copy`, { method: 'POST', body });
+}
+
+export type LifeRoadPeriodReviewJson = {
+  review: string;
+  highlights: string[];
+  next_theme_draft: string | null;
+  open_hint: string | null;
+};
+
+export async function aiLifeRoadPeriodReview(body: {
+  period: string;
+  calendar_year?: number;
+  quarter?: number;
+  direction_body?: string;
+  year_theme?: string;
+  status_counts?: Record<string, number>;
+  arrived_titles?: string[];
+  node_summaries?: Array<Record<string, unknown>>;
+}): Promise<LifeRoadPeriodReviewJson> {
+  return agentAiRequest(`${AI_PREFIX}/life-road/period-review`, { method: 'POST', body });
+}
+
 /** 拆分 data URI 或纯 Base64，供图片类接口使用 */
 export function splitImageBase64AndMime(
   input: string,
@@ -1326,4 +1478,83 @@ export function splitImageBase64AndMime(
     return { image_mime_type, image_base64: m[2].replace(/\s/g, '') };
   }
   return { image_mime_type: defaultMime, image_base64: s.replace(/\s/g, '') };
+}
+
+/** 全局助手 L2：单轮万能路由 */
+export type AssistantRouteResult = {
+  reply_text?: string;
+  cards: unknown[];
+  routed_domains: string[];
+};
+
+export async function aiAssistantRoute(body: {
+  text?: string;
+  image_base64?: string;
+  image_mime_type?: string;
+  brief_context?: unknown;
+  locale?: string;
+}): Promise<AssistantRouteResult> {
+  return agentAiRequest<AssistantRouteResult>(`${AI_PREFIX}/assistant/route`, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** 全局助手 L2：今日简报 */
+export type AssistantDailyBriefFact = { domain: string; text: string };
+
+export type AssistantDailyBriefResult = {
+  headline: string;
+  facts: AssistantDailyBriefFact[];
+  cards: unknown[];
+};
+
+export async function aiAssistantDailyBrief(body: {
+  brief_context: unknown;
+  locale?: string;
+}): Promise<AssistantDailyBriefResult> {
+  return agentAiRequest<AssistantDailyBriefResult>(`${AI_PREFIX}/assistant/daily-brief`, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** 全局助手 L2：多轮改草稿 / 澄清 */
+export type AssistantTurnResult = {
+  session_id: string;
+  reply_text?: string;
+  cards: unknown[];
+};
+
+export async function aiAssistantTurn(body: {
+  session_id?: string;
+  message: string;
+  history?: unknown[];
+  brief_context?: unknown;
+  pending_cards?: unknown[];
+  locale?: string;
+}): Promise<AssistantTurnResult> {
+  return agentAiRequest<AssistantTurnResult>(`${AI_PREFIX}/assistant/turn`, {
+    method: 'POST',
+    body,
+  });
+}
+
+/** 全局助手 L2：跨域编排（P2-1） */
+export type AssistantComposeResult = {
+  reply_text?: string;
+  cards: unknown[];
+  composed_domains: string[];
+};
+
+export async function aiAssistantCompose(body: {
+  goal: string;
+  brief_context: unknown;
+  allowed_domains?: string[];
+  locale?: string;
+}): Promise<AssistantComposeResult> {
+  return agentAiRequest<AssistantComposeResult>(`${AI_PREFIX}/assistant/compose`, {
+    method: 'POST',
+    body,
+  });
 }

@@ -1,4 +1,5 @@
 import { AppIcon } from '@/components/ui/app-icon';
+import { AiCompletionLogCommentSheet } from '@/components/profile/ai-completion-log-comment-sheet';
 import {
   FoldRiseIn,
   FOLD_MOTION_SPRING,
@@ -121,6 +122,7 @@ export default function ProjectCompletionLogDetailScreen() {
   const [row, setRow] = useState<ProjectCompletionLogRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
+  const [commentOpen, setCommentOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!id?.trim()) {
@@ -266,6 +268,15 @@ export default function ProjectCompletionLogDetailScreen() {
                   <Text style={styles.metaText}>只读</Text>
                 </View>
               </View>
+              <Pressable
+                onPress={() => setCommentOpen(true)}
+                style={({ pressed }) => [
+                  styles.aiCommentBtn,
+                  { opacity: pressed ? 0.88 : 1 },
+                ]}>
+                <AppIcon name="auto-awesome" size={13} color={fold.pine} />
+                <Text style={styles.aiCommentText}>AI 短评</Text>
+              </Pressable>
             </View>
           </FoldRiseIn>
 
@@ -468,6 +479,26 @@ export default function ProjectCompletionLogDetailScreen() {
           </View>
         </ScrollView>
       )}
+
+      <AiCompletionLogCommentSheet
+        visible={commentOpen && Boolean(row)}
+        onClose={() => setCommentOpen(false)}
+        projectTitle={row?.name ?? ''}
+        archiveSummary={
+          row
+            ? row.note?.trim() ||
+              (tags.length ? tags.join(' · ') : undefined) ||
+              (row.task_count > 0
+                ? `${row.done_task_count} / ${row.task_count} 任务`
+                : undefined)
+            : undefined
+        }
+        durationLabel={
+          row ? formatDetailDateLine(row.completed_ymd, row.completed_at) : undefined
+        }
+        pointsDelta={row?.points_delta ?? undefined}
+        source={row?.source ?? undefined}
+      />
     </SafeAreaView>
   );
 }
@@ -559,6 +590,19 @@ const styles = StyleSheet.create({
   },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 11, color: '#7A857D', fontWeight: '600' },
+  aiCommentBtn: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 32,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#BFD4C6',
+    backgroundColor: '#EAF3EC',
+  },
+  aiCommentText: { fontSize: 12, fontWeight: '800', color: '#35624F' },
   card: {
     borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,

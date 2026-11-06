@@ -1,7 +1,7 @@
 # selfApp AI 接口说明（App 端）
 
-> 版本：2.1.0  
-> 更新日期：2026-11-06  
+> 版本：2.3.0  
+> 更新日期：2026-11-07  
 > 适用：React Native / Expo 客户端  
 > 服务端：`selfAPP_AIAgent`（`/api/v1/ai/*`）；备忘落库点评仍经业务后端代调 Agent
 
@@ -127,12 +127,26 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 | 45 | POST | `/api/v1/ai/profile/persona-draft` | 一句话 / 润色 → 人物画像草稿 |
 | 46 | POST | `/api/v1/ai/profile/week-rhythm-insights` | 本周节奏洞察（只读） |
 | 47 | POST | `/api/v1/ai/life-road/plan-from-direction` | 总方向 → 年/季/月节点草稿 |
+| 48 | POST | `/api/v1/ai/life-road/acceptance-draft` | 单节点 → 验收标准增量草稿 |
+| 49 | POST | `/api/v1/ai/life-road/parse-node-update` | 一句话 → 节点字段 patch |
+| 50 | POST | `/api/v1/ai/profile/completeness-nudge` | 资料缺口 → 补全引导 |
+| 51 | POST | `/api/v1/ai/life-road/parse-from-image` | 手写便签/截图 → 方向或节点草稿 |
+| 52 | POST | `/api/v1/ai/life-road/suggest-links` | 焦点 ↔ 任务/习惯/项目弱绑定建议 |
+| 53 | POST | `/api/v1/ai/profile/weight-comment` | 体重趋势短评（只读，非医疗） |
+| 54 | POST | `/api/v1/ai/profile/completion-log-comment` | 完成履历短评（可复制/存备忘） |
+| 55 | POST | `/api/v1/ai/profile/notification-copy` | 通知文案批量预生成（≤10，写缓存） |
+| 56 | POST | `/api/v1/ai/life-road/period-review` | 季末 / 年终道路回顾（只读） |
+| 57 | POST | `/api/v1/ai/assistant/route` | 全局助手单轮万能路由 → ActionCard[] |
+| 58 | POST | `/api/v1/ai/assistant/daily-brief` | 今日简报：规则 facts + LLM 短文案 ≤3 卡 |
+| 59 | POST | `/api/v1/ai/assistant/turn` | 多轮改草稿 / 澄清追问 → ActionCard[] |
+| 60 | POST | `/api/v1/ai/assistant/compose` | 跨域编排：goal + 白名单域 → ≤5 张 ActionCard |
 
 > 上表以外的 AI 场景（项目点评、缺点、目标墙、技能等）**当前 Agent 未提供路由**，本文不再描述。  
 > 心愿兑换 / 扣分**永不**经 Agent；资格仍用本地评估 + 业务 `POST /wish-board/redeem`。  
 > 衣橱写库仍走 App → `self_app_back` `/api/app/wardrobe/*`；抠图仍为本地 Vision，不经 Agent。  
 > 任务写库仍走 App → 本地 SQLite → `self_app_back` `/api/app/pages/tasks*`；青蛙指派仍走 `frog-assign`。  
-> 我的页写库仍走 App → `users` / `life_*` 确认后脏同步；Agent 不写库、不改积分。
+> 我的页写库仍走 App → `users` / `life_*` 确认后脏同步；Agent 不写库、不改积分。  
+> 全局助手写库仍须用户确认后走各域现有预览 / `frog-assign` / `review_quick_create`；`ref_ids` 仅允许来自请求 `brief_context`。
 
 ---
 
@@ -1289,7 +1303,7 @@ App：`parseTaskFilter`；UI：待办/项目筛选条「AI 筛选」。
 
 复盘「+ 待办」复用 `parse-one-liner` 增强预填（`priority` / `due_ymd` / `schedule` query），见 `enrichReviewTodoPrefill`。
 
-### 4.12 我的页（P0）
+### 4.12 我的页（P0 / P1）
 
 **`POST .../profile/persona-draft`**
 
@@ -1342,6 +1356,206 @@ App：`analyzeProfileWeekRhythmInsights`；UI：我的页「本周节奏」旁�
 
 成功 `data`：`year_theme?`、`nodes[{ kind, title, note?, quarter?, month?, calendar_year?, parent_hint?, acceptance_items[{ text }] }]`（kind 仅 year/quarter/month）。确认后批量 `createLifeRoadNode`（跳过已占槽）；**不**自动建任务。  
 App：`planLifeRoadFromDirection`；UI：道路页「AI 拆解方向」。
+
+**`POST .../life-road/acceptance-draft`**
+
+```json
+{
+  "title": "11 月：固定起床与训练日",
+  "note": "工作日优先",
+  "kind": "month",
+  "existing_acceptance": ["训练日按档案执行不少于 8 次"],
+  "direction_body": "把健康与深度工作做成可重复的节奏"
+}
+```
+
+成功 `data`：`acceptance_items[{ text }]`（增量、去重、≤80 字）。预览勾选后合并进编辑态；**不**自动标 done。  
+App：`draftLifeRoadAcceptance`；UI：节点编辑「生成验收」。
+
+**`POST .../life-road/parse-node-update`**
+
+```json
+{
+  "text": "先暂停，备注改成等肩颈恢复",
+  "node": {
+    "title": "11 月：固定起床",
+    "note": "",
+    "kind": "month",
+    "status": "on_track",
+    "acceptance": ["起床后不做手机 30 分钟"]
+  }
+}
+```
+
+成功 `data`：可选 patch `status` / `title` / `note` / `acceptance_items`。确认后写入编辑态；`arrived` / `dropped` App 二次确认。  
+App：`parseLifeRoadNodeUpdate`；UI：节点编辑「一句话更新」。
+
+**`POST .../profile/completeness-nudge`**
+
+```json
+{
+  "fill_chips": [
+    { "key": "persona", "label": "人物画像", "filled": false, "tab": "persona" }
+  ],
+  "filled_summary": { "persona": false, "dietary": true, "birthday": true, "body": false },
+  "completeness_percent": 50
+}
+```
+
+成功 `data`：`primary_chip`（`persona`|`dietary`|`birthday`|`body`）、`reason`、`example_fill`。只读引导；示例**不**自动写入。  
+App：`nudgeProfileCompleteness`；UI：我的页「资料待完善」高亮优先芯片。
+
+**`POST .../life-road/parse-from-image`**
+
+```json
+{
+  "image_base64": "<base64>",
+  "image_mime_type": "image/jpeg",
+  "supplement_text": "偏少而硬",
+  "calendar_year": 2026
+}
+```
+
+成功 `data`：`direction_body?`、`year_theme?`、`nodes[]`（同 plan-from-direction 子集）。预览确认后写方向/节点；图不落 Agent 长存。  
+App：`parseLifeRoadFromImage`；UI：道路页「拍照导入」。
+
+**`POST .../life-road/suggest-links`**
+
+```json
+{
+  "focus_node": { "id": "lrn_xxx", "title": "11 月：固定起床", "kind": "month" },
+  "candidate_tasks": [{ "id": "tsk_1", "title": "早起不刷手机" }],
+  "candidate_habits": [{ "id": "hab_1", "title": "晨间拉伸" }],
+  "candidate_projects": [{ "id": "prj_1", "title": "作息重建" }]
+}
+```
+
+成功 `data`：`suggested_task_ids[]` / `suggested_habit_ids[]` / `suggested_project_ids[]` + `reason`。**只能返回请求里出现过的 id**；App 仅导航或预填新建待办，不在道路表伪造 FK。  
+App：`suggestLifeRoadLinks`；UI：道路页「关联执行」。
+
+**`POST .../profile/weight-comment`**（P2）
+
+```json
+{
+  "points": [{ "ymd": "2026-11-01", "kg": 72.4 }, { "ymd": "2026-11-07", "kg": 71.8 }],
+  "goal": "减脂",
+  "height_cm": 175
+}
+```
+
+成功 `data`：`comment`（1～2 句）、可选 `caution`。只读、非医疗；`weight_logs` 仅本机，App 上传近 N 点摘要（≤30）。  
+App：`analyzeProfileWeightComment`；UI：我的页「身体数据」卡「短评」。
+
+**`POST .../profile/completion-log-comment`**（P2）
+
+```json
+{
+  "project_title": "Q4 复盘",
+  "archive_summary": "汇总指标并出报告 · 标签：工作",
+  "duration_label": "2026-10-01 – 2026-11-06",
+  "points_delta": 40,
+  "source": "archive"
+}
+```
+
+成功 `data`：`comment`（一句「这次做成了什么」）。App 可复制或确认后 `createMemo`（标题 `履历短评 · ${project}`）。  
+App：`draftProfileCompletionLogComment`；UI：完成履历详情「AI 短评」。
+
+**`POST .../profile/notification-copy`**（P2）
+
+```json
+{
+  "items": [
+    {
+      "identifier": "selfapp-habit-reminder:hab_1",
+      "fingerprint": "2026-11-07",
+      "context_block": "习惯：晨间拉伸今日还未打卡",
+      "fallback_title": "还差一次打卡",
+      "fallback_body": "今天的拉伸还没做，抽 5 分钟完成。"
+    }
+  ]
+}
+```
+
+成功 `data`：`copies[{ identifier, fingerprint, title, body }]`（≤10；`identifier` + `fingerprint` 必须 ⊆ 请求）。  
+App 写入 `notificationAiCopyCache`；**登记路径仍只读缓存 + 硬编码兜底**，默认关闭，仅用户显式「立即预热」时批量生成。  
+App：`draftProfileNotificationCopy` / `prefetchProfileNotificationCopy`；UI：提醒设置「更自然的通知文案」+「立即预热」。
+
+**`POST .../life-road/period-review`**（P2）
+
+```json
+{
+  "period": "quarter",
+  "calendar_year": 2026,
+  "quarter": 4,
+  "direction_body": "把健康与深度工作做成可重复的节奏",
+  "year_theme": "少而硬的主线",
+  "status_counts": { "on_track": 6, "paused": 1, "arrived": 2, "dropped": 0 },
+  "arrived_titles": ["11 月：固定起床与训练日"],
+  "node_summaries": [
+    { "title": "Q4 打通早晨深度块", "kind": "quarter", "status": "on_track" }
+  ]
+}
+```
+
+成功 `data`：`review`、`highlights[]`、可选 `next_theme_draft`（≤40 字）、可选 `open_hint`（`tasks`|`review`|`life-road`|`wish-board`|null）。只读；`next_theme_draft` 须用户确认后才写 `year_theme`。不替代 `weekly-review/coaching`。  
+App：`analyzeLifeRoadPeriodReview`；UI：道路页「季末回顾」。
+
+### 4.x 全局助手（L2）
+
+**`POST .../assistant/route`**（P0-2）
+
+请求：`{ text?, image_base64?, image_mime_type?, brief_context?, locale? }`（`text` 与图至少其一）。  
+成功 `data`：`reply_text?`、`routed_domains[]`、`cards[]`（ActionCard）。  
+App：`aiAssistantRoute` / `runAssistantRoute`；UI：全局悬浮助手输入。
+
+**`POST .../assistant/daily-brief`**（P0-3）
+
+请求：`{ brief_context, locale? }`（App 已算好计数与候选 id）。  
+成功 `data`：
+
+```json
+{
+  "headline": "今天先啃青蛙，饮食蛋白还差一截。",
+  "facts": [
+    { "domain": "task", "text": "逾期 2 项；青蛙候选「写方案」" },
+    { "domain": "health", "text": "蛋白已摄入 42g / 目标 110g" }
+  ],
+  "cards": []
+}
+```
+
+约束：`facts` 数字以 `brief_context` 为准；`cards` ≤3；LLM 只写 headline / 卡文案与落地点，失败回退规则卡。Agent 不写库。  
+App：`aiAssistantDailyBrief` / `runAssistantDailyBrief`；UI：首页「今日」模块；失败仅展示本地规则 facts。
+
+**`POST .../assistant/turn`**（P1-1）
+
+请求：`{ session_id?, message, history?, brief_context?, pending_cards?, locale? }`（`message` 必填）。  
+成功 `data`：`session_id`、`reply_text?`、`cards[]`（可同 id 更新草稿；`needs_confirm` 仍为 true）。  
+用途：改草稿（「改成支付宝」「截止改周五」）、澄清追问；无 pending 时内部回落 `route`。Agent 不写库。  
+App：`aiAssistantTurn` / `runAssistantTurn`；UI：全局助手有未确认卡时走 turn。
+
+**P1-2 域卡**：`route` / `turn` 可对 finance / food / task / habit / memo / wardrobe / recipe / wish / profile 出 `preview_*`（兑奖仅 `open_route` → 心愿板，禁止确认即兑）。新增确认动作：`preview_recipe`、`preview_profile`。
+
+**`POST .../assistant/compose`**（P2-1）
+
+请求：`{ goal, brief_context, allowed_domains?: string[], locale? }`（`brief_context` 必填；`allowed_domains` 白名单，空则全开）。  
+成功 `data`：`reply_text?`、`composed_domains[]`、`cards[]`（≤5；可含多域；复盘建议用 `confirm_action=review_quick_create`，`draft` 对齐 `{ action: memo|project|habit|todo, title, body }`，与 `review-ai-quick-create` / coaching suggestions 同路径）。  
+约束：超时或 LLM 失败降级规则卡；禁止编造 id；兑奖等敏感动作永不作为 confirm。  
+App：`aiAssistantCompose` / `runAssistantCompose`；UI：全局助手识别「按缺口安排晚上 / 复盘后给三件…」等编排句走 compose，否则仍 route/turn。
+
+**P3 入口与深链（App 侧，非新 Agent 路由）**
+
+| 入口 | 行为 |
+|---|---|
+| 助手 Sheet 剪贴板按钮 / `zheng://assistant/clipboard` | 读剪贴板图或文 → `openGlobalAssistant` → `route`（确认后写库） |
+| iOS 快捷指令「用助手处理」 | pending 图 / 剪贴板标记 → 同上（需 prebuild 刷新 Intent） |
+| `zheng://assistant` | 打开全局助手 |
+| `zheng://assistant/brief` | 打开首页「今日」简报 + 助手提示（Widget **不**在组件内调 LLM） |
+| `zheng://finance` / `tasks` / `profile` / `wardrobe` / `review` | 打开对应 Tab / 页 |
+| 会话缓存 | AsyncStorage `@selfapp/assistant_session_v1`，TTL 24h；不进云同步 |
+
+桌面 Widget：已有财务 / 青蛙 / 习惯 / 健康 / 紧急度均挂 `widgetURL(deepLink)`；健康默认 `zheng://assistant/brief?domain=health`。衣橱 / 我的独立 Widget 可按同模式扩展（深链已就绪）。
 
 ---
 

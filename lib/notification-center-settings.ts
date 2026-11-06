@@ -103,6 +103,11 @@ export type FinanceReminderPrefs = {
 export type NotificationCenterSettings = {
   /** 总开关：关闭后不再登记/展示本 App 本地通知 */
   masterEnabled: boolean;
+  /**
+   * 是否启用更自然的 AI 通知文案（默认关闭）。
+   * 开启后仅在用户显式「立即预热」时批量生成并写入缓存；登记路径仍只读缓存。
+   */
+  aiNaturalCopyEnabled: boolean;
   /** 各来源频道开关 */
   categories: NotificationCategoryPrefs;
   /**
@@ -193,6 +198,7 @@ export const DEFAULT_FINANCE_REMINDER_PREFS: FinanceReminderPrefs = {
 
 export const DEFAULT_NOTIFICATION_CENTER_SETTINGS: NotificationCenterSettings = {
   masterEnabled: true,
+  aiNaturalCopyEnabled: false,
   categories: { ...DEFAULT_CATEGORIES },
   mutedIdentifiers: [],
   health: { ...DEFAULT_HEALTH_INTAKE_REMINDER_PREFS, mealWindows: DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w })), focusKeys: [...HEALTH_INTAKE_FOCUS_KEYS] },
@@ -556,6 +562,7 @@ function normalizeSettings(raw: unknown): NotificationCenterSettings {
   const o = raw as Record<string, unknown>;
   return {
     masterEnabled: o.masterEnabled === false ? false : true,
+    aiNaturalCopyEnabled: o.aiNaturalCopyEnabled === true,
     categories: normalizeCategories(o.categories),
     mutedIdentifiers: normalizeMuted(o.mutedIdentifiers),
     health: normalizeHealth(o.health),
@@ -579,6 +586,7 @@ export async function setNotificationCenterSettings(
 
 export async function patchNotificationCenterSettings(patch: {
   masterEnabled?: boolean;
+  aiNaturalCopyEnabled?: boolean;
   categories?: Partial<NotificationCategoryPrefs>;
   mutedIdentifiers?: string[];
   health?: Partial<HealthIntakeReminderPrefs>;
@@ -628,6 +636,10 @@ export async function patchNotificationCenterSettings(patch: {
   const next: NotificationCenterSettings = {
     masterEnabled:
       typeof patch.masterEnabled === 'boolean' ? patch.masterEnabled : current.masterEnabled,
+    aiNaturalCopyEnabled:
+      typeof patch.aiNaturalCopyEnabled === 'boolean'
+        ? patch.aiNaturalCopyEnabled
+        : current.aiNaturalCopyEnabled,
     categories: patch.categories
       ? { ...current.categories, ...patch.categories }
       : current.categories,

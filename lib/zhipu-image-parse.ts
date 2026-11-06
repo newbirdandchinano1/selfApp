@@ -5038,3 +5038,567 @@ export async function planLifeRoadFromDirection(
     return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
   }
 }
+
+// --- 我的页 P1 ---
+
+export type DraftLifeRoadAcceptanceOptions = {
+  title: string;
+  note?: string;
+  kind?: string;
+  existingAcceptance?: string[];
+  directionBody?: string;
+};
+
+export type DraftLifeRoadAcceptanceResult =
+  | { ok: true; data: aiApi.LifeRoadAcceptanceDraftJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeLifeRoadAcceptanceDraftPayload(
+  raw: unknown,
+): aiApi.LifeRoadAcceptanceDraftJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const acceptance: aiApi.LifeRoadPlanAcceptanceItemJson[] = [];
+  const rawAcc = o.acceptance_items ?? o.acceptance;
+  if (Array.isArray(rawAcc)) {
+    for (const a of rawAcc) {
+      let text = '';
+      if (a && typeof a === 'object') {
+        text = String((a as Record<string, unknown>).text ?? '').trim();
+      } else {
+        text = String(a ?? '').trim();
+      }
+      text = text.slice(0, 80);
+      if (text && !acceptance.some((x) => x.text === text)) acceptance.push({ text });
+      if (acceptance.length >= 20) break;
+    }
+  }
+  if (!acceptance.length) return null;
+  return { acceptance_items: acceptance };
+}
+
+export async function draftLifeRoadAcceptance(
+  options: DraftLifeRoadAcceptanceOptions,
+): Promise<DraftLifeRoadAcceptanceResult> {
+  const title = options.title.trim();
+  if (!title) return { ok: false, error: '请先填写节点标题', attempts: 0 };
+  try {
+    const raw = await aiApi.aiLifeRoadAcceptanceDraft({
+      title,
+      note: options.note?.trim() || undefined,
+      kind: options.kind?.trim() || undefined,
+      existing_acceptance: options.existingAcceptance,
+      direction_body: options.directionBody?.trim() || undefined,
+    });
+    const data = normalizeLifeRoadAcceptanceDraftPayload(raw);
+    if (!data) return { ok: false, error: '未能生成有效验收项', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type ParseLifeRoadNodeUpdateOptions = {
+  text: string;
+  node?: Record<string, unknown>;
+};
+
+export type ParseLifeRoadNodeUpdateResult =
+  | { ok: true; data: aiApi.LifeRoadNodeUpdatePatchJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+const LIFE_ROAD_STATUSES = new Set(['on_track', 'paused', 'arrived', 'dropped']);
+
+function normalizeLifeRoadNodeUpdatePayload(
+  raw: unknown,
+): aiApi.LifeRoadNodeUpdatePatchJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const out: aiApi.LifeRoadNodeUpdatePatchJson = {};
+  const statusRaw = String(o.status ?? '')
+    .trim()
+    .toLowerCase();
+  if (LIFE_ROAD_STATUSES.has(statusRaw)) out.status = statusRaw;
+  if ('title' in o && o.title != null) {
+    const title = String(o.title).trim().slice(0, 40);
+    if (title) out.title = title;
+  }
+  if ('note' in o) {
+    if (o.note == null) out.note = null;
+    else {
+      const note = String(o.note).trim().slice(0, 200);
+      out.note = note || null;
+    }
+  }
+  if ('acceptance_items' in o || 'acceptance' in o) {
+    const acceptance: aiApi.LifeRoadPlanAcceptanceItemJson[] = [];
+    const rawAcc = o.acceptance_items ?? o.acceptance;
+    if (Array.isArray(rawAcc)) {
+      for (const a of rawAcc) {
+        let text = '';
+        if (a && typeof a === 'object') {
+          text = String((a as Record<string, unknown>).text ?? '').trim();
+        } else {
+          text = String(a ?? '').trim();
+        }
+        text = text.slice(0, 80);
+        if (text && !acceptance.some((x) => x.text === text)) acceptance.push({ text });
+        if (acceptance.length >= 20) break;
+      }
+    }
+    if (acceptance.length) out.acceptance_items = acceptance;
+  }
+  if (!Object.keys(out).length) return null;
+  return out;
+}
+
+export async function parseLifeRoadNodeUpdate(
+  options: ParseLifeRoadNodeUpdateOptions,
+): Promise<ParseLifeRoadNodeUpdateResult> {
+  const text = options.text.trim();
+  if (!text) return { ok: false, error: '请输入一句话更新', attempts: 0 };
+  try {
+    const raw = await aiApi.aiLifeRoadParseNodeUpdate({
+      text,
+      node: options.node,
+    });
+    const data = normalizeLifeRoadNodeUpdatePayload(raw);
+    if (!data) return { ok: false, error: '未能解析出有效更新', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type NudgeProfileCompletenessOptions = {
+  fillChips?: Array<Record<string, unknown>>;
+  filledSummary?: Record<string, unknown>;
+  completenessPercent?: number;
+};
+
+export type NudgeProfileCompletenessResult =
+  | { ok: true; data: aiApi.ProfileCompletenessNudgeJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+const PROFILE_FILL_CHIP_KEYS = new Set(['persona', 'dietary', 'birthday', 'body']);
+
+function normalizeProfileCompletenessNudgePayload(
+  raw: unknown,
+): aiApi.ProfileCompletenessNudgeJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const chip = String(o.primary_chip ?? o.chip ?? o.key ?? '')
+    .trim()
+    .toLowerCase();
+  if (!PROFILE_FILL_CHIP_KEYS.has(chip)) return null;
+  const reason = String(o.reason ?? '').trim().slice(0, 160);
+  const example_fill = String(o.example_fill ?? o.example ?? '')
+    .trim()
+    .slice(0, 120);
+  if (!reason) return null;
+  return { primary_chip: chip, reason, example_fill };
+}
+
+export async function nudgeProfileCompleteness(
+  options: NudgeProfileCompletenessOptions,
+): Promise<NudgeProfileCompletenessResult> {
+  try {
+    const raw = await aiApi.aiProfileCompletenessNudge({
+      fill_chips: options.fillChips,
+      filled_summary: options.filledSummary,
+      completeness_percent: options.completenessPercent,
+    });
+    const data = normalizeProfileCompletenessNudgePayload(raw);
+    if (!data) return { ok: false, error: '未能生成有效引导', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type ParseLifeRoadFromImageOptions = {
+  imageBase64: string;
+  imageMimeType?: string;
+  supplementText?: string;
+  calendarYear?: number;
+};
+
+export type ParseLifeRoadFromImageResult =
+  | { ok: true; data: aiApi.LifeRoadParseFromImageJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeLifeRoadParseFromImagePayload(
+  raw: unknown,
+): aiApi.LifeRoadParseFromImageJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const direction_body =
+    typeof o.direction_body === 'string'
+      ? o.direction_body.trim().slice(0, 200) || null
+      : typeof o.body === 'string'
+        ? o.body.trim().slice(0, 200) || null
+        : null;
+  const year_theme =
+    typeof o.year_theme === 'string' ? o.year_theme.trim().slice(0, 40) || null : null;
+  const plan = normalizeLifeRoadPlanPayload({
+    year_theme,
+    nodes: o.nodes,
+  });
+  const nodes = plan?.nodes ?? [];
+  if (!direction_body && !nodes.length) return null;
+  return {
+    direction_body,
+    year_theme: plan?.year_theme ?? year_theme,
+    nodes,
+  };
+}
+
+export async function parseLifeRoadFromImage(
+  options: ParseLifeRoadFromImageOptions,
+): Promise<ParseLifeRoadFromImageResult> {
+  const image_base64 = options.imageBase64.trim();
+  if (!image_base64) return { ok: false, error: '请先选择图片', attempts: 0 };
+  try {
+    const raw = await aiApi.aiLifeRoadParseFromImage({
+      image_base64,
+      image_mime_type: options.imageMimeType?.trim() || undefined,
+      supplement_text: options.supplementText?.trim() || undefined,
+      calendar_year: options.calendarYear,
+    });
+    const data = normalizeLifeRoadParseFromImagePayload(raw);
+    if (!data) return { ok: false, error: '未能从图片识别出道路草稿', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type SuggestLifeRoadLinksOptions = {
+  focusNode?: Record<string, unknown>;
+  candidateTasks?: Array<{ id: string; title?: string }>;
+  candidateHabits?: Array<{ id: string; title?: string }>;
+  candidateProjects?: Array<{ id: string; title?: string }>;
+};
+
+export type SuggestLifeRoadLinksResult =
+  | { ok: true; data: aiApi.LifeRoadSuggestLinksJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function filterIds(raw: unknown, allowed: Set<string>, limit = 5): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const x of raw) {
+    const id =
+      x && typeof x === 'object'
+        ? String((x as Record<string, unknown>).id ?? '').trim()
+        : String(x ?? '').trim();
+    if (!id || !allowed.has(id) || out.includes(id)) continue;
+    out.push(id);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function normalizeLifeRoadSuggestLinksPayload(
+  raw: unknown,
+  allowed: {
+    tasks: Set<string>;
+    habits: Set<string>;
+    projects: Set<string>;
+  },
+): aiApi.LifeRoadSuggestLinksJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    suggested_task_ids: filterIds(o.suggested_task_ids ?? o.task_ids, allowed.tasks),
+    suggested_habit_ids: filterIds(o.suggested_habit_ids ?? o.habit_ids, allowed.habits),
+    suggested_project_ids: filterIds(
+      o.suggested_project_ids ?? o.project_ids,
+      allowed.projects,
+    ),
+    reason: String(o.reason ?? '').trim().slice(0, 120) || '与焦点方向最接近的执行面',
+  };
+}
+
+export async function suggestLifeRoadLinks(
+  options: SuggestLifeRoadLinksOptions,
+): Promise<SuggestLifeRoadLinksResult> {
+  const tasks = options.candidateTasks ?? [];
+  const habits = options.candidateHabits ?? [];
+  const projects = options.candidateProjects ?? [];
+  if (!tasks.length && !habits.length && !projects.length) {
+    return {
+      ok: true,
+      data: {
+        suggested_task_ids: [],
+        suggested_habit_ids: [],
+        suggested_project_ids: [],
+        reason: '没有可关联的候选',
+      },
+      rawContent: '{}',
+      attempts: 0,
+    };
+  }
+  try {
+    const raw = await aiApi.aiLifeRoadSuggestLinks({
+      focus_node: options.focusNode,
+      candidate_tasks: tasks,
+      candidate_habits: habits,
+      candidate_projects: projects,
+    });
+    const data = normalizeLifeRoadSuggestLinksPayload(raw, {
+      tasks: new Set(tasks.map((t) => t.id).filter(Boolean)),
+      habits: new Set(habits.map((h) => h.id).filter(Boolean)),
+      projects: new Set(projects.map((p) => p.id).filter(Boolean)),
+    });
+    if (!data) return { ok: false, error: '未能生成关联建议', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+// --- 我的页 P2 ---
+
+export type AnalyzeProfileWeightCommentOptions = {
+  points: Array<{ ymd: string; kg: number }>;
+  goal?: string;
+  heightCm?: number;
+};
+
+export type AnalyzeProfileWeightCommentResult =
+  | { ok: true; data: aiApi.ProfileWeightCommentJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeProfileWeightCommentPayload(
+  raw: unknown,
+): aiApi.ProfileWeightCommentJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const comment = String(o.comment ?? '').trim().slice(0, 240);
+  if (!comment) return null;
+  const cautionRaw = typeof o.caution === 'string' ? o.caution.trim().slice(0, 120) : '';
+  return { comment, caution: cautionRaw || null };
+}
+
+export async function analyzeProfileWeightComment(
+  options: AnalyzeProfileWeightCommentOptions,
+): Promise<AnalyzeProfileWeightCommentResult> {
+  const points = options.points
+    .filter(
+      (p) => typeof p.ymd === 'string' && p.ymd.trim() && Number.isFinite(p.kg),
+    )
+    .slice(-30)
+    .map((p) => ({ ymd: p.ymd.trim(), kg: p.kg }));
+  if (!points.length) return { ok: false, error: '没有可分析的体重记录', attempts: 0 };
+  try {
+    const raw = await aiApi.aiProfileWeightComment({
+      points,
+      goal: options.goal?.trim() || undefined,
+      height_cm:
+        options.heightCm != null && Number.isFinite(options.heightCm)
+          ? options.heightCm
+          : undefined,
+    });
+    const data = normalizeProfileWeightCommentPayload(raw);
+    if (!data) return { ok: false, error: '未能生成体重短评', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type DraftProfileCompletionLogCommentOptions = {
+  projectTitle: string;
+  archiveSummary?: string;
+  durationLabel?: string;
+  pointsDelta?: number;
+  source?: string;
+};
+
+export type DraftProfileCompletionLogCommentResult =
+  | { ok: true; data: aiApi.ProfileCompletionLogCommentJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeProfileCompletionLogCommentPayload(
+  raw: unknown,
+): aiApi.ProfileCompletionLogCommentJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const comment = String(o.comment ?? '').trim().slice(0, 200);
+  if (!comment) return null;
+  return { comment };
+}
+
+export async function draftProfileCompletionLogComment(
+  options: DraftProfileCompletionLogCommentOptions,
+): Promise<DraftProfileCompletionLogCommentResult> {
+  const project_title = options.projectTitle.trim();
+  if (!project_title) return { ok: false, error: '缺少项目标题', attempts: 0 };
+  try {
+    const raw = await aiApi.aiProfileCompletionLogComment({
+      project_title,
+      archive_summary: options.archiveSummary?.trim() || undefined,
+      duration_label: options.durationLabel?.trim() || undefined,
+      points_delta:
+        options.pointsDelta != null && Number.isFinite(options.pointsDelta)
+          ? options.pointsDelta
+          : undefined,
+      source: options.source?.trim() || undefined,
+    });
+    const data = normalizeProfileCompletionLogCommentPayload(raw);
+    if (!data) return { ok: false, error: '未能生成履历短评', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type DraftProfileNotificationCopyItem = {
+  identifier: string;
+  fingerprint: string;
+  contextBlock: string;
+  fallbackTitle?: string;
+  fallbackBody?: string;
+};
+
+export type DraftProfileNotificationCopyResult =
+  | { ok: true; data: aiApi.ProfileNotificationCopyJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+function normalizeProfileNotificationCopyPayload(
+  raw: unknown,
+  allowed: Map<string, { identifier: string; fingerprint: string }>,
+): aiApi.ProfileNotificationCopyJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const list = Array.isArray(o.copies)
+    ? o.copies
+    : Array.isArray(o.items)
+      ? o.items
+      : null;
+  if (!list) return null;
+  const copies: aiApi.ProfileNotificationCopyItemJson[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const r = row as Record<string, unknown>;
+    const identifier = String(r.identifier ?? '').trim();
+    const fingerprint = String(r.fingerprint ?? '').trim();
+    if (!allowed.has(`${identifier}\u0000${fingerprint}`)) continue;
+    const title = String(r.title ?? '').trim();
+    const body = String(r.body ?? '').trim();
+    if (!title && !body) continue;
+    copies.push({ identifier, fingerprint, title: title || '提醒', body });
+    if (copies.length >= 10) break;
+  }
+  return { copies };
+}
+
+export async function draftProfileNotificationCopy(
+  items: DraftProfileNotificationCopyItem[],
+): Promise<DraftProfileNotificationCopyResult> {
+  const cleaned = items
+    .map((i) => ({
+      identifier: i.identifier.trim(),
+      fingerprint: i.fingerprint.trim(),
+      context_block: i.contextBlock.trim(),
+      fallback_title: i.fallbackTitle?.trim() || undefined,
+      fallback_body: i.fallbackBody?.trim() || undefined,
+    }))
+    .filter((i) => i.identifier && i.fingerprint && i.context_block)
+    .slice(0, 10);
+  if (!cleaned.length) return { ok: false, error: '没有可预热的通知', attempts: 0 };
+  try {
+    const raw = await aiApi.aiProfileNotificationCopy({ items: cleaned });
+    const allowed = new Map<string, { identifier: string; fingerprint: string }>();
+    for (const i of cleaned) {
+      allowed.set(`${i.identifier}\u0000${i.fingerprint}`, {
+        identifier: i.identifier,
+        fingerprint: i.fingerprint,
+      });
+    }
+    const data = normalizeProfileNotificationCopyPayload(raw, allowed);
+    if (!data || !data.copies.length) {
+      return { ok: false, error: '未能生成有效文案', attempts: 1, details: raw };
+    }
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+
+export type AnalyzeLifeRoadPeriodReviewOptions = {
+  period: string;
+  calendarYear?: number;
+  quarter?: number;
+  directionBody?: string;
+  yearTheme?: string;
+  statusCounts?: Record<string, number>;
+  arrivedTitles?: string[];
+  nodeSummaries?: Array<Record<string, unknown>>;
+};
+
+export type AnalyzeLifeRoadPeriodReviewResult =
+  | { ok: true; data: aiApi.LifeRoadPeriodReviewJson; rawContent: string; attempts: number }
+  | { ok: false; error: string; attempts: number; httpStatus?: number; details?: unknown };
+
+const LIFE_ROAD_PERIOD_OPEN_HINTS = new Set(['tasks', 'review', 'life-road', 'wish-board']);
+
+function normalizeLifeRoadPeriodReviewPayload(
+  raw: unknown,
+): aiApi.LifeRoadPeriodReviewJson | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const review = String(o.review ?? o.body ?? '').trim().slice(0, 600);
+  if (!review) return null;
+  const highlights: string[] = [];
+  if (Array.isArray(o.highlights)) {
+    for (const h of o.highlights) {
+      const text = String(h ?? '').trim().slice(0, 120);
+      if (text && !highlights.includes(text)) highlights.push(text);
+      if (highlights.length >= 6) break;
+    }
+  }
+  const themeRaw =
+    typeof o.next_theme_draft === 'string' ? o.next_theme_draft.trim().slice(0, 40) : '';
+  const hintRaw = String(o.open_hint ?? '').trim().toLowerCase();
+  return {
+    review,
+    highlights,
+    next_theme_draft: themeRaw || null,
+    open_hint: LIFE_ROAD_PERIOD_OPEN_HINTS.has(hintRaw) ? hintRaw : null,
+  };
+}
+
+export async function analyzeLifeRoadPeriodReview(
+  options: AnalyzeLifeRoadPeriodReviewOptions,
+): Promise<AnalyzeLifeRoadPeriodReviewResult> {
+  const period = options.period.trim() || 'year';
+  try {
+    const raw = await aiApi.aiLifeRoadPeriodReview({
+      period,
+      calendar_year: options.calendarYear,
+      quarter: options.quarter,
+      direction_body: options.directionBody?.trim() || undefined,
+      year_theme: options.yearTheme?.trim() || undefined,
+      status_counts: options.statusCounts,
+      arrived_titles: options.arrivedTitles,
+      node_summaries: options.nodeSummaries,
+    });
+    const data = normalizeLifeRoadPeriodReviewPayload(raw);
+    if (!data) return { ok: false, error: '未能生成回顾', attempts: 1, details: raw };
+    return { ok: true, data, rawContent: JSON.stringify(raw), attempts: 1 };
+  } catch (e) {
+    const err = mapApiError(e);
+    return { ok: false, error: err.error, attempts: 1, httpStatus: err.httpStatus, details: err.details };
+  }
+}
+

@@ -2,7 +2,10 @@
  * 道路导图子页：对齐 `我的道路-UI重构.html` route-road
  *（同步条、总方向 north-card、可折叠道路树、验收勾选）。
  */
+import { AiLifeRoadFromImageSheet } from '@/components/profile/ai-life-road-from-image-sheet';
+import { AiLifeRoadPeriodReviewSheet } from '@/components/profile/ai-life-road-period-review-sheet';
 import { AiLifeRoadPlanSheet } from '@/components/profile/ai-life-road-plan-sheet';
+import { AiLifeRoadSuggestLinksSheet } from '@/components/profile/ai-life-road-suggest-links-sheet';
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import {
   FoldRiseIn,
@@ -33,11 +36,15 @@ import {
 } from '@/lib/life-road/life-road-node-model';
 import {
   buildRoadMindMap,
+  resolveYearFocusDetail,
   type RoadMindMapModel,
   type RoadProjectRef,
 } from '@/lib/life-road/life-road-tree';
 import { getDatabase } from '@/lib/database';
-import { getLifeDirection } from '@/lib/repositories/life-road/life-direction';
+import {
+  getLifeDirection,
+  updateLifeDirection,
+} from '@/lib/repositories/life-road/life-direction';
 import type { LifeDirectionRow } from '@/lib/repositories/life-road/life-direction.types';
 import {
   deleteLifeRoadNode,
@@ -405,11 +412,51 @@ export default function LifeRoadScreen() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [revealEmptySeason, setRevealEmptySeason] = useState(false);
   const [planAiOpen, setPlanAiOpen] = useState(false);
+  const [imageAiOpen, setImageAiOpen] = useState(false);
+  const [linksAiOpen, setLinksAiOpen] = useState(false);
+  const [periodReviewOpen, setPeriodReviewOpen] = useState(false);
   const [existingNodeTitles, setExistingNodeTitles] = useState<string[]>([]);
   const seededExpand = useRef(false);
   const appliedFocusRef = useRef<string | null>(null);
   const yearNow = new Date().getFullYear();
   const monthNow = new Date().getMonth() + 1;
+  const dayNow = new Date().getDate();
+
+  const yearFocus = useMemo(
+    () => (model ? resolveYearFocusDetail(model) : null),
+    [model],
+  );
+
+  const periodReviewData = useMemo(() => {
+    const statusCounts: Record<string, number> = {};
+    const arrivedTitles: string[] = [];
+    const nodeSummaries: Array<Record<string, unknown>> = [];
+    if (model) {
+      const branch = model.years.find((y) => y.isCurrent) ?? model.years[0];
+      const collect = (node: LifeRoadNodeRow | null) => {
+        if (!node) return;
+        statusCounts[node.status] = (statusCounts[node.status] ?? 0) + 1;
+        if (node.status === 'arrived') arrivedTitles.push(node.title);
+        nodeSummaries.push({
+          title: node.title,
+          kind: node.kind,
+          status: node.status,
+        });
+      };
+      if (branch) {
+        collect(branch.node);
+        for (const q of branch.quarters) {
+          collect(q.node);
+          for (const m of q.months) collect(m.node);
+        }
+      }
+    }
+    return { statusCounts, arrivedTitles, nodeSummaries };
+  }, [model]);
+
+  const nearQuarterEnd = [3, 6, 9, 12].includes(monthNow) && dayNow >= 20;
+  const reviewPeriod = nearQuarterEnd ? 'quarter' : 'year';
+  const reviewQuarter = nearQuarterEnd ? Math.floor((monthNow - 1) / 3) + 1 : null;
 
   const rebuild = useCallback(async () => {
     const [dir, nodes] = await Promise.all([
@@ -746,9 +793,26 @@ export default function LifeRoadScreen() {
                     关键词 · {keywords.length ? keywords.join(' / ') : '未选择'}
                   </Text>
                 </View>
-                {direction?.body?.trim() ? (
+                <View style={styles.aiPlanRow}>
+                  {direction?.body?.trim() ? (
+                    <Pressable
+                      onPress={() => setPlanAiOpen(true)}
+                      style={({ pressed }) => [
+                        styles.aiPlanBtn,
+                        {
+                          borderColor: lr.line,
+                          backgroundColor: 'rgba(255,255,255,0.55)',
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <AppIcon name="auto-awesome" size={13} color={lr.pine} />
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
+                        AI 拆解方向
+                      </Text>
+                    </Pressable>
+                  ) : null}
                   <Pressable
-                    onPress={() => setPlanAiOpen(true)}
+                    onPress={() => setImageAiOpen(true)}
                     style={({ pressed }) => [
                       styles.aiPlanBtn,
                       {
@@ -757,12 +821,44 @@ export default function LifeRoadScreen() {
                         opacity: pressed ? 0.88 : 1,
                       },
                     ]}>
-                    <AppIcon name="auto-awesome" size={13} color={lr.pine} />
+                    <AppIcon name="photo-camera" size={13} color={lr.pine} />
                     <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
-                      AI 拆解方向
+                      拍照导入
                     </Text>
                   </Pressable>
-                ) : null}
+                  {yearFocus?.node ? (
+                    <Pressable
+                      onPress={() => setLinksAiOpen(true)}
+                      style={({ pressed }) => [
+                        styles.aiPlanBtn,
+                        {
+                          borderColor: lr.line,
+                          backgroundColor: 'rgba(255,255,255,0.55)',
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <AppIcon name="link" size={13} color={lr.pine} />
+                      <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
+                        关联执行
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    onPress={() => setPeriodReviewOpen(true)}
+                    style={({ pressed }) => [
+                      styles.aiPlanBtn,
+                      {
+                        borderColor: lr.line,
+                        backgroundColor: 'rgba(255,255,255,0.55)',
+                        opacity: pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    <AppIcon name="auto-awesome" size={13} color={lr.clay} />
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: lr.clay }}>
+                      季末回顾
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
             </FoldRiseIn>
 
@@ -1219,6 +1315,64 @@ export default function LifeRoadScreen() {
           void reload(true);
         }}
       />
+
+      <AiLifeRoadFromImageSheet
+        visible={imageAiOpen}
+        onClose={() => setImageAiOpen(false)}
+        calendarYear={yearNow}
+        directionId={direction?.id ?? null}
+        onCreated={() => {
+          void reload(true);
+        }}
+      />
+
+      <AiLifeRoadSuggestLinksSheet
+        visible={linksAiOpen}
+        onClose={() => setLinksAiOpen(false)}
+        focusNode={
+          yearFocus?.node
+            ? {
+                id: yearFocus.node.id,
+                title: yearFocus.node.title,
+                note: yearFocus.node.note,
+                kind: yearFocus.node.kind,
+                status: yearFocus.node.status,
+              }
+            : yearFocus
+              ? { title: yearFocus.title, kind: yearFocus.kind }
+              : null
+        }
+      />
+
+      <AiLifeRoadPeriodReviewSheet
+        visible={periodReviewOpen}
+        onClose={() => setPeriodReviewOpen(false)}
+        period={reviewPeriod}
+        calendarYear={yearNow}
+        quarter={reviewQuarter}
+        directionBody={direction?.body ?? null}
+        yearTheme={direction?.year_theme ?? null}
+        statusCounts={periodReviewData.statusCounts}
+        arrivedTitles={periodReviewData.arrivedTitles}
+        nodeSummaries={periodReviewData.nodeSummaries}
+        onApplyTheme={(theme) => {
+          const id = direction?.id;
+          if (!id) return;
+          void (async () => {
+            try {
+              await updateLifeDirection(id, { year_theme: theme });
+              await reload(false);
+            } catch (e) {
+              toast.error(toUserMessage(e, '写入年度主题失败'));
+            }
+          })();
+        }}
+        onOpenHint={(hint) => {
+          if (hint === 'tasks') router.push('/(tabs)/tasks');
+          else if (hint === 'review') router.push('/daily-review');
+          else if (hint === 'wish-board') router.push('/wish-board');
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -1329,8 +1483,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  aiPlanBtn: {
+  aiPlanRow: {
     marginTop: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  aiPlanBtn: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',

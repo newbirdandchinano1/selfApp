@@ -5,9 +5,14 @@ import {
   foregroundStyle,
   frame,
   padding,
+  widgetURL,
 } from '@expo/ui/swift-ui/modifiers';
 // 必须直连 'expo-widgets'：iOS LayoutRegistry Metro 只 stub 该模块名来捕获 layout。
 import { createWidget, type WidgetEnvironment } from 'expo-widgets';
+
+function linkOf(props: { deepLink: string }): ReturnType<typeof widgetURL> {
+  return widgetURL(props.deepLink || 'zheng://finance');
+}
 
 export type FinanceGlanceWidgetProps = {
   title: string;
@@ -76,6 +81,7 @@ const FinanceGlanceWidgetView = (
             containerBackground(paper, 'widget'),
             padding({ all: 8 }),
             frame({ maxWidth: Infinity, maxHeight: Infinity, alignment: 'leading' }),
+            linkOf(props),
           ]}>
           <Text modifiers={[font({ size: 12, weight: 'semibold' }), foregroundStyle(accent)]}>
             财务
@@ -96,6 +102,7 @@ const FinanceGlanceWidgetView = (
           containerBackground(paper, 'widget'),
           padding({ all: 8 }),
           frame({ maxWidth: Infinity, maxHeight: Infinity, alignment: 'leading' }),
+          linkOf(props),
         ]}>
         <Text modifiers={[font({ size: 12, weight: 'semibold' }), foregroundStyle(accent)]}>
           财务
@@ -118,6 +125,7 @@ const FinanceGlanceWidgetView = (
         containerBackground(paper, 'widget'),
         padding({ all: 14 }),
         frame({ maxWidth: Infinity, maxHeight: Infinity, alignment: 'topLeading' }),
+        linkOf(props),
       ]}>
       <HStack spacing={8}>
         <Text modifiers={[font({ size: 11, weight: 'bold' }), foregroundStyle(accent)]}>

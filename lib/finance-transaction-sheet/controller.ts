@@ -42,7 +42,17 @@ import React from 'react';
 import { Dimensions, Keyboard, Platform, type KeyboardEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-/** 打开记账弹窗的启动意图（手动/转账/自动记账深链） */
+/** 助手 / L1 记账草稿预填（对齐 finance/parse-one-liner） */
+export type FinanceAiDraftPayload = {
+  transaction_type: 'expense' | 'income';
+  amount: number;
+  name: string;
+  category_label?: string | null;
+  account_name?: string | null;
+  payment_account_label?: string | null;
+};
+
+/** 打开记账弹窗的启动意图（手动/转账/自动记账深链/助手草稿） */
 export type FinanceSheetLaunchIntent =
   | {
       kind: 'manual';
@@ -64,6 +74,13 @@ export type FinanceSheetLaunchIntent =
   /** 深链 zheng://screenshot：在财务页弹窗内读取剪贴板并记账 */
   | {
       kind: 'auto_ledger_clipboard_pending';
+    }
+  /** 全局助手 ActionCard：预填一句话 + 预览态，用户仍需确认保存 */
+  | {
+      kind: 'ai_draft';
+      draft: FinanceAiDraftPayload;
+      /** 展示在句子框的原文；缺省用 name + amount */
+      sentence?: string;
     };
 
 let pendingLaunchIntent: FinanceSheetLaunchIntent | null = null;
@@ -176,6 +193,8 @@ export function useFinanceTransactionSheetController({
   const [sentenceLedgerPreview, setSentenceLedgerPreview] = React.useState<SentenceLedgerPreviewState>(null);
   const [isSentencePreviewBusy, setIsSentencePreviewBusy] = React.useState(false);
   const [sheetKeyboardInset, setSheetKeyboardInset] = React.useState(0);
+  /** ai_draft 预填：跳过「改句子即清预览」一次，避免 setSentence 冲掉刚写入的 preview */
+  const skipSentencePreviewClearRef = React.useRef(false);
 
   const financeAccountsRef = React.useRef<FinanceAccountBalanceRow[]>([]);
 
@@ -375,6 +394,45 @@ export function useFinanceTransactionSheetController({
         setSelectedAccountId(accId);
         return;
       }
+      if (intent.kind === 'ai_draft') {
+        const d = intent.draft;
+        const txnType = d.transaction_type === 'income' ? 'income' : 'expense';
+        resetSheetForm('sentence');
+        const hint =
+          (d.account_name ?? '').trim() || (d.payment_account_label ?? '').trim();
+        let accId =
+          getDefaultSheetAccountIdForTab('sentence', list) ?? list[0].id;
+        if (hint) {
+          const matched = list.find(
+            (a) => a.name === hint || a.name.includes(hint) || hint.includes(a.name),
+          );
+          if (matched) accId = matched.id;
+        }
+        setSelectedAccountId(accId);
+        const amount = Number(d.amount);
+        const name = (d.name ?? '').trim() || '未命名';
+        const sentence =
+          (intent.sentence ?? '').trim() ||
+          [name, Number.isFinite(amount) ? String(amount) : '', hint].filter(Boolean).join(' ');
+        const cat = pickSheetCategoryForParsed(
+          txnType,
+          d.category_label,
+          expenseCategories,
+          incomeCategories,
+        );
+        setSelectedCategoryKey(cat.key);
+        skipSentencePreviewClearRef.current = true;
+        setSheetSentence(sentence);
+        setSentenceLedgerPreview({
+          kind: 'ok',
+          source: 'ai',
+          transaction_type: txnType,
+          amount: Number.isFinite(amount) ? Math.abs(amount) : 0,
+          name,
+          categoryLabel: cat.label,
+        });
+        return;
+      }
       const resolved = resolveTransferLaunchAccounts(list, {
         fromAccountId: intent.fromAccountId,
         toAccountId: intent.toAccountId,
@@ -387,7 +445,12 @@ export function useFinanceTransactionSheetController({
       setTransferFromAccountId(resolved.fromId);
       setTransferToAccountId(resolved.toId);
     },
-    [getDefaultSheetAccountIdForTab, resetSheetForm],
+    [
+      expenseCategories,
+      getDefaultSheetAccountIdForTab,
+      incomeCategories,
+      resetSheetForm,
+    ],
   );
 
   React.useEffect(() => {
@@ -432,6 +495,10 @@ export function useFinanceTransactionSheetController({
   }, [applyLaunchIntent, launchIntent, visible, financeAccounts.length]);
 
   React.useEffect(() => {
+    if (skipSentencePreviewClearRef.current) {
+      skipSentencePreviewClearRef.current = false;
+      return;
+    }
     setSentenceLedgerPreview(null);
   }, [sheetSentence]);
 

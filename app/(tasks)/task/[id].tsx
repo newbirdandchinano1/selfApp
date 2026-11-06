@@ -34,7 +34,6 @@ import { daysBetweenYmd } from '@/lib/project-progress-reminder-logic';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
-import { unassignFrogForDay } from '@/lib/frog-candidates-api';
 import { clearFrogSessionCompletedOn, getIsLongTermTask } from '@/lib/long-term-task';
 import { parseNoteImageUris } from '@/lib/note-image-extra';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
@@ -84,6 +83,7 @@ import {
   type SchedulePickerResult,
 } from '@/lib/schedule-picker-bridge';
 import { formatScheduleTimeHm, type ScheduleMeta } from '@/lib/schedule/meta';
+import { clearSubjectAssignDay } from '@/lib/schedule-service';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { requestPush } from '@/lib/sync-manager';
 import {
@@ -1490,7 +1490,12 @@ export default function TaskDetailScreen() {
           void (async () => {
             try {
               setUnassigning(true);
-              await unassignFrogForDay({ kind: 'task', id: taskId, assignYmd: latestFrogYmd });
+              await clearSubjectAssignDay({
+                subjectKind: 'task',
+                subjectId: taskId,
+                assignYmd: latestFrogYmd,
+                logicalTodayYmd: logicalToday,
+              });
               notifyPageDataChanged(PAGE_API_KEY);
               toast.success('已取消指派 · 果冻块回到候选池');
               await reloadTaskDetail(true);
@@ -1504,7 +1509,7 @@ export default function TaskDetailScreen() {
         },
       },
     ]);
-  }, [latestFrogYmd, reloadTaskDetail, taskId, unassigning]);
+  }, [latestFrogYmd, logicalToday, reloadTaskDetail, taskId, unassigning]);
 
   const canPlaceOnSchedule =
     !!taskId &&

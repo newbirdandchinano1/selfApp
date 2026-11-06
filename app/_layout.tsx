@@ -18,6 +18,9 @@ import { AppDialogHost } from '@/components/app-dialog-host';
 import { AppToastHost } from '@/components/app-toast-host';
 import { PointsEarnedToastHost } from '@/components/points-earned-toast-host';
 import { FinanceTransactionSheet } from '@/components/finance/finance-transaction-sheet';
+import { AssistantDeepLinkListener } from '@/components/assistant/assistant-deeplink-listener';
+import { GlobalAssistantHost } from '@/components/assistant/global-assistant-host';
+import { GlobalFoodIntakeSheet } from '@/components/assistant/global-food-intake-sheet';
 import { ScreenshotDeepLinkListener } from '@/components/screenshot-deeplink-listener';
 import { NotificationRouter } from '@/components/notification-router';
 import {
@@ -475,10 +478,13 @@ function RootLayoutInner() {
         {showMainApp && isDbReady ? (
           <View style={{ flex: 1 }}>
             <ScreenshotDeepLinkListener />
+            <AssistantDeepLinkListener />
             <AutoLedgerCoordinator dbReady={isDbReady} />
             <ScheduledExpenseCoordinator dbReady={isDbReady} />
             <NotificationRouter />
             <FinanceTransactionSheet />
+            <GlobalFoodIntakeSheet />
+            <GlobalAssistantHost />
             <AppErrorBoundary>
             <ApiLoadingShell>
             <Stack screenOptions={{ headerShown: false }}>

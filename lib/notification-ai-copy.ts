@@ -5,7 +5,7 @@
  */
 
 import { AppSettingKey, getAppSettingFromCache, setAppSetting } from '@/lib/app-settings-store';
-import { analyzeFinanceDailyWrapup } from '@/lib/zhipu-image-parse';
+import { analyzeFinanceDailyWrapup, draftProfileNotificationCopy } from '@/lib/zhipu-image-parse';
 
 const TITLE_MAX = 28;
 const BODY_MAX = 80;
@@ -152,5 +152,64 @@ export async function prefetchFinanceNotificationWrapupCopy(params: {
     return normalizeCopy(r.data.title, r.data.body);
   } catch {
     return fallback;
+  }
+}
+
+/** 供 `prefetchProfileNotificationCopy` 的预热项 */
+export type ProfileNotificationCopyPrefetchItem = {
+  identifier: string;
+  fingerprint: string;
+  contextBlock: string;
+  fallbackTitle?: string;
+  fallbackBody?: string;
+};
+
+/**
+ * 用户显式开启「更自然的通知文案」后，批量（≤10）调 `profile/notification-copy`
+ * 并写入缓存。登记路径仍只读缓存 + 硬编码兜底，不在此处外联。
+ */
+export async function prefetchProfileNotificationCopy(
+  items: ProfileNotificationCopyPrefetchItem[],
+): Promise<{ ok: boolean; written: number; error?: string }> {
+  const limited = items
+    .map((i) => ({
+      identifier: i.identifier.trim(),
+      fingerprint: i.fingerprint.trim(),
+      contextBlock: i.contextBlock.trim(),
+      fallbackTitle: i.fallbackTitle,
+      fallbackBody: i.fallbackBody,
+    }))
+    .filter((i) => i.identifier && i.fingerprint && i.contextBlock)
+    .slice(0, 10);
+  if (!limited.length) return { ok: false, written: 0, error: '没有可预热的通知' };
+
+  try {
+    const r = await draftProfileNotificationCopy(
+      limited.map((i) => ({
+        identifier: i.identifier,
+        fingerprint: i.fingerprint,
+        contextBlock: i.contextBlock,
+        fallbackTitle: i.fallbackTitle,
+        fallbackBody: i.fallbackBody,
+      })),
+    );
+    if (!r.ok) return { ok: false, written: 0, error: r.error };
+    let written = 0;
+    for (const copy of r.data.copies) {
+      await cacheNotificationAiCopy({
+        identifier: copy.identifier,
+        fingerprint: copy.fingerprint,
+        title: copy.title,
+        body: copy.body,
+      });
+      written += 1;
+    }
+    return { ok: true, written };
+  } catch (e) {
+    return {
+      ok: false,
+      written: 0,
+      error: e instanceof Error ? e.message : '预热失败',
+    };
   }
 }

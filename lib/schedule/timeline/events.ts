@@ -72,7 +72,8 @@ export function buildTimelineEventsForDay(params: {
   const events: TimelineEvent[] = [];
 
   for (const p of placements) {
-    if (p.orphaned) continue;
+    // 与课表/未入格池一致：orphaned 或无格均不算入轴（勿因残留分钟画进时间线）
+    if (p.orphaned || p.startSlotIndex == null) continue;
     const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
     if (ymd !== dayYmd) continue;
     const iv = placementInterval(p, axis);
@@ -134,6 +135,11 @@ export function buildTimelineEventsForDay(params: {
       id: t.taskId,
       assignYmd: t.assignYmd,
     });
+    /**
+     * 与真实占用同一口径：resolve 拒绝（该日无青蛙指派 / 未入格）不进时间线。
+     * 过期滞留块也不得例外——否则未入格项目/待办会以全天虚拟条漏进轴内。
+     */
+    if (!display) continue;
     let startMinutes = axis.startMinutes;
     let endMinutes = axis.endMinutes;
     if (!t.allDay) {

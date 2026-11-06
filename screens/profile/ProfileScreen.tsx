@@ -1,3 +1,4 @@
+import { AiProfileWeightCommentSheet } from '@/components/profile/ai-profile-weight-comment-sheet';
 import { AiWeekRhythmInsightsSheet } from '@/components/profile/ai-week-rhythm-insights-sheet';
 import { ProfileMoreSheet, type ProfileMoreMenuItem } from '@/components/profile/ProfileMoreSheet';
 import { ProfileRoadBelow } from '@/components/profile/ProfileRoadBelow';
@@ -23,7 +24,10 @@ import {
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
-import type { ProfileWeekRhythmOpenHint } from '@/lib/ai-api-client';
+import type {
+  ProfileCompletenessNudgeJson,
+  ProfileWeekRhythmOpenHint,
+} from '@/lib/ai-api-client';
 import { formatYmd } from '@/lib/date';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
@@ -38,6 +42,7 @@ import { getDefaultUser, subscribeDefaultUserUpdates } from '@/lib/repositories/
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { formatPoints } from '@/lib/reward-points';
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
+import { nudgeProfileCompleteness } from '@/lib/zhipu-image-parse';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -233,6 +238,10 @@ export default function ProfileScreen() {
   const [syncClock, setSyncClock] = useState(formatSyncClock);
   const [moreOpen, setMoreOpen] = useState(false);
   const [weekInsightsOpen, setWeekInsightsOpen] = useState(false);
+  const [weightCommentOpen, setWeightCommentOpen] = useState(false);
+  const [completenessNudge, setCompletenessNudge] =
+    useState<ProfileCompletenessNudgeJson | null>(null);
+  const nudgeFetchedKey = useRef<string>('');
   const bellShake = useRef(new Animated.Value(0)).current;
   const prevBadgeRef = useRef(0);
 
@@ -412,6 +421,53 @@ export default function ProfileScreen() {
   const completenessPercent = hub?.completenessPercent ?? 0;
   const filledCount = hub?.filledCount ?? 0;
   const totalCount = hub?.totalCount ?? 0;
+  const unfilledChips = useMemo(
+    () => fillChips.filter(c => !c.filled),
+    [fillChips],
+  );
+
+  useEffect(() => {
+    if (!hub || unfilledChips.length === 0 || completenessPercent >= 100) {
+      setCompletenessNudge(null);
+      nudgeFetchedKey.current = '';
+      return;
+    }
+    const key = `${completenessPercent}:${unfilledChips.map(c => c.key).join(',')}`;
+    if (nudgeFetchedKey.current === key) return;
+    nudgeFetchedKey.current = key;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await nudgeProfileCompleteness({
+          fillChips: unfilledChips.map(c => ({
+            key: c.key,
+            label: c.label,
+            filled: c.filled,
+            tab: c.tab,
+          })),
+          filledSummary: {
+            persona: Boolean(hub.archive.personaFilled),
+            dietary: !hub.archive.dietaryEmpty,
+            birthday: Boolean(user?.birthday?.trim()),
+            body: Boolean(user && user.height > 0 && user.weight > 0),
+            goal: hub.archive.goal,
+            lifestyle: hub.archive.lifestyle,
+          },
+          completenessPercent,
+        });
+        if (cancelled) return;
+        if (r.ok) setCompletenessNudge(r.data);
+        else setCompletenessNudge(null);
+      } catch {
+        if (!cancelled) setCompletenessNudge(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [completenessPercent, hub, unfilledChips, user]);
+
+  const primaryNudgeChip = completenessNudge?.primary_chip ?? null;
 
   const moreItems: ProfileMoreMenuItem[] = useMemo(() => {
     const weekIn = formatPoints(hub?.wish.weekEarned ?? 0);
@@ -630,35 +686,69 @@ export default function ProfileScreen() {
         </FoldRiseIn>
 
         {/* 资料待完善 */}
-        {fillChips.length > 0 ? (
+        {unfilledChips.length > 0 ? (
           <FoldRiseIn animate={motionOn} index={2} staggerMs={45} fromY={12}>
             <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
               <View style={styles.rowBetween}>
                 <Text style={[styles.cardTitle, { color: fold.ink2 }]}>资料待完善</Text>
                 <Text style={[styles.cardHint, { color: fold.faint }]}>补全后 AI 建议更准</Text>
               </View>
-              <View style={styles.chipRow}>
-                {fillChips.map((chip) => (
-                  <Pressable
-                    key={chip.key}
-                    onPress={() => openEdit(chip.tab)}
-                    style={({ pressed }) => [
-                      styles.chip,
-                      chip.filled
-                        ? { backgroundColor: fold.sage2, borderColor: '#D6E4DA' }
-                        : { backgroundColor: '#F7F0E2', borderColor: '#E6D9C4' },
-                      pressed && { transform: [{ scale: 0.94 }] },
-                    ]}>
-                    <Text
-                      style={[
-                        styles.chipText,
-                        { color: chip.filled ? fold.pine2 : '#8B6B3A' },
-                      ]}>
-                      {chip.label}
-                      {chip.filled ? ' ✓' : ' ›'}
+              {completenessNudge?.reason ? (
+                <Pressable
+                  onPress={() => {
+                    const chip = fillChips.find(c => c.key === primaryNudgeChip);
+                    openEdit(chip?.tab ?? 'basic');
+                  }}
+                  style={styles.nudgeBanner}>
+                  <Text style={[styles.nudgeReason, { color: fold.ink2 }]}>
+                    {completenessNudge.reason}
+                  </Text>
+                  {completenessNudge.example_fill ? (
+                    <Text style={[styles.nudgeExample, { color: fold.muted }]} numberOfLines={2}>
+                      示例 · {completenessNudge.example_fill}
                     </Text>
-                  </Pressable>
-                ))}
+                  ) : null}
+                </Pressable>
+              ) : null}
+              <View style={styles.chipRow}>
+                {fillChips.map((chip) => {
+                  const isPrimary = !chip.filled && chip.key === primaryNudgeChip;
+                  return (
+                    <Pressable
+                      key={chip.key}
+                      onPress={() => openEdit(chip.tab)}
+                      style={({ pressed }) => [
+                        styles.chip,
+                        chip.filled
+                          ? { backgroundColor: fold.sage2, borderColor: '#D6E4DA' }
+                          : isPrimary
+                            ? {
+                                backgroundColor: '#EAF3EC',
+                                borderColor: fold.pine,
+                                borderWidth: 1.5,
+                              }
+                            : { backgroundColor: '#F7F0E2', borderColor: '#E6D9C4' },
+                        pressed && { transform: [{ scale: 0.94 }] },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.chipText,
+                          {
+                            color: chip.filled
+                              ? fold.pine2
+                              : isPrimary
+                                ? fold.pine
+                                : '#8B6B3A',
+                            fontWeight: isPrimary ? '800' : '600',
+                          },
+                        ]}>
+                        {isPrimary ? '优先 · ' : ''}
+                        {chip.label}
+                        {chip.filled ? ' ✓' : ' ›'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
               <View style={[styles.progressTrack, { backgroundColor: fold.paper2 }]}>
                 <View
@@ -907,7 +997,28 @@ export default function ProfileScreen() {
             ]}>
             <View style={[styles.rowBetween, { marginBottom: 6 }]}>
               <Text style={[styles.cardTitle, { color: fold.ink2 }]}>身体数据</Text>
-              <Text style={[styles.cardHint, { color: fold.faint }]}>进入体征 ›</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {(hub?.weightTrend.points.length ?? 0) >= 1 ? (
+                  <Pressable
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      setWeightCommentOpen(true);
+                    }}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.insightChip,
+                      {
+                        borderColor: fold.line,
+                        backgroundColor: fold.paper2,
+                        opacity: pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    <AppIcon name="auto-awesome" size={11} color={fold.pine} />
+                    <Text style={[styles.insightChipText, { color: fold.pine }]}>短评</Text>
+                  </Pressable>
+                ) : null}
+                <Text style={[styles.cardHint, { color: fold.faint }]}>进入体征 ›</Text>
+              </View>
             </View>
             <View style={styles.bodyGrid}>
               {[
@@ -975,6 +1086,14 @@ export default function ProfileScreen() {
           else if (hint === 'life-road') router.push('/life-road');
           else if (hint === 'wish-board') router.push('/wish-board');
         }}
+      />
+
+      <AiProfileWeightCommentSheet
+        visible={weightCommentOpen}
+        onClose={() => setWeightCommentOpen(false)}
+        points={(hub?.weightTrend.points ?? []).map((p) => ({ ymd: p.ymd, kg: p.weight_kg }))}
+        goal={user?.goal ?? null}
+        heightCm={user?.height ?? null}
       />
     </SafeAreaView>
   );
@@ -1112,6 +1231,16 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   insightChipText: { fontSize: 10, fontWeight: '800' },
+  nudgeBanner: {
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(234,243,236,0.72)',
+    gap: 4,
+  },
+  nudgeReason: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
+  nudgeExample: { fontSize: 11, lineHeight: 16 },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1119,8 +1248,9 @@ const styles = StyleSheet.create({
     marginTop: 7,
   },
   chip: {
-    height: 22,
+    minHeight: 22,
     paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: 7,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',

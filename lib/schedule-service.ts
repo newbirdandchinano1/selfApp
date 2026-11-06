@@ -636,13 +636,16 @@ export async function rematerializeOrphanedPlacement(params: {
       scheduleTime: { allDay: true },
     });
   } catch (err) {
-    // 回滚为未入格，避免「格内但未指派」
+    // 回滚为未入格，避免「格内但未指派」；清残留分钟以免画进时间线
     await updatePlacementSlots(placement.id, {
       weekStartYmd: placement.weekStartYmd,
       weekday: placement.weekday,
       startSlotIndex: null,
       spanSlots: placement.spanSlots,
       orphaned: true,
+      startMinutes: null,
+      endMinutes: null,
+      allDay: null,
     });
     notifyFrogScheduleChanged();
     throw err;
@@ -925,6 +928,9 @@ export async function saveScheduleAxisWithRemap(
             await updatePlacementSlots(r.placementId, {
               startSlotIndex: null,
               orphaned: true,
+              startMinutes: null,
+              endMinutes: null,
+              allDay: null,
             });
           } else if (r.nextStartSlotIndex != null) {
             remappedCount += 1;
@@ -941,9 +947,9 @@ export async function saveScheduleAxisWithRemap(
       const results = remapPlacementsForMinutes(oldAxis, next, list);
       for (const r of results) {
         if (r.orphaned) {
-          if (r.reason === 'already_orphaned') continue;
-          orphanedCount += 1;
-          if (__DEV__ && r.reason) {
+          // 已 orphaned 也清残留分钟，避免历史脏数据仍被分钟区间画进时间线
+          if (r.reason !== 'already_orphaned') orphanedCount += 1;
+          if (__DEV__ && r.reason && r.reason !== 'already_orphaned') {
             console.log('[schedule-remap]', r.placementId, r.reason);
           }
           await updatePlacementSlots(r.placementId, {

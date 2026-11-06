@@ -3,6 +3,11 @@
  *（自定义顶栏、槽位面包屑、表单卡片、状态网格、底栏保存）。
  */
 import { AcceptanceChecklistEditor } from '@/components/life-road/AcceptanceChecklistEditor';
+import { AiLifeRoadAcceptanceSheet } from '@/components/profile/ai-life-road-acceptance-sheet';
+import {
+  AiLifeRoadNodeUpdateSheet,
+  type AiLifeRoadNodeUpdateApply,
+} from '@/components/profile/ai-life-road-node-update-sheet';
 import {
   FoldRiseIn,
   useFoldMotionGate,
@@ -35,6 +40,7 @@ import {
   type LifeRoadNodeKind,
   type LifeRoadNodeStatus,
 } from '@/lib/life-road/life-road-node-model';
+import { getLifeDirectionLocal } from '@/lib/repositories/life-road/life-direction';
 import {
   createLifeRoadNode,
   deleteLifeRoadNode,
@@ -168,12 +174,30 @@ export default function EditLifeRoadNodeScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [nodeId, setNodeId] = useState<string | null>(isNew ? null : params.id);
+  const [directionBody, setDirectionBody] = useState('');
+  const [acceptAiOpen, setAcceptAiOpen] = useState(false);
+  const [updateAiOpen, setUpdateAiOpen] = useState(false);
   const [baseline, setBaseline] = useState<{
     title: string;
     note: string;
     status: LifeRoadNodeStatus;
     acceptanceKey: string;
   } | null>(isNew ? { title: '', note: '', status: 'on_track', acceptanceKey: '' } : null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const dir = await getLifeDirectionLocal();
+        if (!cancelled) setDirectionBody(dir?.body?.trim() ?? '');
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const slotLabel = useMemo(
     () => buildSlotLabel(kind, calendarYear, quarter, month),
@@ -342,6 +366,26 @@ export default function EditLifeRoadNodeScreen() {
       : title.trim()
         ? '标题非空 · 有改动才可保存'
         : '标题非空 · 有改动才可保存';
+
+  const onApplyNodeUpdate = useCallback((patch: AiLifeRoadNodeUpdateApply) => {
+    if (patch.title) setTitle([...patch.title].slice(0, LIFE_ROAD_TITLE_MAX).join(''));
+    if ('note' in patch) {
+      const n = patch.note?.trim() ?? '';
+      setNote([...n].slice(0, LIFE_ROAD_NOTE_MAX).join(''));
+    }
+    if (patch.status) setStatus(patch.status);
+    if (patch.acceptanceItems?.length) {
+      setAcceptance(prev => {
+        const room = Math.max(0, LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - prev.length);
+        if (room <= 0) return prev;
+        const existing = new Set(prev.map(p => p.text.trim().toLowerCase()));
+        const add = patch.acceptanceItems!
+          .filter(a => a.text.trim() && !existing.has(a.text.trim().toLowerCase()))
+          .slice(0, room);
+        return add.length ? [...prev, ...add] : prev;
+      });
+    }
+  }, []);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: lr.paper }]} edges={['left', 'right']}>
@@ -556,9 +600,26 @@ export default function EditLifeRoadNodeScreen() {
                       验收标准
                     </Text>
                   </View>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                    {acceptance.length} / {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
-                  </Text>
+                  <View style={styles.aiHeadActions}>
+                    <Pressable
+                      onPress={() => setAcceptAiOpen(true)}
+                      disabled={!title.trim()}
+                      style={({ pressed }) => [
+                        styles.aiMiniBtn,
+                        {
+                          borderColor: lr.line,
+                          opacity: !title.trim() ? 0.4 : pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <AppIcon name="auto-awesome" size={12} color={lr.pine} />
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: lr.pine }}>
+                        生成验收
+                      </Text>
+                    </Pressable>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                      {acceptance.length} / {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
+                    </Text>
+                  </View>
                 </View>
                 <AcceptanceChecklistEditor
                   items={acceptance}
@@ -582,6 +643,30 @@ export default function EditLifeRoadNodeScreen() {
                   </Text>
                 </View>
               </FormCard>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={5} fromY={10}>
+              <Pressable
+                onPress={() => setUpdateAiOpen(true)}
+                disabled={!title.trim()}
+                style={({ pressed }) => [
+                  styles.aiUpdateBtn,
+                  {
+                    borderColor: lr.line,
+                    backgroundColor: 'rgba(255,255,255,0.55)',
+                    opacity: !title.trim() ? 0.45 : pressed ? 0.9 : 1,
+                  },
+                ]}>
+                <AppIcon name="auto-awesome" size={14} color={lr.pine} />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: lr.pine }}>
+                    一句话更新
+                  </Text>
+                  <Text style={{ fontSize: 11, color: lr.muted, marginTop: 2 }}>
+                    自然语言改状态 / 说明 / 验收草稿
+                  </Text>
+                </View>
+              </Pressable>
             </FoldRiseIn>
 
             <View style={styles.helperNote}>
@@ -619,6 +704,40 @@ export default function EditLifeRoadNodeScreen() {
           </View>
         </KeyboardAvoidingView>
       )}
+
+      <AiLifeRoadAcceptanceSheet
+        visible={acceptAiOpen}
+        onClose={() => setAcceptAiOpen(false)}
+        title={title}
+        note={note}
+        kind={kind}
+        existingAcceptance={acceptance.map(a => a.text).filter(Boolean)}
+        directionBody={directionBody || undefined}
+        currentCount={acceptance.length}
+        onApply={items => {
+          setAcceptance(prev => {
+            const room = Math.max(0, LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - prev.length);
+            const existing = new Set(prev.map(p => p.text.trim().toLowerCase()));
+            const add = items
+              .filter(a => a.text.trim() && !existing.has(a.text.trim().toLowerCase()))
+              .slice(0, room);
+            return add.length ? [...prev, ...add] : prev;
+          });
+        }}
+      />
+
+      <AiLifeRoadNodeUpdateSheet
+        visible={updateAiOpen}
+        onClose={() => setUpdateAiOpen(false)}
+        nodeSummary={{
+          title,
+          note,
+          kind,
+          status,
+          acceptance: acceptance.map(a => a.text).filter(Boolean),
+        }}
+        onApply={onApplyNodeUpdate}
+      />
     </SafeAreaView>
   );
 }
@@ -711,6 +830,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     flexShrink: 1,
+  },
+  aiHeadActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  aiMiniBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.55)',
+  },
+  aiUpdateBtn: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   titleInput: {
     borderBottomWidth: StyleSheet.hairlineWidth,

@@ -1,6 +1,7 @@
 /**
- * 在主 App 中注册 App Intent：快捷指令可将截图作为参数传入（不经剪贴板），
- * 未传图时写入剪贴板标记并由 JS 跳转财务页（仍兼容 zheng://screenshot 深链）。
+ * 在主 App 中注册 App Intent：
+ * 1) 截图记账（财务自动记账，兼容旧 Shortcut）
+ * 2) 用助手处理（图/剪贴板 → 全局助手 route，确认后写库）
  * 修改请编辑本文件；勿直接改 ios 下生成文件（prebuild 会覆盖）。
  */
 const { IOSConfig } = require('expo/config-plugins');
@@ -9,6 +10,10 @@ const { IOSConfig } = require('expo/config-plugins');
 const PENDING_FILENAME = 'shortcut-auto-ledger-pending.png';
 /** 无截图参数时走剪贴板记账，由 JS 读取此标记 */
 const CLIPBOARD_MARKER_FILENAME = 'shortcut-auto-ledger-clipboard.marker';
+
+/** 与 lib/assistant/shortcut-handoff.ts 一致 */
+const ASSISTANT_PENDING_FILENAME = 'shortcut-assistant-pending.png';
+const ASSISTANT_CLIPBOARD_MARKER_FILENAME = 'shortcut-assistant-clipboard.marker';
 
 const SWIFT_SOURCE = `//
 // ZhengAppIntents.swift
@@ -19,28 +24,25 @@ import AppIntents
 import Foundation
 import UIKit
 
-private enum ZhengShortcutAutoLedgerPending {
-    static let fileName = "${PENDING_FILENAME}"
-    static let clipboardMarkerName = "${CLIPBOARD_MARKER_FILENAME}"
-
+private enum ZhengShortcutDocs {
     static func documentsDirectory() throws -> URL {
         guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            throw NSError(domain: "ZhengShortcutAutoLedger", code: 1, userInfo: [
+            throw NSError(domain: "ZhengShortcut", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "无法访问应用文档目录。",
             ])
         }
         return docs
     }
 
-    static func writeClipboardMarker() throws {
-        let dest = try documentsDirectory().appendingPathComponent(clipboardMarkerName)
+    static func writeEmptyMarker(_ name: String) throws {
+        let dest = try documentsDirectory().appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
         try Data().write(to: dest, options: .atomic)
     }
 
-    static func writeImageData(_ data: Data) throws -> URL {
+    static func writeImageData(_ data: Data, fileName: String) throws -> URL {
         let dest = try documentsDirectory().appendingPathComponent(fileName)
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
@@ -60,7 +62,6 @@ private enum ZhengShortcutAutoLedgerPending {
         return nil
     }
 
-    /// 备用通道：与 RN 剪贴板读取一致，避免 Intent 与主进程文档目录不一致时丢图
     static func copyImageToPasteboard(_ data: Data) {
         guard let image = UIImage(data: data) else { return }
         UIPasteboard.general.image = image
@@ -75,8 +76,6 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
         "接收快捷指令传入的截图并自动 AI 记账。推荐：截屏 → 从输入获取图像 → 运行本操作；未传图时将尝试打开剪贴板记账（旧方式）。"
     )
 
-    /// 由系统拉起主应用；勿再手动 open 深链 URL，否则快捷指令常报
-    /// 「无法与帮助程序通信」且无法自动打开 App（iOS 17+ 从快捷指令扩展调 open 易失败）。
     static var openAppWhenRun: Bool = true
 
     @Parameter(
@@ -88,10 +87,10 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
     var screenshot: IntentFile?
 
     func perform() async throws -> some IntentResult {
-        if let screenshot, let data = ZhengShortcutAutoLedgerPending.imageData(from: screenshot) {
+        if let screenshot, let data = ZhengShortcutDocs.imageData(from: screenshot) {
             do {
-                _ = try ZhengShortcutAutoLedgerPending.writeImageData(data)
-                ZhengShortcutAutoLedgerPending.copyImageToPasteboard(data)
+                _ = try ZhengShortcutDocs.writeImageData(data, fileName: "${PENDING_FILENAME}")
+                ZhengShortcutDocs.copyImageToPasteboard(data)
             } catch {
                 return .result()
             }
@@ -99,7 +98,45 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
         }
 
         do {
-            try ZhengShortcutAutoLedgerPending.writeClipboardMarker()
+            try ZhengShortcutDocs.writeEmptyMarker("${CLIPBOARD_MARKER_FILENAME}")
+        } catch {
+            return .result()
+        }
+        return .result()
+    }
+}
+
+@available(iOS 16.0, *)
+struct ZhengAssistantProcessIntent: AppIntent {
+    static var title: LocalizedStringResource = "用助手处理"
+
+    static var description = IntentDescription(
+        "把截图或剪贴板交给全局助手分域（记账/饮食等），确认后再写库。推荐：截屏 → 获取图像 → 运行本操作。"
+    )
+
+    static var openAppWhenRun: Bool = true
+
+    @Parameter(
+        title: "图片",
+        description: "账单截图 / 餐盘图等，由上一步「截屏」或「获取图像」传入",
+        supportedTypeIdentifiers: ["public.image", "public.png", "public.jpeg"],
+        inputConnectionBehavior: .connectToPreviousIntentResult
+    )
+    var image: IntentFile?
+
+    func perform() async throws -> some IntentResult {
+        if let image, let data = ZhengShortcutDocs.imageData(from: image) {
+            do {
+                _ = try ZhengShortcutDocs.writeImageData(data, fileName: "${ASSISTANT_PENDING_FILENAME}")
+                ZhengShortcutDocs.copyImageToPasteboard(data)
+            } catch {
+                return .result()
+            }
+            return .result()
+        }
+
+        do {
+            try ZhengShortcutDocs.writeEmptyMarker("${ASSISTANT_CLIPBOARD_MARKER_FILENAME}")
         } catch {
             return .result()
         }
@@ -110,15 +147,26 @@ struct ZhengScreenshotAutoLedgerIntent: AppIntent {
 @available(iOS 17.0, *)
 struct ZhengAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: ZhengScreenshotAutoLedgerIntent(),
-            phrases: [
-                "在\\(.applicationName)里截图记账",
-                "\\(.applicationName)截图记账",
-            ],
-            shortTitle: "截图记账",
-            systemImageName: "creditcard.and.scribble"
-        )
+        [
+            AppShortcut(
+                intent: ZhengScreenshotAutoLedgerIntent(),
+                phrases: [
+                    "在\\(.applicationName)里截图记账",
+                    "\\(.applicationName)截图记账",
+                ],
+                shortTitle: "截图记账",
+                systemImageName: "creditcard.and.scribble"
+            ),
+            AppShortcut(
+                intent: ZhengAssistantProcessIntent(),
+                phrases: [
+                    "用\\(.applicationName)助手处理",
+                    "在\\(.applicationName)里用助手处理",
+                ],
+                shortTitle: "用助手处理",
+                systemImageName: "sparkles"
+            ),
+        ]
     }
 }
 `;

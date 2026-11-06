@@ -7,6 +7,7 @@ import {
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
+import { isFrogAssignedOn } from '@/lib/frog-assignment';
 import { isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
@@ -474,6 +475,14 @@ export function WeeklyFrogSchedule({
     ({ kind, id, assignYmd }) => {
       const info = resolveSubject(kind, id, subjects, assignYmd);
       if (!info) return null;
+      /**
+       * 未入格（该日无青蛙指派）不进入时间线：
+       * 兼容历史「取消指派只清 frog 字段、占用行残留」的数据，
+       * 与列表「已入格 / 未入格」徽章口径一致。
+       */
+      if (!info.deletedSnapshot && !isFrogAssignedOn(info.extraData, assignYmd)) {
+        return null;
+      }
       if (kind === 'project') {
         const due = info.dueDate?.slice(0, 10) ?? '';
         const overdue =
@@ -936,8 +945,17 @@ export function WeeklyFrogSchedule({
 
   const orphanedPlacements = React.useMemo(() => {
     if (!view) return [] as SchedulePlacementRow[];
-    return view.placements.filter((p) => p.orphaned || p.startSlotIndex == null);
-  }, [view]);
+    return view.placements.filter((p) => {
+      if (p.orphaned || p.startSlotIndex == null) return true;
+      // 格内但无该日青蛙指派：与时间线过滤一致，归入未入格池供重新落入
+      const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+      const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      if (sub && !sub.deletedSnapshot && !isFrogAssignedOn(sub.extraData, assignYmd)) {
+        return true;
+      }
+      return false;
+    });
+  }, [view, subjects]);
 
   /** sc-head cnt：「N/M 只已入格」 */
   const frogPlaceStats = React.useMemo(() => {
@@ -945,7 +963,11 @@ export function WeeklyFrogSchedule({
     const map = new Map<string, boolean>();
     for (const p of view.placements) {
       const k = `${p.subjectKind}:${p.subjectId}`;
-      const inGrid = !p.orphaned && p.startSlotIndex != null;
+      const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
+      const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      const assigned =
+        !sub || sub.deletedSnapshot || isFrogAssignedOn(sub.extraData, assignYmd);
+      const inGrid = assigned && !p.orphaned && p.startSlotIndex != null;
       const prev = map.get(k);
       if (prev == null) map.set(k, inGrid);
       else if (inGrid) map.set(k, true);
@@ -953,7 +975,7 @@ export function WeeklyFrogSchedule({
     let inGrid = 0;
     for (const v of map.values()) if (v) inGrid += 1;
     return { inGrid, total: map.size };
-  }, [view]);
+  }, [view, subjects]);
 
   const openPlace = (
     assignYmd: string,
@@ -1234,6 +1256,10 @@ export function WeeklyFrogSchedule({
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (assignYmd !== logicalTodayYmd) continue;
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
+      // 未入格（无该日青蛙指派）不进时间线/最简焦点，兼容残留占用
+      if (sub && !sub.deletedSnapshot && !isFrogAssignedOn(sub.extraData, assignYmd)) {
+        continue;
+      }
       const span = Math.max(1, p.spanSlots);
       const hasMins =
         typeof p.startMinutes === 'number' &&
@@ -1300,6 +1326,8 @@ export function WeeklyFrogSchedule({
     }
     for (const t of virtualTasks) {
       if (t.assignYmd !== logicalTodayYmd) continue;
+      // 当日未指派 / 未入格不进最简焦点（含过期滞留；与时间线一致）
+      if (!isFrogAssignedOn(t.extraData, t.assignYmd)) continue;
       const span = Math.max(1, t.spanSlots);
       const hasMins =
         typeof t.startMinutes === 'number' &&

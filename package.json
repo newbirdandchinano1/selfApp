@@ -35,7 +35,14 @@
     "test:finance-balance-correction": "node scripts/test-finance-balance-correction.mjs",
     "test:finance-scheduled-withholding": "node scripts/test-finance-scheduled-withholding.mjs",
     "test:memo-richdoc": "npx --yes tsx scripts/test-memo-richdoc.ts",
-    "test:memo-richdoc-phase5": "npx --yes tsx scripts/test-memo-richdoc.ts"
+    "test:memo-richdoc-phase5": "npx --yes tsx scripts/test-memo-richdoc.ts",
+    "test:assistant-p0": "npx --yes tsx scripts/test-assistant-p0.ts",
+    "test:assistant-route-p0": "npx --yes tsx scripts/test-assistant-route-p0.ts",
+    "test:assistant-daily-brief-p0": "npx --yes tsx scripts/test-assistant-daily-brief-p0.ts",
+    "test:assistant-clarify-p0": "npx --yes tsx scripts/test-assistant-clarify-p0.ts",
+    "test:assistant-turn-p1": "npx --yes tsx scripts/test-assistant-turn-p1.ts",
+    "test:assistant-compose-p2": "npx --yes tsx scripts/test-assistant-compose-p2.ts",
+    "test:assistant-p3": "npx --yes tsx scripts/test-assistant-p3.ts"
   },
   "dependencies": {
     "@expo-google-fonts/noto-sans-sc": "^0.4.4",

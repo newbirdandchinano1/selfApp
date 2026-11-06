@@ -4,8 +4,9 @@
  * - 有具体时间 → 按时刻落格；无具体时间 → 全天
  * - 有重复 → 按重复日；漏做/过期 → 今天起每日入格直至完成
  * - 有日期无时间 → 今天起至截止日每天全天；过期未完成继续每日
- * - 无日期无重复 → 每天全天直至完成
- * - 同日已有手动占用则不再叠虚拟块
+ * - 该日无青蛙指派 → 未入格，不虚拟铺进时间线
+ * - 无日期无重复且无该日指派 → 未入格，不虚拟铺进时间线
+ * - 同日已有占用行（含未入格）则不再叠虚拟块
  * - 定点时刻落在轴外时回退全天，避免整条消失
  */
 import {
@@ -26,7 +27,7 @@ import {
 import { isAllDayByWorkCoverage } from '@/lib/schedule/timeline/from-placement';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import { ymdForWeekday } from '@/lib/schedule/week';
-import { getFrogAssignedDates } from '@/lib/frog-assignment';
+import { getFrogAssignedDates, isFrogAssignedOn } from '@/lib/frog-assignment';
 import { isFrogDoneForToday } from '@/lib/long-term-task';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
@@ -230,6 +231,11 @@ export function shouldShowVirtualTaskOnDay(params: {
   if (viewYmd < logicalTodayYmd) return false;
   if (isTaskShelvedStatus(task.status) || task.status === 'cancelled') return false;
   if (!isHabitVisibleOnCalendarDay(task.created_at, viewYmd, dayBoundary)) return false;
+  /**
+   * 与时间线 resolve / 列表入格口径一致：必须是「该日」已指派，
+   * 不因截止日 / 日程窗 / 其它指派日而虚拟铺进当天时间线。
+   */
+  if (!isFrogAssignedOn(task.extra_data, viewYmd)) return false;
 
   if (!isTaskActiveStatus(task.status)) {
     return isTaskDoneOnAssignYmd(task, viewYmd);
@@ -250,8 +256,8 @@ export function shouldShowVirtualTaskOnDay(params: {
         endYmd: bounds.endYmd,
       });
     }
-    // 有时刻、无日期无重复：每天定点直至完成
-    return true;
+    // 有时刻、无日期无重复：未指派日 → 不入时间线
+    return false;
   }
 
   // 全天
@@ -267,8 +273,8 @@ export function shouldShowVirtualTaskOnDay(params: {
     });
   }
 
-  // 无日期无重复：每天全天
-  return true;
+  // 无日期无重复：未入格，不虚拟铺块
+  return false;
 }
 
 function buildPlacedTaskDayKeys(placements: SchedulePlacementRow[] | undefined): Set<string> {
@@ -276,7 +282,7 @@ function buildPlacedTaskDayKeys(placements: SchedulePlacementRow[] | undefined):
   if (!placements) return keys;
   for (const p of placements) {
     if (p.subjectKind !== 'task') continue;
-    if (p.orphaned) continue;
+    // 含未入格：已有占用行则不再虚拟顶替（未入格只留在候选池）
     const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
     keys.add(`${p.subjectId}:${ymd}`);
   }
@@ -392,7 +398,7 @@ export function buildOverdueFrogCarryPlacementsForToday(params: {
   const onToday = new Set<string>();
   if (placements) {
     for (const p of placements) {
-      if (p.orphaned || p.startSlotIndex == null) continue;
+      // 含未入格：今日已有占用行则不再滞留虚拟块（避免与未入格池重复上时间线）
       const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (ymd !== logicalTodayYmd) continue;
       onToday.add(`${p.subjectKind}:${p.subjectId}`);

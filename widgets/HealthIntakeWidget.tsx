@@ -6,9 +6,14 @@ import {
   frame,
   gaugeStyle,
   padding,
+  widgetURL,
 } from '@expo/ui/swift-ui/modifiers';
 // 必须直连 'expo-widgets'：iOS LayoutRegistry Metro 只 stub 该模块名来捕获 layout。
 import { createWidget, type WidgetEnvironment } from 'expo-widgets';
+
+function linkOf(props: { deepLink: string }) {
+  return widgetURL(props.deepLink || 'zheng://assistant/brief?domain=health');
+}
 
 export type HealthIntakeWidgetProps = {
   title: string;
@@ -37,7 +42,7 @@ const INITIAL: HealthIntakeWidgetProps = {
   ring2ValueLine: '',
   hasItems: 0,
   allDone: 0,
-  deepLink: 'zheng://',
+  deepLink: 'zheng://assistant/brief?domain=health',
 };
 
 const HealthIntakeWidgetView = (props: HealthIntakeWidgetProps, environment: WidgetEnvironment) => {
@@ -69,6 +74,7 @@ const HealthIntakeWidgetView = (props: HealthIntakeWidgetProps, environment: Wid
           containerBackground(paper, 'widget'),
           padding({ all: 8 }),
           frame({ maxWidth: Infinity, maxHeight: Infinity, alignment: 'leading' }),
+          linkOf(props),
         ]}>
         <Text modifiers={[font({ size: 12, weight: 'semibold' }), foregroundStyle(accent)]}>
           健康
@@ -91,6 +97,7 @@ const HealthIntakeWidgetView = (props: HealthIntakeWidgetProps, environment: Wid
         containerBackground(paper, 'widget'),
         padding({ all: 14 }),
         frame({ maxWidth: Infinity, maxHeight: Infinity, alignment: 'topLeading' }),
+        linkOf(props),
       ]}>
       <Text modifiers={[font({ size: 11, weight: 'bold' }), foregroundStyle(accent)]}>
         {props.title}

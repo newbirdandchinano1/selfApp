@@ -16,9 +16,12 @@ import {
 import {
   getCategoriesForPage,
   isNotificationPageEnabled,
+  NOTIFICATION_CATEGORIES,
   NOTIFICATION_PAGE_CHANNELS,
+  type NotificationCategoryId,
   type NotificationPageChannelId,
 } from '@/lib/notification-catalog';
+import { prefetchProfileNotificationCopy } from '@/lib/notification-ai-copy';
 import {
   getNotificationPermissionSnapshot,
   listScheduledAppNotifications,
@@ -65,6 +68,73 @@ function permLabel(permission: NotificationPermissionSnapshot | null): string {
   return '尚未决定 · 可请求授权';
 }
 
+/** 「立即预热」时每类取样用的一句话上下文与兜底文案 */
+const AI_COPY_SAMPLES: Record<
+  NotificationCategoryId,
+  { context: string; title: string; body: string }
+> = {
+  'health-intake-reminder': {
+    context: '健康摄入：午餐后蛋白还差约 20g，水分偏少',
+    title: '补点蛋白和水',
+    body: '下午先来一杯水，晚餐加一份蛋白。',
+  },
+  'schedule-slot-reminder': {
+    context: '日程：15:00 有一格「深度工作」，提前 15 分钟提醒',
+    title: '下一格快开始',
+    body: '15:00 深度工作，先收一下手头的事。',
+  },
+  'task-deadline-reminder': {
+    context: '待办：季度总结今天截止，仍未完成',
+    title: '今天截止',
+    body: '季度总结今天到期，优先收口。',
+  },
+  'project-progress-reminder': {
+    context: '项目：Q4 复盘 已 4 天未入格推进',
+    title: '项目有点停了',
+    body: 'Q4 复盘几天没推进，安排一格吧。',
+  },
+  'habit-reminder': {
+    context: '习惯：晨间拉伸今日还未打卡',
+    title: '还差一次打卡',
+    body: '今天的拉伸还没做，抽 5 分钟完成。',
+  },
+  'daily-review-reminder': {
+    context: '日复盘：今天还没写',
+    title: '写两句今天',
+    body: '花 3 分钟记下今天的关键一点。',
+  },
+  'weekly-review-reminder': {
+    context: '周复盘：本周还没写',
+    title: '收一收这一周',
+    body: '周末用 10 分钟把这一周理一遍。',
+  },
+  'auto-ledger': {
+    context: '截图记账：刚识别到一笔 28 元餐饮',
+    title: '已记一笔',
+    body: '识别到 28 元餐饮，已帮你记上。',
+  },
+  'finance-scheduled-expense-reminder': {
+    context: '定时支出：每月 1 号房贷 5200 待入账',
+    title: '该记定时支出',
+    body: '房贷 5200 今天应记，别忘了。',
+  },
+  'finance-budget-threshold-reminder': {
+    context: '预算：本月已用 82%',
+    title: '预算快满了',
+    body: '本月预算已用 82%，留意接下来的开销。',
+  },
+  'finance-savings-nudge-reminder': {
+    context: '储蓄目标：距离目标还差 12000',
+    title: '存一笔吧',
+    body: '离储蓄目标还差 12000，本周存一点。',
+  },
+  'finance-ledger-wrap-reminder': {
+    context: '记账：今天还没有流水',
+    title: '今天还没记账',
+    body: '如果今天有支出，顺手记一笔。',
+  },
+};
+
 export type NotificationCenterScreenProps = {
   /** 嵌入消息模块时隐藏自有顶栏 */
   embedded?: boolean;
@@ -87,6 +157,7 @@ export function NotificationCenterScreen({
   const [reviewSummary, setReviewSummary] = useState('未开启');
   const [scheduledCount, setScheduledCount] = useState(0);
   const [nextFireLabel, setNextFireLabel] = useState<string | null>(null);
+  const [aiPrefetching, setAiPrefetching] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -216,6 +287,49 @@ export function NotificationCenterScreen({
     [applySettings],
   );
 
+  const onAiNaturalCopyToggle = useCallback(async (enabled: boolean) => {
+    try {
+      const next = await patchNotificationCenterSettings({ aiNaturalCopyEnabled: enabled });
+      setSettings(next);
+    } catch (e) {
+      toast.error(toUserMessage(e, '保存失败，请稍后再试'));
+    }
+  }, []);
+
+  const buildAiCopySamples = useCallback(() => {
+    if (!settings) return [];
+    return NOTIFICATION_CATEGORIES.filter((cat) => settings.categories[cat.id] !== false)
+      .map((cat) => {
+        const sample = AI_COPY_SAMPLES[cat.id];
+        return {
+          identifier: `ai-prefetch:${cat.id}`,
+          fingerprint: 'sample-v1',
+          contextBlock: sample.context,
+          fallbackTitle: sample.title,
+          fallbackBody: sample.body,
+        };
+      })
+      .slice(0, 10);
+  }, [settings]);
+
+  const onPrefetchAiCopy = useCallback(async () => {
+    const items = buildAiCopySamples();
+    if (!items.length) {
+      toast.info('没有已开启的频道可预热');
+      return;
+    }
+    setAiPrefetching(true);
+    try {
+      const r = await prefetchProfileNotificationCopy(items);
+      if (r.ok) toast.success(`已预热 ${r.written} 条文案`);
+      else toast.error(r.error || '预热失败');
+    } catch (e) {
+      toast.error(toUserMessage(e, '预热失败'));
+    } finally {
+      setAiPrefetching(false);
+    }
+  }, [buildAiCopySamples]);
+
   const masterOn = settings?.masterEnabled !== false;
   const health = settings?.health;
   const advance = settings?.schedule.advanceMinutes ?? 15;
@@ -340,6 +454,53 @@ export function NotificationCenterScreen({
             <View
               style={[
                 styles.card,
+                { backgroundColor: fold.card, borderColor: fold.line, paddingVertical: 8 },
+              ]}>
+              <View style={styles.toggleRow}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={styles.rowTitle}>更自然的通知文案</Text>
+                  <Text style={styles.rowHint}>
+                    {settings.aiNaturalCopyEnabled
+                      ? '开启后仅手动预热时生成；登记提醒时只读缓存，不联网'
+                      : '默认关闭 · 开启后可按需预先生成文案'}
+                  </Text>
+                </View>
+                <Switch
+                  value={settings.aiNaturalCopyEnabled}
+                  disabled={busy}
+                  onValueChange={(v) => void onAiNaturalCopyToggle(v)}
+                  trackColor={switchTrack}
+                  thumbColor="#ffffff"
+                />
+              </View>
+              {settings.aiNaturalCopyEnabled ? (
+                <Pressable
+                  disabled={aiPrefetching || busy}
+                  onPress={() => void onPrefetchAiCopy()}
+                  style={({ pressed }) => [
+                    styles.prefetchBtn,
+                    {
+                      borderColor: fold.line2,
+                      backgroundColor: '#F4F8F2',
+                      opacity: pressed || aiPrefetching ? 0.85 : 1,
+                    },
+                  ]}>
+                  <AppIcon name="auto-awesome" size={13} color={fold.pine} />
+                  <Text style={[styles.prefetchText, { color: fold.pine }]}>
+                    {aiPrefetching ? '预热中…' : '立即预热'}
+                  </Text>
+                  <Text style={[styles.prefetchHint, { color: fold.muted }]}>
+                    从已开启频道取样（≤10）
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={12}>
+            <View
+              style={[
+                styles.card,
                 {
                   backgroundColor: fold.card,
                   borderColor: fold.line,
@@ -389,7 +550,7 @@ export function NotificationCenterScreen({
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={12}>
+          <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
             <Pressable
               onPress={() => router.push('/notification-center-scheduled' as never)}
               style={({ pressed }) => [
@@ -415,7 +576,7 @@ export function NotificationCenterScreen({
             </Pressable>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
+          <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={12}>
             <Pressable
               onPress={() => router.push('/widgets-center' as never)}
               style={({ pressed }) => [
@@ -518,6 +679,18 @@ const styles = StyleSheet.create({
     minHeight: 34,
     paddingVertical: 4,
   },
+  prefetchBtn: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  prefetchText: { fontSize: 12, fontWeight: '800' },
+  prefetchHint: { fontSize: 10, marginLeft: 'auto' },
   channelMain: {
     flex: 1,
     flexDirection: 'row',
