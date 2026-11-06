@@ -8,7 +8,7 @@ import { isHabitScheduledOnLogicalYmd, type HabitCycleTab } from '@/lib/habit-sc
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isBuildNDaysPeriodHiddenOnViewDay } from '@/lib/repositories/habits/habit-build-n-days-period';
 import {
-  isHabitDayGoalMet,
+  isHabitDayDisplayCompleted,
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
@@ -241,19 +241,28 @@ export function buildVirtualHabitPlacementsForDays(params: {
         continue;
       }
       const parentCount = checkIns[ymd] ?? 0;
+      const hasDayRecord = Object.prototype.hasOwnProperty.call(checkIns, ymd);
       let todayCount = parentCount;
       let dailyGoal = parsedDailyGoal;
-      let done = isHabitDayGoalMet({
+      // 与任务页小习惯「今日完成」同口径（戒除有记录即已处理；养成/任务看达标）
+      let done = isHabitDayDisplayCompleted({
         kind,
         todayCount: parentCount,
         dailyGoal: parsedDailyGoal,
-        hasDayRecord: Object.prototype.hasOwnProperty.call(checkIns, ymd),
+        hasDayRecord,
+        ymd,
+        logicalTodayYmd,
       });
       if (subActive && subTotal > 0) {
         const subCompleted = countSubHabitsCompletedForYmd(habit.extra_data, ymd);
         todayCount = subCompleted;
         dailyGoal = subTotal;
-        done = areAllSubHabitsCompletedForYmd(habit.extra_data, ymd);
+        if (kind === 'break') {
+          // 戒除子项：有破戒勾选或父行已确认，即不再待打卡
+          done = subCompleted > 0 || hasDayRecord;
+        } else {
+          done = areAllSubHabitsCompletedForYmd(habit.extra_data, ymd);
+        }
       } else if (kind === 'task' && !done) {
         const taskView = getTaskHabitTasksViewState({
           extraData: habit.extra_data,

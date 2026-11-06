@@ -1,3 +1,4 @@
+import { AdjustIntakeSheet } from '@/components/health/adjust-intake-sheet';
 import { HealthIntakeDeleteConfirmSheet } from '@/components/health/health-intake-delete-confirm-sheet';
 import { HealthPopIn, HealthRiseIn, useHealthMotionGate } from '@/components/health/health-motion';
 import { StoredImage } from '@/components/stored-image';
@@ -5,7 +6,7 @@ import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { formatStoredDatetimeHm } from '@/lib/api-mysql-datetime';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
-import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatYmd, parseYmd } from '@/lib/date';
 import {
   createQuickAddItemMap,
@@ -22,9 +23,14 @@ import {
   deleteHealthRecord,
   getHealthRecordById,
   getHealthRecordsForUserOnDate,
+  updateHealthRecord,
 } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
 import { getDefaultUser } from '@/lib/repositories/users/user';
+import {
+  analyzeFoodIntakeComment,
+  type FoodAdjustIntakeJson,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -269,6 +275,8 @@ export default function IntakeRecordDetailScreen() {
   const [deleteSheetOpen, setDeleteSheetOpen] = React.useState(false);
   const [imageLoadError, setImageLoadError] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const [adjustOpen, setAdjustOpen] = React.useState(false);
+  const [commentRegenBusy, setCommentRegenBusy] = React.useState(false);
   const [contentReady, setContentReady] = React.useState(false);
   const enterKeyRef = React.useRef<string | null>(null);
 
@@ -405,11 +413,66 @@ export default function IntakeRecordDetailScreen() {
   };
 
   const onEdit = () => {
-    Alert.alert('编辑记录', '暂不支持直接改数值。可删除本条后重新添加，或在首页用快捷卡微调。', [
-      { text: '知道了', style: 'cancel' },
-      { text: '去删除', style: 'destructive', onPress: openDeleteSheet },
-    ]);
+    setMenuOpen(false);
+    setAdjustOpen(true);
   };
+
+  const onConfirmAdjust = React.useCallback(
+    async (draft: FoodAdjustIntakeJson) => {
+      if (!row?.id) return;
+      await updateHealthRecord(row.id, {
+        hydration: draft.hydration_ml,
+        protein: draft.protein_g,
+        carbohydrate: draft.carbohydrate_g,
+        calories: draft.calories_kcal,
+        intake_display_title: draft.food_summary.trim() || row.intake_display_title,
+        intake_ai_comment: draft.ai_evaluation.trim() || row.intake_ai_comment,
+      });
+      toast.success('已更新');
+      await reload(true);
+    },
+    [reload, row],
+  );
+
+  const onRegenComment = React.useCallback(async () => {
+    if (!row?.id || commentRegenBusy) return;
+    setCommentRegenBusy(true);
+    try {
+      const gapParts: string[] = [];
+      if (row.target_hydration > 0) {
+        const rem = Math.max(0, Math.round(row.target_hydration - row.hydration));
+        if (rem > 0) gapParts.push(`水分还差约 ${rem}ml（单条对照当日目标快照）`);
+      }
+      if (row.target_protein > 0) {
+        const rem = Math.max(0, Math.round(row.target_protein - row.protein));
+        if (rem > 0) gapParts.push(`蛋白还差约 ${rem}g`);
+      }
+      const r = await analyzeFoodIntakeComment({
+        title: heroTitle(row, catalog),
+        hydrationMl: row.hydration,
+        proteinG: row.protein,
+        carbohydrateG: row.carbohydrate,
+        caloriesKcal: row.calories,
+        gapHint: gapParts.join('；') || undefined,
+      });
+      if (!r.ok) {
+        toast.warn(r.error || '暂时无法换点评');
+        return;
+      }
+      const next = r.data.ai_evaluation.trim();
+      if (!next) {
+        toast.warn('未得到有效点评');
+        return;
+      }
+      await updateHealthRecord(row.id, { intake_ai_comment: next });
+      toast.success('点评已更新');
+      await reload(true);
+    } catch (e) {
+      toast.error(toUserMessage(e, '换点评失败'));
+    } finally {
+      setCommentRegenBusy(false);
+    }
+  }, [catalog, commentRegenBusy, reload, row]);
 
   const deletePreview = React.useMemo(() => {
     if (!row) return null;
@@ -467,7 +530,7 @@ export default function IntakeRecordDetailScreen() {
               onEdit();
             }}
             style={styles.menuItem}>
-            <Text style={[styles.menuItemText, { color: hh.ink }]}>编辑</Text>
+            <Text style={[styles.menuItemText, { color: hh.ink }]}>份量修正</Text>
           </Pressable>
           <Pressable
             onPress={() => {
@@ -542,11 +605,34 @@ export default function IntakeRecordDetailScreen() {
           <HealthRiseIn animate={detailEnterOn} index={1} staggerMs={70} delayMs={180} duration={360}>
             <View style={[styles.aiStrip, { backgroundColor: hh.sageSoft, borderLeftColor: hh.sage }]}>
               <MaterialIcons name="eco" size={16} color={hh.pine} style={{ marginTop: 2 }} />
-              <Text style={[styles.aiStripText, { color: hh.inkSoft }]}>
-                AI 评价：
-                {row.intake_ai_comment?.trim() ||
-                  '暂无点评。模型未返回评价或旧版记录无此字段。'}
-              </Text>
+              <View style={styles.aiStripBody}>
+                <View style={styles.aiStripHead}>
+                  <Text style={[styles.aiStripLabel, { color: hh.pine }]}>AI 评价</Text>
+                  <Pressable
+                    onPress={() => void onRegenComment()}
+                    disabled={commentRegenBusy}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.regenBtn,
+                      { opacity: commentRegenBusy || pressed ? 0.65 : 1 },
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="换一句点评">
+                    {commentRegenBusy ? (
+                      <ActivityIndicator size="small" color={hh.pine} />
+                    ) : (
+                      <>
+                        <MaterialIcons name="sync" size={12} color={hh.pine} />
+                        <Text style={[styles.regenText, { color: hh.pine }]}>换一句</Text>
+                      </>
+                    )}
+                  </Pressable>
+                </View>
+                <Text style={[styles.aiStripText, { color: hh.inkSoft }]}>
+                  {row.intake_ai_comment?.trim() ||
+                    '暂无点评。可点右上角「换一句」生成。'}
+                </Text>
+              </View>
             </View>
           </HealthRiseIn>
 
@@ -630,8 +716,8 @@ export default function IntakeRecordDetailScreen() {
                   opacity: pressed ? 0.88 : 1,
                 },
               ]}>
-              <MaterialIcons name="edit" size={18} color={hh.inkSoft} />
-              <Text style={[styles.actionBtnText, { color: hh.inkSoft }]}>编辑</Text>
+              <MaterialIcons name="tune" size={18} color={hh.inkSoft} />
+              <Text style={[styles.actionBtnText, { color: hh.inkSoft }]}>份量修正</Text>
             </Pressable>
             <Pressable
               onPress={openDeleteSheet}
@@ -722,6 +808,24 @@ export default function IntakeRecordDetailScreen() {
         onConfirm={() => {
           void performDelete();
         }}
+      />
+
+      <AdjustIntakeSheet
+        visible={adjustOpen}
+        onClose={() => setAdjustOpen(false)}
+        source={
+          row
+            ? {
+                title: heroTitle(row, catalog),
+                hydration: row.hydration,
+                protein: row.protein,
+                carbohydrate: row.carbohydrate,
+                calories: row.calories,
+                aiComment: row.intake_ai_comment,
+              }
+            : null
+        }
+        onConfirm={onConfirmAdjust}
       />
     </SafeAreaView>
   );
@@ -847,6 +951,16 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: 'flex-start',
   },
+  aiStripBody: { flex: 1, minWidth: 0, gap: 6 },
+  aiStripHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  aiStripLabel: { fontSize: 12, fontWeight: '800' },
+  regenBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 22 },
+  regenText: { fontSize: 12, fontWeight: '700' },
   aiStripText: { flex: 1, fontSize: 13, fontWeight: '500', lineHeight: 20 },
   photoCard: {
     marginTop: 12,

@@ -4,8 +4,14 @@
  */
 import { ReviewActionFeedStrip, isReviewActionFeedDimension } from '@/components/review/review-action-feed';
 import { ReviewAiAnalysisPanel } from '@/components/review/review-ai-analysis-panel';
+import { ReviewRewriteSheet } from '@/components/review/review-ai-p1-sheets';
+import { ReviewVoiceDraftSheet } from '@/components/review/review-ai-p2-sheets';
 import { ReviewFieldEditor, type ReviewFieldEditorState } from '@/components/review/review-field-editor';
 import { ReviewDimensionSkeleton } from '@/components/skeletons/review';
+import type {
+  ReviewRewriteDimensionMode,
+  ReviewRewriteDimensionResult,
+} from '@/lib/ai-api-client';
 import {
   formatReviewHeaderDate,
   formatReviewMonthLabel,
@@ -43,6 +49,8 @@ import {
   type TextSelection,
 } from '@/lib/review-journal-format';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
+import { buildReviewDraftFactsText } from '@/lib/review-ai-context';
+import { draftReviewDimension, rewriteReviewDimension } from '@/lib/zhipu-image-parse';
 import { listDailyReviewsBetween, upsertDailyReviewJournal } from '@/lib/repositories/insights/daily-review-journal';
 import {
   getMonthlyReviewJournalByMonth,
@@ -75,6 +83,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -182,6 +191,17 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     Record<string, TextSelection | undefined>
   >({});
   const [aiBusy, setAiBusy] = useState(false);
+  const [draftBusyColumnId, setDraftBusyColumnId] = useState<string | null>(null);
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewriteBusy, setRewriteBusy] = useState(false);
+  const [rewriteMode, setRewriteMode] = useState<ReviewRewriteDimensionMode>('tighten');
+  const [rewriteError, setRewriteError] = useState<string | null>(null);
+  const [rewriteDraft, setRewriteDraft] = useState<ReviewRewriteDimensionResult | null>(null);
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceText, setVoiceText] = useState('');
+  const [voiceColumnId, setVoiceColumnId] = useState<string | null>(null);
   /** 当前周期结构化事实（日=当日；周/月=区间合并），供写入健康/任务/财务 */
   const [periodFacts, setPeriodFacts] = useState<ReviewDayFacts | null>(null);
   const [yesterdayFacts, setYesterdayFacts] = useState<ReviewDayFacts | null>(null);
@@ -566,6 +586,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
         periodLabel: periodLabel || formatReviewMonthLabel(periodYmd),
         template,
         fields,
+        periodYmd,
       });
       const nextMeta = { ...meta, ai_analysis: text };
       setMeta(nextMeta);
@@ -740,11 +761,16 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
     scope === 'weekly' ? '写入本周数据' : scope === 'monthly' ? '写入本月数据' : '写入今日数据';
 
   /** 把当日事实追加到栏目末尾（保留已写内容，可撤销） */
-  const insertFactsIntoColumn = useCallback(
-    (columnId: string) => {
+  const appendPlainIntoColumn = useCallback(
+    (columnId: string, text: string, mode: 'append' | 'replace' = 'append') => {
       if (!canEdit) return;
-      const text = factsTextByColumn[columnId];
-      if (!text) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (mode === 'replace') {
+        const created = insertTextIntoTextModel({ plain: '', styles: [] }, { start: 0, end: 0 }, trimmed);
+        commitFieldModel(columnId, { blocks: [{ kind: 'text', model: created.model }] });
+        return;
+      }
       const model = fieldModels[columnId] ?? emptyReviewFieldModel();
       let lastTextIndex = -1;
       for (let i = model.blocks.length - 1; i >= 0; i -= 1) {
@@ -754,7 +780,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
         }
       }
       if (lastTextIndex < 0) {
-        const created = insertTextIntoTextModel({ plain: '', styles: [] }, { start: 0, end: 0 }, text);
+        const created = insertTextIntoTextModel({ plain: '', styles: [] }, { start: 0, end: 0 }, trimmed);
         commitFieldModel(columnId, { blocks: [...model.blocks, { kind: 'text', model: created.model }] });
         return;
       }
@@ -765,7 +791,7 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
       const result = insertTextIntoTextModel(
         block.model,
         { start: plain.length, end: plain.length },
-        `${prefix}${text}`,
+        `${prefix}${trimmed}`,
       );
       const nextBlocks = model.blocks.map((b, idx) =>
         idx === lastTextIndex && b.kind === 'text' ? { kind: 'text' as const, model: result.model } : b,
@@ -774,8 +800,251 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
         editorState: { blockIndex: lastTextIndex, selection: result.selection },
       });
     },
-    [canEdit, commitFieldModel, factsTextByColumn, fieldModels],
+    [canEdit, commitFieldModel, fieldModels],
   );
+
+  const insertFactsIntoColumn = useCallback(
+    (columnId: string) => {
+      const text = factsTextByColumn[columnId];
+      if (!text) return;
+      appendPlainIntoColumn(columnId, text, 'append');
+    },
+    [appendPlainIntoColumn, factsTextByColumn],
+  );
+
+  const runAiDraftForColumn = useCallback(
+    async (columnId: string) => {
+      if (!canEdit || !periodYmd || !dimension) return;
+      const col = dimension.columns.find(c => c.id === columnId);
+      if (!col) return;
+      const existingPlain = reviewContentToPlainDisplay(fields[columnId] ?? '').trim();
+      setDraftBusyColumnId(columnId);
+      try {
+        const factsText = await buildReviewDraftFactsText({
+          scope,
+          periodYmd,
+          columnId,
+        });
+        if (!factsText.trim() && !existingPlain) {
+          toast.error('暂无系统事实可起草，请先记任务 / 健康 / 财务，或手写几句');
+          return;
+        }
+        const r = await draftReviewDimension({
+          scope,
+          periodLabel: periodLabel || periodYmd,
+          dimensionTitle: dimension.title,
+          columnTitle: col.title,
+          factsText,
+          existingText: existingPlain || null,
+        });
+        if (!r.ok) {
+          toast.error(r.error || 'AI 起草失败');
+          return;
+        }
+        const draft = r.data.draft_text.trim();
+        if (!draft) {
+          toast.error('AI 未返回草稿');
+          return;
+        }
+        if (!existingPlain) {
+          appendPlainIntoColumn(columnId, draft, 'replace');
+          toast.success('已填入 AI 草稿，请确认后保存');
+          return;
+        }
+        Alert.alert('AI 草稿', '当前栏目已有内容，如何处理？', [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '追加',
+            onPress: () => {
+              appendPlainIntoColumn(columnId, draft, 'append');
+              toast.success('已追加 AI 草稿');
+            },
+          },
+          {
+            text: '替换',
+            style: 'destructive',
+            onPress: () => {
+              appendPlainIntoColumn(columnId, draft, 'replace');
+              toast.success('已替换为 AI 草稿');
+            },
+          },
+        ]);
+      } catch (e) {
+        console.warn('review dimension ai draft', e);
+        toast.error(toUserMessage(e, 'AI 起草失败，请稍后重试'));
+      } finally {
+        setDraftBusyColumnId(null);
+      }
+    },
+    [appendPlainIntoColumn, canEdit, dimension, fields, periodLabel, periodYmd, scope],
+  );
+
+  const openRewriteSheet = useCallback(() => {
+    if (!canEdit || !activeColumn) {
+      toast.info('当前不可编辑');
+      return;
+    }
+    const plain = reviewContentToPlainDisplay(fields[activeColumn.id] ?? '').trim();
+    if (!plain) {
+      toast.info('当前栏目还没有正文，可先手写或用 AI 起草');
+      return;
+    }
+    setRewriteError(null);
+    setRewriteDraft(null);
+    setRewriteOpen(true);
+  }, [activeColumn, canEdit, fields]);
+
+  const runRewrite = useCallback(async () => {
+    if (!canEdit || !activeColumn || !dimension) return;
+    const plain = reviewContentToPlainDisplay(fields[activeColumn.id] ?? '').trim();
+    if (!plain) {
+      setRewriteError('复盘正文为空');
+      return;
+    }
+    setRewriteBusy(true);
+    setRewriteError(null);
+    try {
+      const r = await rewriteReviewDimension({
+        text: plain,
+        mode: rewriteMode,
+        dimensionTitle: dimension.title,
+        columnTitle: activeColumn.title,
+        scope,
+        periodLabel: periodLabel || periodYmd,
+      });
+      if (!r.ok) {
+        setRewriteError(r.error || 'AI 改写失败');
+        setRewriteDraft(null);
+        return;
+      }
+      setRewriteDraft(r.data);
+    } catch (e) {
+      console.warn('review dimension rewrite', e);
+      setRewriteError(toUserMessage(e, 'AI 改写失败，请稍后重试'));
+      setRewriteDraft(null);
+    } finally {
+      setRewriteBusy(false);
+    }
+  }, [activeColumn, canEdit, dimension, fields, periodLabel, periodYmd, rewriteMode, scope]);
+
+  const acceptRewrite = useCallback(
+    (draft: ReviewRewriteDimensionResult) => {
+      if (!activeColumnId) return;
+      appendPlainIntoColumn(activeColumnId, draft.text, 'replace');
+      setRewriteOpen(false);
+      setRewriteDraft(null);
+      toast.success('已应用到编辑器，记得确认保存');
+    },
+    [activeColumnId, appendPlainIntoColumn],
+  );
+
+  const openVoiceDraft = useCallback(
+    (columnId?: string) => {
+      if (!canEdit) {
+        toast.info('当前不可编辑');
+        return;
+      }
+      const target = columnId || activeColumnId || dimension?.columns[0]?.id || '';
+      if (!target) {
+        toast.info('暂无栏目可写入');
+        return;
+      }
+      setVoiceColumnId(target);
+      setActiveColumnId(target);
+      setVoiceText('');
+      setVoiceError(null);
+      setVoiceOpen(true);
+    },
+    [activeColumnId, canEdit, dimension],
+  );
+
+  const runVoiceDraft = useCallback(async () => {
+    if (!canEdit || !dimension || !periodYmd) return;
+    const columnId = voiceColumnId || activeColumnId;
+    const col = dimension.columns.find(c => c.id === columnId);
+    if (!col || !columnId) {
+      setVoiceError('请先选择栏目');
+      return;
+    }
+    const hint = voiceText.trim();
+    if (!hint) {
+      setVoiceError('请粘贴转写文本或输入几句');
+      return;
+    }
+    setVoiceBusy(true);
+    setVoiceError(null);
+    try {
+      const factsText = await buildReviewDraftFactsText({
+        scope,
+        periodYmd,
+        columnId,
+      });
+      const existingPlain = reviewContentToPlainDisplay(fields[columnId] ?? '').trim();
+      const r = await draftReviewDimension({
+        scope,
+        periodLabel: periodLabel || periodYmd,
+        dimensionTitle: dimension.title,
+        columnTitle: col.title,
+        factsText,
+        existingText: existingPlain || null,
+        userHint: hint,
+      });
+      if (!r.ok) {
+        setVoiceError(r.error || 'AI 起草失败');
+        return;
+      }
+      const draft = r.data.draft_text.trim();
+      if (!draft) {
+        setVoiceError('AI 未返回草稿');
+        return;
+      }
+      if (!existingPlain) {
+        appendPlainIntoColumn(columnId, draft, 'replace');
+        setVoiceOpen(false);
+        setVoiceText('');
+        toast.success('已填入语音草稿，请确认后保存');
+        return;
+      }
+      Alert.alert('语音草稿', '当前栏目已有内容，如何处理？', [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '追加',
+          onPress: () => {
+            appendPlainIntoColumn(columnId, draft, 'append');
+            setVoiceOpen(false);
+            setVoiceText('');
+            toast.success('已追加语音草稿');
+          },
+        },
+        {
+          text: '替换',
+          style: 'destructive',
+          onPress: () => {
+            appendPlainIntoColumn(columnId, draft, 'replace');
+            setVoiceOpen(false);
+            setVoiceText('');
+            toast.success('已替换为语音草稿');
+          },
+        },
+      ]);
+    } catch (e) {
+      console.warn('review dimension voice draft', e);
+      setVoiceError(toUserMessage(e, 'AI 起草失败，请稍后重试'));
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, [
+    activeColumnId,
+    appendPlainIntoColumn,
+    canEdit,
+    dimension,
+    fields,
+    periodLabel,
+    periodYmd,
+    scope,
+    voiceColumnId,
+    voiceText,
+  ]);
 
   const scopeLabel = scope === 'daily' ? '日复盘' : scope === 'weekly' ? '周复盘' : '月复盘';
   const headerTitle = `${dimensionTitle || fallbackTitle} · ${scopeLabel}`;
@@ -862,6 +1131,13 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
           </Text>
         </View>
         <View style={[styles.appbarSide, styles.appbarSideRight]}>
+          {canEdit ? (
+            <FoldIconButton
+              icon="auto-fix"
+              onPress={openRewriteSheet}
+              accessibilityLabel="AI 改写"
+            />
+          ) : null}
           <FoldPillButton
             label={saving ? '保存中' : '保存'}
             variant="solid"
@@ -970,6 +1246,32 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                                 accessibilityLabel={insertFactsLabel}
                               />
                             ) : null}
+                            {canEdit ? (
+                              draftBusyColumnId === col.id ? (
+                                <View style={styles.draftBusy}>
+                                  <ActivityIndicator size="small" color={fold.pine} />
+                                </View>
+                              ) : (
+                                <FoldIconButton
+                                  icon="auto-awesome"
+                                  size={26}
+                                  onPress={() => {
+                                    if (draftBusyColumnId != null) return;
+                                    setActiveColumnId(col.id);
+                                    void runAiDraftForColumn(col.id);
+                                  }}
+                                  accessibilityLabel="AI 起草本栏"
+                                />
+                              )
+                            ) : null}
+                            {canEdit ? (
+                              <FoldIconButton
+                                icon="mic"
+                                size={26}
+                                onPress={() => openVoiceDraft(col.id)}
+                                accessibilityLabel="语音记一笔"
+                              />
+                            ) : null}
                             <FoldIconButton
                               icon="schedule"
                               size={26}
@@ -1012,8 +1314,22 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
                   dimensionId={dimension.id}
                   hint={
                     dimension.columns
-                      .map(c => (fields[c.id] ?? '').trim())
+                      .map(c => reviewContentToPlainDisplay(fields[c.id] ?? '').trim())
                       .find(Boolean) ?? ''
+                  }
+                  bodyText={dimension.columns
+                    .map(c => reviewContentToPlainDisplay(fields[c.id] ?? '').trim())
+                    .filter(Boolean)
+                    .join('\n\n')}
+                  scope={scope}
+                  periodLabel={periodLabel || periodYmd}
+                  openItems={
+                    periodFacts
+                      ? [...periodFacts.frogs, ...periodFacts.todos]
+                          .filter(item => !item.done)
+                          .slice(0, 12)
+                          .map(item => ({ id: item.id, title: item.title }))
+                      : undefined
                   }
                 />
               ) : null}
@@ -1143,6 +1459,35 @@ export function ReviewDimensionDetailScreen({ scope }: { scope: ReviewJournalSco
           </View>
         </KeyboardAvoidingView>
       )}
+
+      <ReviewRewriteSheet
+        visible={rewriteOpen}
+        loading={rewriteBusy}
+        error={rewriteError}
+        mode={rewriteMode}
+        draft={rewriteDraft}
+        onClose={() => {
+          setRewriteOpen(false);
+          setRewriteDraft(null);
+          setRewriteError(null);
+        }}
+        onPickMode={setRewriteMode}
+        onGenerate={() => void runRewrite()}
+        onAccept={acceptRewrite}
+      />
+
+      <ReviewVoiceDraftSheet
+        visible={voiceOpen}
+        loading={voiceBusy}
+        error={voiceError}
+        value={voiceText}
+        onChangeText={setVoiceText}
+        onClose={() => {
+          setVoiceOpen(false);
+          setVoiceError(null);
+        }}
+        onSubmit={() => void runVoiceDraft()}
+      />
     </SafeAreaView>
   );
 }
@@ -1210,7 +1555,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   appbarSideRight: {
-    alignItems: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    minWidth: 96,
   },
   appbarCenter: {
     flex: 1,
@@ -1402,6 +1751,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     justifyContent: 'space-between',
+  },
+  draftBusy: {
+    width: 26,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   toolbarSep: {
     width: StyleSheet.hairlineWidth,

@@ -2,13 +2,14 @@ import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
 import { useWishBoxTheme, useWishStyles } from '@/hooks/use-wish-box-theme';
 import { WishFormLabel, WishToggleRow } from '@/components/wish-board/wish-board-form-ui';
 import { WishBoxGradientFill } from '@/components/wish-board/wish-box-gradient-fill';
+import { aiWishBoardSuggestConditions } from '@/lib/ai-api-client';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { formatSignedMoneyTrunc2 } from '@/lib/finance-net-worth';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { buildTaskTreeFromRows, type TaskTreeNode } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
-import { parseCompletionHabitIds } from '@/lib/repositories/projects/project-completion-habits';
 import {
   formatAvailableFromDate,
   formatAvailableFromLabel,
@@ -22,6 +23,7 @@ import {
   parseAvailableFromDate,
   type WishBoardRedeemConditions,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
+import type { WishBoardWishType } from '@/lib/repositories/wish-board/wish-board.types';
 import { standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker, {
@@ -30,6 +32,7 @@ import DateTimePicker, {
 import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -67,6 +70,11 @@ type Props = {
   currentNetWorth?: number | null;
   loading?: boolean;
   disabled?: boolean;
+  /** 供「帮我绑」拼草稿上下文 */
+  draftTitle?: string;
+  draftDescription?: string | null;
+  draftWishType?: WishBoardWishType;
+  draftCostPoints?: number;
 };
 
 function countTaskProgress(tasks: TaskRow[], projectId: string): { done: number; total: number } {
@@ -154,6 +162,10 @@ export function WishBoardRedeemConditionsField({
   currentNetWorth = null,
   loading = false,
   disabled = false,
+  draftTitle = '',
+  draftDescription = null,
+  draftWishType = 'once',
+  draftCostPoints = 0,
 }: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -161,6 +173,8 @@ export function WishBoardRedeemConditionsField({
   const styles = useWishStyles(makeStyles);
   const [pickerTab, setPickerTab] = useState<PickerTab>('tree');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [aiBindBusy, setAiBindBusy] = useState(false);
+  const [aiBindReason, setAiBindReason] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftBind>(emptyDraft);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [netWorthText, setNetWorthText] = useState(
@@ -205,19 +219,6 @@ export function WishBoardRedeemConditionsField({
   const projectNameById = useMemo(() => new Map(projects.map(p => [p.id, p.name])), [projects]);
   const taskNameById = useMemo(() => new Map(tasks.map(t => [t.id, t.title])), [tasks]);
   const habitNameById = useMemo(() => new Map(habits.map(h => [h.id, h.name])), [habits]);
-
-  /** 习惯 → 已用作项目完成条件的项目名（弱提示） */
-  const habitUsedByProjects = useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const project of projects) {
-      for (const hid of parseCompletionHabitIds(project.extra_data)) {
-        const list = map.get(hid) ?? [];
-        list.push(project.name.trim() || '未命名项目');
-        map.set(hid, list);
-      }
-    }
-    return map;
-  }, [projects]);
 
   const tasksByProjectId = useMemo(() => {
     const map = new Map<string, TaskRow[]>();
@@ -519,23 +520,15 @@ export function WishBoardRedeemConditionsField({
       })
       .map(h => {
         const eligible = isHabitEligibleForWishRedeem(h);
-        const usedBy = habitUsedByProjects.get(h.id);
-        let subtitle = formatWishHabitPickerSubtitle(h);
-        if (usedBy && usedBy.length > 0) {
-          subtitle +=
-            usedBy.length === 1
-              ? ` · 已是「${usedBy[0]}」完成条件`
-              : ` · 已是 ${usedBy.length} 个项目完成条件`;
-        }
         return {
           id: h.id,
           title: h.name.trim() || '未命名习惯',
-          subtitle,
+          subtitle: formatWishHabitPickerSubtitle(h),
           eligible,
           selectable: eligible || selected.has(h.id),
         };
       });
-  }, [draft.habitIds, habitUsedByProjects, habits]);
+  }, [draft.habitIds, habits]);
 
   const renderTaskNodes = (
     nodes: TaskTreeNode[],
@@ -625,9 +618,134 @@ export function WishBoardRedeemConditionsField({
 
   const selectedCount = draftCount(draft);
 
+  const runAiBind = useCallback(() => {
+    if (disabled || loading || aiBindBusy) return;
+    const title = draftTitle.trim();
+    if (!title) {
+      toast.warn('请先填写心愿名称，再帮我绑');
+      return;
+    }
+    setAiBindBusy(true);
+    setAiBindReason(null);
+    void (async () => {
+      try {
+        const projectCands = projects
+          .filter(p => !isProjectRedeemConditionMet(p))
+          .slice(0, 30)
+          .map(p => ({
+            id: p.id,
+            title: p.name.trim() || '未命名项目',
+            progress_hint: (() => {
+              const { done, total } = countTaskProgress(tasks, p.id);
+              return total > 0 ? `${done}/${total}` : undefined;
+            })(),
+          }));
+        const taskCands = projectTasks
+          .filter(t => !isTaskRedeemConditionMet(t))
+          .slice(0, 30)
+          .map(t => ({
+            id: t.id,
+            title: t.title.trim() || '未命名任务',
+          }));
+        const todoCands = todoTasks
+          .filter(t => !isTaskRedeemConditionMet(t))
+          .slice(0, 30)
+          .map(t => ({
+            id: t.id,
+            title: t.title.trim() || '未命名待办',
+          }));
+        const habitCands = habits
+          .filter(h => {
+            const kind = parseHabitKind(h.extra_data);
+            return kind !== 'task';
+          })
+          .slice(0, 30)
+          .map(h => ({
+            id: h.id,
+            title: h.name.trim() || '未命名习惯',
+            eligible: isHabitEligibleForWishRedeem(h),
+            progress_hint: formatWishHabitPickerSubtitle(h),
+          }));
+        const data = await aiWishBoardSuggestConditions({
+          title,
+          description_text: (draftDescription || '').trim() || undefined,
+          wish_type: draftWishType,
+          cost_points: draftCostPoints,
+          projects: projectCands,
+          tasks: taskCands,
+          todos: todoCands,
+          habits: habitCands,
+          current_net_worth:
+            currentNetWorth != null && Number.isFinite(currentNetWorth)
+              ? currentNetWorth
+              : undefined,
+        });
+        const allowedProjects = new Set(projectCands.map(x => x.id));
+        const allowedTasks = new Set(taskCands.map(x => x.id));
+        const allowedTodos = new Set(todoCands.map(x => x.id));
+        const allowedHabits = new Set(
+          habitCands.filter(x => x.eligible).map(x => x.id),
+        );
+        const rc = data.redeem_conditions;
+        const next: WishBoardRedeemConditions = {
+          project_ids: (rc.project_ids ?? []).filter(id => allowedProjects.has(id)).slice(0, 8),
+          task_ids: (rc.task_ids ?? []).filter(id => allowedTasks.has(id)).slice(0, 8),
+          todo_ids: (rc.todo_ids ?? []).filter(id => allowedTodos.has(id)).slice(0, 8),
+          habit_ids: (rc.habit_ids ?? []).filter(id => allowedHabits.has(id)).slice(0, 8),
+          min_net_worth: normalizeMinNetWorth(rc.min_net_worth),
+          available_from: null,
+        };
+        onChange(next);
+        if (next.min_net_worth != null) {
+          setNetWorthText(String(next.min_net_worth));
+        }
+        setAiBindReason((data.reason || '').trim() || null);
+        toast.success('已预填兑换条件，可再调整');
+      } catch (e) {
+        toast.error(toUserMessage(e, '帮我绑失败，请稍后重试'));
+      } finally {
+        setAiBindBusy(false);
+      }
+    })();
+  }, [
+    aiBindBusy,
+    currentNetWorth,
+    disabled,
+    draftCostPoints,
+    draftDescription,
+    draftTitle,
+    draftWishType,
+    habits,
+    loading,
+    onChange,
+    projectTasks,
+    projects,
+    tasks,
+    todoTasks,
+  ]);
+
   return (
     <View>
       <WishFormLabel label="兑换条件" hint="可选 · 不满足时不可兑换" />
+      {disabled ? null : (
+        <Pressable
+          onPress={runAiBind}
+          disabled={disabled || loading || aiBindBusy}
+          style={({ pressed }) => [
+            styles.aiBindBtn,
+            { opacity: pressed || loading || aiBindBusy ? 0.65 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="帮我绑">
+          {aiBindBusy ? (
+            <ActivityIndicator size="small" color={c.pri} />
+          ) : (
+            <MaterialIcons name="auto-awesome" size={14} color={c.pri} />
+          )}
+          <Text style={styles.aiBindBtnText}>{aiBindBusy ? '绑定中…' : '帮我绑'}</Text>
+        </Pressable>
+      )}
+      {aiBindReason ? <Text style={styles.aiBindReason}>{aiBindReason}</Text> : null}
 
       <WishToggleRow
         emoji="🔗"
@@ -1029,6 +1147,32 @@ function countSubtreeProgress(node: TaskTreeNode): { done: number; total: number
 
 function makeStyles(c: WishBoxPalette, _shadows: WishBoxShadowSet) {
   return StyleSheet.create({
+    aiBindBtn: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+      marginBottom: 8,
+      marginTop: -2,
+      borderRadius: 99,
+      backgroundColor: c.priSoft,
+      borderWidth: 1,
+      borderColor: c.priLine,
+    },
+    aiBindBtnText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: c.pri,
+    },
+    aiBindReason: {
+      marginBottom: 8,
+      fontSize: 11.5,
+      lineHeight: 17,
+      color: c.muted,
+      fontWeight: '600',
+    },
     netWorthRow: {
       flexDirection: 'row',
       alignItems: 'center',

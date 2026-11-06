@@ -1,17 +1,23 @@
 /**
- * 道路节点编辑表单：标题 + 说明 + 状态 + 验收标准 checklist。
- * 验收标准是方向级「做成了算过关」，不是任务排期。
+ * 道路节点编辑：对齐 `我的道路-UI重构.html` route-node
+ *（自定义顶栏、槽位面包屑、表单卡片、状态网格、底栏保存）。
  */
 import { AcceptanceChecklistEditor } from '@/components/life-road/AcceptanceChecklistEditor';
 import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
-import { getMinTouchTarget, Spacing } from '@/constants/design-tokens';
-import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
+import { AppIcon } from '@/components/ui/app-icon';
+import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
+import {
+  lifeRoadType,
+  useLifeRoadTheme,
+  type LifeRoadPalette,
+} from '@/constants/life-road-theme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
+  LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
   parseAcceptanceCriteria,
   writeAcceptanceCriteria,
   type LifeRoadAcceptanceItem,
@@ -39,6 +45,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -48,16 +55,81 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Path } from 'react-native-svg';
 
 const PAGE_KEY = 'edit-life-road-node';
-const MIN_TOUCH = getMinTouchTarget(Platform.OS);
+
+const STATUS_TONE: Record<
+  LifeRoadNodeStatus,
+  { color: string; bg: string }
+> = {
+  on_track: { color: '#5D846E', bg: 'rgba(93,132,110,0.09)' },
+  paused: { color: '#D39A55', bg: 'rgba(211,154,85,0.09)' },
+  arrived: { color: '#3D6B58', bg: 'rgba(61,107,88,0.09)' },
+  dropped: { color: '#BF6F52', bg: 'rgba(191,111,82,0.09)' },
+};
+
+function CheckIcon({ color }: { color: string }) {
+  return (
+    <Svg width={13} height={13} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M5 12.5l4.5 4.5L19 7"
+        stroke={color}
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+function CrumbDot({ color }: { color: string }) {
+  return <View style={[styles.crumbDot, { backgroundColor: color }]} />;
+}
+
+function buildSlotLabel(
+  kind: LifeRoadNodeKind,
+  calendarYear: number | null,
+  quarter: number | null | undefined,
+  month: number | null | undefined,
+): string {
+  if (kind === 'multi' || kind === 'farther') return LIFE_ROAD_NODE_KIND_LABELS[kind];
+  if (kind === 'year') return `${calendarYear ?? ''} 年目标`.trim();
+  if (kind === 'quarter') {
+    return `${calendarYear ?? ''} ${quarterLabel(quarter ?? 1)}`.trim();
+  }
+  if (kind === 'month') {
+    return `${calendarYear ?? ''} ${monthLabel(month ?? 1)}`.trim();
+  }
+  return LIFE_ROAD_NODE_KIND_LABELS[kind];
+}
+
+function buildCrumbParts(
+  kind: LifeRoadNodeKind,
+  calendarYear: number | null,
+  quarter: number | null | undefined,
+  month: number | null | undefined,
+): string[] {
+  if (kind === 'multi') return ['多年', '3–10 年坐标'];
+  if (kind === 'farther') return ['更远', '更远方向'];
+  if (kind === 'year') return [String(calendarYear ?? ''), '年目标'];
+  if (kind === 'quarter') {
+    return [String(calendarYear ?? ''), quarterLabel(quarter ?? 1), '季目标'];
+  }
+  return [
+    String(calendarYear ?? ''),
+    quarter != null ? quarterLabel(quarter) : '',
+    monthLabel(month ?? 1),
+  ].filter(Boolean);
+}
 
 export default function EditLifeRoadNodeScreen() {
+  useWardrobeFonts();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { fold } = useFoldTheme();
+  const { lr } = useLifeRoadTheme();
   const { animate: motionOn } = useFoldMotionGate();
-  const { wrapLoad } = usePageApiSync(PAGE_KEY);
+  const { wrapLoad, notifyAncestorsDataChanged } = usePageApiSync(PAGE_KEY);
   const params = useLocalSearchParams<{
     id: string;
     kind?: string;
@@ -68,7 +140,7 @@ export default function EditLifeRoadNodeScreen() {
   }>();
 
   const isNew = !params.id || params.id === 'new';
-  const kind: LifeRoadNodeKind = useMemo(() => {
+  const paramKind: LifeRoadNodeKind = useMemo(() => {
     try {
       return parseLifeRoadNodeKind(params.kind ?? 'month');
     } catch {
@@ -76,10 +148,17 @@ export default function EditLifeRoadNodeScreen() {
     }
   }, [params.kind]);
 
-  const calendarYear = params.year ? Number(params.year) : new Date().getFullYear();
-  const quarter = params.quarter ? Number(params.quarter) : undefined;
-  const month = params.month ? Number(params.month) : undefined;
+  const paramYear = params.year ? Number(params.year) : new Date().getFullYear();
+  const paramQuarter = params.quarter ? Number(params.quarter) : undefined;
+  const paramMonth = params.month ? Number(params.month) : undefined;
   const parentId = params.parent_id?.trim() || null;
+
+  const [kind, setKind] = useState<LifeRoadNodeKind>(paramKind);
+  const [calendarYear, setCalendarYear] = useState<number | null>(
+    paramKind === 'multi' || paramKind === 'farther' ? null : paramYear,
+  );
+  const [quarter, setQuarter] = useState<number | null | undefined>(paramQuarter);
+  const [month, setMonth] = useState<number | null | undefined>(paramMonth);
 
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
@@ -89,14 +168,45 @@ export default function EditLifeRoadNodeScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [nodeId, setNodeId] = useState<string | null>(isNew ? null : params.id);
+  const [baseline, setBaseline] = useState<{
+    title: string;
+    note: string;
+    status: LifeRoadNodeStatus;
+    acceptanceKey: string;
+  } | null>(isNew ? { title: '', note: '', status: 'on_track', acceptanceKey: '' } : null);
 
-  const slotLabel = useMemo(() => {
-    if (kind === 'multi' || kind === 'farther') return LIFE_ROAD_NODE_KIND_LABELS[kind];
-    if (kind === 'year') return `${calendarYear} 年目标`;
-    if (kind === 'quarter') return `${calendarYear} ${quarterLabel(quarter ?? 1)}`;
-    if (kind === 'month') return `${calendarYear} ${monthLabel(month ?? 1)}`;
-    return LIFE_ROAD_NODE_KIND_LABELS[kind];
-  }, [kind, calendarYear, quarter, month]);
+  const slotLabel = useMemo(
+    () => buildSlotLabel(kind, calendarYear, quarter, month),
+    [kind, calendarYear, quarter, month],
+  );
+
+  const crumbParts = useMemo(
+    () => buildCrumbParts(kind, calendarYear, quarter, month),
+    [kind, calendarYear, quarter, month],
+  );
+
+  const titleLen = [...title].length;
+  const noteLen = [...note].length;
+  const acceptanceKey = useMemo(
+    () =>
+      acceptance
+        .map((it) => `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}`)
+        .join('|'),
+    [acceptance],
+  );
+
+  const dirty = useMemo(() => {
+    if (!baseline) return false;
+    return (
+      title.trim() !== baseline.title.trim() ||
+      note.trim() !== baseline.note.trim() ||
+      status !== baseline.status ||
+      acceptanceKey !== baseline.acceptanceKey
+    );
+  }, [acceptanceKey, baseline, note, status, title]);
+
+  const canSave =
+    Boolean(title.trim()) && !saving && !loading && (isNew || dirty);
 
   useEffect(() => {
     if (isNew) return;
@@ -113,11 +223,24 @@ export default function EditLifeRoadNodeScreen() {
             return;
           }
           setNodeId(row.id);
+          setKind(row.kind);
+          setCalendarYear(row.calendar_year);
+          setQuarter(row.quarter);
+          setMonth(row.month);
           setTitle(row.title);
           setNote(row.note ?? '');
           setStatus(row.status);
           setExtraDataBase(row.extra_data ?? null);
-          setAcceptance(parseAcceptanceCriteria(row.extra_data));
+          const items = parseAcceptanceCriteria(row.extra_data);
+          setAcceptance(items);
+          setBaseline({
+            title: row.title,
+            note: row.note ?? '',
+            status: row.status,
+            acceptanceKey: items
+              .map((it) => `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}`)
+              .join('|'),
+          });
         }, false);
       } catch (e) {
         toast.error(toUserMessage(e, '加载失败'));
@@ -131,6 +254,10 @@ export default function EditLifeRoadNodeScreen() {
   }, [isNew, params.id, router, wrapLoad]);
 
   const onSave = useCallback(async () => {
+    if (!title.trim()) {
+      toast.warn('先写标题');
+      return;
+    }
     setSaving(true);
     try {
       const extra_data = writeAcceptanceCriteria(extraDataBase, acceptance);
@@ -157,6 +284,7 @@ export default function EditLifeRoadNodeScreen() {
         });
         toast.success('已保存');
       }
+      notifyAncestorsDataChanged();
       router.back();
     } catch (e) {
       const msg =
@@ -181,6 +309,7 @@ export default function EditLifeRoadNodeScreen() {
     month,
     parentId,
     router,
+    notifyAncestorsDataChanged,
   ]);
 
   const onDelete = useCallback(() => {
@@ -194,6 +323,7 @@ export default function EditLifeRoadNodeScreen() {
           void (async () => {
             try {
               await deleteLifeRoadNode(nodeId);
+              notifyAncestorsDataChanged();
               toast.success('已删除');
               router.back();
             } catch (e) {
@@ -203,182 +333,451 @@ export default function EditLifeRoadNodeScreen() {
         },
       },
     ]);
-  }, [nodeId, title, slotLabel, router]);
+  }, [nodeId, title, slotLabel, router, notifyAncestorsDataChanged]);
+
+  const footerHint = isNew
+    ? '标题非空才可创建节点'
+    : canSave
+      ? '有改动 · 保存后返回'
+      : title.trim()
+        ? '标题非空 · 有改动才可保存'
+        : '标题非空 · 有改动才可保存';
 
   return (
-    <SafeAreaView style={[styles.root, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
-      <Stack.Screen
-        options={{
-          title: isNew ? `新建 · ${slotLabel}` : `编辑 · ${slotLabel}`,
-          headerRight: () =>
-            !isNew ? (
-              <Pressable
-                onPress={onDelete}
-                accessibilityLabel="删除"
-                style={{ paddingHorizontal: 8, minHeight: MIN_TOUCH, justifyContent: 'center' }}>
-                <Text style={{ color: fold.clay, fontWeight: '700' }}>删除</Text>
-              </Pressable>
-            ) : null,
-        }}
-      />
-      {loading ? (
-        <ActivityIndicator style={{ marginTop: 40 }} color={fold.pine} />
-      ) : (
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{
-            padding: 16,
-            paddingBottom: insets.bottom + Spacing['6xl'],
-            gap: 14,
-          }}>
-          <FoldRiseIn animate={motionOn} index={0} fromY={10}>
-            <Text style={[styles.hint, { color: fold.muted }]}>
-              标题 / 说明写方向；验收标准写「怎样算过关」。具体做法与期限仍放到项目里。
-            </Text>
-          </FoldRiseIn>
+    <SafeAreaView style={[styles.safe, { backgroundColor: lr.paper }]} edges={['left', 'right']}>
+      <Stack.Screen options={{ headerShown: false }} />
 
-          <FoldRiseIn animate={motionOn} index={1} fromY={10}>
-            <Text style={[styles.lab, { color: fold.faint }]}>标题</Text>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              maxLength={LIFE_ROAD_TITLE_MAX}
-              placeholder="一句话方向"
-              placeholderTextColor={fold.faint}
-              style={[
-                styles.input,
-                {
-                  color: fold.ink,
-                  borderColor: fold.line,
-                  backgroundColor: 'rgba(255,252,245,0.92)',
-                  fontFamily: foldFonts.serif,
-                },
-              ]}
-            />
-          </FoldRiseIn>
-
-          <FoldRiseIn animate={motionOn} index={2} fromY={10}>
-            <Text style={[styles.lab, { color: fold.faint }]}>说明（可选）</Text>
-            <TextInput
-              value={note}
-              onChangeText={setNote}
-              maxLength={LIFE_ROAD_NOTE_MAX}
-              placeholder="背景或补充说明"
-              placeholderTextColor={fold.faint}
-              multiline
-              style={[
-                styles.area,
-                {
-                  color: fold.ink,
-                  borderColor: fold.line,
-                  backgroundColor: 'rgba(255,252,245,0.92)',
-                },
-              ]}
-            />
-          </FoldRiseIn>
-
-          <FoldRiseIn animate={motionOn} index={3} fromY={10}>
-            <Text style={[styles.lab, { color: fold.faint }]}>状态</Text>
-            <View style={styles.chips}>
-              {LIFE_ROAD_NODE_STATUS_VALUES.map((s) => {
-                const on = status === s;
-                return (
-                  <Pressable
-                    key={s}
-                    onPress={() => setStatus(s)}
-                    style={[
-                      styles.chip,
-                      {
-                        borderColor: on ? fold.pine2 : fold.line,
-                        backgroundColor: on ? fold.sage2 : 'transparent',
-                      },
-                    ]}>
-                    <Text
-                      style={{
-                        color: on ? fold.pine2 : fold.ink2,
-                        fontSize: 12,
-                        fontWeight: '700',
-                      }}>
-                      {LIFE_ROAD_NODE_STATUS_LABELS[s]}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </FoldRiseIn>
-
-          <FoldRiseIn animate={motionOn} index={4} fromY={10}>
-            <AcceptanceChecklistEditor
-              items={acceptance}
-              onChange={setAcceptance}
-              ink={fold.ink}
-              ink2={fold.ink2}
-              muted={fold.muted}
-              faint={fold.faint}
-              line={fold.line}
-              pine2={fold.pine2}
-              sage2={fold.sage2}
-            />
-          </FoldRiseIn>
-
+      <View style={[styles.appBar, { paddingTop: insets.top + 4 }]}>
+        <View style={styles.appBarSide}>
           <Pressable
-            onPress={() => void onSave()}
-            disabled={saving || !title.trim()}
-            style={[
-              styles.save,
+            onPress={() => router.back()}
+            accessibilityRole="button"
+            accessibilityLabel="返回"
+            hitSlop={10}
+            style={({ pressed }) => [
+              styles.iconBtn,
               {
-                backgroundColor: fold.pineButton,
-                opacity: saving || !title.trim() ? 0.5 : 1,
-                minHeight: MIN_TOUCH,
+                borderColor: lr.line,
+                backgroundColor: 'rgba(252,249,241,0.66)',
+                opacity: pressed ? 0.88 : 1,
               },
             ]}>
-            <Text style={{ color: fold.onPineButton, fontWeight: '800', fontSize: 15 }}>
-              {saving ? '保存中…' : '保存'}
-            </Text>
+            <AppIcon name="arrow-back" size={18} color={lr.ink2} />
           </Pressable>
-        </ScrollView>
+        </View>
+        <View style={styles.appBarTitleWrap}>
+          <Text style={[styles.appTitle, { color: lr.pine }]} numberOfLines={1}>
+            {isNew ? `新建 · ${slotLabel}` : `编辑 · ${slotLabel}`}
+          </Text>
+          <Text style={[lifeRoadType.appSub, { color: lr.muted }]}>
+            ROAD NODE · {kind.toUpperCase()}
+          </Text>
+        </View>
+        <View style={[styles.appBarSide, styles.appBarSideEnd]}>
+          {!isNew ? (
+            <Pressable
+              onPress={onDelete}
+              accessibilityRole="button"
+              accessibilityLabel="删除"
+              style={({ pressed }) => [
+                styles.deleteTop,
+                {
+                  borderColor: 'rgba(191,111,82,0.18)',
+                  backgroundColor: 'rgba(241,220,210,0.28)',
+                  opacity: pressed ? 0.88 : 1,
+                },
+              ]}>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: '600',
+                  letterSpacing: 0.4,
+                  color: lr.clay,
+                }}>
+                删除
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
+      {loading ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={lr.pine} />
+        </View>
+      ) : (
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[
+              styles.scroll,
+              { paddingBottom: Math.max(insets.bottom, 16) + 110 },
+            ]}
+            showsVerticalScrollIndicator={false}>
+            <FoldRiseIn animate={motionOn} index={0} fromY={10}>
+              <View
+                style={[
+                  styles.slotCrumb,
+                  {
+                    borderColor: lr.line3,
+                    backgroundColor: 'rgba(252,249,241,0.45)',
+                  },
+                ]}>
+                {crumbParts.map((part, i) => (
+                  <React.Fragment key={`${part}-${i}`}>
+                    {i > 0 ? <CrumbDot color={lr.line2} /> : null}
+                    <Text
+                      style={[
+                        lifeRoadType.monoTiny,
+                        {
+                          color: i === crumbParts.length - 1 ? lr.ink3 : lr.muted,
+                          fontWeight: i === crumbParts.length - 1 ? '600' : '400',
+                        },
+                      ]}>
+                      {part}
+                    </Text>
+                  </React.Fragment>
+                ))}
+              </View>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={1} fromY={10}>
+              <FormCard lr={lr}>
+                <View style={styles.fieldHead}>
+                  <View style={styles.fieldLabel}>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>01</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>标题</Text>
+                    <Text style={{ fontSize: 10, color: lr.clay }}>必填</Text>
+                  </View>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                    {titleLen} / {LIFE_ROAD_TITLE_MAX}
+                  </Text>
+                </View>
+                <TextInput
+                  value={title}
+                  onChangeText={(t) => setTitle([...t].slice(0, LIFE_ROAD_TITLE_MAX).join(''))}
+                  placeholder="这个节点叫什么？"
+                  placeholderTextColor={lr.muted2}
+                  style={[
+                    styles.titleInput,
+                    lifeRoadType.serifNorth,
+                    { color: lr.ink, borderBottomColor: lr.line },
+                  ]}
+                />
+                <View style={styles.lineNote}>
+                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>标题非空才可保存</Text>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>简短、可被记住</Text>
+                </View>
+              </FormCard>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={2} fromY={10}>
+              <FormCard lr={lr}>
+                <View style={styles.fieldHead}>
+                  <View style={styles.fieldLabel}>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>02</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>说明</Text>
+                  </View>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                    {noteLen} / {LIFE_ROAD_NOTE_MAX}
+                  </Text>
+                </View>
+                <TextInput
+                  value={note}
+                  onChangeText={(t) => setNote([...t].slice(0, LIFE_ROAD_NOTE_MAX).join(''))}
+                  maxLength={LIFE_ROAD_NOTE_MAX}
+                  placeholder="可选：为什么要走这一步？"
+                  placeholderTextColor={lr.muted2}
+                  multiline
+                  textAlignVertical="top"
+                  style={[styles.noteInput, { color: lr.ink3 }]}
+                />
+              </FormCard>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={3} fromY={10}>
+              <FormCard lr={lr}>
+                <View style={styles.fieldHead}>
+                  <View style={styles.fieldLabel}>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>03</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>状态</Text>
+                  </View>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>4 种</Text>
+                </View>
+                <View style={styles.statusGrid}>
+                  {LIFE_ROAD_NODE_STATUS_VALUES.map((s) => {
+                    const on = status === s;
+                    const tone = STATUS_TONE[s];
+                    return (
+                      <Pressable
+                        key={s}
+                        onPress={() => setStatus(s)}
+                        style={[
+                          styles.statusOpt,
+                          {
+                            borderColor: on ? tone.color : lr.line,
+                            backgroundColor: on ? tone.bg : 'rgba(255,255,255,0.32)',
+                          },
+                        ]}>
+                        <View
+                          style={[styles.statusDot, { backgroundColor: tone.color }]}
+                        />
+                        <Text
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            fontSize: 12,
+                            fontWeight: on ? '700' : '500',
+                            color: on ? lr.ink : lr.ink3,
+                          }}
+                          numberOfLines={1}>
+                          {LIFE_ROAD_NODE_STATUS_LABELS[s]}
+                        </Text>
+                        {on ? (
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: tone.color }}>
+                            ✓
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </FormCard>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={4} fromY={10}>
+              <FormCard lr={lr}>
+                <View style={styles.fieldHead}>
+                  <View style={styles.fieldLabel}>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>04</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>
+                      验收标准
+                    </Text>
+                  </View>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                    {acceptance.length} / {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
+                  </Text>
+                </View>
+                <AcceptanceChecklistEditor
+                  items={acceptance}
+                  onChange={setAcceptance}
+                  ink2={lr.ink2}
+                  ink3={lr.ink3}
+                  muted={lr.muted}
+                  muted2={lr.muted2}
+                  faint={lr.muted2}
+                  line={lr.line}
+                  pine={lr.pine}
+                  onRoad={lr.onRoad}
+                  clay2={lr.clay2}
+                />
+                <View style={styles.lineNote}>
+                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
+                    勾选会直接写回 extra_data
+                  </Text>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                    最多 {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条
+                  </Text>
+                </View>
+              </FormCard>
+            </FoldRiseIn>
+
+            <View style={styles.helperNote}>
+              <AppIcon name="info-outline" size={12} color={lr.muted2} />
+              <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: lr.muted }}>
+                道路只负责方向与验收：这里没有截止日期、优先级、进度条，也不进入任务日历与积分。
+              </Text>
+            </View>
+          </ScrollView>
+
+          <View
+            style={[
+              styles.formFooter,
+              {
+                paddingBottom: Math.max(insets.bottom, 16),
+                backgroundColor: lr.paper,
+              },
+            ]}>
+            <Pressable
+              onPress={() => void onSave()}
+              disabled={!canSave}
+              style={({ pressed }) => [
+                styles.btnSave,
+                {
+                  backgroundColor: lr.pine,
+                  opacity: !canSave ? 0.38 : pressed ? 0.92 : 1,
+                },
+              ]}>
+              <CheckIcon color={lr.onRoad} />
+              <Text style={[lifeRoadType.cta, { color: lr.onRoad, letterSpacing: 0.8 }]}>
+                {saving ? '保存中…' : isNew ? '创建节点' : '保存节点'}
+              </Text>
+            </Pressable>
+            <Text style={styles.footerHint}>{footerHint}</Text>
+          </View>
+        </KeyboardAvoidingView>
       )}
     </SafeAreaView>
   );
 }
 
+function FormCard({
+  lr,
+  children,
+}: {
+  lr: LifeRoadPalette;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={[styles.formCard, { borderColor: lr.line, backgroundColor: lr.card2 }]}>
+      {children}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  hint: { fontSize: 12, lineHeight: 18 },
-  lab: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.6,
-    marginBottom: 6,
+  safe: { flex: 1 },
+  appBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingBottom: 8,
+    gap: 9,
   },
-  input: {
+  appBarSide: {
+    width: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  appBarSideEnd: { justifyContent: 'flex-end' },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  area: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 14,
-    minHeight: 96,
-    textAlignVertical: 'top',
-  },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  save: {
-    marginTop: 8,
-    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  appBarTitleWrap: { flex: 1, minWidth: 0, alignItems: 'center', paddingHorizontal: 4 },
+  appTitle: {
+    ...lifeRoadType.appTitle,
+    fontSize: 17,
+    lineHeight: 20,
+  },
+  deleteTop: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  scroll: { paddingHorizontal: 18, paddingTop: 4 },
+  slotCrumb: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 2,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  crumbDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 2,
+  },
+  formCard: {
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 13,
+    borderRadius: 21,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  fieldHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 8,
+  },
+  fieldLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 1,
+  },
+  titleInput: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 1,
+    paddingTop: 3,
+    paddingBottom: 7,
+    fontSize: 15,
+  },
+  noteInput: {
+    minHeight: 72,
+    paddingHorizontal: 1,
+    paddingVertical: 2,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  lineNote: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 6,
+  },
+  statusOpt: {
+    width: '48.5%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    flexShrink: 0,
+  },
+  helperNote: {
+    marginTop: 12,
+    marginHorizontal: 2,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 5,
+  },
+  formFooter: {
+    paddingHorizontal: 18,
+    paddingTop: 9,
+  },
+  btnSave: {
+    height: 43,
+    borderRadius: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  footerHint: {
+    textAlign: 'center',
+    marginTop: 7,
+    fontSize: 11,
+    color: '#A6AEA5',
+    letterSpacing: 0.2,
   },
 });

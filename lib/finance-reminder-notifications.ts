@@ -55,6 +55,7 @@ import {
   isLocalNotificationSchedulingUnavailable,
   scheduleDateReminder,
 } from '@/lib/notification-scheduler';
+import { prefetchFinanceNotificationWrapupCopy } from '@/lib/notification-ai-copy';
 import {
   getFinanceAccountsWithBalance,
   getFinanceTransactions,
@@ -382,8 +383,22 @@ export async function syncFinanceBudgetThresholdReminders(
   });
   if (!kind) return;
 
-  const copy = budgetThresholdCopy(kind, usage.percent, usage.usedExpense, usage.totalBudget);
+  const fallback = budgetThresholdCopy(kind, usage.percent, usage.usedExpense, usage.totalBudget);
   const identifier = financeBudgetThresholdIdentifier(periodKey, kind);
+  const fingerprint = `fbt|${periodKey}|${kind}|${Math.round(usage.percent)}`;
+  const copy = await prefetchFinanceNotificationWrapupCopy({
+    identifier,
+    fingerprint,
+    period: 'daily',
+    fallback,
+    summaryText: [
+      `提醒类型：预算阈值 ${kind}`,
+      `本周期预算用量：${Math.round(usage.percent)}%`,
+      `已用支出：${formatYuan(usage.usedExpense)} / 总预算 ${formatYuan(usage.totalBudget)}`,
+      `规则兜底标题：${fallback.title}`,
+      `规则兜底正文：${fallback.body}`,
+    ].join('\n'),
+  });
   const ok = await presentImmediateFinanceNotification({
     category: 'finance-budget-threshold-reminder',
     identifier,
@@ -494,6 +509,28 @@ export async function syncFinanceLedgerWrapReminders(
   });
   if (!fireAt) return;
 
+  const fingerprint = `flw|${fireAt.toISOString().slice(0, 16)}`;
+  const fallback = {
+    title: '今天还没记账',
+    body: '花半分钟记一笔，预算与复盘会更准。',
+  };
+  const fireYmd = getLogicalLocalYmd(fireAt, boundary);
+  // 排期前低频预取 AI 收口文案；失败仍走规则兜底（schedule 只读缓存）
+  await prefetchFinanceNotificationWrapupCopy({
+    identifier: id,
+    fingerprint,
+    period: 'daily',
+    fallback,
+    summaryText: [
+      '提醒类型：当日未记账傍晚收口',
+      `计划提醒日：${fireYmd}`,
+      `当日是否已有流水：否（否则不会排期）`,
+      `近几日有流水的日期数：${ymdsWithTxn.size}`,
+      `规则兜底标题：${fallback.title}`,
+      `规则兜底正文：${fallback.body}`,
+    ].join('\n'),
+  });
+
   await scheduleDateReminder({
     category: 'finance-ledger-wrap-reminder',
     identifier: id,
@@ -501,11 +538,8 @@ export async function syncFinanceLedgerWrapReminders(
     channel: LEDGER_WRAP_CHANNEL,
     strong: false,
     data: { type: 'finance-ledger-wrap-reminder' },
-    fallback: {
-      title: '今天还没记账',
-      body: '花半分钟记一笔，预算与复盘会更准。',
-    },
-    fingerprint: `flw|${fireAt.toISOString().slice(0, 16)}`,
+    fallback,
+    fingerprint,
     contextBlock: '财务未记账收口',
   });
 }

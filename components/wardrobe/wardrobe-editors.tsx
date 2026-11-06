@@ -46,12 +46,22 @@ import {
   releaseReplacedWardrobeImages,
   type WardrobeImageSource,
 } from '@/lib/wardrobe-images';
-import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { buildWardrobeOptionHints } from '@/lib/wardrobe-ai-context';
+import {
+  isStoredImageUri,
+  readLocalImageDataUrl,
+  resolveStoredImageDisplayUri,
+} from '@/lib/stored-images';
+import { parseWardrobeItemFromImage, parseWardrobeItemFromText } from '@/lib/zhipu-image-parse';
+import { toUserMessage } from '@/lib/app-feedback';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -698,6 +708,10 @@ function ItemForm({
   );
   const [noteImageUri, setNoteImageUri] = useState(editor.item?.note_image_uri ?? '');
   const [imageBusy, setImageBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const aiGenRef = useRef(0);
+  const [oneLinerOpen, setOneLinerOpen] = useState(false);
+  const [oneLinerText, setOneLinerText] = useState('');
   const [picker, setPicker] = useState<'category' | 'season' | 'color' | 'brand' | 'fit' | null>(
     null,
   );
@@ -706,6 +720,123 @@ function ItemForm({
   useEffect(() => {
     if (!categoryId && selectableCategories[0]) setCategoryId(selectableCategories[0].id);
   }, [categoryId, selectableCategories]);
+
+  const readImageDataUrlForAi = useCallback(async (uri: string): Promise<string> => {
+    const raw = uri.trim();
+    if (!raw) throw new Error('请先添加单品图片');
+    if (raw.toLowerCase().startsWith('data:')) return raw;
+    if (isStoredImageUri(raw) || raw.startsWith('/uploads/') || /^https?:\/\//i.test(raw)) {
+      const display = await resolveStoredImageDisplayUri(raw);
+      if (!display) throw new Error('无法读取图片');
+      return readLocalImageDataUrl(display);
+    }
+    return readLocalImageDataUrl(raw);
+  }, []);
+
+  const applyItemDraft = useCallback(
+    (d: {
+      name: string;
+      category_hint: string | null;
+      color: string;
+      season: string;
+      brand: string;
+      fit: string;
+    }) => {
+      if (d.name.trim()) setName(d.name.trim());
+      if (d.category_hint) {
+        const match = selectableCategories.find((c) => c.name === d.category_hint);
+        if (match) setCategoryId(match.id);
+      }
+      if (d.season.trim()) setSeason(d.season.replace(/\s*\/\s*/g, '/'));
+      if (d.color.trim()) setColor(d.color.trim());
+      if (d.brand.trim()) setBrand(d.brand.trim());
+      if (d.fit.trim()) setFit(d.fit.trim());
+    },
+    [selectableCategories],
+  );
+
+  const runAiFillAttrs = useCallback(async () => {
+    if (busy || imageBusy || aiBusy) return;
+    const sourceUri = cutoutUri.trim() || imageUri.trim();
+    if (!sourceUri) {
+      toast.info('请先拍照或导入单品图');
+      return;
+    }
+    const gen = ++aiGenRef.current;
+    setAiBusy(true);
+    try {
+      const dataUrl = await readImageDataUrlForAi(sourceUri);
+      const categoryNames = selectableCategories.map((c) => c.name);
+      const optionHints = buildWardrobeOptionHints(editor.options);
+      const r = await parseWardrobeItemFromImage({
+        imageBase64: dataUrl,
+        categoryNames,
+        optionHints,
+      });
+      if (gen !== aiGenRef.current) return;
+      if (!r.ok) {
+        toast.info(r.error || 'AI 识别失败');
+        return;
+      }
+      applyItemDraft(r.data);
+      toast.info('已填入属性，请确认后保存');
+    } catch (e) {
+      if (gen !== aiGenRef.current) return;
+      toast.info(toUserMessage(e, 'AI 识别失败'));
+    } finally {
+      if (gen === aiGenRef.current) setAiBusy(false);
+    }
+  }, [
+    aiBusy,
+    applyItemDraft,
+    busy,
+    cutoutUri,
+    editor.options,
+    imageBusy,
+    imageUri,
+    readImageDataUrlForAi,
+    selectableCategories,
+  ]);
+
+  const runAiFillAttrsFromText = useCallback(async () => {
+    if (busy || imageBusy || aiBusy) return;
+    const text = oneLinerText.trim();
+    if (!text) {
+      toast.info('请输入一句话描述');
+      return;
+    }
+    const gen = ++aiGenRef.current;
+    setAiBusy(true);
+    try {
+      const r = await parseWardrobeItemFromText({
+        text,
+        categoryNames: selectableCategories.map((c) => c.name),
+        optionHints: buildWardrobeOptionHints(editor.options),
+      });
+      if (gen !== aiGenRef.current) return;
+      if (!r.ok) {
+        toast.info(r.error || 'AI 解析失败');
+        return;
+      }
+      applyItemDraft(r.data);
+      setOneLinerOpen(false);
+      setOneLinerText('');
+      toast.info('已填入属性，请确认后保存');
+    } catch (e) {
+      if (gen !== aiGenRef.current) return;
+      toast.info(toUserMessage(e, 'AI 解析失败'));
+    } finally {
+      if (gen === aiGenRef.current) setAiBusy(false);
+    }
+  }, [
+    aiBusy,
+    applyItemDraft,
+    busy,
+    editor.options,
+    imageBusy,
+    oneLinerText,
+    selectableCategories,
+  ]);
 
   const categoryName = editor.categories.find((c) => c.id === categoryId)?.name ?? '';
   const colorSwatch = guessColorSwatch(color, w.pine);
@@ -914,6 +1045,77 @@ function ItemForm({
             <IconImage size={14} color={w.pine} />
           </View>
         </Pressable>
+
+        <View style={styles.aiFillRow}>
+          <Pressable
+            style={[styles.aiFillBtn, (aiBusy || imageBusy || busy) && styles.btnDisabled]}
+            onPress={() => void runAiFillAttrs()}
+            disabled={aiBusy || imageBusy || busy}
+            accessibilityLabel="AI 填属性">
+            {aiBusy && !oneLinerOpen ? (
+              <ActivityIndicator color={w.pine} size="small" />
+            ) : (
+              <Text style={styles.aiFillBtnText}>AI 填属性</Text>
+            )}
+          </Pressable>
+          <Pressable
+            style={[styles.aiFillBtn, (aiBusy || imageBusy || busy) && styles.btnDisabled]}
+            onPress={() => setOneLinerOpen(true)}
+            disabled={aiBusy || imageBusy || busy}
+            accessibilityLabel="一句话添加">
+            <Text style={styles.aiFillBtnText}>一句话添加</Text>
+          </Pressable>
+        </View>
+
+        <Modal
+          visible={oneLinerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => !aiBusy && setOneLinerOpen(false)}>
+          <KeyboardAvoidingView
+            style={styles.oneLinerBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => !aiBusy && setOneLinerOpen(false)}
+            />
+            <View style={styles.oneLinerCard}>
+              <Text style={styles.oneLinerTitle}>一句话添加</Text>
+              <Text style={styles.oneLinerSub}>例如：优衣库米色羊毛大衣 秋冬 L</Text>
+              <TextInput
+                style={styles.oneLinerInput}
+                value={oneLinerText}
+                onChangeText={setOneLinerText}
+                placeholder="描述品牌、颜色、品类…"
+                placeholderTextColor={w.muted}
+                multiline
+                editable={!aiBusy}
+                autoFocus
+              />
+              <View style={styles.oneLinerActions}>
+                <Pressable
+                  style={styles.oneLinerGhost}
+                  disabled={aiBusy}
+                  onPress={() => {
+                    setOneLinerOpen(false);
+                    setOneLinerText('');
+                  }}>
+                  <Text style={styles.oneLinerGhostText}>取消</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.oneLinerPrimary, aiBusy && styles.btnDisabled]}
+                  disabled={aiBusy}
+                  onPress={() => void runAiFillAttrsFromText()}>
+                  {aiBusy ? (
+                    <ActivityIndicator color={w.onPine} size="small" />
+                  ) : (
+                    <Text style={styles.oneLinerPrimaryText}>AI 填入</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
 
         <View style={styles.formGroup}>
           <FormRow label="名称">
@@ -1531,6 +1733,94 @@ function createStyles(w: WardrobePalette) {
       borderColor: w.glassBorder,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    aiFillRow: {
+      marginTop: 10,
+      marginBottom: 4,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+    },
+    aiFillBtn: {
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: w.pine,
+      backgroundColor: w.paper2,
+      minWidth: 108,
+      alignItems: 'center',
+    },
+    aiFillBtnText: {
+      fontFamily: wardrobeFonts.sansSemiBold,
+      fontSize: 13,
+      color: w.pine,
+    },
+    oneLinerBackdrop: {
+      flex: 1,
+      backgroundColor: 'rgba(20,28,26,0.42)',
+      justifyContent: 'center',
+      paddingHorizontal: 24,
+    },
+    oneLinerCard: {
+      backgroundColor: w.paper,
+      borderRadius: 18,
+      padding: 16,
+      borderWidth: 1,
+      borderColor: w.line,
+      gap: 8,
+    },
+    oneLinerTitle: {
+      fontFamily: wardrobeFonts.sansSemiBold,
+      fontSize: 17,
+      color: w.ink,
+    },
+    oneLinerSub: {
+      fontFamily: wardrobeFonts.sans,
+      fontSize: 12,
+      color: w.muted,
+      marginBottom: 4,
+    },
+    oneLinerInput: {
+      minHeight: 88,
+      borderWidth: 1,
+      borderColor: w.line,
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      fontFamily: wardrobeFonts.sans,
+      fontSize: 14,
+      color: w.ink,
+      textAlignVertical: 'top',
+      backgroundColor: w.card,
+    },
+    oneLinerActions: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      gap: 10,
+      marginTop: 4,
+    },
+    oneLinerGhost: {
+      paddingHorizontal: 12,
+      paddingVertical: 9,
+    },
+    oneLinerGhostText: {
+      fontFamily: wardrobeFonts.sans,
+      fontSize: 14,
+      color: w.muted,
+    },
+    oneLinerPrimary: {
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      borderRadius: 999,
+      backgroundColor: w.pine,
+      minWidth: 88,
+      alignItems: 'center',
+    },
+    oneLinerPrimaryText: {
+      fontFamily: wardrobeFonts.sansSemiBold,
+      fontSize: 14,
+      color: w.onPine,
     },
     heroBusyMask: {
       ...StyleSheet.absoluteFill,

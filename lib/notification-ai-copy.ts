@@ -1,13 +1,15 @@
 /**
  * 本地通知登记时解析 title/body（非系统弹出瞬间）。
  * 优先读缓存；未命中则用硬编码兜底。
- * 不再调用 AI（曾误复用 finance/txn-comment，启动重同步会轰炸后端）。
+ * 登记路径本身不直接打模型；财务收口可在排期前低频预取写入缓存。
  */
 
-import { AppSettingKey, getAppSettingFromCache } from '@/lib/app-settings-store';
+import { AppSettingKey, getAppSettingFromCache, setAppSetting } from '@/lib/app-settings-store';
+import { analyzeFinanceDailyWrapup } from '@/lib/zhipu-image-parse';
 
 const TITLE_MAX = 28;
 const BODY_MAX = 80;
+const CACHE_MAX_ENTRIES = 40;
 
 export type NotificationAiCopy = { title: string; body: string };
 
@@ -64,7 +66,7 @@ export async function resolveNotificationAiCopy(params: {
   identifier: string;
   fingerprint: string;
   fallback: NotificationAiCopy;
-  /** 保留参数以兼容调用方；不再送 AI */
+  /** 保留参数以兼容调用方；登记时不送 AI */
   contextBlock: string;
 }): Promise<NotificationAiCopy> {
   const fallback = normalizeCopy(params.fallback.title, params.fallback.body);
@@ -72,7 +74,7 @@ export async function resolveNotificationAiCopy(params: {
   try {
     const store = await readCache();
     const hit = store.entries.find(
-      e => e.identifier === params.identifier && e.fingerprint === params.fingerprint,
+      (e) => e.identifier === params.identifier && e.fingerprint === params.fingerprint,
     );
     if (hit) return normalizeCopy(hit.title, hit.body);
   } catch {
@@ -80,4 +82,75 @@ export async function resolveNotificationAiCopy(params: {
   }
 
   return fallback;
+}
+
+/** 写入通知文案缓存（按 identifier+fingerprint；供排期前低频预取）。 */
+export async function cacheNotificationAiCopy(params: {
+  identifier: string;
+  fingerprint: string;
+  title: string;
+  body: string;
+}): Promise<void> {
+  const copy = normalizeCopy(params.title, params.body);
+  try {
+    const store = await readCache();
+    const next: CacheEntry[] = store.entries.filter(
+      (e) => !(e.identifier === params.identifier && e.fingerprint === params.fingerprint),
+    );
+    next.unshift({
+      identifier: params.identifier,
+      fingerprint: params.fingerprint,
+      title: copy.title,
+      body: copy.body,
+      updatedAt: new Date().toISOString(),
+    });
+    await setAppSetting(AppSettingKey.notificationAiCopyCache, {
+      entries: next.slice(0, CACHE_MAX_ENTRIES),
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 财务收口/阈值通知：缓存未命中时低频调 `finance/daily-wrapup` 写入缓存。
+ * 失败静默回退；绝不在启动全量同步路径上连环轰炸。
+ */
+export async function prefetchFinanceNotificationWrapupCopy(params: {
+  identifier: string;
+  fingerprint: string;
+  summaryText: string;
+  fallback: NotificationAiCopy;
+  period?: 'daily' | 'weekly';
+}): Promise<NotificationAiCopy> {
+  const fallback = normalizeCopy(params.fallback.title, params.fallback.body);
+  try {
+    const store = await readCache();
+    const hit = store.entries.find(
+      (e) => e.identifier === params.identifier && e.fingerprint === params.fingerprint,
+    );
+    if (hit) return normalizeCopy(hit.title, hit.body);
+  } catch {
+    /* ignore */
+  }
+
+  const summary = params.summaryText.trim();
+  if (!summary) return fallback;
+
+  try {
+    const r = await analyzeFinanceDailyWrapup({
+      summaryText: summary,
+      period: params.period ?? 'daily',
+    });
+    if (!r.ok) return fallback;
+    await cacheNotificationAiCopy({
+      identifier: params.identifier,
+      fingerprint: params.fingerprint,
+      title: r.data.title,
+      body: r.data.body,
+    });
+    return normalizeCopy(r.data.title, r.data.body);
+  } catch {
+    return fallback;
+  }
 }

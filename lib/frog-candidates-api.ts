@@ -7,6 +7,11 @@ import { applyServerFrogExtraLocally, assignFrogToApi, assignProjectFrogToApi } 
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import {
+  syncStandaloneTodoAfterAssign,
+  syncStandaloneTodoAfterUnassign,
+  type StandaloneAssignScheduleTime,
+} from '@/lib/standalone-todo-assign-sync';
+import {
   getLogicalLocalYmd,
   loadTasksDayBoundary,
   type TasksDayBoundary,
@@ -44,12 +49,16 @@ export async function fetchFrogCandidates(opts: {
 
 /**
  * 优先走服务端 frog-assign，成功后回写本地；失败则回退原 PATCH 写入链路。
+ * 独立待办额外双向同步 due_date / schedule。
  */
 export async function assignFrogForDay(params: {
   kind: 'task' | 'project';
   id: string;
   assignYmd: string;
+  /** 独立待办：入格时段（缺省按全天写回日期） */
+  scheduleTime?: StandaloneAssignScheduleTime;
 }): Promise<void> {
+  let assigned = false;
   try {
     const result = await apiPostFrogAssign({
       kind: params.kind,
@@ -63,32 +72,41 @@ export async function assignFrogForDay(params: {
       result.extra_data,
       result.updated_at,
     );
-    return;
+    assigned = true;
   } catch (err) {
     console.warn('[frog-assign] 服务端指派失败，回退本地写入', err);
   }
 
-  if (params.kind === 'project') {
-    const projects = await getProjects();
-    const project = projects.find((p) => p.id === params.id);
-    if (!project) throw new Error('项目不存在');
-    await assignProjectFrogToApi(
-      params.id,
-      project.extra_data,
-      params.assignYmd,
-      project as unknown as Record<string, unknown>,
-    );
-    return;
+  if (!assigned) {
+    if (params.kind === 'project') {
+      const projects = await getProjects();
+      const project = projects.find((p) => p.id === params.id);
+      if (!project) throw new Error('项目不存在');
+      await assignProjectFrogToApi(
+        params.id,
+        project.extra_data,
+        params.assignYmd,
+        project as unknown as Record<string, unknown>,
+      );
+    } else {
+      const task = await getTaskById(params.id);
+      if (!task) throw new Error('任务不存在');
+      await assignFrogToApi(
+        params.id,
+        task.extra_data,
+        params.assignYmd,
+        task as unknown as Record<string, unknown>,
+      );
+    }
   }
 
-  const task = await getTaskById(params.id);
-  if (!task) throw new Error('任务不存在');
-  await assignFrogToApi(
-    params.id,
-    task.extra_data,
-    params.assignYmd,
-    task as unknown as Record<string, unknown>,
-  );
+  if (params.kind === 'task') {
+    try {
+      await syncStandaloneTodoAfterAssign(params.id, params.assignYmd, params.scheduleTime);
+    } catch (syncErr) {
+      console.warn('[frog-assign] 独立待办日期回写失败', syncErr);
+    }
+  }
 }
 
 /** 优先走服务端 frog-assign 取消；失败回退 PATCH extra_data */
@@ -97,6 +115,7 @@ export async function unassignFrogForDay(params: {
   id: string;
   assignYmd: string;
 }): Promise<void> {
+  let unassigned = false;
   try {
     const result = await apiPostFrogAssign({
       kind: params.kind,
@@ -110,32 +129,41 @@ export async function unassignFrogForDay(params: {
       result.extra_data,
       result.updated_at,
     );
-    return;
+    unassigned = true;
   } catch (err) {
     console.warn('[frog-assign] 服务端取消指派失败，回退本地写入', err);
   }
 
-  if (params.kind === 'project') {
-    const { getProjectById } = await import('@/lib/repositories/projects/project');
-    const { unassignProjectFrogFromApi } = await import('@/lib/frog-assignment');
-    const project = await getProjectById(params.id);
-    if (!project) return;
-    await unassignProjectFrogFromApi(
-      params.id,
-      project.extra_data,
-      project as unknown as Record<string, unknown>,
-      params.assignYmd,
-    );
-    return;
+  if (!unassigned) {
+    if (params.kind === 'project') {
+      const { getProjectById } = await import('@/lib/repositories/projects/project');
+      const { unassignProjectFrogFromApi } = await import('@/lib/frog-assignment');
+      const project = await getProjectById(params.id);
+      if (!project) return;
+      await unassignProjectFrogFromApi(
+        params.id,
+        project.extra_data,
+        project as unknown as Record<string, unknown>,
+        params.assignYmd,
+      );
+    } else {
+      const { unassignFrogFromApi } = await import('@/lib/frog-assignment');
+      const task = await getTaskById(params.id);
+      if (!task) return;
+      await unassignFrogFromApi(
+        params.id,
+        task.extra_data,
+        task as unknown as Record<string, unknown>,
+        params.assignYmd,
+      );
+    }
   }
 
-  const { unassignFrogFromApi } = await import('@/lib/frog-assignment');
-  const task = await getTaskById(params.id);
-  if (!task) return;
-  await unassignFrogFromApi(
-    params.id,
-    task.extra_data,
-    task as unknown as Record<string, unknown>,
-    params.assignYmd,
-  );
+  if (params.kind === 'task') {
+    try {
+      await syncStandaloneTodoAfterUnassign(params.id, params.assignYmd);
+    } catch (syncErr) {
+      console.warn('[frog-assign] 独立待办取消指派日期同步失败', syncErr);
+    }
+  }
 }

@@ -105,13 +105,12 @@ npx expo start
 分步构建说明（根目录）：[项目任务与小习惯联动-分步构建.md](../项目任务与小习惯联动-分步构建.md)。
 
 - **任务日绑定**（已有）：`tasks.extra_data.bound_habit_ids`（`lib/repositories/tasks/task-habit-binding.ts`）。当日目标都达标 → 任务可自动完成并级联。
-- **项目完成条件**（已有）：`projects.extra_data.completion_habit_ids`（`lib/repositories/projects/project-completion-habits.ts`）。口径为养成 `buildHabitCycle.completedAt` / 戒除 `breakHabitCycle.completedAt`（须已设周期目标）；**不是**当日打卡。周期配额不纳入。门禁：手动完成 / 左滑收纳未达成可拦截并提供「仍要归档」。自动收尾：习惯周期成功且任务树已全部 done/cancelled（或无任务）→ 收入收集箱并写履历（`source: habit_completion`）；任务已齐习惯未成时只 toast。UI：新建 / 编辑项目「完成条件」行（`BoundHabitPickerField`）。
-- **项目进度燃料**（Step 1–8 已落地）：`projects.extra_data.progress_habit_bindings`（`[{ habit_id, target_days }]`）。实现：`lib/repositories/projects/project-progress-habits.ts`。双轨：有自身目标则**养成**跟 `expectedGoal`、**戒除**跟连续守住；无则用 `target_days` 按达标日累计。只计绑定日起（`since_ymd`）之后的打卡；零进度也出轨。周期配额不纳入。项目级 ratio 为各轨平均。打卡后先任务日绑定、再进度重算、再结案尝试；刚满进度 toast「可考虑结案」，**不**自动归档。UI：新建 / 编辑「推进进度」（`ProgressHabitBindingsField`）；任务页项目卡在任务树外独立进度条（`ProjectHabitProgressBlock`）。与完成条件分键，勿混用。纯规则自测：`node scripts/test-project-progress-habits.mjs`。手工剧本见根目录 [项目任务与小习惯联动-分步构建.md](../项目任务与小习惯联动-分步构建.md) Step 8。
+- **项目推进进度**（进度燃料）：`projects.extra_data.progress_habit_bindings`（`[{ habit_id, target_days }]`）。实现：`lib/repositories/projects/project-progress-habits.ts`。双轨：有自身目标则**养成**跟 `expectedGoal`、**戒除**跟连续守住；无则用 `target_days` 按达标日累计。只计绑定日起（`since_ymd`）之后的打卡；零进度也出轨。周期配额不纳入。项目级 ratio 为各轨平均。打卡后先任务日绑定、再进度重算；任务齐且进度未满时 toast 静等；刚满进度 toast「可考虑结案」，**不**自动归档、也不拦截手动归档。UI：新建 / 编辑「推进进度」（`ProgressHabitBindingsField`）；任务页项目卡在任务树外独立进度条（`ProjectHabitProgressBlock`）。旧版 `completion_habit_ids`（完成条件）已废弃，编辑保存时清除。纯规则自测：`node scripts/test-project-progress-habits.mjs`。
 
 ## 心愿板 · 兑换条件绑定
 
 - UI：`WishBoardRedeemConditionsField`。绑定选择器 **项目树** / **小习惯** / **待办**；项目与任务为可展开树（任意层级可勾选，项目与旗下任务互斥）。点名称进详情，仅右侧选中框勾选。
-- **小习惯**：仅养成/戒除；口径与项目完成条件相同（`buildHabitCycle.completedAt` / `breakHabitCycle.completedAt`），非当日打卡；周期配额不纳入；未设周期目标默认不可选；与项目/任务/待办 AND 并存、习惯之间不互斥；不做「选项目隐含其完成习惯」。已是某项目完成条件时弱提示。缺口 Sheet「去打卡」进习惯详情。
+- **小习惯**：仅养成/戒除；口径为周期目标成功（`buildHabitCycle.completedAt` / `breakHabitCycle.completedAt`），非当日打卡；周期配额不纳入；未设周期目标默认不可选；与项目/任务/待办 AND 并存、习惯之间不互斥。缺口 Sheet「去打卡」进习惯详情。
 - 另可开关 **开放兑换时间**（`available_from`）：到点后才可兑。
 - 数据：`extra_data.redeem_conditions` 的 `project_ids` / `task_ids` / `todo_ids` / `habit_ids` / `min_net_worth` / `available_from`；本地评估 + 后端兑换硬校验。
 
@@ -170,6 +169,6 @@ App **不直连**智谱。场景请求经 `lib/ai-api-client.ts` → **Agent** `
 
 - **排版规范（日 / 周 / 月共用）**（`lib/review-day-facts.ts`）：区块用【】、列表用「· 」、块间空行。健康只写摄入汇总（+ 体重），不含逐条记录 / AI 点评；任务分【任务（青蛙）】【待办】【小习惯】并列出未完成；财务为周期汇总 + 流水。日复盘「一键写入」；周/月空栏 rollup 时健康/任务/财务优先写结构化周期事实（`rollupWeekly*` / `rollupMonthly*`），日常/缺陷/新想法仍拼接子周期原文。
 - **完成门禁**：当日模板全部维度格子写完后才发放日复盘积分（`review-points-grant`），且才允许打开 / 生成 AI 复盘分析。
-- **AI 入口**：日复盘维度预览下方底部展示「AI 复盘分析」大按钮（写完全部维度后可生成）；更多菜单同入口须等系统 Alert 关闭后再开 Modal（避免 Android 卡住）。客户端传 `review_type` + 维度原文，并附带拼好的 `user_prompt`（兼容线上仍只认该字段的旧 Agent）。**JSON 契约以 App 为准**：`lib/review-ai-json-contract.ts`（title / overview / tags / suggestions ↔ 分析页 UI）；Agent `review_prompts.py` 按该契约约束模型。云端失败时**不**做本地模板兜底，直接失败提示。
-- **反哺执行**：缺陷 / 新想法维度详情提供快捷入口（新建备忘 / 项目 / 小习惯 / 待办），见 `components/review/review-action-feed.tsx`。从复盘新建待办默认带当日全天 +「自动临期」提醒。AI 分析页每条建议仅一个「+」图标；「落到哪里」在分析页 Modal 内以全屏遮罩 + 正中卡片展示（不做淡入透明度动画，避免 iOS 上看不见）。
+- **AI 入口**：日复盘维度预览下方底部展示「AI 复盘分析」大按钮（写完全部维度后可生成）；更多菜单同入口须等系统 Alert 关闭后再开 Modal（避免 Android 卡住）。客户端传 `review_type` + 维度原文，并附带拼好的 `user_prompt`（兼容线上仍只认该字段的旧 Agent）；日/周/月还会本地拼 `metrics_text` / `related_digest`（`lib/review-ai-context.ts`，含昨刊 / 上一周刊 / 上一月刊）。**JSON 契约以 App 为准**：`lib/review-ai-json-contract.ts`（title / overview / tags / suggestions ↔ 分析页 UI）；Agent `review_prompts.py` 按该契约约束模型。云端失败时**不**做本地模板兜底，直接失败提示。维度详情栏目支持「AI 起草」（`review/draft-dimension`）；顶栏支持「AI 改写」（`review/rewrite-dimension`）。未写满时日格子可「生成写前提纲」（`review/outline`）；提醒 `focusEmpty` 落地也会先出提纲 Sheet。
+- **反哺执行**：缺陷 / 新想法维度详情提供「智能拆分」（`review/convert-actions`）与快捷新建备忘 / 项目 / 小习惯 / 待办，见 `components/review/review-action-feed.tsx`。从复盘新建待办默认带当日全天 +「自动临期」提醒。AI 分析页每条建议仅一个「+」图标；「落到哪里」在分析页 Modal 内以全屏遮罩 + 正中卡片展示（不做淡入透明度动画，避免 iOS 上看不见）。方案见根目录 `复盘页接入AIAgent方案.md`。
 - **复盘提醒**（方案见仓库根目录 `复盘提醒对接方案.md`）：`daily-review-reminder` 到点催日刊（已填 / 周复盘日跳过）；`weekly-review-reminder` 在配置的周复盘日催周刊。通知点击进 `/daily-review/[ymd]?focusEmpty=1`（或 Hub `focus=weekly`），尽量打开首个未写维度；日提醒正文可附未完成青蛙 / 待办 / 习惯摘要。写完后 sync 停催。设置入口：复盘设置 + 通知中心「复盘」频道。

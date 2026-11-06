@@ -1,6 +1,6 @@
 /**
  * 项目进度燃料 ↔ 小习惯。
- * 存于 projects.extra_data.progress_habit_bindings；与 completion_habit_ids（结案门禁）分键。
+ * 存于 projects.extra_data.progress_habit_bindings（项目侧唯一的小习惯进度绑定）。
  *
  * 口径（按习惯类别，不再清一色「累计达标日 / 手填天数」）：
  * 双轨：
@@ -724,7 +724,7 @@ export function formatProjectProgressHabitsRemainMessage(
       return `${c.title} ${remain}${c.unitLabel}`;
     });
   if (parts.length === 0) return '';
-  return `任务与结案条件已齐，习惯进度还差：${parts.join('、')}`;
+  return `任务已齐，推进进度还差：${parts.join('、')}`;
 }
 
 /**

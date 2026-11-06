@@ -1,3 +1,4 @@
+import { buildReviewCoachingExtras } from '@/lib/review-ai-context';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import {
   areAllReviewDimensionsFilled,
@@ -14,6 +15,8 @@ export type ReviewAiAnalysisInput = {
   periodLabel: string;
   template: ReviewDimensionTemplate[];
   fields: ReviewFieldValues;
+  /** 日：当日 ymd；周：周起始；月：月初。用于拼 facts / digest */
+  periodYmd?: string;
 };
 
 function buildDimensions(input: ReviewAiAnalysisInput) {
@@ -28,10 +31,18 @@ function buildDimensions(input: ReviewAiAnalysisInput) {
 
 /** 仅走 Agent 云端；失败直接抛错，不做本地模板兜底 */
 export async function generateReviewAiAnalysis(input: ReviewAiAnalysisInput): Promise<string> {
+  const extras = await buildReviewCoachingExtras({
+    scope: input.scope,
+    periodYmd: input.periodYmd,
+    template: input.template,
+  });
   const r = await generateWeeklyReviewCoachingFromText({
     reviewType: input.scope,
     periodLabel: input.periodLabel,
     dimensions: buildDimensions(input),
+    metricsText: extras.metricsText,
+    relatedDigest: extras.relatedDigest,
+    executionScore: extras.executionScore,
   });
   if (r.ok) return r.text;
   throw new Error(r.error || 'AI 分析失败，请检查网络后重试');

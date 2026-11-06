@@ -26,11 +26,16 @@ import {
   type FrogScheduleGlance,
   type FrogScheduleWidgetProps,
 } from '@/lib/widgets/frog-schedule-glance';
+import { isExpoWidgetsNativeAvailable } from '@/lib/widgets/expo-widgets-compat';
 import {
   getWidgetsSettings,
   shouldPushFrogScheduleWidget,
   shouldRunFrogScheduleLiveActivity,
 } from '@/lib/widgets/widgets-settings';
+import {
+  ensureHomeWidgetsRegistered,
+  pushWidgetSnapshotVerified,
+} from '@/lib/widgets/widget-bridge';
 import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
 let syncChain: Promise<void> = Promise.resolve();
@@ -139,9 +144,6 @@ async function pushWidgetTimeline(
   now: Date,
 ) {
   const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
-  // 先立刻写一帧，避免只排 timeline 时 WidgetKit 仍停在 INITIAL
-  FrogScheduleWidget.updateSnapshot(props);
-
   const entries: { date: Date; props: FrogScheduleWidgetProps }[] = [{ date: now, props }];
   const day0 = dayZeroMs(now);
 
@@ -153,7 +155,7 @@ async function pushWidgetTimeline(
       if (tMs >= endAt - 5_000) break;
       const remainSec = (endAt - tMs) / 1000;
       entries.push({
-        date: new Date(tMs),
+        date: new Date(Math.floor(tMs)),
         props: {
           ...props,
           statusLine: `进行中 · ${formatRemainLabel(remainSec)}`,
@@ -163,7 +165,7 @@ async function pushWidgetTimeline(
 
     if (endAt > now.getTime() + 10_000) {
       entries.push({
-        date: new Date(endAt),
+        date: new Date(Math.floor(endAt)),
         props: {
           ...props,
           headline: glance.upcoming[0]?.title.slice(0, 40) || '今日入格已清',
@@ -183,7 +185,7 @@ async function pushWidgetTimeline(
     const startAt = day0 + glance.focus.startMins * 60_000;
     if (startAt > now.getTime() + 10_000) {
       entries.push({
-        date: new Date(startAt),
+        date: new Date(Math.floor(startAt)),
         props: {
           ...props,
           statusLine: `进行中 · ${formatRemainLabel(
@@ -194,12 +196,11 @@ async function pushWidgetTimeline(
     }
   }
 
-  FrogScheduleWidget.updateTimeline(entries);
-  try {
-    FrogScheduleWidget.reload();
-  } catch {
-    /* reload 在部分构建上可能不可用 */
-  }
+  await pushWidgetSnapshotVerified(
+    FrogScheduleWidget as never,
+    props as never,
+    { timeline: entries as never },
+  );
 }
 
 async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean, now: Date) {
@@ -259,6 +260,7 @@ async function syncLiveActivity(glance: FrogScheduleGlance, enabled: boolean, no
 async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
   await whenHomeWidgetsDbReady();
+  await ensureHomeWidgetsRegistered();
 
   const settings = await getWidgetsSettings();
   const now = new Date();
@@ -266,14 +268,9 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   if (!shouldPushFrogScheduleWidget(settings)) {
     try {
       const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
-      FrogScheduleWidget.updateSnapshot(pausedWidgetProps());
-      try {
-        FrogScheduleWidget.reload();
-      } catch {
-        /* ignore */
-      }
+      await pushWidgetSnapshotVerified(FrogScheduleWidget as never, pausedWidgetProps() as never);
     } catch (e) {
-      if (__DEV__) console.warn('[widgets] pause snapshot failed', e);
+      console.warn('[widgets] pause snapshot failed', e);
     }
     await syncLiveActivity(emptyGlance(), false, now);
     return;
@@ -285,29 +282,18 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
   });
   const fp = `${props.headline}|${props.lockHeadline}|${props.statusLine}|${props.summaryLine}|${props.upcoming1}|${glance.status}|${lastLivePlacementId ?? ''}`;
   if (fp === lastWidgetFingerprint && reason === 'debounce') return;
-  lastWidgetFingerprint = fp;
 
   try {
     await pushWidgetTimeline(props, glance, now);
+    lastWidgetFingerprint = fp;
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] timeline update failed', reason, e);
-    try {
-      const FrogScheduleWidget = (await import('@/widgets/FrogScheduleWidget')).default;
-      FrogScheduleWidget.updateSnapshot(props);
-      try {
-        FrogScheduleWidget.reload();
-      } catch {
-        /* ignore */
-      }
-    } catch (e2) {
-      if (__DEV__) console.warn('[widgets] snapshot fallback failed', e2);
-    }
+    console.warn('[widgets] timeline update failed', reason, e);
   }
 
   try {
     await syncLiveActivity(glance, shouldRunFrogScheduleLiveActivity(settings), now);
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] live activity sync failed', e);
+    console.warn('[widgets] live activity sync failed', e);
   }
 
   if (__DEV__) {
@@ -323,6 +309,7 @@ async function syncFrogScheduleWidgetsNow(reason: string): Promise<void> {
 /** 串行调度，避免入格连点打爆原生更新 */
 export function scheduleFrogScheduleWidgetSync(reason: string): void {
   if (Platform.OS !== 'ios') return;
+  if (!isExpoWidgetsNativeAvailable()) return;
   const task = syncChain.then(() => syncFrogScheduleWidgetsNow(reason));
   syncChain = task.catch((e) => {
     if (__DEV__) console.warn('[widgets] sync chain error', reason, e);

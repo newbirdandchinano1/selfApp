@@ -1,5 +1,6 @@
 import { CrudDetailScreen } from '@/components/crud';
 import { AddRecipeToPlanSheet } from '@/components/recipe/add-recipe-to-plan-sheet';
+import { AiRecipeRewriteSheet } from '@/components/recipe/ai-recipe-rewrite-sheet';
 import { CompleteRecipeCookSheet } from '@/components/recipe/complete-recipe-cook-sheet';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { StoredImage } from '@/components/stored-image';
@@ -63,6 +64,7 @@ export default function RecipeViewScreen() {
   const [error, setError] = useState<string | null>(null);
   const [planSheetVisible, setPlanSheetVisible] = useState(false);
   const [cookSheetVisible, setCookSheetVisible] = useState(false);
+  const [rewriteSheetVisible, setRewriteSheetVisible] = useState(false);
   const [cookLogs, setCookLogs] = useState<RecipeCookLog[]>([]);
   const [shopBusy, setShopBusy] = useState(false);
 
@@ -342,17 +344,34 @@ export default function RecipeViewScreen() {
                     <Text style={[styles.actionSecondaryText, { color: p.accent }]}>加入采购</Text>
                   </Pressable>
                 </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="完成制作＆评分"
-                  onPress={() => setCookSheetVisible(true)}
-                  style={({ pressed }) => [
-                    styles.actionPrimary,
-                    { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
-                  ]}>
-                  <MaterialIcons name="restaurant" size={18} color="#fff" />
-                  <Text style={styles.actionPrimaryText}>完成制作＆评分</Text>
-                </Pressable>
+                <View style={styles.actionRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="AI 改写"
+                    onPress={() => setRewriteSheetVisible(true)}
+                    style={({ pressed }) => [
+                      styles.actionSecondary,
+                      {
+                        backgroundColor: p.accentSoft,
+                        borderColor: p.border,
+                        opacity: pressed ? 0.82 : 1,
+                      },
+                    ]}>
+                    <MaterialIcons name="auto-awesome" size={18} color={p.accent} />
+                    <Text style={[styles.actionSecondaryText, { color: p.accent }]}>AI 改写</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="完成制作＆评分"
+                    onPress={() => setCookSheetVisible(true)}
+                    style={({ pressed }) => [
+                      styles.actionPrimaryFlex,
+                      { backgroundColor: p.primary, opacity: pressed ? 0.88 : 1 },
+                    ]}>
+                    <MaterialIcons name="restaurant" size={18} color="#fff" />
+                    <Text style={styles.actionPrimaryText}>完成制作＆评分</Text>
+                  </Pressable>
+                </View>
               </View>
 
               <View style={[styles.sectionCard, { backgroundColor: p.card, borderColor: p.border }]}>
@@ -530,6 +549,14 @@ export default function RecipeViewScreen() {
                 void reloadCookLogs(updated.id);
               }}
             />
+            <AiRecipeRewriteSheet
+              visible={rewriteSheetVisible}
+              onClose={() => setRewriteSheetVisible(false)}
+              recipe={row}
+              onApplied={next => {
+                setRow(next);
+              }}
+            />
           </>
         ) : null}
       </View>
@@ -624,6 +651,16 @@ const styles = StyleSheet.create({
     minHeight: 48,
     borderRadius: 14,
     paddingHorizontal: 16,
+  },
+  actionPrimaryFlex: {
+    flex: 1.35,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 46,
+    borderRadius: 14,
+    paddingHorizontal: 12,
   },
   actionPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   cookSummaryRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },

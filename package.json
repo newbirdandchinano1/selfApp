@@ -3,6 +3,7 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
+    "postinstall": "node scripts/patch-expo-widgets.mjs",
     "start": "node -r ./scripts/patch-fs.js ./node_modules/expo/bin/cli start",
     "start:clean": "node -r ./scripts/patch-fs.js ./node_modules/expo/bin/cli start -c",
     "android": "expo run:android",

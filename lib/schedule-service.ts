@@ -406,6 +406,7 @@ export async function placeFrogOnSchedule(params: {
       kind: params.subjectKind,
       id: params.subjectId,
       assignYmd,
+      scheduleTime: { allDay: true },
     });
   } catch (err) {
     await softDeletePlacement(row.id);
@@ -561,6 +562,11 @@ export async function placeFrogOnScheduleAt(params: {
       kind: params.subjectKind,
       id: params.subjectId,
       assignYmd,
+      scheduleTime: {
+        startMinutes: resolved.startMinutes,
+        endMinutes: resolved.endMinutes,
+        allDay: resolved.allDay === 1,
+      },
     });
   } catch (err) {
     await softDeletePlacement(row.id);
@@ -622,6 +628,27 @@ export async function rematerializeOrphanedPlacement(params: {
     orphaned: false,
   });
 
+  try {
+    await assignFrogForDay({
+      kind: placement.subjectKind,
+      id: placement.subjectId,
+      assignYmd: params.assignYmd,
+      scheduleTime: { allDay: true },
+    });
+  } catch (err) {
+    // 回滚为未入格，避免「格内但未指派」
+    await updatePlacementSlots(placement.id, {
+      weekStartYmd: placement.weekStartYmd,
+      weekday: placement.weekday,
+      startSlotIndex: null,
+      spanSlots: placement.spanSlots,
+      orphaned: true,
+    });
+    notifyFrogScheduleChanged();
+    throw err;
+  }
+
+  // 先指派新日再取消旧日，避免独立待办 due 被中间态清空
   if (oldYmd !== params.assignYmd) {
     const remainOnOld = (
       await listSubjectPlacementsOnDay(
@@ -633,24 +660,6 @@ export async function rematerializeOrphanedPlacement(params: {
     ).filter((p) => p.id !== placement.id).length;
     if (remainOnOld === 0) {
       await unassignSubjectDay(placement.subjectKind, placement.subjectId, oldYmd);
-    }
-    try {
-      await assignFrogForDay({
-        kind: placement.subjectKind,
-        id: placement.subjectId,
-        assignYmd: params.assignYmd,
-      });
-    } catch (err) {
-      // 回滚为未入格，避免「格内但未指派」
-      await updatePlacementSlots(placement.id, {
-        weekStartYmd: placement.weekStartYmd,
-        weekday: placement.weekday,
-        startSlotIndex: null,
-        spanSlots: placement.spanSlots,
-        orphaned: true,
-      });
-      notifyFrogScheduleChanged();
-      throw err;
     }
   }
 
@@ -713,6 +722,33 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
     allDay: resolved.allDay,
   });
 
+  try {
+    await assignFrogForDay({
+      kind: placement.subjectKind,
+      id: placement.subjectId,
+      assignYmd: params.assignYmd,
+      scheduleTime: {
+        startMinutes: resolved.startMinutes,
+        endMinutes: resolved.endMinutes,
+        allDay: resolved.allDay === 1,
+      },
+    });
+  } catch (err) {
+    // 回滚为未入格，避免「时段内但未指派」
+    await updatePlacementSlots(placement.id, {
+      weekStartYmd: placement.weekStartYmd,
+      weekday: placement.weekday,
+      startSlotIndex: null,
+      spanSlots: placement.spanSlots,
+      orphaned: true,
+      startMinutes: null,
+      endMinutes: null,
+      allDay: null,
+    });
+    notifyFrogScheduleChanged();
+    throw err;
+  }
+
   if (oldYmd !== params.assignYmd) {
     const remainOnOld = (
       await listSubjectPlacementsOnDay(
@@ -724,27 +760,6 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
     ).filter((p) => p.id !== placement.id).length;
     if (remainOnOld === 0) {
       await unassignSubjectDay(placement.subjectKind, placement.subjectId, oldYmd);
-    }
-    try {
-      await assignFrogForDay({
-        kind: placement.subjectKind,
-        id: placement.subjectId,
-        assignYmd: params.assignYmd,
-      });
-    } catch (err) {
-      // 回滚为未入格，避免「时段内但未指派」
-      await updatePlacementSlots(placement.id, {
-        weekStartYmd: placement.weekStartYmd,
-        weekday: placement.weekday,
-        startSlotIndex: null,
-        spanSlots: placement.spanSlots,
-        orphaned: true,
-        startMinutes: null,
-        endMinutes: null,
-        allDay: null,
-      });
-      notifyFrogScheduleChanged();
-      throw err;
     }
   }
 
@@ -808,6 +823,42 @@ export async function cancelAssignForPlacementDay(
   }
   await unassignSubjectDay(placement.subjectKind, placement.subjectId, assignYmd);
   notifyFrogScheduleChanged();
+}
+
+/**
+ * 按主体+指派日清占用并取消指派（编辑待办清日期 / 改日时用）。
+ * 过去日不可编辑时仍 best-effort 取消 frog 字段。
+ */
+export async function clearSubjectAssignDay(params: {
+  subjectKind: ScheduleSubjectKind;
+  subjectId: string;
+  assignYmd: string;
+  logicalTodayYmd: string;
+}): Promise<void> {
+  await ensureScheduleTables();
+  const weekStartYmd = getWeekStartMondayYmd(params.assignYmd);
+  const weekday = weekdayFromYmd(params.assignYmd);
+  const editable = isEditableScheduleDay(params.assignYmd, params.logicalTodayYmd);
+
+  if (editable) {
+    const all = await listSubjectPlacementsOnDay(
+      weekStartYmd,
+      weekday,
+      params.subjectKind,
+      params.subjectId,
+    );
+    for (const p of all) {
+      await softDeletePlacement(p.id);
+      try {
+        await apiPostFrogSchedulePlacement({ action: 'delete', id: p.id });
+      } catch (err) {
+        console.warn('[frog-schedule] 删除占用远端失败', p.id, err);
+      }
+    }
+  }
+
+  await unassignSubjectDay(params.subjectKind, params.subjectId, params.assignYmd);
+  if (editable) notifyFrogScheduleChanged();
 }
 
 export type SaveAxisResult =

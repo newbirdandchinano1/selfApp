@@ -4,6 +4,7 @@ import { toast, toUserMessage } from '@/lib/app-feedback';
 import { addRecipeCookLog } from '@/lib/recipe-cook-log';
 import { getRecipePalette } from '@/lib/recipe-theme';
 import { recordRecipeCooked, type RecipeItem } from '@/lib/recipes';
+import { generateRecipeCookComment } from '@/lib/zhipu-image-parse';
 import { PaletteDark, PaletteLight } from '@/constants/design-tokens';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -51,6 +52,7 @@ export function CompleteRecipeCookSheet({
   const [rating, setRating] = useState(0);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
 
   const [shouldRender, setShouldRender] = useState(visible);
   const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
@@ -62,7 +64,34 @@ export function CompleteRecipeCookSheet({
     setRating(0);
     setNote('');
     setSaving(false);
+    setAiBusy(false);
   }, []);
+
+  const onAiComment = useCallback(async () => {
+    if (saving || aiBusy) return;
+    if (rating < 1 || rating > 5) {
+      toast.info('请先选择评分，再生成备注');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const r = await generateRecipeCookComment({
+        recipeTitle,
+        rating,
+        userNote: note,
+      });
+      if (!r.ok) {
+        toast.error(r.error || 'AI 备注失败');
+        return;
+      }
+      setNote(r.comment.slice(0, 200));
+      toast.success('已填入备注草稿，可再改');
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 备注失败'));
+    } finally {
+      setAiBusy(false);
+    }
+  }, [aiBusy, note, rating, recipeTitle, saving]);
 
   const playOpen = useCallback(() => {
     if (reduceMotion) {
@@ -117,9 +146,9 @@ export function CompleteRecipeCookSheet({
   );
 
   const requestClose = useCallback(() => {
-    if (saving) return;
+    if (saving || aiBusy) return;
     onCloseRef.current();
-  }, [saving]);
+  }, [aiBusy, saving]);
 
   useEffect(() => {
     if (!visible) return;
@@ -271,7 +300,31 @@ export function CompleteRecipeCookSheet({
                 {rating > 0 ? `${rating} 星` : '点选 1～5 星'}
               </Text>
 
-              <Text style={[styles.fieldLabel, { color: p.outlineMuted }]}>备注（可选）</Text>
+              <View style={styles.noteHead}>
+                <Text style={[styles.fieldLabel, { color: p.outlineMuted, marginBottom: 0 }]}>
+                  备注（可选）
+                </Text>
+                <Pressable
+                  onPress={() => void onAiComment()}
+                  disabled={saving || aiBusy}
+                  style={({ pressed }) => [
+                    styles.aiNoteBtn,
+                    {
+                      borderColor: p.border,
+                      backgroundColor: p.accentSoft,
+                      opacity: pressed || saving || aiBusy ? 0.7 : 1,
+                    },
+                  ]}>
+                  {aiBusy ? (
+                    <ActivityIndicator size="small" color={p.accent} />
+                  ) : (
+                    <MaterialIcons name="auto-awesome" size={14} color={p.accent} />
+                  )}
+                  <Text style={[styles.aiNoteBtnText, { color: p.accent }]}>
+                    {aiBusy ? '生成中' : 'AI 备注'}
+                  </Text>
+                </Pressable>
+              </View>
               <TextInput
                 value={note}
                 onChangeText={setNote}
@@ -279,6 +332,7 @@ export function CompleteRecipeCookSheet({
                 placeholderTextColor={p.outlineMuted}
                 multiline
                 maxLength={200}
+                editable={!saving && !aiBusy}
                 style={[
                   styles.noteInput,
                   {
@@ -342,6 +396,23 @@ const styles = StyleSheet.create({
   starHit: { padding: 4 },
   ratingHint: { textAlign: 'center', fontSize: 13, fontWeight: '700', marginBottom: 4 },
   fieldLabel: { fontSize: 12, fontWeight: '700', marginTop: 4 },
+  noteHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  aiNoteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  aiNoteBtnText: { fontSize: 12, fontWeight: '800' },
   noteInput: {
     minHeight: 96,
     borderWidth: 1,

@@ -18,10 +18,10 @@ import {
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
+import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
-import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
@@ -54,16 +54,18 @@ import { getMonthGoalsLocal } from '@/lib/repositories/life-road/life-road-node'
 import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from '@/lib/repositories/projects/constants';
 import {
-  filterHabitsForProjectCompletionPicker,
-  mergeCompletionHabitIdsIntoExtraData,
-} from '@/lib/repositories/projects/project-completion-habits';
-import {
   filterHabitsForProjectProgressPicker,
   mergeProgressHabitBindingsIntoExtraData,
   stampProgressHabitBindingsSinceYmd,
   validateProgressHabitBindingsForSave,
   type ProjectProgressHabitBinding,
 } from '@/lib/repositories/projects/project-progress-habits';
+import {
+  mergeProgressCountersIntoExtraData,
+  stampProgressCountersSinceYmd,
+  validateProgressCountersForSave,
+  type ProgressCounter,
+} from '@/lib/repositories/progress/progress-counters';
 import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import {
   mergePrerequisiteIdsIntoExtraData,
@@ -175,10 +177,10 @@ export default function AddProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
-  const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
   const [progressHabitBindings, setProgressHabitBindings] = React.useState<
     ProjectProgressHabitBinding[]
   >([]);
+  const [progressCounters, setProgressCounters] = React.useState<ProgressCounter[]>([]);
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
@@ -307,21 +309,6 @@ export default function AddProjectScreen() {
     }, forceRefresh);
   }, [wrapLoad]);
 
-  const habitSections = React.useMemo(() => {
-    const filtered = filterHabitsForProjectCompletionPicker(allHabits, completionHabitIds);
-    const habitsByContext = new Map<string, HabitRow[]>();
-    for (const habit of filtered) {
-      const list = habitsByContext.get(habit.context) ?? [];
-      list.push(habit);
-      habitsByContext.set(habit.context, list);
-    }
-    return habitContexts.map((ctx) => ({
-      contextId: ctx.id,
-      contextName: ctx.name,
-      habits: habitsByContext.get(ctx.id) ?? [],
-    }));
-  }, [allHabits, completionHabitIds, habitContexts]);
-
   const progressHabitSections = React.useMemo(() => {
     const selectedIds = progressHabitBindings.map((b) => b.habitId);
     const filtered = filterHabitsForProjectProgressPicker(allHabits, selectedIds);
@@ -407,17 +394,27 @@ export default function AddProjectScreen() {
       logicalTodayYmd,
       progressHabitBindings,
     );
+    const countersValidation = validateProgressCountersForSave(progressCounters);
+    if (!countersValidation.ok) {
+      toast.warn(countersValidation.message);
+      return;
+    }
+    const stampedCounters = stampProgressCountersSinceYmd(
+      countersValidation.counters,
+      logicalTodayYmd,
+      progressCounters,
+    );
 
     setCreating(true);
     try {
       const projectId = buildProjectId();
       const scheduleToSave = ensureProjectScheduleMetaForSave(scheduleMeta, deadlineText);
-      const extra = mergeProgressHabitBindingsIntoExtraData(
-        mergeCompletionHabitIdsIntoExtraData(
+      const extra = mergeProgressCountersIntoExtraData(
+        mergeProgressHabitBindingsIntoExtraData(
           mergePrerequisiteIdsIntoExtraData({ schedule: scheduleToSave }, prerequisiteProjectIds),
-          completionHabitIds,
+          stampedProgressBindings,
         ),
-        stampedProgressBindings,
+        stampedCounters,
       );
       const checklist = isLongTermProject ? acceptanceItems : [];
       const withLongTerm = mergeLongTermProjectIntoExtraData(JSON.stringify(extra), isLongTermProject);
@@ -508,8 +505,8 @@ export default function AddProjectScreen() {
     }
   }, [
     allProjects,
-    completionHabitIds,
     progressHabitBindings,
+    progressCounters,
     logicalTodayYmd,
     creating,
     deadlineText,
@@ -680,28 +677,6 @@ export default function AddProjectScreen() {
                 </View>
               </View>
               <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成条件</Text>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <BoundHabitPickerField
-                    selectedHabitIds={completionHabitIds}
-                    sections={habitSections}
-                    loading={habitsLoading}
-                    onChange={setCompletionHabitIds}
-                    textColor={tf.ink}
-                    outline={tf.muted}
-                    placeholderColor={tf.faint}
-                    primary={tf.pond}
-                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                    surfaceLowest={isDark ? colors.surface : tf.card}
-                    isDark={isDark}
-                    emptyHint="可选；这些习惯的周期目标成功后，才建议结案"
-                    selectedHint="全部达成周期目标后，才满足项目完成条件"
-                    modalTitle="完成条件 · 小习惯"
-                    modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
-                  />
-                </View>
-              </View>
-              <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
                 <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>推进进度</Text>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <ProgressHabitBindingsField
@@ -718,6 +693,19 @@ export default function AddProjectScreen() {
                     surfaceLowest={isDark ? colors.surface : tf.card}
                     isDark={isDark}
                   />
+                  <View style={{ marginTop: 10 }}>
+                    <ProgressCountersField
+                      counters={progressCounters}
+                      onChange={setProgressCounters}
+                      anchorYmd={logicalTodayYmd}
+                      textColor={tf.ink}
+                      outline={tf.muted}
+                      placeholderColor={tf.faint}
+                      primary={tf.pond}
+                      surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                      surfaceLowest={isDark ? colors.surface : tf.card}
+                    />
+                  </View>
                 </View>
               </View>
               <Pressable

@@ -376,6 +376,12 @@ export type WardrobeSheetProps = {
   onEditItem?: (id: string) => void;
   onDeleteItem?: (id: string) => void;
   onCreateOutfit?: (seedItemIds?: string[]) => void;
+  /** 单品详情：AI 用它出一套 */
+  onSuggestOutfitFromItem?: (itemId: string) => void;
+  /** 单品详情：库内找相似 */
+  onFindSimilarItem?: (itemId: string) => void;
+  /** 穿搭统计：闲置洞察 */
+  onIdleInsights?: () => void;
   onEditOutfit?: (id: string) => void;
   onDeleteOutfit?: (id: string) => void;
   onCreateCategory?: () => void;
@@ -412,6 +418,9 @@ export const WardrobeSheet = memo(function WardrobeSheet({
   onEditItem,
   onDeleteItem,
   onCreateOutfit,
+  onSuggestOutfitFromItem,
+  onFindSimilarItem,
+  onIdleInsights,
   onEditOutfit,
   onDeleteOutfit,
   onCreateCategory,
@@ -545,6 +554,30 @@ export const WardrobeSheet = memo(function WardrobeSheet({
               <Text style={styles.btnGhostText}>加入搭配</Text>
             </Pressable>
           </View>
+          {onSuggestOutfitFromItem || onFindSimilarItem ? (
+            <View style={[styles.detailActions, { marginTop: 8 }]}>
+              {onSuggestOutfitFromItem ? (
+                <Pressable
+                  style={[styles.btn, styles.btnGhost]}
+                  onPress={() => {
+                    onClose();
+                    onSuggestOutfitFromItem(item.id);
+                  }}>
+                  <Text style={styles.btnGhostText}>用它出一套</Text>
+                </Pressable>
+              ) : null}
+              {onFindSimilarItem ? (
+                <Pressable
+                  style={[styles.btn, styles.btnGhost]}
+                  onPress={() => {
+                    onClose();
+                    onFindSimilarItem(item.id);
+                  }}>
+                  <Text style={styles.btnGhostText}>找相似</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           <View style={[styles.detailActions, { marginTop: 8 }]}>
             <Pressable
               style={[styles.btn, styles.btnGhost]}
@@ -1053,6 +1086,16 @@ export const WardrobeSheet = memo(function WardrobeSheet({
                 ['总价值', valueSum ? `¥${valueSum.toLocaleString('zh-CN')}` : '—'],
               ]}
             />
+            {onIdleInsights ? (
+              <Pressable
+                style={[styles.btn, styles.btnGhost, { marginTop: 14, alignSelf: 'stretch' }]}
+                onPress={() => {
+                  onClose();
+                  onIdleInsights();
+                }}>
+                <Text style={styles.btnGhostText}>闲置洞察</Text>
+              </Pressable>
+            ) : null}
           </View>
         );
       }

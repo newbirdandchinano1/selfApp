@@ -2,6 +2,7 @@
  * 项目窗格 · 任务树 — 对齐设计稿 `.tasktree` / `.trow` / `.frogleaf`
  * 树展开 360ms · 箭头旋转 · 子行 35ms 级联 · 叶子青蛙标记
  */
+import { ProgressCounterListHint } from '@/components/progress/ProgressCounterListHint';
 import {
   FOLD_MOTION_EASE,
   FOLD_MOTION_SPRING,
@@ -56,6 +57,7 @@ function ProjectFoldTaskRow({
   onToggleDone,
   onOpen,
   onLongPress,
+  onBumpCounter,
 }: {
   node: TaskTreeNode;
   depth: number;
@@ -72,6 +74,7 @@ function ProjectFoldTaskRow({
   onToggleDone: () => void;
   onOpen: () => void;
   onLongPress?: () => void;
+  onBumpCounter?: (task: TaskRow, counterId: string, delta: number) => void;
 }) {
   const { tf, fonts, isDark } = useTaskFoldTheme();
   const { animate } = useFoldMotionGate();
@@ -169,34 +172,50 @@ function ProjectFoldTaskRow({
           onPress={onOpen}
           onLongPress={onLongPress}
           delayLongPress={380}
-          style={({ pressed }) => [styles.tnWrap, pressed && { opacity: 0.82 }]}>
-          <Text
-            style={[
-              styles.tn,
-              {
-                color: done || shelved ? '#A8AFA6' : filterHit ? tf.pond : tf.ink2,
-                fontWeight: filterHit ? '700' : '600',
-                textDecorationLine: done ? 'line-through' : 'none',
-                opacity: shelved ? 0.85 : 1,
-              },
-            ]}
-            numberOfLines={1}>
-            {node.title?.trim() || '（无标题）'}
-          </Text>
-          <TaskStatusTag status={node.status} />
-          {filterHit ? (
-            <View style={[styles.filterHitChip, { backgroundColor: tf.sage2 }]}>
-              <Text style={[styles.filterHitChipText, { color: tf.pond }]}>命中</Text>
-            </View>
-          ) : null}
-          {frogLeaf ? (
-            <View style={[styles.frogleaf, { backgroundColor: tf.lily2 }]}>
-              <Text style={[styles.frogleafText, { color: '#5A8256' }]}>{frogLeaf}</Text>
-            </View>
-          ) : null}
-          {tp ? (
-            <Text style={[styles.tp, { color: tf.faint, fontFamily: fonts.mono }]}>{tp}</Text>
-          ) : null}
+          style={({ pressed }) => [styles.tnMain, pressed && { opacity: 0.82 }]}>
+          <View style={styles.tnWrap}>
+            <Text
+              style={[
+                styles.tn,
+                {
+                  color: done || shelved ? '#A8AFA6' : filterHit ? tf.pond : tf.ink2,
+                  fontWeight: filterHit ? '700' : '600',
+                  textDecorationLine: done ? 'line-through' : 'none',
+                  opacity: shelved ? 0.85 : 1,
+                },
+              ]}
+              numberOfLines={1}>
+              {node.title?.trim() || '（无标题）'}
+            </Text>
+            <TaskStatusTag status={node.status} />
+            {filterHit ? (
+              <View style={[styles.filterHitChip, { backgroundColor: tf.sage2 }]}>
+                <Text style={[styles.filterHitChipText, { color: tf.pond }]}>命中</Text>
+              </View>
+            ) : null}
+            {frogLeaf ? (
+              <View style={[styles.frogleaf, { backgroundColor: tf.lily2 }]}>
+                <Text style={[styles.frogleafText, { color: '#5A8256' }]}>{frogLeaf}</Text>
+              </View>
+            ) : null}
+            {tp ? (
+              <Text style={[styles.tp, { color: tf.faint, fontFamily: fonts.mono }]}>{tp}</Text>
+            ) : null}
+          </View>
+          <ProgressCounterListHint
+            extraData={node.extra_data}
+            logicalTodayYmd={logicalTodayYmd}
+            muted={tf.muted}
+            primary={tf.frog}
+            ink={tf.ink2}
+            surfaceLow={isDark ? tf.paper2 : '#F1EDE1'}
+            disabled={done || shelved || locked}
+            onBump={
+              onBumpCounter && !done && !shelved && !locked
+                ? (counterId, delta) => onBumpCounter(node, counterId, delta)
+                : undefined
+            }
+          />
         </Pressable>
       </View>
     </FoldRiseIn>
@@ -215,6 +234,7 @@ export function ProjectFoldTaskTree({
   onToggleDone,
   onOpenTask,
   onLongPressTask,
+  onBumpCounter,
   highlightTaskIds,
   maxDepth = 3,
 }: {
@@ -229,6 +249,7 @@ export function ProjectFoldTaskTree({
   onToggleDone: (task: TaskRow) => void;
   onOpenTask: (taskId: string) => void;
   onLongPressTask?: (task: TaskRow) => void;
+  onBumpCounter?: (task: TaskRow, counterId: string, delta: number) => void;
   /** 筛选命中的任务 id，用于行高亮 */
   highlightTaskIds?: Set<string> | null;
   maxDepth?: number;
@@ -306,6 +327,7 @@ export function ProjectFoldTaskTree({
             onToggleDone={() => onToggleDone(node)}
             onOpen={() => onOpenTask(node.id)}
             onLongPress={onLongPressTask ? () => onLongPressTask(node) : undefined}
+            onBumpCounter={onBumpCounter}
           />
           {hasChildren && !isCollapsed && depth < maxDepth
             ? renderLevel(children, depth + 1)
@@ -356,7 +378,7 @@ const styles = StyleSheet.create({
   },
   trow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 4,
     paddingVertical: 3,
     minHeight: 26,
@@ -364,23 +386,29 @@ const styles = StyleSheet.create({
   chevHit: {
     width: 16,
     height: 16,
+    marginTop: 4,
     alignItems: 'center',
     justifyContent: 'center',
   },
   cb: {
     width: 14,
     height: 14,
+    marginTop: 5,
     borderRadius: 4,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tnWrap: {
+  tnMain: {
     flex: 1,
     minWidth: 0,
+    gap: 1,
+  },
+  tnWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    minWidth: 0,
   },
   tn: {
     flexShrink: 1,

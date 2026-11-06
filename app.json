@@ -11,11 +11,19 @@
       "supportsTablet": true,
       "requireFullScreen": true,
       "bundleIdentifier": "com.myselfManage.appdemo",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.myselfManage.appdemo"
+        ]
+      },
       "infoPlist": {
         "CFBundleDisplayName": "小郑的自我修养",
         "CFBundleName": "小郑的自我修养",
         "ITSAppUsesNonExemptEncryption": false,
         "UIRequiresFullScreen": true,
+        "NSSupportsLiveActivities": true,
+        "NSSupportsLiveActivitiesFrequentUpdates": true,
+        "ExpoWidgetsAppGroupIdentifier": "group.com.myselfManage.appdemo",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         }

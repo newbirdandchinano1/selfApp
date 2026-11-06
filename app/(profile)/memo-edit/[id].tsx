@@ -1,4 +1,6 @@
 import { CrudEditScreen } from '@/components/crud';
+import { MemoCenterSheet } from '@/components/memo/memo-center-sheet';
+import { MemoAiRewriteBody } from '@/components/memo/memo-ai-p1-sheets';
 import { MemoFormatToolbar } from '@/components/memo/memo-format-toolbar';
 import { MEMO_INK, MEMO_INK_SOFT, MEMO_WASH, MemoPaperPage, memoPagePaper, memoPaperColor } from '@/components/memo/memo-paper';
 import {
@@ -10,6 +12,8 @@ import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerFie
 import { AppIconButton } from '@/components/ui';
 import { MemoText } from '@/constants/memo-ui';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import type { MemoRewriteJson, MemoRewriteMode } from '@/lib/ai-types';
+import { toast, toUserMessage } from '@/lib/app-feedback';
 import { startMemoAiReviewInBackground } from '@/lib/memo-ai-background';
 import {
   emptyMemoEditModel,
@@ -17,6 +21,7 @@ import {
   type MemoEditModel,
   type MemoFormatAction,
 } from '@/lib/memo-format';
+import { forgetUnusedMemoUploads, uploadMemoImage } from '@/lib/memo-images';
 import {
   editModelToRichDoc,
   MEMO_BODY_MAX_BYTES,
@@ -25,8 +30,6 @@ import {
   serializeEditModelToBody,
   serializeRichDoc,
 } from '@/lib/memo-richdoc';
-import { toast, toUserMessage } from '@/lib/app-feedback';
-import { forgetUnusedMemoUploads, uploadMemoImage } from '@/lib/memo-images';
 import {
   createMemo,
   getMemo,
@@ -36,6 +39,7 @@ import {
 } from '@/lib/memos';
 import { getTagIdsByEntity, getMemoTags } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
+import { analyzeMemoRewrite } from '@/lib/zhipu-image-parse';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -176,6 +180,12 @@ export default function MemoEditScreen() {
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
 
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewriteMode, setRewriteMode] = useState<MemoRewriteMode>('polish');
+  const [rewriteLoading, setRewriteLoading] = useState(false);
+  const [rewriteError, setRewriteError] = useState<string | null>(null);
+  const [rewriteDraft, setRewriteDraft] = useState<MemoRewriteJson | null>(null);
+
   const bodyBytes = useMemo(
     () => memoBodyByteLength(serializeRichDoc(editModelToRichDoc(bodyModel))),
     [bodyModel],
@@ -248,6 +258,46 @@ export default function MemoEditScreen() {
     setBodyModel(next);
   }, []);
 
+  const runRewrite = useCallback(async () => {
+    const t = title.trim();
+    const body = bodyModel.plain.trim();
+    if (!t && !body) {
+      setRewriteError('请先填写标题或正文');
+      return;
+    }
+    setRewriteLoading(true);
+    setRewriteError(null);
+    setRewriteDraft(null);
+    try {
+      const parts: string[] = [];
+      if (t) parts.push(`【标题】\n${t}`);
+      if (body) parts.push(`【正文】\n${body}`);
+      const r = await analyzeMemoRewrite({
+        memoContextText: parts.join('\n\n'),
+        mode: rewriteMode,
+      });
+      if (!r.ok) {
+        setRewriteError(r.error);
+        return;
+      }
+      setRewriteDraft(r.data);
+    } finally {
+      setRewriteLoading(false);
+    }
+  }, [bodyModel.plain, rewriteMode, title]);
+
+  const acceptRewrite = useCallback(
+    (d: MemoRewriteJson) => {
+      if (d.title?.trim()) {
+        setTitle(d.title.trim().slice(0, MEMO_TITLE_MAX));
+      }
+      setBodyModel(updateMemoEditModelPlain(emptyMemoEditModel(), d.body_plain));
+      setRewriteOpen(false);
+      toast.success('已应用到编辑器，记得保存');
+    },
+    [],
+  );
+
   const onSave = useCallback(async () => {
     if (saving || savingRef.current) return;
     savingRef.current = true;
@@ -313,6 +363,17 @@ export default function MemoEditScreen() {
       headerProps={{ style: styles.wallHeader }}
       headerRight={
         <View style={styles.headerActions}>
+          <AppIconButton
+            icon="auto-fix"
+            onPress={() => {
+              setRewriteError(null);
+              setRewriteDraft(null);
+              setRewriteOpen(true);
+            }}
+            disabled={saving || loading}
+            color={wall.ink}
+            accessibilityLabel="AI 改写"
+          />
           <AppIconButton
             icon="push-pin"
             onPress={() => setPinned(p => !p)}
@@ -429,6 +490,30 @@ export default function MemoEditScreen() {
           </View>
         </MemoPaperPage>
       </View>
+
+      <MemoCenterSheet
+        visible={rewriteOpen}
+        onClose={() => setRewriteOpen(false)}
+        style={[
+          styles.rewriteSheet,
+          { backgroundColor: colors.surface, borderColor: colors.outline },
+        ]}>
+        <MemoAiRewriteBody
+          colors={{
+            ink: colors.text,
+            muted: colors.textSecondary,
+            secondary: colors.secondary,
+            primary: colors.primary,
+          }}
+          loading={rewriteLoading}
+          error={rewriteError}
+          mode={rewriteMode}
+          draft={rewriteDraft}
+          onPickMode={setRewriteMode}
+          onGenerate={() => void runRewrite()}
+          onAccept={acceptRewrite}
+        />
+      </MemoCenterSheet>
     </CrudEditScreen>
   );
 }
@@ -473,6 +558,11 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 2,
     overflow: 'hidden',
+  },
+  rewriteSheet: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    maxHeight: '80%',
   },
   bodyFill: {
     flex: 1,

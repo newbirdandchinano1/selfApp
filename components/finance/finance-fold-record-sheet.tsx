@@ -449,6 +449,11 @@ export type FinanceAlbumScanResult = {
   dedupeLabel?: string;
 };
 
+export type FinanceAlbumMultiItem = FinanceAlbumScanResult & {
+  id: string;
+  confirmed?: boolean;
+};
+
 export function FinanceFoldAlbumScanPanel({
   ff,
   fonts = financeFoldFonts,
@@ -462,6 +467,11 @@ export function FinanceFoldAlbumScanPanel({
   onCorrect,
   onClose,
   confirming,
+  onSplitMulti,
+  splitLoading,
+  multiItems,
+  onConfirmMultiItem,
+  onConfirmAllMulti,
 }: {
   ff: FinanceFoldPalette;
   fonts?: typeof financeFoldFonts;
@@ -475,6 +485,12 @@ export function FinanceFoldAlbumScanPanel({
   onCorrect: () => void;
   onClose: () => void;
   confirming: boolean;
+  /** 单笔结果上「拆成多笔」 */
+  onSplitMulti?: () => void;
+  splitLoading?: boolean;
+  multiItems?: FinanceAlbumMultiItem[] | null;
+  onConfirmMultiItem?: (id: string) => void;
+  onConfirmAllMulti?: () => void;
 }) {
   const { animate, motionReduced } = useFoldMotionGate();
   const scanAnim = React.useRef(new Animated.Value(0)).current;
@@ -719,8 +735,90 @@ export function FinanceFoldAlbumScanPanel({
               )}
             </Pressable>
           </View>
+          {onSplitMulti ? (
+            <Pressable
+              onPress={onSplitMulti}
+              disabled={splitLoading || confirming}
+              style={({ pressed }) => [
+                styles.splitMultiBtn,
+                {
+                  borderColor: ff.line,
+                  backgroundColor: softTrack(ff),
+                  opacity: splitLoading || confirming ? 0.6 : pressed ? 0.88 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="拆成多笔账单">
+              {splitLoading ? (
+                <ActivityIndicator color={ff.pine} size="small" />
+              ) : (
+                <MaterialIcons name="call-split" size={14} color={ff.pine} />
+              )}
+              <Text style={[styles.splitMultiText, { color: ff.pine }]}>
+                {splitLoading ? '拆分中…' : '拆成多笔'}
+              </Text>
+            </Pressable>
+          ) : null}
           <Text style={[styles.tip, { color: ff.faint }]}>支持连续识别多张截图 · 可一次入账多笔</Text>
         </>
+      ) : null}
+
+      {multiItems && multiItems.length > 0 ? (
+        <View style={styles.multiList}>
+          <Text style={[styles.multiTitle, { color: ff.ink }]}>
+            识别到 {multiItems.length} 笔 · 逐条确认
+          </Text>
+          {multiItems.map((item) => (
+            <View
+              key={item.id}
+              style={[
+                styles.multiRow,
+                {
+                  borderColor: ff.line,
+                  backgroundColor: softField(ff),
+                  opacity: item.confirmed ? 0.55 : 1,
+                },
+              ]}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={[styles.multiName, { color: ff.ink }]} numberOfLines={1}>
+                  {item.name}
+                </Text>
+                <Text style={[styles.multiMeta, { color: ff.muted }]} numberOfLines={1}>
+                  {item.transaction_type === 'income' ? '收入' : '支出'} · ¥
+                  {item.amount.toFixed(2)} · {item.categoryLabel} · {item.accountName}
+                </Text>
+              </View>
+              {item.confirmed ? (
+                <Text style={[styles.multiDone, { color: ff.pine }]}>已入账</Text>
+              ) : (
+                <Pressable
+                  onPress={() => onConfirmMultiItem?.(item.id)}
+                  disabled={confirming}
+                  style={({ pressed }) => [
+                    styles.multiConfirmBtn,
+                    { backgroundColor: ff.pine, opacity: pressed ? 0.88 : 1 },
+                  ]}>
+                  <Text style={[styles.multiConfirmText, { color: ff.onPine }]}>确认</Text>
+                </Pressable>
+              )}
+            </View>
+          ))}
+          {onConfirmAllMulti && multiItems.some((i) => !i.confirmed) ? (
+            <Pressable
+              onPress={onConfirmAllMulti}
+              disabled={confirming}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                { backgroundColor: ff.pine, marginTop: 4, opacity: pressed ? 0.9 : 1 },
+              ]}>
+              {confirming ? (
+                <ActivityIndicator color={ff.onPine} />
+              ) : (
+                <Text style={[styles.primaryBtnText, { color: ff.onPine }]}>全部确认入账</Text>
+              )}
+            </Pressable>
+          ) : null}
+        </View>
       ) : null}
 
       {scanning ? (
@@ -1232,6 +1330,10 @@ export function FinanceFoldTransferPanel({
   onSave,
   keypadKeys,
   onKeypadKey,
+  oneLiner,
+  onChangeOneLiner,
+  onParseOneLiner,
+  parseOneLinerLoading,
 }: {
   ff: FinanceFoldPalette;
   fonts?: typeof financeFoldFonts;
@@ -1258,9 +1360,44 @@ export function FinanceFoldTransferPanel({
   onSave: () => void;
   keypadKeys: string[];
   onKeypadKey: (key: string) => void;
+  /** 一句话转账（可选） */
+  oneLiner?: string;
+  onChangeOneLiner?: (v: string) => void;
+  onParseOneLiner?: () => void;
+  parseOneLinerLoading?: boolean;
 }) {
   return (
     <View style={styles.manualPanel}>
+      {onChangeOneLiner && onParseOneLiner ? (
+        <View style={[styles.transferOneLiner, { backgroundColor: softField(ff), borderColor: ff.line2 }]}>
+          <TextInput
+            value={oneLiner ?? ''}
+            onChangeText={onChangeOneLiner}
+            placeholder="例如：工资卡转到招行信用卡 2000"
+            placeholderTextColor={ff.faint}
+            style={[styles.transferOneLinerInput, { color: ff.ink }]}
+          />
+          <Pressable
+            onPress={onParseOneLiner}
+            disabled={parseOneLinerLoading || !(oneLiner ?? '').trim()}
+            style={({ pressed }) => [
+              styles.transferOneLinerBtn,
+              {
+                backgroundColor: ff.pine,
+                opacity:
+                  parseOneLinerLoading || !(oneLiner ?? '').trim() ? 0.55 : pressed ? 0.88 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="AI 解析转账">
+            {parseOneLinerLoading ? (
+              <ActivityIndicator color={ff.onPine} size="small" />
+            ) : (
+              <MaterialIcons name="auto-awesome" size={16} color={ff.onPine} />
+            )}
+          </Pressable>
+        </View>
+      ) : null}
       <FinanceFoldAmountInput
         ff={ff}
         fonts={fonts}
@@ -1860,6 +1997,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  splitMultiBtn: {
+    marginTop: 8,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  splitMultiText: { fontSize: 12, fontWeight: '700' },
+  multiList: { marginTop: 12, gap: 8 },
+  multiTitle: { fontSize: 13, fontWeight: '700', marginBottom: 2 },
+  multiRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  multiName: { fontSize: 13, fontWeight: '650' },
+  multiMeta: { fontSize: 11, marginTop: 2 },
+  multiDone: { fontSize: 11, fontWeight: '700' },
+  multiConfirmBtn: {
+    height: 30,
+    paddingHorizontal: 12,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  multiConfirmText: { fontSize: 12, fontWeight: '700' },
   errorBox: {
     marginTop: 10,
     borderRadius: 10,
@@ -1986,6 +2156,30 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 12,
     marginBottom: 4,
+  },
+  transferOneLiner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingLeft: 12,
+    paddingRight: 6,
+    paddingVertical: 6,
+    marginBottom: 10,
+  },
+  transferOneLinerInput: {
+    flex: 1,
+    fontSize: 13,
+    minHeight: 36,
+    paddingVertical: 6,
+  },
+  transferOneLinerBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   transferHint: {
     fontSize: 12,

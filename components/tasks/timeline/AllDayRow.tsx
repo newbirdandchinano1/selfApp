@@ -38,7 +38,9 @@ export function AllDayRow({ events, onPress }: Props) {
                 key={event.id}
                 onPress={() => onPress(event)}
                 accessibilityRole="button"
-                accessibilityLabel={`全天 ${event.title}${event.done ? '，已完成' : ''}`}
+                accessibilityLabel={`全天 ${event.title}${
+                  event.done ? '，已完成' : event.kind === 'habit' ? '，待打卡' : ''
+                }`}
                 style={({ pressed }) => [
                   styles.chip,
                   {
@@ -63,6 +65,8 @@ export function AllDayRow({ events, onPress }: Props) {
                 </Text>
                 {event.done ? (
                   <MaterialIcons name="check" size={11} color={tone.barColor} />
+                ) : event.kind === 'habit' ? (
+                  <Text style={[styles.chipMeta, { color: tone.metaColor }]}>待打卡</Text>
                 ) : null}
               </Pressable>
             );
@@ -122,5 +126,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     flexShrink: 1,
+  },
+  chipMeta: {
+    fontSize: 9,
+    fontWeight: '600',
+    marginLeft: 1,
   },
 });

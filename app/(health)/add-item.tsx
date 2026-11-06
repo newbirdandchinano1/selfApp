@@ -3,10 +3,13 @@ import { Layout, Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { addCustomQuickAddItem, type QuickAddMetricType, type QuickAddVolumeUnit } from '@/lib/quick-add-cards';
+import { parseQuickAddFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
+  ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -89,6 +92,9 @@ export default function AddItemScreen() {
   const [selectedIconKey, setSelectedIconKey] = React.useState(iconOptions[0].key);
   const [metricTypes, setMetricTypes] = React.useState<QuickAddMetricType[]>(['hydration']);
   const [saving, setSaving] = React.useState(false);
+  const [aiModalOpen, setAiModalOpen] = React.useState(false);
+  const [aiText, setAiText] = React.useState('');
+  const [aiBusy, setAiBusy] = React.useState(false);
 
   const selectedIcon = React.useMemo(
     () => iconOptions.find((item) => item.key === selectedIconKey)?.icon ?? iconOptions[0].icon,
@@ -149,6 +155,64 @@ export default function AddItemScreen() {
     }
   }, [name, metricTypes, selectedMetricAmounts, selectedIcon, router]);
 
+  const onAiFill = React.useCallback(async () => {
+    const text = aiText.trim();
+    if (!text || aiBusy) return;
+    setAiBusy(true);
+    try {
+      const r = await parseQuickAddFromText(text);
+      if (!r.ok) {
+        toast.error(r.error || 'AI 解析失败');
+        return;
+      }
+      const d = r.data;
+      const nextTypes: QuickAddMetricType[] = [];
+      const nextAmounts: Record<QuickAddMetricType, string> = {
+        hydration: '',
+        protein: '',
+        carbohydrate: '',
+        calories: '',
+      };
+      if (d.hydration_ml > 0) {
+        nextTypes.push('hydration');
+        nextAmounts.hydration = String(Math.round(d.hydration_ml));
+      }
+      if (d.protein_g > 0) {
+        nextTypes.push('protein');
+        nextAmounts.protein = String(Math.round(d.protein_g));
+      }
+      if (d.carbohydrate_g > 0) {
+        nextTypes.push('carbohydrate');
+        nextAmounts.carbohydrate = String(Math.round(d.carbohydrate_g));
+      }
+      if (d.calories_kcal > 0) {
+        nextTypes.push('calories');
+        nextAmounts.calories = String(Math.round(d.calories_kcal));
+      }
+      if (nextTypes.length === 0) {
+        toast.warn('未识别到有效营养，请改写描述');
+        return;
+      }
+      setName(d.name.slice(0, 18));
+      setMetricTypes(nextTypes);
+      setMetricAmounts(nextAmounts);
+      if (d.hydration_ml > 0 && d.protein_g + d.carbohydrate_g + d.calories_kcal === 0) {
+        setSelectedIconKey('water');
+      } else if (d.protein_g >= d.carbohydrate_g && d.protein_g >= d.calories_kcal) {
+        setSelectedIconKey('egg');
+      } else if (d.calories_kcal > 0) {
+        setSelectedIconKey('food');
+      }
+      setAiModalOpen(false);
+      setAiText('');
+      toast.success('已预填，请确认后保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 解析失败'));
+    } finally {
+      setAiBusy(false);
+    }
+  }, [aiBusy, aiText]);
+
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: colors.background }]} edges={['left', 'right', 'bottom']}>
       <ScreenHeader title="添加项目" onBack={() => router.back()} />
@@ -160,6 +224,21 @@ export default function AddItemScreen() {
         keyboardShouldPersistTaps="always"
         keyboardDismissMode="on-drag">
         <View style={styles.content}>
+          <Pressable
+            onPress={() => setAiModalOpen(true)}
+            disabled={saving}
+            style={({ pressed }) => [
+              styles.aiFillBtn,
+              {
+                backgroundColor: colors.primaryMuted,
+                borderColor: colors.primary,
+                opacity: saving ? 0.5 : pressed ? 0.85 : 1,
+              },
+            ]}>
+            <MaterialIcons name="auto-awesome" size={18} color={colors.primary} />
+            <Text style={[Typography.bodyStrong, { color: colors.primary }]}>AI 一句话填入</Text>
+          </Pressable>
+
           <View style={styles.section}>
             <SectionLabel>项目名称</SectionLabel>
             <AppInput
@@ -309,6 +388,67 @@ export default function AddItemScreen() {
           onPress={() => void onSave()}
         />
       </View>
+
+      <Modal
+        transparent
+        visible={aiModalOpen}
+        animationType="fade"
+        onRequestClose={() => {
+          if (!aiBusy) setAiModalOpen(false);
+        }}>
+        <View style={styles.aiModalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => {
+              if (!aiBusy) setAiModalOpen(false);
+            }}
+          />
+          <View style={[styles.aiModalCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <Text style={[Typography.h3, { color: colors.text }]}>AI 一句话填入</Text>
+            <Text style={[Typography.caption, { color: colors.textSecondary, marginTop: 4 }]}>
+              例如「一杯无糖美式」· 预填表单，需你确认保存
+            </Text>
+            <TextInput
+              value={aiText}
+              onChangeText={setAiText}
+              placeholder="描述这张快捷卡…"
+              placeholderTextColor={colors.textMuted}
+              multiline
+              editable={!aiBusy}
+              style={[
+                styles.aiModalInput,
+                Typography.body,
+                { color: colors.text, borderColor: colors.outline, backgroundColor: colors.input },
+              ]}
+            />
+            <View style={styles.aiModalActions}>
+              <Pressable
+                onPress={() => {
+                  if (!aiBusy) setAiModalOpen(false);
+                }}
+                style={[styles.aiModalGhost, { borderColor: colors.outline }]}>
+                <Text style={[Typography.bodyStrong, { color: colors.textSecondary }]}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void onAiFill()}
+                disabled={aiBusy || !aiText.trim()}
+                style={[
+                  styles.aiModalPrimary,
+                  {
+                    backgroundColor: colors.primary,
+                    opacity: aiBusy || !aiText.trim() ? 0.5 : 1,
+                  },
+                ]}>
+                {aiBusy ? (
+                  <ActivityIndicator color={colors.onPrimary ?? '#fff'} />
+                ) : (
+                  <Text style={[Typography.bodyStrong, { color: colors.onPrimary ?? '#fff' }]}>解析并填入</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -387,4 +527,48 @@ const styles = StyleSheet.create({
     paddingTop: Spacing['3xl'],
   },
   pressed: { opacity: 0.85 },
+  aiFillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.md,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    paddingVertical: Spacing.xl,
+  },
+  aiModalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(20,28,22,0.45)',
+    paddingHorizontal: Spacing['5xl'],
+  },
+  aiModalCard: {
+    borderRadius: Radius['2xl'],
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing['4xl'],
+    gap: Spacing.lg,
+  },
+  aiModalInput: {
+    minHeight: 88,
+    borderRadius: Radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    textAlignVertical: 'top',
+  },
+  aiModalActions: { flexDirection: 'row', gap: Spacing.lg, marginTop: Spacing.sm },
+  aiModalGhost: {
+    flex: 1,
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+  },
+  aiModalPrimary: {
+    flex: 1,
+    borderRadius: Radius.xl,
+    paddingVertical: Spacing.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

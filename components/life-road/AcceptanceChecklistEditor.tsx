@@ -1,5 +1,6 @@
 /**
  * 道路节点编辑：验收标准可增删勾选清单。
+ * 对齐设计稿 `我的道路-UI重构.html` route-node checklist-edit。
  */
 import {
   LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
@@ -7,42 +8,58 @@ import {
   createAcceptanceItem,
   type LifeRoadAcceptanceItem,
 } from '@/lib/life-road/life-road-acceptance';
-import { getMinTouchTarget } from '@/constants/design-tokens';
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-
-const MIN_TOUCH = getMinTouchTarget(Platform.OS);
+import Svg, { Path } from 'react-native-svg';
 
 export type AcceptanceChecklistEditorProps = {
   items: LifeRoadAcceptanceItem[];
   onChange: (next: LifeRoadAcceptanceItem[]) => void;
-  ink: string;
   ink2: string;
+  ink3: string;
   muted: string;
+  muted2: string;
   faint: string;
   line: string;
-  pine2: string;
-  sage2: string;
+  pine: string;
+  onRoad: string;
+  clay2: string;
 };
+
+function RemoveIcon({ color }: { color: string }) {
+  return (
+    <Svg width={10} height={10} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M5 5l14 14M19 5L5 19"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
 
 export function AcceptanceChecklistEditor({
   items,
   onChange,
-  ink,
   ink2,
+  ink3,
   muted,
+  muted2,
   faint,
   line,
-  pine2,
-  sage2,
+  pine,
+  onRoad,
+  clay2,
 }: AcceptanceChecklistEditorProps) {
+  const [draft, setDraft] = useState('');
+
   const updateAt = (index: number, patch: Partial<LifeRoadAcceptanceItem>) => {
     onChange(items.map((it, i) => (i === index ? { ...it, ...patch } : it)));
   };
@@ -51,22 +68,21 @@ export function AcceptanceChecklistEditor({
     onChange(items.filter((_, i) => i !== index));
   };
 
-  const addRow = () => {
+  const addFromDraft = () => {
     if (items.length >= LIFE_ROAD_ACCEPTANCE_MAX_ITEMS) return;
-    onChange([...items, createAcceptanceItem('')]);
+    const text = draft.trim();
+    if (!text) return;
+    onChange([
+      ...items,
+      createAcceptanceItem(text.slice(0, LIFE_ROAD_ACCEPTANCE_TEXT_MAX)),
+    ]);
+    setDraft('');
   };
 
   return (
     <View style={styles.wrap}>
-      <Text style={[styles.lab, { color: faint }]}>验收标准（可选）</Text>
-      <Text style={[styles.hint, { color: muted }]}>
-        「做成了算过关」的可勾选项；不是任务排期，也不计积分。
-      </Text>
-
       {items.map((item, index) => (
-        <View
-          key={item.id}
-          style={[styles.row, { borderColor: line, backgroundColor: 'rgba(255,252,245,0.92)' }]}>
+        <View key={item.id} style={styles.row}>
           <Pressable
             onPress={() => updateAt(index, { done: !item.done })}
             accessibilityRole="checkbox"
@@ -75,16 +91,24 @@ export function AcceptanceChecklistEditor({
             hitSlop={6}
             style={[
               styles.check,
-              {
-                borderColor: item.done ? pine2 : line,
-                backgroundColor: item.done ? sage2 : 'transparent',
-                minWidth: Math.min(28, MIN_TOUCH),
-                minHeight: Math.min(28, MIN_TOUCH),
-              },
+              item.done
+                ? { borderColor: pine, backgroundColor: pine }
+                : {
+                    borderColor: line,
+                    backgroundColor: 'rgba(255,255,255,0.45)',
+                  },
             ]}>
-            <Text style={{ color: pine2, fontSize: 12, fontWeight: '800' }}>
-              {item.done ? '✓' : ''}
-            </Text>
+            {item.done ? (
+              <Svg width={9} height={9} viewBox="0 0 24 24" fill="none">
+                <Path
+                  d="M5 12.5l4.5 4.5L19 7"
+                  stroke={onRoad}
+                  strokeWidth={2.4}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </Svg>
+            ) : null}
           </Pressable>
           <TextInput
             value={item.text}
@@ -92,27 +116,56 @@ export function AcceptanceChecklistEditor({
             maxLength={LIFE_ROAD_ACCEPTANCE_TEXT_MAX}
             placeholder="过关条件…"
             placeholderTextColor={faint}
-            style={[styles.input, { color: ink }]}
+            style={[styles.input, { color: item.done ? muted : ink3 }]}
           />
           <Pressable
             onPress={() => removeAt(index)}
             accessibilityLabel="删除本条"
             hitSlop={8}
-            style={styles.remove}>
-            <Text style={{ color: muted, fontSize: 16, fontWeight: '700' }}>×</Text>
+            style={({ pressed }) => [
+              styles.remove,
+              pressed && { backgroundColor: clay2, opacity: 1 },
+            ]}>
+            <RemoveIcon color={muted2} />
           </Pressable>
         </View>
       ))}
 
       {items.length < LIFE_ROAD_ACCEPTANCE_MAX_ITEMS ? (
-        <Pressable
-          onPress={addRow}
-          accessibilityLabel="添加验收标准"
-          style={[styles.add, { borderColor: line }]}>
-          <Text style={{ color: pine2, fontSize: 12, fontWeight: '700' }}>
-            + 验收标准
-          </Text>
-        </Pressable>
+        <View style={styles.addRow}>
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            maxLength={LIFE_ROAD_ACCEPTANCE_TEXT_MAX}
+            placeholder="加一条可勾选的验收标准"
+            placeholderTextColor={muted2}
+            onSubmitEditing={addFromDraft}
+            returnKeyType="done"
+            style={[
+              styles.addInput,
+              {
+                color: ink3,
+                borderColor: line,
+                backgroundColor: 'rgba(255,255,255,0.38)',
+              },
+            ]}
+          />
+          <Pressable
+            onPress={addFromDraft}
+            disabled={!draft.trim()}
+            accessibilityLabel="添加验收标准"
+            style={({ pressed }) => [
+              styles.addBtn,
+              {
+                backgroundColor: pine,
+                opacity: !draft.trim() ? 0.4 : pressed ? 0.9 : 1,
+              },
+            ]}>
+            <Text style={{ color: onRoad, fontSize: 18, lineHeight: 20, marginTop: -1 }}>
+              +
+            </Text>
+          </Pressable>
+        </View>
       ) : (
         <Text style={[styles.cap, { color: faint }]}>
           已达上限 {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条
@@ -129,57 +182,65 @@ export function AcceptanceChecklistEditor({
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 8 },
-  lab: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.6,
-  },
-  hint: {
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: -2,
-    marginBottom: 2,
-  },
+  wrap: { gap: 4, marginTop: 1 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    gap: 7,
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    borderRadius: 9,
   },
   check: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 5,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   input: {
     flex: 1,
     minWidth: 0,
-    fontSize: 14,
-    fontWeight: '600',
-    paddingVertical: 8,
-    paddingHorizontal: 2,
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: '500',
+    paddingVertical: 2,
+    paddingHorizontal: 0,
   },
   remove: {
-    width: 28,
-    height: 28,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    opacity: 0.55,
+    flexShrink: 0,
   },
-  add: {
+  addRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 5,
+  },
+  addInput: {
+    flex: 1,
+    minWidth: 0,
     borderWidth: StyleSheet.hairlineWidth,
-    borderStyle: 'dashed',
-    borderRadius: 10,
-    paddingVertical: 9,
+    borderRadius: 9,
     paddingHorizontal: 10,
-    alignItems: 'flex-start',
+    paddingVertical: 9,
+    fontSize: 13,
   },
-  cap: { fontSize: 11 },
-  empty: { fontSize: 12, lineHeight: 18, fontStyle: 'italic' },
+  addBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  cap: { fontSize: 11, marginTop: 4 },
+  empty: { fontSize: 12, lineHeight: 18, fontStyle: 'italic', marginTop: 4 },
 });

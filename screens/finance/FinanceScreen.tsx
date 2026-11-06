@@ -9,6 +9,7 @@ import {
   FinanceFoldSheetChrome,
   FinanceFoldSheetHead,
   FinanceFoldTransferPanel,
+  type FinanceAlbumMultiItem,
   type FinanceAlbumScanResult,
   type FinanceFoldParsePill,
 } from '@/components/finance/finance-fold-record-sheet';
@@ -53,7 +54,10 @@ import {
 import { FINANCE_ACCOUNT_ICON_OPTIONS } from '@/lib/constants/finance-account-icons';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { resolveFinanceAccountForAutoLedgerWithDefaults } from '@/lib/finance-account-match';
+import {
+  resolveFinanceAccountForAutoLedger,
+  resolveFinanceAccountForAutoLedgerWithDefaults,
+} from '@/lib/finance-account-match';
 import { resolveHappenedAtForBillLedger } from '@/lib/finance-bill-happened-at';
 import {
     getCachedFinanceLastUsedAccountId,
@@ -90,6 +94,8 @@ import {
   getFinanceReminderStatusSummary,
   syncAllFinanceReminders,
 } from '@/lib/finance-reminder-notifications';
+import { loadFinanceAnomalyHints } from '@/lib/finance-anomaly-hints';
+import type { FinanceAnomalyHintItem } from '@/lib/ai-types';
 import {
     consumeFinanceSheetLaunchIntent,
     notifyFinanceSheetSaved,
@@ -114,7 +120,7 @@ import {
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { fetchFinanceHome, fetchFinanceRecentDays } from '@/lib/finance-page-api';
-import { aggregateTransactions } from '@/lib/finance-aggregate';
+import { aggregateTransactions, listMonthKeysInclusive } from '@/lib/finance-aggregate';
 import { formatYmd } from '@/lib/date';
 import {
   computeNetWorthTotal,
@@ -136,8 +142,11 @@ import { addDaysToLogicalYmd, getLogicalLocalYmd, logicalYmdToLocalDate } from '
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
 import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import {
+    analyzeFinanceBudgetSuggest,
+    parseFinanceMultiFromImage,
     parseFinanceOneLinerFromImage,
     parseFinanceOneLinerFromText,
+    parseFinanceTransferFromText,
 } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -578,6 +587,8 @@ export default function FinanceScreen() {
   const monthCountdownLabel =
     daysToMonthEnd <= 0 ? '本月最后一天' : `距离本月结束还有 ${daysToMonthEnd} 天`;
   const [financeReminderLine, setFinanceReminderLine] = React.useState<string | null>(null);
+  const [anomalyHints, setAnomalyHints] = React.useState<FinanceAnomalyHintItem[]>([]);
+  const [anomalyHintDismissed, setAnomalyHintDismissed] = React.useState(false);
   const headerSubLabel = financeReminderLine ?? monthCountdownLabel;
 
   const formatCurrencyWithDecimals = React.useCallback((value: number) => {
@@ -664,6 +675,8 @@ export default function FinanceScreen() {
   const [periodSurplusDraft, setPeriodSurplusDraft] = React.useState('');
   const [periodSurplusLoadedFromBudget, setPeriodSurplusLoadedFromBudget] = React.useState<number | null>(null);
   const [modalIncludeLast, setModalIncludeLast] = React.useState(false);
+  const [budgetAiHintOverride, setBudgetAiHintOverride] = React.useState<string | null>(null);
+  const [budgetAiSuggestLoading, setBudgetAiSuggestLoading] = React.useState(false);
   const [scheduledExpenses, setScheduledExpenses] = React.useState<ScheduledFinanceExpense[]>([]);
   const [savingsGoalTargetDate, setSavingsGoalTargetDate] = React.useState<string | null>(null);
   /** 收支明细：除「今天」外，初次最多再展示的历史日数（2 → 今天+前两日共三天） */
@@ -703,6 +716,26 @@ export default function FinanceScreen() {
     imageDataUri: string;
   }>(null);
   const [albumConfirming, setAlbumConfirming] = React.useState(false);
+  const [albumSplitLoading, setAlbumSplitLoading] = React.useState(false);
+  const [albumMultiItems, setAlbumMultiItems] = React.useState<FinanceAlbumMultiItem[] | null>(null);
+  const [albumMultiPayloads, setAlbumMultiPayloads] = React.useState<
+    Record<
+      string,
+      {
+        transaction_type: 'expense' | 'income';
+        amount: number;
+        name: string;
+        category_key: string;
+        category_label: string;
+        account_id: string;
+        account_name: string;
+        happened_at: string;
+        imageDataUri: string;
+      }
+    >
+  >({});
+  const [transferOneLiner, setTransferOneLiner] = React.useState('');
+  const [transferParseLoading, setTransferParseLoading] = React.useState(false);
   /** 递增以作废进行中的相册识图异步结果（关闭弹层 / 取消选图） */
   const albumScanGenerationRef = React.useRef(0);
   /** 手动记账弹窗内键盘高度，用于整体上移弹层并收缩可滚动区域，避免一句话输入框被 IME 遮挡 */
@@ -1457,6 +1490,17 @@ export default function FinanceScreen() {
 
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
+
+  /** 近 6 个自然月净储蓄（旧→新），供储蓄目标 AI 教练 */
+  const recentMonthlyNetSavings = React.useMemo(() => {
+    const end = formatYmd(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+    const start = formatYmd(new Date(today.getFullYear(), today.getMonth() - 5, 1));
+    const agg = aggregateTransactions(financeTransactions, { start, end });
+    return listMonthKeysInclusive(start, end).map((mk) => {
+      const bucket = agg.byMonth.get(mk);
+      return bucket ? Math.round(bucket.net * 100) / 100 : 0;
+    });
+  }, [financeTransactions, today]);
 
   const prevBudgetPeriodStart = getPreviousBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
   const prevBudgetPeriodEndExclusive = budgetPeriodStart;
@@ -2216,6 +2260,9 @@ export default function FinanceScreen() {
     setAlbumScanResult(null);
     setAlbumParsePayload(null);
     setAlbumConfirming(false);
+    setAlbumSplitLoading(false);
+    setAlbumMultiItems(null);
+    setAlbumMultiPayloads({});
   }, []);
 
   const resetSheetForm = React.useCallback((nextTab: SheetTab = 'sentence', opts?: { preserveBudget?: boolean }) => {
@@ -2225,6 +2272,8 @@ export default function FinanceScreen() {
     setTransferAmountTarget('amount');
     setSheetSentence('');
     setSheetNote('');
+    setTransferOneLiner('');
+    setTransferParseLoading(false);
     setSheetImageUris([]);
     if (!opts?.preserveBudget) {
       applySheetIncludeInBudget(true);
@@ -2409,6 +2458,34 @@ export default function FinanceScreen() {
     }
   }, []);
 
+  React.useEffect(() => {
+    if (!financeTransactions.length) {
+      setAnomalyHints([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const cats = await getFinanceFlowCategories({ cacheOnly: true }).catch(() => []);
+        const categoryNameById = new Map(cats.map((c) => [c.id, c.name]));
+        const hints = await loadFinanceAnomalyHints({
+          transactions: financeTransactions,
+          categoryNameById,
+        });
+        if (!cancelled) {
+          setAnomalyHints(hints);
+          setAnomalyHintDismissed(false);
+        }
+      } catch (e) {
+        console.warn('加载财务异常提示失败', e);
+        if (!cancelled) setAnomalyHints([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [financeTransactions]);
+
   useFocusEffect(
     React.useCallback(() => {
       scheduleRunScheduledFinanceExpenses('finance-tab-focus');
@@ -2458,6 +2535,8 @@ export default function FinanceScreen() {
 
   const closeBudgetAdjust = React.useCallback(() => {
     setIsBudgetAdjustVisible(false);
+    setBudgetAiHintOverride(null);
+    setBudgetAiSuggestLoading(false);
   }, []);
 
   const openBudgetAdjust = React.useCallback(() => {
@@ -2473,6 +2552,7 @@ export default function FinanceScreen() {
     setPeriodSurplusLoadedFromBudget(autoSurplus);
     setModalIncludeLast(inc);
     setBudgetRefreshDayDraft(budgetRefreshDay);
+    setBudgetAiHintOverride(null);
     setIsBudgetAdjustVisible(true);
   }, [
     budgetRefreshDay,
@@ -2565,6 +2645,7 @@ export default function FinanceScreen() {
   );
 
   const budgetAdjustAiHint = React.useMemo(() => {
+    if (budgetAiHintOverride) return budgetAiHintOverride;
     const surplus = Number.isFinite(parsedPeriodSurplusDraft)
       ? parsedPeriodSurplusDraft
       : autoPeriodSurplusPreview;
@@ -2575,10 +2656,111 @@ export default function FinanceScreen() {
     return `按目前节奏，${budgetUiScopeShort}预计超支 ${formatCurrencyWithDecimals(Math.abs(surplus))} · 建议下调支出或上调预算`;
   }, [
     autoPeriodSurplusPreview,
+    budgetAiHintOverride,
     budgetUiScopeShort,
     formatCurrencyWithDecimals,
     parsedPeriodSurplusDraft,
     todayAvailableAmount,
+  ]);
+
+  const handleBudgetAiSuggest = React.useCallback(async () => {
+    if (budgetAiSuggestLoading) return;
+    setBudgetAiSuggestLoading(true);
+    try {
+      const catNames = flowCategoryNamesRef.current;
+      const periodLines: string[] = [];
+      let cursorStart = budgetPeriodStart;
+      for (let i = 0; i < 4; i += 1) {
+        const start = cursorStart;
+        const endEx = getNextBudgetPeriodStart(start, budgetRefreshDay);
+        const monthKey = getBudgetMonthKeyForDate(start, budgetRefreshDay);
+        const setting = monthBudgetSettings[monthKey];
+        const periodTxns = financeTransactions.filter((txn) => {
+          const happenedAt = parseStoredDatetime(txn.happened_at);
+          return happenedAt >= start && happenedAt < endEx;
+        });
+        let income = 0;
+        let expense = 0;
+        const catMap = new Map<string, number>();
+        for (const txn of periodTxns) {
+          if (isFinanceTransactionExcludedFromBudget(txn.extra_data, txn.transaction_type)) continue;
+          const amt = Math.abs(txn.amount);
+          if (txn.transaction_type === 'income') income += amt;
+          else if (txn.transaction_type === 'expense') {
+            expense += amt;
+            const label =
+              (txn.flow_category_id && catNames[txn.flow_category_id]) ||
+              txn.name?.trim() ||
+              '未分类';
+            catMap.set(label, (catMap.get(label) ?? 0) + amt);
+          }
+        }
+        const topCats = [...catMap.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 4)
+          .map(([n, v]) => `${n}¥${Math.round(v)}`)
+          .join('、');
+        const sched = sumScheduledExpensesInRange(scheduledExpenses, start, endEx);
+        periodLines.push(
+          `${i === 0 ? '当前' : `前${i}`}周期 ${monthKey}：预算基数${setting ? setting.baseAmount.toFixed(0) : '未设'}，收入¥${Math.round(income)}，支出¥${Math.round(expense)}，定时预扣¥${Math.round(sched)}${topCats ? `，分类Top ${topCats}` : ''}`,
+        );
+        cursorStart = getPreviousBudgetPeriodStart(start, budgetRefreshDay);
+      }
+      const currentBase = Number.isFinite(parsedBudgetDraft) && parsedBudgetDraft >= 0
+        ? parsedBudgetDraft
+        : effectiveBaseBudget;
+      const summary = [
+        `预算刷新日：每月 ${budgetRefreshDay} 日`,
+        `当前草稿预算基数：¥${currentBase.toFixed(2)}`,
+        `本周期已用支出：¥${monthlyBudgetExpense.toFixed(2)}`,
+        `本周期预算收入：¥${monthlyBudgetIncome.toFixed(2)}`,
+        `本周期定时预扣：¥${scheduledBudgetDeduction.toFixed(2)}`,
+        ...periodLines,
+        '请给出适合当前周期的 suggested_base_amount（预算基数）。',
+      ].join('\n');
+      const result = await analyzeFinanceBudgetSuggest({
+        summaryText: summary,
+        currentBaseAmount: currentBase,
+      });
+      if (!result.ok) {
+        toast.warn(result.error || 'AI 建议失败，请稍后重试');
+        return;
+      }
+      const suggested = result.data.suggested_base_amount;
+      setBudgetBaseDraft(suggested.toFixed(2));
+      const previewGross = modalIncludeLast ? suggested + lastMonthRemaining : suggested;
+      const previewTotal = Math.max(0, previewGross - scheduledBudgetDeduction + monthlyBudgetIncome);
+      const autoSurplus = previewTotal - monthlyBudgetExpense;
+      setPeriodSurplusDraft(autoSurplus.toFixed(2));
+      setPeriodSurplusLoadedFromBudget(autoSurplus);
+      const tips = (result.data.cut_tips ?? []).filter(Boolean).slice(0, 3);
+      const daily =
+        result.data.daily_cap_hint != null && Number.isFinite(result.data.daily_cap_hint)
+          ? ` · 日均约 ¥${Math.round(result.data.daily_cap_hint)}`
+          : '';
+      setBudgetAiHintOverride(
+        `${result.data.rationale_zh}${daily}${tips.length ? `；${tips.join('；')}` : ''}（已预填基数，确认后点保存）`,
+      );
+      toast.success('已预填 AI 建议预算，请确认后保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 建议失败，请稍后重试'));
+    } finally {
+      setBudgetAiSuggestLoading(false);
+    }
+  }, [
+    budgetAiSuggestLoading,
+    budgetPeriodStart,
+    budgetRefreshDay,
+    effectiveBaseBudget,
+    financeTransactions,
+    lastMonthRemaining,
+    modalIncludeLast,
+    monthBudgetSettings,
+    monthlyBudgetExpense,
+    monthlyBudgetIncome,
+    parsedBudgetDraft,
+    scheduledBudgetDeduction,
+    scheduledExpenses,
   ]);
 
   const handleSelectAccount = React.useCallback(
@@ -3152,6 +3334,8 @@ export default function FinanceScreen() {
       setAlbumScanError(null);
       setAlbumScanResult(null);
       setAlbumParsePayload(null);
+      setAlbumMultiItems(null);
+      setAlbumMultiPayloads({});
       setAlbumImageUri(imageDataUri);
       setAlbumScanPhase('scanning');
 
@@ -3245,33 +3429,111 @@ export default function FinanceScreen() {
     resetSheetForm,
   ]);
 
-  const confirmAlbumScan = React.useCallback(async () => {
-    if (albumConfirming || !albumParsePayload) return;
-    const payload = albumParsePayload;
-    const account = financeAccountsRef.current.find((a) => a.id === payload.account_id);
-    if (!account) {
-      toast.warn('账户已失效，请重新识图或手动记账。');
-      return;
-    }
-
-    const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, payload.amount);
-    const boundsErr = await validateFinanceTransactionBeforeSave({
-      accountId: account.id,
-      transactionType: payload.transaction_type,
-      amount: signedAmount,
-      extraData: null,
-      accountName: account.name,
-      uiLedgerBalance: account.balance,
-    });
-    if (boundsErr) {
-      toast.warn(boundsErr);
-      return;
-    }
-
-    setAlbumConfirming(true);
-    markPageDirty();
-    financeReloadGenerationRef.current += 1;
+  const handleAlbumSplitMulti = React.useCallback(async () => {
+    if (albumSplitLoading || albumConfirming || !albumImageUri) return;
+    setAlbumSplitLoading(true);
     try {
+      const accounts = financeAccountsRef.current;
+      const accountHints = accounts.map((a) => ({ name: a.name, account_no: a.account_no }));
+      const resolved = await parseFinanceMultiFromImage({
+        imageDataUri: albumImageUri,
+        accounts: accountHints,
+        maxItems: 8,
+      });
+      if (!resolved.ok) {
+        toast.warn(resolved.error || '未能拆出多笔账单');
+        return;
+      }
+      const lastUsedAccountId = sanitizeFinanceLastUsedAccountId(
+        getCachedFinanceLastUsedAccountId(),
+        accounts,
+      );
+      const nextItems: FinanceAlbumMultiItem[] = [];
+      const nextPayloads: typeof albumMultiPayloads = {};
+      resolved.data.items.forEach((item, idx) => {
+        const account = pickAccountForAutoLedger(
+          accounts,
+          {
+            transaction_type: item.transaction_type,
+            account_name: item.account_name,
+            payment_account_label: item.payment_account_label,
+          },
+          lastUsedAccountId,
+        );
+        if (!account) return;
+        const cat = pickSheetCategoryForParsed(
+          item.transaction_type,
+          item.category_label,
+          expenseCategories,
+          incomeCategories,
+        );
+        const { iso: happenedAtIso } = resolveHappenedAtForBillLedger(item.happened_at);
+        const happenedAtDate = parseStoredDatetime(happenedAtIso) ?? new Date();
+        const id = `multi_${idx}_${Math.round(item.amount * 100)}`;
+        nextItems.push({
+          id,
+          transaction_type: item.transaction_type,
+          amount: item.amount,
+          name: item.name,
+          categoryLabel: cat.label,
+          accountName: account.name,
+          happenedLabel: formatAlbumHappenedLabel(happenedAtDate),
+          confirmed: false,
+        });
+        nextPayloads[id] = {
+          transaction_type: item.transaction_type,
+          amount: item.amount,
+          name: item.name,
+          category_key: cat.key,
+          category_label: cat.label,
+          account_id: account.id,
+          account_name: account.name,
+          happened_at: happenedAtIso,
+          imageDataUri: albumImageUri,
+        };
+      });
+      if (!nextItems.length) {
+        toast.warn('拆分结果为空，请仍用单笔确认');
+        return;
+      }
+      setAlbumMultiItems(nextItems);
+      setAlbumMultiPayloads(nextPayloads);
+      toast.success(`已拆出 ${nextItems.length} 笔，可逐条确认`);
+    } catch (e) {
+      toast.error(toUserMessage(e, '拆分失败，请稍后重试'));
+    } finally {
+      setAlbumSplitLoading(false);
+    }
+  }, [
+    albumConfirming,
+    albumImageUri,
+    albumMultiPayloads,
+    albumSplitLoading,
+    expenseCategories,
+    incomeCategories,
+    pickAccountForAutoLedger,
+  ]);
+
+  const writeAlbumPayload = React.useCallback(
+    async (payload: NonNullable<typeof albumParsePayload>) => {
+      const account = financeAccountsRef.current.find((a) => a.id === payload.account_id);
+      if (!account) {
+        toast.warn('账户已失效，请重新识图或手动记账。');
+        return false;
+      }
+      const signedAmount = financeSignedAmountForSave(account.sign_rule, account.account_type, payload.amount);
+      const boundsErr = await validateFinanceTransactionBeforeSave({
+        accountId: account.id,
+        transactionType: payload.transaction_type,
+        amount: signedAmount,
+        extraData: null,
+        accountName: account.name,
+        uiLedgerBalance: account.balance,
+      });
+      if (boundsErr) {
+        toast.warn(boundsErr);
+        return false;
+      }
       const txnId = makeTimestampEntityId('ft_', 8);
       await createFinanceTransaction(
         {
@@ -3297,6 +3559,19 @@ export default function FinanceScreen() {
         },
         { skipBalanceRecheck: true },
       );
+      return true;
+    },
+    [],
+  );
+
+  const confirmAlbumScan = React.useCallback(async () => {
+    if (albumConfirming || !albumParsePayload) return;
+    setAlbumConfirming(true);
+    markPageDirty();
+    financeReloadGenerationRef.current += 1;
+    try {
+      const okWrite = await writeAlbumPayload(albumParsePayload);
+      if (!okWrite) return;
       await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
       resetAlbumScanState();
       setIsSheetVisible(false);
@@ -3317,7 +3592,130 @@ export default function FinanceScreen() {
     reloadFinanceTransactions,
     resetAlbumScanState,
     resetSheetForm,
+    writeAlbumPayload,
   ]);
+
+  const confirmAlbumMultiItem = React.useCallback(
+    async (id: string) => {
+      const payload = albumMultiPayloads[id];
+      if (albumConfirming || !payload) return;
+      setAlbumConfirming(true);
+      markPageDirty();
+      financeReloadGenerationRef.current += 1;
+      try {
+        const okWrite = await writeAlbumPayload(payload);
+        if (!okWrite) return;
+        setAlbumMultiItems((prev) =>
+          (prev ?? []).map((row) => (row.id === id ? { ...row, confirmed: true } : row)),
+        );
+        await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
+        notifyFinanceSheetSaved();
+        toast.success('已入账 1 笔');
+      } catch (error) {
+        toast.error(toUserMessage(error, '入账失败，请稍后重试。'));
+      } finally {
+        setAlbumConfirming(false);
+      }
+    },
+    [
+      albumConfirming,
+      albumMultiPayloads,
+      markPageDirty,
+      reloadFinanceAccounts,
+      reloadFinanceTransactions,
+      writeAlbumPayload,
+    ],
+  );
+
+  const confirmAlbumAllMulti = React.useCallback(async () => {
+    if (albumConfirming || !albumMultiItems?.length) return;
+    const pending = albumMultiItems.filter((i) => !i.confirmed);
+    if (!pending.length) return;
+    setAlbumConfirming(true);
+    markPageDirty();
+    financeReloadGenerationRef.current += 1;
+    let okCount = 0;
+    try {
+      for (const row of pending) {
+        const payload = albumMultiPayloads[row.id];
+        if (!payload) continue;
+        const okWrite = await writeAlbumPayload(payload);
+        if (okWrite) {
+          okCount += 1;
+          setAlbumMultiItems((prev) =>
+            (prev ?? []).map((r) => (r.id === row.id ? { ...r, confirmed: true } : r)),
+          );
+        }
+      }
+      await Promise.all([reloadFinanceTransactions(), reloadFinanceAccounts()]);
+      notifyFinanceSheetSaved();
+      if (okCount > 0) toast.success(`已入账 ${okCount} 笔`);
+      if (okCount === pending.length) {
+        resetAlbumScanState();
+        setIsSheetVisible(false);
+        resetSheetForm('sentence');
+      }
+    } catch (error) {
+      toast.error(toUserMessage(error, '批量入账失败，请稍后重试。'));
+    } finally {
+      setAlbumConfirming(false);
+    }
+  }, [
+    albumConfirming,
+    albumMultiItems,
+    albumMultiPayloads,
+    markPageDirty,
+    reloadFinanceAccounts,
+    reloadFinanceTransactions,
+    resetAlbumScanState,
+    resetSheetForm,
+    writeAlbumPayload,
+  ]);
+
+  const handleTransferParseOneLiner = React.useCallback(async () => {
+    if (transferParseLoading) return;
+    const text = transferOneLiner.trim();
+    if (!text) {
+      toast.warn('请先输入转账描述');
+      return;
+    }
+    const accounts = financeAccountsRef.current;
+    if (accounts.length < 2) {
+      toast.warn('转账至少需要两个账户');
+      return;
+    }
+    setTransferParseLoading(true);
+    try {
+      const result = await parseFinanceTransferFromText({
+        text,
+        accounts: accounts.map((a) => ({ name: a.name, account_no: a.account_no })),
+      });
+      if (!result.ok) {
+        toast.warn(result.error || '未能解析转账');
+        return;
+      }
+      const from = resolveFinanceAccountForAutoLedger(accounts, {
+        accountName: result.data.from_account_hint,
+        paymentAccountLabel: result.data.from_account_hint,
+      });
+      const to = resolveFinanceAccountForAutoLedger(accounts, {
+        accountName: result.data.to_account_hint,
+        paymentAccountLabel: result.data.to_account_hint,
+      });
+      if (from) setTransferFromAccountId(from.id);
+      if (to && (!from || to.id !== from.id)) setTransferToAccountId(to.id);
+      setSheetAmount(String(result.data.amount));
+      if (result.data.fee_amount != null && result.data.fee_amount > 0) {
+        setTransferFeeAmount(String(result.data.fee_amount));
+      }
+      if (result.data.name) setSheetNote(result.data.name);
+      toast.success('已预填转账草稿，请确认后保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, '解析失败，请稍后重试'));
+    } finally {
+      setTransferParseLoading(false);
+    }
+  }, [transferOneLiner, transferParseLoading]);
 
   const applyAlbumScanToForm = React.useCallback(() => {
     if (!albumParsePayload) {
@@ -3679,6 +4077,7 @@ export default function FinanceScreen() {
               dayBoundaryHour={financeDayBoundary.hour}
               dayBoundaryMinute={financeDayBoundary.minute}
               onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
+              recentMonthlyNetSavings={recentMonthlyNetSavings}
             />
             </View>
           </FoldRiseIn>
@@ -4008,6 +4407,37 @@ export default function FinanceScreen() {
             )}
           </ScrollView>
 
+          {!anomalyHintDismissed && anomalyHints.length > 0 ? (
+            <View
+              style={[
+                styles.anomalyHintCard,
+                {
+                  backgroundColor: isDark ? ff.amber2 : '#F4EAD9',
+                  borderColor: isDark ? ff.line : '#E8D4B6',
+                },
+              ]}>
+              <View style={styles.anomalyHintHead}>
+                <MaterialIcons name="report-problem" size={14} color={ff.amberInk} />
+                <Text style={[styles.anomalyHintTitle, { color: ff.amberInk }]} numberOfLines={1}>
+                  {anomalyHints[0]!.title}
+                </Text>
+                <Pressable
+                  onPress={() => setAnomalyHintDismissed(true)}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="关闭异常提示">
+                  <MaterialIcons name="close" size={16} color={subtle} />
+                </Pressable>
+              </View>
+              <Text style={[styles.anomalyHintBody, { color: ff.ink2 }]}>{anomalyHints[0]!.body}</Text>
+              {anomalyHints.length > 1 ? (
+                <Text style={[styles.anomalyHintMore, { color: subtle }]}>
+                  另有 {anomalyHints.length - 1} 条弱提示
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
           <View style={styles.sectionEyebrowRow}>
             <Text style={[styles.sectionEyebrow, { color: ff.ink2 }]}>LEDGER / 今日流水</Text>
             <Text style={[styles.txnSwipeHint, { color: subtle }]}>左滑删除</Text>
@@ -4248,6 +4678,11 @@ export default function FinanceScreen() {
                   if (!albumConfirming) resetAlbumScanState();
                 }}
                 confirming={albumConfirming}
+                onSplitMulti={() => void handleAlbumSplitMulti()}
+                splitLoading={albumSplitLoading}
+                multiItems={albumMultiItems}
+                onConfirmMultiItem={(id) => void confirmAlbumMultiItem(id)}
+                onConfirmAllMulti={() => void confirmAlbumAllMulti()}
               />
             </ScrollView>
           </FinanceFoldSheetChrome>
@@ -4333,6 +4768,10 @@ export default function FinanceScreen() {
                 onSave={() => void handleSaveTransaction()}
                 keypadKeys={keypadRows.flat()}
                 onKeypadKey={handleAmountKeyPress}
+                oneLiner={transferOneLiner}
+                onChangeOneLiner={setTransferOneLiner}
+                onParseOneLiner={() => void handleTransferParseOneLiner()}
+                parseOneLinerLoading={transferParseLoading}
               />
             ) : activeSheetTab === 'sentence' ? (
               <>
@@ -4672,6 +5111,10 @@ export default function FinanceScreen() {
           scheduledDeduction={scheduledBudgetDeduction}
           hasSavedBudget={currentMonthKey in monthBudgetSettings}
           aiHint={budgetAdjustAiHint}
+          aiSuggestLoading={budgetAiSuggestLoading}
+          onAiSuggest={() => {
+            void handleBudgetAiSuggest();
+          }}
           onClose={closeBudgetAdjust}
           onChangeBudget={handleBudgetSliderChange}
           onManageScheduled={() => {
@@ -5092,6 +5535,32 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1.4,
+  },
+  anomalyHintCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+    gap: 4,
+  },
+  anomalyHintHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  anomalyHintTitle: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  anomalyHintBody: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  anomalyHintMore: {
+    fontSize: 11,
+    marginTop: 2,
   },
   accountCardFold: {
     width: 184,

@@ -8,6 +8,11 @@ import {
 } from '@/components/wish-board/wish-board-segment';
 import { WishBoardShelfTile } from '@/components/wish-board/wish-board-shelf-tile';
 import {
+  WishBoardSuggestNextSheet,
+  type WishBoardSuggestNextPick,
+} from '@/components/wish-board/wish-board-suggest-next-sheet';
+import type { WishBoardItemFormInitial } from '@/components/wish-board/wish-board-item-form';
+import {
   formatWishBoxPoints,
   greetingByHour,
   greetingMoonByHour,
@@ -64,9 +69,34 @@ export default function WishBoardScreen() {
   const entranceOn = motionReady && !reduceMotion;
 
   const [addVisible, setAddVisible] = useState(false);
+  const [addInitial, setAddInitial] = useState<WishBoardItemFormInitial | null>(null);
+  const [suggestNextVisible, setSuggestNextVisible] = useState(false);
   const [tab, setTab] = useState<WishBoardTabId>('ready');
   const [displayName, setDisplayName] = useState('朋友');
   const tabTouchedRef = useRef(false);
+
+  const openAdd = useCallback((initial?: WishBoardItemFormInitial | null) => {
+    setAddInitial(initial ?? null);
+    setAddVisible(true);
+  }, []);
+
+  const closeAdd = useCallback(() => {
+    setAddVisible(false);
+    setAddInitial(null);
+  }, []);
+
+  const onSuggestNextPick = useCallback(
+    (draft: WishBoardSuggestNextPick) => {
+      openAdd({
+        title: draft.title,
+        description: draft.description,
+        icon_key: draft.icon_key,
+        wish_type: draft.wish_type,
+        cost_points: draft.cost_points,
+      });
+    },
+    [openAdd],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -210,7 +240,7 @@ export default function WishBoardScreen() {
         </View>
         <View style={styles.secRight}>
           <Pressable
-            onPress={() => setAddVisible(true)}
+            onPress={() => openAdd()}
             style={({ pressed }) => [
               styles.addBtn,
               { opacity: pressed ? 0.88 : 1, backgroundColor: c.priSoft },
@@ -299,7 +329,7 @@ export default function WishBoardScreen() {
           </Pressable>
         ) : null}
         <Pressable
-          onPress={() => setAddVisible(true)}
+          onPress={() => openAdd()}
           style={({ pressed }) => [
             styles.dashAdd,
             { opacity: pressed ? 0.9 : 1, backgroundColor: c.card, borderColor: c.line },
@@ -308,6 +338,23 @@ export default function WishBoardScreen() {
           accessibilityLabel="新增心愿">
           <Text style={styles.dashAddText}>＋ 许下新的心愿</Text>
         </Pressable>
+        {items.length === 0 || (readyItems.length > 0 && waitingItems.length === 0) ? (
+          <Pressable
+            onPress={() => setSuggestNextVisible(true)}
+            style={({ pressed }) => [
+              styles.dashAdd,
+              {
+                opacity: pressed ? 0.9 : 1,
+                backgroundColor: c.priSoft,
+                borderColor: c.priLine,
+                marginTop: 8,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="下一颗心愿">
+            <Text style={[styles.dashAddText, { color: c.pri }]}>✨ 下一颗心愿建议</Text>
+          </Pressable>
+        ) : null}
       </View>
     ) : null;
 
@@ -327,8 +374,20 @@ export default function WishBoardScreen() {
                 ? '现在就有心愿可以兑换啦'
                 : '完成条件、攒够积分就能兑换'
         }
-        actionLabel={items.length === 0 ? '去许愿' : undefined}
-        onAction={items.length === 0 ? () => setAddVisible(true) : undefined}
+        actionLabel={
+          items.length === 0
+            ? '去许愿'
+            : tab === 'ready' && waitingItems.length === 0
+              ? '下一颗心愿'
+              : undefined
+        }
+        onAction={
+          items.length === 0
+            ? () => openAdd()
+            : tab === 'ready' && waitingItems.length === 0
+              ? () => setSuggestNextVisible(true)
+              : undefined
+        }
         style={styles.empty}
       />
     ) : null;
@@ -405,8 +464,15 @@ export default function WishBoardScreen() {
 
       <AddWishBoardModal
         visible={addVisible}
-        onClose={() => setAddVisible(false)}
+        initial={addInitial}
+        onClose={closeAdd}
         onCreated={() => void reload()}
+      />
+      <WishBoardSuggestNextSheet
+        visible={suggestNextVisible}
+        balance={balance}
+        onClose={() => setSuggestNextVisible(false)}
+        onPick={onSuggestNextPick}
       />
     </View>
   );

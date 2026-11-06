@@ -2,6 +2,7 @@
  * 「我的 · 编辑资料」：基本信息 / 画像 / 体征与饮食 + 未保存拦截。
  * 对齐设计稿 03–06 与动效规范（Tab 指示器、脏数据条、条件展开、弹窗 pop）。
  */
+import { AiPersonaDraftSheet } from '@/components/profile/ai-persona-draft-sheet';
 import { EditProfileUnsavedDialog } from '@/components/profile/EditProfileUnsavedDialog';
 import {
   FoldCountUpText,
@@ -20,6 +21,7 @@ import { formatYmd, parseYmd } from '@/lib/date';
 import {
   DEFAULT_DIETARY_PREFS,
   DIETARY_PRESET_TAGS,
+  formatDietaryPrefsSummary,
   loadDietaryPrefs,
   normalizeDietaryPrefs,
   saveDietaryPrefs,
@@ -511,6 +513,7 @@ export default function EditProfileScreen() {
   const [showBirthdayPicker, setShowBirthdayPicker] = useState(false);
   const [birthdayDraft, setBirthdayDraft] = useState(() => new Date(1990, 0, 1));
   const [unsavedVisible, setUnsavedVisible] = useState(false);
+  const [personaAiOpen, setPersonaAiOpen] = useState(false);
   const leaveActionRef = useRef<(() => void) | null>(null);
 
   const [skipRemoveGuard, setSkipRemoveGuard] = useState(false);
@@ -1188,6 +1191,23 @@ export default function EditProfileScreen() {
                   </View>
                 </View>
 
+                <Pressable
+                  onPress={() => setPersonaAiOpen(true)}
+                  style={({ pressed }) => [
+                    styles.ghostBtn,
+                    {
+                      borderColor: fold.line,
+                      backgroundColor: isDark ? fold.paper2 : '#F8F4EA',
+                      marginBottom: 12,
+                    },
+                    pressed && { opacity: 0.9 },
+                  ]}>
+                  <AppIcon name="auto-awesome" size={14} color={fold.pine} />
+                  <Text style={[styles.ghostBtnLabel, { color: fold.pine }]}>
+                    AI 写画像 / 润色
+                  </Text>
+                </Pressable>
+
                 <View style={styles.field}>
                   <FieldLabel label="不会写？插入一段结构" hint="点一下追加" />
                   <View style={styles.chipWrap}>
@@ -1507,6 +1527,19 @@ export default function EditProfileScreen() {
             if (leave) leave();
             else performLeave();
           })();
+        }}
+      />
+
+      <AiPersonaDraftSheet
+        visible={personaAiOpen}
+        onClose={() => setPersonaAiOpen(false)}
+        currentPersona={personaPortrait}
+        gender={gender}
+        lifestyle={lifestyle}
+        goal={goal}
+        dietarySummary={formatDietaryPrefsSummary(dietary)}
+        onApply={(portrait) => {
+          setPersonaPortrait(portrait.slice(0, PERSONA_PORTRAIT_MAX));
         }}
       />
 

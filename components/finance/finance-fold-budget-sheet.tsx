@@ -267,6 +267,9 @@ export type FinanceFoldBudgetSheetProps = {
   /** 是否已配置本月预算（用于「可撤销」） */
   hasSavedBudget: boolean;
   aiHint: string;
+  /** AI 建议本周期预算（可选） */
+  aiSuggestLoading?: boolean;
+  onAiSuggest?: () => void;
   onClose: () => void;
   onChangeBudget: (amount: number) => void;
   onManageScheduled: () => void;
@@ -289,6 +292,8 @@ export function FinanceFoldBudgetSheet({
   scheduledDeduction,
   hasSavedBudget,
   aiHint,
+  aiSuggestLoading = false,
+  onAiSuggest,
   onClose,
   onChangeBudget,
   onManageScheduled,
@@ -407,9 +412,31 @@ export function FinanceFoldBudgetSheet({
       </FoldRiseIn>
 
       <FoldRiseIn animate={animate} index={3} staggerMs={45} fromY={8} delayMs={120}>
-        <View style={styles.aiLine}>
-          <MaterialIcons name="auto-awesome" size={14} color={ff.amber} />
-          <Text style={[styles.aiText, { color: ff.muted }]}>{aiHint}</Text>
+        <View style={styles.aiBlock}>
+          <View style={styles.aiLine}>
+            <MaterialIcons name="auto-awesome" size={14} color={ff.amber} />
+            <Text style={[styles.aiText, { color: ff.muted }]}>{aiHint}</Text>
+          </View>
+          {onAiSuggest ? (
+            <Pressable
+              onPress={onAiSuggest}
+              disabled={aiSuggestLoading}
+              style={({ pressed }) => [
+                styles.aiSuggestBtn,
+                {
+                  borderColor: ff.line,
+                  backgroundColor: isDark ? ff.paper2 : ff.paper,
+                  opacity: aiSuggestLoading ? 0.65 : pressed ? 0.85 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="AI 建议本周期预算">
+              <MaterialIcons name="auto-awesome" size={14} color={ff.amber} />
+              <Text style={[styles.aiSuggestText, { color: ff.pine }]}>
+                {aiSuggestLoading ? 'AI 建议中…' : 'AI 建议本周期预算'}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </FoldRiseIn>
 
@@ -503,14 +530,28 @@ const styles = StyleSheet.create({
   formRight: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   formValue: { fontSize: 13, fontWeight: '650' },
   formMuted: { fontSize: 13, fontWeight: '500' },
+  aiBlock: {
+    marginTop: 4,
+    marginBottom: 4,
+    gap: 8,
+  },
   aiLine: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 6,
-    marginTop: 4,
-    marginBottom: 4,
   },
   aiText: { flex: 1, fontSize: 12, lineHeight: 18 },
+  aiSuggestBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  aiSuggestText: { fontSize: 12, fontWeight: '700' },
   actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
   ghostBtn: {
     width: 84,

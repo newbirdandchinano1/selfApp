@@ -700,6 +700,7 @@ export function WeeklyReviewGridView({
       weekNo={weekNo}
       periodLabel={weekRangeLabel || periodStartYmd}
       weekStartYmd={periodStartYmd}
+      periodYmd={periodStartYmd}
       template={weeklyTemplate}
       fields={fields}
       dailyEntries={dailyEntries}

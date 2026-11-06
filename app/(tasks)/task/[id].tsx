@@ -6,7 +6,10 @@ import {
 } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { AcceptanceReviewModal } from '@/components/tasks/AcceptanceReviewModal';
+import { AiTaskBreakdownSheet } from '@/components/tasks/ai-task-breakdown-sheet';
+import { AiTaskCommentSheet } from '@/components/tasks/ai-task-comment-sheet';
 import { NoteImagePreview } from '@/components/tasks/note-image-attach';
+import { ProgressCounterTrackBlock } from '@/components/progress/ProgressCounterTrackBlock';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import {
@@ -18,13 +21,17 @@ import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
   acceptanceChecklistToLines,
   countAcceptanceProgress,
+  createEmptyAcceptanceItem,
   mergeAcceptanceChecklistIntoExtraData,
   parseAcceptanceChecklist,
   type AcceptanceCriterionItem,
 } from '@/lib/acceptance-criteria';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { toast, Alert } from '@/lib/app-feedback';
+import type { TaskBreakdownJson } from '@/lib/ai-api-client';
 import { formatYmd, parseYmd } from '@/lib/date';
+import { daysBetweenYmd } from '@/lib/project-progress-reminder-logic';
+import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import { unassignFrogForDay } from '@/lib/frog-candidates-api';
@@ -60,6 +67,15 @@ import {
 import { getTagsByEntity, getTagsByProjectId } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
+import {
+  bumpProgressCounter,
+  evaluateProgressCounters,
+  formatTaskCounterIncompleteConfirmMessage,
+  mergeProgressCountersIntoExtraData,
+  parseProgressCounters,
+  setProgressCounterCurrent,
+  undoLastProgressCounterChange,
+} from '@/lib/repositories/progress/progress-counters';
 import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
 import {
   consumeSchedulePickerResult,
@@ -485,6 +501,9 @@ export default function TaskDetailScreen() {
   const [unassigning, setUnassigning] = React.useState(false);
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
   const [addSubtaskOpen, setAddSubtaskOpen] = React.useState(false);
+  const [aiBreakdownOpen, setAiBreakdownOpen] = React.useState(false);
+  const [aiCommentOpen, setAiCommentOpen] = React.useState(false);
+  const [updatedAt, setUpdatedAt] = React.useState<string | null>(null);
   const [acceptanceReviewOpen, setAcceptanceReviewOpen] = React.useState(false);
   const [reviewItems, setReviewItems] = React.useState<AcceptanceCriterionItem[]>([]);
   const [savingAcceptance, setSavingAcceptance] = React.useState(false);
@@ -603,6 +622,7 @@ export default function TaskDetailScreen() {
       setTaskNote(longTerm ? '' : (row.note ?? '').trim());
       setTaskNoteImageUris(longTerm ? [] : parseNoteImageUris(row.extra_data));
       setStatus(row.status);
+      setUpdatedAt(row.updated_at ?? null);
       setPriority(row.priority ?? 0);
       setDueDate(nextDue);
       setExtraData(nextExtra);
@@ -1048,6 +1068,32 @@ export default function TaskDetailScreen() {
     () => countAcceptanceProgress(acceptanceItems),
     [acceptanceItems],
   );
+  const overdueDays = React.useMemo(() => {
+    const dueYmd = dueDate?.slice(0, 10) || null;
+    if (!dueYmd || dueYmd >= logicalToday) return 0;
+    return daysBetweenYmd(dueYmd, logicalToday) ?? 0;
+  }, [dueDate, logicalToday]);
+  const doingStaleDays = React.useMemo(() => {
+    if (status !== 'doing' || !updatedAt) return 0;
+    const ymd = updatedAt.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return 0;
+    return Math.max(0, daysBetweenYmd(ymd, logicalToday) ?? 0);
+  }, [logicalToday, status, updatedAt]);
+  const showAiComment =
+    status === 'blocked' || (status === 'doing' && doingStaleDays >= 2);
+
+  const appendAiCommentToNote = React.useCallback(
+    async (comment: string) => {
+      if (!taskId) return;
+      const nextNote = taskNote.trim()
+        ? `${taskNote.trim()}\n\n【AI 短评】${comment}`
+        : `【AI 短评】${comment}`;
+      await updateTask(taskId, { note: nextNote });
+      setTaskNote(nextNote);
+      notifyPageDataChanged(PAGE_API_KEY);
+    },
+    [taskId, taskNote],
+  );
 
   const persistAcceptanceItems = React.useCallback(
     async (items: AcceptanceCriterionItem[], opts?: { manageBusy?: boolean }) => {
@@ -1085,9 +1131,182 @@ export default function TaskDetailScreen() {
     [acceptanceItems, taskId],
   );
 
+  const applyAiBreakdown = React.useCallback(
+    async (draft: TaskBreakdownJson) => {
+      if (!taskId) return;
+      for (const sub of draft.subtasks) {
+        const id = makeTimestampEntityId('tsk');
+        await createTask({
+          id,
+          project_id: projectIdRef.current,
+          category_id: categoryIdRef.current,
+          parent_task_id: taskId,
+          title: sub.title.trim() || '未命名任务',
+          status: 'todo',
+          priority: normalizeTaskPriority(sub.priority ?? priorityRef.current),
+          due_date: null,
+          extra_data: JSON.stringify({ schedule: null }),
+        });
+      }
+      if (draft.acceptance_items.length) {
+        const existingTexts = new Set(
+          acceptanceItems.map((i) => i.text.trim().toLowerCase()).filter(Boolean),
+        );
+        const merged = [...acceptanceItems];
+        for (const a of draft.acceptance_items) {
+          const text = a.text.trim();
+          if (!text || existingTexts.has(text.toLowerCase())) continue;
+          merged.push({ ...createEmptyAcceptanceItem(), text });
+          existingTexts.add(text.toLowerCase());
+        }
+        const cleaned = merged.filter((i) => i.text.trim());
+        if (cleaned.length) {
+          const ok = await persistAcceptanceItems(cleaned);
+          if (!ok) throw new Error('验收清单写入失败');
+        }
+      }
+      toast.success(
+        [
+          draft.subtasks.length ? `已添加 ${draft.subtasks.length} 个子任务` : null,
+          draft.acceptance_items.length ? `已写入验收项` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ') || '已写入',
+      );
+      notifyPageDataChanged(PAGE_API_KEY);
+      await reloadTaskDetail(true);
+    },
+    [acceptanceItems, persistAcceptanceItems, reloadTaskDetail, taskId],
+  );
+
+  const counterProgress = React.useMemo(
+    () => evaluateProgressCounters(extraData, { logicalTodayYmd: logicalToday }),
+    [extraData, logicalToday],
+  );
+  const showCounterProgress =
+    counterProgress.checks.length > 0 && counterProgress.ratio != null;
+  const taskDone = isTaskTerminalStatus(status);
+
+  const applyTaskCounterMutation = React.useCallback(
+    async (
+      mutate: (
+        counters: ReturnType<typeof parseProgressCounters>,
+      ) => {
+        counters: ReturnType<typeof parseProgressCounters>;
+        becameFull: boolean;
+      },
+    ) => {
+      if (!taskId || taskDone || isTaskShelvedStatus(status)) return;
+      const currentCounters = parseProgressCounters(extraDataRef.current);
+      const result = mutate(currentCounters);
+      const nextExtra = JSON.stringify(
+        mergeProgressCountersIntoExtraData(extraDataRef.current, result.counters),
+      );
+      const prevExtra = extraDataRef.current;
+      setExtraData(nextExtra);
+      extraDataRef.current = nextExtra;
+      try {
+        await updateTask(taskId, { extra_data: nextExtra });
+        if (result.becameFull) {
+          const name = title.trim() || '未命名任务';
+          const childCount = tree?.children?.length ?? 0;
+          if (childCount > 1) {
+            Alert.alert(
+              '计数进度已满',
+              `「${name}」计数已满，但仍有 ${childCount} 个子任务。请先处理子任务后再手动完成。`,
+              [{ text: '知道了', style: 'cancel' }],
+            );
+          } else {
+            const body =
+              childCount === 1
+                ? `「${name}」计数已满，且仅有 1 个子任务。是否一并完成子任务并标记本任务完成？`
+                : `「${name}」计数已满，是否标记任务完成？`;
+            Alert.alert('计数进度已满', body, [
+              { text: '稍后', style: 'cancel' },
+              {
+                text: '完成',
+                style: 'default',
+                onPress: () => {
+                  void (async () => {
+                    try {
+                      if (childCount === 1) {
+                        const child = (tree?.children ?? []).find(
+                          (c) =>
+                            c.status !== 'done' &&
+                            c.status !== 'cancelled' &&
+                            !isTaskShelvedStatus(c.status),
+                        );
+                        if (child) {
+                          await updateTask(child.id, {
+                            status: 'done',
+                            completed_at: formatTaskAuditDatetimeLocal(),
+                          });
+                        }
+                      }
+                      const completedAt = formatTaskAuditDatetimeLocal();
+                      const cleared = clearFrogSessionCompletedOn(extraDataRef.current);
+                      await updateTask(taskId, {
+                        status: 'done',
+                        completed_at: completedAt,
+                        extra_data: cleared,
+                      });
+                      setStatus('done');
+                      setExtraData(cleared);
+                      extraDataRef.current = cleared;
+                      try {
+                        await insertTaskExecutionEvent(taskId, 'completed', title || null);
+                      } catch {
+                        /* ignore */
+                      }
+                      try {
+                        await applyTaskCompletionPointsReward(taskId, 'earn', cleared);
+                      } catch {
+                        /* ignore */
+                      }
+                      try {
+                        await cascadeParentTaskStatusAfterChildChange(taskId, true);
+                      } catch {
+                        /* ignore */
+                      }
+                      notifyPageDataChanged(PAGE_API_KEY);
+                      toast.success('已完成任务');
+                      await reloadTaskDetail(true);
+                    } catch (completeErr) {
+                      console.warn('计数满后完成任务失败', completeErr);
+                      toast.error(formatWriteError(completeErr, '完成任务失败，请稍后重试。'));
+                    }
+                  })();
+                },
+              },
+            ]);
+          }
+        }
+      } catch (err) {
+        console.warn('更新任务计数进度失败', err);
+        setExtraData(prevExtra);
+        extraDataRef.current = prevExtra;
+        toast.error(formatWriteError(err, '计数更新失败，请稍后重试。'));
+      }
+    },
+    [reloadTaskDetail, status, taskDone, taskId, title, tree],
+  );
+
   /** 已核对：保存验收清单并完成主任务 */
   const completeMainTaskAfterAcceptanceReview = React.useCallback(async () => {
     if (!taskId) return;
+    const counterEval = evaluateProgressCounters(extraDataRef.current, {
+      logicalTodayYmd: logicalToday,
+    });
+    const confirmMsg = formatTaskCounterIncompleteConfirmMessage(counterEval);
+    if (confirmMsg) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Alert.alert('计数未完成', confirmMsg, [
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+          { text: '仍要完成', style: 'destructive', onPress: () => resolve(true) },
+        ]);
+      });
+      if (!confirmed) return;
+    }
     setSavingAcceptance(true);
     try {
       const saved = await persistAcceptanceItems(reviewItems, { manageBusy: false });
@@ -1130,7 +1349,7 @@ export default function TaskDetailScreen() {
     } finally {
       setSavingAcceptance(false);
     }
-  }, [persistAcceptanceItems, reloadTaskDetail, reviewItems, taskId, title]);
+  }, [logicalToday, persistAcceptanceItems, reloadTaskDetail, reviewItems, taskId, title]);
 
   /** 稍后：不完成主任务；勾选进度仍写入，便于下次继续 */
   const dismissAcceptanceReviewForLater = React.useCallback(() => {
@@ -1459,12 +1678,64 @@ export default function TaskDetailScreen() {
                       {isLeaf ? <StatusTag label="叶子任务" tone="gray" /> : null}
                       {hasFrog ? <StatusTag label="🐸 已入格" tone="frog" /> : null}
                     </View>
+                    {showAiComment ? (
+                      <Pressable
+                        onPress={() => setAiCommentOpen(true)}
+                        style={({ pressed }) => [
+                          styles.fchipBtn,
+                          {
+                            alignSelf: 'flex-start',
+                            marginTop: 8,
+                            backgroundColor: tf.lily,
+                            opacity: pressed ? 0.8 : 1,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 4,
+                          },
+                        ]}>
+                        <MaterialIcons name="auto-awesome" size={12} color={tf.frog} />
+                        <Text style={{ fontSize: 11, color: tf.frog, fontWeight: '700' }}>
+                          {status === 'blocked' ? 'AI 解阻' : 'AI 短评'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                   <FoldProgressRing ratio={progress.ratio} size={40} strokeWidth={3} />
                 </View>
                 <View style={{ marginTop: 10 }}>
                   <FoldProgressBar ratio={progress.ratio} height={4} />
                 </View>
+                {showCounterProgress ? (
+                  <ProgressCounterTrackBlock
+                    evaluation={counterProgress}
+                    muted={tf.muted}
+                    faint={tf.faint}
+                    ink={tf.ink}
+                    primary={tf.frog}
+                    surface={tf.card}
+                    surfaceLow={isDark ? tf.paper2 : '#F1EDE1'}
+                    fullHint="可标记完成"
+                    interactive={!taskDone && !isTaskShelvedStatus(status)}
+                    disabled={taskDone || isTaskShelvedStatus(status)}
+                    actions={{
+                      onBump: (counterId, delta) => {
+                        void applyTaskCounterMutation((counters) =>
+                          bumpProgressCounter(counters, counterId, delta, logicalToday),
+                        );
+                      },
+                      onSetCurrent: (counterId, value) => {
+                        void applyTaskCounterMutation((counters) =>
+                          setProgressCounterCurrent(counters, counterId, value, logicalToday),
+                        );
+                      },
+                      onUndo: (counterId) => {
+                        void applyTaskCounterMutation((counters) =>
+                          undoLastProgressCounterChange(counters, counterId, logicalToday),
+                        );
+                      },
+                    }}
+                  />
+                ) : null}
                 <View style={styles.metaRow}>
                   <Text style={[styles.metaText, { color: tf.faint }]}>
                     {progress.total > 0 ? `${progress.done} / ${progress.total} 子任务` : '无子任务'}
@@ -1716,6 +1987,15 @@ export default function TaskDetailScreen() {
                     ]}>
                     <MaterialIcons name="add" size={14} color={tf.frog} />
                     <Text style={{ fontSize: 12, color: tf.frog, fontWeight: '700' }}>添加子任务</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setAiBreakdownOpen(true)}
+                    style={({ pressed }) => [
+                      styles.addSub,
+                      { opacity: pressed ? 0.75 : 1, marginLeft: 8 },
+                    ]}>
+                    <MaterialIcons name="auto-awesome" size={14} color={tf.frog} />
+                    <Text style={{ fontSize: 12, color: tf.frog, fontWeight: '700' }}>AI 拆解</Text>
                   </Pressable>
                   <Text style={{ fontSize: 10, color: tf.faint, marginLeft: 'auto' }}>
                     子任务不可直接入格
@@ -2118,6 +2398,29 @@ export default function TaskDetailScreen() {
         progressDone={progress.done}
         progressTotal={progress.total}
         scheduleSource={addSubtaskSource}
+      />
+
+      <AiTaskBreakdownSheet
+        visible={aiBreakdownOpen}
+        onClose={() => setAiBreakdownOpen(false)}
+        title={title}
+        note={taskNote}
+        dueYmd={dueDate ? dueDate.slice(0, 10) : null}
+        projectName={projectName || null}
+        existingSubtaskTitles={(tree?.children ?? []).map((c) => c.title).filter(Boolean)}
+        mode={isLongTermTask ? 'both' : 'subtasks'}
+        onConfirm={applyAiBreakdown}
+      />
+
+      <AiTaskCommentSheet
+        visible={aiCommentOpen}
+        onClose={() => setAiCommentOpen(false)}
+        title={title}
+        note={taskNote}
+        status={status}
+        subtaskDoneRatio={progress.total > 0 ? progress.ratio : null}
+        overdueDays={overdueDays}
+        onAppend={appendAiCommentToNote}
       />
 
       <AcceptanceReviewModal

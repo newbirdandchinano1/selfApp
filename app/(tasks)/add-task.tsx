@@ -15,6 +15,7 @@ import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
+import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
@@ -26,10 +27,20 @@ import { setAddTaskResult } from '@/lib/add-task-bridge';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
-import { toast, Alert } from '@/lib/app-feedback';
+import { toast, Alert, toUserMessage } from '@/lib/app-feedback';
+import type { ScheduleMeta } from '@/lib/schedule/meta';
+import { parseTaskOneLiner } from '@/lib/zhipu-image-parse';
 import { formatWriteError } from '@/lib/format-write-error';
-import { clearProjectFrogFields } from '@/lib/frog-assignment';
+import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
+import { applyAssignFromDueToExtra } from '@/lib/standalone-todo-assign-sync';
+import { assignFrogForDay } from '@/lib/frog-candidates-api';
+import {
+  clearSubjectAssignDay,
+  placeFrogOnScheduleAt,
+} from '@/lib/schedule-service';
+import { parseScheduleTimeHm } from '@/lib/schedule/meta';
+import { getWeekStartMondayYmd, weekdayFromYmd } from '@/lib/schedule/week';
 import {
   acceptanceChecklistToLines,
   createEmptyAcceptanceItem,
@@ -52,6 +63,13 @@ import {
   normalizeRewardPoints,
   parseRewardPointsFromExtraData,
 } from '@/lib/reward-points';
+import {
+  mergeProgressCountersIntoExtraDataString,
+  parseProgressCounters,
+  stampProgressCountersSinceYmd,
+  validateProgressCountersForSave,
+  type ProgressCounter,
+} from '@/lib/repositories/progress/progress-counters';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import {
@@ -95,6 +113,7 @@ import React from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -177,6 +196,10 @@ export default function AddTaskScreen() {
     /** 复盘建议等入口预填 */
     title?: string;
     note?: string;
+    /** 复盘 AI 增强：priority / due_ymd / schedule JSON */
+    priority?: string;
+    due_ymd?: string;
+    schedule?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
@@ -192,7 +215,12 @@ export default function AddTaskScreen() {
   const [note, setNote] = React.useState(() => firstRouteParam(params.note).trim());
   const [noteImageUris, setNoteImageUris] = React.useState<string[]>([]);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
-  const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
+  const [progressCounters, setProgressCounters] = React.useState<ProgressCounter[]>([]);
+  const [priority, setPriority] = React.useState<TaskPriorityKey>(() => {
+    const raw = Number(firstRouteParam(params.priority));
+    if (Number.isFinite(raw) && raw >= 1 && raw <= 4) return taskPriorityToKey(raw);
+    return 'not-urgent-not-important';
+  });
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [projectName, setProjectName] = React.useState<string | null>(null);
@@ -202,6 +230,9 @@ export default function AddTaskScreen() {
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<TagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(false);
+  const [aiFillOpen, setAiFillOpen] = React.useState(false);
+  const [aiFillText, setAiFillText] = React.useState('');
+  const [aiFillBusy, setAiFillBusy] = React.useState(false);
   const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
   const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const editTaskStatusRef = React.useRef<string>('todo');
@@ -259,6 +290,34 @@ export default function AddTaskScreen() {
 
   React.useEffect(() => {
     if (defaultScheduleApplied.current || scheduleMeta) return;
+    // 复盘 / 深链：schedule JSON 或 due_ymd
+    const scheduleRaw = firstRouteParam(params.schedule);
+    if (scheduleRaw) {
+      try {
+        const parsed = JSON.parse(scheduleRaw) as ScheduleMeta;
+        if (parsed && typeof parsed === 'object') {
+          defaultScheduleApplied.current = true;
+          applySchedule(parsed);
+          setStandaloneIntent('active');
+          return;
+        }
+      } catch {
+        // fall through
+      }
+    }
+    const dueYmd = firstRouteParam(params.due_ymd);
+    if (dueYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueYmd)) {
+      defaultScheduleApplied.current = true;
+      applySchedule({
+        mode: 'date',
+        allDay: true,
+        date: `${dueYmd}T12:00:00`,
+        reminderOption: '不提前',
+        repeatOption: '不重复',
+      });
+      setStandaloneIntent('active');
+      return;
+    }
     const inherited = resolveInheritedDefaultSchedule(
       parseDefaultScheduleParam(typeof params.defaultSchedule === 'string' ? params.defaultSchedule : undefined),
       dateLimit,
@@ -267,7 +326,15 @@ export default function AddTaskScreen() {
     defaultScheduleApplied.current = true;
     applySchedule(inherited);
     if (lockScheduleFromParam) setInheritsProjectSchedule(true);
-  }, [applySchedule, dateLimit, lockScheduleFromParam, params.defaultSchedule, scheduleMeta]);
+  }, [
+    applySchedule,
+    dateLimit,
+    lockScheduleFromParam,
+    params.defaultSchedule,
+    params.due_ymd,
+    params.schedule,
+    scheduleMeta,
+  ]);
 
   React.useEffect(() => {
     if (!quickProjectId || defaultScheduleApplied.current || scheduleMeta) return;
@@ -354,6 +421,7 @@ export default function AddTaskScreen() {
     setNoteImageUris(loadedNoteImages);
     setAcceptanceItems([createEmptyAcceptanceItem()]);
     setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
+    setProgressCounters(parseProgressCounters(task.extra_data));
     setPriority(taskPriorityToKey(task.priority ?? 0));
     editTaskStatusRef.current = task.status;
     const shelved = task.status === 'shelved';
@@ -454,20 +522,47 @@ export default function AddTaskScreen() {
       return;
     }
     const trimmedTitle = titleCheck.title;
+    const countersValidation = validateProgressCountersForSave(progressCounters);
+    if (!countersValidation.ok) {
+      toast.warn(countersValidation.message);
+      return;
+    }
+    const logicalTodayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+    const stampedCounters = stampProgressCountersSinceYmd(
+      countersValidation.counters,
+      logicalTodayYmd,
+      progressCounters,
+    );
     if (isStandalone) {
       try {
         setIsSubmitting(true);
         const shelved = standaloneIntent === 'shelved';
         const dueDate = shelved ? null : resolveDueDate();
+        const dueYmd = dueDate?.trim().slice(0, 10) || null;
+        const dueYmdValid = dueYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueYmd) ? dueYmd : null;
+
+        let previousFrogDates: string[] = [];
+        if (isEditStandalone && editTaskId) {
+          try {
+            const prev = await ensureLocalRowForWrite<TaskRow>('tasks', editTaskId);
+            if (prev) previousFrogDates = getFrogAssignedDates(prev.extra_data);
+          } catch {
+            /* ignore */
+          }
+        }
+
         const extraPayload = mergeIconIntoExtraData(
           mergeRewardPointsIntoExtraData(
-            shelved
-              ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
-              : JSON.stringify({
-                  reminder: reminderText || '',
-                  repeat: repeatText || '',
-                  schedule: scheduleMeta,
-                }),
+            mergeProgressCountersIntoExtraDataString(
+              shelved
+                ? JSON.stringify({ reminder: '', repeat: '', schedule: null })
+                : JSON.stringify({
+                    reminder: reminderText || '',
+                    repeat: repeatText || '',
+                    schedule: scheduleMeta,
+                  }),
+              stampedCounters,
+            ) ?? '{}',
             normalizeRewardPoints(rewardPointsText),
           ),
           entityIcon,
@@ -475,6 +570,7 @@ export default function AddTaskScreen() {
         );
         const trimmedNote = note.trim() || null;
         let nextNoteImages = [...noteImageUris];
+        let savedTaskId = editTaskId;
         if (isEditStandalone) {
           const previousNoteImages = loadedNoteImageUrisRef.current;
           if (nextNoteImages.length > 0) {
@@ -485,6 +581,7 @@ export default function AddTaskScreen() {
           }
           let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
           nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
+          nextExtra = applyAssignFromDueToExtra(nextExtra, shelved ? null : dueYmdValid) ?? nextExtra;
           await updateTask(editTaskId, {
             title: trimmedTitle,
             description: null,
@@ -501,6 +598,7 @@ export default function AddTaskScreen() {
           await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
           const id = makeTimestampEntityId('tsk_', 8);
+          savedTaskId = id;
           if (nextNoteImages.length > 0) {
             nextNoteImages = await ensureNoteImagesRemote({
               localUris: nextNoteImages,
@@ -509,6 +607,7 @@ export default function AddTaskScreen() {
           }
           let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
           nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
+          nextExtra = applyAssignFromDueToExtra(nextExtra, shelved ? null : dueYmdValid) ?? nextExtra;
           await createTask({
             id,
             project_id: null,
@@ -527,6 +626,79 @@ export default function AddTaskScreen() {
           }
           await setTaskTagIds(id, selectedTagIds);
         }
+
+        // 日期 ↔ 指派：先落到新日，再清旧日（避免 unassign 旧日时把 due/frog 清空）
+        const logicalToday = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+        if (!shelved && dueYmdValid && savedTaskId) {
+          try {
+            const startHm = scheduleMeta?.hasExactTime
+              ? parseScheduleTimeHm(scheduleMeta.startTime)
+              : null;
+            const endHm = scheduleMeta?.hasExactTime
+              ? parseScheduleTimeHm(scheduleMeta.endTime)
+              : null;
+            if (startHm) {
+              const startMinutes = startHm.hour * 60 + startHm.minute;
+              const endMinutes = endHm
+                ? endHm.hour * 60 + endHm.minute
+                : startMinutes + 60;
+              await placeFrogOnScheduleAt({
+                weekStartYmd: getWeekStartMondayYmd(dueYmdValid),
+                weekday: weekdayFromYmd(dueYmdValid),
+                startMinutes,
+                endMinutes: endMinutes > startMinutes ? endMinutes : startMinutes + 60,
+                allDay: false,
+                subjectKind: 'task',
+                subjectId: savedTaskId,
+                logicalTodayYmd: logicalToday,
+              });
+            } else if (scheduleMeta?.allDay || scheduleMeta?.date || scheduleMeta?.mode === 'date') {
+              await placeFrogOnScheduleAt({
+                weekStartYmd: getWeekStartMondayYmd(dueYmdValid),
+                weekday: weekdayFromYmd(dueYmdValid),
+                startMinutes: 0,
+                endMinutes: 60,
+                allDay: true,
+                subjectKind: 'task',
+                subjectId: savedTaskId,
+                logicalTodayYmd: logicalToday,
+              });
+            } else {
+              await assignFrogForDay({
+                kind: 'task',
+                id: savedTaskId,
+                assignYmd: dueYmdValid,
+                scheduleTime: { allDay: true },
+              });
+            }
+          } catch (placeErr) {
+            console.warn('保存后入格/指派失败（本地 frog 字段已写入）', placeErr);
+            try {
+              await assignFrogForDay({
+                kind: 'task',
+                id: savedTaskId,
+                assignYmd: dueYmdValid,
+                scheduleTime: { allDay: true },
+              });
+            } catch (assignErr) {
+              console.warn('保存后指派回退失败', assignErr);
+            }
+          }
+        }
+        for (const oldYmd of previousFrogDates) {
+          if (oldYmd === dueYmdValid) continue;
+          try {
+            await clearSubjectAssignDay({
+              subjectKind: 'task',
+              subjectId: savedTaskId,
+              assignYmd: oldYmd,
+              logicalTodayYmd: logicalToday,
+            });
+          } catch (clearErr) {
+            console.warn('清除旧指派日失败', oldYmd, clearErr);
+          }
+        }
+
         try {
           await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
           // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回列表
@@ -564,11 +736,14 @@ export default function AddTaskScreen() {
         let extraPayload = mergeIconIntoExtraData(
           mergeRewardPointsIntoExtraData(
             mergeLongTermTaskIntoExtraData(
-              JSON.stringify({
-                reminder: reminderText || '',
-                repeat: repeatText || '',
-                schedule: scheduleMeta,
-              }),
+              mergeProgressCountersIntoExtraDataString(
+                JSON.stringify({
+                  reminder: reminderText || '',
+                  repeat: repeatText || '',
+                  schedule: scheduleMeta,
+                }),
+                stampedCounters,
+              ) ?? '{}',
               isLongTermTask,
             ),
             normalizeRewardPoints(rewardPointsText),
@@ -661,6 +836,58 @@ export default function AddTaskScreen() {
   const foldCardBg = isDark ? colors.surfaceMuted : 'rgba(255,252,245,0.86)';
   const foldCardBorder = tf.line2;
   const rewardN = Math.round(Number(rewardPointsText) || 0);
+
+  const handleAiFillStandalone = React.useCallback(async () => {
+    const text = aiFillText.trim();
+    if (!text) {
+      toast.info('请先输入一句话');
+      return;
+    }
+    setAiFillBusy(true);
+    try {
+      const r = await parseTaskOneLiner({
+        text,
+        todayYmd: getLogicalLocalYmd(new Date(), getDayBoundarySync()),
+        tagNames: allTags.map((t) => t.name).filter(Boolean).slice(0, 40),
+      });
+      if (!r.ok) {
+        toast.error(r.error || 'AI 解析失败');
+        return;
+      }
+      const d = r.data;
+      setTitle(clampTitle(d.title, titleMaxLength));
+      if (d.note) setNote(d.note);
+      if (d.priority > 0) setPriority(taskPriorityToKey(d.priority));
+      if (d.reward_points != null) setRewardPointsText(String(d.reward_points));
+      if (d.schedule) {
+        applySchedule(d.schedule as ScheduleMeta);
+        setStandaloneIntent('active');
+      } else if (d.due_ymd) {
+        applySchedule({
+          mode: 'date',
+          allDay: true,
+          date: `${d.due_ymd}T12:00:00`,
+          reminderOption: '不提前',
+          repeatOption: '不重复',
+        });
+        setStandaloneIntent('active');
+      }
+      if (d.tag_hints.length && allTags.length) {
+        const lowerHints = new Set(d.tag_hints.map((x) => x.toLowerCase()));
+        const matched = allTags
+          .filter((t) => lowerHints.has(t.name.trim().toLowerCase()))
+          .map((t) => t.id);
+        if (matched.length) setSelectedTagIds(matched);
+      }
+      setAiFillOpen(false);
+      setAiFillText('');
+      toast.success('已填入，请确认后保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 解析失败'));
+    } finally {
+      setAiFillBusy(false);
+    }
+  }, [aiFillText, allTags, applySchedule, titleMaxLength]);
 
   const beginPlaceStandaloneOnSchedule = React.useCallback(() => {
     if (!isEditStandalone || !editTaskId || formBusy) return;
@@ -847,6 +1074,25 @@ export default function AddTaskScreen() {
                         isDark={isDark}
                       />
                     </View>
+                    {!isEditStandalone ? (
+                      <Pressable
+                        onPress={() => setAiFillOpen(true)}
+                        disabled={formBusy || aiFillBusy}
+                        accessibilityRole="button"
+                        accessibilityLabel="AI 填入"
+                        style={({ pressed }) => [
+                          styles.aiFillBtn,
+                          {
+                            borderColor: tf.line2,
+                            backgroundColor: isDark ? colors.input : 'rgba(255,255,255,0.55)',
+                            opacity: pressed || formBusy || aiFillBusy ? 0.7 : 1,
+                          },
+                        ]}>
+                        <MaterialIcons name="auto-awesome" size={16} color={tf.frog} />
+                        <Text style={[styles.aiFillBtnText, { color: tf.frog }]}>AI 填入</Text>
+                        <Text style={[styles.aiFillBtnHint, { color: tf.faint }]}>一句话建待办</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 </FoldRiseIn>
 
@@ -904,6 +1150,32 @@ export default function AddTaskScreen() {
                         onChange={setRewardPointsText}
                         monoFontFamily={fonts.mono}
                       />
+                    </View>
+                    <View
+                      style={[
+                        styles.frow,
+                        {
+                          borderTopWidth: StyleSheet.hairlineWidth,
+                          borderTopColor: 'rgba(232,224,210,0.52)',
+                          alignItems: 'flex-start',
+                          paddingVertical: 10,
+                        },
+                      ]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>计数进度</Text>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <ProgressCountersField
+                          counters={progressCounters}
+                          disabled={formBusy}
+                          onChange={setProgressCounters}
+                          anchorYmd={getLogicalLocalYmd(new Date(), getDayBoundarySync())}
+                          textColor={tf.ink2}
+                          outline={tf.muted}
+                          placeholderColor={tf.faint}
+                          primary={tf.frog}
+                          surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                          surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                        />
+                      </View>
                     </View>
                     <View
                       style={[
@@ -1035,6 +1307,68 @@ export default function AddTaskScreen() {
             </View>
           </View>
         </KeyboardAvoidingView>
+
+        <Modal
+          visible={aiFillOpen}
+          animationType="fade"
+          transparent
+          onRequestClose={() => !aiFillBusy && setAiFillOpen(false)}>
+          <View style={styles.aiModalBackdrop}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => !aiFillBusy && setAiFillOpen(false)}
+            />
+            <View style={[styles.aiModalCard, { backgroundColor: isDark ? colors.surface : '#FFFCF5' }]}>
+              <Text style={[styles.aiModalTitle, { color: tf.ink, fontFamily: fonts.serif }]}>
+                AI 填入待办
+              </Text>
+              <Text style={[styles.aiModalSub, { color: tf.faint }]}>
+                例如：周五前交季度总结，重要紧急，提前一天提醒
+              </Text>
+              <TextInput
+                style={[
+                  styles.aiModalInput,
+                  {
+                    color: tf.ink,
+                    borderColor: tf.line2,
+                    backgroundColor: isDark ? colors.input : '#FFF',
+                  },
+                ]}
+                value={aiFillText}
+                onChangeText={setAiFillText}
+                placeholder="一句话描述待办…"
+                placeholderTextColor={tf.faint}
+                multiline
+                editable={!aiFillBusy}
+                autoFocus
+              />
+              <View style={styles.aiModalActions}>
+                <Pressable
+                  disabled={aiFillBusy}
+                  onPress={() => {
+                    setAiFillOpen(false);
+                    setAiFillText('');
+                  }}
+                  style={styles.aiModalGhost}>
+                  <Text style={{ color: tf.ink2, fontWeight: '700' }}>取消</Text>
+                </Pressable>
+                <Pressable
+                  disabled={aiFillBusy}
+                  onPress={() => void handleAiFillStandalone()}
+                  style={[
+                    styles.aiModalPrimary,
+                    { backgroundColor: tf.pond, opacity: aiFillBusy ? 0.65 : 1 },
+                  ]}>
+                  {aiFillBusy ? (
+                    <ActivityIndicator color={tf.onPond} />
+                  ) : (
+                    <Text style={{ color: tf.onPond, fontWeight: '800' }}>AI 填入</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -1290,6 +1624,32 @@ export default function AddTaskScreen() {
                   monoFontFamily={fonts.mono}
                 />
               </View>
+              <View
+                style={[
+                  styles.frow,
+                  {
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                    borderTopColor: 'rgba(232,224,210,0.52)',
+                    alignItems: 'flex-start',
+                    paddingVertical: 10,
+                  },
+                ]}>
+                <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>计数进度</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <ProgressCountersField
+                    counters={progressCounters}
+                    disabled={formBusy}
+                    onChange={setProgressCounters}
+                    anchorYmd={getLogicalLocalYmd(new Date(), getDayBoundarySync())}
+                    textColor={tf.ink2}
+                    outline={tf.muted}
+                    placeholderColor={tf.faint}
+                    primary={tf.frog}
+                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                    surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                  />
+                </View>
+              </View>
             </View>
           </FoldRiseIn>
 
@@ -1432,6 +1792,55 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 6,
+  },
+  aiFillBtn: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  aiFillBtnText: { fontSize: 13, fontWeight: '800' },
+  aiFillBtnHint: { marginLeft: 'auto', fontSize: 11, fontWeight: '600' },
+  aiModalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 22,
+    backgroundColor: 'rgba(20,28,22,0.42)',
+  },
+  aiModalCard: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+  },
+  aiModalTitle: { fontSize: 18, fontWeight: '800' },
+  aiModalSub: { fontSize: 12, lineHeight: 17 },
+  aiModalInput: {
+    minHeight: 88,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    textAlignVertical: 'top',
+  },
+  aiModalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  aiModalGhost: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  aiModalPrimary: {
+    flex: 1.2,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
   },
   deleteBtn: {
     width: '100%',

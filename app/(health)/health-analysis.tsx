@@ -6,6 +6,10 @@ import {
   useHealthMotionGate,
 } from '@/components/health/health-motion';
 import { HealthIntakeTrendSection } from '@/components/health/health-intake-trend-section';
+import {
+  WeightCommentSheet,
+  type WeightCommentContext,
+} from '@/components/health/weight-comment-sheet';
 import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -15,9 +19,14 @@ import { addDaysToYmd, parseYmd } from '@/lib/date';
 import { getResolvedGlobalIntakeTargets, loadPersistedIntakeTargets } from '@/lib/global-intake-targets';
 import { getHealthRecordsLast7Days } from '@/lib/repositories/health/health';
 import type { HealthRecordRow } from '@/lib/repositories/health/health.types';
+import { listWeightLogsLastNDays } from '@/lib/repositories/health/weight-log';
 import { getDefaultUser } from '@/lib/repositories/users/user';
 import type { UserRow } from '@/lib/repositories/users/user.types';
 import { getUserDayScheduleKind } from '@/lib/user-workout-schedule';
+import {
+  analyzeFoodWeeklyInsights,
+  type FoodWeeklyInsightsJson,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
@@ -309,6 +318,79 @@ function buildSuggestion(
   return `下周建议：${tips.slice(0, 3).join('，')}。`;
 }
 
+function metricIconForHint(
+  hint: string | undefined,
+  nutrients: { hydration: string; protein: string; carbohydrate: string; calories: string },
+): Pick<Insight, 'icon' | 'tint' | 'tintBg'> {
+  const key = (hint || '').toLowerCase();
+  if (key === 'protein') {
+    return { icon: 'restaurant', tint: nutrients.protein, tintBg: `${nutrients.protein}22` };
+  }
+  if (key === 'carbohydrate' || key === 'carb') {
+    return { icon: 'grain', tint: nutrients.carbohydrate, tintBg: `${nutrients.carbohydrate}22` };
+  }
+  if (key === 'calories' || key === 'calorie') {
+    return {
+      icon: 'local-fire-department',
+      tint: nutrients.calories,
+      tintBg: `${nutrients.calories}22`,
+    };
+  }
+  return { icon: 'water-drop', tint: nutrients.hydration, tintBg: `${nutrients.hydration}22` };
+}
+
+function mapAiInsightsToUi(
+  data: FoodWeeklyInsightsJson,
+  nutrients: { hydration: string; protein: string; carbohydrate: string; calories: string },
+): Insight[] {
+  return data.insights.map((item, idx) => {
+    const style = metricIconForHint(item.metric_hint, nutrients);
+    return {
+      key: `ai-${idx}-${item.title}`,
+      title: item.title,
+      body: item.body,
+      ...style,
+    };
+  });
+}
+
+function buildWeeklyInsightsContextBlock(params: {
+  weekStartYmd: string;
+  weekEndYmd: string;
+  weekYmds: string[];
+  dayMap: Map<string, DayTotals>;
+  targets: ReturnType<typeof getResolvedGlobalIntakeTargets>;
+  user: UserRow | null;
+  percents: Record<MetricKey, number>;
+  score: number;
+  weightLines: string[];
+}): string {
+  const lines: string[] = [];
+  lines.push(`分析周期：${params.weekStartYmd} ~ ${params.weekEndYmd}`);
+  lines.push(
+    `日目标：水分 ${params.targets.hydrationMl}ml / 蛋白 ${params.targets.proteinG}g / 碳水 ${params.targets.carbohydrateG}g / 热量 ${params.targets.caloriesKcal}kcal`,
+  );
+  lines.push(
+    `本周平均达成：水分 ${params.percents.hydration}% / 蛋白 ${params.percents.protein}% / 碳水 ${params.percents.carbohydrate}% / 热量 ${params.percents.calories}%；综合约 ${params.score}`,
+  );
+  for (const ymd of params.weekYmds) {
+    const day = params.dayMap.get(ymd);
+    const kind = params.user ? getUserDayScheduleKind(params.user, ymd) : 'unknown';
+    if (!day) {
+      lines.push(`${ymd}（${kind}）：无记录`);
+      continue;
+    }
+    lines.push(
+      `${ymd}（${kind}）：h=${Math.round(day.hydration)} p=${Math.round(day.protein)} c=${Math.round(day.carbohydrate)} kcal=${Math.round(day.calories)}`,
+    );
+  }
+  if (params.weightLines.length) {
+    lines.push('近两周体重（本地）：');
+    lines.push(...params.weightLines);
+  }
+  return lines.join('\n');
+}
+
 function ScoreRing({
   score,
   color,
@@ -395,7 +477,14 @@ export default function HealthAnalysisScreen() {
   const [prevRows, setPrevRows] = React.useState<HealthRecordRow[]>([]);
   const [showTrend, setShowTrend] = React.useState(false);
   const [contentReady, setContentReady] = React.useState(false);
+  const [aiWeekly, setAiWeekly] = React.useState<FoodWeeklyInsightsJson | null>(null);
+  const [aiWeeklyLoading, setAiWeeklyLoading] = React.useState(false);
+  const [aiWeeklySource, setAiWeeklySource] = React.useState<'ai' | 'rule'>('rule');
+  const [weightCommentOpen, setWeightCommentOpen] = React.useState(false);
+  const [weightCommentCtx, setWeightCommentCtx] = React.useState<WeightCommentContext | null>(null);
+  const [weightCommentBusy, setWeightCommentBusy] = React.useState(false);
   const enterTokenRef = React.useRef(`${weekOffset}`);
+  const aiFetchTokenRef = React.useRef(0);
 
   const weekEndYmd = React.useMemo(
     () => addDaysToYmd(logicalTodayYmd, weekOffset * 7),
@@ -510,7 +599,7 @@ export default function HealthAnalysisScreen() {
         delta: deltas.calories,
       },
     ];
-    const insights = buildInsights(dayMap, weekYmds, targets, user, nutrients);
+    const ruleInsights = buildInsights(dayMap, weekYmds, targets, user, nutrients);
 
     let workoutPct = 0;
     let workoutDays = 0;
@@ -538,8 +627,11 @@ export default function HealthAnalysisScreen() {
       headline: buildHeadline(score, deltas, prevScore),
       body: buildSummaryBody(percents, deltas),
       metrics,
-      insights,
-      suggestion: buildSuggestion(percents, deltas, insights),
+      ruleInsights,
+      suggestion: buildSuggestion(percents, deltas, ruleInsights),
+      percents,
+      dayMap,
+      targets,
       schedule:
         workoutDays + restDays > 0
           ? {
@@ -556,12 +648,130 @@ export default function HealthAnalysisScreen() {
     };
   }, [rows, prevRows, weekYmds, prevYmds, user, nutrients]);
 
+  React.useEffect(() => {
+    if (loading) return;
+    const token = ++aiFetchTokenRef.current;
+    setAiWeekly(null);
+    setAiWeeklySource('rule');
+    const hasAnyDay = weekYmds.some((ymd) => {
+      const day = analysis.dayMap.get(ymd);
+      return Boolean(day && (day.hydration > 0 || day.protein > 0 || day.carbohydrate > 0 || day.calories > 0));
+    });
+    if (!hasAnyDay) return;
+
+    let cancelled = false;
+    setAiWeeklyLoading(true);
+    void (async () => {
+      try {
+        const weights = await listWeightLogsLastNDays(14, weekEndYmd).catch(() => []);
+        const weightLines = weights
+          .slice(-10)
+          .map((w) => `${w.recorded_ymd}: ${Number(w.weight_kg).toFixed(1)}kg`);
+        const contextBlock = buildWeeklyInsightsContextBlock({
+          weekStartYmd,
+          weekEndYmd,
+          weekYmds,
+          dayMap: analysis.dayMap,
+          targets: analysis.targets,
+          user,
+          percents: analysis.percents,
+          score: analysis.score,
+          weightLines,
+        });
+        const r = await analyzeFoodWeeklyInsights({
+          contextBlock,
+          ruleInsights: analysis.ruleInsights.map((i) => ({
+            title: i.title,
+            body: i.body,
+            metric_hint:
+              i.key === 'hydration-window'
+                ? 'hydration'
+                : i.key === 'protein-schedule'
+                  ? 'protein'
+                  : i.key === 'carb-timing'
+                    ? 'carbohydrate'
+                    : undefined,
+          })),
+        });
+        if (cancelled || token !== aiFetchTokenRef.current) return;
+        if (r.ok && (r.data.insights.length > 0 || r.data.suggestion.trim())) {
+          setAiWeekly(r.data);
+          setAiWeeklySource('ai');
+        }
+      } finally {
+        if (!cancelled && token === aiFetchTokenRef.current) {
+          setAiWeeklyLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loading,
+    weekStartYmd,
+    weekEndYmd,
+    weekYmds,
+    user,
+    analysis.dayMap,
+    analysis.targets,
+    analysis.percents,
+    analysis.score,
+    analysis.ruleInsights,
+  ]);
+
+  const displayInsights =
+    aiWeeklySource === 'ai' && aiWeekly?.insights?.length
+      ? mapAiInsightsToUi(aiWeekly, nutrients)
+      : analysis.ruleInsights;
+  const displaySuggestion =
+    aiWeeklySource === 'ai' && aiWeekly?.suggestion?.trim()
+      ? aiWeekly.suggestion.trim().startsWith('下周')
+        ? aiWeekly.suggestion.trim()
+        : `下周建议：${aiWeekly.suggestion.trim()}`
+      : analysis.suggestion;
+  const displayScore =
+    aiWeeklySource === 'ai' && typeof aiWeekly?.score === 'number' ? aiWeekly.score : analysis.score;
+
   const rangeLabel = formatRangeLabel(weekStartYmd, weekEndYmd);
   const isThisWeek = weekOffset === 0;
 
   const onApplySuggestion = () => {
     toast.success('已记下下周建议，可在首页目标与提醒里微调');
   };
+
+  const openWeightComment = React.useCallback(async () => {
+    if (weightCommentBusy) return;
+    setWeightCommentBusy(true);
+    try {
+      const weights = await listWeightLogsLastNDays(30, weekEndYmd).catch(() => []);
+      const weightLines = weights.map(
+        (w) => `${w.recorded_ymd}: ${Number(w.weight_kg).toFixed(1)}kg`,
+      );
+      let calorieSum = 0;
+      let calorieDays = 0;
+      for (const ymd of weekYmds) {
+        const day = analysis.dayMap.get(ymd);
+        if (!day) continue;
+        if (day.calories > 0 || day.protein > 0 || day.carbohydrate > 0 || day.hydration > 0) {
+          calorieSum += day.calories;
+          calorieDays += 1;
+        }
+      }
+      const calorieAvgLine =
+        calorieDays > 0
+          ? `近周有记录日热量日均约 ${Math.round(calorieSum / calorieDays)}kcal（${calorieDays} 天）`
+          : '近周暂无热量记录';
+      setWeightCommentCtx({
+        weightLines,
+        goalLabel: user?.goal?.trim() || '未设置',
+        calorieAvgLine,
+      });
+      setWeightCommentOpen(true);
+    } finally {
+      setWeightCommentBusy(false);
+    }
+  }, [analysis.dayMap, user?.goal, weekEndYmd, weekYmds, weightCommentBusy]);
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: hh.paper }]} edges={['left', 'right']}>
@@ -595,7 +805,7 @@ export default function HealthAnalysisScreen() {
           <HealthRiseIn animate={analysisEnterOn} duration={420} fromY={12}>
             <View style={[styles.summaryCard, { backgroundColor: hh.pine, shadowColor: hh.shadow }]}>
               <ScoreRing
-                score={analysis.score}
+                score={displayScore}
                 color={hh.sage}
                 track="rgba(247,245,236,0.18)"
                 textColor={hh.onPine}
@@ -657,17 +867,25 @@ export default function HealthAnalysisScreen() {
 
           <View style={styles.sectionHead}>
             <Text style={[styles.sectionTitle, { color: hh.ink }]}>本周洞察</Text>
-            <Text style={[styles.sectionHint, { color: hh.faint }]}>{analysis.insights.length} 条</Text>
+            <Text style={[styles.sectionHint, { color: hh.faint }]}>
+              {aiWeeklyLoading
+                ? 'AI 生成中…'
+                : aiWeeklySource === 'ai'
+                  ? `AI · ${displayInsights.length} 条`
+                  : `${displayInsights.length} 条`}
+            </Text>
           </View>
-          {analysis.insights.length === 0 ? (
+          {displayInsights.length === 0 ? (
             <View style={[styles.emptyInsight, { backgroundColor: hh.cardMuted, borderColor: hh.line }]}>
               <Text style={[styles.emptyInsightText, { color: hh.muted }]}>
-                记录再多几天，这里会生成时段与训练日洞察
+                {aiWeeklyLoading
+                  ? '正在结合本周摄入生成洞察…'
+                  : '记录再多几天，这里会生成时段与训练日洞察'}
               </Text>
             </View>
           ) : (
             <View style={styles.insightList}>
-              {analysis.insights.map((item, insightIndex) => (
+              {displayInsights.map((item, insightIndex) => (
                 <HealthRiseIn
                   key={item.key}
                   animate={analysisEnterOn}
@@ -748,7 +966,7 @@ export default function HealthAnalysisScreen() {
             </>
           ) : null}
 
-          <Text style={[styles.suggestion, { color: hh.inkSoft }]}>{analysis.suggestion}</Text>
+          <Text style={[styles.suggestion, { color: hh.inkSoft }]}>{displaySuggestion}</Text>
           <Pressable
             onPress={onApplySuggestion}
             style={({ pressed }) => [
@@ -758,6 +976,29 @@ export default function HealthAnalysisScreen() {
             accessibilityRole="button"
             accessibilityLabel="把建议加入下周">
             <Text style={[styles.primaryBtnText, { color: hh.onPine }]}>把建议加入下周</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => void openWeightComment()}
+            disabled={weightCommentBusy}
+            style={({ pressed }) => [
+              styles.weightCommentBtn,
+              {
+                backgroundColor: hh.card,
+                borderColor: hh.line,
+                opacity: weightCommentBusy || pressed ? 0.75 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="查看体重趋势短评">
+            <MaterialIcons name="monitor-weight" size={18} color={hh.pine} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[styles.weightCommentTitle, { color: hh.ink }]}>体重趋势短评</Text>
+              <Text style={[styles.weightCommentSub, { color: hh.muted }]}>
+                本地体重 + 近周热量 · 非医疗建议
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={20} color={hh.faint} />
           </Pressable>
 
           <Pressable
@@ -784,6 +1025,12 @@ export default function HealthAnalysisScreen() {
           ) : null}
         </ScrollView>
       )}
+
+      <WeightCommentSheet
+        visible={weightCommentOpen}
+        onClose={() => setWeightCommentOpen(false)}
+        context={weightCommentCtx}
+      />
     </SafeAreaView>
   );
 }
@@ -920,6 +1167,18 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   primaryBtnText: { fontSize: 16, fontWeight: '800' },
+  weightCommentBtn: {
+    marginTop: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  weightCommentTitle: { fontSize: 14, fontWeight: '800' },
+  weightCommentSub: { marginTop: 2, fontSize: 11, fontWeight: '500' },
   trendToggle: {
     marginTop: 18,
     flexDirection: 'row',

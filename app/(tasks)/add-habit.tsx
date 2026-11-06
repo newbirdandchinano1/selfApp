@@ -5,7 +5,9 @@
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AppButton, AppCard } from '@/components/ui';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
+import { AiParseHabitSheet } from '@/components/tasks/ai-parse-habit-sheet';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
+import type { TaskParseHabitJson } from '@/lib/ai-api-client';
 import {
   contextTone,
   formatSignedPoints,
@@ -269,6 +271,7 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
+  const [aiHabitOpen, setAiHabitOpen] = React.useState(false);
   const [reminderIntensity, setReminderIntensity] = React.useState<'soft' | 'normal' | 'strong'>(
     'normal',
   );
@@ -1157,7 +1160,17 @@ export default function AddHabitScreen() {
                     />
                     <HabitNameCaret visible={nameFocused} />
                   </View>
-                  <Text style={[styles.hbtMeta, { color: tf.faint }]}>衬线名称 · 最多 24 字</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                    <Text style={[styles.hbtMeta, { color: tf.faint, flex: 1 }]}>衬线名称 · 最多 24 字</Text>
+                    {!isEditMode ? (
+                      <Pressable
+                        onPress={() => setAiHabitOpen(true)}
+                        hitSlop={8}
+                        accessibilityLabel="AI 填入习惯">
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>AI 填入</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </View>
                 {!habitName.trim() ? (
                   <Text style={styles.requiredBadge}>必填</Text>
@@ -2465,6 +2478,37 @@ export default function AddHabitScreen() {
           </View>
         </View>
       </Modal>
+
+      <AiParseHabitSheet
+        visible={aiHabitOpen}
+        onClose={() => setAiHabitOpen(false)}
+        onApply={(draft: TaskParseHabitJson) => {
+          setHabitName(draft.name.slice(0, 24));
+          const kind = draft.habitKind;
+          if (kind === 'build' || kind === 'break' || kind === 'task') {
+            setHabitKind(kind);
+          }
+          if (draft.daily_goal != null && (kind === 'build' || kind === 'break' || !kind)) {
+            setDailyGoal(draft.daily_goal);
+          }
+          if (draft.reward_points != null) {
+            setRewardPointsText(String(draft.reward_points));
+          }
+          if (draft.reminder) {
+            if (draft.reminder.enabled) {
+              setReminderEnabled(true);
+              setReminderOpen(true);
+              setReminderTime(() => {
+                const d = new Date();
+                d.setHours(draft.reminder?.hour ?? 8, draft.reminder?.minute ?? 0, 0, 0);
+                return d;
+              });
+            } else {
+              setReminderEnabled(false);
+            }
+          }
+        }}
+      />
     </SafeAreaView>
   );
 }

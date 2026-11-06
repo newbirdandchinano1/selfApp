@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { AiParseFilterSheet } from '@/components/tasks/ai-parse-filter-sheet';
 import { MotionPressable } from '@/components/ui/motion-pressable';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
@@ -102,6 +103,7 @@ export function TaskListFilterBar({
   const { tf, isDark } = useTaskFoldTheme();
   const [expanded, setExpanded] = React.useState(false);
   const [searchFocused, setSearchFocused] = React.useState(false);
+  const [aiFilterOpen, setAiFilterOpen] = React.useState(false);
   const active = isTaskListFilterActive(value);
   const dimCount = countActiveTaskListFilterDims(value);
   const entityScope = value.entityScope ?? 'all';
@@ -172,6 +174,18 @@ export function TaskListFilterBar({
           ) : null}
         </View>
         <MotionPressable
+          onPress={() => setAiFilterOpen(true)}
+          accessibilityLabel="AI 筛选"
+          style={[
+            styles.iconBtn,
+            {
+              borderColor: tf.line,
+              backgroundColor: isDark ? tf.paper3 : 'rgba(255,252,245,0.72)',
+            },
+          ]}>
+          <MaterialIcons name="auto-awesome" size={16} color={tf.pond} />
+        </MotionPressable>
+        <MotionPressable
           onPress={() => setExpanded((v) => !v)}
           accessibilityLabel={expanded ? '收起筛选' : '展开筛选'}
           accessibilityState={{ expanded }}
@@ -201,6 +215,13 @@ export function TaskListFilterBar({
           ) : null}
         </MotionPressable>
       </View>
+
+      <AiParseFilterSheet
+        visible={aiFilterOpen}
+        onClose={() => setAiFilterOpen(false)}
+        tags={tags}
+        onApply={onChange}
+      />
 
       <ScrollView
         horizontal

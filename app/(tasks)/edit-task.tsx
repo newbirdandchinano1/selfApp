@@ -11,6 +11,7 @@ import {
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
+import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
 import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { NoteImageAttach } from '@/components/tasks/note-image-attach';
@@ -73,6 +74,14 @@ import {
   parseBoundHabitIdsFromExtraData,
   tryCompleteTaskByBoundHabits,
 } from '@/lib/repositories/tasks/task-habit-binding';
+import {
+  mergeProgressCountersIntoExtraDataString,
+  parseProgressCounters,
+  stampProgressCountersSinceYmd,
+  validateProgressCountersForSave,
+  type ProgressCounter,
+} from '@/lib/repositories/progress/progress-counters';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { insertTaskExecutionEvent } from '@/lib/repositories/tasks/task-execution-events';
 import {
   cascadeParentTaskStatusAfterChildChange,
@@ -276,6 +285,7 @@ type EditTaskFormSnapshot = {
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
+  progressCounters: ProgressCounter[];
   isLongTermTask: boolean;
   rewardPointsText: string;
 };
@@ -318,6 +328,7 @@ function buildFormSnapshotFromTask(task: TaskRow): EditTaskFormSnapshot {
     repeatText,
     scheduleMeta,
     boundHabitIds: parseBoundHabitIdsFromExtraData(task.extra_data),
+    progressCounters: parseProgressCounters(task.extra_data),
     isLongTermTask: isLongTerm,
     rewardPointsText: String(parseRewardPointsFromExtraData(task.extra_data)),
   };
@@ -336,6 +347,7 @@ function buildFormSnapshotFromFields(input: {
   repeatText: string;
   scheduleMeta: TaskScheduleMeta | null;
   boundHabitIds: string[];
+  progressCounters: ProgressCounter[];
   isLongTermTask: boolean;
   rewardPointsText: string;
 }): EditTaskFormSnapshot {
@@ -352,6 +364,7 @@ function buildFormSnapshotFromFields(input: {
     repeatText: input.repeatText,
     scheduleMeta: input.scheduleMeta,
     boundHabitIds: input.boundHabitIds,
+    progressCounters: input.progressCounters,
     isLongTermTask: input.isLongTermTask,
     rewardPointsText: String(normalizeRewardPoints(input.rewardPointsText)),
   };
@@ -414,6 +427,7 @@ export default function EditTaskScreen() {
   const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
   const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
+  const [progressCounters, setProgressCounters] = React.useState<ProgressCounter[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
@@ -442,6 +456,7 @@ export default function EditTaskScreen() {
   const scheduleMetaRef = React.useRef(scheduleMeta);
   const taskSnapshotRef = React.useRef(taskSnapshot);
   const boundHabitIdsRef = React.useRef(boundHabitIds);
+  const progressCountersRef = React.useRef(progressCounters);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
   const rewardPointsTextRef = React.useRef(rewardPointsText);
   const selectedTagIdsRef = React.useRef(selectedTagIds);
@@ -458,6 +473,7 @@ export default function EditTaskScreen() {
   scheduleMetaRef.current = scheduleMeta;
   taskSnapshotRef.current = taskSnapshot;
   boundHabitIdsRef.current = boundHabitIds;
+  progressCountersRef.current = progressCounters;
   isLongTermTaskRef.current = isLongTermTask;
   rewardPointsTextRef.current = rewardPointsText;
   selectedTagIdsRef.current = selectedTagIds;
@@ -521,6 +537,7 @@ export default function EditTaskScreen() {
       repeatText,
       scheduleMeta,
       boundHabitIds,
+      progressCounters,
       isLongTermTask,
       rewardPointsText,
     });
@@ -528,6 +545,7 @@ export default function EditTaskScreen() {
   }, [
     acceptanceCriteriaText,
     boundHabitIds,
+    progressCounters,
     deadlineText,
     entityIcon,
     isLongTermTask,
@@ -781,6 +799,7 @@ export default function EditTaskScreen() {
         setRepeatText(repeat);
       }
       setBoundHabitIds(parseBoundHabitIdsFromExtraData(task.extra_data));
+      setProgressCounters(parseProgressCounters(task.extra_data));
       setIsLongTermTask(longTerm);
       setRewardPointsText(String(parseRewardPointsFromExtraData(task.extra_data)));
 
@@ -1081,18 +1100,33 @@ export default function EditTaskScreen() {
       }
       delete parsedExtra.note_image_uri;
       delete parsedExtra.note_image_uris;
+      const countersValidation = validateProgressCountersForSave(progressCountersRef.current);
+      if (!countersValidation.ok) {
+        toast.warn(countersValidation.message);
+        setSaving(false);
+        return false;
+      }
+      const logicalTodayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+      const stampedCounters = stampProgressCountersSinceYmd(
+        countersValidation.counters,
+        logicalTodayYmd,
+        progressCountersRef.current,
+      );
       let mergedExtra = mergeIconIntoExtraData(
         mergeRewardPointsIntoExtraData(
           mergeLongTermTaskIntoExtraData(
-            mergeBoundHabitIdsIntoExtraData(
-              JSON.stringify({
-                ...parsedExtra,
-                reminder: reminderForExtra,
-                repeat: repeatForExtra,
-                schedule: meta,
-              }),
-              boundHabitIdsRef.current,
-            ),
+            mergeProgressCountersIntoExtraDataString(
+              mergeBoundHabitIdsIntoExtraData(
+                JSON.stringify({
+                  ...parsedExtra,
+                  reminder: reminderForExtra,
+                  repeat: repeatForExtra,
+                  schedule: meta,
+                }),
+                boundHabitIdsRef.current,
+              ),
+              stampedCounters,
+            ) ?? '{}',
             longTerm,
           ),
           normalizeRewardPoints(rewardPointsTextRef.current),
@@ -1765,6 +1799,23 @@ export default function EditTaskScreen() {
                         surfaceLow={isDark ? colors.input : '#F1EDE1'}
                         surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
                         isDark={isDark}
+                      />
+                    </View>
+                  </View>
+                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>计数进度</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <ProgressCountersField
+                        counters={progressCounters}
+                        disabled={loading}
+                        onChange={setProgressCounters}
+                        anchorYmd={getLogicalLocalYmd(new Date(), getDayBoundarySync())}
+                        textColor={tf.ink2}
+                        outline={tf.muted}
+                        placeholderColor={tf.faint}
+                        primary={tf.frog}
+                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
                       />
                     </View>
                   </View>

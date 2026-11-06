@@ -2,6 +2,7 @@
  * 道路导图子页：对齐 `我的道路-UI重构.html` route-road
  *（同步条、总方向 north-card、可折叠道路树、验收勾选）。
  */
+import { AiLifeRoadPlanSheet } from '@/components/profile/ai-life-road-plan-sheet';
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import {
   FoldRiseIn,
@@ -403,6 +404,8 @@ export default function LifeRoadScreen() {
   const [syncing, setSyncing] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [revealEmptySeason, setRevealEmptySeason] = useState(false);
+  const [planAiOpen, setPlanAiOpen] = useState(false);
+  const [existingNodeTitles, setExistingNodeTitles] = useState<string[]>([]);
   const seededExpand = useRef(false);
   const appliedFocusRef = useRef<string | null>(null);
   const yearNow = new Date().getFullYear();
@@ -443,6 +446,12 @@ export default function LifeRoadScreen() {
     }
     const next = buildRoadMindMap(nodes, projectsByMonthId);
     setModel(next);
+    setExistingNodeTitles(
+      nodes
+        .map((n) => n.title.trim())
+        .filter(Boolean)
+        .slice(0, 40),
+    );
     if (!seededExpand.current) {
       setExpanded(new Set(next.defaultExpandedKeys));
       seededExpand.current = true;
@@ -737,6 +746,23 @@ export default function LifeRoadScreen() {
                     关键词 · {keywords.length ? keywords.join(' / ') : '未选择'}
                   </Text>
                 </View>
+                {direction?.body?.trim() ? (
+                  <Pressable
+                    onPress={() => setPlanAiOpen(true)}
+                    style={({ pressed }) => [
+                      styles.aiPlanBtn,
+                      {
+                        borderColor: lr.line,
+                        backgroundColor: 'rgba(255,255,255,0.55)',
+                        opacity: pressed ? 0.88 : 1,
+                      },
+                    ]}>
+                    <AppIcon name="auto-awesome" size={13} color={lr.pine} />
+                    <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
+                      AI 拆解方向
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             </FoldRiseIn>
 
@@ -1180,6 +1206,19 @@ export default function LifeRoadScreen() {
           </>
         )}
       </ScrollView>
+
+      <AiLifeRoadPlanSheet
+        visible={planAiOpen}
+        onClose={() => setPlanAiOpen(false)}
+        directionId={direction?.id ?? null}
+        directionBody={direction?.body ?? ''}
+        yearTheme={direction?.year_theme}
+        calendarYear={yearNow}
+        existingNodeTitles={existingNodeTitles}
+        onCreated={() => {
+          void reload(true);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -1287,6 +1326,17 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 7,
     paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  aiPlanBtn: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
   },

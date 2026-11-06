@@ -1,5 +1,6 @@
 import { FoldCard, FoldIconButton, FoldPillButton, FoldSegment, foldFonts } from '@/components/review/fold-ui';
 import { FoldDailyJournal } from '@/components/review/fold-daily-journal';
+import { ReviewPeriodInsightsSheet } from '@/components/review/review-ai-p2-sheets';
 import { ReviewJournalScreen } from '@/components/review/review-journal-screen';
 import {
   countDailyReviewStreak,
@@ -19,11 +20,17 @@ import { useNotificationSourceBadges } from '@/hooks/use-notification-source-bad
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
 import { useLocalQuery } from '@/hooks/use-local-query';
+import type { ReviewPeriodInsightsResult } from '@/lib/ai-api-client';
+import { toUserMessage } from '@/lib/app-feedback';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notification-inbox';
+import { hrefForReviewAiSuggestion } from '@/lib/review-ai-quick-create';
+import type { ReviewAiSuggestion, ReviewAiSuggestionAction } from '@/lib/review-ai-sections';
+import { buildReviewPeriodInsightPeriods } from '@/lib/review-period-insights';
 import { resetTabBarAutoHide } from '@/lib/tab-bar-auto-hide';
 import { reviewContentMaxWidth } from '@/lib/review-layout';
 import { WEEKLY_REVIEW_WEEKDAY_LABELS } from '@/lib/weekly-review-settings';
+import { periodInsightsReview } from '@/lib/zhipu-image-parse';
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -100,7 +107,7 @@ function HubBrand({
 }
 
 /**
- * Hub 右上「更多」浮层：复盘日历 / 复盘设置。
+ * Hub 右上「更多」浮层：复盘日历 / 近月模式 / 复盘设置。
  * 月复盘已在主切换并列，不再收进这里。轻遮罩淡入 + popover 从 .92 弹性放大，点击外部关闭。
  */
 function MoreMenu({
@@ -110,6 +117,7 @@ function MoreMenu({
   right,
   onClose,
   onCalendar,
+  onPeriodInsights,
   onSettings,
 }: {
   open: boolean;
@@ -118,11 +126,19 @@ function MoreMenu({
   right: number;
   onClose: () => void;
   onCalendar: () => void;
+  onPeriodInsights: () => void;
   onSettings: () => void;
 }) {
   const { fold, palette } = useFoldTheme();
   const items = [
     { key: 'calendar', label: '复盘日历', sub: '42 格 · 找到任意一天', icon: 'date-range' as const, onPress: onCalendar },
+    {
+      key: 'insights',
+      label: '近月模式',
+      sub: '跨周期只读洞察',
+      icon: 'insights' as const,
+      onPress: onPeriodInsights,
+    },
     { key: 'settings', label: '复盘设置', sub: '复盘日 / 提醒 / 积分', icon: 'settings' as const, onPress: onSettings },
   ];
 
@@ -164,7 +180,7 @@ function MoreMenu({
             MORE · 更多
           </Text>
           <Text style={[styles.popoverHeadSub, { color: fold.faint }]} maxFontSizeMultiplier={1.25}>
-            日历与设置
+            日历 · 模式 · 设置
           </Text>
         </View>
         {items.map(item => (
@@ -256,6 +272,10 @@ export function ReviewHubScreen() {
   const [streakEntries, setStreakEntries] = useState<DailyEntry[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
   const [moreAnim] = useState(() => new Animated.Value(0));
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insightsBusy, setInsightsBusy] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+  const [insightsData, setInsightsData] = useState<ReviewPeriodInsightsResult | null>(null);
 
   const scopeRef = useRef(scope);
   const weeklyReloadRef = useRef<(() => Promise<void>) | null>(null);
@@ -388,6 +408,59 @@ export function ReviewHubScreen() {
     [closeHeaderMore],
   );
 
+  const insightsScope = scope === 'monthly' ? 'monthly' : 'weekly';
+  const insightsScopeLabel = insightsScope === 'monthly' ? '月刊' : '周刊';
+
+  const runPeriodInsights = useCallback(async () => {
+    setInsightsBusy(true);
+    setInsightsError(null);
+    try {
+      const packed = await buildReviewPeriodInsightPeriods({
+        scope: insightsScope,
+        anchorYmd: todayYmd,
+      });
+      if (packed.periods.length === 0 && !packed.aggregateMetrics) {
+        setInsightsData(null);
+        setInsightsError(
+          insightsScope === 'monthly'
+            ? '近几月暂无足够月刊正文，写满一两期后再看模式'
+            : '近几周暂无足够周刊正文，写满一两期后再看模式',
+        );
+        return;
+      }
+      const r = await periodInsightsReview({
+        scope: insightsScope,
+        periods: packed.periods,
+        aggregateMetrics: packed.aggregateMetrics,
+      });
+      if (!r.ok) {
+        setInsightsData(null);
+        setInsightsError(r.error || '跨周期洞察失败');
+        return;
+      }
+      setInsightsData(r.data);
+    } catch (e) {
+      console.warn('[review-ai] hub period-insights', e);
+      setInsightsData(null);
+      setInsightsError(toUserMessage(e, '跨周期洞察失败，请稍后重试'));
+    } finally {
+      setInsightsBusy(false);
+    }
+  }, [insightsScope, todayYmd]);
+
+  const openPeriodInsights = useCallback(() => {
+    setInsightsOpen(true);
+    void runPeriodInsights();
+  }, [runPeriodInsights]);
+
+  const onAddInsightSuggestion = useCallback(
+    (suggestion: ReviewAiSuggestion, action: ReviewAiSuggestionAction) => {
+      setInsightsOpen(false);
+      router.push(hrefForReviewAiSuggestion(suggestion, action));
+    },
+    [router],
+  );
+
   return (
     <SafeAreaView
       style={[styles.safe, { backgroundColor: palette.paper }]}
@@ -471,7 +544,19 @@ export function ReviewHubScreen() {
         right={moreRight}
         onClose={closeHeaderMore}
         onCalendar={closeAnd(() => router.push('/review-calendar'))}
+        onPeriodInsights={closeAnd(openPeriodInsights)}
         onSettings={closeAnd(() => router.push('/review-settings'))}
+      />
+
+      <ReviewPeriodInsightsSheet
+        visible={insightsOpen}
+        loading={insightsBusy}
+        error={insightsError}
+        data={insightsData}
+        scopeLabel={insightsScopeLabel}
+        onClose={() => setInsightsOpen(false)}
+        onRetry={() => void runPeriodInsights()}
+        onAddSuggestion={onAddInsightSuggestion}
       />
     </SafeAreaView>
   );

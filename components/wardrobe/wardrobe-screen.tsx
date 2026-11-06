@@ -9,6 +9,14 @@ import {
   type WardrobeOutfit,
   type WardrobeTab,
 } from '@/components/wardrobe/data';
+import { AiIdleInsightsSheet } from '@/components/wardrobe/ai-idle-insights-sheet';
+import { AiSimilarItemsSheet } from '@/components/wardrobe/ai-similar-items-sheet';
+import { AiSuggestOutfitSheet } from '@/components/wardrobe/ai-suggest-outfit-sheet';
+import { AiSuggestTodaySheet } from '@/components/wardrobe/ai-suggest-today-sheet';
+import {
+  AiWearCommentSheet,
+  type AiWearCommentTarget,
+} from '@/components/wardrobe/ai-wear-comment-sheet';
 import { ClosetView } from '@/components/wardrobe/closet-view';
 import { CollageEditor } from '@/components/wardrobe/collage-editor';
 import {
@@ -137,6 +145,12 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
   const [createHint, setCreateHint] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [sheet, setSheet] = useState<SheetContent>(null);
+  const [suggestTodayOpen, setSuggestTodayOpen] = useState(false);
+  const [suggestOutfitOpen, setSuggestOutfitOpen] = useState(false);
+  const [suggestOutfitSeeds, setSuggestOutfitSeeds] = useState<string[] | undefined>();
+  const [idleInsightsOpen, setIdleInsightsOpen] = useState(false);
+  const [wearCommentTarget, setWearCommentTarget] = useState<AiWearCommentTarget | null>(null);
+  const [similarTargetId, setSimilarTargetId] = useState<string | null>(null);
 
   const [titleSwap, setTitleSwap] = useState(false);
   const [title, setTitle] = useState(TAB_META.closet.title);
@@ -572,26 +586,69 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
     [createHint, importItemFromImage, openCreateItem, openCreateOutfit, promptOutfitPhotoUpload],
   );
 
-  const wearItem = (id: string) => {
-    void (async () => {
-      const res = await recordWardrobeItemWear(id);
-      if (!res.ok) {
-        toast.info(res.error || '记录穿着失败');
+  const openWearItemComment = useCallback(
+    (id: string) => {
+      const item = items.find((x) => x.id === id);
+      if (!item) {
+        toast.info('单品不存在');
         return;
       }
-      const nextData = await reloadLocal();
-      const nextItem = nextData.items.find((x) => x.id === id) ?? res.item;
-      const hist = await fetchItemWearHistory28(id);
-      setWearHistory28(hist);
-      setSheet((cur) => {
-        if (cur?.kind === 'item' && cur.item.id === id && nextItem) {
-          return { kind: 'item', item: nextItem };
-        }
-        return cur;
+      setWearCommentTarget({ kind: 'item', id, name: item.name });
+    },
+    [items],
+  );
+
+  const openWearOutfitComment = useCallback(
+    (id: string) => {
+      const outfit = outfits.find((x) => x.id === id);
+      if (!outfit) {
+        toast.info('搭配不存在');
+        return;
+      }
+      setWearCommentTarget({
+        kind: 'outfit',
+        id,
+        name: outfit.name,
+        occasion: outfit.occasion,
       });
-      toast.info(res.created ? '已记录穿着' : '今日已记过这件');
-    })();
-  };
+    },
+    [outfits],
+  );
+
+  const confirmWearWithNote = useCallback(
+    async (payload: { note?: string }): Promise<boolean> => {
+      const target = wearCommentTarget;
+      if (!target) return false;
+      if (target.kind === 'item') {
+        const res = await recordWardrobeItemWear(target.id, { note: payload.note });
+        if (!res.ok) {
+          toast.info(res.error || '记录穿着失败');
+          return false;
+        }
+        const nextData = await reloadLocal();
+        const nextItem = nextData.items.find((x) => x.id === target.id) ?? res.item;
+        const hist = await fetchItemWearHistory28(target.id);
+        setWearHistory28(hist);
+        setSheet((cur) => {
+          if (cur?.kind === 'item' && cur.item.id === target.id && nextItem) {
+            return { kind: 'item', item: nextItem };
+          }
+          return cur;
+        });
+        toast.info(res.created ? '已记录穿着' : '今日已记过这件');
+        return true;
+      }
+      const res = await recordWardrobeOutfitWear(target.id, { note: payload.note });
+      if (!res.ok) {
+        toast.info(res.error || '记录穿搭失败');
+        return false;
+      }
+      await reloadLocal();
+      toast.info(res.created ? '已记录这套穿搭' : '今日已记过这套');
+      return true;
+    },
+    [reloadLocal, wearCommentTarget],
+  );
 
   const bodySummary = useMemo(() => {
     const pick = (v: unknown) => {
@@ -676,6 +733,13 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           }}
           onCategoryMore={(name) => setSheet({ kind: 'category', name, categories })}
           onJumpMine={() => switchTab('mine')}
+          onSuggestToday={() => {
+            if (!items.length) {
+              toast.info('请先添加几件单品');
+              return;
+            }
+            setSuggestTodayOpen(true);
+          }}
         />
       );
     }
@@ -690,6 +754,14 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           onOccasion={setOccasion}
           onOpenOutfit={openOutfit}
           onSort={() => setSheet({ kind: 'generic', key: 'outfit-sort' })}
+          onSuggestOutfit={() => {
+            if (!items.length) {
+              toast.info('请先添加几件单品');
+              return;
+            }
+            setSuggestOutfitSeeds(undefined);
+            setSuggestOutfitOpen(true);
+          }}
         />
       );
     }
@@ -712,6 +784,13 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           if (key === 'sort') setSheet({ kind: 'sort', sort });
           else if (key === 'categories') setSheet({ kind: 'categories', categories });
           else setSheet({ kind: 'generic', key, season, categories, items, outfits });
+        }}
+        onIdleInsights={() => {
+          if (!items.length) {
+            toast.info('请先添加几件单品');
+            return;
+          }
+          setIdleInsightsOpen(true);
         }}
       />
     );
@@ -878,18 +957,8 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           );
         }}
         onOpenItem={openItem}
-        onWearItem={wearItem}
-        onWearOutfit={(id) => {
-          void (async () => {
-            const res = await recordWardrobeOutfitWear(id);
-            if (!res.ok) {
-              toast.info(res.error || '记录穿搭失败');
-              return;
-            }
-            await reloadLocal();
-            toast.info(res.created ? '已记录这套穿搭' : '今日已记过这套');
-          })();
-        }}
+        onWearItem={openWearItemComment}
+        onWearOutfit={openWearOutfitComment}
         onOpenGeneric={(key) => {
           if (key === 'sort') setSheet({ kind: 'sort', sort });
           else if (key === 'categories') setSheet({ kind: 'categories', categories });
@@ -924,6 +993,24 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
           setEditor({ type: 'confirm-delete', target: 'item', id, label: item.name });
         }}
         onCreateOutfit={(seed) => openCreateOutfit(seed?.length ? { seedItemIds: seed } : undefined)}
+        onSuggestOutfitFromItem={(itemId) => {
+          setSuggestOutfitSeeds([itemId]);
+          setSuggestOutfitOpen(true);
+        }}
+        onFindSimilarItem={(itemId) => {
+          if (items.length < 2) {
+            toast.info('衣橱里再多几件单品再找相似');
+            return;
+          }
+          setSimilarTargetId(itemId);
+        }}
+        onIdleInsights={() => {
+          if (!items.length) {
+            toast.info('请先添加几件单品');
+            return;
+          }
+          setIdleInsightsOpen(true);
+        }}
         onEditOutfit={(id) => openEditOutfitCollage(id)}
         onDeleteOutfit={(id) => {
           const outfit = outfits.find((x) => x.id === id);
@@ -1053,6 +1140,71 @@ export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
         visible={searchOpen}
         items={items}
         onClose={() => setSearchOpen(false)}
+        onOpenItem={openItem}
+      />
+
+      <AiSuggestTodaySheet
+        visible={suggestTodayOpen}
+        onClose={() => setSuggestTodayOpen(false)}
+        items={items}
+        outfits={outfits}
+        seasonFilter={season}
+        onOpenOutfit={openOutfit}
+        onOpenItem={openItem}
+        onWearOutfit={(id) => {
+          setSuggestTodayOpen(false);
+          openWearOutfitComment(id);
+        }}
+        onWearItems={(ids) => {
+          void (async () => {
+            let created = 0;
+            for (const id of ids) {
+              const res = await recordWardrobeItemWear(id);
+              if (res.ok && res.created) created += 1;
+            }
+            await reloadLocal();
+            toast.info(created > 0 ? `已记录 ${created} 件穿着` : '今日已记过这些');
+          })();
+        }}
+        onSeedCollage={(seedItemIds) => openCreateOutfit({ seedItemIds })}
+      />
+
+      <AiSuggestOutfitSheet
+        visible={suggestOutfitOpen}
+        onClose={() => {
+          setSuggestOutfitOpen(false);
+          setSuggestOutfitSeeds(undefined);
+        }}
+        items={items}
+        outfits={outfits}
+        occasion={occasion}
+        seasonFilter={season}
+        seedItemIds={suggestOutfitSeeds}
+        onOpenOutfit={openOutfit}
+        onOpenCollage={(seedItemIds) => openCreateOutfit({ seedItemIds })}
+      />
+
+      <AiIdleInsightsSheet
+        visible={idleInsightsOpen}
+        onClose={() => setIdleInsightsOpen(false)}
+        items={items}
+        categoryNames={categories.map((c) => c.name)}
+        wornThisMonth={wornThisMonth}
+        onOpenItem={openItem}
+      />
+
+      <AiWearCommentSheet
+        visible={!!wearCommentTarget}
+        target={wearCommentTarget}
+        onClose={() => setWearCommentTarget(null)}
+        onConfirm={confirmWearWithNote}
+      />
+
+      <AiSimilarItemsSheet
+        visible={!!similarTargetId}
+        onClose={() => setSimilarTargetId(null)}
+        items={items}
+        targetItemId={similarTargetId}
         onOpenItem={openItem}
       />
     </View>

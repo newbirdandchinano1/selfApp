@@ -83,6 +83,16 @@ export function mergeFrogAssignedOn(extraData: string | null, frogAssignedOn: st
   return writeFrogAssignedDates(extraData, dates) ?? JSON.stringify({ frogAssignedOn: ymd });
 }
 
+/** 独立待办：指派日替换为单日（不累加多日） */
+export function replaceFrogAssignedOn(extraData: string | null, frogAssignedOn: string): string {
+  const ymd = normalizeYmd(frogAssignedOn);
+  if (!ymd) {
+    const current = parseTaskExtraObject(extraData);
+    return JSON.stringify({ ...current, frogAssignedOn });
+  }
+  return writeFrogAssignedDates(extraData, [ymd]) ?? JSON.stringify({ frogAssignedOn: ymd });
+}
+
 /** 移除某一指派日；无剩余则清除全部青蛙指派字段 */
 export function removeFrogAssignedOn(extraData: string | null, ymd: string): string | null {
   const target = normalizeYmd(ymd);

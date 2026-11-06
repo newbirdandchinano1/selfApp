@@ -25,6 +25,11 @@ import {
   type UrgencyCandidate,
   type UrgencyWidgetProps,
 } from '@/lib/widgets/urgency-glance';
+import { isExpoWidgetsNativeAvailable } from '@/lib/widgets/expo-widgets-compat';
+import {
+  ensureHomeWidgetsRegistered,
+  pushWidgetSnapshotVerified,
+} from '@/lib/widgets/widget-bridge';
 import { getWidgetsSettings, shouldPushUrgencyWidget } from '@/lib/widgets/widgets-settings';
 import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
@@ -149,19 +154,15 @@ export async function buildTodayUrgencyGlance(now = new Date()) {
 async function syncUrgencyWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
   await whenHomeWidgetsDbReady();
+  await ensureHomeWidgetsRegistered();
   const settings = await getWidgetsSettings();
   const UrgencyWidget = (await import('@/widgets/UrgencyWidget')).default;
 
   if (!shouldPushUrgencyWidget(settings)) {
     try {
-      UrgencyWidget.updateSnapshot(pausedProps());
-      try {
-        UrgencyWidget.reload();
-      } catch {
-        /* ignore */
-      }
+      await pushWidgetSnapshotVerified(UrgencyWidget as never, pausedProps() as never);
     } catch (e) {
-      if (__DEV__) console.warn('[widgets] urgency pause failed', e);
+      console.warn('[widgets] urgency pause failed', e);
     }
     return;
   }
@@ -179,17 +180,12 @@ async function syncUrgencyWidgetNow(reason: string): Promise<void> {
     props.showTopTitle,
   ].join('|');
   if (fp === lastFingerprint && reason === 'debounce') return;
-  lastFingerprint = fp;
 
   try {
-    UrgencyWidget.updateSnapshot(props);
-    try {
-      UrgencyWidget.reload();
-    } catch {
-      /* ignore */
-    }
+    await pushWidgetSnapshotVerified(UrgencyWidget as never, props as never);
+    lastFingerprint = fp;
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] urgency snapshot failed', reason, e);
+    console.warn('[widgets] urgency snapshot failed', reason, e);
   }
 
   if (__DEV__) {
@@ -202,6 +198,7 @@ async function syncUrgencyWidgetNow(reason: string): Promise<void> {
 
 export function scheduleUrgencyWidgetSync(reason: string): void {
   if (Platform.OS !== 'ios') return;
+  if (!isExpoWidgetsNativeAvailable()) return;
   const task = syncChain.then(() => syncUrgencyWidgetNow(reason));
   syncChain = task.catch((e) => {
     if (__DEV__) console.warn('[widgets] urgency sync chain error', reason, e);

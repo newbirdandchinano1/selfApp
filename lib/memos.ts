@@ -337,6 +337,29 @@ export async function setMemoPinned(id: string, pinned: boolean): Promise<MemoIt
   return updateMemo(id, { is_pinned: pinned });
 }
 
+/** 写入 / 清空备忘与待办的关联（不改正文，不清 AI 点评）。 */
+export async function setMemoLinkedTaskId(
+  id: string,
+  taskId: string | null,
+): Promise<MemoItem | null> {
+  const prev = await getMemo(id);
+  if (!prev) return null;
+  const linked = taskId?.trim() || '';
+  const now = new Date().toISOString();
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE memos SET linked_task_id = ?, updated_at = ?,
+      sync_status = CASE WHEN sync_status = 'synced' THEN 'pending_update' ELSE sync_status END WHERE id = ?`,
+    [linked || null, now, id],
+  );
+  markMemosDirty();
+  return {
+    ...prev,
+    updated_at: now,
+    ...(linked ? { linked_task_id: linked } : { linked_task_id: undefined }),
+  };
+}
+
 export async function setMemoAiReview(
   id: string,
   payload: { evaluation: string; suggestions: string },
@@ -364,7 +387,37 @@ export async function setMemoAiReview(
  * 推荐：`POST /api/app/memos/:id/ai-review`（服务端分析并落库），再刷新本地。
  * 失败时抛出，由调用方决定是否回退到纯分析接口。
  */
-export async function runMemoAiReviewOnServer(id: string): Promise<MemoItem | null> {
+/** 服务端 ai-review 响应里可选的结构化字段（不落本地库，仅本次会话可用）。 */
+export type MemoAiReviewExtras = {
+  bullets?: string[];
+  suggested_action?: 'todo' | 'project' | 'keep' | 'archive';
+  draft_title?: string;
+};
+
+export type MemoAiReviewServerResult = MemoItem & { ai_extras?: MemoAiReviewExtras };
+
+function pickMemoAiReviewExtras(data: Record<string, unknown>): MemoAiReviewExtras | undefined {
+  const extras: MemoAiReviewExtras = {};
+  if (Array.isArray(data.bullets)) {
+    const bullets = data.bullets
+      .filter((t): t is string => typeof t === 'string' && !!t.trim())
+      .map(t => t.trim().slice(0, 80))
+      .slice(0, 6);
+    if (bullets.length) extras.bullets = bullets;
+  }
+  if (typeof data.suggested_action === 'string') {
+    const a = data.suggested_action.trim().toLowerCase();
+    if (a === 'todo' || a === 'project' || a === 'keep' || a === 'archive') {
+      extras.suggested_action = a;
+    }
+  }
+  if (typeof data.draft_title === 'string' && data.draft_title.trim()) {
+    extras.draft_title = data.draft_title.trim().slice(0, 50);
+  }
+  return extras.bullets || extras.suggested_action || extras.draft_title ? extras : undefined;
+}
+
+export async function runMemoAiReviewOnServer(id: string): Promise<MemoAiReviewServerResult | null> {
   const { appMemoAiReview } = await import('@/lib/api-app-domain');
   const data = await appMemoAiReview(id);
   const evaluation =
@@ -405,12 +458,14 @@ export async function runMemoAiReviewOnServer(id: string): Promise<MemoItem | nu
     endCloudSqliteDirtyIgnoreBatch();
   }
 
+  const extras = pickMemoAiReviewExtras(data);
   return {
     ...prev,
     ...(evaluation ? { ai_evaluation: evaluation } : {}),
     ...(suggestions ? { ai_suggestions: suggestions } : {}),
     ai_review_at: now,
     updated_at: updatedAt,
+    ...(extras ? { ai_extras: extras } : {}),
   };
 }
 

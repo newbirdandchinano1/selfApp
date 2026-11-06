@@ -12,6 +12,7 @@ import {
   type WishBoardRedeemConditionKind,
   type WishBoardRedeemEligibility,
 } from '@/lib/repositories/wish-board/wish-board-redeem-conditions';
+import { buildWishBoardGapCoachTemplate } from '@/lib/wish-board-gap-coach-template';
 import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -160,7 +161,10 @@ export function WishBoardGapSheet({
     return list;
   }, [eligibility, currentNetWorth]);
 
-  const count = rows.length;
+  const coach = useMemo(
+    () => buildWishBoardGapCoachTemplate(title, eligibility),
+    [title, eligibility],
+  );
 
   const runAction = (kind: GapActionKind, id?: string) => {
     onClose();
@@ -178,12 +182,8 @@ export function WishBoardGapSheet({
             { paddingBottom: Math.max(insets.bottom, 18) },
           ]}>
           <View style={styles.handle} />
-          <Text style={styles.heading}>还差一点点就能兑换 ✨</Text>
-          <Text style={styles.sub}>
-            {count > 0
-              ? `完成下面 ${count} 件事，「${title}」就是你的了：`
-              : `「${title}」还差一点点就能兑换`}
-          </Text>
+          <Text style={styles.heading}>{coach.headline}</Text>
+          <Text style={styles.sub}>{coach.sub}</Text>
 
           <ScrollView
             style={styles.list}

@@ -22,16 +22,37 @@ export function buildProjectNameFromMemo(row: MemoItem): string {
   return `${raw.slice(0, MEMO_PROJECT_NAME_MAX - 1)}…`;
 }
 
-/** 由备忘生成一条项目并放入收集箱，成功后删除原备忘。 */
-export async function createProjectFromMemoInInbox(row: MemoItem): Promise<MemoToProjectResult> {
+export type MemoProjectDraftOverride = {
+  name?: string;
+  note?: string | null;
+};
+
+function clampProjectName(raw: string): string {
+  const t = raw.trim() || '来自备忘的项目';
+  if (t.length <= MEMO_PROJECT_NAME_MAX) return t;
+  return `${t.slice(0, MEMO_PROJECT_NAME_MAX - 1)}…`;
+}
+
+/** 由备忘生成一条项目并放入收集箱，成功后删除原备忘。可传入 AI 草稿覆盖名称/备注。 */
+export async function createProjectFromMemoInInbox(
+  row: MemoItem,
+  override?: MemoProjectDraftOverride,
+): Promise<MemoToProjectResult> {
   const projectId = newProjectId();
-  const name = buildProjectNameFromMemo(row);
+  const name = override?.name?.trim()
+    ? clampProjectName(override.name)
+    : buildProjectNameFromMemo(row);
 
   if (await isProjectNameDuplicate(name)) {
     throw new Error('duplicate_name');
   }
 
-  const note = buildTodoNoteFromMemo(row);
+  const note =
+    override && 'note' in override
+      ? override.note?.trim()
+        ? override.note.trim()
+        : null
+      : buildTodoNoteFromMemo(row);
   const now = new Date().toISOString();
 
   await createProject({

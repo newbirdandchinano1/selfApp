@@ -7,7 +7,7 @@ import {
   gaugeStyle,
   padding,
 } from '@expo/ui/swift-ui/modifiers';
-import { createWidget, type WidgetEnvironment } from 'expo-widgets';
+import { createWidget, type WidgetEnvironment } from '@/lib/widgets/expo-widgets-compat';
 
 export type HealthIntakeWidgetProps = {
   title: string;

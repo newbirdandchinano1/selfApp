@@ -19,6 +19,7 @@ import {
   type ReviewAiScope,
 } from '@/lib/review-ai-analysis';
 import {
+  enrichReviewTodoPrefill,
   hrefForReviewAiSuggestion,
   REVIEW_AI_ACTION_META,
   REVIEW_AI_ACTION_ORDER,
@@ -129,6 +130,8 @@ export type ReviewAiAnalysisScreenProps = {
   weekNo: number;
   periodLabel: string;
   weekStartYmd: string;
+  /** 日：当日；周：周起始；月：月初。用于 coaching 拼 facts */
+  periodYmd?: string;
   template: ReviewDimensionTemplate[];
   fields: ReviewFieldValues;
   dailyEntries: DailyEntry[];
@@ -145,6 +148,7 @@ export function ReviewAiAnalysisScreen({
   weekNo,
   periodLabel,
   weekStartYmd,
+  periodYmd,
   template,
   fields,
   dailyEntries,
@@ -332,6 +336,7 @@ export function ReviewAiAnalysisScreen({
         periodLabel,
         template,
         fields,
+        periodYmd: (periodYmd || weekStartYmd || '').trim() || undefined,
       });
       if (revealTokenRef.current !== token) return;
       setDraft(result);
@@ -363,11 +368,13 @@ export function ReviewAiAnalysisScreen({
     motionOk,
     onPersist,
     periodLabel,
+    periodYmd,
     resetStreamFlags,
     scope,
     setBusySafe,
     startRevealNow,
     template,
+    weekStartYmd,
   ]);
 
   const writeIn = useCallback(async () => {
@@ -423,9 +430,16 @@ export function ReviewAiAnalysisScreen({
       if (!item) return;
       handleClose();
       // 等分析页 Modal 卸掉再跳转，避免路由被挡住
-      setTimeout(() => {
-        router.push(hrefForReviewAiSuggestion(item, action));
-      }, 320);
+      void (async () => {
+        let todoPrefill = null;
+        if (action === 'todo') {
+          toast.info('正在结构化待办…');
+          todoPrefill = await enrichReviewTodoPrefill(item);
+        }
+        setTimeout(() => {
+          router.push(hrefForReviewAiSuggestion(item, action, todoPrefill));
+        }, 320);
+      })();
     },
     [createPickerIndex, handleClose, router, suggestionItems],
   );

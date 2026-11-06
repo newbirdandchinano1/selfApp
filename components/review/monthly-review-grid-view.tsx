@@ -1,6 +1,7 @@
 import { ReviewGridSkeleton } from '@/components/skeletons/review';
 import { FoldCountUpText, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { FoldCard, FoldDimensionGrid, FoldSectionHeader, foldFonts, useFoldTheme } from '@/components/review/fold-ui';
+import { ReviewPeriodInsightsSheet } from '@/components/review/review-ai-p2-sheets';
 import { ReviewPageContent } from '@/components/review/review-shared-ui';
 import { glassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
@@ -14,12 +15,18 @@ import {
 } from '@/components/review/review-utils';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import type { ReviewPeriodInsightsResult } from '@/lib/ai-api-client';
 import { generateReviewAiAnalysis, reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
+import { hrefForReviewAiSuggestion } from '@/lib/review-ai-quick-create';
 import {
   formatReviewAiPayloadForCopy,
   parseReviewAiPayload,
   reviewAiPreviewTitle,
+  type ReviewAiSuggestion,
+  type ReviewAiSuggestionAction,
 } from '@/lib/review-ai-sections';
+import { buildReviewPeriodInsightPeriods } from '@/lib/review-period-insights';
+import { periodInsightsReview } from '@/lib/zhipu-image-parse';
 import {
   collectColumnIds,
   hasAnyFilledField,
@@ -137,6 +144,10 @@ export function MonthlyReviewGridView({
   const [aiBusy, setAiBusy] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insightsBusy, setInsightsBusy] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+  const [insightsData, setInsightsData] = useState<ReviewPeriodInsightsResult | null>(null);
 
   const hydratedRef = useRef(false);
   const skipFirstFocusReloadRef = useRef(true);
@@ -301,6 +312,7 @@ export function MonthlyReviewGridView({
         periodLabel: monthLabel,
         template: monthlyTemplate,
         fields,
+        periodYmd: monthStartYmd,
       });
       const nextMeta = { ...meta, ai_analysis: text };
       setMeta(nextMeta);
@@ -316,6 +328,52 @@ export function MonthlyReviewGridView({
       setAiBusy(false);
     }
   }, [canEdit, fields, meta, monthLabel, monthStartYmd, monthlyTemplate, persist]);
+
+  const runPeriodInsights = useCallback(async () => {
+    setInsightsBusy(true);
+    setInsightsError(null);
+    try {
+      const packed = await buildReviewPeriodInsightPeriods({
+        scope: 'monthly',
+        anchorYmd: monthStartYmd,
+      });
+      if (packed.periods.length === 0 && !packed.aggregateMetrics) {
+        setInsightsData(null);
+        setInsightsError('近几月暂无足够月刊正文，写满一两期后再看模式');
+        return;
+      }
+      const r = await periodInsightsReview({
+        scope: 'monthly',
+        periods: packed.periods,
+        aggregateMetrics: packed.aggregateMetrics,
+      });
+      if (!r.ok) {
+        setInsightsData(null);
+        setInsightsError(r.error || '跨周期洞察失败');
+        return;
+      }
+      setInsightsData(r.data);
+    } catch (e) {
+      console.warn('monthly period-insights', e);
+      setInsightsData(null);
+      setInsightsError(toUserMessage(e, '跨周期洞察失败，请稍后重试'));
+    } finally {
+      setInsightsBusy(false);
+    }
+  }, [monthStartYmd]);
+
+  const openPeriodInsights = useCallback(() => {
+    setInsightsOpen(true);
+    void runPeriodInsights();
+  }, [runPeriodInsights]);
+
+  const onAddInsightSuggestion = useCallback(
+    (suggestion: ReviewAiSuggestion, action: ReviewAiSuggestionAction) => {
+      setInsightsOpen(false);
+      router.push(hrefForReviewAiSuggestion(suggestion, action));
+    },
+    [router],
+  );
 
   const heatCells = useMemo(() => {
     const levelByYmd = new Map<string, number>();
@@ -706,6 +764,20 @@ export function MonthlyReviewGridView({
                 <MaterialIcons name={aiExpanded ? 'expand-less' : 'chevron-right'} size={14} color={fold.aiInk} />
               </Pressable>
             ) : null}
+
+            <Pressable
+              onPress={openPeriodInsights}
+              accessibilityRole="button"
+              accessibilityLabel="近月模式跨周期洞察"
+              style={({ pressed }) => [
+                styles.aiLink,
+                { marginTop: 8, opacity: pressed ? 0.75 : 1 },
+              ]}>
+              <Text style={[styles.aiLinkText, { color: fold.aiInk }]} maxFontSizeMultiplier={1.2}>
+                近月模式 · 跨周期洞察
+              </Text>
+              <MaterialIcons name="insights" size={14} color={fold.aiInk} />
+            </Pressable>
           </View>
         </FoldRiseIn>
 
@@ -716,6 +788,17 @@ export function MonthlyReviewGridView({
           </Text>
         </View>
       </ReviewPageContent>
+
+      <ReviewPeriodInsightsSheet
+        visible={insightsOpen}
+        loading={insightsBusy}
+        error={insightsError}
+        data={insightsData}
+        scopeLabel="月刊"
+        onClose={() => setInsightsOpen(false)}
+        onRetry={() => void runPeriodInsights()}
+        onAddSuggestion={onAddInsightSuggestion}
+      />
     </ScrollView>
   );
 }

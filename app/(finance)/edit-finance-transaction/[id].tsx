@@ -27,6 +27,7 @@ import {
   isIncomeIncludedInBudget,
 } from '@/lib/repositories/finance/finance-transaction-extra';
 import { tryPersistFinanceTxnAiComment } from '@/lib/repositories/finance/finance-txn-ai-comment';
+import { suggestFinanceCategory } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -113,6 +114,8 @@ export default function EditFinanceTransactionScreen() {
   const [deleting, setDeleting] = React.useState(false);
   const [savePop, setSavePop] = React.useState(false);
   const [regenBusy, setRegenBusy] = React.useState(false);
+  const [categorySuggestBusy, setCategorySuggestBusy] = React.useState(false);
+  const [categorySuggestHint, setCategorySuggestHint] = React.useState<string | null>(null);
   const [categorySheetOpen, setCategorySheetOpen] = React.useState(false);
   const [row, setRow] = React.useState<FinanceTransactionRow | null>(null);
   const [accounts, setAccounts] = React.useState<FinanceAccountBalanceRow[]>([]);
@@ -460,6 +463,59 @@ export default function EditFinanceTransactionScreen() {
     tab,
   ]);
 
+  const onSuggestCategory = React.useCallback(async () => {
+    if (tab === 'transfer' || categorySuggestBusy) return;
+    const pool = tab === 'income' ? incomeCategories : expenseCategories;
+    const labels = pool.map((c) => c.label).filter(Boolean);
+    if (!labels.length) {
+      toast.warn('暂无可用分类');
+      return;
+    }
+    setCategorySuggestBusy(true);
+    setCategorySuggestHint(null);
+    try {
+      const summary = [
+        `类型：${tab === 'income' ? '收入' : '支出'}`,
+        `标题：${nameDraft.trim() || '（无）'}`,
+        `金额：¥${absAmount.toFixed(2)}`,
+        `账户：${selectedAccount?.name ?? '（无）'}`,
+        `备注：${noteDraft.trim() || '（无）'}`,
+        `当前分类：${selectedCategory?.label ?? '（无）'}`,
+      ].join('\n');
+      const result = await suggestFinanceCategory({
+        summaryText: summary,
+        categoryNames: labels,
+      });
+      if (!result.ok) {
+        toast.warn(result.error || '未能建议分类');
+        return;
+      }
+      const hit = pool.find((c) => c.label === result.data.category_label);
+      if (!hit) {
+        toast.warn('建议分类不在列表中');
+        return;
+      }
+      setCategoryKey(hit.key);
+      const pct = Math.round(result.data.confidence * 100);
+      setCategorySuggestHint(`${result.data.reason}（置信 ${pct}%）`);
+      toast.success(`已建议分类：${hit.label}`);
+    } catch (e) {
+      toast.error(toUserMessage(e, '分类建议失败'));
+    } finally {
+      setCategorySuggestBusy(false);
+    }
+  }, [
+    absAmount,
+    categorySuggestBusy,
+    expenseCategories,
+    incomeCategories,
+    nameDraft,
+    noteDraft,
+    selectedAccount?.name,
+    selectedCategory?.label,
+    tab,
+  ]);
+
   const onDelete = React.useCallback(() => {
     if (!row || deleting) return;
     Alert.alert('删除记录', `确定删除「${row.name?.trim() || '该笔记录'}」吗？`, [
@@ -665,18 +721,47 @@ export default function EditFinanceTransactionScreen() {
               </Pressable>
 
               {tab !== 'transfer' ? (
-                <Pressable
-                  onPress={() => setCategorySheetOpen(true)}
-                  style={[styles.inputLine, { borderBottomColor: line }]}>
-                  <Text style={[styles.inputLab, { color: subtle }]}>分类</Text>
-                  <Text style={[styles.inputVal, { color: text }]} numberOfLines={1}>
-                    {selectedCategory?.label ?? '选择分类'}
-                  </Text>
-                  <View style={[styles.autoTag, { backgroundColor: isDark ? ff.sage2 : '#EEF2EE' }]}>
-                    <Text style={[styles.autoTagText, { color: isDark ? ff.sage : '#6A7F72' }]}>自动</Text>
+                <>
+                  <View style={[styles.inputLine, { borderBottomColor: line }]}>
+                    <Text style={[styles.inputLab, { color: subtle }]}>分类</Text>
+                    <Pressable
+                      onPress={() => setCategorySheetOpen(true)}
+                      style={styles.inputValPress}
+                      accessibilityRole="button"
+                      accessibilityLabel="选择分类">
+                      <Text style={[styles.inputVal, { color: text }]} numberOfLines={1}>
+                        {selectedCategory?.label ?? '选择分类'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void onSuggestCategory()}
+                      disabled={categorySuggestBusy}
+                      hitSlop={8}
+                      style={({ pressed }) => [
+                        styles.autoTag,
+                        {
+                          backgroundColor: isDark ? ff.amber2 : '#F4EAD9',
+                          opacity: categorySuggestBusy ? 0.65 : pressed ? 0.85 : 1,
+                        },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="AI 建议分类">
+                      {categorySuggestBusy ? (
+                        <ActivityIndicator size="small" color={isDark ? ff.amberInk : '#996A2F'} />
+                      ) : (
+                        <Text style={[styles.autoTagText, { color: isDark ? ff.amberInk : '#996A2F' }]}>
+                          AI 建议
+                        </Text>
+                      )}
+                    </Pressable>
+                    <Pressable onPress={() => setCategorySheetOpen(true)} hitSlop={8}>
+                      <MaterialIcons name="chevron-right" size={16} color={faint} />
+                    </Pressable>
                   </View>
-                  <MaterialIcons name="chevron-right" size={16} color={faint} />
-                </Pressable>
+                  {categorySuggestHint ? (
+                    <Text style={[styles.categoryHint, { color: subtle }]}>{categorySuggestHint}</Text>
+                  ) : null}
+                </>
               ) : null}
 
               <View style={[styles.inputLine, { borderBottomColor: line }]}>
@@ -794,14 +879,14 @@ export default function EditFinanceTransactionScreen() {
                     ) : (
                       <>
                         <MaterialIcons name="sync" size={12} color={ff.amberInk} />
-                        <Text style={[styles.regenText, { color: ff.amberInk }]}>重新生成</Text>
+                        <Text style={[styles.regenText, { color: ff.amberInk }]}>换一句</Text>
                       </>
                     )}
                   </Pressable>
                 </View>
                 <Text style={[styles.aiBody, { color: aiInk }]}>
                   {aiComment ||
-                    '暂无 AI 评价。保存本笔（尚无评价时）会尝试生成；也可点右上角重新生成。'}
+                    '暂无 AI 评价。保存本笔（尚无评价时）会尝试生成；也可点右上角「换一句」。'}
                 </Text>
               </View>
             </FoldRiseIn>
@@ -1185,6 +1270,14 @@ const styles = StyleSheet.create({
     fontWeight: '650',
     paddingVertical: 8,
     paddingHorizontal: 0,
+  },
+  inputValPress: { flex: 1, minWidth: 0 },
+  categoryHint: {
+    fontSize: 11,
+    lineHeight: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    marginTop: -4,
   },
   autoTag: {
     height: 18,

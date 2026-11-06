@@ -109,14 +109,6 @@ export async function tryMarkBuildHabitCompleted(
     completedValue: progress,
   });
   await updateHabit(habit.id, { extra_data: extra });
-  try {
-    const { completeProjectsBoundToHabitIfReady } = await import(
-      '@/lib/repositories/projects/project-completion-habits'
-    );
-    await completeProjectsBoundToHabitIfReady(habit.id, { logicalTodayYmd: todayYmd });
-  } catch (linkErr) {
-    console.warn('养成习惯成功后联动项目收尾失败', habit.id, linkErr);
-  }
   return true;
 }
 

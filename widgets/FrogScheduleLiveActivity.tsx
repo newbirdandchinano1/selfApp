@@ -1,6 +1,6 @@
 import { HStack, Image, Text, VStack } from '@expo/ui/swift-ui';
 import { font, foregroundStyle, padding } from '@expo/ui/swift-ui/modifiers';
-import { createLiveActivity, type LiveActivityEnvironment } from 'expo-widgets';
+import { createLiveActivity, type LiveActivityEnvironment } from '@/lib/widgets/expo-widgets-compat';
 
 export type FrogScheduleLiveActivityProps = {
   title: string;

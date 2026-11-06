@@ -31,6 +31,8 @@ export type OutfitsViewProps = {
   onOccasion: (occasion: string) => void;
   onOpenOutfit: (id: string) => void;
   onSort?: () => void;
+  /** AI 按场合组一套 */
+  onSuggestOutfit?: () => void;
 };
 
 function Collage({
@@ -135,6 +137,7 @@ export const OutfitsView = memo(function OutfitsView({
   onOccasion,
   onOpenOutfit,
   onSort,
+  onSuggestOutfit,
 }: OutfitsViewProps) {
   const { w } = useWardrobeTheme();
   const styles = useMemo(() => createStyles(w), [w]);
@@ -163,6 +166,11 @@ export const OutfitsView = memo(function OutfitsView({
             <Text style={styles.pageTitlePeriod}>。</Text>
           </View>
           <Text style={styles.pageSub}>把喜欢的单品组合起来，保存每一次灵感。</Text>
+          {onSuggestOutfit ? (
+            <Pressable style={styles.aiPill} onPress={onSuggestOutfit}>
+              <Text style={styles.aiPillText}>AI 组一套</Text>
+            </Pressable>
+          ) : null}
         </View>
       </FoldRiseIn>
 
@@ -318,6 +326,21 @@ function createStyles(w: WardrobePalette) {
     marginBottom: 0,
   },
   pageSub: { ...wardrobeType.pageSub, color: w.muted, maxWidth: 238 },
+  aiPill: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: w.pine,
+    backgroundColor: w.paper2,
+  },
+  aiPillText: {
+    fontFamily: wardrobeFonts.sansSemiBold,
+    fontSize: 13,
+    color: w.pine,
+  },
   chipRow: { gap: 6, paddingVertical: 13, paddingHorizontal: 2 },
   chip: {
     flexDirection: 'row',

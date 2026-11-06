@@ -1,3 +1,10 @@
+import { AddWishBoardModal } from '@/components/wish-board/add-wish-board-modal';
+import { WishBoardInsightsSheet } from '@/components/wish-board/wish-board-insights-sheet';
+import {
+  WishBoardSuggestNextSheet,
+  type WishBoardSuggestNextPick,
+} from '@/components/wish-board/wish-board-suggest-next-sheet';
+import type { WishBoardItemFormInitial } from '@/components/wish-board/wish-board-item-form';
 import {
   formatWishBoxPoints,
   type WishBoxPalette,
@@ -131,6 +138,21 @@ export default function WishBoardFootprintsScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>('all');
+  const [suggestNextVisible, setSuggestNextVisible] = useState(false);
+  const [insightsVisible, setInsightsVisible] = useState(false);
+  const [addVisible, setAddVisible] = useState(false);
+  const [addInitial, setAddInitial] = useState<WishBoardItemFormInitial | null>(null);
+
+  const onSuggestNextPick = useCallback((draft: WishBoardSuggestNextPick) => {
+    setAddInitial({
+      title: draft.title,
+      description: draft.description,
+      icon_key: draft.icon_key,
+      wish_type: draft.wish_type,
+      cost_points: draft.cost_points,
+    });
+    setAddVisible(true);
+  }, []);
 
   const loadPage = useCallback(async (nextPage: number, append: boolean) => {
     setLoadError(null);
@@ -324,6 +346,25 @@ export default function WishBoardFootprintsScreen() {
             })}
           </View>
 
+          <View style={styles.aiRow}>
+            <Pressable
+              onPress={() => setInsightsVisible(true)}
+              style={({ pressed }) => [styles.suggestNextBtn, { opacity: pressed ? 0.88 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="积分健康度">
+              <MaterialIcons name="insights" size={16} color={c.pri} />
+              <Text style={styles.suggestNextText}>积分健康度</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSuggestNextVisible(true)}
+              style={({ pressed }) => [styles.suggestNextBtn, { opacity: pressed ? 0.88 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="下一颗心愿建议">
+              <MaterialIcons name="auto-awesome" size={16} color={c.pri} />
+              <Text style={styles.suggestNextText}>下一颗心愿建议</Text>
+            </Pressable>
+          </View>
+
           {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
 
           {!loadError && visibleItems.length === 0 ? (
@@ -387,6 +428,26 @@ export default function WishBoardFootprintsScreen() {
           ) : null}
         </ScrollView>
       )}
+
+      <WishBoardInsightsSheet
+        visible={insightsVisible}
+        balance={balance}
+        onClose={() => setInsightsVisible(false)}
+      />
+      <WishBoardSuggestNextSheet
+        visible={suggestNextVisible}
+        balance={balance}
+        onClose={() => setSuggestNextVisible(false)}
+        onPick={onSuggestNextPick}
+      />
+      <AddWishBoardModal
+        visible={addVisible}
+        initial={addInitial}
+        onClose={() => {
+          setAddVisible(false);
+          setAddInitial(null);
+        }}
+      />
     </View>
   );
 }
@@ -663,6 +724,29 @@ function makeStyles(c: WishBoxPalette, shadows: WishBoxShadowSet) {
       color: c.muted,
     },
     filterChipTextOn: {
+      color: c.pri,
+    },
+    aiRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 14,
+    },
+    suggestNextBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      alignSelf: 'flex-start',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: c.priSoft,
+      borderWidth: 1,
+      borderColor: c.priLine,
+    },
+    suggestNextText: {
+      fontSize: 12.5,
+      fontWeight: '700',
       color: c.pri,
     },
     monthHead: {

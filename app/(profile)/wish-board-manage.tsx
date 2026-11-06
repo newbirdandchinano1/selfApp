@@ -1,5 +1,6 @@
 import { AddWishBoardModal } from '@/components/wish-board/add-wish-board-modal';
 import { WishBoardDeleteDialog } from '@/components/wish-board/wish-board-delete-dialog';
+import { WishBoardInsightsSheet } from '@/components/wish-board/wish-board-insights-sheet';
 import {
   formatWishBoxPoints,
   wishBoxTintWash,
@@ -41,6 +42,7 @@ export default function WishBoardManageScreen() {
   const {
     items,
     activeItems,
+    balance,
     eligibilityById,
     redeemRecords,
     loading,
@@ -50,6 +52,7 @@ export default function WishBoardManageScreen() {
   } = useWishBoardData();
 
   const [addVisible, setAddVisible] = useState(false);
+  const [insightsVisible, setInsightsVisible] = useState(false);
   const [menuItem, setMenuItem] = useState<WishBoardItemRow | null>(null);
   const [deleteItem, setDeleteItem] = useState<WishBoardItemRow | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -127,6 +130,20 @@ export default function WishBoardManageScreen() {
     [deleteItem?.id, eligibilityById, entranceOn, menuItem?.id, onRowRemoved, removingId, subtitleOf],
   );
 
+  const listHeader = (
+    <View>
+      {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
+      <Pressable
+        onPress={() => setInsightsVisible(true)}
+        style={({ pressed }) => [styles.insightsBtn, { opacity: pressed ? 0.88 : 1 }]}
+        accessibilityRole="button"
+        accessibilityLabel="积分健康度">
+        <MaterialIcons name="insights" size={16} color={c.pri} />
+        <Text style={styles.insightsBtnText}>积分健康度</Text>
+      </Pressable>
+    </View>
+  );
+
   const listFooter =
     activeItems.length > 0 ? (
       <Text style={styles.note}>💡 点击「···」可编辑心愿信息，或删除不再想要的心愿。</Text>
@@ -182,13 +199,19 @@ export default function WishBoardManageScreen() {
           keyExtractor={item => item.id}
           renderItem={renderRow}
           contentContainerStyle={styles.listContent}
-          ListHeaderComponent={loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
+          ListHeaderComponent={listHeader}
           ListFooterComponent={listFooter}
           ListEmptyComponent={empty}
           showsVerticalScrollIndicator={false}
           refreshControl={refreshControl}
         />
       )}
+
+      <WishBoardInsightsSheet
+        visible={insightsVisible}
+        balance={balance}
+        onClose={() => setInsightsVisible(false)}
+      />
 
       <AddWishBoardModal
         visible={addVisible}
@@ -440,6 +463,24 @@ function makeStyles(c: WishBoxPalette, shadows: WishBoxShadowSet) {
     color: c.danger,
     fontWeight: '600',
     marginBottom: 10,
+  },
+  insightsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    marginBottom: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: c.priSoft,
+    borderWidth: 1,
+    borderColor: c.priLine,
+  },
+  insightsBtnText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: c.pri,
   },
   row: {
     flexDirection: 'row',

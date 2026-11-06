@@ -8,12 +8,41 @@ import {
   useMemoListLayout,
   useResetMemoEnteredOnUnmount,
 } from '@/components/memo/use-memo-list-motion';
+import {
+  MemoAiConvertDraftBody,
+  MemoAiDraftFromTextBody,
+  MemoAiSuggestTagsBody,
+} from '@/components/memo/memo-ai-p0-sheets';
+import {
+  MemoAiDedupeBody,
+  MemoAiDraftFromImageBody,
+  MemoAiInsightsBody,
+} from '@/components/memo/memo-ai-p1-sheets';
 import { AppButton, AppIconButton, MotionPressable } from '@/components/ui';
 import { Spacing } from '@/constants/design-tokens';
 import { MemoRadius, MemoText } from '@/constants/memo-ui';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import type {
+  MemoCollectionInsightsJson,
+  MemoConvertDraftJson,
+  MemoConvertTodoDraft,
+  MemoDedupeHintsJson,
+  MemoDraftFromImageJson,
+  MemoDraftFromTextJson,
+  MemoDraftStyle,
+  MemoSuggestTagsJson,
+} from '@/lib/ai-types';
+import { makeTimestampEntityId } from '@/lib/entity-id';
+import {
+  buildMemoAiSummaryItem,
+  pickCandidatesForDedupe,
+  pickRecentMemosForInsights,
+} from '@/lib/memo-ai-summary';
 import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
-import { createStandaloneTodoFromMemo } from '@/lib/memo-to-task';
+import {
+  createStandaloneTodoFromMemo,
+  createStandaloneTodosFromMemo,
+} from '@/lib/memo-to-task';
 import {
   deleteMemo,
   listMemos,
@@ -24,6 +53,7 @@ import {
   setMemoAiReview,
   setMemoPinned,
   sortMemos,
+  type MemoAiReviewExtras,
   type MemoItem,
   type MemoSortMode,
 } from '@/lib/memos';
@@ -31,9 +61,25 @@ import {
   addMemoAiPendingAnalysisListener,
   addMemoAiReviewSavedListener,
 } from '@/lib/memo-ai-background';
-import { analyzeMemoReviewFromText } from '@/lib/zhipu-image-parse';
+import {
+  analyzeMemoCollectionInsights,
+  analyzeMemoConvertDraft,
+  analyzeMemoDedupeHints,
+  analyzeMemoDraftFromImage,
+  analyzeMemoDraftFromText,
+  analyzeMemoReviewFromText,
+  analyzeMemoSuggestTags,
+} from '@/lib/zhipu-image-parse';
 import { plainTextFromBody } from '@/lib/memo-richdoc/plain-text';
-import { getMemoTags, getTagsByEntityIds, normalizeTagDomain } from '@/lib/repositories/tags/tag';
+import * as ImagePicker from 'expo-image-picker';
+import {
+  createMemoTag,
+  getMemoTags,
+  getTagIdsByEntity,
+  getTagsByEntityIds,
+  normalizeTagDomain,
+  setMemoTagIds,
+} from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -142,10 +188,46 @@ export default function MemoListScreen() {
 
   const [aiModalId, setAiModalId] = useState<string | null>(null);
   const [aiModalLoading, setAiModalLoading] = useState(false);
+  const [aiModalExtras, setAiModalExtras] = useState<MemoAiReviewExtras | null>(null);
   const [convertingMemoId, setConvertingMemoId] = useState<string | null>(null);
   const [pendingAnalysisIds, setPendingAnalysisIds] = useState<ReadonlySet<string>>(() => new Set());
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [actionRow, setActionRow] = useState<MemoItem | null>(null);
+
+  const [convertRow, setConvertRow] = useState<MemoItem | null>(null);
+  const [convertLoading, setConvertLoading] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
+  const [convertDraft, setConvertDraft] = useState<MemoConvertDraftJson | null>(null);
+
+  const [suggestRow, setSuggestRow] = useState<MemoItem | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestData, setSuggestData] = useState<MemoSuggestTagsJson | null>(null);
+  const [suggestSelectedIds, setSuggestSelectedIds] = useState<string[]>([]);
+  const [suggestNewNames, setSuggestNewNames] = useState<string[]>([]);
+
+  const [draftSheetOpen, setDraftSheetOpen] = useState(false);
+  const [draftInput, setDraftInput] = useState('');
+  const [draftStyle, setDraftStyle] = useState<MemoDraftStyle>('brief');
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftResult, setDraftResult] = useState<MemoDraftFromTextJson | null>(null);
+
+  const [imageDraftOpen, setImageDraftOpen] = useState(false);
+  const [imageDraftLoading, setImageDraftLoading] = useState(false);
+  const [imageDraftError, setImageDraftError] = useState<string | null>(null);
+  const [imageDraft, setImageDraft] = useState<MemoDraftFromImageJson | null>(null);
+  const [imageDraftRaw, setImageDraftRaw] = useState<{ b64: string; mime: string } | null>(null);
+
+  const [dedupeRow, setDedupeRow] = useState<MemoItem | null>(null);
+  const [dedupeLoading, setDedupeLoading] = useState(false);
+  const [dedupeError, setDedupeError] = useState<string | null>(null);
+  const [dedupeData, setDedupeData] = useState<MemoDedupeHintsJson | null>(null);
+
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+  const [insightsData, setInsightsData] = useState<MemoCollectionInsightsJson | null>(null);
 
   const listRef = useRef<FlatList<ListRow>>(null);
   const convertingLockRef = useRef<string | null>(null);
@@ -320,6 +402,7 @@ export default function MemoListScreen() {
               : m,
           ),
         );
+        setAiModalExtras(saved.ai_extras ?? null);
         return { ok: true };
       }
     } catch (e) {
@@ -336,6 +419,11 @@ export default function MemoListScreen() {
           : m,
       ),
     );
+    setAiModalExtras({
+      ...(r.bullets?.length ? { bullets: r.bullets } : {}),
+      ...(r.suggested_action ? { suggested_action: r.suggested_action } : {}),
+      ...(r.draft_title ? { draft_title: r.draft_title } : {}),
+    });
     return { ok: true };
   }, []);
 
@@ -345,6 +433,7 @@ export default function MemoListScreen() {
         Alert.alert('内容为空', '请先为该备忘填写标题或正文。');
         return;
       }
+      setAiModalExtras(null);
       setAiModalId(row.id);
     },
     [],
@@ -470,6 +559,297 @@ export default function MemoListScreen() {
     router.push({ pathname: '/memo-edit/[id]', params: { id: 'new' } });
   }, [router]);
 
+  const openAiDraftSheet = useCallback(() => {
+    setDraftInput('');
+    setDraftStyle('brief');
+    setDraftError(null);
+    setDraftResult(null);
+    setDraftSheetOpen(true);
+  }, []);
+
+  const runImageDraft = useCallback(async (b64: string, mime: string) => {
+    setImageDraftLoading(true);
+    setImageDraftError(null);
+    setImageDraft(null);
+    setImageDraftRaw({ b64, mime });
+    try {
+      const r = await analyzeMemoDraftFromImage({
+        imageBase64: b64,
+        imageMimeType: mime,
+      });
+      if (!r.ok) {
+        setImageDraftError(r.error);
+        return;
+      }
+      setImageDraft(r.data);
+    } finally {
+      setImageDraftLoading(false);
+    }
+  }, []);
+
+  const openPhotoMemo = useCallback(() => {
+    void (async () => {
+      const pick = async () => {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          toast.warn('需要相册权限');
+          return;
+        }
+        return ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.85,
+          base64: true,
+        });
+      };
+      const camPerm = await ImagePicker.requestCameraPermissionsAsync();
+      Alert.alert('拍照建备忘', '选择图片来源', [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '相册',
+          onPress: () => {
+            void (async () => {
+              const result = await pick();
+              if (!result || result.canceled || !result.assets[0]?.base64) {
+                if (result && !result.canceled) toast.warn('无法读取图片数据');
+                return;
+              }
+              const asset = result.assets[0];
+              setImageDraftOpen(true);
+              await runImageDraft(asset.base64!, asset.mimeType?.trim() || 'image/jpeg');
+            })();
+          },
+        },
+        {
+          text: '拍照',
+          onPress: () => {
+            void (async () => {
+              if (!camPerm.granted) {
+                toast.warn('需要相机权限');
+                return;
+              }
+              const result = await ImagePicker.launchCameraAsync({
+                quality: 0.85,
+                base64: true,
+              });
+              if (result.canceled || !result.assets[0]?.base64) {
+                if (!result.canceled) toast.warn('无法读取图片数据');
+                return;
+              }
+              const asset = result.assets[0];
+              setImageDraftOpen(true);
+              await runImageDraft(asset.base64!, asset.mimeType?.trim() || 'image/jpeg');
+            })();
+          },
+        },
+      ]);
+    })();
+  }, [runImageDraft]);
+
+  const runDedupe = useCallback(
+    async (row: MemoItem) => {
+      setDedupeLoading(true);
+      setDedupeError(null);
+      setDedupeData(null);
+      try {
+        const ctx = memoContextForAiReview(row);
+        if (!ctx) {
+          setDedupeError('备忘内容为空');
+          return;
+        }
+        const candidates = pickCandidatesForDedupe(items, row.id).map(m =>
+          buildMemoAiSummaryItem(m, tagsByMemoId.get(m.id)),
+        );
+        const r = await analyzeMemoDedupeHints({
+          memoContextText: ctx,
+          currentMemoId: row.id,
+          candidates,
+        });
+        if (!r.ok) {
+          setDedupeError(r.error);
+          return;
+        }
+        setDedupeData(r.data);
+      } finally {
+        setDedupeLoading(false);
+      }
+    },
+    [items, tagsByMemoId],
+  );
+
+  const openDedupe = useCallback(
+    (row: MemoItem) => {
+      setDedupeRow(row);
+      void runDedupe(row);
+    },
+    [runDedupe],
+  );
+
+  const runInsights = useCallback(async () => {
+    setInsightsLoading(true);
+    setInsightsError(null);
+    setInsightsData(null);
+    try {
+      const recent = pickRecentMemosForInsights(items);
+      if (recent.length === 0) {
+        setInsightsError('近 7 天暂无备忘');
+        return;
+      }
+      const memos = recent.map(m => buildMemoAiSummaryItem(m, tagsByMemoId.get(m.id)));
+      const r = await analyzeMemoCollectionInsights({
+        periodLabel: '近 7 天',
+        memos,
+      });
+      if (!r.ok) {
+        setInsightsError(r.error);
+        return;
+      }
+      setInsightsData(r.data);
+    } finally {
+      setInsightsLoading(false);
+    }
+  }, [items, tagsByMemoId]);
+
+  const openInsights = useCallback(() => {
+    setInsightsOpen(true);
+    void runInsights();
+  }, [runInsights]);
+
+  const runConvertDraft = useCallback(async (row: MemoItem) => {
+    setConvertLoading(true);
+    setConvertError(null);
+    setConvertDraft(null);
+    try {
+      const ctx = memoContextForAiReview(row);
+      if (!ctx) {
+        setConvertError('备忘内容为空');
+        return;
+      }
+      const aiSummary = [row.ai_evaluation, row.ai_suggestions].filter(Boolean).join('\n').slice(0, 800);
+      const r = await analyzeMemoConvertDraft({
+        memoContextText: ctx,
+        target: 'auto',
+        aiSummary: aiSummary || undefined,
+      });
+      if (!r.ok) {
+        setConvertError(r.error);
+        return;
+      }
+      setConvertDraft(r.data);
+    } finally {
+      setConvertLoading(false);
+    }
+  }, []);
+
+  const openSmartConvert = useCallback(
+    (row: MemoItem) => {
+      setConvertRow(row);
+      void runConvertDraft(row);
+    },
+    [runConvertDraft],
+  );
+
+  const runSuggestTags = useCallback(
+    async (row: MemoItem) => {
+      setSuggestLoading(true);
+      setSuggestError(null);
+      setSuggestData(null);
+      setSuggestSelectedIds([]);
+      setSuggestNewNames([]);
+      try {
+        const ctx = memoContextForAiReview(row);
+        if (!ctx) {
+          setSuggestError('备忘内容为空');
+          return;
+        }
+        const catalog = allTags.map(t => ({ id: t.id, name: t.name }));
+        const existing = await getTagIdsByEntity('memo', row.id);
+        const r = await analyzeMemoSuggestTags({
+          memoContextText: ctx,
+          tags: catalog,
+          tagIds: existing,
+        });
+        if (!r.ok) {
+          setSuggestError(r.error);
+          return;
+        }
+        setSuggestData(r.data);
+        setSuggestSelectedIds(r.data.tag_ids);
+        setSuggestNewNames([]);
+      } finally {
+        setSuggestLoading(false);
+      }
+    },
+    [allTags],
+  );
+
+  const openSuggestTags = useCallback(
+    (row: MemoItem) => {
+      setSuggestRow(row);
+      void runSuggestTags(row);
+    },
+    [runSuggestTags],
+  );
+
+  const confirmSuggestTags = useCallback(async () => {
+    if (!suggestRow) return;
+    try {
+      const existing = await getTagIdsByEntity('memo', suggestRow.id);
+      const next = new Set(existing);
+      for (const id of suggestSelectedIds) next.add(id);
+      for (const name of suggestNewNames) {
+        const trimmed = name.trim();
+        if (!trimmed) continue;
+        const dup = allTags.find(t => t.name.trim().toLowerCase() === trimmed.toLowerCase());
+        if (dup) {
+          next.add(dup.id);
+          continue;
+        }
+        const tagId = makeTimestampEntityId('ptag_', 8);
+        await createMemoTag({ id: tagId, name: trimmed.slice(0, 20), color: '#64748B' });
+        next.add(tagId);
+      }
+      await setMemoTagIds(suggestRow.id, [...next]);
+      const map = await getTagsByEntityIds(
+        'memo',
+        items.map(m => m.id),
+      );
+      setTagsByMemoId(map);
+      const tags = await getMemoTags();
+      setAllTags(tags);
+      setSuggestRow(null);
+      toast.success('已更新标签');
+    } catch (e) {
+      toast.error(toUserMessage(e, '挂标签失败'));
+    }
+  }, [allTags, items, suggestNewNames, suggestRow, suggestSelectedIds]);
+
+  const generateDraftFromText = useCallback(async () => {
+    setDraftLoading(true);
+    setDraftError(null);
+    try {
+      const r = await analyzeMemoDraftFromText({ text: draftInput, style: draftStyle });
+      if (!r.ok) {
+        setDraftError(r.error);
+        setDraftResult(null);
+        return;
+      }
+      setDraftResult(r.data);
+    } finally {
+      setDraftLoading(false);
+    }
+  }, [draftInput, draftStyle]);
+
+  const useDraftIntoEditor = useCallback(
+    (d: MemoDraftFromTextJson) => {
+      setDraftSheetOpen(false);
+      router.push({
+        pathname: '/memo-edit/[id]',
+        params: { id: 'new', title: d.title, body: d.body_plain },
+      });
+    },
+    [router],
+  );
+
   const openRowActions = useCallback((row: MemoItem) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setActionRow(row);
@@ -548,7 +928,30 @@ export default function MemoListScreen() {
       title="备忘录"
       onBack={() => router.back()}
       headerRight={
-        <AppIconButton icon="add" size={26} color={primary} onPress={openNewMemo} accessibilityLabel="新建备忘" />
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <AppIconButton
+            icon="insights"
+            size={22}
+            color={primary}
+            onPress={openInsights}
+            accessibilityLabel="本周备忘小结"
+          />
+          <AppIconButton
+            icon="photo-camera"
+            size={22}
+            color={primary}
+            onPress={openPhotoMemo}
+            accessibilityLabel="拍照建备忘"
+          />
+          <AppIconButton
+            icon="auto-awesome"
+            size={24}
+            color={primary}
+            onPress={openAiDraftSheet}
+            accessibilityLabel="AI 起草"
+          />
+          <AppIconButton icon="add" size={26} color={primary} onPress={openNewMemo} accessibilityLabel="新建备忘" />
+        </View>
       }
       loading={loading}
       loadingHint="加载备忘…"
@@ -632,12 +1035,210 @@ export default function MemoListScreen() {
             danger={colors.danger}
             onPin={() => void togglePin(actionRow)}
             onAi={() => openAiModal(actionRow)}
+            onSmartConvert={() => openSmartConvert(actionRow)}
+            onSuggestTags={() => openSuggestTags(actionRow)}
+            onDedupe={() => openDedupe(actionRow)}
             onEdit={() => router.push({ pathname: '/memo-edit/[id]', params: { id: actionRow.id } })}
             onTodo={() => void performConvertToTodo(actionRow)}
             onProject={() => void performConvertToProject(actionRow)}
             onDelete={() => onDeleteMemo(actionRow)}
           />
         ) : null}
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={!!convertRow}
+        onClose={() => setConvertRow(null)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        {convertRow ? (
+          <MemoAiConvertDraftBody
+            colors={{ ink, muted, secondary, primary }}
+            loading={convertLoading}
+            error={convertError}
+            draft={convertDraft}
+            onRetry={() => void runConvertDraft(convertRow)}
+            onConfirmTodo={(todo: MemoConvertTodoDraft) => {
+              const row = convertRow;
+              setConvertRow(null);
+              void (async () => {
+                if (convertingLockRef.current) return;
+                convertingLockRef.current = row.id;
+                setConvertingMemoId(row.id);
+                try {
+                  const { taskId, title } = await createStandaloneTodoFromMemo(row, {
+                    title: todo.title,
+                    note: todo.note,
+                    priority: todo.priority,
+                  });
+                  withLayout(() => setItems(prev => prev.filter(m => m.id !== row.id)));
+                  Alert.alert('已转为待办', `「${title}」已加入待办列表，原备忘已删除。`, [
+                    { text: '知道了', style: 'cancel' },
+                    {
+                      text: '查看待办',
+                      onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }),
+                    },
+                  ]);
+                } catch (e) {
+                  toast.error(toUserMessage(e, '转换失败，请稍后重试'));
+                } finally {
+                  if (convertingLockRef.current === row.id) convertingLockRef.current = null;
+                  setConvertingMemoId(prev => (prev === row.id ? null : prev));
+                }
+              })();
+            }}
+            onConfirmProject={project => {
+              const row = convertRow;
+              setConvertRow(null);
+              void (async () => {
+                if (convertingLockRef.current) return;
+                convertingLockRef.current = row.id;
+                setConvertingMemoId(row.id);
+                try {
+                  const { projectId, name } = await createProjectFromMemoInInbox(row, {
+                    name: project.name,
+                    note: project.note,
+                  });
+                  withLayout(() => setItems(prev => prev.filter(m => m.id !== row.id)));
+                  Alert.alert('已转为项目', `「${name}」已加入收集箱，原备忘已删除。`, [
+                    { text: '知道了', style: 'cancel' },
+                    {
+                      text: '查看项目',
+                      onPress: () => router.push({ pathname: '/edit-project', params: { id: projectId } }),
+                    },
+                  ]);
+                } catch (e) {
+                  if (e instanceof Error && e.message === 'duplicate_name') {
+                    toast.warn('已有同名项目，请修改名称后再转换。');
+                  } else {
+                    toast.error(toUserMessage(e, '转换失败，请稍后重试'));
+                  }
+                } finally {
+                  if (convertingLockRef.current === row.id) convertingLockRef.current = null;
+                  setConvertingMemoId(prev => (prev === row.id ? null : prev));
+                }
+              })();
+            }}
+            onConfirmSplit={todos => {
+              const row = convertRow;
+              setConvertRow(null);
+              void (async () => {
+                if (convertingLockRef.current) return;
+                convertingLockRef.current = row.id;
+                setConvertingMemoId(row.id);
+                try {
+                  const { titles } = await createStandaloneTodosFromMemo(row, todos);
+                  withLayout(() => setItems(prev => prev.filter(m => m.id !== row.id)));
+                  Alert.alert('已拆分为待办', `已创建 ${titles.length} 条待办，原备忘已删除。`);
+                } catch (e) {
+                  toast.error(toUserMessage(e, '拆分失败，请稍后重试'));
+                } finally {
+                  if (convertingLockRef.current === row.id) convertingLockRef.current = null;
+                  setConvertingMemoId(prev => (prev === row.id ? null : prev));
+                }
+              })();
+            }}
+          />
+        ) : null}
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={!!suggestRow}
+        onClose={() => setSuggestRow(null)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        {suggestRow ? (
+          <MemoAiSuggestTagsBody
+            colors={{ ink, muted, secondary, primary }}
+            loading={suggestLoading}
+            error={suggestError}
+            catalog={allTags.map(t => ({ id: t.id, name: t.name }))}
+            suggestion={suggestData}
+            selectedIds={suggestSelectedIds}
+            selectedNewNames={suggestNewNames}
+            onToggleId={id =>
+              setSuggestSelectedIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]))
+            }
+            onToggleNewName={name =>
+              setSuggestNewNames(prev =>
+                prev.includes(name) ? prev.filter(x => x !== name) : [...prev, name],
+              )
+            }
+            onRetry={() => void runSuggestTags(suggestRow)}
+            onConfirm={() => void confirmSuggestTags()}
+          />
+        ) : null}
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={draftSheetOpen}
+        onClose={() => setDraftSheetOpen(false)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        <MemoAiDraftFromTextBody
+          colors={{ ink, muted, secondary, primary }}
+          loading={draftLoading}
+          error={draftError}
+          draft={draftResult}
+          input={draftInput}
+          style={draftStyle}
+          onChangeInput={setDraftInput}
+          onChangeStyle={setDraftStyle}
+          onGenerate={() => void generateDraftFromText()}
+          onUseDraft={useDraftIntoEditor}
+        />
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={imageDraftOpen}
+        onClose={() => setImageDraftOpen(false)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        <MemoAiDraftFromImageBody
+          colors={{ ink, muted, secondary, primary }}
+          loading={imageDraftLoading}
+          error={imageDraftError}
+          draft={imageDraft}
+          onRetry={() => {
+            if (imageDraftRaw) void runImageDraft(imageDraftRaw.b64, imageDraftRaw.mime);
+            else openPhotoMemo();
+          }}
+          onUseDraft={d => {
+            setImageDraftOpen(false);
+            router.push({
+              pathname: '/memo-edit/[id]',
+              params: { id: 'new', title: d.title, body: d.body_plain },
+            });
+          }}
+        />
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={!!dedupeRow}
+        onClose={() => setDedupeRow(null)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        {dedupeRow ? (
+          <MemoAiDedupeBody
+            colors={{ ink, muted, secondary, primary }}
+            loading={dedupeLoading}
+            error={dedupeError}
+            data={dedupeData}
+            titleById={new Map(items.map(m => [m.id, memoListPreviewTitle(m)]))}
+            onRetry={() => void runDedupe(dedupeRow)}
+            onOpenMemo={id => router.push({ pathname: '/memo-view/[id]', params: { id } })}
+          />
+        ) : null}
+      </MemoCenterSheet>
+
+      <MemoCenterSheet
+        visible={insightsOpen}
+        onClose={() => setInsightsOpen(false)}
+        style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
+        <MemoAiInsightsBody
+          colors={{ ink, muted, secondary, primary }}
+          loading={insightsLoading}
+          error={insightsError}
+          data={insightsData}
+          titleById={new Map(items.map(m => [m.id, memoListPreviewTitle(m)]))}
+          onRetry={() => void runInsights()}
+          onOpenMemo={id => router.push({ pathname: '/memo-view/[id]', params: { id } })}
+        />
       </MemoCenterSheet>
 
       <MemoCenterSheet
@@ -655,16 +1256,93 @@ export default function MemoListScreen() {
 
       <MemoCenterSheet
         visible={!!aiModalItem}
-        onClose={() => setAiModalId(null)}
+        onClose={() => {
+          setAiModalId(null);
+          setAiModalExtras(null);
+        }}
         style={[styles.aiSheet, { backgroundColor: colors.surface, borderColor: line }]}>
         {aiModalItem ? (
           <AiSheetBody
             item={aiModalItem}
+            extras={aiModalExtras}
             ink={ink}
             muted={muted}
             secondary={secondary}
+            primary={primary}
             loading={aiModalLoading}
+            converting={convertingMemoId === aiModalItem.id}
             onRegenerate={() => void onModalRegenerate()}
+            onConvertTodo={() => {
+              const row = aiModalItem;
+              const title = aiModalExtras?.draft_title?.trim();
+              setAiModalId(null);
+              setAiModalExtras(null);
+              void (async () => {
+                if (convertingLockRef.current) return;
+                convertingLockRef.current = row.id;
+                setConvertingMemoId(row.id);
+                try {
+                  const { taskId, title: t } = await createStandaloneTodoFromMemo(
+                    row,
+                    title ? { title } : undefined,
+                  );
+                  withLayout(() => setItems(prev => prev.filter(m => m.id !== row.id)));
+                  Alert.alert('已转为待办', `「${t}」已加入待办列表，原备忘已删除。`, [
+                    { text: '知道了', style: 'cancel' },
+                    {
+                      text: '查看待办',
+                      onPress: () => router.push({ pathname: '/task/[id]', params: { id: taskId } }),
+                    },
+                  ]);
+                } catch (e) {
+                  toast.error(toUserMessage(e, '转换失败，请稍后重试'));
+                } finally {
+                  if (convertingLockRef.current === row.id) convertingLockRef.current = null;
+                  setConvertingMemoId(prev => (prev === row.id ? null : prev));
+                }
+              })();
+            }}
+            onConvertProject={() => {
+              const row = aiModalItem;
+              const name = aiModalExtras?.draft_title?.trim();
+              setAiModalId(null);
+              setAiModalExtras(null);
+              void (async () => {
+                if (convertingLockRef.current) return;
+                convertingLockRef.current = row.id;
+                setConvertingMemoId(row.id);
+                try {
+                  const { projectId, name: n } = await createProjectFromMemoInInbox(
+                    row,
+                    name ? { name } : undefined,
+                  );
+                  withLayout(() => setItems(prev => prev.filter(m => m.id !== row.id)));
+                  Alert.alert('已转为项目', `「${n}」已加入收集箱，原备忘已删除。`, [
+                    { text: '知道了', style: 'cancel' },
+                    {
+                      text: '查看项目',
+                      onPress: () => router.push({ pathname: '/edit-project', params: { id: projectId } }),
+                    },
+                  ]);
+                } catch (e) {
+                  if (e instanceof Error && e.message === 'duplicate_name') {
+                    toast.warn('已有同名项目，请修改名称后再转换。');
+                  } else {
+                    toast.error(toUserMessage(e, '转换失败，请稍后重试'));
+                  }
+                } finally {
+                  if (convertingLockRef.current === row.id) convertingLockRef.current = null;
+                  setConvertingMemoId(prev => (prev === row.id ? null : prev));
+                }
+              })();
+            }}
+            onSmartConvert={() => {
+              const row = aiModalItem;
+              setAiModalId(null);
+              setAiModalExtras(null);
+              setConvertRow(row);
+              void runConvertDraft(row);
+            }}
           />
         ) : null}
       </MemoCenterSheet>
@@ -678,6 +1356,9 @@ function RowActionSheet({
   danger,
   onPin,
   onAi,
+  onSmartConvert,
+  onSuggestTags,
+  onDedupe,
   onEdit,
   onTodo,
   onProject,
@@ -688,6 +1369,9 @@ function RowActionSheet({
   danger: string;
   onPin: () => void;
   onAi: () => void;
+  onSmartConvert: () => void;
+  onSuggestTags: () => void;
+  onDedupe: () => void;
   onEdit: () => void;
   onTodo: () => void;
   onProject: () => void;
@@ -701,6 +1385,9 @@ function RowActionSheet({
   const options: { key: string; label: string; color?: string; action: () => void }[] = [
     { key: 'pin', label: row.is_pinned ? '取消置顶' : '置顶', action: onPin },
     { key: 'ai', label: 'AI 分析', action: onAi },
+    { key: 'smart', label: '智能拆分', action: onSmartConvert },
+    { key: 'tags', label: '建议标签', action: onSuggestTags },
+    { key: 'dedupe', label: '相似检测', action: onDedupe },
     { key: 'edit', label: '编辑', action: onEdit },
     { key: 'todo', label: '转为待办', action: onTodo },
     { key: 'project', label: '转为项目', action: onProject },
@@ -762,22 +1449,46 @@ function SortSheetBody({
 
 function AiSheetBody({
   item,
+  extras,
   ink,
   muted,
   secondary,
+  primary,
   loading,
+  converting,
   onRegenerate,
+  onConvertTodo,
+  onConvertProject,
+  onSmartConvert,
 }: {
   item: MemoItem;
+  extras: MemoAiReviewExtras | null;
   ink: string;
   muted: string;
   secondary: string;
+  primary: string;
   loading: boolean;
+  converting: boolean;
   onRegenerate: () => void;
+  onConvertTodo: () => void;
+  onConvertProject: () => void;
+  onSmartConvert: () => void;
 }) {
   const requestClose = useMemoCenterSheetClose();
   const evaluation = item.ai_evaluation?.trim() || '';
   const suggestions = item.ai_suggestions?.trim() || '';
+  const bullets = extras?.bullets?.filter(Boolean) ?? [];
+  const action = extras?.suggested_action;
+  const actionLabel =
+    action === 'todo'
+      ? '转待办'
+      : action === 'project'
+        ? '转项目'
+        : action === 'archive'
+          ? '可归档'
+          : action === 'keep'
+            ? '建议保留'
+            : null;
   return (
     <>
       <View style={styles.aiSheetHead}>
@@ -795,12 +1506,53 @@ function AiSheetBody({
       </View>
       <Text style={[styles.aiKicker, { color: muted }]}>评价</Text>
       <Text style={[styles.aiBody, { color: ink }]}>{evaluation || '尚未生成'}</Text>
+      {bullets.length > 0 ? (
+        <View style={{ marginTop: 10, gap: 4 }}>
+          {bullets.map((b, i) => (
+            <Text key={`${b}-${i}`} style={[styles.aiBody, { color: muted }]}>
+              · {b}
+            </Text>
+          ))}
+        </View>
+      ) : null}
       <Text style={[styles.aiKicker, { color: muted, marginTop: 14 }]}>建议</Text>
       <Text style={[styles.aiBody, { color: secondary }]}>{suggestions || '尚未生成'}</Text>
+      {actionLabel ? (
+        <Text style={[styles.aiKicker, { color: primary, marginTop: 12 }]}>建议动作：{actionLabel}</Text>
+      ) : null}
+      {extras?.draft_title ? (
+        <Text style={[styles.aiBody, { color: muted, marginTop: 4 }]}>预填标题：{extras.draft_title}</Text>
+      ) : null}
+      {action === 'todo' ? (
+        <AppButton
+          label="按建议转待办"
+          loading={converting}
+          disabled={loading || converting}
+          onPress={onConvertTodo}
+          style={styles.regenBtn}
+        />
+      ) : null}
+      {action === 'project' ? (
+        <AppButton
+          label="按建议转项目"
+          loading={converting}
+          disabled={loading || converting}
+          onPress={onConvertProject}
+          style={styles.regenBtn}
+        />
+      ) : null}
+      {action === 'todo' || action === 'project' ? (
+        <AppButton
+          label="打开智能拆分预览"
+          disabled={loading || converting}
+          onPress={onSmartConvert}
+          style={styles.regenBtn}
+        />
+      ) : null}
       <AppButton
         label={evaluation ? '重新生成' : '开始分析'}
         loading={loading}
-        disabled={loading}
+        disabled={loading || converting}
         onPress={onRegenerate}
         style={styles.regenBtn}
       />

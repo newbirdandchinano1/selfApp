@@ -42,6 +42,8 @@ export type MineViewProps = {
   refreshControl?: React.ReactElement<RefreshControlProps>;
   onSeason: (season: SeasonFilter) => void;
   onOpenSheet: (key: string) => void;
+  /** 使用率区 → 闲置洞察 */
+  onIdleInsights?: () => void;
 };
 
 const FALLBACK_SWATCHES = ['#C4B398', '#839A76', '#8FAFBB', '#BF8E62', '#A89B8C', '#9AA7B5'] as const;
@@ -161,6 +163,7 @@ export const MineView = memo(function MineView({
   refreshControl,
   onSeason,
   onOpenSheet,
+  onIdleInsights,
 }: MineViewProps) {
   void _categories;
   const { w } = useWardrobeTheme();
@@ -237,7 +240,12 @@ export const MineView = memo(function MineView({
       </FoldRiseIn>
 
       <FoldRiseIn animate={animate} index={3} fromY={16}>
-        <View style={styles.usageCard}>
+        <Pressable
+          style={styles.usageCard}
+          onPress={onIdleInsights}
+          disabled={!onIdleInsights}
+          accessibilityRole={onIdleInsights ? 'button' : undefined}
+          accessibilityLabel="闲置洞察">
           <UsageRing percent={usagePercent} size={66} gradient={false} animate={animate} />
           <View style={styles.useCopy}>
             <View style={styles.kickerRow}>
@@ -247,6 +255,7 @@ export const MineView = memo(function MineView({
             <Text style={styles.useTitle}>衣橱使用率 {usagePercent}%</Text>
             <Text style={styles.useNote}>
               本月穿过 {wornThisMonth} 件 · {neverWorn} 件仍在等待第一次出场
+              {onIdleInsights ? ' · 点按闲置洞察' : ''}
             </Text>
             <View style={styles.useBars}>
               {sparkHeights.map((h, i) => (
@@ -263,7 +272,7 @@ export const MineView = memo(function MineView({
               ))}
             </View>
           </View>
-        </View>
+        </Pressable>
       </FoldRiseIn>
 
       <FoldRiseIn animate={animate} index={4} fromY={16}>

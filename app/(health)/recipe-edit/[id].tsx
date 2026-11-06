@@ -26,6 +26,11 @@ import {
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { loadRecipeCategoryMeta, sortCategoriesByMeta } from '@/lib/recipe-category-meta';
 import { getRecipePalette } from '@/lib/recipe-theme';
+import {
+  parseRecipeFromImage,
+  parseRecipeFromText,
+  type RecipeParseDraft,
+} from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import { StoredImage } from '@/components/stored-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -33,6 +38,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -43,10 +49,18 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+const AI_TEXT_MAX = 4000;
+/** RN Modal 卸掉后再开系统相机/相册需要短暂空窗，否则触摸层易卡死（iOS/Android 均有） */
+const MODAL_SETTLE_MS = 320;
+
 function normalizeId(raw: string | string[] | undefined): string {
   if (typeof raw === 'string') return raw;
   if (Array.isArray(raw) && raw[0]) return raw[0];
   return '';
+}
+
+function runAfterModalSettles(action: () => void) {
+  setTimeout(action, MODAL_SETTLE_MS);
 }
 
 export default function RecipeEditScreen() {
@@ -77,11 +91,185 @@ export default function RecipeEditScreen() {
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aiModalVisible, setAiModalVisible] = useState(false);
+  /** menu：选入口；text：粘贴文本。勿再叠 AppDialogHost（同为 Modal，双层会卡触摸） */
+  const [aiSheetMode, setAiSheetMode] = useState<'menu' | 'text'>('menu');
+  const [aiText, setAiText] = useState('');
+  const [aiParsing, setAiParsing] = useState(false);
+  const aiParseGenRef = React.useRef(0);
 
   const selectedCategoryName = useMemo(() => {
     if (!selectedCategoryId) return '';
     return categories.find(c => c.id === selectedCategoryId)?.name ?? '';
   }, [categories, selectedCategoryId]);
+
+  const categoryHints = useMemo(
+    () => categories.map(c => c.name).filter(Boolean),
+    [categories],
+  );
+
+  const applyRecipeDraft = useCallback(
+    (draft: RecipeParseDraft, opts?: { finishedImageUri?: string | null }) => {
+      if (draft.title.trim()) {
+        const t = draft.title.trim();
+        setTitle(t.length > RECIPE_TITLE_MAX ? t.slice(0, RECIPE_TITLE_MAX) : t);
+      }
+      if (draft.category_hint) {
+        const hint = draft.category_hint.trim().toLowerCase();
+        const matched = categories.find(c => c.name.trim().toLowerCase() === hint);
+        if (matched) setSelectedCategoryId(matched.id);
+      }
+      if (draft.ingredients.length > 0) {
+        setIngredientRows(
+          ensureMinIngredientRows(
+            draft.ingredients.map(ing => ({
+              name: ing.name,
+              amount: ing.amount,
+              ...(ing.remark ? { remark: ing.remark } : {}),
+            })),
+          ),
+        );
+      }
+      if (draft.steps.length > 0) {
+        setStepLines(ensureMinLines(draft.steps));
+      }
+      if (draft.notes.trim()) {
+        const n = draft.notes.trim();
+        setNotes(n.length > RECIPE_NOTES_MAX ? n.slice(0, RECIPE_NOTES_MAX) : n);
+      }
+      if (opts && 'finishedImageUri' in opts && opts.finishedImageUri) {
+        setFinishedImageUri(opts.finishedImageUri);
+      }
+    },
+    [categories],
+  );
+
+  const closeAiModal = useCallback(() => {
+    Keyboard.dismiss();
+    setAiModalVisible(false);
+    setAiSheetMode('menu');
+  }, []);
+
+  const runAiParseFromText = useCallback(async () => {
+    const text = aiText.trim();
+    if (!text) {
+      toast.warn('请粘贴或输入菜谱文本');
+      return;
+    }
+    // 先关弹窗再请求：长耗时 AI 不要把界面锁在 Modal 里（iOS 上极像卡死）
+    Keyboard.dismiss();
+    setAiModalVisible(false);
+    setAiSheetMode('menu');
+    const gen = ++aiParseGenRef.current;
+    setAiParsing(true);
+    try {
+      const r = await parseRecipeFromText({ text, categoryHints });
+      if (gen !== aiParseGenRef.current) return;
+      if (!r.ok) {
+        toast.error(r.error || 'AI 解析失败');
+        return;
+      }
+      applyRecipeDraft(r.data);
+      setAiText('');
+      toast.success('已填入草稿，请确认后保存');
+    } catch (e) {
+      if (gen !== aiParseGenRef.current) return;
+      toast.error(toUserMessage(e, 'AI 解析失败，请稍后重试'));
+    } finally {
+      if (gen === aiParseGenRef.current) setAiParsing(false);
+    }
+  }, [aiText, applyRecipeDraft, categoryHints]);
+
+  const runAiParseFromImageAsset = useCallback(
+    async (asset: ImagePicker.ImagePickerAsset) => {
+      const b64 = asset.base64;
+      if (!b64) {
+        toast.error('无法读取图片数据');
+        return;
+      }
+      const mime = asset.mimeType?.trim() || 'image/jpeg';
+      const uri = asset.uri;
+      const gen = ++aiParseGenRef.current;
+      setAiParsing(true);
+      try {
+        const r = await parseRecipeFromImage({
+          imageBase64: b64,
+          imageMimeType: mime,
+          categoryHints,
+        });
+        if (gen !== aiParseGenRef.current) return;
+        if (!r.ok) {
+          toast.error(r.error || 'AI 识图失败');
+          return;
+        }
+        applyRecipeDraft(r.data, { finishedImageUri: uri });
+        toast.success('已识图填入，请确认后保存');
+      } catch (e) {
+        if (gen !== aiParseGenRef.current) return;
+        toast.error(toUserMessage(e, 'AI 识图失败，请稍后重试'));
+      } finally {
+        if (gen === aiParseGenRef.current) setAiParsing(false);
+      }
+    },
+    [applyRecipeDraft, categoryHints],
+  );
+
+  /** 先关本页 Modal，再开系统相机/相册；勿叠 AppDialog */
+  const pickAiImage = useCallback(
+    (source: 'camera' | 'library') => {
+      Keyboard.dismiss();
+      setAiModalVisible(false);
+      setAiSheetMode('menu');
+      runAfterModalSettles(() => {
+        void (async () => {
+          try {
+            if (source === 'camera') {
+              const perm = await ImagePicker.requestCameraPermissionsAsync();
+              if (!perm.granted) {
+                toast.warn('需要相机权限才能拍照');
+                return;
+              }
+              const shot = await ImagePicker.launchCameraAsync({
+                allowsEditing: false,
+                quality: 0.7,
+                base64: true,
+              });
+              const asset = shot.assets?.[0];
+              if (shot.canceled || !asset?.uri) return;
+              await runAiParseFromImageAsset(asset);
+              return;
+            }
+            const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (!perm.granted) {
+              toast.warn('需要相册权限才能选图');
+              return;
+            }
+            const picked = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ['images'],
+              allowsEditing: false,
+              quality: 0.7,
+              base64: true,
+            });
+            const asset = picked.assets?.[0];
+            if (picked.canceled || !asset?.uri) return;
+            await runAiParseFromImageAsset(asset);
+          } catch (e) {
+            toast.error(toUserMessage(e, '打开相机/相册失败'));
+          }
+        })();
+      });
+    },
+    [runAiParseFromImageAsset],
+  );
+
+  const openAiEntry = useCallback(() => {
+    if (aiParsing) {
+      toast.warn('正在解析中，请稍候');
+      return;
+    }
+    setAiSheetMode('menu');
+    setAiModalVisible(true);
+  }, [aiParsing]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -354,6 +542,29 @@ export default function RecipeEditScreen() {
             </Pressable>
           ) : null}
 
+          <Pressable
+            onPress={openAiEntry}
+            disabled={saving || loading || aiParsing}
+            style={({ pressed }) => [
+              styles.aiFillBtn,
+              {
+                backgroundColor: p.accentSoft,
+                borderColor: p.border,
+                opacity: pressed || saving || loading || aiParsing ? 0.7 : 1,
+              },
+            ]}
+          >
+            {aiParsing ? (
+              <ActivityIndicator size="small" color={p.accent} />
+            ) : (
+              <MaterialIcons name="auto-awesome" size={18} color={p.accent} />
+            )}
+            <Text style={[styles.aiFillBtnText, { color: p.accent }]}>
+              {aiParsing ? 'AI 解析中…' : 'AI 填入'}
+            </Text>
+            <Text style={[styles.aiFillBtnHint, { color: p.outlineMuted }]}>文本 / 识图</Text>
+          </Pressable>
+
           <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
             <Text style={[styles.sectionLabel, { color: p.text }]}>基本信息</Text>
             <Text style={[styles.label, { color: p.outline }]}>分类</Text>
@@ -447,6 +658,125 @@ export default function RecipeEditScreen() {
           </View>
         </ScrollView>
       </CrudEditScreen>
+
+      <Modal
+        transparent
+        visible={aiModalVisible}
+        animationType="fade"
+        onRequestClose={closeAiModal}
+      >
+        {/* 遮罩与内容分离：勿用外层 Pressable 包裹 TextInput，iOS 易卡触摸/焦点 */}
+        <View style={[styles.modalOverlay, { backgroundColor: p.overlay }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeAiModal} accessibilityLabel="关闭" />
+          <View style={[styles.modalCard, { backgroundColor: p.card, borderColor: p.border }]}>
+            {aiSheetMode === 'menu' ? (
+              <>
+                <Text style={[styles.modalTitle, { color: p.text }]}>AI 填入</Text>
+                <Text style={[styles.aiModalHint, { color: p.outlineMuted }]}>
+                  解析后写入表单草稿，确认后再保存
+                </Text>
+                <Pressable
+                  onPress={() => setAiSheetMode('text')}
+                  style={({ pressed }) => [
+                    styles.aiMenuBtn,
+                    {
+                      backgroundColor: p.accentSoft,
+                      borderColor: p.border,
+                      opacity: pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="content-paste" size={18} color={p.accent} />
+                  <Text style={[styles.aiMenuBtnText, { color: p.text }]}>粘贴文本</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => pickAiImage('camera')}
+                  style={({ pressed }) => [
+                    styles.aiMenuBtn,
+                    {
+                      backgroundColor: p.inputBg,
+                      borderColor: p.border,
+                      opacity: pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="photo-camera" size={18} color={p.primary} />
+                  <Text style={[styles.aiMenuBtnText, { color: p.text }]}>拍照识图</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => pickAiImage('library')}
+                  style={({ pressed }) => [
+                    styles.aiMenuBtn,
+                    {
+                      backgroundColor: p.inputBg,
+                      borderColor: p.border,
+                      opacity: pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="photo-library" size={18} color={p.primary} />
+                  <Text style={[styles.aiMenuBtnText, { color: p.text }]}>相册识图</Text>
+                </Pressable>
+                <Pressable
+                  onPress={closeAiModal}
+                  style={({ pressed }) => [
+                    styles.aiModalCancel,
+                    { borderColor: p.border, marginTop: 4, opacity: pressed ? 0.7 : 1 },
+                  ]}
+                >
+                  <Text style={{ color: p.textSecondary, fontWeight: '700' }}>取消</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.modalTitle, { color: p.text }]}>粘贴菜谱文本</Text>
+                <Text style={[styles.aiModalHint, { color: p.outlineMuted }]}>
+                  一句话、配料表或完整步骤均可；解析后预填，确认再保存
+                </Text>
+                <TextInput
+                  value={aiText}
+                  onChangeText={x => setAiText(x.length > AI_TEXT_MAX ? x.slice(0, AI_TEXT_MAX) : x)}
+                  placeholder="例如：番茄炒蛋：鸡蛋3个，番茄2个…"
+                  placeholderTextColor={p.outlineMuted}
+                  multiline
+                  textAlignVertical="top"
+                  style={[
+                    styles.aiTextInput,
+                    { color: p.text, borderColor: p.border, backgroundColor: p.inputBg },
+                  ]}
+                />
+                <Text style={[styles.aiCharCount, { color: p.outlineMuted }]}>
+                  {aiText.length} / {AI_TEXT_MAX}
+                </Text>
+                <View style={styles.aiModalActions}>
+                  <Pressable
+                    onPress={() => setAiSheetMode('menu')}
+                    style={({ pressed }) => [
+                      styles.aiModalCancel,
+                      { borderColor: p.border, opacity: pressed ? 0.7 : 1 },
+                    ]}
+                  >
+                    <Text style={{ color: p.textSecondary, fontWeight: '700' }}>返回</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void runAiParseFromText()}
+                    disabled={!aiText.trim()}
+                    style={({ pressed }) => [
+                      styles.aiModalSubmit,
+                      {
+                        backgroundColor: p.primary,
+                        opacity: pressed || !aiText.trim() ? 0.65 : 1,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.aiModalSubmitText}>解析填入</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         transparent
@@ -578,6 +908,62 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     paddingVertical: 6,
   },
+  aiFillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  aiFillBtnText: { fontSize: 15, fontWeight: '800' },
+  aiFillBtnHint: { marginLeft: 'auto', fontSize: 12, fontWeight: '600' },
+  aiModalHint: { fontSize: 12, fontWeight: '600', marginBottom: 10, lineHeight: 18 },
+  aiMenuBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    marginBottom: 8,
+  },
+  aiMenuBtnText: { fontSize: 15, fontWeight: '700' },
+  aiTextInput: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontSize: 15,
+    minHeight: 140,
+    lineHeight: 22,
+  },
+  aiCharCount: { fontSize: 11, fontWeight: '600', textAlign: 'right', marginTop: 6 },
+  aiModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  aiModalCancel: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  aiModalSubmit: {
+    flex: 1.2,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  aiModalSubmitText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   categoryPicker: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -597,6 +983,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   modalCard: {
+    zIndex: 1,
     borderWidth: 1,
     borderRadius: 20,
     paddingHorizontal: 16,

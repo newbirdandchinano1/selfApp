@@ -11,6 +11,7 @@ import {
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { calculateCashFlowMetrics, type CashFlowMetrics } from '@/lib/cash-flow/cash-flow-metrics';
 import type { CashFlowState } from '@/lib/repositories/cash-flow/cash-flow.types';
+import { analyzeFinanceSimulateAdvice } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -318,7 +319,7 @@ export function CashFlowFoldSimulator({
   const monthsSim = monthsToCover(simMetrics.freedomProgress, simGainPerMonth, 50);
   const delayMonths = monthsSim - monthsBase;
 
-  const aiTip = useMemo(() => {
+  const ruleAiTip = useMemo(() => {
     if (deltaFcf >= 0 && deltaProgress >= 0) {
       return '此情景对自由现金流与覆盖率均为正向，可考虑推进；仍建议保留至少 6 个月应急金。';
     }
@@ -330,6 +331,73 @@ export function CashFlowFoldSimulator({
     }
     return `自由现金流每月减少 ${formatMoney(Math.abs(deltaFcf))}。可对比「首付更低方案」，或先把应急金补到 6 个月再决策。`;
   }, [deltaFcf, deltaProgress, downPct, extraOut, simMetrics.freeCashFlow]);
+
+  const [aiTip, setAiTip] = useState(ruleAiTip);
+  const [aiTipLoading, setAiTipLoading] = useState(false);
+  const aiTipReqId = useRef(0);
+
+  useEffect(() => {
+    setAiTip(ruleAiTip);
+    const reqId = ++aiTipReqId.current;
+    const timer = setTimeout(() => {
+      const emergencyMonths =
+        monthlyOut > 0 ? Math.max(0, currentMetrics.freeCashFlow / Math.max(1, monthlyOut)) : 0;
+      const summary = [
+        `情景：${SCENARIO_PRESETS[scenario].label}`,
+        `房屋总价 ¥${price}，首付 ${downPct}%（¥${downPayment}），贷款本金 ¥${loanPrincipal}`,
+        `月流入 ¥${monthlyIn}，月流出 ¥${monthlyOut}`,
+        `当前 FCF ¥${currentMetrics.freeCashFlow.toFixed(0)}，自由进度 ${currentMetrics.freedomProgress.toFixed(1)}%`,
+        `模拟后 FCF ¥${simMetrics.freeCashFlow.toFixed(0)}，自由进度 ${simMetrics.freedomProgress.toFixed(1)}%`,
+        `FCF 差分 ${deltaFcf >= 0 ? '+' : ''}${deltaFcf.toFixed(0)}，进度差分 ${deltaProgress >= 0 ? '+' : ''}${deltaProgress.toFixed(1)} pt`,
+        `达成 50% 覆盖率预计变化：${delayMonths === 0 ? '几乎不变' : delayMonths > 0 ? `推迟 ${delayMonths} 个月` : `提前 ${Math.abs(delayMonths)} 个月`}`,
+        `应急金粗算（FCF/月流出）：约 ${emergencyMonths.toFixed(1)} 个月`,
+      ].join('\n');
+      setAiTipLoading(true);
+      void analyzeFinanceSimulateAdvice({ summaryText: summary })
+        .then((result) => {
+          if (aiTipReqId.current !== reqId) return;
+          if (result.ok && result.data.advice.trim()) {
+            const risk =
+              result.data.risk_level === 'high'
+                ? '（风险偏高）'
+                : result.data.risk_level === 'medium'
+                  ? '（需谨慎）'
+                  : result.data.risk_level === 'low'
+                    ? '（风险可控）'
+                    : '';
+            setAiTip(`${result.data.advice.trim()}${risk}`);
+          } else {
+            setAiTip(ruleAiTip);
+          }
+        })
+        .catch(() => {
+          if (aiTipReqId.current !== reqId) return;
+          setAiTip(ruleAiTip);
+        })
+        .finally(() => {
+          if (aiTipReqId.current === reqId) setAiTipLoading(false);
+        });
+    }, 650);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [
+    currentMetrics.freeCashFlow,
+    currentMetrics.freedomProgress,
+    delayMonths,
+    deltaFcf,
+    deltaProgress,
+    downPayment,
+    downPct,
+    loanPrincipal,
+    monthlyIn,
+    monthlyOut,
+    price,
+    ruleAiTip,
+    scenario,
+    simMetrics.freeCashFlow,
+    simMetrics.freedomProgress,
+  ]);
 
   const handleSave = useCallback(() => {
     showToast('已保存决策模拟', 'success');
@@ -516,7 +584,9 @@ export function CashFlowFoldSimulator({
         <View style={[styles.aiInsight, { backgroundColor: aiBg, borderColor: aiBorder }]}>
           <MaterialIcons name="auto-awesome" size={14} color={ff.amber} style={{ marginTop: 2 }} />
           <Text style={[styles.aiBody, { color: isDark ? ff.ink2 : '#6D6658' }]}>
-            <Text style={{ fontWeight: '700', color: isDark ? ff.ink : '#514B40' }}>AI 建议：</Text>
+            <Text style={{ fontWeight: '700', color: isDark ? ff.ink : '#514B40' }}>
+              {aiTipLoading ? 'AI 建议（更新中）：' : 'AI 建议：'}
+            </Text>
             {aiTip}
           </Text>
         </View>

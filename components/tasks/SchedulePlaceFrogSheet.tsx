@@ -13,9 +13,20 @@ import {
 import { fetchFrogCandidates, type FrogCandidate } from '@/lib/frog-candidates-api';
 import { DEFAULT_PROJECT_TAG_COLOR } from '@/lib/repositories/projects/project-tag.types';
 import { getProjectTags } from '@/lib/repositories/projects/project-tag';
-import { breakIntersectingInterval, formatMinutesAsHm } from '@/lib/schedule/axis';
+import {
+  getProjectTaskTreeMap,
+  type TaskTreeNode,
+} from '@/lib/repositories/tasks/task';
+import {
+  breakIntersectingInterval,
+  formatMinutesAsHm,
+  SCHEDULE_DAY_END_MAX_MINUTES,
+} from '@/lib/schedule/axis';
 import { formatEventDuration } from '@/lib/schedule/timeline/layout';
+import { semanticBucketsForAxis } from '@/lib/schedule/timeline/labels';
 import type { ScheduleBreak, ScheduleSubjectKind } from '@/lib/schedule/types';
+import { addDaysToYmd, formatYmd, parseYmd } from '@/lib/date';
+import { isEditableScheduleDay } from '@/lib/schedule/week';
 import { isTaskDueOverdue } from '@/lib/standalone-todo-visibility';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -96,6 +107,8 @@ type Props = {
   defaultStartMinutes?: number;
   /** 阶段 G：分钟模式默认结束分钟（通常为点选格终点） */
   defaultEndMinutes?: number;
+  /** 弹窗内改日期时同步父级（切日视图等） */
+  onAssignYmdChange?: (ymd: string) => void;
   onConfirm: (result: SchedulePlaceResult) => Promise<void> | void;
 };
 
@@ -121,6 +134,17 @@ function formatAssignTitle(ymd: string): string {
   const d = new Date(Number(m[1]), month - 1, day);
   const wd = Number.isNaN(d.getTime()) ? '' : WEEKDAY_CN[d.getDay()] ?? '';
   return `${month}/${day}${wd ? ` ${wd}` : ''}`;
+}
+
+function formatAssignDayChip(ymd: string, todayYmd: string): string {
+  if (ymd === todayYmd) return '今天';
+  if (ymd === addDaysToYmd(todayYmd, 1)) return '明天';
+  if (ymd === addDaysToYmd(todayYmd, 2)) return '后天';
+  return formatAssignTitle(ymd);
+}
+
+function ymdToPickerDate(ymd: string, fallbackYmd: string): Date {
+  return parseYmd(ymd) ?? parseYmd(fallbackYmd) ?? new Date();
 }
 
 function priorityLabel(p: number): string {
@@ -254,10 +278,180 @@ function isLockedByProjects(it: FrogCandidate, locked: Set<string>): boolean {
   return false;
 }
 
-/** 轴分钟 → HH:MM 展示串（支持跨午夜，如 25:30） */
+type ProjectPlaceGroup = {
+  key: string;
+  projectId: string;
+  projectName: string;
+  /** 无子任务的空项目：项目本身可入格 */
+  projectCandidate: DisplayCandidate | null;
+  tree: TaskTreeNode[];
+  candidateById: Map<string, DisplayCandidate>;
+  eligibleCount: number;
+  totalCount: number;
+  sortPriority: number;
+  hasOverdue: boolean;
+};
+
+/** 只保留候选节点及其祖先，避免整棵项目树塞进弹窗 */
+function pruneTreeToCandidateIds(
+  nodes: TaskTreeNode[],
+  candidateIds: Set<string>,
+): TaskTreeNode[] {
+  const out: TaskTreeNode[] = [];
+  for (const node of nodes) {
+    const children = pruneTreeToCandidateIds(
+      Array.isArray(node.children) ? node.children : [],
+      candidateIds,
+    );
+    if (candidateIds.has(node.id) || children.length > 0) {
+      out.push({ ...node, children });
+    }
+  }
+  return out;
+}
+
+function treeContainsQuery(nodes: TaskTreeNode[], q: string): boolean {
+  for (const node of nodes) {
+    if ((node.title ?? '').toLowerCase().includes(q)) return true;
+    const ch = Array.isArray(node.children) ? node.children : [];
+    if (ch.length > 0 && treeContainsQuery(ch, q)) return true;
+  }
+  return false;
+}
+
+function buildProjectPlaceGroups(
+  items: DisplayCandidate[],
+  taskTreeMap: Record<string, TaskTreeNode[]>,
+): ProjectPlaceGroup[] {
+  const byProject = new Map<
+    string,
+    {
+      projectId: string;
+      projectName: string;
+      projectCandidate: DisplayCandidate | null;
+      tasks: DisplayCandidate[];
+    }
+  >();
+
+  for (const item of items) {
+    if (item.kind === 'project') {
+      const pid = item.id;
+      const cur = byProject.get(pid) ?? {
+        projectId: pid,
+        projectName: item.title || item.projectName || '未命名项目',
+        projectCandidate: null,
+        tasks: [],
+      };
+      cur.projectCandidate = item;
+      cur.projectName = item.title || cur.projectName;
+      byProject.set(pid, cur);
+      continue;
+    }
+    if (item.kind !== 'task' || !item.projectId) continue;
+    const pid = item.projectId;
+    const cur = byProject.get(pid) ?? {
+      projectId: pid,
+      projectName: item.projectName?.trim() || '未命名项目',
+      projectCandidate: null,
+      tasks: [],
+    };
+    if (item.projectName?.trim()) cur.projectName = item.projectName.trim();
+    cur.tasks.push(item);
+    byProject.set(pid, cur);
+  }
+
+  const groups: ProjectPlaceGroup[] = [];
+  for (const cur of byProject.values()) {
+    const candidateById = new Map<string, DisplayCandidate>();
+    for (const t of cur.tasks) candidateById.set(t.id, t);
+    const candidateIds = new Set(candidateById.keys());
+    const rawTree = taskTreeMap[cur.projectId] ?? [];
+    const tree =
+      candidateIds.size > 0 ? pruneTreeToCandidateIds(rawTree, candidateIds) : [];
+
+    // 本地树尚未同步时：退化为扁平任务列表（挂在虚拟根下）
+    const displayTree =
+      tree.length > 0
+        ? tree
+        : cur.tasks.map(
+            (t) =>
+              ({
+                id: t.id,
+                project_id: t.projectId,
+                category_id: null,
+                parent_task_id: null,
+                title: t.title,
+                description: null,
+                note: null,
+                status: 'todo',
+                priority: (t.priority ?? 0) as 0 | 1 | 2 | 3 | 4,
+                due_date: t.dueDate,
+                completed_at: null,
+                created_at: '',
+                updated_at: '',
+                sync_status: 'synced',
+                extra_data: null,
+                sort_order: 0,
+                children: [],
+              }) satisfies TaskTreeNode,
+          );
+
+    let eligibleCount = 0;
+    let sortPriority = 0;
+    let hasOverdue = false;
+    const allItems = [
+      ...(cur.projectCandidate ? [cur.projectCandidate] : []),
+      ...cur.tasks,
+    ];
+    for (const it of allItems) {
+      if (!it.blockedReason) eligibleCount += 1;
+      sortPriority = Math.max(sortPriority, it.priority ?? 0);
+      if (it.isOverdue) hasOverdue = true;
+    }
+
+    groups.push({
+      key: cur.projectId,
+      projectId: cur.projectId,
+      projectName: cur.projectName,
+      projectCandidate: cur.projectCandidate,
+      tree: displayTree,
+      candidateById,
+      eligibleCount,
+      totalCount: allItems.length,
+      sortPriority,
+      hasOverdue,
+    });
+  }
+
+  return groups.sort((a, b) => {
+    if (a.hasOverdue !== b.hasOverdue) return a.hasOverdue ? -1 : 1;
+    if (a.eligibleCount !== b.eligibleCount) {
+      if (a.eligibleCount === 0) return 1;
+      if (b.eligibleCount === 0) return -1;
+    }
+    if (a.sortPriority !== b.sortPriority) return b.sortPriority - a.sortPriority;
+    return a.projectName.localeCompare(b.projectName, 'zh');
+  });
+}
+
+/**
+ * 轴分钟 → 墙钟展示。
+ * 逻辑日可越过午夜（如 1440=次日 00:00、1680=次日 04:00），禁止直接显示 24:00 / 28:00。
+ */
 function axisTimeDisplayValue(minutes: number): string {
   const m = Math.max(0, Math.round(minutes));
-  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  if (m >= SCHEDULE_DAY_END_MAX_MINUTES) {
+    const wall = m % SCHEDULE_DAY_END_MAX_MINUTES;
+    const h = Math.floor(wall / 60);
+    const mm = wall % 60;
+    return `次日 ${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+  return formatMinutesAsHm(m);
+}
+
+/** 快捷时段芯片文案：跨午夜片段标「次日」 */
+function quickPeriodChipLabel(startMinutes: number, label: string): string {
+  return startMinutes >= SCHEDULE_DAY_END_MAX_MINUTES ? `${label}·次日` : label;
 }
 
 /** 轴分钟 → 给 DateTimePicker 的墙钟 Date（小时对 24 取模） */
@@ -587,6 +781,8 @@ function CandRow({
   index,
   animate,
   onPress,
+  depth = 0,
+  leading,
 }: {
   tf: TaskFoldPalette;
   fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
@@ -596,9 +792,14 @@ function CandRow({
   index: number;
   animate: boolean;
   onPress?: () => void;
+  /** 项目树缩进层级（0=顶层） */
+  depth?: number;
+  /** 树行左侧展开箭头等 */
+  leading?: React.ReactNode;
 }) {
   const sub = disabled ? lockReason(item) : candidateSubline(item);
   const slotOccupied = item.alreadyAssigned && !disabled;
+  const padLeft = depth > 0 ? 6 + depth * 14 : 6;
 
   return (
     <FoldRiseIn animate={animate} index={index} staggerMs={TaskFoldMotion.rowStagger} fromY={10}>
@@ -607,10 +808,12 @@ function CandRow({
         disabled={disabled}
         style={({ pressed }) => [
           styles.cand,
+          { paddingLeft: padLeft },
           selected && { backgroundColor: 'rgba(232,239,217,0.55)', borderRadius: 8 },
           disabled && { opacity: 0.55 },
           pressed && !disabled && { opacity: 0.88 },
         ]}>
+        {leading}
         <View style={[styles.candIcon, { backgroundColor: tf.lily2 }]}>
           <MaterialIcons name={kindIcon(item)} size={16} color={tf.frog} />
         </View>
@@ -664,6 +867,223 @@ function CandRow({
   );
 }
 
+function ProjectGroupHeader({
+  tf,
+  fonts,
+  group,
+  collapsed,
+  index,
+  animate,
+  onToggle,
+  onSelectProject,
+}: {
+  tf: TaskFoldPalette;
+  fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
+  group: ProjectPlaceGroup;
+  collapsed: boolean;
+  index: number;
+  animate: boolean;
+  onToggle: () => void;
+  onSelectProject?: () => void;
+}) {
+  const emptySelectable = !!group.projectCandidate && !group.projectCandidate.blockedReason;
+  const emptyLocked = !!group.projectCandidate?.blockedReason;
+  const chev = React.useRef(new Animated.Value(collapsed ? 0 : 1)).current;
+
+  React.useEffect(() => {
+    Animated.timing(chev, {
+      toValue: collapsed ? 0 : 1,
+      duration: animate ? TaskFoldMotion.treeExpand * 0.7 : 0,
+      easing: FOLD_MOTION_EASE,
+      useNativeDriver: true,
+    }).start();
+  }, [animate, chev, collapsed]);
+
+  const rotate = chev.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '90deg'],
+  });
+
+  const hasTree = group.tree.length > 0;
+  const countLabel =
+    group.eligibleCount > 0
+      ? `${group.eligibleCount}/${group.totalCount} 可入格`
+      : `${group.totalCount} 项`;
+
+  return (
+    <FoldRiseIn animate={animate} index={index} staggerMs={TaskFoldMotion.rowStagger} fromY={8}>
+      <View
+        style={[
+          styles.projectHead,
+          {
+            backgroundColor: 'rgba(232,239,217,0.28)',
+            borderColor: tf.line2,
+          },
+        ]}>
+        {hasTree ? (
+          <Pressable
+            onPress={onToggle}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={collapsed ? '展开项目任务' : '收起项目任务'}
+            style={styles.treeChev}>
+            <Animated.View style={{ transform: [{ rotate }] }}>
+              <MaterialIcons name="chevron-right" size={16} color={tf.muted} />
+            </Animated.View>
+          </Pressable>
+        ) : (
+          <View style={styles.treeChev}>
+            <MaterialIcons name="folder" size={14} color={tf.frog} />
+          </View>
+        )}
+        <Pressable
+          onPress={() => {
+            if (emptySelectable && onSelectProject) {
+              onSelectProject();
+              return;
+            }
+            if (hasTree) onToggle();
+          }}
+          disabled={emptyLocked}
+          style={({ pressed }) => [
+            styles.projectHeadCopy,
+            pressed && { opacity: 0.88 },
+            emptyLocked && { opacity: 0.55 },
+          ]}>
+          <Text style={[styles.projectHeadTitle, { color: tf.ink2 }]} numberOfLines={1}>
+            {group.projectName}
+          </Text>
+          <Text style={[styles.projectHeadMeta, { color: tf.faint, fontFamily: fonts.mono }]}>
+            {emptySelectable
+              ? '空项目可入格'
+              : emptyLocked
+                ? lockReason(group.projectCandidate!)
+                : countLabel}
+          </Text>
+        </Pressable>
+        {emptySelectable ? (
+          <View style={[styles.slotChip, { backgroundColor: '#EAF0DA' }]}>
+            <Text style={[styles.slotChipText, { color: '#5E8358', fontFamily: fonts.mono }]}>
+              可入格
+            </Text>
+          </View>
+        ) : emptyLocked ? (
+          <MaterialIcons name="lock-outline" size={16} color={tf.faint} />
+        ) : null}
+      </View>
+    </FoldRiseIn>
+  );
+}
+
+function PlaceProjectTreeList({
+  tf,
+  fonts,
+  groups,
+  collapsedProjectIds,
+  collapsedTaskIds,
+  animate,
+  onToggleProject,
+  onToggleTask,
+  onPick,
+}: {
+  tf: TaskFoldPalette;
+  fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
+  groups: ProjectPlaceGroup[];
+  collapsedProjectIds: Record<string, boolean>;
+  collapsedTaskIds: Record<string, boolean>;
+  animate: boolean;
+  onToggleProject: (projectId: string) => void;
+  onToggleTask: (taskId: string) => void;
+  onPick: (item: DisplayCandidate) => void;
+}) {
+  let rowIndex = 0;
+
+  const renderNodes = (nodes: TaskTreeNode[], depth: number, candidateById: Map<string, DisplayCandidate>) =>
+    nodes.map((node) => {
+      const children = Array.isArray(node.children) ? node.children : [];
+      const hasChildren = children.length > 0;
+      const collapsed = hasChildren ? !!collapsedTaskIds[node.id] : false;
+      const cand = candidateById.get(node.id);
+      const idx = rowIndex++;
+
+      const chev = hasChildren ? (
+        <Pressable
+          onPress={() => onToggleTask(node.id)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={collapsed ? '展开子任务' : '收起子任务'}
+          style={styles.treeChev}>
+          <MaterialIcons
+            name={collapsed ? 'chevron-right' : 'expand-more'}
+            size={16}
+            color={tf.faint}
+          />
+        </Pressable>
+      ) : (
+        <View style={styles.treeChev}>
+          <MaterialIcons name="fiber-manual-record" size={6} color={tf.faint} />
+        </View>
+      );
+
+      return (
+        <View key={node.id}>
+          {cand ? (
+            <CandRow
+              tf={tf}
+              fonts={fonts}
+              item={cand}
+              index={idx}
+              animate={animate}
+              disabled={!!cand.blockedReason}
+              depth={depth}
+              leading={chev}
+              onPress={cand.blockedReason ? undefined : () => onPick(cand)}
+            />
+          ) : (
+            <View style={[styles.structRow, { paddingLeft: 6 + depth * 14 }]}>
+              {chev}
+              <Text style={[styles.structTitle, { color: tf.muted }]} numberOfLines={1}>
+                {node.title?.trim() || '（无标题）'}
+              </Text>
+              <Text style={[styles.structHint, { color: tf.faint }]}>结构节点</Text>
+            </View>
+          )}
+          {hasChildren && !collapsed ? renderNodes(children, depth + 1, candidateById) : null}
+        </View>
+      );
+    });
+
+  return (
+    <View>
+      {groups.map((group) => {
+        const collapsed = !!collapsedProjectIds[group.projectId];
+        const headIdx = rowIndex++;
+        return (
+          <View key={group.key} style={styles.projectGroup}>
+            <ProjectGroupHeader
+              tf={tf}
+              fonts={fonts}
+              group={group}
+              collapsed={collapsed}
+              index={headIdx}
+              animate={animate}
+              onToggle={() => onToggleProject(group.projectId)}
+              onSelectProject={
+                group.projectCandidate && !group.projectCandidate.blockedReason
+                  ? () => onPick(group.projectCandidate!)
+                  : undefined
+              }
+            />
+            {!collapsed && group.tree.length > 0
+              ? renderNodes(group.tree, 1, group.candidateById)
+              : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 export function SchedulePlaceFrogSheet({
   visible,
   onClose,
@@ -677,6 +1097,7 @@ export function SchedulePlaceFrogSheet({
   axis,
   defaultStartMinutes,
   defaultEndMinutes,
+  onAssignYmdChange,
   onConfirm,
 }: Props) {
   const insets = useSafeAreaInsets();
@@ -691,15 +1112,25 @@ export function SchedulePlaceFrogSheet({
   const [saving, setSaving] = React.useState(false);
   const [eligible, setEligible] = React.useState<DisplayCandidate[]>([]);
   const [blocked, setBlocked] = React.useState<DisplayCandidate[]>([]);
+  const [taskTreeMap, setTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
+  const [collapsedProjectIds, setCollapsedProjectIds] = React.useState<Record<string, boolean>>({});
+  const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
   const [picked, setPicked] = React.useState<DisplayCandidate | null>(null);
   const [span, setSpan] = React.useState(1);
   const [allDay, setAllDay] = React.useState(!!initialAllDay);
+  const [selectedYmd, setSelectedYmd] = React.useState(assignYmd);
   const [logicalToday, setLogicalToday] = React.useState(assignYmd);
+  const [datePickerOpen, setDatePickerOpen] = React.useState(false);
+  const [datePickerDraft, setDatePickerDraft] = React.useState(() =>
+    ymdToPickerDate(assignYmd, assignYmd),
+  );
   const [tagColorByName, setTagColorByName] = React.useState<Map<string, string>>(() => new Map());
   const [seg, setSeg] = React.useState<SegKey>('recommend');
   const [query, setQuery] = React.useState('');
   const [onlyEligible, setOnlyEligible] = React.useState(false);
   const [blockedOpen, setBlockedOpen] = React.useState(false);
+  const onAssignYmdChangeRef = React.useRef(onAssignYmdChange);
+  onAssignYmdChangeRef.current = onAssignYmdChange;
 
   const axisStart = axis?.startMinutes ?? 8 * 60;
   const axisEnd = axis?.endMinutes ?? 22 * 60;
@@ -741,15 +1172,38 @@ export function SchedulePlaceFrogSheet({
     return () => anim.stop();
   }, [animate, visible, scrim, sheetY]);
 
+  const applySelectedYmd = React.useCallback((nextYmd: string, opts?: { notify?: boolean }) => {
+    const today = logicalToday || assignYmd;
+    const clamped =
+      nextYmd && isEditableScheduleDay(nextYmd, today) ? nextYmd : today;
+    setSelectedYmd((prev) => (prev === clamped ? prev : clamped));
+    setDatePickerOpen(false);
+    if (opts?.notify !== false) onAssignYmdChangeRef.current?.(clamped);
+  }, [assignYmd, logicalToday]);
+
+  const openedSessionRef = React.useRef(false);
   React.useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      openedSessionRef.current = false;
+      setDatePickerOpen(false);
+      return;
+    }
+    // 仅在本次打开时初始化；弹窗内改日会回写 assignYmd，不能把时段/选中态冲掉
+    if (openedSessionRef.current) return;
+    openedSessionRef.current = true;
     setSeg('recommend');
     setQuery('');
     setOnlyEligible(false);
     setBlockedOpen(false);
+    setCollapsedProjectIds({});
+    setCollapsedTaskIds({});
+    setTaskTreeMap({});
     const preferAllDay = !!initialAllDay;
     setAllDay(preferAllDay);
     setSpan(preferAllDay ? fullDaySlots : 1);
+    setSelectedYmd(assignYmd);
+    setDatePickerDraft(ymdToPickerDate(assignYmd, assignYmd));
+    setDatePickerOpen(false);
 
     const initStart =
       defaultStartMinutes != null
@@ -797,20 +1251,29 @@ export function SchedulePlaceFrogSheet({
     setSpan(1);
     setAllDay(false);
     if (preselected) {
-      setPicked(toDisplayCandidate(preselected, tagColorByName, logicalToday || assignYmd));
+      setPicked(
+        toDisplayCandidate(preselected, tagColorByName, logicalToday || selectedYmd || assignYmd),
+      );
       setEligible([]);
       setBlocked([]);
+      setTaskTreeMap({});
       setLoading(false);
       return;
     }
     setPicked(null);
     let cancelled = false;
     setLoading(true);
-    void fetchFrogCandidates({ assignYmd })
-      .then((res) => {
+    void (async () => {
+      try {
+        const res = await fetchFrogCandidates({ assignYmd: selectedYmd || assignYmd });
         if (cancelled) return;
-        const today = res.logicalToday || assignYmd;
+        const today = res.logicalToday || selectedYmd || assignYmd;
         setLogicalToday(today);
+        // 若初始日早于逻辑今日，钳回今天
+        if (selectedYmd && !isEditableScheduleDay(selectedYmd, today)) {
+          setSelectedYmd(today);
+          onAssignYmdChangeRef.current?.(today);
+        }
         const locked = lockedProjectIds ?? new Set<string>();
         const canPlace: DisplayCandidate[] = [];
         const cannot: DisplayCandidate[] = [];
@@ -827,20 +1290,41 @@ export function SchedulePlaceFrogSheet({
         }
         setEligible(sortCandidates(canPlace));
         setBlocked(sortCandidates(cannot));
-      })
-      .finally(() => {
+
+        const projectIds = [
+          ...new Set(
+            [...canPlace, ...cannot]
+              .map((c) =>
+                c.kind === 'project' ? c.id : c.kind === 'task' && c.projectId ? c.projectId : '',
+              )
+              .filter(Boolean),
+          ),
+        ];
+        if (projectIds.length === 0) {
+          setTaskTreeMap({});
+          return;
+        }
+        try {
+          const trees = await getProjectTaskTreeMap(projectIds);
+          if (!cancelled) setTaskTreeMap(trees);
+        } catch (err) {
+          console.warn('[schedule-place] 加载项目任务树失败', err);
+          if (!cancelled) setTaskTreeMap({});
+        }
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
     // tagColorByName 变化时由下方 effect 仅重着色，避免重复请求
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, assignYmd, lockedProjectIds, preselected]);
+  }, [visible, selectedYmd, lockedProjectIds, preselected]);
 
   React.useEffect(() => {
     if (!visible) return;
-    const today = logicalToday || assignYmd;
+    const today = logicalToday || selectedYmd || assignYmd;
     if (preselected) {
       setPicked(toDisplayCandidate(preselected, tagColorByName, today));
       return;
@@ -855,7 +1339,7 @@ export function SchedulePlaceFrogSheet({
         ),
       ),
     );
-  }, [visible, tagColorByName, preselected, logicalToday, assignYmd]);
+  }, [visible, tagColorByName, preselected, logicalToday, selectedYmd, assignYmd]);
 
   const effectiveSpan = allDay ? fullDaySlots : span;
   const minuteRangeValid = React.useMemo(() => {
@@ -878,6 +1362,29 @@ export function SchedulePlaceFrogSheet({
   }, [minuteMode, allDay, endM, startM, axisStart, axisEnd, axis]);
   const minuteDurationLabel =
     minuteMode && !allDay && endM > startM ? formatEventDuration(startM, endM) : '';
+  /** 可排轴上的语义时段，作快捷选择（裁剪到轴范围） */
+  const quickPeriods = React.useMemo(() => {
+    if (!minuteMode) return [];
+    return semanticBucketsForAxis({
+      startMinutes: axisStart,
+      endMinutes: axisEnd,
+      slotHours: axis?.slotHours ?? 2,
+      breaks: axis?.breaks,
+    });
+  }, [minuteMode, axisStart, axisEnd, axis?.slotHours, axis?.breaks]);
+  /** 从当前起点延伸的常用时长 */
+  const quickDurations = React.useMemo(() => {
+    if (!minuteMode) return [] as { key: string; label: string; minutes: number }[];
+    const opts: { key: string; label: string; minutes: number }[] = [
+      { key: '30', label: '30分', minutes: 30 },
+      { key: '60', label: '1小时', minutes: 60 },
+      { key: '120', label: '2小时', minutes: 120 },
+    ];
+    if (slotSpanMins !== 30 && slotSpanMins !== 60 && slotSpanMins !== 120) {
+      opts.push({ key: 'slot', label: '一格', minutes: slotSpanMins });
+    }
+    return opts.filter((o) => startM + o.minutes <= axisEnd && o.minutes >= 5);
+  }, [minuteMode, slotSpanMins, startM, axisEnd]);
   const canConfirm =
     !!picked &&
     !saving &&
@@ -887,7 +1394,39 @@ export function SchedulePlaceFrogSheet({
         ? minuteRangeValid
         : span >= 1 && span <= maxSpan);
   const showList = !preselected && !picked;
-  const dateLabel = formatAssignTitle(assignYmd);
+  const effectiveYmd = selectedYmd || assignYmd;
+  const todayYmd = logicalToday || assignYmd;
+  const dateLabel = formatAssignTitle(effectiveYmd);
+  const dayQuickChips = React.useMemo(() => {
+    const chips = [
+      { key: 'today', ymd: todayYmd, label: '今天' },
+      { key: 'tomorrow', ymd: addDaysToYmd(todayYmd, 1), label: '明天' },
+      { key: 'dayAfter', ymd: addDaysToYmd(todayYmd, 2), label: '后天' },
+    ];
+    const isQuick = chips.some((c) => c.ymd === effectiveYmd);
+    if (!isQuick && effectiveYmd) {
+      chips.push({
+        key: 'custom',
+        ymd: effectiveYmd,
+        label: formatAssignDayChip(effectiveYmd, todayYmd),
+      });
+    }
+    return chips;
+  }, [todayYmd, effectiveYmd]);
+
+  const openDatePicker = React.useCallback(() => {
+    setDatePickerDraft(ymdToPickerDate(effectiveYmd, todayYmd));
+    setDatePickerOpen(true);
+  }, [effectiveYmd, todayYmd]);
+
+  const commitDatePicker = React.useCallback(() => {
+    const ymd = formatYmd(datePickerDraft);
+    if (!isEditableScheduleDay(ymd, todayYmd)) {
+      Alert.alert('无法指派', '只能选择今天或未来的日期。');
+      return;
+    }
+    applySelectedYmd(ymd);
+  }, [applySelectedYmd, datePickerDraft, todayYmd]);
 
   const filteredEligible = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -925,8 +1464,48 @@ export function SchedulePlaceFrogSheet({
     return list;
   }, [blocked, onlyEligible, query, seg]);
 
+  /** 「项目 / 任务」Tab：可入格 +（可选）暂不可入格，合并成项目树 */
+  const projectPlaceGroups = React.useMemo(() => {
+    if (seg !== 'projectTask') return [] as ProjectPlaceGroup[];
+    const merged = onlyEligible
+      ? filteredEligible
+      : [...filteredEligible, ...filteredBlocked];
+    const groups = buildProjectPlaceGroups(merged, taskTreeMap);
+    const q = query.trim().toLowerCase();
+    if (!q) return groups;
+    return groups.filter((g) => {
+      if (g.projectName.toLowerCase().includes(q)) return true;
+      if (g.projectCandidate?.title.toLowerCase().includes(q)) return true;
+      for (const c of g.candidateById.values()) {
+        if (c.title.toLowerCase().includes(q)) return true;
+        if ((c.blockedReason ?? '').toLowerCase().includes(q)) return true;
+      }
+      return treeContainsQuery(g.tree, q);
+    });
+  }, [
+    seg,
+    onlyEligible,
+    filteredEligible,
+    filteredBlocked,
+    taskTreeMap,
+    query,
+  ]);
+
+  const toggleProjectCollapsed = React.useCallback((projectId: string) => {
+    setCollapsedProjectIds((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  }, []);
+
+  const toggleTaskCollapsed = React.useCallback((taskId: string) => {
+    setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
+  }, []);
+
   const submit = React.useCallback(async () => {
     if (!picked || !canConfirm) return;
+    const ymd = selectedYmd || assignYmd;
+    if (!isEditableScheduleDay(ymd, logicalToday || assignYmd)) {
+      Alert.alert('无法指派', '只能选择今天或未来的日期。');
+      return;
+    }
     setSaving(true);
     try {
       await onConfirm({
@@ -934,7 +1513,7 @@ export function SchedulePlaceFrogSheet({
         id: picked.id,
         title: picked.title,
         spanSlots: effectiveSpan,
-        assignYmd,
+        assignYmd: ymd,
         allDay: allDay || undefined,
         ...(minuteMode && !allDay ? { startMinutes: startM, endMinutes: endM } : {}),
       });
@@ -944,7 +1523,20 @@ export function SchedulePlaceFrogSheet({
     } finally {
       setSaving(false);
     }
-  }, [picked, canConfirm, onConfirm, effectiveSpan, assignYmd, allDay, minuteMode, startM, endM, onClose]);
+  }, [
+    picked,
+    canConfirm,
+    onConfirm,
+    effectiveSpan,
+    selectedYmd,
+    assignYmd,
+    logicalToday,
+    allDay,
+    minuteMode,
+    startM,
+    endM,
+    onClose,
+  ]);
 
   const sheetBg = isDark ? tf.paper2 : tf.card;
   const translateY = sheetY.interpolate({
@@ -984,7 +1576,7 @@ export function SchedulePlaceFrogSheet({
         {minuteMode
           ? allDay
             ? '全天 · 铺满当日可排时段'
-            : '点时刻打开时间选择器（精确到分钟）'
+            : '可点快捷时段，或点时刻微调（精确到分钟）'
           : allDay
             ? '全天 · 放入顶部全天格，不占用时段'
             : `连续占用格数（最多 ${maxSpan}）`}
@@ -992,6 +1584,85 @@ export function SchedulePlaceFrogSheet({
 
       {minuteMode && !allDay ? (
         <View style={styles.timeFields}>
+          {quickPeriods.length > 0 ? (
+            <View style={styles.quickBlock}>
+              <Text style={[styles.quickLabel, { color: tf.faint }]}>快捷时段</Text>
+              <View style={styles.quickChipRow}>
+                {quickPeriods.map((p) => {
+                  const chipLabel = quickPeriodChipLabel(p.startMinutes, p.label);
+                  const active =
+                    !allDay && startM === p.startMinutes && endM === p.endMinutes;
+                  return (
+                    <Pressable
+                      key={`${p.key}-${p.startMinutes}`}
+                      onPress={() => {
+                        setAllDay(false);
+                        setStartM(p.startMinutes);
+                        setEndM(p.endMinutes);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`快捷时段 ${chipLabel} ${axisTimeDisplayValue(p.startMinutes)}到${axisTimeDisplayValue(p.endMinutes)}`}
+                      style={[
+                        styles.quickChip,
+                        {
+                          borderColor: active ? tf.pond : tf.line2,
+                          backgroundColor: active ? tf.lily2 : 'transparent',
+                        },
+                      ]}>
+                      <Text
+                        style={{
+                          color: active ? tf.pond : tf.ink,
+                          fontWeight: '700',
+                          fontSize: 12,
+                        }}>
+                        {chipLabel}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+          {quickDurations.length > 0 ? (
+            <View style={styles.quickBlock}>
+              <Text style={[styles.quickLabel, { color: tf.faint }]}>从起点起</Text>
+              <View style={styles.quickChipRow}>
+                {quickDurations.map((d) => {
+                  const nextEnd = Math.min(axisEnd, startM + d.minutes);
+                  const active = !allDay && endM === nextEnd && endM - startM === d.minutes;
+                  return (
+                    <Pressable
+                      key={d.key}
+                      onPress={() => {
+                        setAllDay(false);
+                        setEndM(Math.min(axisEnd, Math.max(startM + 5, startM + d.minutes)));
+                      }}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      accessibilityLabel={`时长 ${d.label}`}
+                      style={[
+                        styles.quickChip,
+                        {
+                          borderColor: active ? tf.pond : tf.line2,
+                          backgroundColor: active ? tf.lily2 : 'transparent',
+                        },
+                      ]}>
+                      <Text
+                        style={{
+                          color: active ? tf.pond : tf.ink,
+                          fontWeight: '700',
+                          fontSize: 12,
+                          fontFamily: fonts.mono,
+                        }}>
+                        {d.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
           <AxisTimeField
             label="开始"
             value={startM}
@@ -1029,7 +1700,9 @@ export function SchedulePlaceFrogSheet({
               numberOfLines={2}>
               {minuteConflictLabel ||
                 `${minuteDurationLabel ? `${minuteDurationLabel} · ` : ''}${
-                  axis ? `可排 ${formatMinutesAsHm(axisStart)}–${formatMinutesAsHm(axisEnd)}` : ''
+                  axis
+                    ? `可排 ${axisTimeDisplayValue(axisStart)}–${axisTimeDisplayValue(axisEnd)}`
+                    : ''
                 }`}
             </Text>
           </View>
@@ -1199,7 +1872,7 @@ export function SchedulePlaceFrogSheet({
               </Text>
               <Text style={[styles.sheetSub, { color: tf.muted }]}>
                 {showList
-                  ? '先选任务或项目 · 已完成 / 搁置 / 未开始项目不可入格'
+                  ? '先选日期，再选任务或项目 · 已完成 / 搁置 / 未开始项目不可入格'
                   : minuteMode
                     ? `放入 ${dateLabel} · 选起止时刻或指派全天`
                     : `放入 ${dateLabel} · 选格数或指派全天`}
@@ -1214,6 +1887,62 @@ export function SchedulePlaceFrogSheet({
                 { backgroundColor: isDark ? tf.paper3 : '#EFEADD', opacity: pressed ? 0.8 : 1 },
               ]}>
               <MaterialIcons name="close" size={16} color={tf.muted} />
+            </Pressable>
+          </View>
+
+          <View style={styles.datePickRow}>
+            {dayQuickChips.map((chip) => {
+              const active = chip.ymd === effectiveYmd;
+              return (
+                <Pressable
+                  key={chip.key}
+                  onPress={() => applySelectedYmd(chip.ymd)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`指派到${chip.label}`}
+                  style={[
+                    styles.dateChip,
+                    {
+                      borderColor: active ? tf.pond : tf.line2,
+                      backgroundColor: active ? tf.lily2 : 'transparent',
+                    },
+                  ]}>
+                  <Text
+                    style={{
+                      color: active ? tf.pond : tf.ink,
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}>
+                    {chip.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <Pressable
+              onPress={openDatePicker}
+              accessibilityRole="button"
+              accessibilityLabel="选择具体日期"
+              style={[
+                styles.dateChip,
+                styles.dateChipCalendar,
+                {
+                  borderColor: datePickerOpen ? tf.pond : tf.line2,
+                  backgroundColor: datePickerOpen ? tf.lily2 : 'transparent',
+                },
+              ]}>
+              <MaterialIcons
+                name="event"
+                size={14}
+                color={datePickerOpen ? tf.pond : tf.muted}
+              />
+              <Text
+                style={{
+                  color: datePickerOpen ? tf.pond : tf.ink,
+                  fontWeight: '700',
+                  fontSize: 12,
+                }}>
+                选日期
+              </Text>
             </Pressable>
           </View>
 
@@ -1261,13 +1990,37 @@ export function SchedulePlaceFrogSheet({
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}>
                   <View style={styles.capRow}>
-                    <Text style={[styles.capTitle, { color: tf.muted }]}>最佳空档</Text>
+                    <Text style={[styles.capTitle, { color: tf.muted }]}>
+                      {seg === 'projectTask' ? '项目树' : '最佳空档'}
+                    </Text>
                     <Text style={[styles.capHint, { color: tf.faint }]}>
-                      按优先级与截止时间排序
+                      {seg === 'projectTask'
+                        ? '按项目折叠 · 叶子可入格'
+                        : '按优先级与截止时间排序'}
                     </Text>
                   </View>
 
-                  {filteredEligible.length === 0 ? (
+                  {seg === 'projectTask' ? (
+                    projectPlaceGroups.length === 0 ? (
+                      <Text style={[styles.emptyText, { color: tf.muted }]}>
+                        {eligible.length === 0 && blocked.length === 0
+                          ? '当日暂无可指派项。'
+                          : '当前筛选下暂无项目 / 任务。'}
+                      </Text>
+                    ) : (
+                      <PlaceProjectTreeList
+                        tf={tf}
+                        fonts={fonts}
+                        groups={projectPlaceGroups}
+                        collapsedProjectIds={collapsedProjectIds}
+                        collapsedTaskIds={collapsedTaskIds}
+                        animate={animate}
+                        onToggleProject={toggleProjectCollapsed}
+                        onToggleTask={toggleTaskCollapsed}
+                        onPick={setPicked}
+                      />
+                    )
+                  ) : filteredEligible.length === 0 ? (
                     <Text style={[styles.emptyText, { color: tf.muted }]}>
                       {eligible.length === 0
                         ? '当日暂无可指派项。'
@@ -1287,7 +2040,7 @@ export function SchedulePlaceFrogSheet({
                     ))
                   )}
 
-                  {!onlyEligible && blocked.length > 0 ? (
+                  {seg !== 'projectTask' && !onlyEligible && blocked.length > 0 ? (
                     <>
                       <Pressable
                         onPress={() => setBlockedOpen((v) => !v)}
@@ -1339,6 +2092,58 @@ export function SchedulePlaceFrogSheet({
           ) : null}
         </Animated.View>
       </View>
+
+      <Modal
+        visible={datePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDatePickerOpen(false)}>
+        <View style={styles.timePickerBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setDatePickerOpen(false)} />
+          <View
+            style={[
+              styles.timePickerCard,
+              {
+                backgroundColor: isDark ? tf.paper2 : '#FFFCF5',
+                borderColor: isDark ? tf.line2 : 'rgba(216,205,187,0.7)',
+              },
+            ]}>
+            <Text style={[styles.timePickerTitle, { color: tf.ink2 }]}>选择指派日期</Text>
+            <DateTimePicker
+              value={datePickerDraft}
+              mode="date"
+              // Modal 内必须用 spinner：Android default 是系统对话框，组件本身空白
+              display="spinner"
+              minimumDate={ymdToPickerDate(todayYmd, todayYmd)}
+              locale="zh-CN"
+              themeVariant={isDark ? 'dark' : 'light'}
+              textColor={tf.ink2}
+              onChange={(_, date) => {
+                if (!date) return;
+                const next = new Date(date);
+                next.setHours(12, 0, 0, 0);
+                setDatePickerDraft(next);
+              }}
+              style={styles.nativeTimePicker}
+            />
+            <View style={styles.timePickerActions}>
+              <Pressable
+                onPress={() => setDatePickerOpen(false)}
+                style={[
+                  styles.timePickerBtn,
+                  { backgroundColor: isDark ? tf.paper3 : 'rgba(241,237,225,0.9)' },
+                ]}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: tf.muted }}>取消</Text>
+              </Pressable>
+              <Pressable
+                onPress={commitDatePicker}
+                style={[styles.timePickerBtn, { backgroundColor: tf.pond }]}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: tf.onPond }}>确定</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Modal>
   );
 }
@@ -1385,6 +2190,27 @@ const styles = StyleSheet.create({
     marginTop: 3,
     fontSize: 12,
     lineHeight: 16,
+  },
+  datePickRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 2,
+    paddingBottom: 2,
+  },
+  dateChip: {
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  dateChipCalendar: {
+    flexDirection: 'row',
+    gap: 4,
   },
   closeBtn: {
     width: 28,
@@ -1526,6 +2352,56 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   candNoteText: { fontSize: 11, lineHeight: 15 },
+  projectGroup: {
+    marginBottom: 6,
+  },
+  projectHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginTop: 4,
+  },
+  projectHeadCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  projectHeadTitle: {
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  projectHeadMeta: {
+    fontSize: 10.5,
+  },
+  treeChev: {
+    width: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  structRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 7,
+    paddingRight: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(232,224,210,0.5)',
+  },
+  structTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  structHint: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
   spanStep: { gap: 10, paddingBottom: 2 },
   previewCard: {
     flexDirection: 'row',
@@ -1547,6 +2423,22 @@ const styles = StyleSheet.create({
   previewTagText: { fontSize: 11, fontWeight: '700' },
   spanHint: { fontSize: 12 },
   spanRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  quickBlock: { gap: 6 },
+  quickLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  quickChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  quickChip: {
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   timeFields: { gap: 8 },
   timeFieldRow: {
     flexDirection: 'row',

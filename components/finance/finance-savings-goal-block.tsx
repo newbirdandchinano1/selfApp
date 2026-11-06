@@ -1,6 +1,7 @@
 import { Radius, Spacing } from '@/constants/design-tokens';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { apiGetFinancePredictedSavings } from '@/lib/api/endpoints/finance';
+import type { FinanceSavingsGoalCoachJson } from '@/lib/ai-types';
 import {
   clearFinanceSavingsGoal,
   computeFinanceSavingsGoalProgress,
@@ -14,9 +15,11 @@ import {
   persistFinanceSavingsGoal,
   type FinanceSavingsGoal,
 } from '@/lib/finance-savings-goal';
+import { analyzeFinanceSavingsGoalCoach } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
+  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -84,6 +87,8 @@ export type FinanceSavingsGoalBlockProps = {
   onGoalChange?: (goal: FinanceSavingsGoal | null) => void;
   /** 打开编辑 Sheet 时回调（用于确认储蓄提醒已读） */
   onOpenEditor?: () => void;
+  /** 近若干月净储蓄（从旧到新），供 AI 教练 */
+  recentMonthlyNetSavings?: number[];
 };
 
 export function FinanceSavingsGoalBlock({
@@ -110,6 +115,7 @@ export function FinanceSavingsGoalBlock({
   dayBoundaryMinute,
   onOpenEditor,
   onGoalChange,
+  recentMonthlyNetSavings = [],
 }: FinanceSavingsGoalBlockProps) {
   const insets = useSafeAreaInsets();
   const [goal, setGoal] = React.useState<FinanceSavingsGoal | null>(null);
@@ -122,6 +128,8 @@ export function FinanceSavingsGoalBlock({
   const [saving, setSaving] = React.useState(false);
   const [predictedDeposit, setPredictedDeposit] = React.useState<number | null>(null);
   const [predictedLoading, setPredictedLoading] = React.useState(false);
+  const [coachLoading, setCoachLoading] = React.useState(false);
+  const [coachResult, setCoachResult] = React.useState<FinanceSavingsGoalCoachJson | null>(null);
 
   const reloadGoal = React.useCallback(async () => {
     const next = await loadFinanceSavingsGoal();
@@ -132,6 +140,10 @@ export function FinanceSavingsGoalBlock({
   React.useEffect(() => {
     void reloadGoal();
   }, [reloadGoal]);
+
+  React.useEffect(() => {
+    setCoachResult(null);
+  }, [goal?.targetAmount, goal?.targetDate]);
 
   const progress = React.useMemo(
     () =>
@@ -281,6 +293,7 @@ export function FinanceSavingsGoalBlock({
             try {
               await clearFinanceSavingsGoal();
               setGoal(null);
+              setCoachResult(null);
               onGoalChange?.(null);
               toast.success('已清除');
               closeSheet();
@@ -292,6 +305,83 @@ export function FinanceSavingsGoalBlock({
       },
     ]);
   }, [closeSheet, onGoalChange]);
+
+  const handleCoach = React.useCallback(async () => {
+    if (!goal || !progress || coachLoading) return;
+    setCoachLoading(true);
+    try {
+      const nets =
+        recentMonthlyNetSavings.length > 0
+          ? recentMonthlyNetSavings.map((n) => Math.round(n)).join(', ')
+          : '未知';
+      const summary = [
+        `目标金额：¥${goal.targetAmount.toFixed(2)}`,
+        `目标日期：${goal.targetDate}`,
+        `当前净资产：¥${currentNetWorth.toFixed(2)}`,
+        `缺口（含定时预扣抬高）：¥${progress.gap.toFixed(2)}`,
+        `剩余天数（含今天）：${progress.daysLeft}`,
+        `日均需存：¥${progress.dailyTarget.toFixed(2)}`,
+        `到目标日定时支出预扣：¥${scheduledDrainUntilTarget.toFixed(2)}`,
+        `近月净储蓄（旧→新）：${nets}`,
+        progress.achieved ? '状态：已达成' : progress.overdue ? '状态：已过期未达成' : '状态：进行中',
+      ].join('\n');
+      const result = await analyzeFinanceSavingsGoalCoach({ summaryText: summary });
+      if (!result.ok) {
+        toast.warn(result.error || 'AI 教练失败，请稍后重试');
+        return;
+      }
+      setCoachResult(result.data);
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 教练失败，请稍后重试'));
+    } finally {
+      setCoachLoading(false);
+    }
+  }, [
+    coachLoading,
+    currentNetWorth,
+    goal,
+    progress,
+    recentMonthlyNetSavings,
+    scheduledDrainUntilTarget,
+  ]);
+
+  const applyCoachOption = React.useCallback(
+    (opt: NonNullable<FinanceSavingsGoalCoachJson['adjust_options']>[number]) => {
+      const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+      if (opt.kind === 'extend_days' && opt.days && goal) {
+        const base = financeSavingsGoalParseIsoDate(goal.targetDate);
+        const next = new Date(base.getFullYear(), base.getMonth(), base.getDate() + opt.days);
+        const safe = next.getTime() < tomorrow.getTime() ? tomorrow : next;
+        setAmountDraft(String(Math.round(goal.targetAmount * 100) / 100));
+        setDateDraft(safe);
+        setCalendarMonth(startOfMonth(safe));
+        setShowDatePicker(false);
+        setSheetVisible(true);
+        onOpenEditor?.();
+        toast.success('已预填建议日期，请确认后保存');
+        return;
+      }
+      if (opt.kind === 'lower_target' && opt.amount != null && opt.amount > 0) {
+        const amount = Math.round(opt.amount * 100) / 100;
+        setAmountDraft(String(amount));
+        if (goal) {
+          const parsed = financeSavingsGoalParseIsoDate(goal.targetDate);
+          const safe = parsed.getTime() < tomorrow.getTime() ? tomorrow : parsed;
+          setDateDraft(safe);
+          setCalendarMonth(startOfMonth(safe));
+        } else {
+          const fallback = defaultFinanceSavingsGoalDate(today);
+          setDateDraft(fallback);
+          setCalendarMonth(startOfMonth(fallback));
+        }
+        setShowDatePicker(false);
+        setSheetVisible(true);
+        onOpenEditor?.();
+        toast.success('已预填建议目标额，请确认后保存');
+      }
+    },
+    [goal, onOpenEditor, today],
+  );
 
   if (!loaded) return null;
 
@@ -345,6 +435,7 @@ export function FinanceSavingsGoalBlock({
 
   return (
     <>
+      <View style={styles.goalStack}>
       <Pressable
         onPress={openSheet}
         style={({ pressed }) => [
@@ -412,6 +503,84 @@ export function FinanceSavingsGoalBlock({
         </View>
         <MaterialIcons name="chevron-right" size={18} color={subtle} />
       </Pressable>
+
+      {goal && progress && !progress.achieved ? (
+        <View
+          style={[
+            styles.coachCard,
+            {
+              backgroundColor: surfaceMuted ?? surface,
+              borderColor: outlineVariant,
+            },
+          ]}>
+          <View style={styles.coachHead}>
+            <MaterialIcons name="auto-awesome" size={14} color={primary} />
+            <Text style={[styles.coachTitle, { color: text }]}>能不能做到</Text>
+            <Pressable
+              onPress={() => void handleCoach()}
+              disabled={coachLoading}
+              style={({ pressed }) => [
+                styles.coachBtn,
+                {
+                  backgroundColor: primary,
+                  opacity: coachLoading ? 0.7 : pressed ? 0.88 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="AI 储蓄目标教练">
+              {coachLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.coachBtnText}>{coachResult ? '再问一次' : 'AI 教练'}</Text>
+              )}
+            </Pressable>
+          </View>
+          {coachResult ? (
+            <>
+              <Text
+                style={[
+                  styles.coachBadge,
+                  { color: coachResult.feasible ? successColor : dangerColor },
+                ]}>
+                {coachResult.feasible ? '粗判：大致可行' : '粗判：偏紧，建议调整'}
+              </Text>
+              <Text style={[styles.coachBody, { color: subtle }]}>{coachResult.pace_comment}</Text>
+              {(coachResult.adjust_options ?? []).length > 0 ? (
+                <View style={styles.coachOpts}>
+                  {(coachResult.adjust_options ?? []).map((opt, idx) => (
+                    <Pressable
+                      key={`${opt.kind}-${idx}`}
+                      onPress={() => applyCoachOption(opt)}
+                      style={({ pressed }) => [
+                        styles.coachOpt,
+                        {
+                          borderColor: outlineVariant,
+                          backgroundColor: surface,
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={opt.label}>
+                      <Text style={[styles.coachOptText, { color: text }]} numberOfLines={2}>
+                        {opt.label}
+                      </Text>
+                      {(opt.kind === 'extend_days' || opt.kind === 'lower_target') &&
+                      (opt.days || opt.amount != null) ? (
+                        <Text style={[styles.coachOptApply, { color: primary }]}>应用</Text>
+                      ) : null}
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <Text style={[styles.coachBody, { color: subtle }]}>
+              结合缺口、日均需存与近月净储蓄，粗判节奏是否跟得上。不会自动改目标。
+            </Text>
+          )}
+        </View>
+      ) : null}
+      </View>
 
       <Modal visible={sheetVisible} animationType="slide" transparent onRequestClose={closeSheet}>
         <KeyboardAvoidingView
@@ -626,6 +795,9 @@ export function FinanceSavingsGoalBlock({
 }
 
 const styles = StyleSheet.create({
+  goalStack: {
+    gap: 8,
+  },
   goalCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -634,6 +806,66 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  coachCard: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 6,
+  },
+  coachHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  coachTitle: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  coachBtn: {
+    minWidth: 72,
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  coachBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  coachBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  coachBody: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  coachOpts: {
+    gap: 6,
+    marginTop: 2,
+  },
+  coachOpt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  coachOptText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  coachOptApply: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   goalIc: {
     width: 31,

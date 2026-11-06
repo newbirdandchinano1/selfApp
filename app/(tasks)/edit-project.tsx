@@ -3,10 +3,11 @@ import { labelsFromPickerResult, extractDueDateFromDeadlineText } from '@/compon
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
+import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
 import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
-import { BoundHabitPickerField } from '@/components/tasks/BoundHabitPickerField';
+import { AiPlanProjectSheet } from '@/components/tasks/ai-plan-project-sheet';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
@@ -75,11 +76,6 @@ import {
 } from '@/lib/repositories/projects/constants';
 import { deleteProject, getProjectById, getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
 import {
-  filterHabitsForProjectCompletionPicker,
-  mergeCompletionHabitIdsIntoExtraData,
-  parseCompletionHabitIds,
-} from '@/lib/repositories/projects/project-completion-habits';
-import {
   filterHabitsForProjectProgressPicker,
   mergeProgressHabitBindingsIntoExtraData,
   parseProgressHabitBindings,
@@ -87,6 +83,13 @@ import {
   validateProgressHabitBindingsForSave,
   type ProjectProgressHabitBinding,
 } from '@/lib/repositories/projects/project-progress-habits';
+import {
+  mergeProgressCountersIntoExtraData,
+  parseProgressCounters,
+  stampProgressCountersSinceYmd,
+  validateProgressCountersForSave,
+  type ProgressCounter,
+} from '@/lib/repositories/progress/progress-counters';
 import {
   mergePrerequisiteIdsIntoExtraData,
   parsePrerequisiteProjectIds,
@@ -567,6 +570,7 @@ export default function EditProjectScreen() {
   const [projectExtraData, setProjectExtraData] = React.useState<ProjectExtraData>({});
   const [subtasks, setSubtasks] = React.useState<SubtaskNode[]>([]);
   const [taskTree, setTaskTree] = React.useState<TaskTreeNode[]>([]);
+  const [aiPlanOpen, setAiPlanOpen] = React.useState(false);
   const [hideCompletedTasks, setHideCompletedTasks] = React.useState(false);
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
   const [persistedTaskIds, setPersistedTaskIds] = React.useState<Set<string>>(new Set());
@@ -583,10 +587,10 @@ export default function EditProjectScreen() {
   const [allProjects, setAllProjects] = React.useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = React.useState(true);
   const [prerequisiteProjectIds, setPrerequisiteProjectIds] = React.useState<string[]>([]);
-  const [completionHabitIds, setCompletionHabitIds] = React.useState<string[]>([]);
   const [progressHabitBindings, setProgressHabitBindings] = React.useState<
     ProjectProgressHabitBinding[]
   >([]);
+  const [progressCounters, setProgressCounters] = React.useState<ProgressCounter[]>([]);
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
@@ -769,8 +773,8 @@ export default function EditProjectScreen() {
       setRepeatText(loadedSchedule?.repeatOption === '不重复' ? '' : loadedSchedule?.repeatSummary ?? '');
       setDeadlineText(buildDeadlineTextFromSchedule(loadedSchedule) || (project.due_date ? formatDate(project.due_date) : ''));
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
-      setCompletionHabitIds(parseCompletionHabitIds(project.extra_data));
       setProgressHabitBindings(parseProgressHabitBindings(project.extra_data));
+      setProgressCounters(parseProgressCounters(project.extra_data));
       try {
         setSelectedTagIds(await getTagIdsByProjectId(projectId));
       } catch (tagErr) {
@@ -856,21 +860,6 @@ export default function EditProjectScreen() {
     },
     [loadProject, wrapLoad],
   );
-
-  const habitSections = React.useMemo(() => {
-    const filtered = filterHabitsForProjectCompletionPicker(allHabits, completionHabitIds);
-    const habitsByContext = new Map<string, HabitRow[]>();
-    for (const habit of filtered) {
-      const list = habitsByContext.get(habit.context) ?? [];
-      list.push(habit);
-      habitsByContext.set(habit.context, list);
-    }
-    return habitContexts.map((ctx) => ({
-      contextId: ctx.id,
-      contextName: ctx.name,
-      habits: habitsByContext.get(ctx.id) ?? [],
-    }));
-  }, [allHabits, completionHabitIds, habitContexts]);
 
   const progressHabitSections = React.useMemo(() => {
     const selectedIds = progressHabitBindings.map((b) => b.habitId);
@@ -1149,6 +1138,16 @@ export default function EditProjectScreen() {
       logicalTodayYmd,
       progressHabitBindings,
     );
+    const countersValidation = validateProgressCountersForSave(progressCounters);
+    if (!countersValidation.ok) {
+      toast.warn(countersValidation.message);
+      return;
+    }
+    const stampedCounters = stampProgressCountersSinceYmd(
+      countersValidation.counters,
+      logicalTodayYmd,
+      progressCounters,
+    );
 
     setSaving(true);
     let committed = false;
@@ -1179,12 +1178,14 @@ export default function EditProjectScreen() {
       const baseExtra = { ...projectExtraData, schedule: scheduleToSave } as Record<string, unknown>;
       delete baseExtra.note_image_uri;
       delete baseExtra.note_image_uris;
-      const mergedExtra = mergeProgressHabitBindingsIntoExtraData(
-        mergeCompletionHabitIdsIntoExtraData(
+      // 旧版「完成条件」键废弃：保存时清掉，只保留推进进度
+      delete baseExtra.completion_habit_ids;
+      const mergedExtra = mergeProgressCountersIntoExtraData(
+        mergeProgressHabitBindingsIntoExtraData(
           mergePrerequisiteIdsIntoExtraData(baseExtra, prerequisiteProjectIds),
-          completionHabitIds,
+          stampedProgressBindings,
         ),
-        stampedProgressBindings,
+        stampedCounters,
       );
       delete (mergedExtra as Record<string, unknown>).completion_reward;
       const withReward = mergeRewardPointsIntoExtraObject(
@@ -1383,8 +1384,8 @@ export default function EditProjectScreen() {
     }
   }, [
     allProjects,
-    completionHabitIds,
     progressHabitBindings,
+    progressCounters,
     deadlineText,
     entityIcon,
     isLongTermProject,
@@ -1703,6 +1704,18 @@ export default function EditProjectScreen() {
                       <MaterialIcons name="add" size={12} color={tf.frog} />
                       <Text style={{ fontSize: 12, fontWeight: '700', color: tf.frog }}>加任务</Text>
                     </Pressable>
+                    <Pressable
+                      onPress={() => setAiPlanOpen(true)}
+                      disabled={formBusy || !projectId || !title.trim()}
+                      style={({ pressed }) => [
+                        styles.treeAdd,
+                        {
+                          opacity: formBusy || !projectId || !title.trim() ? 0.5 : pressed ? 0.8 : 1,
+                        },
+                      ]}>
+                      <MaterialIcons name="auto-awesome" size={12} color={tf.frog} />
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: tf.frog }}>AI 规划</Text>
+                    </Pressable>
                     <Text style={{ fontSize: 10, color: tf.faint }}>未落库临时任务不能进编辑</Text>
                   </View>
                 </View>
@@ -1736,29 +1749,6 @@ export default function EditProjectScreen() {
                     </View>
                   </View>
                   <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>完成条件</Text>
-                    <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
-                      <BoundHabitPickerField
-                        selectedHabitIds={completionHabitIds}
-                        sections={habitSections}
-                        loading={habitsLoading || loading}
-                        disabled={formBusy}
-                        onChange={setCompletionHabitIds}
-                        textColor={tf.ink}
-                        outline={outline}
-                        placeholderColor={tf.faint}
-                        primary={primary}
-                        surfaceLow={surfaceLow}
-                        surfaceLowest={surfaceLowest}
-                        isDark={isDark}
-                        emptyHint="可选；这些习惯的周期目标成功后，才建议结案"
-                        selectedHint="全部达成周期目标后，才满足项目完成条件"
-                        modalTitle="完成条件 · 小习惯"
-                        modalDesc="可多选。仅显示已设周期目标的养成/戒除习惯；全部达成后才可收尾本项目（任务齐时也可自动归档）。"
-                      />
-                    </View>
-                  </View>
-                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
                     <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>推进进度</Text>
                     <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
                       <ProgressHabitBindingsField
@@ -1776,6 +1766,20 @@ export default function EditProjectScreen() {
                         surfaceLowest={surfaceLowest}
                         isDark={isDark}
                       />
+                      <View style={{ marginTop: 10, opacity: formBusy ? 0.65 : 1 }}>
+                        <ProgressCountersField
+                          counters={progressCounters}
+                          disabled={formBusy}
+                          onChange={setProgressCounters}
+                          anchorYmd={logicalTodayYmd}
+                          textColor={tf.ink}
+                          outline={outline}
+                          placeholderColor={tf.faint}
+                          primary={primary}
+                          surfaceLow={surfaceLow}
+                          surfaceLowest={surfaceLowest}
+                        />
+                      </View>
                     </View>
                   </View>
                   <Pressable
@@ -2180,6 +2184,19 @@ export default function EditProjectScreen() {
           <Text style={{ fontSize: 15, fontWeight: '600', color: tf.ink }}>正在保存…</Text>
         </View>
       ) : null}
+
+      <AiPlanProjectSheet
+        visible={aiPlanOpen}
+        onClose={() => setAiPlanOpen(false)}
+        projectId={projectId}
+        projectName={title}
+        description={notes}
+        dueYmd={extractDueDateFromDeadlineText(deadlineText)}
+        existingTopTitles={taskTree.map((n) => n.title).filter(Boolean)}
+        onCreated={() => {
+          void reloadSubtasksOnly();
+        }}
+      />
     </SafeAreaView>
   );
 }

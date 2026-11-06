@@ -1,5 +1,6 @@
 import {
   WishBoardItemForm,
+  type WishBoardItemFormInitial,
   type WishBoardItemFormValues,
 } from '@/components/wish-board/wish-board-item-form';
 import type { WishBoxPalette, WishBoxShadowSet } from '@/constants/wish-box-ui';
@@ -24,10 +25,12 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   onCreated?: () => void;
+  /** 「下一颗心愿」等入口预填 */
+  initial?: WishBoardItemFormInitial | null;
 };
 
 /** 添加心愿：加载上下文后渲染标准全屏表单（设计稿 05） */
-export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
+export function AddWishBoardModal({ visible, onClose, onCreated, initial = null }: Props) {
   const styles = useWishStyles(makeStyles);
   const { c } = useWishBoxTheme();
   const [balance, setBalance] = useState(0);
@@ -40,6 +43,8 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const uploadedUrisRef = useRef<string[]>([]);
+  const initialRef = useRef(initial);
+  initialRef.current = initial;
 
   // 打开时重置本次会话（渲染期同步，避免 effect 内同步 setState）
   if (visible !== lastVisible) {
@@ -117,6 +122,7 @@ export function AddWishBoardModal({ visible, onClose, onCreated }: Props) {
         <WishBoardItemForm
           key={openToken}
           mode="create"
+          initial={initialRef.current ?? undefined}
           balance={balance}
           projects={projects}
           tasks={tasks}

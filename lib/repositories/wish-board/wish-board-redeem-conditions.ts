@@ -3,15 +3,17 @@ import {
   formatSignedMoneyTrunc2,
   isNetWorthAtLeast,
 } from '@/lib/finance-net-worth';
+import { isBreakHabitSucceeded } from '@/lib/repositories/habits/habit-break-success';
+import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { getHabitById } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
+import {
+  parseBuildHabitExpectedGoal,
+  parseHabitConsecutiveTargetDays,
+} from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind, type HabitKind } from '@/lib/repositories/habits/habit-kind';
 import { getProjectById } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
-import {
-  isHabitCycleSucceededForProject,
-  isHabitEligibleForProjectCompletion,
-} from '@/lib/repositories/projects/project-completion-habits';
 import { getTaskById } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import type { WishBoardRedeemConditionsInput } from '@/lib/repositories/wish-board/wish-board.types';
@@ -30,7 +32,7 @@ export type WishBoardRedeemConditions = {
   todo_ids: string[];
   /**
    * 须养成/戒除「周期目标已达成」的小习惯（completedAt）；
-   * 周期配额不纳入；与项目完成条件同口径，非当日打卡。
+   * 周期配额不纳入；非当日打卡。
    */
   habit_ids: string[];
   /** 当前净资产须 ≥ 该值（与资产页「当前净资产」同一公式）；null 表示不限制 */
@@ -281,14 +283,20 @@ export function countWishBoardRedeemConditions(conditions: WishBoardRedeemCondit
   );
 }
 
-/** 与项目完成条件同口径：养成/戒除且已设周期目标；周期配额不可绑 */
+/** 养成须有预期目标，戒除须有连续天数；周期配额不可绑 */
 export function isHabitEligibleForWishRedeem(habit: Pick<HabitRow, 'extra_data'>): boolean {
-  return isHabitEligibleForProjectCompletion(habit);
+  const kind = parseHabitKind(habit.extra_data);
+  if (kind === 'build') return parseBuildHabitExpectedGoal(habit.extra_data) != null;
+  if (kind === 'break') return parseHabitConsecutiveTargetDays(habit.extra_data) != null;
+  return false;
 }
 
 /** 养成：预期目标 completedAt；戒除：连续挑战 completedAt */
 export function isHabitWishRedeemConditionMet(habit: Pick<HabitRow, 'extra_data'>): boolean {
-  return isHabitCycleSucceededForProject(habit);
+  const kind = parseHabitKind(habit.extra_data);
+  if (kind === 'build') return isBuildHabitSucceeded(habit.extra_data);
+  if (kind === 'break') return isBreakHabitSucceeded(habit.extra_data);
+  return false;
 }
 
 export function wishHabitKindForRedeem(

@@ -9,10 +9,15 @@ import { resolveStoredImageDisplayUri } from '@/lib/stored-images';
 import { MotionPressable } from '@/components/ui/motion-pressable';
 import {
   analyzeFoodNutritionFromImage,
+  analyzeFoodNutritionFromImageSplit,
+  analyzeFoodNutritionFromLabelImage,
   parseAiIntakeNumericValue,
   parseFoodIntakeFromText,
+  scaleFoodNutritionLabel,
+  type FoodNutritionLabelJson,
   type FoodTextIntakeJson,
 } from '@/lib/zhipu-image-parse';
+import { toast } from '@/lib/app-feedback';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -65,6 +70,7 @@ const BIGNUM_BUMP_MS = 220;
 const CARET_BLINK_MS = 1100;
 
 type TabKey = 'ai' | 'photo' | 'manual';
+type PhotoScanMode = 'food' | 'label';
 export type ManualIntakeType = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 type ManualType = ManualIntakeType;
 type ConfirmUnit = 'ml' | 'g' | 'kcal';
@@ -149,6 +155,12 @@ const PHOTO_TIPS = [
   { label: '单独拍摄', detail: '不要与餐具混在一起' },
 ] as const;
 
+const PHOTO_LABEL_TIPS = [
+  { label: '拍清表头', detail: '看清「每100克」或「每份」' },
+  { label: '避免反光', detail: '数字与单位要对齐入镜' },
+  { label: '整表入镜', detail: '蛋白 / 碳水 / 热量尽量齐' },
+] as const;
+
 const UNIT_HINTS = [
   '1 杯 ≈ 250 ml',
   '1 碗 ≈ 150 g',
@@ -221,6 +233,8 @@ export type RecordIntakeConfirmPayload =
       photoNote?: string;
       /** 有预解析时直接落库，跳过首页后台再识别 */
       parsed?: PhotoIntakeParsedPayload;
+      /** 一图拆多条：逐条确认写入；同源图只挂第一条 */
+      parsedItems?: PhotoIntakeParsedPayload[];
     };
 
 function getUnitByType(type: ManualType): ConfirmUnit {
@@ -659,6 +673,7 @@ export function RecordIntakeSheet({
   recentPhrases = [],
   recentPhotos = [],
   recentManuals = [],
+  seedAiDraft = null,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -675,6 +690,8 @@ export function RecordIntakeSheet({
   recentPhrases?: string[];
   recentPhotos?: RecordIntakeRecentPhoto[];
   recentManuals?: RecordIntakeRecentManual[];
+  /** 打开时预填 AI 文字草稿（如「补一餐」建议） */
+  seedAiDraft?: FoodTextIntakeJson | null;
 }) {
   const { hh, isDark, nutrients, fonts } = useHealthHomeTheme();
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
@@ -696,7 +713,13 @@ export function RecordIntakeSheet({
   const [photoBusy, setPhotoBusy] = React.useState(false);
   const [photoNotFood, setPhotoNotFood] = React.useState(false);
   const [photoFieldTexts, setPhotoFieldTexts] = React.useState<PhotoIntakeFieldTexts | null>(null);
+  const [photoSplitItems, setPhotoSplitItems] = React.useState<PhotoIntakeFieldTexts[] | null>(null);
+  const [photoSplitBusy, setPhotoSplitBusy] = React.useState(false);
   const [photoRevealKey, setPhotoRevealKey] = React.useState(0);
+  const [photoScanMode, setPhotoScanMode] = React.useState<PhotoScanMode>('food');
+  const [photoLabelRaw, setPhotoLabelRaw] = React.useState<FoodNutritionLabelJson | null>(null);
+  const [photoLabelServings, setPhotoLabelServings] = React.useState(1);
+  const [photoLabelGrams, setPhotoLabelGrams] = React.useState('100');
   const [aiBusy, setAiBusy] = React.useState(false);
   const [aiError, setAiError] = React.useState<string | null>(null);
   const [aiResolved, setAiResolved] = React.useState<{ text: string; data: FoodTextIntakeJson } | null>(null);
@@ -820,8 +843,6 @@ export function RecordIntakeSheet({
 
   React.useEffect(() => {
     if (!visible) return;
-    setText('');
-    setTab('ai');
     setManualType('hydration');
     setAmountText(MANUAL_DEFAULTS.hydration);
     setManualEnterKey(0);
@@ -833,23 +854,55 @@ export function RecordIntakeSheet({
     setPhotoBusy(false);
     setPhotoNotFood(false);
     setPhotoFieldTexts(null);
+    setPhotoSplitItems(null);
+    setPhotoSplitBusy(false);
     setPhotoRevealKey(0);
+    setPhotoScanMode('food');
+    setPhotoLabelRaw(null);
+    setPhotoLabelServings(1);
+    setPhotoLabelGrams('100');
     photoParseGenRef.current += 1;
     photoShakeX.setValue(0);
     photoErrCodeOpacity.setValue(1);
     setAiBusy(false);
     setAiError(null);
-    setAiResolved(null);
-    setAiFieldTexts(null);
     setAiParseSeconds(null);
-    setAiRevealKey(0);
     clearAiEvalStream();
     setWandSparks([]);
     setSaveBurst(null);
     setConfirmSaving(false);
     confirmScale.setValue(1);
     resultDim.setValue(0);
-  }, [clearAiEvalStream, confirmScale, photoErrCodeOpacity, photoShakeX, resultDim, visible]);
+    setTab('ai');
+    if (seedAiDraft) {
+      const summary = seedAiDraft.food_summary?.trim() || '建议加餐';
+      const draft: FoodTextIntakeJson = {
+        food_summary: summary,
+        hydration_ml: Math.max(0, Number(seedAiDraft.hydration_ml) || 0),
+        protein_g: Math.max(0, Number(seedAiDraft.protein_g) || 0),
+        carbohydrate_g: Math.max(0, Number(seedAiDraft.carbohydrate_g) || 0),
+        calories_kcal: Math.max(0, Number(seedAiDraft.calories_kcal) || 0),
+        ai_evaluation: seedAiDraft.ai_evaluation?.trim() || '',
+      };
+      setText(summary);
+      setAiResolved({ text: summary, data: draft });
+      setAiFieldTexts(aiIntakeFieldTextsFromData(draft));
+      setAiRevealKey((k) => k + 1);
+    } else {
+      setText('');
+      setAiResolved(null);
+      setAiFieldTexts(null);
+      setAiRevealKey(0);
+    }
+  }, [
+    clearAiEvalStream,
+    confirmScale,
+    photoErrCodeOpacity,
+    photoShakeX,
+    resultDim,
+    seedAiDraft,
+    visible,
+  ]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -1124,14 +1177,75 @@ export function RecordIntakeSheet({
     clearAiEvalStream();
   }, [clearAiEvalStream]);
 
+  const applyLabelScaleToFields = React.useCallback(
+    (label: FoodNutritionLabelJson, servings: number, gramsText: string) => {
+      const grams = parseNonNegMetricInput(gramsText);
+      const scaled = scaleFoodNutritionLabel(label, {
+        servings: Math.max(0.1, servings),
+        grams: label.basis === 'per_100g' ? Math.max(0, grams) : 0,
+      });
+      setPhotoFieldTexts({
+        food_name: scaled.food_name,
+        hydration_ml: String(Math.round(scaled.hydration_ml)),
+        protein_g: String(scaled.protein_g),
+        carbohydrate_g: String(scaled.carbohydrate_g),
+        calories_kcal: String(scaled.calories_kcal),
+        ai_evaluation: scaled.ai_evaluation ?? '',
+      });
+    },
+    [],
+  );
+
   const runPhotoParse = React.useCallback(
-    async (base64: string, mime: string, note: string) => {
+    async (base64: string, mime: string, note: string, mode: PhotoScanMode = 'food') => {
       const gen = ++photoParseGenRef.current;
       setPhotoBusy(true);
       setPhotoError(null);
       setPhotoNotFood(false);
       setPhotoFieldTexts(null);
+      setPhotoSplitItems(null);
+      setPhotoLabelRaw(null);
       try {
+        if (mode === 'label') {
+          const r = await analyzeFoodNutritionFromLabelImage({
+            imageBase64: base64,
+            imageMimeType: mime,
+            ...(note.trim() ? { supplementText: note.trim() } : {}),
+          });
+          if (gen !== photoParseGenRef.current) return;
+          if (!r.ok) {
+            setPhotoError(r.error || '标签识别失败，请稍后重试');
+            playPhotoErrMotion();
+            return;
+          }
+          const d = r.data;
+          const sum = d.protein_g + d.carbohydrate_g + d.calories_kcal;
+          if (d.is_label !== 1 || sum <= 0) {
+            setPhotoNotFood(true);
+            setPhotoError(
+              d.is_label !== 1
+                ? `未识别到营养成分表（${PHOTO_NOT_FOOD_CODE}），请拍清包装标签或改用食物拍照。`
+                : '标签数值均为 0，请换一张更清晰的成分表照片。',
+            );
+            playPhotoErrMotion();
+            return;
+          }
+          const servings = 1;
+          const gramsDefault =
+            d.basis === 'per_100g'
+              ? String(Math.round(d.serving_size_g > 0 ? d.serving_size_g : 100))
+              : '100';
+          setPhotoLabelServings(servings);
+          setPhotoLabelGrams(gramsDefault);
+          setPhotoLabelRaw(d);
+          applyLabelScaleToFields(d, servings, gramsDefault);
+          setPhotoRevealKey((k) => k + 1);
+          if (d.product_name?.trim() && !note.trim()) {
+            setPhotoNote(d.product_name.trim());
+          }
+          return;
+        }
+
         const r = await analyzeFoodNutritionFromImage({
           imageBase64: base64,
           imageMimeType: mime,
@@ -1157,7 +1271,7 @@ export function RecordIntakeSheet({
         }
         setPhotoFieldTexts({
           food_name: d.food_name?.trim() || '',
-          hydration_ml: '0',
+          hydration_ml: String(Math.round(d.hydration_ml ?? 0)),
           protein_g: String(d.protein_g ?? 0),
           carbohydrate_g: String(d.carbohydrate_g ?? 0),
           calories_kcal: String(d.calories_kcal ?? 0),
@@ -1175,8 +1289,47 @@ export function RecordIntakeSheet({
         if (gen === photoParseGenRef.current) setPhotoBusy(false);
       }
     },
-    [playPhotoErrMotion],
+    [applyLabelScaleToFields, playPhotoErrMotion],
   );
+
+  const runPhotoSplit = React.useCallback(async () => {
+    if (!photoBase64 || photoBusy || photoSplitBusy) return;
+    const gen = photoParseGenRef.current;
+    setPhotoSplitBusy(true);
+    setPhotoError(null);
+    try {
+      const r = await analyzeFoodNutritionFromImageSplit({
+        imageBase64: photoBase64,
+        imageMimeType: photoMime,
+        ...(photoNote.trim() ? { supplementText: photoNote.trim() } : {}),
+      });
+      if (gen !== photoParseGenRef.current) return;
+      if (!r.ok) {
+        toast.error(r.error || '拆分失败');
+        return;
+      }
+      if (r.data.is_food !== 1 || r.data.items.length === 0) {
+        toast.warn('未能拆出多道菜，可继续用单条结果写入');
+        return;
+      }
+      const next = r.data.items.map((item) => ({
+        food_name: item.food_name?.trim() || '',
+        hydration_ml: String(Math.round(item.hydration_ml ?? 0)),
+        protein_g: String(item.protein_g ?? 0),
+        carbohydrate_g: String(item.carbohydrate_g ?? 0),
+        calories_kcal: String(item.calories_kcal ?? 0),
+        ai_evaluation: item.ai_evaluation ?? '',
+      }));
+      setPhotoSplitItems(next);
+      setPhotoRevealKey((k) => k + 1);
+      toast.success(`已拆成 ${next.length} 道`);
+    } catch (e) {
+      if (gen !== photoParseGenRef.current) return;
+      toast.error(e instanceof Error ? e.message : '拆分失败');
+    } finally {
+      if (gen === photoParseGenRef.current) setPhotoSplitBusy(false);
+    }
+  }, [photoBase64, photoBusy, photoMime, photoNote, photoSplitBusy]);
 
   const applyPhotoAsset = React.useCallback(
     (uri: string, base64: string | null | undefined, mime: string) => {
@@ -1184,6 +1337,7 @@ export function RecordIntakeSheet({
         setPhotoUri(uri);
         setPhotoBase64(null);
         setPhotoFieldTexts(null);
+        setPhotoLabelRaw(null);
         setPhotoNotFood(false);
         setPhotoBusy(false);
         setPhotoError('无法读取图片数据，请重试或压缩后重选');
@@ -1197,9 +1351,27 @@ export function RecordIntakeSheet({
       setPhotoError(null);
       setPhotoNotFood(false);
       setPhotoFieldTexts(null);
-      void runPhotoParse(base64, nextMime, photoNote);
+      setPhotoSplitItems(null);
+      setPhotoLabelRaw(null);
+      void runPhotoParse(base64, nextMime, photoNote, photoScanMode);
     },
-    [photoNote, playPhotoErrMotion, runPhotoParse],
+    [photoNote, photoScanMode, playPhotoErrMotion, runPhotoParse],
+  );
+
+  const switchPhotoScanMode = React.useCallback(
+    (next: PhotoScanMode) => {
+      if (next === photoScanMode || photoBusy || photoSplitBusy) return;
+      setPhotoScanMode(next);
+      setPhotoFieldTexts(null);
+      setPhotoSplitItems(null);
+      setPhotoLabelRaw(null);
+      setPhotoError(null);
+      setPhotoNotFood(false);
+      if (photoBase64) {
+        void runPhotoParse(photoBase64, photoMime, photoNote, next);
+      }
+    },
+    [photoBase64, photoBusy, photoMime, photoNote, photoScanMode, photoSplitBusy, runPhotoParse],
   );
 
   const pickFromLibrary = React.useCallback(async () => {
@@ -1292,9 +1464,12 @@ export function RecordIntakeSheet({
           ? nutrients.carbohydrate
           : nutrients.calories;
   const clampedAmount = Math.min(Math.max(0, amount), manualMeta.limit);
-  const photoReady = Boolean(photoFieldTexts && !photoBusy && !photoNotFood);
+  const photoSplitReady = Boolean(photoSplitItems && photoSplitItems.length > 0 && !photoBusy && !photoSplitBusy);
+  const photoReady = Boolean(
+    (photoFieldTexts || photoSplitReady) && !photoBusy && !photoSplitBusy && !photoNotFood,
+  );
   const photoConfirmDisabled =
-    tab === 'photo' && (!photoBase64 || photoBusy || photoNotFood);
+    tab === 'photo' && (!photoBase64 || photoBusy || photoSplitBusy || photoNotFood);
   const aiConfirmDisabled = tab === 'ai' && !text.trim();
   const confirmDisabled = (tab === 'manual' && amount <= 0) || photoConfirmDisabled || aiConfirmDisabled;
   const aiReady = Boolean(aiResolved && aiResolved.text === text.trim() && aiFieldTexts && !aiBusy);
@@ -1341,7 +1516,13 @@ export function RecordIntakeSheet({
         : `${dateLabel?.trim() || '今日'} · 今日已有 ${todayRecordCount} 条`;
 
   const confirmLabel =
-    tab === 'ai' ? '确认写入并结算积分' : tab === 'photo' ? '写入这条记录' : '写入记录';
+    tab === 'ai'
+      ? '确认写入并结算积分'
+      : tab === 'photo'
+        ? photoSplitReady
+          ? `写入 ${photoSplitItems!.length} 条记录`
+          : '写入这条记录'
+        : '写入记录';
 
   const softHydration = isDark ? 'rgba(79,143,168,0.18)' : 'rgba(79,143,168,0.14)';
   const softProtein = isDark ? 'rgba(196,120,82,0.18)' : 'rgba(196,120,82,0.14)';
@@ -1446,7 +1627,9 @@ export function RecordIntakeSheet({
     }
     if (tab === 'photo' && photoBase64) {
       const note = photoNote.trim();
-      const hasParsedPreview = photoReady && photoFieldTexts != null;
+      const hasSplit =
+        photoSplitReady && photoSplitItems != null && photoSplitItems.length > 0;
+      const hasParsedPreview = !hasSplit && photoReady && photoFieldTexts != null;
       await playConfirmBurstThen(() =>
         onConfirm?.({
           mode: 'photo',
@@ -1454,7 +1637,11 @@ export function RecordIntakeSheet({
           imageMimeType: photoMime,
           sourceImageUri: photoUri,
           ...(note ? { photoNote: note } : {}),
-          ...(hasParsedPreview ? { parsed: photoIntakeFromFieldTexts(photoFieldTexts) } : {}),
+          ...(hasSplit
+            ? { parsedItems: photoSplitItems.map((f) => photoIntakeFromFieldTexts(f)) }
+            : hasParsedPreview
+              ? { parsed: photoIntakeFromFieldTexts(photoFieldTexts) }
+              : {}),
         }),
       );
       return;
@@ -1540,20 +1727,24 @@ export function RecordIntakeSheet({
   const aiEvalStreaming = Boolean(aiEvalStream);
   const aiEvalShownText = aiEvalStream?.shown ?? aiFieldTexts?.ai_evaluation ?? '';
   const wandLabel = aiReady ? '重新预解析' : '魔法棒预解析';
-  const photoCaptionTitle = photoBusy
-    ? `${photoNote.trim() || '食物照片'} · 识别中`
+  const photoCaptionTitle = photoBusy || photoSplitBusy
+    ? `${photoNote.trim() || '食物照片'} · ${photoSplitBusy ? '拆分中' : '识别中'}`
     : photoNotFood
       ? '无法识别 · 非食物'
-      : photoReady
-        ? `${photoFieldTexts?.food_name?.trim() || photoNote.trim() || '食物照片'} · 待确认`
-        : `${photoNote.trim() || '食物照片'} · 待写入识别`;
-  const photoCaptionSub = photoBusy
-    ? '已上传 1 张 · 正在估算营养'
+      : photoSplitReady
+        ? `${photoSplitItems!.length} 道菜 · 待确认`
+        : photoReady
+          ? `${photoFieldTexts?.food_name?.trim() || photoNote.trim() || '食物照片'} · 待确认`
+          : `${photoNote.trim() || '食物照片'} · 待写入识别`;
+  const photoCaptionSub = photoBusy || photoSplitBusy
+    ? `已上传 1 张 · ${photoSplitBusy ? '正在拆成多道' : '正在估算营养'}`
     : photoNotFood
       ? `错误码 ${PHOTO_NOT_FOOD_CODE}`
-      : photoReady
-        ? `识别到 ${editableMetricCount(photoFieldTexts!)} 项 · 可编辑后写入`
-        : '已上传 1 张 · 写入后后台解析';
+      : photoSplitReady
+        ? `将写入 ${photoSplitItems!.length} 条 · 可编辑后确认`
+        : photoReady && photoFieldTexts
+          ? `识别到 ${editableMetricCount(photoFieldTexts)} 项 · 可编辑后写入`
+          : '已上传 1 张 · 写入后后台解析';
 
   return (
     <Modal transparent visible onRequestClose={onClose} statusBarTranslucent>
@@ -1866,6 +2057,38 @@ export function RecordIntakeSheet({
                 </View>
               ) : tab === 'photo' ? (
                 <View style={styles.sectionStack}>
+                  <View style={styles.photoModeRow}>
+                    {(
+                      [
+                        { key: 'food' as const, label: '食物拍照' },
+                        { key: 'label' as const, label: '包装成分表' },
+                      ] as const
+                    ).map((item) => {
+                      const active = photoScanMode === item.key;
+                      return (
+                        <Pressable
+                          key={item.key}
+                          onPress={() => switchPhotoScanMode(item.key)}
+                          disabled={photoBusy || photoSplitBusy}
+                          style={({ pressed }) => [
+                            styles.photoModeChip,
+                            {
+                              backgroundColor: active ? hh.sageSoft : hh.card,
+                              borderColor: active ? hh.pine : hh.line,
+                              opacity: photoBusy || photoSplitBusy ? 0.55 : pressed ? 0.88 : 1,
+                            },
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          accessibilityLabel={item.label}>
+                          <Text style={[styles.photoModeChipText, { color: active ? hh.pine : hh.muted }]}>
+                            {item.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
                   <View
                     style={[
                       styles.photoStage,
@@ -1880,10 +2103,20 @@ export function RecordIntakeSheet({
                     ) : (
                       <View style={styles.photoStageEmpty}>
                         <View style={[styles.photoCamCircle, { backgroundColor: hh.card }]}>
-                          <MaterialIcons name="photo-camera" size={28} color={hh.pine} />
+                          <MaterialIcons
+                            name={photoScanMode === 'label' ? 'qr-code-scanner' : 'photo-camera'}
+                            size={28}
+                            color={hh.pine}
+                          />
                         </View>
-                        <Text style={[styles.photoStageTitle, { color: hh.ink }]}>拍摄或选择食物照片</Text>
-                        <Text style={[styles.photoStageSub, { color: hh.muted }]}>识别后可在写入前核对数值</Text>
+                        <Text style={[styles.photoStageTitle, { color: hh.ink }]}>
+                          {photoScanMode === 'label' ? '拍摄包装营养成分表' : '拍摄或选择食物照片'}
+                        </Text>
+                        <Text style={[styles.photoStageSub, { color: hh.muted }]}>
+                          {photoScanMode === 'label'
+                            ? '读表后按份数 / 克数换算四项'
+                            : '识别后可在写入前核对数值'}
+                        </Text>
                       </View>
                     )}
                     {photoUri ? (
@@ -1990,16 +2223,77 @@ export function RecordIntakeSheet({
                     </View>
                   </Animated.View>
 
-                  {photoFieldTexts ? (
+                  {photoFieldTexts && !photoSplitItems ? (
                     <View style={[styles.resultCard, { backgroundColor: hh.card, borderColor: hh.line }]}>
                       <View style={styles.resultCardHeader}>
                         <Text style={[styles.resultCardTitle, { color: hh.ink }]}>
-                          识别到 {editableMetricCount(photoFieldTexts)} 项
+                          {photoLabelRaw
+                            ? photoLabelRaw.basis === 'per_serving'
+                              ? '标签 · 每份基准'
+                              : '标签 · 每100g基准'
+                            : `识别到 ${editableMetricCount(photoFieldTexts)} 项`}
                         </Text>
                         <View style={[styles.editableBadge, { backgroundColor: hh.aiTagBg }]}>
                           <Text style={[styles.editableBadgeText, { color: hh.aiTagText }]}>待确认</Text>
                         </View>
                       </View>
+                      {photoFieldTexts.food_name.trim() ? (
+                        <Text style={[styles.photoSplitName, { color: hh.ink }]} numberOfLines={2}>
+                          {photoFieldTexts.food_name.trim()}
+                        </Text>
+                      ) : null}
+                      {photoLabelRaw ? (
+                        <View style={styles.labelScaleRow}>
+                          {photoLabelRaw.basis === 'per_serving' ? (
+                            <View style={styles.labelScaleBlock}>
+                              <Text style={[styles.labelScaleLabel, { color: hh.muted }]}>实吃份数</Text>
+                              <View style={styles.labelStepper}>
+                                <Pressable
+                                  onPress={() => {
+                                    const next = Math.max(0.5, Math.round((photoLabelServings - 0.5) * 10) / 10);
+                                    setPhotoLabelServings(next);
+                                    applyLabelScaleToFields(photoLabelRaw, next, photoLabelGrams);
+                                  }}
+                                  style={[styles.labelStepBtn, { borderColor: hh.line }]}
+                                  accessibilityLabel="减少份数">
+                                  <MaterialIcons name="remove" size={16} color={hh.inkSoft} />
+                                </Pressable>
+                                <Text style={[styles.labelStepValue, { color: hh.ink }]}>
+                                  {photoLabelServings}
+                                </Text>
+                                <Pressable
+                                  onPress={() => {
+                                    const next = Math.min(20, Math.round((photoLabelServings + 0.5) * 10) / 10);
+                                    setPhotoLabelServings(next);
+                                    applyLabelScaleToFields(photoLabelRaw, next, photoLabelGrams);
+                                  }}
+                                  style={[styles.labelStepBtn, { borderColor: hh.line }]}
+                                  accessibilityLabel="增加份数">
+                                  <MaterialIcons name="add" size={16} color={hh.inkSoft} />
+                                </Pressable>
+                              </View>
+                            </View>
+                          ) : (
+                            <View style={[styles.labelScaleBlock, { flex: 1 }]}>
+                              <Text style={[styles.labelScaleLabel, { color: hh.muted }]}>实吃克数</Text>
+                              <TextInput
+                                value={photoLabelGrams}
+                                onChangeText={(v) => {
+                                  setPhotoLabelGrams(v);
+                                  applyLabelScaleToFields(photoLabelRaw, photoLabelServings, v);
+                                }}
+                                keyboardType="decimal-pad"
+                                style={[
+                                  styles.labelGramsInput,
+                                  { color: hh.ink, borderColor: hh.line, backgroundColor: hh.cardMuted },
+                                ]}
+                                placeholder="100"
+                                placeholderTextColor={hh.faint}
+                              />
+                            </View>
+                          )}
+                        </View>
+                      ) : null}
                       <NutrientTiles
                         editable={photoReady}
                         reduceMotion={motionReduced}
@@ -2057,6 +2351,112 @@ export function RecordIntakeSheet({
                           />
                         </View>
                       ) : null}
+                      {!photoLabelRaw ? (
+                        <Pressable
+                          onPress={() => void runPhotoSplit()}
+                          disabled={photoSplitBusy || photoBusy}
+                          style={({ pressed }) => [
+                            styles.splitBtn,
+                            {
+                              borderColor: hh.pine,
+                              opacity: photoSplitBusy || photoBusy ? 0.5 : pressed ? 0.85 : 1,
+                            },
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel="拆成多道菜分别记录"
+                        >
+                          <MaterialIcons name="call-split" size={16} color={hh.pine} />
+                          <Text style={[styles.splitBtnText, { color: hh.pine }]}>
+                            {photoSplitBusy ? '拆分中…' : '拆成多道'}
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+
+                  {photoSplitItems && photoSplitItems.length > 0 ? (
+                    <View style={{ gap: 10 }}>
+                      <View style={styles.resultCardHeader}>
+                        <Text style={[styles.resultCardTitle, { color: hh.ink }]}>
+                          已拆成 {photoSplitItems.length} 道
+                        </Text>
+                        <Pressable
+                          onPress={() => {
+                            setPhotoSplitItems(null);
+                          }}
+                          hitSlop={8}
+                          accessibilityLabel="回到单条结果"
+                        >
+                          <Text style={[styles.splitBackText, { color: hh.pine }]}>回单条</Text>
+                        </Pressable>
+                      </View>
+                      {photoSplitItems.map((item, index) => (
+                        <View
+                          key={`split-${index}-${item.food_name}`}
+                          style={[styles.resultCard, { backgroundColor: hh.card, borderColor: hh.line }]}
+                        >
+                          <TextInput
+                            value={item.food_name}
+                            onChangeText={(v) =>
+                              setPhotoSplitItems((prev) =>
+                                prev
+                                  ? prev.map((row, i) => (i === index ? { ...row, food_name: v } : row))
+                                  : prev,
+                              )
+                            }
+                            placeholder="菜名"
+                            placeholderTextColor={hh.faint}
+                            style={[styles.photoSplitNameInput, { color: hh.ink, borderColor: hh.line }]}
+                          />
+                          <NutrientTiles
+                            editable
+                            reduceMotion={motionReduced}
+                            onChange={(key, value) =>
+                              setPhotoSplitItems((prev) =>
+                                prev
+                                  ? prev.map((row, i) =>
+                                      i === index ? { ...row, [key]: value } : row,
+                                    )
+                                  : prev,
+                              )
+                            }
+                            items={[
+                              {
+                                key: 'hydration_ml',
+                                label: '水分',
+                                unit: 'ml',
+                                value: item.hydration_ml,
+                                accent: nutrients.hydration,
+                                soft: softHydration,
+                              },
+                              {
+                                key: 'protein_g',
+                                label: '蛋白',
+                                unit: 'g',
+                                value: item.protein_g,
+                                accent: nutrients.protein,
+                                soft: softProtein,
+                              },
+                              {
+                                key: 'carbohydrate_g',
+                                label: '碳水',
+                                unit: 'g',
+                                value: item.carbohydrate_g,
+                                accent: nutrients.carbohydrate,
+                                soft: softCarb,
+                              },
+                              {
+                                key: 'calories_kcal',
+                                label: '热量',
+                                unit: 'kcal',
+                                value: item.calories_kcal,
+                                accent: nutrients.calories,
+                                soft: softCal,
+                              },
+                            ]}
+                          />
+                        </View>
+                      ))}
                     </View>
                   ) : null}
 
@@ -2077,9 +2477,11 @@ export function RecordIntakeSheet({
                   <View style={[styles.tipsCard, { backgroundColor: hh.card, borderColor: hh.line }]}>
                     <View style={styles.todayHeader}>
                       <Text style={[styles.helperTitle, { color: hh.ink, marginBottom: 0 }]}>拍摄建议</Text>
-                      <Text style={[styles.todayHint, { color: hh.faint }]}>识别率更高</Text>
+                      <Text style={[styles.todayHint, { color: hh.faint }]}>
+                        {photoScanMode === 'label' ? '读表更准' : '识别率更高'}
+                      </Text>
                     </View>
-                    {PHOTO_TIPS.map((tip) => (
+                    {(photoScanMode === 'label' ? PHOTO_LABEL_TIPS : PHOTO_TIPS).map((tip) => (
                       <View key={tip.label} style={[styles.tipRow, { borderTopColor: hh.line }]}>
                         <Text style={[styles.tipLabel, { color: hh.inkSoft }]}>{tip.label}</Text>
                         <Text style={[styles.tipExample, { color: hh.muted }]}>{tip.detail}</Text>
@@ -2515,6 +2917,36 @@ const styles = StyleSheet.create({
   },
   tabText: { fontSize: 11, fontWeight: '800' },
   sectionStack: { gap: 12 },
+  photoModeRow: { flexDirection: 'row', gap: 8 },
+  photoModeChip: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  photoModeChipText: { fontSize: 13, fontWeight: '700' },
+  labelScaleRow: { flexDirection: 'row', gap: 10, marginBottom: 10, alignItems: 'flex-end' },
+  labelScaleBlock: { gap: 6 },
+  labelScaleLabel: { fontSize: 11, fontWeight: '600' },
+  labelStepper: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  labelStepBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  labelStepValue: { minWidth: 36, textAlign: 'center', fontSize: 15, fontWeight: '800' },
+  labelGramsInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    fontWeight: '700',
+  },
   labelRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
   sectionLabel: { fontSize: 15, fontWeight: '800' },
   sectionHint: { fontSize: 11, fontWeight: '600' },
@@ -2583,6 +3015,28 @@ const styles = StyleSheet.create({
   resultCardTitle: { fontSize: 14, fontWeight: '800' },
   editableBadge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   editableBadgeText: { fontSize: 11, fontWeight: '700' },
+  splitBtn: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 10,
+  },
+  splitBtnText: { fontSize: 13, fontWeight: '700' },
+  splitBackText: { fontSize: 12, fontWeight: '700' },
+  photoSplitName: { fontSize: 15, fontWeight: '800', marginBottom: 4 },
+  photoSplitNameInput: {
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   metricTile: {
     width: '48%',

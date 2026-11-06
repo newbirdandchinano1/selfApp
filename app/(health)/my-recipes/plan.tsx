@@ -1,3 +1,4 @@
+import { AiWeekPlanSheet } from '@/components/recipe/ai-week-plan-sheet';
 import { recipeGlassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { RecipeMotionPressable } from '@/components/recipe/recipe-motion-pressable';
 import { StoredImage } from '@/components/stored-image';
@@ -97,6 +98,7 @@ export default function RecipePlanScreen() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [aiWeekVisible, setAiWeekVisible] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -243,8 +245,26 @@ export default function RecipePlanScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}>
         <View style={styles.pageHead}>
-          <Text style={[styles.pageTitle, { color: p.text }]}>计划</Text>
-          <Text style={[styles.pageSub, { color: p.outlineMuted }]}>提前安排，轻松开饭。</Text>
+          <View style={styles.pageHeadRow}>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={[styles.pageTitle, { color: p.text }]}>计划</Text>
+              <Text style={[styles.pageSub, { color: p.outlineMuted }]}>提前安排，轻松开饭。</Text>
+            </View>
+            <Pressable
+              onPress={() => setAiWeekVisible(true)}
+              style={({ pressed }) => [
+                styles.aiWeekBtn,
+                {
+                  backgroundColor: p.accentSoft,
+                  borderColor: p.border,
+                  opacity: pressed ? 0.75 : 1,
+                },
+              ]}
+              accessibilityLabel="AI 排本周">
+              <MaterialIcons name="auto-awesome" size={16} color={p.accent} />
+              <Text style={[styles.aiWeekBtnText, { color: p.accent }]}>AI 排本周</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* 日历 */}
@@ -479,6 +499,17 @@ export default function RecipePlanScreen() {
           )}
         </View>
       </ScrollView>
+
+      <AiWeekPlanSheet
+        visible={aiWeekVisible}
+        onClose={() => setAiWeekVisible(false)}
+        focusYmd={selectedYmd}
+        recipeStore={recipeStore}
+        planStore={planStore}
+        onApplied={() => {
+          void reload();
+        }}
+      />
     </View>
   );
 }
@@ -491,9 +522,21 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     gap: 14,
   },
-  pageHead: { gap: 4, marginBottom: 2 },
+  pageHead: { marginBottom: 2 },
+  pageHeadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   pageTitle: { fontSize: 28, fontWeight: '900', letterSpacing: 0.2 },
   pageSub: { fontSize: 13, fontWeight: '600' },
+  aiWeekBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  aiWeekBtnText: { fontSize: 13, fontWeight: '800' },
 
   calCard: {
     borderRadius: 22,

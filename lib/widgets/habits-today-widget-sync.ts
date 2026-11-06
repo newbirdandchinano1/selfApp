@@ -26,6 +26,11 @@ import {
   type HabitsTodayItem,
   type HabitsTodayWidgetProps,
 } from '@/lib/widgets/habits-today-glance';
+import { isExpoWidgetsNativeAvailable } from '@/lib/widgets/expo-widgets-compat';
+import {
+  ensureHomeWidgetsRegistered,
+  pushWidgetSnapshotVerified,
+} from '@/lib/widgets/widget-bridge';
 import { getWidgetsSettings, shouldPushHabitsTodayWidget } from '@/lib/widgets/widgets-settings';
 import { whenHomeWidgetsDbReady } from '@/lib/widgets/widget-sync-ready';
 
@@ -130,19 +135,15 @@ export async function buildTodayHabitsGlance(now = new Date()) {
 async function syncHabitsTodayWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
   await whenHomeWidgetsDbReady();
+  await ensureHomeWidgetsRegistered();
   const settings = await getWidgetsSettings();
   const HabitsTodayWidget = (await import('@/widgets/HabitsTodayWidget')).default;
 
   if (!shouldPushHabitsTodayWidget(settings)) {
     try {
-      HabitsTodayWidget.updateSnapshot(pausedProps());
-      try {
-        HabitsTodayWidget.reload();
-      } catch {
-        /* ignore */
-      }
+      await pushWidgetSnapshotVerified(HabitsTodayWidget as never, pausedProps() as never);
     } catch (e) {
-      if (__DEV__) console.warn('[widgets] habits pause failed', e);
+      console.warn('[widgets] habits pause failed', e);
     }
     return;
   }
@@ -153,17 +154,12 @@ async function syncHabitsTodayWidgetNow(reason: string): Promise<void> {
   });
   const fp = `${props.progressLine}|${props.statusLine}|${props.item1}|${props.item2}|${props.moreLine}`;
   if (fp === lastFingerprint && reason === 'debounce') return;
-  lastFingerprint = fp;
 
   try {
-    HabitsTodayWidget.updateSnapshot(props);
-    try {
-      HabitsTodayWidget.reload();
-    } catch {
-      /* ignore */
-    }
+    await pushWidgetSnapshotVerified(HabitsTodayWidget as never, props as never);
+    lastFingerprint = fp;
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] habits snapshot failed', reason, e);
+    console.warn('[widgets] habits snapshot failed', reason, e);
   }
 
   if (__DEV__) {
@@ -176,6 +172,7 @@ async function syncHabitsTodayWidgetNow(reason: string): Promise<void> {
 
 export function scheduleHabitsTodayWidgetSync(reason: string): void {
   if (Platform.OS !== 'ios') return;
+  if (!isExpoWidgetsNativeAvailable()) return;
   const task = syncChain.then(() => syncHabitsTodayWidgetNow(reason));
   syncChain = task.catch((e) => {
     if (__DEV__) console.warn('[widgets] habits sync chain error', reason, e);

@@ -3,10 +3,12 @@
  * 日期/时刻 Tab 指示器 · 快捷芯片 · 月历 · 全天开关 · 提醒/重复 · 越界 toast+钳制
  */
 import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
+import { AiParseScheduleSheet } from '@/components/tasks/ai-parse-schedule-sheet';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
 import { Radius, Shadows, Spacing, Typography } from '@/constants/design-tokens';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
+import type { TaskParseScheduleJson } from '@/lib/ai-api-client';
 import { toast, Alert } from '@/lib/app-feedback';
 import { parseStoredDatetime } from '@/lib/api-mysql-datetime';
 import { getCalendarLunarLabel } from '@/lib/lunar-day-label';
@@ -442,6 +444,7 @@ export default function SchedulePickerScreen() {
   const [reminderTimeDraft, setReminderTimeDraft] = React.useState<Date>(() => defaultReminderTime);
   const reminderTimeUserSetRef = React.useRef(false);
   const [repeatOption, setRepeatOption] = React.useState<RepeatOption>('不重复');
+  const [aiScheduleOpen, setAiScheduleOpen] = React.useState(false);
   const [settingModalStage, setSettingModalStage] = React.useState<SettingModalStage>('options');
   const [weeklyDays, setWeeklyDays] = React.useState<number[]>([1]);
   const [monthlyDays, setMonthlyDays] = React.useState<number[]>([1]);
@@ -1163,6 +1166,101 @@ export default function SchedulePickerScreen() {
     router.back();
   }, [buildReturnPayload, hasExactTime, router, selectedDate, startTime]);
 
+  const currentScheduleSnapshot = React.useMemo(
+    () => ({
+      mode: tab,
+      allDay,
+      hasExactTime,
+      reminderOption,
+      repeatOption,
+      date: selectedDate ? formatScheduleLocalDateTime(selectedDate) : undefined,
+      startTime: hasExactTime ? formatScheduleLocalDateTime(startTime) : undefined,
+      endTime: hasExactTime ? formatScheduleLocalDateTime(endTime) : undefined,
+      weeklyDays: [...weeklyDays],
+      monthlyDays: [...monthlyDays],
+    }),
+    [
+      allDay,
+      endTime,
+      hasExactTime,
+      monthlyDays,
+      reminderOption,
+      repeatOption,
+      selectedDate,
+      startTime,
+      tab,
+      weeklyDays,
+    ],
+  );
+
+  const applyAiScheduleDraft = React.useCallback(
+    (draft: TaskParseScheduleJson) => {
+      const schedule = draft.schedule;
+      if (schedule) {
+        const mode: TabMode = schedule.mode === 'time' ? 'time' : 'date';
+        setTab(mode);
+        if (typeof schedule.allDay === 'boolean') setAllDay(schedule.allDay);
+        if (typeof schedule.hasExactTime === 'boolean') setHasExactTime(schedule.hasExactTime);
+        const rem = schedule.reminderOption as ReminderOption | undefined;
+        if (rem && REMINDER_OPTIONS.includes(rem)) {
+          setReminderOption(rem);
+          if (REMINDER_ADVANCED.includes(rem)) setShowAdvancedReminder(true);
+        }
+        const rep = schedule.repeatOption as RepeatOption | undefined;
+        if (rep && REPEAT_OPTIONS.includes(rep)) setRepeatOption(rep);
+        if (Array.isArray(schedule.weeklyDays) && schedule.weeklyDays.length) {
+          setWeeklyDays(
+            Array.from(
+              new Set(
+                schedule.weeklyDays.filter(
+                  (d): d is number => Number.isInteger(d) && d >= 1 && d <= 7,
+                ),
+              ),
+            ),
+          );
+        }
+        if (Array.isArray(schedule.monthlyDays) && schedule.monthlyDays.length) {
+          setMonthlyDays(
+            Array.from(
+              new Set(
+                schedule.monthlyDays.filter(
+                  (d): d is number => Number.isInteger(d) && d >= 1 && d <= 31,
+                ),
+              ),
+            ),
+          );
+        }
+        if (schedule.startTime) {
+          const st = parseDateTime(schedule.startTime, startTime);
+          setStartTime(st);
+          setHasExactTime(true);
+          setAllDay(false);
+        }
+        if (schedule.endTime) {
+          setEndTime(parseDateTime(schedule.endTime, endTime));
+        }
+        const dateRaw = schedule.date || (draft.due_ymd ? `${draft.due_ymd}T12:00:00` : '');
+        if (dateRaw) {
+          const d = parseDateTime(dateRaw, todayStart);
+          const clamped = clampDateInLimit(startOfDay(d), dateLimit);
+          setSelectedDate(clamped);
+          setMonthOffset(getMonthDiff(todayStart, clamped));
+          setSelectedQuickChip('');
+        }
+      } else if (draft.due_ymd) {
+        const d = parseDateTime(`${draft.due_ymd}T12:00:00`, todayStart);
+        const clamped = clampDateInLimit(startOfDay(d), dateLimit);
+        setSelectedDate(clamped);
+        setMonthOffset(getMonthDiff(todayStart, clamped));
+        setTab('date');
+        setAllDay(true);
+        setHasExactTime(false);
+        setSelectedQuickChip('');
+      }
+    },
+    [dateLimit, endTime, startTime, todayStart],
+  );
+
   const dateLimitSub =
     dateLimit?.end
       ? `日期与时刻 · 受项目截止 ${formatLimitLabel(dateLimit.end)} 限制`
@@ -1699,6 +1797,18 @@ export default function SchedulePickerScreen() {
             </View>
           ) : null}
 
+          <Pressable
+            style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]}
+            onPress={() => setAiScheduleOpen(true)}>
+            <Text style={[styles.pl, { color: tf.muted }]}>一句话改</Text>
+            <View style={styles.pv}>
+              <MaterialIcons name="auto-awesome" size={14} color={tf.frog} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: tf.frog }} numberOfLines={1}>
+                AI 解析日程
+              </Text>
+            </View>
+            <Text style={{ fontSize: 11, color: tf.muted }}>›</Text>
+          </Pressable>
           <Pressable style={[styles.pickrow, { borderTopColor: 'rgba(232,224,210,0.52)' }]} onPress={() => openSettingPicker('reminder')}>
             <Text style={[styles.pl, { color: tf.muted }]}>截止提醒</Text>
             <View style={styles.pv}>
@@ -1821,7 +1931,14 @@ export default function SchedulePickerScreen() {
         </Pressable>
       </View>
 
-     
+      <AiParseScheduleSheet
+        visible={aiScheduleOpen}
+        onClose={() => setAiScheduleOpen(false)}
+        currentDueYmd={selectedDate ? toLocalYMD(selectedDate) : null}
+        currentSchedule={currentScheduleSnapshot}
+        onApply={applyAiScheduleDraft}
+      />
+
       <Modal visible={timePickerVisible} transparent animationType="fade" onRequestClose={() => setTimePickerVisible(false)}>
         <View style={[styles.pickerBackdrop, { backgroundColor: colors.overlay }]}>
           {/* 弹层用实心底：半透明 surface 会让滚轮文字与背景糊成一团 */}

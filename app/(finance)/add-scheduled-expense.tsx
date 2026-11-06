@@ -9,6 +9,7 @@ import { Layout } from '@/constants/design-tokens';
 import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import { toast, toUserMessage } from '@/lib/app-feedback';
+import { resolveFinanceAccountForAutoLedger } from '@/lib/finance-account-match';
 import {
   findNextScheduledExpenseOccurrence,
   getScheduledFinanceExpenseById,
@@ -20,11 +21,13 @@ import {
 import { scheduleRunScheduledFinanceExpenses } from '@/lib/finance-scheduled-expense-runner';
 import { fetchFinanceCatalog } from '@/lib/finance-page-api';
 import type { FinanceAccountBalanceRow } from '@/lib/repositories/finance/finance.types';
+import { parseFinanceScheduledExpenseFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -211,6 +214,8 @@ export default function AddScheduledExpenseScreen() {
   const [timePickerOpen, setTimePickerOpen] = React.useState(false);
   const [accountPickerOpen, setAccountPickerOpen] = React.useState(false);
   const [monthPickerOpen, setMonthPickerOpen] = React.useState(false);
+  const [aiDraftText, setAiDraftText] = React.useState('');
+  const [aiDraftLoading, setAiDraftLoading] = React.useState(false);
 
   React.useEffect(() => {
     void wrapLoad(async () => {
@@ -326,6 +331,49 @@ export default function AddScheduledExpenseScreen() {
       return [...prev, day].sort((a, b) => a - b);
     });
   }, []);
+
+  const handleAiFill = React.useCallback(async () => {
+    const text = aiDraftText.trim();
+    if (!text) {
+      toast.warn('请先输入一句话，例如：每月 1 号扣房贷 5200 招行');
+      return;
+    }
+    if (aiDraftLoading) return;
+    setAiDraftLoading(true);
+    try {
+      const result = await parseFinanceScheduledExpenseFromText({
+        text,
+        accounts: accounts.map((a) => ({ name: a.name, account_no: a.account_no })),
+      });
+      if (!result.ok) {
+        toast.warn(result.error || '未能解析定时支出');
+        return;
+      }
+      const d = result.data;
+      setName(d.name);
+      setAmountText(String(d.amount));
+      setRepeatOption(d.repeat_hint);
+      if (d.repeat_hint === 'weekly') {
+        setWeeklyDays(d.days.length ? d.days : [1]);
+      } else if (d.repeat_hint === 'monthly') {
+        setMonthlyDays(d.days.length ? d.days : [1]);
+      }
+      const t = defaultScheduleTime();
+      t.setHours(d.hour, d.minute, 0, 0);
+      setScheduleTime(t);
+      setIncludeInBudget(d.include_in_budget);
+      const matched = resolveFinanceAccountForAutoLedger(accounts, {
+        accountName: d.account_hint,
+        paymentAccountLabel: d.account_hint,
+      });
+      if (matched) setAccountId(matched.id);
+      toast.success('已预填表单，请确认后保存');
+    } catch (e) {
+      toast.error(toUserMessage(e, 'AI 填入失败，请稍后重试'));
+    } finally {
+      setAiDraftLoading(false);
+    }
+  }, [accounts, aiDraftLoading, aiDraftText]);
 
   const handleSave = React.useCallback(async () => {
     const title = name.trim();
@@ -503,6 +551,34 @@ export default function AddScheduledExpenseScreen() {
           showsVerticalScrollIndicator={false}>
           <FoldRiseIn animate={motionOn} index={0} staggerMs={45} fromY={11}>
             <View style={[styles.formCard, { backgroundColor: card, borderColor: line }]}>
+              <View style={[styles.aiFillRow, { borderBottomColor: line }]}>
+                <MaterialIcons name="auto-awesome" size={14} color={ff.amber} />
+                <TextInput
+                  value={aiDraftText}
+                  onChangeText={setAiDraftText}
+                  placeholder="AI 填入：每月 1 号房贷 5200 招行"
+                  placeholderTextColor={faint}
+                  style={[styles.aiFillInput, { color: text }]}
+                />
+                <Pressable
+                  onPress={() => void handleAiFill()}
+                  disabled={aiDraftLoading}
+                  style={({ pressed }) => [
+                    styles.aiFillBtn,
+                    {
+                      backgroundColor: pine,
+                      opacity: aiDraftLoading ? 0.65 : pressed ? 0.88 : 1,
+                    },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="AI 填入定时支出">
+                  {aiDraftLoading ? (
+                    <ActivityIndicator size="small" color={ff.onPine} />
+                  ) : (
+                    <Text style={[styles.aiFillBtnText, { color: ff.onPine }]}>填入</Text>
+                  )}
+                </Pressable>
+              </View>
               <View style={[styles.inputLine, { borderBottomColor: line }]}>
                 <Text style={[styles.inputLab, { color: subtle }]}>名称</Text>
                 <TextInput
@@ -925,6 +1001,29 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginBottom: 6,
   },
+  aiFillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  aiFillInput: {
+    flex: 1,
+    fontSize: 13,
+    minHeight: 32,
+    paddingVertical: 4,
+  },
+  aiFillBtn: {
+    minWidth: 52,
+    height: 30,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  aiFillBtnText: { fontSize: 12, fontWeight: '700' },
   inputLine: {
     flexDirection: 'row',
     alignItems: 'center',

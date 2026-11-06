@@ -193,10 +193,14 @@ function RootLayoutInner() {
             if (Platform.OS === 'ios') {
               const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
               markHomeWidgetsDbReady();
-              void import('@/lib/widgets/schedule-all-widget-sync').then(
-                ({ scheduleAllHomeWidgetsSync }) =>
-                  scheduleAllHomeWidgetsSync('deferred-bootstrap'),
+              const { ensureHomeWidgetsRegistered } = await import('@/lib/widgets/widget-bridge');
+              await ensureHomeWidgetsRegistered().catch((e) =>
+                console.warn('[widgets] register failed', e),
               );
+              const { scheduleAllHomeWidgetsSync } = await import(
+                '@/lib/widgets/schedule-all-widget-sync'
+              );
+              scheduleAllHomeWidgetsSync('deferred-bootstrap');
             }
           } else {
             void import('@/lib/sync-manager').then((m) => m.SyncManager.start());
@@ -425,12 +429,16 @@ function RootLayoutInner() {
   // 库迁移完成后再放行组件推送，并立刻刷一遍（避免停在 INITIAL「打开 App 后同步」）
   useEffect(() => {
     if (Platform.OS !== 'ios' || !isDbReady) return;
-    void import('@/lib/widgets/widget-sync-ready').then(({ markHomeWidgetsDbReady }) => {
+    void (async () => {
+      const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
       markHomeWidgetsDbReady();
-    });
-    void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
-      scheduleAllHomeWidgetsSync('db-ready'),
-    );
+      const { ensureHomeWidgetsRegistered } = await import('@/lib/widgets/widget-bridge');
+      await ensureHomeWidgetsRegistered().catch((e) =>
+        console.warn('[widgets] register failed', e),
+      );
+      const { scheduleAllHomeWidgetsSync } = await import('@/lib/widgets/schedule-all-widget-sync');
+      scheduleAllHomeWidgetsSync('db-ready');
+    })();
   }, [isDbReady]);
 
   useEffect(() => {
@@ -443,8 +451,10 @@ function RootLayoutInner() {
         );
       });
     });
-    // 预注册 Live Activity 布局（createLiveActivity 需在进程内至少 import 一次）
-    void import('@/widgets/FrogScheduleLiveActivity').catch(() => {});
+    // 预注册全部小组件 + Live Activity layout
+    void import('@/lib/widgets/widget-bridge').then(({ ensureHomeWidgetsRegistered }) =>
+      ensureHomeWidgetsRegistered().catch(() => {}),
+    );
     return () => unsub();
   }, []);
 

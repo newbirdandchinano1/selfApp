@@ -18,6 +18,11 @@ import {
   type HealthIntakeMetricInput,
   type HealthIntakeWidgetProps,
 } from '@/lib/widgets/health-intake-glance';
+import { isExpoWidgetsNativeAvailable } from '@/lib/widgets/expo-widgets-compat';
+import {
+  ensureHomeWidgetsRegistered,
+  pushWidgetSnapshotVerified,
+} from '@/lib/widgets/widget-bridge';
 import {
   getWidgetsSettings,
   shouldPushHealthIntakeWidget,
@@ -111,19 +116,15 @@ async function syncHealthIntakeWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
   const { whenHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
   await whenHomeWidgetsDbReady();
+  await ensureHomeWidgetsRegistered();
   const settings = await getWidgetsSettings();
   const HealthIntakeWidget = (await import('@/widgets/HealthIntakeWidget')).default;
 
   if (!shouldPushHealthIntakeWidget(settings)) {
     try {
-      HealthIntakeWidget.updateSnapshot(pausedProps());
-      try {
-        HealthIntakeWidget.reload();
-      } catch {
-        /* ignore */
-      }
+      await pushWidgetSnapshotVerified(HealthIntakeWidget as never, pausedProps() as never);
     } catch (e) {
-      if (__DEV__) console.warn('[widgets] health pause failed', e);
+      console.warn('[widgets] health pause failed', e);
     }
     return;
   }
@@ -140,17 +141,12 @@ async function syncHealthIntakeWidgetNow(reason: string): Promise<void> {
     props.allDone,
   ].join('|');
   if (fp === lastFingerprint && reason === 'debounce') return;
-  lastFingerprint = fp;
 
   try {
-    HealthIntakeWidget.updateSnapshot(props);
-    try {
-      HealthIntakeWidget.reload();
-    } catch {
-      /* ignore */
-    }
+    await pushWidgetSnapshotVerified(HealthIntakeWidget as never, props as never);
+    lastFingerprint = fp;
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] health snapshot failed', reason, e);
+    console.warn('[widgets] health snapshot failed', reason, e);
   }
 
   if (__DEV__) {
@@ -163,6 +159,7 @@ async function syncHealthIntakeWidgetNow(reason: string): Promise<void> {
 
 export function scheduleHealthIntakeWidgetSync(reason: string): void {
   if (Platform.OS !== 'ios') return;
+  if (!isExpoWidgetsNativeAvailable()) return;
   const task = syncChain.then(() => syncHealthIntakeWidgetNow(reason));
   syncChain = task.catch((e) => {
     if (__DEV__) console.warn('[widgets] health sync chain error', reason, e);

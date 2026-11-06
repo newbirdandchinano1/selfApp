@@ -14,6 +14,8 @@ import {
 import { HealthIntakeDeleteConfirmSheet } from '@/components/health/health-intake-delete-confirm-sheet';
 import { HealthMetricPointsSettingsSheet } from '@/components/health/health-metric-points-settings-sheet';
 import { HealthPulseDot, HealthShimmerOverlay } from '@/components/health/health-motion';
+import { DailyWrapupSheet } from '@/components/health/daily-wrapup-sheet';
+import { SuggestNextMealSheet } from '@/components/health/suggest-next-meal-sheet';
 import {
   HealthIntakeListSkeleton,
   HealthMetricsSkeleton,
@@ -93,6 +95,8 @@ import {
   analyzeFoodNutritionFromImage,
   finalizeFoodTextIntakeForRecord,
   parseFoodIntakeFromText,
+  type FoodSuggestNextMealDraft,
+  type FoodTextIntakeJson,
 } from '@/lib/zhipu-image-parse';
 import {
   createQuickAddItemMap,
@@ -876,6 +880,9 @@ export default function HealthScreen() {
   /** 快速添加横滑卡宽度 */
   const cardWidth = Math.max(76, Math.min(92, (width - pageInset - Spacing.md * 3) / 4.2));
   const [sheetOpen, setSheetOpen] = React.useState(false);
+  const [seedAiDraft, setSeedAiDraft] = React.useState<FoodTextIntakeJson | null>(null);
+  const [suggestMealOpen, setSuggestMealOpen] = React.useState(false);
+  const [dailyWrapupOpen, setDailyWrapupOpen] = React.useState(false);
   const [assistantOpen, setAssistantOpen] = React.useState(false);
   const [pointsSettingsOpen, setPointsSettingsOpen] = React.useState(false);
   const [metricPointsSettings, setMetricPointsSettings] = React.useState<HealthMetricPointsSettings>(
@@ -1299,6 +1306,36 @@ export default function HealthScreen() {
       calories: { current: caloriesCurrent, target: tS, percent: pct(caloriesCurrent, tS) },
     };
   }, [selectedDayIntakeTotals, intakeTargetsSnapshot]);
+
+  const suggestMealGap = React.useMemo(
+    () => ({
+      todayYmd: formatLocalYmd(selectedDate),
+      hour: new Date().getHours(),
+      totals: {
+        hydration: dayIntakeDisplay.hydration.current,
+        protein: dayIntakeDisplay.protein.current,
+        carbohydrate: dayIntakeDisplay.carbohydrate.current,
+        calories: dayIntakeDisplay.calories.current,
+      },
+      targets: {
+        hydration: dayIntakeDisplay.hydration.target,
+        protein: dayIntakeDisplay.protein.target,
+        carbohydrate: dayIntakeDisplay.carbohydrate.target,
+        calories: dayIntakeDisplay.calories.target,
+      },
+    }),
+    [selectedDate, dayIntakeDisplay],
+  );
+
+  const hasIntakeGap = React.useMemo(() => {
+    const d = dayIntakeDisplay;
+    return (
+      d.hydration.percent < 100 ||
+      d.protein.percent < 100 ||
+      d.carbohydrate.percent < 100 ||
+      d.calories.percent < 100
+    );
+  }, [dayIntakeDisplay]);
 
   const weeklyTrend = React.useMemo<WeeklyTrendItem[]>(() => {
     const totalsByYmd = new Map<string, { hydration: number; protein: number; carbohydrate: number; calories: number }>();
@@ -1945,6 +1982,38 @@ export default function HealthScreen() {
       }
       if (payload.mode === 'photo') {
         const photoNote = payload.photoNote?.trim() ?? '';
+        // 一图拆多条：逐条写库，同源图只挂第一条
+        if (payload.parsedItems && payload.parsedItems.length > 0) {
+          let saved = 0;
+          for (let i = 0; i < payload.parsedItems.length; i += 1) {
+            const d = payload.parsedItems[i]!;
+            const sum = d.protein_g + d.carbohydrate_g + d.calories_kcal + (d.hydration_ml || 0);
+            if (sum <= 0) continue;
+            const foodName = d.food_name?.trim() ?? '';
+            const displayTitleRaw =
+              i === 0 && photoNote.length > 0
+                ? foodName.length > 0
+                  ? `${photoNote} · ${foodName}`
+                  : photoNote
+                : foodName;
+            const ok = await persistFoodPhotoIntake(
+              d.protein_g,
+              d.carbohydrate_g,
+              d.calories_kcal,
+              i === 0 ? payload.sourceImageUri : null,
+              {
+                displayTitle: clampIntakeDisplayTitle(displayTitleRaw) ?? undefined,
+                aiComment: d.ai_evaluation?.trim(),
+                hydration: d.hydration_ml,
+              },
+            );
+            if (ok) saved += 1;
+          }
+          if (saved === 0) toast.warn('没有可写入的条目，请检查数值。');
+          else if (saved < payload.parsedItems.length) toast.warn(`已写入 ${saved} 条，其余失败或为 0。`);
+          else toast.success(`已写入 ${saved} 条`);
+          return;
+        }
         // Sheet 内已预解析：直接落库（对齐设计稿 04，避免二次识图）
         if (payload.parsed) {
           const d = payload.parsed;
@@ -3476,6 +3545,26 @@ export default function HealthScreen() {
             </View>
             <TouchableOpacity
               activeOpacity={0.75}
+              onPress={() => setDailyWrapupOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="今日小结"
+              style={styles.sectionActionRow}
+            >
+              <Text style={[styles.editBtn, { color: hh.pine, marginTop: 0 }]}>今日小结</Text>
+            </TouchableOpacity>
+            {hasIntakeGap ? (
+              <TouchableOpacity
+                activeOpacity={0.75}
+                onPress={() => setSuggestMealOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel="按缺口补一餐"
+                style={styles.sectionActionRow}
+              >
+                <Text style={[styles.editBtn, { color: hh.pine, marginTop: 0 }]}>补一餐</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              activeOpacity={0.75}
               onPress={() =>
                 router.push({
                   pathname: '/intake-history',
@@ -3505,6 +3594,20 @@ export default function HealthScreen() {
               <Text style={[styles.intakeEmptyText, { color: hh.muted }]}>
                 暂无摄入记录。可点上方快捷卡一键加量，或点右下角 + 手动 / AI / 拍照记录
               </Text>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => setSuggestMealOpen(true)}
+                style={[
+                  styles.suggestMealEmptyBtn,
+                  { backgroundColor: hh.pine },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="按今日缺口补一餐"
+              >
+                <Text style={[styles.suggestMealEmptyBtnText, { color: hh.onPine }]}>
+                  按缺口补一餐
+                </Text>
+              </TouchableOpacity>
             </View>
           ) : (
             <View style={styles.intakeList}>
@@ -4052,7 +4155,10 @@ export default function HealthScreen() {
 
       <RecordIntakeSheet
         visible={sheetOpen}
-        onClose={() => setSheetOpen(false)}
+        onClose={() => {
+          setSheetOpen(false);
+          setSeedAiDraft(null);
+        }}
         onConfirm={handleRecordIntakeConfirm}
         dateLabel={recordIntakeSheetContext.dateLabel}
         todayRecordCount={recordIntakeSheetContext.todayRecordCount}
@@ -4063,6 +4169,41 @@ export default function HealthScreen() {
         recentPhrases={recordIntakeSheetContext.recentPhrases}
         recentPhotos={recordIntakeSheetContext.recentPhotos}
         recentManuals={recordIntakeSheetContext.recentManuals}
+        seedAiDraft={seedAiDraft}
+      />
+
+      <SuggestNextMealSheet
+        visible={suggestMealOpen}
+        onClose={() => setSuggestMealOpen(false)}
+        gap={suggestMealGap}
+        quickAddCatalog={quickAddCatalog}
+        onQuickAdd={(item) => {
+          const index = Math.max(
+            0,
+            quickAddCatalog.findIndex((x) => x.key === item.key),
+          );
+          void persistQuickAddIntake(item, index, null);
+        }}
+        onOpenRecipe={(recipeId) => {
+          router.push({ pathname: '/recipe-view/[id]', params: { id: recipeId } });
+        }}
+        onUseDraft={(draft: FoodSuggestNextMealDraft) => {
+          setSeedAiDraft({
+            food_summary: draft.food_summary,
+            hydration_ml: draft.hydration_ml,
+            protein_g: draft.protein_g,
+            carbohydrate_g: draft.carbohydrate_g,
+            calories_kcal: draft.calories_kcal,
+            ai_evaluation: draft.ai_evaluation,
+          });
+          setSheetOpen(true);
+        }}
+      />
+
+      <DailyWrapupSheet
+        visible={dailyWrapupOpen}
+        onClose={() => setDailyWrapupOpen(false)}
+        gap={suggestMealGap}
       />
 
       <HealthIntakeDeleteConfirmSheet
@@ -4716,6 +4857,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  suggestMealEmptyBtn: {
+    marginTop: 14,
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  suggestMealEmptyBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   intakeList: {
     gap: 0,

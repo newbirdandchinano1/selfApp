@@ -782,7 +782,10 @@ async function upsertLocalSyncedRow(table: string, row: Record<string, unknown> 
 }
 
 /** 穿单品：专用接口 + 回写本地计数 / 日志 */
-export async function recordWardrobeItemWear(itemId: string): Promise<{
+export async function recordWardrobeItemWear(
+  itemId: string,
+  opts?: { note?: string },
+): Promise<{
   ok: boolean;
   created: boolean;
   item?: WardrobeItem;
@@ -791,7 +794,8 @@ export async function recordWardrobeItemWear(itemId: string): Promise<{
   const id = itemId.trim();
   if (!id) return { ok: false, created: false, error: '缺少单品 id' };
   try {
-    const res = await apiWardrobeWearItem({ item_id: id });
+    const note = opts?.note?.trim() || undefined;
+    const res = await apiWardrobeWearItem({ item_id: id, note });
     await upsertLocalSyncedRow('wardrobe_wear_logs', res.log ?? undefined);
     await upsertLocalSyncedRow('wardrobe_items', res.item ?? undefined);
     const data = await loadWardrobeScreenData();
@@ -804,7 +808,10 @@ export async function recordWardrobeItemWear(itemId: string): Promise<{
 }
 
 /** 穿搭配：专用接口展开单品日志 */
-export async function recordWardrobeOutfitWear(outfitId: string): Promise<{
+export async function recordWardrobeOutfitWear(
+  outfitId: string,
+  opts?: { note?: string },
+): Promise<{
   ok: boolean;
   created: boolean;
   error?: string;
@@ -812,7 +819,8 @@ export async function recordWardrobeOutfitWear(outfitId: string): Promise<{
   const id = outfitId.trim();
   if (!id) return { ok: false, created: false, error: '缺少搭配 id' };
   try {
-    const res = await apiWardrobeWearOutfit({ outfit_id: id });
+    const note = opts?.note?.trim() || undefined;
+    const res = await apiWardrobeWearOutfit({ outfit_id: id, note });
     await upsertLocalSyncedRow('wardrobe_wear_logs', res.log ?? undefined);
     await upsertLocalSyncedRow('wardrobe_outfits', res.outfit ?? undefined);
     for (const log of res.item_logs ?? []) {

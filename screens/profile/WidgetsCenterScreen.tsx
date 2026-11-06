@@ -18,7 +18,11 @@ import { previewFinanceGlanceWidgetProps } from '@/lib/widgets/finance-glance-wi
 import { previewFrogScheduleWidgetProps } from '@/lib/widgets/frog-schedule-widget-sync';
 import { previewHabitsTodayWidgetProps } from '@/lib/widgets/habits-today-widget-sync';
 import { previewHealthIntakeWidgetProps } from '@/lib/widgets/health-intake-widget-sync';
-import { scheduleAllHomeWidgetsSync } from '@/lib/widgets/schedule-all-widget-sync';
+import {
+  flushAllHomeWidgetsSync,
+  scheduleAllHomeWidgetsSync,
+} from '@/lib/widgets/schedule-all-widget-sync';
+import type { WidgetBridgeDiagnosis } from '@/lib/widgets/widget-bridge';
 import { previewUrgencyWidgetProps } from '@/lib/widgets/urgency-widget-sync';
 import { WIDGET_DISPLAY_NAMES, widgetHowToAddSteps } from '@/lib/widgets/widget-catalog';
 import {
@@ -85,6 +89,7 @@ export default function WidgetsCenterScreen() {
   const [urgencySummary, setUrgencySummary] = useState('加载中…');
   const [permission, setPermission] = useState<NotificationPermissionSnapshot | null>(null);
   const [howToOpen, setHowToOpen] = useState(false);
+  const [bridgeDiag, setBridgeDiag] = useState<WidgetBridgeDiagnosis | null>(null);
 
   const applySummaries = useCallback(async (next: WidgetsSettings) => {
     const [frogPreview, habitsPreview, healthPreview, financePreview, urgencyPreview] =
@@ -131,6 +136,28 @@ export default function WidgetsCenterScreen() {
       setSettings(next);
       setPermission(perm);
       await applySummaries(next);
+      if (Platform.OS === 'ios') {
+        const { isExpoWidgetsNativeAvailable } = await import(
+          '@/lib/widgets/expo-widgets-compat'
+        );
+        if (!isExpoWidgetsNativeAvailable()) {
+          setBridgeDiag({
+            ok: false,
+            platform: 'ios',
+            appGroupReady: false,
+            widgetsDirectory: null,
+            registered: [],
+            sampleTimelineCount: null,
+            error: '当前为 Expo Go / 沙盒，无 ExpoWidgets 原生模块',
+            hint: '主功能可正常用；桌面组件请用 development / 正式 iOS 包验证。',
+          });
+        } else {
+          const { diagnoseHomeWidgetBridge } = await import('@/lib/widgets/widget-bridge');
+          setBridgeDiag(await diagnoseHomeWidgetBridge());
+        }
+      } else {
+        setBridgeDiag(null);
+      }
     } catch (e) {
       toast(toUserMessage(e, '加载组件设置失败'));
     } finally {
@@ -313,26 +340,55 @@ export default function WidgetsCenterScreen() {
                 </Text>
               ) : null}
               {Platform.OS === 'ios' ? (
-                <Pressable
-                  disabled={busy}
-                  onPress={() => {
-                    scheduleAllHomeWidgetsSync('manual-refresh');
-                    toast('已推送最新快照到桌面组件');
-                  }}
-                  style={({ pressed }) => [
-                    styles.pillBtn,
-                    {
-                      alignSelf: 'flex-start',
-                      marginTop: 12,
-                      borderColor: fold.line,
-                      backgroundColor: fold.paper2,
-                      opacity: busy ? 0.5 : pressed ? 0.86 : 1,
-                    },
-                  ]}>
-                  <Text style={{ color: fold.ink2, fontWeight: '700', fontSize: 12 }}>
-                    立即刷新桌面组件
-                  </Text>
-                </Pressable>
+                <>
+                  {bridgeDiag && !bridgeDiag.ok ? (
+                    <Text style={[styles.rowHint, { color: fold.clay ?? '#B4543C', marginTop: 10 }]}>
+                      {bridgeDiag.error}
+                      {bridgeDiag.hint ? `\n${bridgeDiag.hint}` : ''}
+                    </Text>
+                  ) : bridgeDiag?.ok ? (
+                    <Text style={[styles.rowHint, { color: fold.muted, marginTop: 10 }]}>
+                      App Group 正常 · timeline {bridgeDiag.sampleTimelineCount ?? 0} 条
+                    </Text>
+                  ) : null}
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => {
+                      void (async () => {
+                        setBusy(true);
+                        try {
+                          const result = await flushAllHomeWidgetsSync('manual-refresh');
+                          const { diagnoseHomeWidgetBridge } = await import(
+                            '@/lib/widgets/widget-bridge'
+                          );
+                          setBridgeDiag(await diagnoseHomeWidgetBridge());
+                          if (result.ok) {
+                            toast('已推送最新快照到桌面组件');
+                          } else {
+                            toast(result.error ?? '推送失败');
+                          }
+                        } catch (e) {
+                          toast(toUserMessage(e, '推送失败'));
+                        } finally {
+                          setBusy(false);
+                        }
+                      })();
+                    }}
+                    style={({ pressed }) => [
+                      styles.pillBtn,
+                      {
+                        alignSelf: 'flex-start',
+                        marginTop: 12,
+                        borderColor: fold.line,
+                        backgroundColor: fold.paper2,
+                        opacity: busy ? 0.5 : pressed ? 0.86 : 1,
+                      },
+                    ]}>
+                    <Text style={{ color: fold.ink2, fontWeight: '700', fontSize: 12 }}>
+                      立即刷新桌面组件
+                    </Text>
+                  </Pressable>
+                </>
               ) : null}
             </View>
           </FoldRiseIn>

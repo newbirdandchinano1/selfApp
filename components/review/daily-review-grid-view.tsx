@@ -11,7 +11,14 @@ import {
 } from '@/components/review/fold-daily-overview-parts';
 import { FoldCard, FoldSectionHeader } from '@/components/review/fold-ui';
 import { ReviewAiAnalysisScreen } from '@/components/review/review-ai-analysis-screen';
+import { ReviewOutlineSheet } from '@/components/review/review-ai-p1-sheets';
 import { ReviewGridSkeleton } from '@/components/skeletons/review';
+import type { ReviewOutlineItem, ReviewOutlineResult } from '@/lib/ai-api-client';
+import {
+  formatReviewFactsMetricsText,
+  loadPreviousOpenDefectHint,
+} from '@/lib/review-ai-context';
+import { outlineReview } from '@/lib/zhipu-image-parse';
 import {
   countDailyReviewStreak,
   countEditableDailyEntries,
@@ -37,7 +44,13 @@ import {
   syncDailyReviewReminderNotification,
 } from '@/lib/daily-review-reminder-notifications';
 import { formatYmd } from '@/lib/date';
-import { loadReviewDayFacts, builtinDailyReviewFieldPatch, reviewDayFactsIsEmpty, type ReviewDayFacts } from '@/lib/review-day-facts';
+import {
+  builtinDailyReviewFieldPatch,
+  formatReviewDayFactsInsertText,
+  loadReviewDayFacts,
+  reviewDayFactsIsEmpty,
+  type ReviewDayFacts,
+} from '@/lib/review-day-facts';
 import { reviewCanRunAiAnalysis } from '@/lib/review-ai-analysis';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
@@ -141,6 +154,11 @@ export function DailyReviewGridView({
   const [dailyReminderTimeLabel, setDailyReminderTimeLabel] = useState<string | null>(null);
   const [highlightDimensionId, setHighlightDimensionId] = useState<string | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outlineBusy, setOutlineBusy] = useState(false);
+  const [outlineError, setOutlineError] = useState<string | null>(null);
+  const [outlineData, setOutlineData] = useState<ReviewOutlineResult | null>(null);
+  const outlineFromFocusRef = useRef(false);
 
   const hydratedRef = useRef(false);
   /** 首屏成功后永为 true；快切日期时不能用 hydratedRef 判断 silent（它会被置回 false） */
@@ -271,6 +289,10 @@ export function DailyReviewGridView({
 
   useEffect(() => {
     focusEmptyDoneRef.current = false;
+    outlineFromFocusRef.current = false;
+    setOutlineOpen(false);
+    setOutlineData(null);
+    setOutlineError(null);
   }, [ymd, focusEmpty]);
 
   const setMetaPatch = useCallback(
@@ -349,13 +371,130 @@ export function DailyReviewGridView({
     focusEmptyDoneRef.current = true;
     if (!emptyId) return;
     setHighlightDimensionId(emptyId);
-    const t = setTimeout(() => {
-      openDimension(emptyId);
-    }, 350);
+    // 提醒落地：先出写前提纲，方便起笔；关掉后再进空维
+    outlineFromFocusRef.current = true;
+    const t = setTimeout(() => setOutlineOpen(true), 350);
     return () => clearTimeout(t);
-  }, [canEdit, dailyTemplate, fields, focusEmpty, loading, openDimension, skipped]);
+  }, [canEdit, dailyTemplate, fields, focusEmpty, loading, skipped]);
 
   const templateColumnIds = useMemo(() => new Set(collectColumnIds(dailyTemplate)), [dailyTemplate]);
+
+  const matchDimensionByTitle = useCallback(
+    (title: string): ReviewDimensionTemplate | null => {
+      const needle = title.trim();
+      if (!needle) return null;
+      const exact = dailyTemplate.find(d => d.title.trim() === needle);
+      if (exact) return exact;
+      return (
+        dailyTemplate.find(
+          d => d.title.includes(needle) || needle.includes(d.title.trim()),
+        ) ?? null
+      );
+    },
+    [dailyTemplate],
+  );
+
+  const runOutlineGenerate = useCallback(async () => {
+    if (!ymd) return;
+    setOutlineBusy(true);
+    setOutlineError(null);
+    try {
+      const dayFacts = facts ?? (await loadReviewDayFacts(ymd).catch(() => null));
+      const factsText = dayFacts ? formatReviewDayFactsInsertText(dayFacts, 'daily') : '';
+      const metricsText = dayFacts ? formatReviewFactsMetricsText(dayFacts, '当日系统事实') : '';
+      const defectHint = await loadPreviousOpenDefectHint(ymd);
+      const r = await outlineReview({
+        scope: 'daily',
+        periodLabel: formatReviewHeaderDate(ymd),
+        factsText,
+        metricsText,
+        dimensionTitles: dailyTemplate.map(d => d.title),
+        openDefectHint: defectHint || null,
+      });
+      if (!r.ok) {
+        setOutlineError(r.error || '生成提纲失败');
+        setOutlineData(null);
+        return;
+      }
+      setOutlineData(r.data);
+    } catch (e) {
+      console.warn('review outline', e);
+      setOutlineError(toUserMessage(e, '生成提纲失败，请稍后重试'));
+      setOutlineData(null);
+    } finally {
+      setOutlineBusy(false);
+    }
+  }, [dailyTemplate, facts, ymd]);
+
+  const openOutlineSheet = useCallback(() => {
+    setOutlineOpen(true);
+    setOutlineError(null);
+    if (!outlineData) void runOutlineGenerate();
+  }, [outlineData, runOutlineGenerate]);
+
+  useEffect(() => {
+    if (!outlineOpen || outlineBusy || outlineData || outlineError) return;
+    void runOutlineGenerate();
+  }, [outlineBusy, outlineData, outlineError, outlineOpen, runOutlineGenerate]);
+
+  const fillOutlineIntoEmpty = useCallback(
+    (items: ReviewOutlineItem[]) => {
+      if (!canEdit) return;
+      const patch: ReviewFieldValues = {};
+      for (const item of items) {
+        const dim = matchDimensionByTitle(item.dimension_title);
+        if (!dim) continue;
+        const promptText = item.prompts.map(p => `· ${p}`).join('\n').trim();
+        if (!promptText) continue;
+        const emptyCol = dim.columns.find(c => !((patch[c.id] ?? fields[c.id] ?? '').trim()));
+        if (!emptyCol) continue;
+        patch[emptyCol.id] = promptText;
+      }
+      const filled = Object.keys(patch).length;
+      if (filled === 0) {
+        toast.info('没有可写入的空栏（维度已写或标题未匹配）');
+        return;
+      }
+      setFields(prev => ({ ...prev, ...patch }));
+      dirtyRef.current = true;
+      toast.success(`已写入 ${filled} 个空栏提纲，请确认后保存`);
+      setOutlineOpen(false);
+      outlineFromFocusRef.current = false;
+    },
+    [canEdit, fields, matchDimensionByTitle],
+  );
+
+  const openOutlineDimension = useCallback(
+    (item: ReviewOutlineItem) => {
+      const dim = matchDimensionByTitle(item.dimension_title);
+      if (!dim) {
+        toast.info(`未找到维度「${item.dimension_title}」`);
+        return;
+      }
+      const promptText = item.prompts.map(p => `· ${p}`).join('\n').trim();
+      const firstEmpty = dim.columns.find(c => !(fields[c.id] ?? '').trim());
+      if (canEdit && firstEmpty && promptText) {
+        setFields(prev => ({ ...prev, [firstEmpty.id]: promptText }));
+        dirtyRef.current = true;
+        toast.success('已填入提纲问句，进入编辑后可改写');
+      }
+      setOutlineOpen(false);
+      outlineFromFocusRef.current = false;
+      setHighlightDimensionId(dim.id);
+      setTimeout(() => openDimension(dim.id), 220);
+    },
+    [canEdit, fields, matchDimensionByTitle, openDimension],
+  );
+
+  const closeOutlineSheet = useCallback(() => {
+    setOutlineOpen(false);
+    if (outlineFromFocusRef.current) {
+      outlineFromFocusRef.current = false;
+      const emptyId =
+        highlightDimensionId || findFirstEmptyReviewDimensionId(dailyTemplate, fields);
+      if (emptyId) setTimeout(() => openDimension(emptyId), 220);
+    }
+  }, [dailyTemplate, fields, highlightDimensionId, openDimension]);
 
   /** 一键写入：把当日健康 / 任务 / 财务汇总写进对应内置栏目（只写有数据的栏） */
   const insertFacts = useCallback(() => {
@@ -429,6 +568,9 @@ export function DailyReviewGridView({
   const openMore = useCallback(() => {
     Alert.alert('更多', undefined, [
       { text: '一键写入今日数据', onPress: insertFacts },
+      ...(canEdit
+        ? [{ text: '生成写前提纲', onPress: () => setTimeout(() => openOutlineSheet(), 280) }]
+        : []),
       { text: '去填写每周复盘', onPress: () => (onSwitchToWeekly ? onSwitchToWeekly() : router.push('/weekly-review-form')) },
       {
         text: allDimsFilled ? 'AI 复盘分析' : 'AI 复盘分析（请先写完格子）',
@@ -436,7 +578,7 @@ export function DailyReviewGridView({
       },
       { text: '取消', style: 'cancel' },
     ]);
-  }, [allDimsFilled, insertFacts, onSwitchToWeekly, openAiAnalysis, router]);
+  }, [allDimsFilled, canEdit, insertFacts, onSwitchToWeekly, openAiAnalysis, openOutlineSheet, router]);
 
   const goWeekly = useCallback(() => {
     if (onSwitchToWeekly) onSwitchToWeekly();
@@ -551,6 +693,26 @@ export function DailyReviewGridView({
               />
             )}
 
+            {canEdit && dailyTemplate.length > 0 && !allDimsFilled ? (
+              <FoldCard tone="muted" style={styles.outlineCard}>
+                <Text style={[Typography.bodyStrong, { color: palette.ink }]} maxFontSizeMultiplier={1.3}>
+                  不知道写什么？
+                </Text>
+                <Text
+                  style={[Typography.body, { color: palette.muted, lineHeight: 20, marginTop: 4 }]}
+                  maxFontSizeMultiplier={1.3}>
+                  根据今日事实与模板，生成各维起笔问句。
+                </Text>
+                <Text
+                  onPress={openOutlineSheet}
+                  style={[Typography.bodyStrong, { color: palette.pine, marginTop: 10 }]}
+                  maxFontSizeMultiplier={1.3}
+                  accessibilityRole="button">
+                  生成写前提纲 →
+                </Text>
+              </FoldCard>
+            ) : null}
+
             <FoldAiMini
               text={meta.ai_analysis}
               onOpen={openAiAnalysis}
@@ -578,12 +740,28 @@ export function DailyReviewGridView({
         weekNo={weekNo}
         periodLabel={formatReviewHeaderDate(ymd)}
         weekStartYmd={weekStartYmd}
+        periodYmd={ymd}
         template={dailyTemplate}
         fields={fields}
         dailyEntries={periodEntries}
         initialText={meta.ai_analysis ?? null}
         canEdit={canEdit}
         onPersist={persistAiText}
+      />
+
+      <ReviewOutlineSheet
+        visible={outlineOpen}
+        loading={outlineBusy}
+        error={outlineError}
+        data={outlineData}
+        onClose={closeOutlineSheet}
+        onRetry={() => void runOutlineGenerate()}
+        onOpenDimension={openOutlineDimension}
+        onFillEmpty={
+          outlineData && canEdit
+            ? () => fillOutlineIntoEmpty(outlineData.outline)
+            : undefined
+        }
       />
     </View>
   );
@@ -605,6 +783,10 @@ const styles = StyleSheet.create({
   emptyCard: {
     marginTop: 8,
     gap: 6,
+  },
+  outlineCard: {
+    marginTop: 12,
+    gap: 2,
   },
   autoSave: {
     flexDirection: 'row',

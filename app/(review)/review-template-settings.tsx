@@ -30,10 +30,13 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { foldFonts, useFoldTheme } from '@/components/review/fold-ui';
+import { ReviewTemplateCopySheet } from '@/components/review/review-ai-p2-sheets';
 import { Spacing } from '@/constants/design-tokens';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
+import type { ReviewSuggestTemplateCopyResult, ReviewTemplateCopyColumn } from '@/lib/ai-api-client';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { fetchReviewCatalog, shouldFetchReviewFromApi } from '@/lib/review-page-api';
+import { suggestReviewTemplateCopy } from '@/lib/zhipu-image-parse';
 import {
   createReviewColumn,
   createReviewColumnId,
@@ -275,6 +278,11 @@ export default function ReviewTemplateSettingsScreen() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [modalKeyboardInset, setModalKeyboardInset] = useState(0);
   const skipFocusReloadRef = useRef(false);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [copyGoal, setCopyGoal] = useState('');
+  const [copyData, setCopyData] = useState<ReviewSuggestTemplateCopyResult | null>(null);
 
   useEffect(() => {
     if (editor == null) {
@@ -610,6 +618,73 @@ export default function ReviewTemplateSettingsScreen() {
     ]);
   }, [dirty, router, saveDrafts]);
 
+  const runSuggestTemplateCopy = useCallback(async () => {
+    const titles = drafts[scope]
+      .filter(d => !d.removed)
+      .map(d => d.title.trim())
+      .filter(Boolean);
+    setCopyBusy(true);
+    setCopyError(null);
+    try {
+      const r = await suggestReviewTemplateCopy({
+        scope,
+        dimensionTitles: titles,
+        userGoal: copyGoal.trim() || undefined,
+      });
+      if (!r.ok) {
+        setCopyData(null);
+        setCopyError(r.error || '模板文案建议失败');
+        return;
+      }
+      setCopyData(r.data);
+    } catch (e) {
+      console.warn('review template copy suggest', e);
+      setCopyData(null);
+      setCopyError(toUserMessage(e, '模板文案建议失败，请稍后重试'));
+    } finally {
+      setCopyBusy(false);
+    }
+  }, [copyGoal, drafts, scope]);
+
+  const applyTemplateCopyColumn = useCallback(
+    (col: ReviewTemplateCopyColumn) => {
+      const dimTitle = col.dimension_title.trim();
+      const colTitle = (col.column_title || '').trim();
+      const placeholder = col.placeholder.trim();
+      if (!dimTitle || !placeholder) return;
+      let matched = false;
+      mutateScope(scope, dims =>
+        dims.map(d => {
+          if (d.removed || d.title.trim() !== dimTitle) return d;
+          const cols = d.columns.filter(c => !c.removed);
+          if (cols.length === 0) return d;
+          const target =
+            cols.find(c => colTitle && c.title.trim() === colTitle) ??
+            cols[0];
+          matched = true;
+          return {
+            ...d,
+            columns: d.columns.map(c =>
+              c.key === target.key ? { ...c, placeholder } : c,
+            ),
+          };
+        }),
+      );
+      if (matched) toast.success(`已写入「${dimTitle}」占位文案（未保存）`);
+      else toast.info(`未找到维度「${dimTitle}」，请核对标题`);
+    },
+    [mutateScope, scope],
+  );
+
+  const applyAllTemplateCopy = useCallback(() => {
+    if (!copyData?.columns.length) return;
+    for (const col of copyData.columns) {
+      applyTemplateCopyColumn(col);
+    }
+    setCopyOpen(false);
+    toast.success('已全部写入草稿，记得点保存');
+  }, [applyTemplateCopyColumn, copyData]);
+
   const visibleDims = useMemo(() => drafts[scope].filter(d => !d.removed), [drafts, scope]);
   const builtinDims = visibleDims.filter(d => d.builtin);
   const customDims = visibleDims.filter(d => !d.builtin);
@@ -845,6 +920,25 @@ export default function ReviewTemplateSettingsScreen() {
                   三个 scope 的模板彼此独立。内置维度不可删除 / 改名，必须排在自定义模块之前；内置栏目不可删除。
                 </Text>
               </View>
+              <Pressable
+                onPress={() => {
+                  setCopyError(null);
+                  setCopyData(null);
+                  setCopyOpen(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="AI 建议栏目说明"
+                style={({ pressed }) => [
+                  styles.aiCopyBtn,
+                  {
+                    borderColor: fold.line2,
+                    backgroundColor: fold.card,
+                    opacity: pressed ? 0.82 : 1,
+                  },
+                ]}>
+                <MaterialIcons name="auto-fix" size={14} color={fold.pine} />
+                <Text style={[styles.aiCopyBtnText, { color: fold.pine }]}>AI 建议栏目说明</Text>
+              </Pressable>
             </FoldRiseIn>
 
             <FoldRiseIn animate={motionOn} index={1} staggerMs={55} duration={400}>
@@ -996,6 +1090,19 @@ export default function ReviewTemplateSettingsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <ReviewTemplateCopySheet
+        visible={copyOpen}
+        loading={copyBusy}
+        error={copyError}
+        goal={copyGoal}
+        onChangeGoal={setCopyGoal}
+        data={copyData}
+        onClose={() => setCopyOpen(false)}
+        onGenerate={() => void runSuggestTemplateCopy()}
+        onApplyColumn={applyTemplateCopyColumn}
+        onApplyAll={applyAllTemplateCopy}
+      />
     </SafeAreaView>
   );
 }
@@ -1085,6 +1192,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   noteText: { flex: 1, fontSize: 11, lineHeight: 16 },
+  aiCopyBtn: {
+    marginTop: 8,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  aiCopyBtnText: { fontSize: 12.5, fontWeight: '700' },
   groupRow: {
     flexDirection: 'row',
     alignItems: 'center',

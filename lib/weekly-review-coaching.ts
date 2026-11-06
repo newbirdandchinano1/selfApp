@@ -2,6 +2,7 @@ import type { WeeklyReviewMetrics } from '@/lib/repositories/insights/weekly-rev
 import type { ReviewDimensionTemplate } from '@/lib/repositories/insights/review-template.types';
 import { totalFilledLength } from '@/lib/repositories/insights/review-journal-body';
 import type { ReviewFieldValues } from '@/lib/repositories/insights/review-journal-body';
+import { buildWishBoardPeriodDigest } from '@/lib/wish-board-period-digest';
 import { generateWeeklyReviewCoachingFromText } from '@/lib/zhipu-image-parse';
 
 export type WeeklyCoachingSection = {
@@ -48,12 +49,30 @@ export async function generateWeeklyReviewCoaching(input: WeeklyCoachingInput): 
     title: sec.dimensionTitle,
     columns: sec.columns,
   }));
+
+  /** P2：本地拼心愿周期摘要进 related_digest；失败静默省略 */
+  let wishDigest = '';
+  const startYmd = input.metrics?.weekStartYmd?.trim() ?? '';
+  const endYmd = input.metrics?.weekEndYmd?.trim() ?? '';
+  if (startYmd && endYmd) {
+    try {
+      wishDigest = await buildWishBoardPeriodDigest({ startYmd, endYmd });
+    } catch {
+      wishDigest = '';
+    }
+  }
+  const relatedDigest =
+    [input.dailyReviewsDigest, wishDigest]
+      .map(s => (s ?? '').trim())
+      .filter(Boolean)
+      .join('\n\n') || undefined;
+
   const remote = await generateWeeklyReviewCoachingFromText({
     reviewType: 'weekly',
     periodLabel: input.weekRangeLabel,
     dimensions,
     metricsText: buildMetricsBlock(input.metrics),
-    relatedDigest: input.dailyReviewsDigest,
+    relatedDigest,
     executionScore: input.executionScore,
   });
   if (remote.ok) return remote.text;

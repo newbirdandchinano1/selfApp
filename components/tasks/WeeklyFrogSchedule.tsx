@@ -196,6 +196,11 @@ type Props = {
   onHabitCheckIn?: (habitId: string) => void;
   /** 点已达标的日程习惯块：撤销当日打卡（仅今日） */
   onHabitUndo?: (habitId: string) => void;
+  /**
+   * 任务页小习惯「今日完成」态（habitId → done）。
+   * 今日虚拟习惯 / 时间线全天以此覆盖本地重建结果，避免打卡后日程仍显示待打卡。
+   */
+  habitDoneTodayById?: ReadonlyMap<string, boolean>;
   /** 顶部日历点选：跳到该日课表 */
   jumpToYmd?: string | null;
   onJumpToYmdConsumed?: () => void;
@@ -439,6 +444,7 @@ export function WeeklyFrogSchedule({
   onToggleDone,
   onHabitCheckIn,
   onHabitUndo,
+  habitDoneTodayById,
   jumpToYmd = null,
   onJumpToYmdConsumed,
   onViewYmdChange,
@@ -517,6 +523,24 @@ export function WeeklyFrogSchedule({
   const checkInsMapsRef = React.useRef<Map<string, Record<string, number>>>(new Map());
   const subjectsRef = React.useRef(subjects);
   subjectsRef.current = subjects;
+
+  /**
+   * 今日习惯完成态与任务页小习惯列表强绑定：
+   * reload 尚未读到打卡表 / 口径偏差时，仍跟 habitDoneTodayById 对齐。
+   */
+  const virtualHabitsResolved = React.useMemo(() => {
+    if (!habitDoneTodayById || habitDoneTodayById.size === 0) return virtualHabits;
+    let changed = false;
+    const next = virtualHabits.map((h) => {
+      if (h.assignYmd !== logicalTodayYmd) return h;
+      if (!habitDoneTodayById.has(h.habitId)) return h;
+      const done = habitDoneTodayById.get(h.habitId) === true;
+      if (done === h.done) return h;
+      changed = true;
+      return { ...h, done };
+    });
+    return changed ? next : virtualHabits;
+  }, [virtualHabits, habitDoneTodayById, logicalTodayYmd]);
   const [gridWidth, setGridWidth] = React.useState(0);
   /** 时间线视口：默认半高，点按展开完整高度 */
   const [timelineHeightExpanded, setTimelineHeightExpanded] = React.useState(false);
@@ -886,14 +910,14 @@ export function WeeklyFrogSchedule({
       dayYmd: ymd,
       axis: view.axis,
       placements: view.placements,
-      virtualHabits,
+      virtualHabits: virtualHabitsResolved,
       virtualTasks,
       resolvePlacement: resolveTimelineDisplay,
     });
     return { ymd, events };
   }, [
     view,
-    virtualHabits,
+    virtualHabitsResolved,
     virtualTasks,
     resolveTimelineDisplay,
     centerYmd,
@@ -998,6 +1022,12 @@ export function WeeklyFrogSchedule({
 
   const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
     if (!placeTarget || !view) return;
+    const assignYmd =
+      result.assignYmd && isEditableScheduleDay(result.assignYmd, logicalTodayYmd)
+        ? result.assignYmd
+        : placeTarget.assignYmd;
+    const weekStartYmd = getWeekStartMondayYmd(assignYmd);
+    const weekday = weekdayFromYmd(assignYmd);
     const useMinutePath = timelineWrite;
     const daySlots = getSlotCount(view.axis);
     const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
@@ -1006,7 +1036,7 @@ export function WeeklyFrogSchedule({
       if (useMinutePath) {
         await rematerializeOrphanedPlacementAtMinutes({
           placementId: placeTarget.rematerializePlacementId,
-          assignYmd: placeTarget.assignYmd,
+          assignYmd,
           startMinutes: result.startMinutes ?? 0,
           endMinutes: result.endMinutes ?? 0,
           allDay: result.allDay,
@@ -1015,7 +1045,7 @@ export function WeeklyFrogSchedule({
       } else {
         await rematerializeOrphanedPlacement({
           placementId: placeTarget.rematerializePlacementId,
-          assignYmd: placeTarget.assignYmd,
+          assignYmd,
           startSlotIndex,
           spanSlots,
           logicalTodayYmd,
@@ -1023,15 +1053,16 @@ export function WeeklyFrogSchedule({
       }
       setPlaceTarget(null);
       setReassignPending(null);
-      await reload(loadDayYmds, { silent: true });
+      setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+      await reload([assignYmd], { silent: true });
       onChanged?.();
       return;
     }
 
     const row = useMinutePath
       ? await placeFrogOnScheduleAt({
-          weekStartYmd: placeTarget.weekStartYmd,
-          weekday: placeTarget.weekday,
+          weekStartYmd,
+          weekday,
           startMinutes: result.startMinutes ?? 0,
           endMinutes: result.endMinutes ?? 0,
           allDay: result.allDay,
@@ -1040,8 +1071,8 @@ export function WeeklyFrogSchedule({
           logicalTodayYmd,
         })
       : await placeFrogOnSchedule({
-          weekStartYmd: placeTarget.weekStartYmd,
-          weekday: placeTarget.weekday,
+          weekStartYmd,
+          weekday,
           startSlotIndex,
           spanSlots,
           subjectKind: result.kind,
@@ -1060,11 +1091,12 @@ export function WeeklyFrogSchedule({
     );
     setPlaceTarget(null);
     onClearPendingPlace?.();
-    await reload(loadDayYmds, { silent: true });
+    setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+    await reload([assignYmd], { silent: true });
     onChanged?.({
       kind: result.kind,
       id: result.id,
-      assignYmd: placeTarget.assignYmd,
+      assignYmd,
       action: 'assign',
     });
   };
@@ -1245,7 +1277,7 @@ export function WeeklyFrogSchedule({
         priority: sub?.priority ?? 0,
       });
     }
-    for (const h of virtualHabits) {
+    for (const h of virtualHabitsResolved) {
       if (h.assignYmd !== logicalTodayYmd) continue;
       const span = Math.max(1, h.spanSlots);
       const startMins = slotStartMinutes(view.axis, h.startSlotIndex);
@@ -1298,7 +1330,7 @@ export function WeeklyFrogSchedule({
     }
     items.sort(compareTodayCompactByWeight);
     return items;
-  }, [view, logicalTodayYmd, subjects, virtualHabits, virtualTasks, tagWeightBySubjectId]);
+  }, [view, logicalTodayYmd, subjects, virtualHabitsResolved, virtualTasks, tagWeightBySubjectId]);
 
   const minimalFocus = React.useMemo(() => {
     const nowMins = axisNowMins ?? -1;
@@ -2050,6 +2082,20 @@ export function WeeklyFrogSchedule({
             ? slotEndMinutes(view.axis, placeTarget.startSlotIndex)
             : undefined
         }
+        onAssignYmdChange={(ymd) => {
+          if (!isEditableScheduleDay(ymd, logicalTodayYmd)) return;
+          setPeriodIndex(dayOffsetFromToday(ymd, logicalTodayYmd));
+          setPlaceTarget((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  assignYmd: ymd,
+                  weekStartYmd: getWeekStartMondayYmd(ymd),
+                  weekday: weekdayFromYmd(ymd),
+                }
+              : prev,
+          );
+        }}
         onConfirm={handlePlaceConfirm}
       />
 

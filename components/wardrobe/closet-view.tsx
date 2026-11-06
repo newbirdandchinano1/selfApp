@@ -43,6 +43,8 @@ export type ClosetViewProps = {
   onCategoryMore: (name: string) => void;
   onJumpMine: () => void;
   onSeason?: (season: SeasonFilter) => void;
+  /** Hero「今天穿什么」→ AI 库内推荐 */
+  onSuggestToday?: () => void;
 };
 
 const DAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'] as const;
@@ -129,6 +131,7 @@ export const ClosetView = memo(function ClosetView({
   onAddToCategory,
   onCategoryMore,
   onJumpMine,
+  onSuggestToday,
 }: ClosetViewProps) {
   const { w } = useWardrobeTheme();
   const styles = useMemo(() => createStyles(w), [w]);
@@ -230,7 +233,12 @@ export const ClosetView = memo(function ClosetView({
       showsVerticalScrollIndicator={false}
       refreshControl={refreshControl}>
       <FoldRiseIn animate={animate} index={0} fromY={16}>
-        <View style={styles.hero}>
+        <Pressable
+          style={styles.hero}
+          onPress={onSuggestToday}
+          disabled={!onSuggestToday}
+          accessibilityRole={onSuggestToday ? 'button' : undefined}
+          accessibilityLabel="今天穿什么，AI 推荐">
           <View style={{ flex: 1 }}>
             <View style={styles.kickerRow}>
               <View style={styles.kickerLine} />
@@ -245,6 +253,12 @@ export const ClosetView = memo(function ClosetView({
               <View style={styles.dot} />
               <Text style={styles.heroSubText}>
                 已整理 <Text style={styles.heroSubBold}>{total}</Text> 件</Text>
+              {onSuggestToday ? (
+                <>
+                  <View style={styles.dot} />
+                  <Text style={[styles.heroSubText, { color: w.pine }]}>点按推荐</Text>
+                </>
+              ) : null}
             </View>
           </View>
           <View style={styles.stamp}>
@@ -252,7 +266,7 @@ export const ClosetView = memo(function ClosetView({
             <Text style={styles.stampDay}>{heroDate.stampDay}</Text>
             <Text style={styles.stampMon}>{heroDate.stampMon}</Text>
           </View>
-        </View>
+        </Pressable>
       </FoldRiseIn>
 
       <FoldRiseIn animate={animate} index={1} fromY={16} style={styles.weekRise}>

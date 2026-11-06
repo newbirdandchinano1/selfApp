@@ -20,9 +20,11 @@ import type {
   IncomeItem,
   Quadrant,
 } from '@/lib/repositories/cash-flow/cash-flow.types';
+import { parseFinanceCashFlowEntryFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Switch,
@@ -163,6 +165,66 @@ export function CashFlowFoldEntry({
   const [assetReturnAmount, setAssetReturnAmount] = useState('');
   const [liabilityRepayMonths, setLiabilityRepayMonths] = useState('');
   const [linkRealAccount, setLinkRealAccount] = useState(true);
+  const [aiSentence, setAiSentence] = useState('');
+  const [aiParsing, setAiParsing] = useState(false);
+
+  const existingNames = useMemo(() => {
+    const names: string[] = [];
+    for (const row of state.incomes) {
+      const n = row.name?.trim();
+      if (n) names.push(n);
+    }
+    for (const row of state.expenseLines ?? []) {
+      const n = row.name?.trim();
+      if (n) names.push(n);
+    }
+    for (const row of state.holdings) {
+      const n = row.name?.trim();
+      if (n) names.push(n);
+    }
+    return names.slice(0, 80);
+  }, [state.expenseLines, state.holdings, state.incomes]);
+
+  const onParseAiSentence = async () => {
+    const trimmed = aiSentence.trim();
+    if (!trimmed) {
+      showToast('先写一句要记入的现金流', 'warning');
+      return;
+    }
+    if (aiParsing) return;
+    setAiParsing(true);
+    try {
+      const r = await parseFinanceCashFlowEntryFromText({
+        text: trimmed,
+        existingNames,
+      });
+      if (!r.ok) {
+        showToast(r.error || '未能解析', 'warning');
+        return;
+      }
+      const d = r.data;
+      setAmount(String(d.amount));
+      setName(d.name_hint);
+      if (d.entry_kind === 'income') {
+        setEntryType('income');
+        if (d.quadrant) setQuadrant(d.quadrant);
+      } else {
+        setEntryType('expense');
+        setExpenseType(d.entry_kind);
+        if (d.entry_kind === 'asset' && d.asset_return != null) {
+          setAssetReturnAmount(String(d.asset_return));
+        }
+        if (d.entry_kind === 'liability' && d.liability_months != null) {
+          setLiabilityRepayMonths(String(d.liability_months));
+        }
+      }
+      showToast('已预填，请确认后记入', 'success');
+    } catch {
+      showToast('解析失败，请稍后重试', 'warning');
+    } finally {
+      setAiParsing(false);
+    }
+  };
 
   const amountNum = useMemo(() => {
     const n = parseFloat(amount.replace(/,/g, ''));
@@ -351,6 +413,39 @@ export function CashFlowFoldEntry({
 
   return (
     <View style={styles.root}>
+      <FoldRiseIn animate={animate} index={0} fromY={11}>
+        <View style={[styles.aiParseCard, { backgroundColor: aiBg, borderColor: aiBorder }]}>
+          <Text style={[styles.aiParseLab, { color: ff.amberInk }]}>一句话填入</Text>
+          <View style={styles.aiParseRow}>
+            <TextInput
+              value={aiSentence}
+              onChangeText={setAiSentence}
+              placeholder="例：每月房租 3200 记必要支出"
+              placeholderTextColor={ff.faint}
+              style={[styles.aiParseInput, { color: ff.ink, backgroundColor: ff.card, borderColor: ff.line }]}
+              editable={!aiParsing}
+              returnKeyType="done"
+              onSubmitEditing={() => void onParseAiSentence()}
+            />
+            <Pressable
+              onPress={() => void onParseAiSentence()}
+              disabled={aiParsing}
+              style={({ pressed }) => [
+                styles.aiParseBtn,
+                { backgroundColor: ff.pine, opacity: aiParsing ? 0.55 : pressed ? 0.88 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="AI 填入现金流">
+              {aiParsing ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.aiParseBtnText}>AI 填入</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </FoldRiseIn>
+
       <FoldRiseIn animate={animate} index={0} fromY={11}>
         <View style={[styles.segment, { backgroundColor: ff.paper2 }]}>
           <Pressable
@@ -588,6 +683,32 @@ export function CashFlowFoldEntry({
 
 const styles = StyleSheet.create({
   root: { paddingBottom: 12 },
+  aiParseCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 8,
+    gap: 8,
+  },
+  aiParseLab: { fontSize: 11, fontWeight: '700' },
+  aiParseRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiParseInput: {
+    flex: 1,
+    height: 36,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    fontSize: 13,
+  },
+  aiParseBtn: {
+    height: 36,
+    minWidth: 72,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aiParseBtnText: { color: '#F8F3E9', fontSize: 12, fontWeight: '700' },
   segment: {
     flexDirection: 'row',
     borderRadius: 12,

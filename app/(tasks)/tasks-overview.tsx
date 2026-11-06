@@ -1,6 +1,8 @@
-﻿import { Colors } from '@/constants/theme';
+﻿import { AiTasksOverviewInsightsSheet } from '@/components/tasks/ai-tasks-overview-insights-sheet';
+import { Colors } from '@/constants/theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import type { TaskAiTaskSummary } from '@/lib/ai-api-client';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import type { TaskExecutionEventWithTitle } from '@/lib/repositories/tasks/task-execution-events';
 import { openTaskById } from '@/lib/open-task-by-id';
@@ -9,7 +11,9 @@ import {
   type TasksOverviewInsightCounts,
   type TasksOverviewStatKey,
 } from '@/lib/tasks-overview-api';
-import { formatYmdCN } from '@/lib/date';
+import { addDaysToYmd, formatYmdCN } from '@/lib/date';
+import { buildTaskAiSummaries } from '@/lib/task-ai-context';
+import { getTasksForOverviewList } from '@/lib/repositories/tasks/task';
 import { getTaskRepeatDisplayText } from '@/lib/task-repeat-rollover';
 import { buildGlobalTaskHeatmapGrid, heatmapGridDayRange, type HeatmapCell } from '@/lib/tasks-global-heatmap';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -268,6 +272,8 @@ export default function TasksOverviewScreen() {
   const [dayEvents, setDayEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
   const [dayEventsLoading, setDayEventsLoading] = React.useState(false);
 
+  const [aiInsightsOpen, setAiInsightsOpen] = React.useState(false);
+  const [aiOpenTasks, setAiOpenTasks] = React.useState<TaskAiTaskSummary[]>([]);
   const [selectedStatKey, setSelectedStatKey] = React.useState<TasksOverviewStatKey | null>(null);
   const [statTasks, setStatTasks] = React.useState<TaskRow[]>([]);
   const [statTasksTotal, setStatTasksTotal] = React.useState(0);
@@ -603,6 +609,40 @@ export default function TasksOverviewScreen() {
 
   const showClearSelection = !!selectedHeatYmd || !!selectedStatKey;
 
+  const completionCounts7d = React.useMemo(() => {
+    if (!heatmapGrid.length || !logicalTodayYmd) return undefined;
+    let sum = 0;
+    const start = addDaysToYmd(logicalTodayYmd, -6);
+    for (const col of heatmapGrid) {
+      for (const cell of col) {
+        if (cell.ymd >= start && cell.ymd <= logicalTodayYmd) sum += cell.count;
+      }
+    }
+    return sum;
+  }, [heatmapGrid, logicalTodayYmd]);
+
+  const completionCounts14d = React.useMemo(() => {
+    if (!heatmapGrid.length || !logicalTodayYmd) return undefined;
+    let sum = 0;
+    const start = addDaysToYmd(logicalTodayYmd, -13);
+    for (const col of heatmapGrid) {
+      for (const cell of col) {
+        if (cell.ymd >= start && cell.ymd <= logicalTodayYmd) sum += cell.count;
+      }
+    }
+    return sum;
+  }, [heatmapGrid, logicalTodayYmd]);
+
+  const openAiInsights = React.useCallback(async () => {
+    try {
+      const rows = await getTasksForOverviewList('open');
+      setAiOpenTasks(buildTaskAiSummaries(rows.slice(0, 40), { logicalTodayYmd }));
+    } catch {
+      setAiOpenTasks([]);
+    }
+    setAiInsightsOpen(true);
+  }, [logicalTodayYmd]);
+
   const bg = isDark ? theme.background : '#F5F3E8';
   const surface = isDark ? 'rgba(30, 41, 59, 0.70)' : '#ffffff';
   const surfaceLow = isDark ? 'rgba(15, 23, 42, 0.55)' : '#f2f3ff';
@@ -618,7 +658,13 @@ export default function TasksOverviewScreen() {
           <MaterialIcons name="arrow-back" size={22} color={primary} />
         </Pressable>
         <Text style={[styles.topTitle, { color: theme.text }]}>待办总览</Text>
-        <View style={{ width: 38 }} />
+        <Pressable
+          onPress={() => void openAiInsights()}
+          hitSlop={10}
+          accessibilityLabel="AI 洞察"
+          style={({ pressed }) => [styles.iconBtn, pressed && { opacity: 0.7 }]}>
+          <MaterialIcons name="auto-awesome" size={20} color={primary} />
+        </Pressable>
       </View>
 
       <ScrollView
@@ -903,6 +949,32 @@ export default function TasksOverviewScreen() {
           )}
         </View>
       </ScrollView>
+
+      <AiTasksOverviewInsightsSheet
+        visible={aiInsightsOpen}
+        onClose={() => setAiInsightsOpen(false)}
+        todayYmd={logicalTodayYmd}
+        insightCounts={
+          counts
+            ? {
+                open: counts.open,
+                doneOrCancelled: counts.doneOrCancelled,
+                totalActive: counts.totalActive,
+                recurring: counts.recurring,
+                completedEvents: counts.completedEvents,
+                reopenedEvents: counts.reopenedEvents,
+              }
+            : undefined
+        }
+        completionCounts7d={completionCounts7d}
+        completionCounts14d={completionCounts14d}
+        reopenCount={counts?.reopenedEvents}
+        openTasks={aiOpenTasks}
+        onOpenTask={(taskId) => {
+          setAiInsightsOpen(false);
+          void handleOpenTask(taskId);
+        }}
+      />
     </SafeAreaView>
   );
 }

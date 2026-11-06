@@ -1,3 +1,4 @@
+import { AiPantrySuggestSheet } from '@/components/recipe/ai-pantry-suggest-sheet';
 import { recipeGlassTabBarContentInset } from '@/components/recipe/recipe-glass-tab-bar';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
@@ -51,6 +52,7 @@ export default function RecipeShopScreen() {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  const [aiPantryVisible, setAiPantryVisible] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -340,6 +342,20 @@ export default function RecipeShopScreen() {
             <Text style={[styles.pageTitle, { color: p.text }]}>采购</Text>
             <View style={styles.headActions}>
               <Pressable
+                onPress={() => setAiPantryVisible(true)}
+                style={({ pressed }) => [
+                  styles.btnGhost,
+                  {
+                    borderColor: p.border,
+                    backgroundColor: p.accentSoft,
+                    opacity: pressed ? 0.85 : 1,
+                  },
+                ]}
+                accessibilityLabel="冰箱食材选菜">
+                <MaterialIcons name="kitchen" size={16} color={p.accent} />
+                <Text style={[styles.btnGhostText, { color: p.accent }]}>AI 选菜</Text>
+              </Pressable>
+              <Pressable
                 onPress={() => {
                   if (batchMode) exitBatch();
                   else setBatchMode(true);
@@ -456,6 +472,15 @@ export default function RecipeShopScreen() {
           </View>
         </View>
       ) : null}
+
+      <AiPantrySuggestSheet
+        visible={aiPantryVisible}
+        onClose={() => setAiPantryVisible(false)}
+        recipeStore={recipes}
+        onApplied={() => {
+          void reload();
+        }}
+      />
     </View>
   );
 }
@@ -484,7 +509,10 @@ const styles = StyleSheet.create({
   },
   btnPrimaryText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   btnGhost: {
-    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,

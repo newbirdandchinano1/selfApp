@@ -1,3 +1,4 @@
+import { AiWeekRhythmInsightsSheet } from '@/components/profile/ai-week-rhythm-insights-sheet';
 import { ProfileMoreSheet, type ProfileMoreMenuItem } from '@/components/profile/ProfileMoreSheet';
 import { ProfileRoadBelow } from '@/components/profile/ProfileRoadBelow';
 import { ProfileRoadCard } from '@/components/profile/ProfileRoadCard';
@@ -22,6 +23,8 @@ import {
 import { useLocalQuery } from '@/hooks/use-local-query';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { usePageFocusReload } from '@/hooks/use-page-focus-reload';
+import type { ProfileWeekRhythmOpenHint } from '@/lib/ai-api-client';
+import { formatYmd } from '@/lib/date';
 import { listUiRefreshTables } from '@/lib/page-api-scope';
 import { subscribePointsBalanceChanged } from '@/lib/points-balance-events';
 import {
@@ -229,6 +232,7 @@ export default function ProfileScreen() {
   const [hub, setHub] = useState<ProfileHubStats | null>(null);
   const [syncClock, setSyncClock] = useState(formatSyncClock);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [weekInsightsOpen, setWeekInsightsOpen] = useState(false);
   const bellShake = useRef(new Animated.Value(0)).current;
   const prevBadgeRef = useRef(0);
 
@@ -748,7 +752,23 @@ export default function ProfileScreen() {
           <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
             <View style={[styles.rowBetween, { marginBottom: 6 }]}>
               <Text style={[styles.cardTitle, { color: fold.ink2 }]}>本周节奏</Text>
-              <Text style={[styles.cardHint, { color: fold.faint }]}>{weekRange}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Text style={[styles.cardHint, { color: fold.faint }]}>{weekRange}</Text>
+                <Pressable
+                  onPress={() => setWeekInsightsOpen(true)}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    styles.insightChip,
+                    {
+                      borderColor: fold.line,
+                      backgroundColor: fold.paper2,
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <AppIcon name="auto-awesome" size={11} color={fold.pine} />
+                  <Text style={[styles.insightChipText, { color: fold.pine }]}>洞察</Text>
+                </Pressable>
+              </View>
             </View>
             <View style={styles.rhythmGrid}>
               <Pressable
@@ -923,6 +943,39 @@ export default function ProfileScreen() {
         items={moreItems}
         onClose={() => setMoreOpen(false)}
       />
+
+      <AiWeekRhythmInsightsSheet
+        visible={weekInsightsOpen}
+        onClose={() => setWeekInsightsOpen(false)}
+        todayYmd={formatYmd(new Date())}
+        week={
+          hub?.week
+            ? {
+                habit_check_in_rate_percent: hub.week.habitCheckInRatePercent,
+                habit_check_in_total: hub.week.habitCheckInTotal,
+                habit_expected_slots: hub.week.habitExpectedSlots,
+                tasks_completed: hub.week.tasksCompleted,
+                tasks_delta_vs_last_week: hub.week.tasksDeltaVsLastWeek,
+                daily_review_days: hub.week.dailyReviewDays,
+                days_elapsed_inclusive: hub.week.daysElapsedInclusive,
+                weekly_review_done: hub.week.weeklyReviewDone,
+              }
+            : undefined
+        }
+        roadFocusLine={hub?.road.yearFocus ?? hub?.road.direction}
+        wishGapLine={wishLine}
+        personaOneLiner={
+          hub?.archive.personaFilled
+            ? `画像已填 · ${hub.archive.personaCharCount} 字`
+            : '画像未填'
+        }
+        onOpenHint={(hint: ProfileWeekRhythmOpenHint) => {
+          if (hint === 'tasks') router.push('/(tabs)/tasks');
+          else if (hint === 'review') router.push('/daily-review');
+          else if (hint === 'life-road') router.push('/life-road');
+          else if (hint === 'wish-board') router.push('/wish-board');
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -1049,6 +1102,16 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 12, fontWeight: '700' },
   cardHint: { fontSize: 10 },
+  insightChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    height: 22,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  insightChipText: { fontSize: 10, fontWeight: '800' },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

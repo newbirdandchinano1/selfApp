@@ -10,6 +10,9 @@ import {
   useTaskStatusToneColors,
   resolveTaskStatusTone,
 } from '@/components/tasks/task-status-tag';
+import { AiHabitNudgeSheet } from '@/components/tasks/ai-habit-nudge-sheet';
+import { AiSuggestTodayTasksSheet } from '@/components/tasks/ai-suggest-today-sheet';
+import { AiTaskFromImageSheet } from '@/components/tasks/ai-task-from-image-sheet';
 import { TasksWeekStrip } from '@/components/tasks/TasksWeekStrip';
 import {
   WeeklyFrogSchedule,
@@ -223,6 +226,8 @@ import {
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
 import { ProjectHabitProgressBlock } from '@/components/projects/ProjectHabitProgressBlock';
+import { ProgressCounterListHint } from '@/components/progress/ProgressCounterListHint';
+import { ProgressCounterTrackBlock } from '@/components/progress/ProgressCounterTrackBlock';
 import {
   buildProgressHabitsPlaceholderEvaluation,
   evaluateProjectProgressHabits,
@@ -232,6 +237,17 @@ import {
   notifyProjectsProgressHabitsAfterCheckIn,
   type ProjectProgressHabitsEvaluation,
 } from '@/lib/repositories/projects/project-progress-habits';
+import {
+  bumpProgressCounter,
+  evaluateProgressCounters,
+  formatCombinedProgressRemainMessage,
+  formatProgressCountersRemainMessage,
+  formatTaskCounterIncompleteConfirmMessage,
+  mergeProgressCountersIntoExtraData,
+  parseProgressCounters,
+  setProgressCounterCurrent,
+  undoLastProgressCounterChange,
+} from '@/lib/repositories/progress/progress-counters';
 import {
   completeTasksBoundToHabitIfGoalMet,
   parseBoundHabitIdsFromExtraData,
@@ -297,6 +313,7 @@ import {
   fetchTasksPageData,
   sortStandaloneTodosLocally,
 } from '@/lib/tasks-page-api';
+import { backfillStandaloneTodosFrogFromDue } from '@/lib/standalone-todo-assign-sync';
 import {
   loadTasksHideCompletedProjectTasks,
   loadTasksMainListView,
@@ -1367,6 +1384,23 @@ function collectIncompleteTasksFromProjectTree(nodes: TaskTreeNode[]): TaskTreeN
   return out;
 }
 
+/** 直接子任务数量（含已完成）；计数满进度自动结案门槛用 */
+function countDirectChildTasks(nodes: TaskTreeNode[] | undefined): number {
+  return Array.isArray(nodes) ? nodes.length : 0;
+}
+
+function findTaskNodeInTree(nodes: TaskTreeNode[], taskId: string): TaskTreeNode | null {
+  for (const n of nodes) {
+    if (n.id === taskId) return n;
+    const ch = Array.isArray(n.children) ? n.children : [];
+    if (ch.length > 0) {
+      const hit = findTaskNodeInTree(ch, taskId);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 /** 可指派为青蛙的叶子任务（无未完成子任务） */
 function collectAssignableFrogTasksFromTree(nodes: TaskTreeNode[]): TaskTreeNode[] {
   const out: TaskTreeNode[] = [];
@@ -1421,8 +1455,8 @@ function showProjectCompletionDispositionPrompt(
 }
 
 /**
- * 完成条件含小习惯时先门禁；softWaitHabits 用于任务已齐、静等结案习惯（不弹强制归档）。
- * 进度燃料未满只提示、不拦截归档；满进度 ≠ 自动结案。
+ * softWaitHabits：任务刚齐时，若推进进度未满只 toast 并静等（不弹归档）；
+ * 无绑定或已满进度则弹出归档确认。手动结案不受进度燃料拦截。
  */
 async function promptProjectCompletionWithHabitGate(
   project: ProjectRow,
@@ -1432,51 +1466,23 @@ async function promptProjectCompletionWithHabitGate(
     softWaitHabits?: boolean;
   },
 ) {
-  try {
-    const {
-      evaluateProjectCompletionHabits,
-      formatProjectCompletionHabitsBlockMessage,
-      parseCompletionHabitIds,
-    } = await import('@/lib/repositories/projects/project-completion-habits');
-    const hasCompletionHabits = parseCompletionHabitIds(project.extra_data).length > 0;
-    if (hasCompletionHabits) {
-      const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
-      if (!evaluation.ok) {
-        if (options.softWaitHabits) {
-          const names = evaluation.pending.map((p) => p.title).join('、');
-          toast.info(
-            names ? `任务已齐，还差小习惯：${names}` : '任务已齐，完成条件中的小习惯尚未达成',
-          );
-          return;
-        }
-        Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '仍要归档',
-            style: 'destructive',
-            onPress: () => showProjectCompletionDispositionPrompt(project, options),
-          },
-        ]);
+  if (options.softWaitHabits) {
+    try {
+      const progressEval = await evaluateProjectProgressHabits(project.extra_data);
+      const counterEval = evaluateProgressCounters(project.extra_data);
+      const remainMsg = formatCombinedProgressRemainMessage(
+        formatProjectProgressHabitsRemainMessage(progressEval),
+        formatProgressCountersRemainMessage(counterEval),
+      );
+      if (remainMsg) {
+        toast.info(remainMsg);
         return;
       }
+    } catch (progressErr) {
+      console.warn('检查项目推进进度失败', progressErr);
     }
-
-    // 结案条件已齐（或未配）：进度未满时软提示，仍允许走归档弹窗
-    if (options.softWaitHabits) {
-      try {
-        const progressEval = await evaluateProjectProgressHabits(project.extra_data);
-        const remainMsg = formatProjectProgressHabitsRemainMessage(progressEval);
-        if (remainMsg) toast.info(remainMsg);
-      } catch (progressErr) {
-        console.warn('检查项目习惯进度失败', progressErr);
-      }
-    }
-
-    showProjectCompletionDispositionPrompt(project, options);
-  } catch (err) {
-    console.warn('检查项目小习惯完成条件失败', err);
-    showProjectCompletionDispositionPrompt(project, options);
   }
+  showProjectCompletionDispositionPrompt(project, options);
 }
 
 type ProjectListFlatItem =
@@ -1764,6 +1770,9 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
+  const [aiSuggestTodayOpen, setAiSuggestTodayOpen] = React.useState(false);
+  const [aiHabitNudgeOpen, setAiHabitNudgeOpen] = React.useState(false);
+  const [aiTaskFromImageOpen, setAiTaskFromImageOpen] = React.useState(false);
   /** 设计稿 shot 06：行下操作抽屉 / 新建行高亮 */
   const [todoDrawerId, setTodoDrawerId] = React.useState<string | null>(null);
   const [highlightTodoId, setHighlightTodoId] = React.useState<string | null>(null);
@@ -2084,6 +2093,11 @@ export default function TasksScreen() {
   | null>(null);
   const projectsRef = React.useRef(projects);
   projectsRef.current = projects;
+  /** 计数满进度后弹窗结案（定义在后，经 ref 供 mutation 回调） */
+  const offerCompleteProjectAfterCounterFullRef = React.useRef<(projectId: string) => void>(
+    () => {},
+  );
+  const offerCompleteTaskAfterCounterFullRef = React.useRef<(taskId: string) => void>(() => {});
   const projectTaskRefillInflightRef = React.useRef(new Set<string>());
   const projectTaskRefilledRef = React.useRef(new Set<string>());
   const [upgradingStandaloneTodoId, setUpgradingStandaloneTodoId] = React.useState<string | null>(null);
@@ -2118,6 +2132,43 @@ export default function TasksScreen() {
       return [];
     }
   }, [refreshProjectHabitProgress]);
+
+  const applyProjectCounterMutation = React.useCallback(
+    async (
+      projectId: string,
+      mutate: (
+        counters: ReturnType<typeof parseProgressCounters>,
+      ) => {
+        counters: ReturnType<typeof parseProgressCounters>;
+        becameFull: boolean;
+      },
+    ) => {
+      const project = projectsRef.current.find((p) => p.id === projectId);
+      if (!project) return;
+      if (project.status === 'completed' || project.status === 'archived') return;
+      const currentCounters = parseProgressCounters(project.extra_data);
+      const result = mutate(currentCounters);
+      const nextExtra = JSON.stringify(
+        mergeProgressCountersIntoExtraData(project.extra_data, result.counters),
+      );
+      markPageDirty();
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, extra_data: nextExtra } : p)),
+      );
+      try {
+        await updateProject(projectId, { extra_data: nextExtra });
+        if (result.becameFull) {
+          // 满进度弹窗在外层 offerCompleteProjectAfterCounterFull 处理
+          offerCompleteProjectAfterCounterFullRef.current?.(projectId);
+        }
+      } catch (err) {
+        console.warn('更新项目计数进度失败', err);
+        toast.error('计数更新失败，请稍后重试');
+        void loadProjects();
+      }
+    },
+    [loadProjects, markPageDirty],
+  );
 
   const refreshProjectTags = React.useCallback(async (projectRows?: ProjectRow[]) => {
     const ids = (projectRows ?? projectsRef.current).map((p) => p.id);
@@ -2308,7 +2359,9 @@ export default function TasksScreen() {
         forceLocal: opts?.forceLocal,
         forceRefresh: opts?.forceRefresh,
       });
-      setStandaloneTodos(standalone.tasks);
+      // 旧数据：有 due 无 frog → 懒对齐为已指派
+      const aligned = await backfillStandaloneTodosFrogFromDue(standalone.tasks);
+      setStandaloneTodos(aligned);
       return rolled + overdueBumped;
     } catch (err) {
       console.warn('加载任务列表失败', err);
@@ -2801,7 +2854,9 @@ export default function TasksScreen() {
       : catalogProjects;
     setProjects(mergedProjects);
     setProjectCategories(pageData.projectCategories);
-    setStandaloneTodos(pageData.standaloneTodos);
+    const alignedStandalone = await backfillStandaloneTodosFrogFromDue(pageData.standaloneTodos);
+    if (isStale()) return;
+    setStandaloneTodos(alignedStandalone);
     setMatrixWeekTasks(pageData.matrixWeekTasks);
 
     // 与设计稿一致：有任务的项目默认展开树；未知 id 默认 true（否则只见「x / y 任务」不见行）
@@ -3336,6 +3391,62 @@ export default function TasksScreen() {
     []
   );
 
+  const applyTaskCounterMutation = React.useCallback(
+    async (
+      taskId: string,
+      mutate: (
+        counters: ReturnType<typeof parseProgressCounters>,
+      ) => {
+        counters: ReturnType<typeof parseProgressCounters>;
+        becameFull: boolean;
+      },
+    ) => {
+      const current =
+        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current) return;
+      if (isTaskTerminalStatus(current.status) || isTaskShelvedStatus(current.status)) return;
+      const result = mutate(parseProgressCounters(current.extra_data));
+      const nextExtra = JSON.stringify(
+        mergeProgressCountersIntoExtraData(current.extra_data, result.counters),
+      );
+      markPageDirty();
+      patchVisibleTask(taskId, { extra_data: nextExtra });
+      setProjectTaskTreeMap((prev) =>
+        updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtra })),
+      );
+      try {
+        await persistTaskPatchToApi(
+          taskId,
+          { extra_data: nextExtra },
+          current as Record<string, unknown>,
+        );
+        if (result.becameFull) {
+          offerCompleteTaskAfterCounterFullRef.current?.(taskId);
+        }
+      } catch (err) {
+        console.warn('更新任务计数进度失败', err);
+        toast.error('计数更新失败，请稍后重试');
+        patchVisibleTask(taskId, { extra_data: current.extra_data });
+        setProjectTaskTreeMap((prev) =>
+          updateTaskInProjectTree(prev, taskId, (node) => ({
+            ...node,
+            extra_data: current.extra_data,
+          })),
+        );
+      }
+    },
+    [findVisibleTask, markPageDirty, patchVisibleTask, projectTaskTreeMap, updateTaskInProjectTree],
+  );
+
+  const bumpTaskCounterFromList = React.useCallback(
+    (task: TaskRow, counterId: string, delta: number) => {
+      void applyTaskCounterMutation(task.id, (counters) =>
+        bumpProgressCounter(counters, counterId, delta, logicalTodayYmd),
+      );
+    },
+    [applyTaskCounterMutation, logicalTodayYmd],
+  );
+
   const applyHabitBoundTaskSyncResult = React.useCallback(
     (result: CompleteTasksBoundToHabitResult) => {
       const changes = [...result.completedTasks, ...result.cascadeChanges];
@@ -3655,32 +3766,7 @@ export default function TasksScreen() {
         projectSwipeableRefs.current[project.id]?.close();
         return;
       }
-      void (async () => {
-        try {
-          const {
-            evaluateProjectCompletionHabits,
-            formatProjectCompletionHabitsBlockMessage,
-            parseCompletionHabitIds,
-          } = await import('@/lib/repositories/projects/project-completion-habits');
-          if (parseCompletionHabitIds(project.extra_data).length > 0) {
-            const evaluation = await evaluateProjectCompletionHabits(project.extra_data);
-            if (!evaluation.ok) {
-              Alert.alert('完成条件未满足', formatProjectCompletionHabitsBlockMessage(evaluation), [
-                { text: '取消', style: 'cancel', onPress: () => projectSwipeableRefs.current[project.id]?.close() },
-                {
-                  text: '仍要归档',
-                  style: 'destructive',
-                  onPress: () => void moveProjectToInboxById(project.id),
-                },
-              ]);
-              return;
-            }
-          }
-        } catch (err) {
-          console.warn('收纳前检查小习惯完成条件失败', err);
-        }
-        void moveProjectToInboxById(project.id);
-      })();
+      void moveProjectToInboxById(project.id);
     },
     [moveProjectToInboxById, projectTaskTreeMap]
   );
@@ -3882,9 +3968,23 @@ export default function TasksScreen() {
         return;
       }
 
+      const wasDone = isTaskTerminalStatus(current.status);
+      if (!wasDone) {
+        const counterEval = evaluateProgressCounters(current.extra_data, { logicalTodayYmd });
+        const confirmMsg = formatTaskCounterIncompleteConfirmMessage(counterEval);
+        if (confirmMsg) {
+          const confirmed = await new Promise<boolean>((resolve) => {
+            Alert.alert('计数未完成', confirmMsg, [
+              { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+              { text: '仍要完成', style: 'destructive', onPress: () => resolve(true) },
+            ]);
+          });
+          if (!confirmed) return;
+        }
+      }
+
       markPageDirty();
 
-      const wasDone = isTaskTerminalStatus(current.status);
       const nextStatus: TaskRow['status'] = wasDone ? 'todo' : 'done';
       const nextCompletedAt = wasDone ? null : formatTaskAuditDatetimeLocal();
       let nextExtraData = current.extra_data;
@@ -4093,6 +4193,120 @@ export default function TasksScreen() {
       updateTaskInProjectTree,
     ]
   );
+
+  /**
+   * 计数满进度：弹窗询问是否完成。
+   * 仅当「最多 1 个子任务」时可自动完成（含子任务一并勾完）。
+   */
+  const offerCompleteTaskAfterCounterFull = React.useCallback(
+    (taskId: string) => {
+      const current =
+        findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current || isTaskTerminalStatus(current.status)) return;
+
+      let childCount = 0;
+      if (current.project_id) {
+        const tree = projectTaskTreeMap[current.project_id] ?? [];
+        const node = findTaskNodeInTree(tree, taskId);
+        childCount = countDirectChildTasks(node?.children);
+      }
+
+      const name = current.title.trim() || '未命名任务';
+      if (childCount > 1) {
+        Alert.alert(
+          '计数进度已满',
+          `「${name}」计数已满，但仍有 ${childCount} 个子任务。请先处理子任务后再手动完成。`,
+          [{ text: '知道了', style: 'cancel' }],
+        );
+        return;
+      }
+
+      const body =
+        childCount === 1
+          ? `「${name}」计数已满，且仅有 1 个子任务。是否一并完成子任务并标记本任务完成？`
+          : `「${name}」计数已满，是否标记任务完成？`;
+
+      Alert.alert('计数进度已满', body, [
+        { text: '稍后', style: 'cancel' },
+        {
+          text: '完成',
+          style: 'default',
+          onPress: () => {
+            void (async () => {
+              if (childCount === 1 && current.project_id) {
+                const tree = projectTaskTreeMap[current.project_id] ?? [];
+                const node = findTaskNodeInTree(tree, taskId);
+                const child = (node?.children ?? []).find(
+                  (c) => !isTaskTerminalStatus(c.status) && !isTaskShelvedStatus(c.status),
+                );
+                if (child) await toggleTaskDone(child.id);
+              }
+              const still = findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+              if (still && !isTaskTerminalStatus(still.status)) {
+                await toggleTaskDone(taskId);
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [findVisibleTask, projectTaskTreeMap, toggleTaskDone],
+  );
+
+  const offerCompleteProjectAfterCounterFull = React.useCallback(
+    (projectId: string) => {
+      const project = projectsRef.current.find((p) => p.id === projectId);
+      if (!project || project.status === 'completed' || project.status === 'archived') return;
+
+      void (async () => {
+        try {
+          const habitEval = await evaluateProjectProgressHabits(project.extra_data);
+          if (habitEval.ratio != null && !habitEval.full) {
+            const remain = formatProjectProgressHabitsRemainMessage(habitEval);
+            Alert.alert(
+              '计数进度已满',
+              remain || '习惯进度尚未满，暂不能自动结案。',
+              [{ text: '知道了', style: 'cancel' }],
+            );
+            return;
+          }
+        } catch (err) {
+          console.warn('检查习惯进度失败', err);
+        }
+
+        const tree = projectTaskTreeMap[projectId] ?? [];
+        const childCount = countDirectChildTasks(tree);
+        const name = project.name.trim() || '未命名项目';
+
+        if (childCount > 1) {
+          Alert.alert(
+            '计数进度已满',
+            `「${name}」计数已满，但仍有 ${childCount} 个任务。请先处理任务后再手动结案。`,
+            [{ text: '知道了', style: 'cancel' }],
+          );
+          return;
+        }
+
+        const body =
+          childCount === 1
+            ? `「${name}」计数已满，且仅有 1 个任务。是否一并完成该任务并结案归档？`
+            : `「${name}」计数已满，是否结案归档到收集箱？`;
+
+        Alert.alert('计数进度已满', body, [
+          { text: '稍后', style: 'cancel' },
+          {
+            text: '结案',
+            style: 'default',
+            onPress: () => void completeProjectFromList(project),
+          },
+        ]);
+      })();
+    },
+    [completeProjectFromList, projectTaskTreeMap],
+  );
+
+  offerCompleteTaskAfterCounterFullRef.current = offerCompleteTaskAfterCounterFull;
+  offerCompleteProjectAfterCounterFullRef.current = offerCompleteProjectAfterCounterFull;
 
   const completeFrogSessionOnly = React.useCallback(
     async (taskId: string, assignYmd: string = logicalTodayYmd) => {
@@ -5689,16 +5903,43 @@ export default function TasksScreen() {
   }, [logicalTodayYmd, scheduleSubjects]);
 
   const weekStripBlock = (
-    <TasksWeekStrip
-      logicalTodayYmd={logicalTodayYmd}
-      dayBoundary={dayBoundary}
-      selectedYmd={weekStripSelectedYmd}
-      onSelectDay={onWeekStripSelectDay}
-      reloadToken={completionHeatmapReloadToken}
-      todayFrogLabel={todayFrogCount > 0 ? `今日 ${todayFrogCount} 只青蛙` : '今日暂无青蛙'}
-      todayMeta={`待办 ${standaloneTodoOpenCount} · 习惯 ${habitSections.reduce((n, s) => n + s.items.length, 0)}`}
-      syncLabel={null}
-    />
+    <View>
+      <TasksWeekStrip
+        logicalTodayYmd={logicalTodayYmd}
+        dayBoundary={dayBoundary}
+        selectedYmd={weekStripSelectedYmd}
+        onSelectDay={onWeekStripSelectDay}
+        reloadToken={completionHeatmapReloadToken}
+        todayFrogLabel={todayFrogCount > 0 ? `今日 ${todayFrogCount} 只青蛙` : '今日暂无青蛙'}
+        todayMeta={`待办 ${standaloneTodoOpenCount} · 习惯 ${habitSections.reduce((n, s) => n + s.items.length, 0)}`}
+        syncLabel={null}
+      />
+      <Pressable
+        onPress={() => setAiSuggestTodayOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="今天先做什么"
+        style={({ pressed }) => ({
+          marginHorizontal: 14,
+          marginTop: 8,
+          marginBottom: 2,
+          paddingVertical: 10,
+          paddingHorizontal: 12,
+          borderRadius: 12,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.outlineStrong,
+          backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          opacity: pressed ? 0.85 : 1,
+        })}>
+        <MaterialIcons name="auto-awesome" size={16} color={primary} />
+        <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: colors.text }}>
+          今天先做什么
+        </Text>
+        <Text style={{ fontSize: 11, color: outline }}>AI 优先 ›</Text>
+      </Pressable>
+    </View>
   );
 
   const heatmapBlock = (
@@ -5739,12 +5980,24 @@ export default function TasksScreen() {
     scheduleSubjects.tasks,
   ]);
 
+  /** 小习惯今日完成态 → 时间线/全天区强绑定，避免打卡后仍显示待打卡 */
+  const habitDoneTodayById = React.useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const section of habitSections) {
+      for (const item of section.items) {
+        map.set(item.id, isHabitGridItemCompletedToday(item, logicalTodayYmd));
+      }
+    }
+    return map;
+  }, [habitSections, logicalTodayYmd]);
+
   const scheduleSharedProps = {
     logicalTodayYmd,
     sectionCardStyle,
     lockedProjectIds,
     subjects: scheduleSubjects,
     tagWeightBySubjectId: scheduleTagWeightBySubjectId,
+    habitDoneTodayById,
     pendingPlace: pendingSchedulePlace,
     onClearPendingPlace: () => setPendingSchedulePlace(null),
     onChanged: onScheduleChanged,
@@ -6120,6 +6373,25 @@ export default function TasksScreen() {
                   按情境分组 · 点行打卡
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                  <ScalePressable
+                    onPress={() => {
+                      const hasGap = habitSections
+                        .flatMap((s) => s.items)
+                        .some((h) => !isHabitGridItemCompletedToday(h, logicalTodayYmd));
+                      if (!hasGap) {
+                        toast.info('今日习惯都已达标');
+                        return;
+                      }
+                      setAiHabitNudgeOpen(true);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="今日补打建议"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 2, opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <MaterialIcons name="auto-awesome" size={13} color={tf.frog} />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>补打</Text>
+                  </ScalePressable>
                   <ScalePressable
                     onPress={() => router.push('/add-habit')}
                     accessibilityRole="button"
@@ -6541,6 +6813,16 @@ export default function TasksScreen() {
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <ScalePressable
+                    onPress={() => setAiTaskFromImageOpen(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="拍照建待办"
+                    style={({ pressed }) => [
+                      { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
+                    ]}>
+                    <MaterialIcons name="photo-camera" size={14} color={tf.frog} />
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>拍照</Text>
+                  </ScalePressable>
+                  <ScalePressable
                     onPress={openStandaloneTaskComposer}
                     accessibilityRole="button"
                     accessibilityLabel="详细新建待办"
@@ -6816,8 +7098,15 @@ export default function TasksScreen() {
                             if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
                             else if (isTomorrowPreview) todoMetaParts.push('明天');
                             else if (isRepeatWaiting) todoMetaParts.push('未到执行日');
-                            else if (hasFrogAssignment) todoMetaParts.push(frogAssignedBadgeText);
-                            else if (overdue) todoMetaParts.push('已过期');
+                            else if (hasFrogAssignment) {
+                              // 状态标签已是「已入格」；meta 只保留指派日，避免与 due 文案叠词
+                              const upcoming = frogAssignedDates.filter((d) => d >= logicalTodayYmd);
+                              const show = upcoming.length > 0 ? upcoming : frogAssignedDates;
+                              todoMetaParts.push(
+                                show.map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd)).join('、') ||
+                                  frogAssignedBadgeText,
+                              );
+                            } else if (overdue) todoMetaParts.push('已过期');
                             else if (dueDisplayYmd)
                               todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
                             else todoMetaParts.push('今天');
@@ -6973,6 +7262,21 @@ export default function TasksScreen() {
                               ) : null}
                               {todoMetaParts.join(' · ')}
                             </Text>
+                            <ProgressCounterListHint
+                              extraData={t.extra_data}
+                              logicalTodayYmd={logicalTodayYmd}
+                              muted={tf.muted}
+                              primary={tf.frog}
+                              ink={tf.ink2}
+                              surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                              disabled={isDone || isShelved}
+                              onBump={
+                                !isDone && !isShelved
+                                  ? (counterId, delta) =>
+                                      bumpTaskCounterFromList(t, counterId, delta)
+                                  : undefined
+                              }
+                            />
                           </Pressable>
                           <View style={[styles.todoStatTag, { backgroundColor: statusTag.bg, height: 18, paddingHorizontal: 6 }]}>
                             <Text style={[styles.todoStatTagText, { color: statusTag.fg, fontSize: 9 }]}>
@@ -7392,6 +7696,11 @@ export default function TasksScreen() {
                     !!habitProgress &&
                     habitProgress.checks.length > 0 &&
                     (habitProgress.ratio != null || habitProgress.bindings.length > 0);
+                  const counterProgress = evaluateProgressCounters(project.extra_data, {
+                    logicalTodayYmd,
+                  });
+                  const showCounterProgress =
+                    counterProgress.checks.length > 0 && counterProgress.ratio != null;
 
                   const hasAnyTasks = taskTree.length > 0;
                   const isInInbox = isProjectInInboxCategory(project.category_id);
@@ -8004,6 +8313,54 @@ export default function TasksScreen() {
                                 }
                               />
                             ) : null}
+                            {showCounterProgress ? (
+                              <ProgressCounterTrackBlock
+                                evaluation={counterProgress}
+                                muted={tf.muted}
+                                faint={tf.faint}
+                                ink={isCompleted ? doneMuted : tf.ink}
+                                primary={tf.frog}
+                                surface={tf.card}
+                                surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                                trackAccentFrom={isScheduleExpired ? '#E3B39C' : '#7BA3C9'}
+                                trackAccentTo={
+                                  isScheduleExpired ? tf.rose : isCompleted ? tf.sage : '#4F7FA8'
+                                }
+                                interactive={!isCompleted}
+                                disabled={isCompleted}
+                                actions={{
+                                  onBump: (counterId, delta) => {
+                                    void applyProjectCounterMutation(project.id, (counters) =>
+                                      bumpProgressCounter(
+                                        counters,
+                                        counterId,
+                                        delta,
+                                        logicalTodayYmd,
+                                      ),
+                                    );
+                                  },
+                                  onSetCurrent: (counterId, value) => {
+                                    void applyProjectCounterMutation(project.id, (counters) =>
+                                      setProgressCounterCurrent(
+                                        counters,
+                                        counterId,
+                                        value,
+                                        logicalTodayYmd,
+                                      ),
+                                    );
+                                  },
+                                  onUndo: (counterId) => {
+                                    void applyProjectCounterMutation(project.id, (counters) =>
+                                      undoLastProgressCounterChange(
+                                        counters,
+                                        counterId,
+                                        logicalTodayYmd,
+                                      ),
+                                    );
+                                  },
+                                }}
+                              />
+                            ) : null}
                           </View>
                         </View>
                         <View style={styles.projectHeadRight}>
@@ -8102,6 +8459,7 @@ export default function TasksScreen() {
                                 }
                                 beginSchedulePlaceForTask(task, project.name);
                               }}
+                              onBumpCounter={bumpTaskCounterFromList}
                             />
                           )}
                           {isExpanded ? (
@@ -8467,6 +8825,73 @@ export default function TasksScreen() {
           </View>
         </View>
       </Modal>
+
+      <AiSuggestTodayTasksSheet
+        visible={aiSuggestTodayOpen}
+        onClose={() => setAiSuggestTodayOpen(false)}
+        logicalTodayYmd={logicalTodayYmd}
+        dayBoundary={dayBoundary}
+        tasks={(() => {
+          const byId = new Map<string, TaskRow>();
+          for (const t of standaloneTodos) byId.set(t.id, t);
+          for (const t of scheduleSubjects.tasks) byId.set(t.id, t);
+          return [...byId.values()];
+        })()}
+        habits={habitSections.flatMap((s) =>
+          s.items.map((h) => ({
+            id: h.id,
+            name: h.name,
+            kind: h.kind,
+            todayCount: h.todayCount,
+            dailyGoal: h.dailyGoal ?? 1,
+            streak: 0,
+          })),
+        )}
+        tagsByTaskId={(() => {
+          const map = new Map<string, string[]>();
+          standaloneTagsByTaskId.forEach((tags, id) => {
+            map.set(
+              id,
+              tags.map((t) => t.name).filter(Boolean),
+            );
+          });
+          return map;
+        })()}
+        onOpenTask={(id) => router.push({ pathname: '/task/[id]', params: { id } })}
+        onAssignedFrog={() => {
+          markPageDirty();
+          schedulePostMutationSync({ frogs: true, tasks: true, projects: true });
+        }}
+      />
+
+      <AiHabitNudgeSheet
+        visible={aiHabitNudgeOpen}
+        onClose={() => setAiHabitNudgeOpen(false)}
+        todayYmd={logicalTodayYmd}
+        habits={habitSections
+          .flatMap((s) => s.items)
+          .filter((h) => !isHabitGridItemCompletedToday(h, logicalTodayYmd))
+          .map((h) => ({
+            id: h.id,
+            name: h.name,
+            kind: h.kind,
+            today_count: h.todayCount,
+            daily_goal: h.dailyGoal ?? 1,
+            streak: 0,
+          }))}
+        onOpenHabit={(id) =>
+          router.push({ pathname: '/habit-detail', params: { habitId: id } })
+        }
+      />
+
+      <AiTaskFromImageSheet
+        visible={aiTaskFromImageOpen}
+        onClose={() => setAiTaskFromImageOpen(false)}
+        onCreated={() => {
+          markPageDirty();
+          void reloadPage(true);
+        }}
+      />
 
     </SafeAreaView>
   );

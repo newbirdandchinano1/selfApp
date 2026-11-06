@@ -38,6 +38,11 @@ import {
   type FinanceScheduledCandidate,
   type FinanceGlanceWidgetProps,
 } from '@/lib/widgets/finance-glance';
+import { isExpoWidgetsNativeAvailable } from '@/lib/widgets/expo-widgets-compat';
+import {
+  ensureHomeWidgetsRegistered,
+  pushWidgetSnapshotVerified,
+} from '@/lib/widgets/widget-bridge';
 import {
   getWidgetsSettings,
   shouldPushFinanceGlanceWidget,
@@ -226,19 +231,15 @@ async function syncFinanceGlanceWidgetNow(reason: string): Promise<void> {
   if (Platform.OS !== 'ios') return;
   const { whenHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
   await whenHomeWidgetsDbReady();
+  await ensureHomeWidgetsRegistered();
   const settings = await getWidgetsSettings();
   const FinanceGlanceWidget = (await import('@/widgets/FinanceGlanceWidget')).default;
 
   if (!shouldPushFinanceGlanceWidget(settings)) {
     try {
-      FinanceGlanceWidget.updateSnapshot(pausedProps());
-      try {
-        FinanceGlanceWidget.reload();
-      } catch {
-        /* ignore */
-      }
+      await pushWidgetSnapshotVerified(FinanceGlanceWidget as never, pausedProps() as never);
     } catch (e) {
-      if (__DEV__) console.warn('[widgets] finance pause failed', e);
+      console.warn('[widgets] finance pause failed', e);
     }
     return;
   }
@@ -259,17 +260,12 @@ async function syncFinanceGlanceWidgetNow(reason: string): Promise<void> {
     props.allowLockScreen,
   ].join('|');
   if (fp === lastFingerprint && reason === 'debounce') return;
-  lastFingerprint = fp;
 
   try {
-    FinanceGlanceWidget.updateSnapshot(props);
-    try {
-      FinanceGlanceWidget.reload();
-    } catch {
-      /* ignore */
-    }
+    await pushWidgetSnapshotVerified(FinanceGlanceWidget as never, props as never);
+    lastFingerprint = fp;
   } catch (e) {
-    if (__DEV__) console.warn('[widgets] finance snapshot failed', reason, e);
+    console.warn('[widgets] finance snapshot failed', reason, e);
   }
 
   if (__DEV__) {
@@ -282,6 +278,7 @@ async function syncFinanceGlanceWidgetNow(reason: string): Promise<void> {
 
 export function scheduleFinanceGlanceWidgetSync(reason: string): void {
   if (Platform.OS !== 'ios') return;
+  if (!isExpoWidgetsNativeAvailable()) return;
   const task = syncChain.then(() => syncFinanceGlanceWidgetNow(reason));
   syncChain = task.catch((e) => {
     if (__DEV__) console.warn('[widgets] finance sync chain error', reason, e);
