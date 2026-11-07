@@ -64,6 +64,25 @@ export async function confirmAssistantCard(
         sentence: c.summary || c.title,
       });
     },
+    openFinanceTransferPreview: draft => {
+      const amount =
+        typeof draft.amount === 'number' && Number.isFinite(draft.amount) ? draft.amount : undefined;
+      const fee =
+        typeof draft.fee_amount === 'number' && Number.isFinite(draft.fee_amount)
+          ? draft.fee_amount
+          : undefined;
+      openFinanceSheet({
+        kind: 'transfer',
+        fromAccountId: null,
+        toAccountId: null,
+        amount,
+        feeAmount: fee,
+        name: typeof draft.name === 'string' ? draft.name : undefined,
+        fromAccountHint:
+          typeof draft.from_account_hint === 'string' ? draft.from_account_hint : undefined,
+        toAccountHint: typeof draft.to_account_hint === 'string' ? draft.to_account_hint : undefined,
+      });
+    },
     openFoodPreview: draft => {
       openFoodIntakeSheet({ seedAiDraft: asFoodDraft(draft) });
     },

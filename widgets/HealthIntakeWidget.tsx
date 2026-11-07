@@ -12,7 +12,7 @@ import {
 import { createWidget, type WidgetEnvironment } from 'expo-widgets';
 
 function linkOf(props: { deepLink: string }) {
-  return widgetURL(props.deepLink || 'zheng://assistant/brief?domain=health');
+  return widgetURL(props.deepLink || 'zheng://health');
 }
 
 export type HealthIntakeWidgetProps = {
@@ -42,7 +42,7 @@ const INITIAL: HealthIntakeWidgetProps = {
   ring2ValueLine: '',
   hasItems: 0,
   allDone: 0,
-  deepLink: 'zheng://assistant/brief?domain=health',
+  deepLink: 'zheng://health',
 };
 
 const HealthIntakeWidgetView = (props: HealthIntakeWidgetProps, environment: WidgetEnvironment) => {

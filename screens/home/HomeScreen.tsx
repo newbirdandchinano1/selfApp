@@ -14,7 +14,6 @@ import {
 import { HealthIntakeDeleteConfirmSheet } from '@/components/health/health-intake-delete-confirm-sheet';
 import { HealthMetricPointsSettingsSheet } from '@/components/health/health-metric-points-settings-sheet';
 import { HealthPulseDot, HealthShimmerOverlay } from '@/components/health/health-motion';
-import { DailyBriefPanel } from '@/components/assistant/daily-brief-panel';
 import { DailyWrapupSheet } from '@/components/health/daily-wrapup-sheet';
 import { SuggestNextMealSheet } from '@/components/health/suggest-next-meal-sheet';
 import {
@@ -3121,9 +3120,6 @@ export default function HealthScreen() {
         <View style={styles.healthBodyStack}>
           {!skeletonPending ? (
               <View style={styles.sectionStack}>
-        <View style={styles.sectionPanel}>
-          <DailyBriefPanel />
-        </View>
         <View style={styles.sectionPanel}>
         <View style={styles.sectionHeader}>
           <View>

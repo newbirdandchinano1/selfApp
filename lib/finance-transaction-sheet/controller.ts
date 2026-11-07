@@ -65,6 +65,12 @@ export type FinanceSheetLaunchIntent =
       fromAccountId: string | null;
       /** 入账/还款账户；从负债详情发起还款时传入 */
       toAccountId?: string | null;
+      /** 助手转账草稿预填 */
+      amount?: number;
+      feeAmount?: number;
+      name?: string;
+      fromAccountHint?: string;
+      toAccountHint?: string;
     }
   /** 剪贴板截图（如 zheng://screenshot，旧流程）：财务页消费后自动 AI 识别并落账 */
   | {
@@ -433,9 +439,25 @@ export function useFinanceTransactionSheetController({
         });
         return;
       }
+      let fromId = intent.fromAccountId;
+      let toId = intent.toAccountId ?? null;
+      const fromHint = (intent.fromAccountHint ?? '').trim();
+      const toHint = (intent.toAccountHint ?? '').trim();
+      if (fromHint) {
+        const matched = list.find(
+          (a) => a.name === fromHint || a.name.includes(fromHint) || fromHint.includes(a.name),
+        );
+        if (matched) fromId = matched.id;
+      }
+      if (toHint) {
+        const matched = list.find(
+          (a) => a.name === toHint || a.name.includes(toHint) || toHint.includes(a.name),
+        );
+        if (matched) toId = matched.id;
+      }
       const resolved = resolveTransferLaunchAccounts(list, {
-        fromAccountId: intent.fromAccountId,
-        toAccountId: intent.toAccountId,
+        fromAccountId: fromId,
+        toAccountId: toId,
       });
       if (!resolved) {
         toast.warn('至少需要两个账户才能进行转账或还款。');
@@ -444,6 +466,14 @@ export function useFinanceTransactionSheetController({
       resetSheetForm('transfer');
       setTransferFromAccountId(resolved.fromId);
       setTransferToAccountId(resolved.toId);
+      if (typeof intent.amount === 'number' && Number.isFinite(intent.amount) && intent.amount > 0) {
+        setSheetAmount(String(intent.amount));
+      }
+      if (typeof intent.feeAmount === 'number' && Number.isFinite(intent.feeAmount) && intent.feeAmount > 0) {
+        setTransferFeeAmount(String(intent.feeAmount));
+      }
+      const transferName = (intent.name ?? '').trim();
+      if (transferName) setSheetNote(transferName);
     },
     [
       expenseCategories,

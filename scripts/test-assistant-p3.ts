@@ -13,6 +13,7 @@ import {
   openGlobalAssistant,
   peekGlobalAssistantPending,
   subscribeGlobalAssistant,
+  takeAssistantLaunchPayload,
 } from '../lib/assistant/host-controller';
 
 let passed = 0;
@@ -38,10 +39,13 @@ check('zheng://assistant/clipboard → clipboard', () => {
   assert.equal(parseAssistantDeepLink(ASSISTANT_DEEP_LINKS.clipboard).kind, 'assistant_clipboard');
 });
 
-check('zheng://assistant/brief?domain=health → brief', () => {
-  const p = parseAssistantDeepLink(ASSISTANT_DEEP_LINKS.health);
+check('zheng://assistant/brief → brief', () => {
+  const p = parseAssistantDeepLink(ASSISTANT_DEEP_LINKS.brief);
   assert.equal(p.kind, 'assistant_brief');
-  assert.equal(p.domain, 'health');
+});
+
+check('zheng://health → tab_health', () => {
+  assert.equal(parseAssistantDeepLink(ASSISTANT_DEEP_LINKS.health).kind, 'tab_health');
 });
 
 check('zheng://finance → tab_finance', () => {
@@ -88,6 +92,15 @@ check('host-controller：有订阅时立即回调', () => {
   openGlobalAssistant({ openOnly: true });
   assert.equal(n, 1);
   unsub();
+});
+
+check('host-controller：launchPayload 可供聊天页取走', () => {
+  takeAssistantLaunchPayload();
+  openGlobalAssistant({ text: '记一笔咖啡', autoSubmit: true });
+  const payload = takeAssistantLaunchPayload();
+  assert.equal(payload?.text, '记一笔咖啡');
+  assert.equal(payload?.autoSubmit, true);
+  assert.equal(takeAssistantLaunchPayload(), null);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

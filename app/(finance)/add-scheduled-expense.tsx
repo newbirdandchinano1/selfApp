@@ -175,9 +175,29 @@ function Stepper({
 export default function AddScheduledExpenseScreen() {
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string; template?: string }>();
+  const params = useLocalSearchParams<{
+    id?: string;
+    template?: string;
+    name?: string;
+    amount?: string;
+    repeat?: string;
+    days?: string;
+    hour?: string;
+    minute?: string;
+    account_hint?: string;
+    include_in_budget?: string;
+  }>();
   const editId = pickParam(params.id)?.trim() ?? '';
   const templateKey = pickParam(params.template)?.trim() ?? '';
+  const draftName = pickParam(params.name)?.trim() ?? '';
+  const draftAmount = pickParam(params.amount)?.trim() ?? '';
+  const draftRepeat = pickParam(params.repeat)?.trim().toLowerCase() ?? '';
+  const draftDays = pickParam(params.days)?.trim() ?? '';
+  const draftHour = pickParam(params.hour)?.trim() ?? '';
+  const draftMinute = pickParam(params.minute)?.trim() ?? '';
+  const draftAccountHint = pickParam(params.account_hint)?.trim() ?? '';
+  const draftIncludeInBudget = pickParam(params.include_in_budget)?.trim();
+  const hasAssistantDraft = Boolean(draftName || draftAmount);
   const isEditMode = editId.length > 0;
 
   const insets = useSafeAreaInsets();
@@ -245,6 +265,43 @@ export default function AddScheduledExpenseScreen() {
           setTimesPerDay(row.timesPerDay);
           setIncludeInBudget(row.includeInBudget);
           setEnabled(row.enabled);
+        } else if (hasAssistantDraft) {
+          if (draftName) setName(draftName.slice(0, 40));
+          if (draftAmount) {
+            const n = Number(draftAmount);
+            if (Number.isFinite(n) && n > 0) setAmountText(String(n));
+          }
+          const repeat: ScheduledExpenseRepeat =
+            draftRepeat === 'weekly' || draftRepeat === 'daily' || draftRepeat === 'monthly'
+              ? draftRepeat
+              : 'monthly';
+          setRepeatOption(repeat);
+          const parsedDays = draftDays
+            .split(',')
+            .map((x) => parseInt(x.trim(), 10))
+            .filter((n) => Number.isFinite(n));
+          if (repeat === 'weekly') {
+            const days = parsedDays.filter((d) => d >= 1 && d <= 7);
+            setWeeklyDays(days.length ? days : [1]);
+          } else if (repeat === 'monthly') {
+            const days = parsedDays.filter((d) => d >= 1 && d <= 31);
+            setMonthlyDays(days.length ? days : [1]);
+          }
+          const t = defaultScheduleTime();
+          const h = parseInt(draftHour, 10);
+          const m = parseInt(draftMinute, 10);
+          t.setHours(Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 9, Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0, 0, 0);
+          setScheduleTime(t);
+          if (draftIncludeInBudget === '0' || draftIncludeInBudget === 'false') {
+            setIncludeInBudget(false);
+          }
+          if (draftAccountHint && accts.length > 0) {
+            const matched = resolveFinanceAccountForAutoLedger(
+              accts.map((a) => ({ id: a.id, name: a.name, account_no: a.account_no })),
+              { accountName: draftAccountHint },
+            );
+            if (matched) setAccountId(matched.id);
+          }
         } else if (templateKey) {
           const tpl = applyTemplate(templateKey);
           setName(tpl.name);
@@ -262,7 +319,22 @@ export default function AddScheduledExpenseScreen() {
         setLoading(false);
       }
     });
-  }, [editId, isEditMode, router, templateKey, wrapLoad]);
+  }, [
+    draftAccountHint,
+    draftAmount,
+    draftDays,
+    draftHour,
+    draftIncludeInBudget,
+    draftMinute,
+    draftName,
+    draftRepeat,
+    editId,
+    hasAssistantDraft,
+    isEditMode,
+    router,
+    templateKey,
+    wrapLoad,
+  ]);
 
   const selectedAccount = accounts.find((a) => a.id === accountId) ?? null;
   const motionOn = foldAnimate && !loading;

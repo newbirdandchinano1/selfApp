@@ -42,7 +42,13 @@
     "test:assistant-clarify-p0": "npx --yes tsx scripts/test-assistant-clarify-p0.ts",
     "test:assistant-turn-p1": "npx --yes tsx scripts/test-assistant-turn-p1.ts",
     "test:assistant-compose-p2": "npx --yes tsx scripts/test-assistant-compose-p2.ts",
-    "test:assistant-p3": "npx --yes tsx scripts/test-assistant-p3.ts"
+    "test:assistant-p3": "npx --yes tsx scripts/test-assistant-p3.ts",
+    "test:assistant-p5": "npx --yes tsx scripts/test-assistant-p5.ts",
+    "test:assistant-s9.2": "npx --yes tsx scripts/test-assistant-s9.2-chat-commit.ts",
+    "test:assistant-s9.3": "npx --yes tsx scripts/test-assistant-s9.3-w1-commit.ts && npx --yes tsx scripts/test-assistant-s9.3-w2-commit.ts && npx --yes tsx scripts/test-assistant-s9.3-w3-commit.ts",
+    "test:assistant-s9.6": "npx --yes tsx scripts/test-assistant-s9.6-multiturn.ts",
+    "test:assistant-s9.7": "npx --yes tsx scripts/test-assistant-s9.7-confirm-fields.ts",
+    "test:assistant-s9.7": "npx --yes tsx scripts/test-assistant-s9.7-confirm-fields.ts"
   },
   "dependencies": {
     "@expo-google-fonts/noto-sans-sc": "^0.4.4",

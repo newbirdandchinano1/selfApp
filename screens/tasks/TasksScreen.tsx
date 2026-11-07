@@ -10,6 +10,7 @@ import {
   useTaskStatusToneColors,
   resolveTaskStatusTone,
 } from '@/components/tasks/task-status-tag';
+import { DailyBriefPanel } from '@/components/assistant/daily-brief-panel';
 import { AiHabitNudgeSheet } from '@/components/tasks/ai-habit-nudge-sheet';
 import { AiSuggestTodayTasksSheet } from '@/components/tasks/ai-suggest-today-sheet';
 import { AiTaskFromImageSheet } from '@/components/tasks/ai-task-from-image-sheet';
@@ -1722,6 +1723,7 @@ export default function TasksScreen() {
     React.useState<TaskListFilterState>(EMPTY_TASK_LIST_FILTER);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
+  const [dailyBriefRefreshToken, setDailyBriefRefreshToken] = React.useState(0);
   /** 周条选中日 → 驱动日程跳转到该日课表 */
   const [weekStripSelectedYmd, setWeekStripSelectedYmd] = React.useState<string | null>(null);
   const [scheduleJumpYmd, setScheduleJumpYmd] = React.useState<string | null>(null);
@@ -2980,6 +2982,7 @@ export default function TasksScreen() {
       }, forceRefresh);
       setInitialTasksLoadPending(false);
       setCompletionHeatmapReloadToken((n) => n + 1);
+      setDailyBriefRefreshToken((n) => n + 1);
     } catch {
       setInitialTasksLoadPending(false);
     }
@@ -6034,9 +6037,28 @@ export default function TasksScreen() {
     },
   } as const;
 
-  /** 两栏布局共用的左列：周条 + 日程表 + 完成热力（宽屏放左列，窄屏留在列表头部） */
+  const dailyBriefBlock = (
+    <View style={stackedSectionStyle}>
+      <View
+        style={[
+          styles.sectionCard,
+          styles.sectionCardQuiet,
+          {
+            backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.92)',
+            borderColor: isDark ? tf.line : 'rgba(216,205,187,0.75)',
+            paddingHorizontal: 14,
+            paddingVertical: 12,
+          },
+        ]}>
+        <DailyBriefPanel refreshToken={dailyBriefRefreshToken} />
+      </View>
+    </View>
+  );
+
+  /** 两栏布局共用的左列：简报 + 周条 + 日程表 + 完成热力（宽屏放左列，窄屏留在列表头部） */
   const schedulePane = (
     <>
+      {dailyBriefBlock}
       {weekStripBlock}
       <WeeklyFrogSchedule {...scheduleSharedProps} />
       {heatmapBlock}
@@ -6259,6 +6281,7 @@ export default function TasksScreen() {
           <>
           {isWideTwoPane ? null : (
           <>
+          {dailyBriefBlock}
           {weekStripBlock}
           <WeeklyFrogSchedule {...scheduleSharedProps} />
           {heatmapBlock}

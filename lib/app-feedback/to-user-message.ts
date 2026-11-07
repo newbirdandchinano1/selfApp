@@ -53,6 +53,10 @@ export function toUserMessage(err: unknown, errorFallback = '操作失败，请�
   if (err instanceof Error && err.name === 'ApiUnauthorizedError') {
     return '登录已失效，请重新登录';
   }
+  // 全局助手走 X-API-Key，与业务登录 Token 区分文案
+  if (/助手服务鉴权失败|Agent API Key|助手.*(鉴权|API Key)/i.test(raw)) {
+    return '助手服务鉴权失败，请检查 Agent API Key';
+  }
   if (status === 401 || /unauthorized|token.*expir|未登录|登录已失效|token 已过期/i.test(raw)) {
     return '登录已失效，请重新登录';
   }

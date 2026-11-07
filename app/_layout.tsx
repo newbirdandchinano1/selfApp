@@ -581,6 +581,7 @@ function RootLayoutInner() {
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />
             <Stack.Screen name="auto-ledger" />
+            <Stack.Screen name="assistant" options={{ headerShown: false, animation: 'slide_from_right' }} />
           </Stack>
             </ApiLoadingShell>
             </AppErrorBoundary>

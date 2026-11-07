@@ -207,7 +207,7 @@ export function healthIntakeGlanceToWidgetProps(
   glance: HealthIntakeGlance,
   opts?: { deepLink?: string },
 ): HealthIntakeWidgetProps {
-  const deepLink = opts?.deepLink ?? 'zheng://assistant/brief?domain=health';
+  const deepLink = opts?.deepLink ?? 'zheng://health';
   const r1 = glance.rings[0];
   const r2 = glance.rings[1];
 

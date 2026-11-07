@@ -293,19 +293,28 @@ function resolveSubject(
  */
 type ScheduleBlockKind = 'frog' | 'habit' | 'todo' | 'proj';
 
+/** Alert / 轻量写库：短延后即可 */
+const UI_SETTLE_MS = 48;
+/** 关一个 RN Modal 再开另一个：原生卸层需要空窗，过短会触摸卡死（与菜谱 AI 入口同口径） */
+const MODAL_HANDOFF_MS = 320;
+
 /** Alert / Modal 关闭后再改状态，避免 Android 触摸层与 LayoutAnimation 抢焦点卡死 */
-function runAfterUiSettles(action: () => void) {
+function runAfterUiSettles(action: () => void, delayMs = UI_SETTLE_MS) {
   const run = () => {
     requestAnimationFrame(() => {
       action();
     });
   };
+  if (delayMs > UI_SETTLE_MS) {
+    setTimeout(run, delayMs);
+    return;
+  }
   // RN 个别环境无 requestIdleCallback；有则加 timeout，避免闲时回调迟迟不来像「点了没反应」
   if (typeof requestIdleCallback === 'function') {
     requestIdleCallback(run, { timeout: 400 });
     return;
   }
-  setTimeout(run, 48);
+  setTimeout(run, delayMs);
 }
 
 function dayEditable(ymd: string, logicalTodayYmd: string): boolean {
@@ -1054,82 +1063,92 @@ export function WeeklyFrogSchedule({
     const daySlots = getSlotCount(view.axis);
     const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
     const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
-    if (placeTarget.rematerializePlacementId) {
-      if (useMinutePath) {
-        await rematerializeOrphanedPlacementAtMinutes({
-          placementId: placeTarget.rematerializePlacementId,
-          assignYmd,
-          startMinutes: result.startMinutes ?? 0,
-          endMinutes: result.endMinutes ?? 0,
-          allDay: result.allDay,
-          logicalTodayYmd,
-        });
-      } else {
-        await rematerializeOrphanedPlacement({
-          placementId: placeTarget.rematerializePlacementId,
-          assignYmd,
-          startSlotIndex,
-          spanSlots,
-          logicalTodayYmd,
-        });
+    try {
+      if (placeTarget.rematerializePlacementId) {
+        if (useMinutePath) {
+          await rematerializeOrphanedPlacementAtMinutes({
+            placementId: placeTarget.rematerializePlacementId,
+            assignYmd,
+            startMinutes: result.startMinutes ?? 0,
+            endMinutes: result.endMinutes ?? 0,
+            allDay: result.allDay,
+            logicalTodayYmd,
+          });
+        } else {
+          await rematerializeOrphanedPlacement({
+            placementId: placeTarget.rematerializePlacementId,
+            assignYmd,
+            startSlotIndex,
+            spanSlots,
+            logicalTodayYmd,
+          });
+        }
+        setPlaceTarget(null);
+        setReassignPending(null);
+        setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+        await reload([assignYmd], { silent: true });
+        onChanged?.();
+        return;
       }
+
+      const row = useMinutePath
+        ? await placeFrogOnScheduleAt({
+            weekStartYmd,
+            weekday,
+            startMinutes: result.startMinutes ?? 0,
+            endMinutes: result.endMinutes ?? 0,
+            allDay: result.allDay,
+            subjectKind: result.kind,
+            subjectId: result.id,
+            logicalTodayYmd,
+          })
+        : await placeFrogOnSchedule({
+            weekStartYmd,
+            weekday,
+            startSlotIndex,
+            spanSlots,
+            subjectKind: result.kind,
+            subjectId: result.id,
+            logicalTodayYmd,
+          });
+      setView((prev) =>
+        prev
+          ? {
+              ...prev,
+              placements: [...prev.placements.filter((p) => p.id !== row.id), row],
+              orphanedCount: prev.placements.filter((p) => p.orphaned || p.startSlotIndex == null)
+                .length,
+            }
+          : prev,
+      );
       setPlaceTarget(null);
-      setReassignPending(null);
+      onClearPendingPlace?.();
       setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
       await reload([assignYmd], { silent: true });
-      onChanged?.();
-      return;
+      onChanged?.({
+        kind: result.kind,
+        id: result.id,
+        assignYmd,
+        action: 'assign',
+      });
+    } catch (err) {
+      toast.error(toUserMessage(err, '改派失败，请稍后重试'));
     }
-
-    const row = useMinutePath
-      ? await placeFrogOnScheduleAt({
-          weekStartYmd,
-          weekday,
-          startMinutes: result.startMinutes ?? 0,
-          endMinutes: result.endMinutes ?? 0,
-          allDay: result.allDay,
-          subjectKind: result.kind,
-          subjectId: result.id,
-          logicalTodayYmd,
-        })
-      : await placeFrogOnSchedule({
-          weekStartYmd,
-          weekday,
-          startSlotIndex,
-          spanSlots,
-          subjectKind: result.kind,
-          subjectId: result.id,
-          logicalTodayYmd,
-        });
-    setView((prev) =>
-      prev
-        ? {
-            ...prev,
-            placements: [...prev.placements.filter((p) => p.id !== row.id), row],
-            orphanedCount: prev.placements.filter((p) => p.orphaned || p.startSlotIndex == null)
-              .length,
-          }
-        : prev,
-    );
-    setPlaceTarget(null);
-    onClearPendingPlace?.();
-    setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
-    await reload([assignYmd], { silent: true });
-    onChanged?.({
-      kind: result.kind,
-      id: result.id,
-      assignYmd,
-      action: 'assign',
-    });
   };
 
   const startReassignTime = (placement: SchedulePlacementRow, subject: ScheduleSubjectInfo) => {
+    // 先关详情 / 孤儿列表 Modal，再延后开入格 Sheet（Modal→Modal 需更长空窗）
     setDetail(null);
     setOrphanListOpen(false);
-    goZoom('day');
-    const assignYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
-    setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
-    setReassignPending({ placement, subject });
+    setPlaceTarget(null);
+    // 允许同一占用再次改派时强制重开 Sheet（否则 autoOpened key 会短路）
+    autoOpenedPendingKeyRef.current = null;
+    runAfterUiSettles(() => {
+      goZoom('day');
+      const assignYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+      setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+      setReassignPending({ placement, subject });
+    }, MODAL_HANDOFF_MS);
   };
 
   const openVirtualHabitDetail = React.useCallback((habit: VirtualHabitPlacement) => {

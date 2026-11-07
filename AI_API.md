@@ -1,9 +1,9 @@
 # selfApp AI 接口说明（App 端）
 
-> 版本：2.3.0  
+> 版本：2.4.0  
 > 更新日期：2026-11-07  
 > 适用：React Native / Expo 客户端  
-> 服务端：`selfAPP_AIAgent`（`/api/v1/ai/*`）；备忘落库点评仍经业务后端代调 Agent
+> 服务端：`selfAPP_AIAgent`（`/api/v1/ai/*` + `/api/v1/agent/chat*`）；备忘落库点评仍经业务后端代调 Agent
 
 ---
 
@@ -136,17 +136,23 @@ App（JWT）──► self_app_back /api/app/memos/:id/ai-review
 | 54 | POST | `/api/v1/ai/profile/completion-log-comment` | 完成履历短评（可复制/存备忘） |
 | 55 | POST | `/api/v1/ai/profile/notification-copy` | 通知文案批量预生成（≤10，写缓存） |
 | 56 | POST | `/api/v1/ai/life-road/period-review` | 季末 / 年终道路回顾（只读） |
-| 57 | POST | `/api/v1/ai/assistant/route` | 全局助手单轮万能路由 → ActionCard[] |
+| 57 | POST | `/api/v1/ai/assistant/route` | 全局助手单轮万能路由 → ActionCard[]（过渡保留） |
 | 58 | POST | `/api/v1/ai/assistant/daily-brief` | 今日简报：规则 facts + LLM 短文案 ≤3 卡 |
 | 59 | POST | `/api/v1/ai/assistant/turn` | 多轮改草稿 / 澄清追问 → ActionCard[] |
 | 60 | POST | `/api/v1/ai/assistant/compose` | 跨域编排：goal + 白名单域 → ≤5 张 ActionCard |
+| 61 | POST | `/api/v1/agent/chat` | **聊天页主路径**：通用对话 + Tool loop（非 envelope） |
+| 62 | POST | `/api/v1/agent/chat/stream` | 同上，SSE：`session` / `delta` / `tool_*` / `card` / `error` / `done` |
+| 63 | GET | `/api/v1/agent/capabilities` | 能力注册表（只读） |
 
 > 上表以外的 AI 场景（项目点评、缺点、目标墙、技能等）**当前 Agent 未提供路由**，本文不再描述。  
 > 心愿兑换 / 扣分**永不**经 Agent；资格仍用本地评估 + 业务 `POST /wish-board/redeem`。  
 > 衣橱写库仍走 App → `self_app_back` `/api/app/wardrobe/*`；抠图仍为本地 Vision，不经 Agent。  
 > 任务写库仍走 App → 本地 SQLite → `self_app_back` `/api/app/pages/tasks*`；青蛙指派仍走 `frog-assign`。  
 > 我的页写库仍走 App → `users` / `life_*` 确认后脏同步；Agent 不写库、不改积分。  
-> 全局助手写库仍须用户确认后走各域现有预览 / `frog-assign` / `review_quick_create`；`ref_ids` 仅允许来自请求 `brief_context`。
+> **全局助手写路径（S9 已完成）**：主路径为聊天 ConfirmCard → 用户「确认保存」→ App `commit_*`（现有 repository + sync）；`preview_*` / Sheet 仅缺参或富编辑降级；另保留 `frog-assign` / `review_quick_create`。`ref_ids` 仅允许来自请求 `brief_context`。  
+> **S9.2**：`commit_*` → `WriteOperationStore` + `ChatCommitExecutor`；ConfirmCard `draft_fields` / 确认·取消；结果气泡 + `metadata.execution_results`。`client_capabilities` = 基线 `preview_*` + **已注册** `commit_*`。  
+> **S9.3～S9.6**：全域 `commit_*` handler；ReplyValidator；Intent Gate；多轮 `operation_id` / 超时核实 / `sync_status` 诚实文案。  
+> **S9.7**：分域字段模板（`confirm-card-fields.ts`）；知识库写明「助手可确认保存」与红线例外；对照表非红线项关闭。Agent 永不直连业务库、不静默写库；兑奖/删库等红线不可破。
 
 ---
 
@@ -1503,7 +1509,73 @@ App：`analyzeLifeRoadPeriodReview`；UI：道路页「季末回顾」。
 
 ### 4.x 全局助手（L2）
 
-**`POST .../assistant/route`**（P0-2）
+**`POST /api/v1/agent/chat`**（阶段四主路径）
+
+鉴权：`X-API-Key`。响应**不是** `{code,message,data}` envelope，而是：
+
+```json
+{
+  "reply": "……",
+  "session_id": "uuid",
+  "cards": [
+    {
+      "id": "c_…",
+      "domain": "finance",
+      "intent": "create",
+      "title": "记一笔支出",
+      "needs_confirm": true,
+      "confirm_action": "preview_finance_txn",
+      "draft": { "amount": 25, "name": "午餐" }
+    }
+  ],
+  "tool_traces": [
+    { "id": "call_…", "name": "finance.draft_expense", "ok": true, "summary": "确认卡：记一笔支出", "arguments": {} }
+  ],
+  "metadata": { "mode": "zhipu", "model": "glm-4-flash", "ok": true }
+}
+```
+
+请求要点：
+
+```json
+{
+  "session_id": "可选",
+  "message": "用户文本",
+  "history": [{ "role": "user|assistant|tool", "content": "…" }],
+  "brief_context": {},
+  "client_capabilities": ["open_module", "preview_finance_txn", "preview_finance_transfer", "preview_finance_scheduled", "preview_finance_cash_flow", "preview_finance_budget", "preview_task", "preview_habit", "preview_food_intake", "preview_memo", "preview_recipe", "preview_wardrobe_item", "preview_wish", "preview_profile"],
+  "locale": "zh-CN",
+  "image_base64": "可选本轮附图（纯 base64 或 data URI；识图 Tool 用，不落盘）",
+  "image_mime_type": "image/jpeg",
+  "metadata": {
+    "user_access_token": "<App 业务 JWT，只读 Tool 转发>",
+    "enabled_domains": ["finance", "task"],
+    "intent_gate": true,
+    "intent": "可选强制：chat|app_query|app_draft|navigate|help|compound（亦支持 query/draft 简写）",
+    "intent_domains": ["可选补充域软提示"],
+    "tool_choice": "可选强制：auto|required|none",
+    "pending_operations": [{ "operation_id": "op_…", "domain": "finance", "confirm_action": "commit_finance_txn", "title": "午饭" }]
+  }
+}
+```
+
+模型主导 Tool 选择；普通闲聊零业务 Tool。  
+**S8 裁剪**：`metadata.enabled_domains` 非空时只暴露对应域 + 横切（`kb`/`app`/`memory`）；`client_capabilities` 可剔除客户端不支持确认动作的 draft。  
+**S9.5 Intent Gate**（默认开）：进模型前规则分类意图 → 收窄域/`allowed_risks`（闲聊仅横切；查询不暴露 draft；高置信 query/draft 首轮 `tool_choice=required`）；**不**映射到具体 Capability。关闭：`intent_gate=false`/`off` 或环境变量 `AGENT_INTENT_GATE=false`。  
+只读：`kb.*`、`memory.recall`、`finance.summary` / `month_stats` / `anomaly_hints` / `insights`、`task.*` 只读、`food.*` 只读、`memo.list_recent`、`review.status`、`recipe.suggest_*`、`wardrobe.summary`、`wish.summary`、`profile.completeness`、`life_road.summary` 等（业务数字后端优先 / brief 降级；Tool 宜带 `source`）。  
+草稿（ActionCard，**不写库**）：各域 `draft_*` / `budget_suggest` / `persona_draft` / `plan_from_direction` 等；`memory.remember`（偏好，非业务库）。  
+识图草稿（S5）：财务/任务/饮食/备忘/菜谱/衣橱/心愿/道路 `*_from_image`（缺图追问）。  
+导航：`app.open_module`（只发 `module_id`）。  
+**禁止**：心愿兑奖/扣分、删库、Agent 直连业务库、无回执宣称已保存。  
+业务只读快照：`GET /api/app/agent/snapshot/{finance|tasks|health|memo|review|recipe|wardrobe|wish|profile|life_road}`。  
+`GET /api/v1/agent/capabilities?domains=finance`：能力目录（可按域过滤）。  
+App：`runAgentChat` / `runAgentChatStream`；确认：`preview_*` → `confirmAssistantCard`（Sheet/路由）；`commit_*` → `confirmChatCommit`（状态机 + Executor）。  
+**S9.2**：`buildClientCapabilities()` 随 handler 注册递增上报 `commit_*`；写操作状态机 / 结果气泡 / 幂等 journal 已落地（`npm run test:assistant-s9.2`）。  
+**S9.3～S9.7**：各域真实 repository handler + draft 改 `commit_*`；ReplyValidator / Intent Gate / 多轮幂等见 S9.4～S9.6；S9.7 分域 ConfirmCard 模板 + 知识库「可确认保存」；对照表见 `S9.1-全量可写操作审计对照表.md`（A/B 已清零，仅剩 C 红线 / D 冷门排除）。旧客户端仅 `preview_*` 时行为与 S8 一致。
+
+**`POST /api/v1/agent/chat/stream`**：SSE，每条 `data:` 为完整事件 JSON（含 `event` 字段：`session` / `intent` / `delta` / `tool_call` / `tool_result` / `card` / `error` / `done`）。`intent` 为 S9.5 调度结果；`done.usage.intent_gate` 可观测。失败/无 Key 会推 `error` 后仍发 `done`。
+
+**`POST .../assistant/route`**（P0-2，过渡保留）
 
 请求：`{ text?, image_base64?, image_mime_type?, brief_context?, locale? }`（`text` 与图至少其一）。  
 成功 `data`：`reply_text?`、`routed_domains[]`、`cards[]`（ActionCard）。  
@@ -1526,7 +1598,7 @@ App：`aiAssistantRoute` / `runAssistantRoute`；UI：全局悬浮助手输入�
 ```
 
 约束：`facts` 数字以 `brief_context` 为准；`cards` ≤3；LLM 只写 headline / 卡文案与落地点，失败回退规则卡。Agent 不写库。  
-App：`aiAssistantDailyBrief` / `runAssistantDailyBrief`；UI：首页「今日」模块；失败仅展示本地规则 facts。
+App：`aiAssistantDailyBrief` / `runAssistantDailyBrief`；UI：任务页「今日任务与习惯」模块；失败仅展示本地规则 facts。
 
 **`POST .../assistant/turn`**（P1-1）
 
@@ -1551,11 +1623,11 @@ App：`aiAssistantCompose` / `runAssistantCompose`；UI：全局助手识别「�
 | 助手 Sheet 剪贴板按钮 / `zheng://assistant/clipboard` | 读剪贴板图或文 → `openGlobalAssistant` → `route`（确认后写库） |
 | iOS 快捷指令「用助手处理」 | pending 图 / 剪贴板标记 → 同上（需 prebuild 刷新 Intent） |
 | `zheng://assistant` | 打开全局助手 |
-| `zheng://assistant/brief` | 打开首页「今日」简报 + 助手提示（Widget **不**在组件内调 LLM） |
+| `zheng://assistant/brief` | 打开任务页「今日任务与习惯」简报 + 助手提示（Widget **不**在组件内调 LLM） |
 | `zheng://finance` / `tasks` / `profile` / `wardrobe` / `review` | 打开对应 Tab / 页 |
 | 会话缓存 | AsyncStorage `@selfapp/assistant_session_v1`，TTL 24h；不进云同步 |
 
-桌面 Widget：已有财务 / 青蛙 / 习惯 / 健康 / 紧急度均挂 `widgetURL(deepLink)`；健康默认 `zheng://assistant/brief?domain=health`。衣橱 / 我的独立 Widget 可按同模式扩展（深链已就绪）。
+桌面 Widget：已有财务 / 青蛙 / 习惯 / 健康 / 紧急度均挂 `widgetURL(deepLink)`；健康默认 `zheng://health`；简报入口 `zheng://assistant/brief`。衣橱 / 我的独立 Widget 可按同模式扩展（深链已就绪）。
 
 ---
 

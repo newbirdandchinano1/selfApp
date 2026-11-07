@@ -9,6 +9,7 @@ import {
   FORBIDDEN_CONFIRM_ACTIONS,
   sanitizeActionCardAgainstWhitelist,
 } from './action-card';
+import { resolveModuleHref } from './capability-router';
 
 /** 与 expo-router Href 兼容的轻量形态（避免本模块静态依赖 RN） */
 export type AssistantHref = string | { pathname: string; params?: Record<string, string> };
@@ -17,6 +18,29 @@ export type AssistantConfirmPlan =
   | {
       kind: 'preview_finance_txn';
       draft: Record<string, unknown>;
+      card: ActionCard;
+    }
+  | {
+      kind: 'preview_finance_transfer';
+      draft: Record<string, unknown>;
+      card: ActionCard;
+    }
+  | {
+      kind: 'preview_finance_scheduled';
+      draft: Record<string, unknown>;
+      href: AssistantHref;
+      card: ActionCard;
+    }
+  | {
+      kind: 'preview_finance_cash_flow';
+      draft: Record<string, unknown>;
+      href: AssistantHref;
+      card: ActionCard;
+    }
+  | {
+      kind: 'preview_finance_budget';
+      draft: Record<string, unknown>;
+      href: AssistantHref;
       card: ActionCard;
     }
   | {
@@ -163,8 +187,16 @@ function hrefForWardrobeDraft(draft: Record<string, unknown>, card: ActionCard):
 
 function hrefForWishDraft(draft: Record<string, unknown>): AssistantHref {
   const title = draftString(draft, 'title');
-  if (title) return asHref('/wish-board', { q: title });
-  return asHref('/wish-board');
+  const params: Record<string, string> = {};
+  if (title) params.title = title.slice(0, 80);
+  const desc =
+    draftString(draft, 'description_text') || draftString(draft, 'description');
+  if (desc) params.description = desc.slice(0, 500);
+  const cost = draftNumber(draft, 'cost_points');
+  if (cost != null) params.cost_points = String(cost);
+  const icon = draftString(draft, 'icon_key');
+  if (icon) params.icon_key = icon;
+  return asHref('/add-wish-board-item', Object.keys(params).length ? params : undefined);
 }
 
 function hrefForRecipeDraft(draft: Record<string, unknown>): AssistantHref {
@@ -181,7 +213,62 @@ function hrefForProfileDraft(draft: Record<string, unknown>): AssistantHref {
   return asHref('/edit-profile');
 }
 
+function hrefForFinanceScheduledDraft(draft: Record<string, unknown>): AssistantHref {
+  const params: Record<string, string> = {};
+  const name = draftString(draft, 'name');
+  if (name) params.name = name.slice(0, 40);
+  const amount = draftNumber(draft, 'amount');
+  if (amount != null) params.amount = String(amount);
+  const repeat = draftString(draft, 'repeat_hint');
+  if (repeat) params.repeat = repeat;
+  const account = draftString(draft, 'account_hint');
+  if (account) params.account_hint = account.slice(0, 40);
+  const days = draft.days;
+  if (Array.isArray(days) && days.length) {
+    params.days = days
+      .map((d) => (typeof d === 'number' ? d : Number(d)))
+      .filter((n) => Number.isFinite(n))
+      .slice(0, 8)
+      .join(',');
+  }
+  const hour = draftNumber(draft, 'hour');
+  if (hour != null) params.hour = String(hour);
+  const minute = draftNumber(draft, 'minute');
+  if (minute != null) params.minute = String(minute);
+  if (draft.include_in_budget === false) params.include_in_budget = '0';
+  return asHref('/add-scheduled-expense', params);
+}
+
+function hrefForFinanceCashFlowDraft(draft: Record<string, unknown>): AssistantHref {
+  const params: Record<string, string> = {};
+  const kind = draftString(draft, 'entry_kind');
+  if (kind) params.entry_kind = kind;
+  const amount = draftNumber(draft, 'amount');
+  if (amount != null) params.amount = String(amount);
+  const name = draftString(draft, 'name_hint') || draftString(draft, 'name');
+  if (name) params.name = name.slice(0, 40);
+  const quadrant = draftString(draft, 'quadrant');
+  if (quadrant) params.quadrant = quadrant;
+  const assetReturn = draftNumber(draft, 'asset_return');
+  if (assetReturn != null) params.asset_return = String(assetReturn);
+  const liabilityMonths = draftNumber(draft, 'liability_months');
+  if (liabilityMonths != null) params.liability_months = String(liabilityMonths);
+  return asHref('/cash-flow/entry', params);
+}
+
+function hrefForFinanceBudgetDraft(draft: Record<string, unknown>): AssistantHref {
+  const amount = draftNumber(draft, 'suggested_base_amount');
+  const params: Record<string, string> = {};
+  if (amount != null) params.suggested_budget = String(amount);
+  return asHref('/(tabs)/finance', params);
+}
+
 function hrefForOpenRoute(card: ActionCard): AssistantHref | null {
+  const moduleId = (card.module_id ?? '').trim();
+  if (moduleId) {
+    const fromModule = resolveModuleHref(moduleId, card.route_params);
+    if (fromModule) return fromModule;
+  }
   const href = (card.route_href ?? '').trim();
   if (!href) return null;
   if (card.route_params && Object.keys(card.route_params).length > 0) {
@@ -268,6 +355,29 @@ export function mapActionCardToConfirmPlan(
   switch (action) {
     case 'preview_finance_txn':
       return { kind: 'preview_finance_txn', draft, card };
+    case 'preview_finance_transfer':
+      return { kind: 'preview_finance_transfer', draft, card };
+    case 'preview_finance_scheduled':
+      return {
+        kind: 'preview_finance_scheduled',
+        draft,
+        href: hrefForFinanceScheduledDraft(draft),
+        card,
+      };
+    case 'preview_finance_cash_flow':
+      return {
+        kind: 'preview_finance_cash_flow',
+        draft,
+        href: hrefForFinanceCashFlowDraft(draft),
+        card,
+      };
+    case 'preview_finance_budget':
+      return {
+        kind: 'preview_finance_budget',
+        draft,
+        href: hrefForFinanceBudgetDraft(draft),
+        card,
+      };
     case 'preview_food_intake':
       return { kind: 'preview_food_intake', draft, card };
     case 'preview_task':
@@ -292,7 +402,7 @@ export function mapActionCardToConfirmPlan(
     case 'open_route': {
       const href = hrefForOpenRoute(card);
       if (!href) {
-        return { kind: 'rejected', reason: 'open_route 缺少 route_href', card };
+        return { kind: 'rejected', reason: 'open_route 缺少 module_id / route_href', card };
       }
       return { kind: 'open_route', href, card };
     }
@@ -320,6 +430,7 @@ export function mapActionCardToConfirmPlan(
 
 export type ExecuteConfirmDeps = {
   openFinancePreview?: (draft: Record<string, unknown>, card: ActionCard) => void | Promise<void>;
+  openFinanceTransferPreview?: (draft: Record<string, unknown>, card: ActionCard) => void | Promise<void>;
   openFoodPreview?: (draft: Record<string, unknown>, card: ActionCard) => void | Promise<void>;
   push?: (href: AssistantHref) => void | Promise<void>;
   assignFrog?: (taskId: string, assignYmd: string) => Promise<void>;
@@ -348,6 +459,21 @@ export async function executeAssistantConfirm(
       }
       await deps.openFinancePreview(plan.draft, plan.card);
       return { ok: true, plan };
+    case 'preview_finance_transfer':
+      if (!deps.openFinanceTransferPreview) {
+        return { ok: false, plan, error: '未接入转账预览 Sheet' };
+      }
+      await deps.openFinanceTransferPreview(plan.draft, plan.card);
+      return { ok: true, plan };
+    case 'preview_finance_scheduled':
+    case 'preview_finance_cash_flow':
+    case 'preview_finance_budget': {
+      if (!deps.push) {
+        return { ok: false, plan, error: '未接入路由 push' };
+      }
+      await deps.push(plan.href);
+      return { ok: true, plan };
+    }
     case 'preview_food_intake':
       if (!deps.openFoodPreview) {
         return { ok: false, plan, error: '未接入饮食预览 Sheet' };

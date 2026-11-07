@@ -90,6 +90,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export type WardrobeScreenProps = {
   onBack: () => void;
+  /** 助手导航等：初始 Tab（closet / outfits / mine） */
+  initialTab?: WardrobeTab;
 };
 
 const TAB_META: Record<WardrobeTab, { title: string; sub: string }> = {
@@ -100,12 +102,14 @@ const TAB_META: Record<WardrobeTab, { title: string; sub: string }> = {
 
 const TABS: WardrobeTab[] = ['closet', 'outfits', 'mine'];
 
-export function WardrobeScreen({ onBack }: WardrobeScreenProps) {
+export function WardrobeScreen({ onBack, initialTab }: WardrobeScreenProps) {
   const insets = useSafeAreaInsets();
   const { w } = useWardrobeTheme();
   const styles = useMemo(() => createStyles(w), [w]);
   const { ready: fontsReady } = useWardrobeFonts();
-  const [tab, setTab] = useState<WardrobeTab>('closet');
+  const [tab, setTab] = useState<WardrobeTab>(() =>
+    initialTab && TABS.includes(initialTab) ? initialTab : 'closet',
+  );
   const [prevTab, setPrevTab] = useState<WardrobeTab | null>(null);
   const [layout, setLayout] = useState<ClosetLayout>('card');
   const [sort, setSort] = useState<ClosetSort>('recent');

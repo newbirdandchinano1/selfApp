@@ -39,7 +39,7 @@ function parseQuery(search: string): Record<string, string> {
 
 /**
  * 解析 zheng://… / 自定义 scheme。
- * 例：zheng://finance、zheng://assistant/brief?domain=health、zheng://tasks?placement=x
+ * 例：zheng://finance、zheng://assistant/brief、zheng://health、zheng://tasks?placement=x
  */
 export function parseAssistantDeepLink(url: string): ParsedAssistantDeepLink {
   const raw = (url || '').trim();
@@ -103,7 +103,7 @@ export const ASSISTANT_DEEP_LINKS = {
   brief: 'zheng://assistant/brief',
   finance: 'zheng://finance',
   tasks: 'zheng://tasks',
-  health: 'zheng://assistant/brief?domain=health',
+  health: 'zheng://health',
   profile: 'zheng://profile',
   wardrobe: 'zheng://wardrobe',
   review: 'zheng://review',

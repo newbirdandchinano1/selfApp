@@ -579,7 +579,7 @@ export async function placeFrogOnScheduleAt(params: {
   return row;
 }
 
-/** 未入格占用重新落入时间格（可改日）；已指派日按需迁移 */
+/** 改派 / 未入格重落入格（可改日、改时段）；已指派日按需迁移 */
 export async function rematerializeOrphanedPlacement(params: {
   placementId: string;
   assignYmd: string;
@@ -590,9 +590,6 @@ export async function rematerializeOrphanedPlacement(params: {
   await ensureScheduleTables();
   const placement = await getPlacementById(params.placementId);
   if (!placement) throw new Error('占用不存在');
-  if (!(placement.orphaned || placement.startSlotIndex == null)) {
-    throw new Error('该项已在格内');
-  }
   if (!isEditableScheduleDay(params.assignYmd, params.logicalTodayYmd)) {
     throw new Error('过去日程不可编辑');
   }
@@ -672,7 +669,7 @@ export async function rematerializeOrphanedPlacement(params: {
   return row;
 }
 
-/** 阶段 G：未入格占用按分钟重新落入时段（可改日）；已指派日按需迁移 */
+/** 阶段 G：改派 / 未入格按分钟重落时段（可改日）；已指派日按需迁移 */
 export async function rematerializeOrphanedPlacementAtMinutes(params: {
   placementId: string;
   assignYmd: string;
@@ -684,9 +681,6 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
   await ensureScheduleTables();
   const placement = await getPlacementById(params.placementId);
   if (!placement) throw new Error('占用不存在');
-  if (!(placement.orphaned || placement.startSlotIndex == null)) {
-    throw new Error('该项已在时段内');
-  }
   if (!isEditableScheduleDay(params.assignYmd, params.logicalTodayYmd)) {
     throw new Error('过去日程不可编辑');
   }

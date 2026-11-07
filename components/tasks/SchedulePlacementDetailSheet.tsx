@@ -643,7 +643,11 @@ export function SchedulePlacementDetailSheet({
             {canManagePlacement && onReassignTime ? (
               <Pressable
                 disabled={readOnly}
-                onPress={onReassignTime}
+                onPress={() => {
+                  // 先关本 Sheet，再让父级延后开入格 Modal，避免双 Modal 叠层卡死
+                  onClose();
+                  onReassignTime();
+                }}
                 style={({ pressed }) => [
                   styles.pdAct,
                   {

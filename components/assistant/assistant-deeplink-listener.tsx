@@ -56,9 +56,9 @@ function hrefForKind(
     case 'tab_finance':
       return '/(tabs)/finance';
     case 'tab_tasks':
+    case 'assistant_brief':
       return '/(tabs)/tasks';
     case 'tab_health':
-    case 'assistant_brief':
       return '/(tabs)/';
     case 'tab_profile':
       return '/(tabs)/profile';
@@ -102,7 +102,7 @@ export function AssistantDeepLinkListener() {
         if (parsed.kind === 'assistant_brief') {
           const href = hrefForKind(parsed.kind, parsed.query);
           if (href) router.push(href as never);
-          // 首页 DailyBriefPanel 会因 focus 自动加载；再开助手提示
+          // 任务页 DailyBriefPanel 会因 focus 自动加载；再开助手提示
           openGlobalAssistant({ focusBrief: true, openOnly: true });
           return;
         }

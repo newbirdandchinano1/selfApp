@@ -22,7 +22,8 @@ import type {
 } from '@/lib/repositories/cash-flow/cash-flow.types';
 import { parseFinanceCashFlowEntryFromText } from '@/lib/zhipu-image-parse';
 import { MaterialIcons } from '@expo/vector-icons';
-import React, { useMemo, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -32,6 +33,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+function pickParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return (value[0] ?? '').trim();
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 type ExpenseFlowType = CashFlowExpenseBucket;
 
@@ -167,6 +173,54 @@ export function CashFlowFoldEntry({
   const [linkRealAccount, setLinkRealAccount] = useState(true);
   const [aiSentence, setAiSentence] = useState('');
   const [aiParsing, setAiParsing] = useState(false);
+  const assistantDraftAppliedRef = useRef(false);
+  const params = useLocalSearchParams<{
+    entry_kind?: string | string[];
+    amount?: string | string[];
+    name?: string | string[];
+    quadrant?: string | string[];
+    asset_return?: string | string[];
+    liability_months?: string | string[];
+  }>();
+
+  useEffect(() => {
+    if (assistantDraftAppliedRef.current) return;
+    const kindRaw = pickParam(params.entry_kind).toLowerCase();
+    const amountRaw = pickParam(params.amount);
+    const nameRaw = pickParam(params.name);
+    if (!kindRaw && !amountRaw && !nameRaw) return;
+    assistantDraftAppliedRef.current = true;
+
+    const kindMap: Record<string, 'income' | ExpenseFlowType> = {
+      income: 'income',
+      necessary: 'necessary',
+      unnecessary: 'unnecessary',
+      asset: 'asset',
+      liability: 'liability',
+    };
+    const mapped = kindMap[kindRaw];
+    if (mapped === 'income') {
+      setEntryType('income');
+      const q = pickParam(params.quadrant).toUpperCase();
+      if (q === 'E' || q === 'S' || q === 'B' || q === 'I') setQuadrant(q);
+    } else if (mapped) {
+      setEntryType('expense');
+      setExpenseType(mapped);
+      if (mapped === 'asset') {
+        const ar = pickParam(params.asset_return);
+        if (ar) setAssetReturnAmount(ar);
+      }
+      if (mapped === 'liability') {
+        const lm = pickParam(params.liability_months);
+        if (lm) setLiabilityRepayMonths(lm);
+      }
+    }
+    if (amountRaw) {
+      const n = Number(amountRaw);
+      if (Number.isFinite(n) && n > 0) setAmount(String(n));
+    }
+    if (nameRaw) setName(nameRaw.slice(0, 40));
+  }, [params.amount, params.asset_return, params.entry_kind, params.liability_months, params.name, params.quadrant]);
 
   const existingNames = useMemo(() => {
     const names: string[] = [];
