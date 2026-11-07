@@ -146,27 +146,26 @@ struct ZhengAssistantProcessIntent: AppIntent {
 
 @available(iOS 17.0, *)
 struct ZhengAppShortcuts: AppShortcutsProvider {
+    /// Xcode 16+ 使用 @AppShortcutsBuilder：逐条写 AppShortcut，不要包一层 [ … ]
     static var appShortcuts: [AppShortcut] {
-        [
-            AppShortcut(
-                intent: ZhengScreenshotAutoLedgerIntent(),
-                phrases: [
-                    "在\\(.applicationName)里截图记账",
-                    "\\(.applicationName)截图记账",
-                ],
-                shortTitle: "截图记账",
-                systemImageName: "creditcard.and.scribble"
-            ),
-            AppShortcut(
-                intent: ZhengAssistantProcessIntent(),
-                phrases: [
-                    "用\\(.applicationName)助手处理",
-                    "在\\(.applicationName)里用助手处理",
-                ],
-                shortTitle: "用助手处理",
-                systemImageName: "sparkles"
-            ),
-        ]
+        AppShortcut(
+            intent: ZhengScreenshotAutoLedgerIntent(),
+            phrases: [
+                "在\\(.applicationName)里截图记账",
+                "\\(.applicationName)截图记账",
+            ],
+            shortTitle: "截图记账",
+            systemImageName: "creditcard.and.scribble"
+        )
+        AppShortcut(
+            intent: ZhengAssistantProcessIntent(),
+            phrases: [
+                "用\\(.applicationName)助手处理",
+                "在\\(.applicationName)里用助手处理",
+            ],
+            shortTitle: "用助手处理",
+            systemImageName: "sparkles"
+        )
     }
 }
 `;
