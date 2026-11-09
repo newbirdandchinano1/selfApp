@@ -2,8 +2,7 @@
  * 折页 · 财务视觉令牌 — 对齐 `finance-screens/财务APP-设计稿.html`
  * Paper / Pine / Sage / Amber / Clay；仅财务相关页消费。
  */
-import { Platform } from 'react-native';
-
+import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 export const FINANCE_FOLD_LIGHT = {
@@ -89,8 +88,11 @@ export const FINANCE_FOLD_DARK: FinanceFoldPalette = {
 };
 
 export const financeFoldFonts = {
-  serif: Platform.select({ ios: 'Songti SC', android: 'serif', default: 'serif' }),
-  mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  serif: appFonts.serif,
+  serifBold: appFonts.serifBold,
+  sans: appFonts.sans,
+  mono: appFonts.mono,
+  monoBold: appFonts.monoBold,
 } as const;
 
 export function useFinanceFoldTheme(): {

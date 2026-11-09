@@ -209,7 +209,13 @@ export async function runAgentChat(opts: {
         }),
       ),
     },
-    { perAttemptTimeoutMs: CHAT_TIMEOUT_MS, maxAttempts: 2, signal: opts.signal },
+    {
+      perAttemptTimeoutMs: CHAT_TIMEOUT_MS,
+      maxAttempts: 4,
+      baseDelayMs: 800,
+      maxDelayMs: 8_000,
+      signal: opts.signal,
+    },
   );
 
   let parsed: unknown = null;

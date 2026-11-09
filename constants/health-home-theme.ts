@@ -2,8 +2,7 @@
  * 健康首页视觉令牌 — 对齐 `health-screens` 设计稿：奶油纸底、松墨绿、营养素分色。
  * 亦为 App 品牌色基准（全局 Palette / 菜谱模块同源）；财务等折页可另用 fold 令牌。
  */
-import { Platform } from 'react-native';
-
+import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 export const HEALTH_HOME_LIGHT = {
@@ -65,8 +64,11 @@ export const HealthHomeNutrientAccents = {
 } as const;
 
 export const healthHomeFonts = {
-  serif: Platform.select({ ios: 'Songti SC', android: 'serif', default: 'serif' }),
-  mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  serif: appFonts.serif,
+  serifBold: appFonts.serifBold,
+  sans: appFonts.sans,
+  mono: appFonts.mono,
+  monoBold: appFonts.monoBold,
 } as const;
 
 export function useHealthHomeTheme(): {

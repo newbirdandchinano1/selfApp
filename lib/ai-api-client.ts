@@ -117,6 +117,7 @@ async function agentAiRequest<T>(
     headers['Content-Type'] = 'application/json';
   }
 
+  // 503/繁忙在网络层静默多试几轮，避免场景 AI 把「服务器繁忙」弹到前台
   const res = await fetchWithTimeoutAndRetry(
     url,
     {
@@ -124,7 +125,7 @@ async function agentAiRequest<T>(
       headers,
       ...(requestBody !== undefined ? { body: requestBody } : {}),
     },
-    { perAttemptTimeoutMs: AI_TIMEOUT_MS, maxAttempts: 2 },
+    { perAttemptTimeoutMs: AI_TIMEOUT_MS, maxAttempts: 4, baseDelayMs: 800, maxDelayMs: 8_000 },
   );
 
   let parsed: unknown = null;

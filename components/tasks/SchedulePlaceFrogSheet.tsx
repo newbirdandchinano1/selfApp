@@ -58,7 +58,16 @@ export type SchedulePlaceResult = {
   startMinutes?: number;
   /** 阶段 G：按分钟写入时的结束分钟（半开；全天时省略） */
   endMinutes?: number;
+  /**
+   * 批量入格时相对点选格起点的偏移格数（单项为 0）。
+   * 分钟模式下不必使用：每条自带 startMinutes/endMinutes。
+   */
+  startSlotOffset?: number;
 };
+
+function candidateKey(item: { kind: string; id: string }): string {
+  return `${item.kind}:${item.id}`;
+}
 
 /** 阶段 G：分钟写入所需的时间轴 */
 export type ScheduleMinuteAxis = {
@@ -109,7 +118,8 @@ type Props = {
   defaultEndMinutes?: number;
   /** 弹窗内改日期时同步父级（切日视图等） */
   onAssignYmdChange?: (ymd: string) => void;
-  onConfirm: (result: SchedulePlaceResult) => Promise<void> | void;
+  /** 确认入格；批量时按顺序传入多条（已排好时段/格偏移） */
+  onConfirm: (results: SchedulePlaceResult[]) => Promise<void> | void;
 };
 
 type DisplayCandidate = FrogCandidate & {
@@ -777,6 +787,8 @@ function CandRow({
   fonts,
   item,
   selected,
+  checked,
+  batchMode,
   disabled,
   index,
   animate,
@@ -788,6 +800,9 @@ function CandRow({
   fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
   item: DisplayCandidate;
   selected?: boolean;
+  /** 多选勾选态 */
+  checked?: boolean;
+  batchMode?: boolean;
   disabled?: boolean;
   index: number;
   animate: boolean;
@@ -800,19 +815,33 @@ function CandRow({
   const sub = disabled ? lockReason(item) : candidateSubline(item);
   const slotOccupied = item.alreadyAssigned && !disabled;
   const padLeft = depth > 0 ? 6 + depth * 14 : 6;
+  const highlight = selected || !!checked;
 
   return (
     <FoldRiseIn animate={animate} index={index} staggerMs={TaskFoldMotion.rowStagger} fromY={10}>
       <Pressable
         onPress={disabled ? undefined : onPress}
         disabled={disabled}
+        accessibilityState={batchMode ? { selected: !!checked, disabled } : { disabled }}
         style={({ pressed }) => [
           styles.cand,
           { paddingLeft: padLeft },
-          selected && { backgroundColor: 'rgba(232,239,217,0.55)', borderRadius: 8 },
+          highlight && { backgroundColor: 'rgba(232,239,217,0.55)', borderRadius: 8 },
           disabled && { opacity: 0.55 },
           pressed && !disabled && { opacity: 0.88 },
         ]}>
+        {batchMode ? (
+          <View
+            style={[
+              styles.checkBox,
+              {
+                borderColor: checked ? tf.pond : tf.line2,
+                backgroundColor: checked ? tf.pond : 'transparent',
+              },
+            ]}>
+            {checked ? <MaterialIcons name="check" size={14} color={tf.onPond} /> : null}
+          </View>
+        ) : null}
         {leading}
         <View style={[styles.candIcon, { backgroundColor: tf.lily2 }]}>
           <MaterialIcons name={kindIcon(item)} size={16} color={tf.frog} />
@@ -876,6 +905,8 @@ function ProjectGroupHeader({
   animate,
   onToggle,
   onSelectProject,
+  batchMode = false,
+  checked = false,
 }: {
   tf: TaskFoldPalette;
   fonts: ReturnType<typeof useTaskFoldTheme>['fonts'];
@@ -885,6 +916,8 @@ function ProjectGroupHeader({
   animate: boolean;
   onToggle: () => void;
   onSelectProject?: () => void;
+  batchMode?: boolean;
+  checked?: boolean;
 }) {
   const emptySelectable = !!group.projectCandidate && !group.projectCandidate.blockedReason;
   const emptyLocked = !!group.projectCandidate?.blockedReason;
@@ -916,10 +949,30 @@ function ProjectGroupHeader({
         style={[
           styles.projectHead,
           {
-            backgroundColor: 'rgba(232,239,217,0.28)',
+            backgroundColor: checked
+              ? 'rgba(232,239,217,0.55)'
+              : 'rgba(232,239,217,0.28)',
             borderColor: tf.line2,
           },
         ]}>
+        {batchMode && emptySelectable ? (
+          <Pressable
+            onPress={onSelectProject}
+            hitSlop={6}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked }}
+            accessibilityLabel={`选择项目 ${group.projectName}`}
+            style={[
+              styles.checkBox,
+              {
+                borderColor: checked ? tf.pond : tf.line2,
+                backgroundColor: checked ? tf.pond : 'transparent',
+                marginLeft: 4,
+              },
+            ]}>
+            {checked ? <MaterialIcons name="check" size={14} color={tf.onPond} /> : null}
+          </Pressable>
+        ) : null}
         {hasTree ? (
           <Pressable
             onPress={onToggle}
@@ -982,6 +1035,8 @@ function PlaceProjectTreeList({
   collapsedProjectIds,
   collapsedTaskIds,
   animate,
+  batchMode,
+  selectedKeys,
   onToggleProject,
   onToggleTask,
   onPick,
@@ -992,6 +1047,8 @@ function PlaceProjectTreeList({
   collapsedProjectIds: Record<string, boolean>;
   collapsedTaskIds: Record<string, boolean>;
   animate: boolean;
+  batchMode: boolean;
+  selectedKeys: Set<string>;
   onToggleProject: (projectId: string) => void;
   onToggleTask: (taskId: string) => void;
   onPick: (item: DisplayCandidate) => void;
@@ -1034,6 +1091,8 @@ function PlaceProjectTreeList({
               item={cand}
               index={idx}
               animate={animate}
+              batchMode={batchMode}
+              checked={selectedKeys.has(candidateKey(cand))}
               disabled={!!cand.blockedReason}
               depth={depth}
               leading={chev}
@@ -1058,6 +1117,9 @@ function PlaceProjectTreeList({
       {groups.map((group) => {
         const collapsed = !!collapsedProjectIds[group.projectId];
         const headIdx = rowIndex++;
+        const projectCand = group.projectCandidate;
+        const projectChecked =
+          !!projectCand && selectedKeys.has(candidateKey(projectCand));
         return (
           <View key={group.key} style={styles.projectGroup}>
             <ProjectGroupHeader
@@ -1069,10 +1131,12 @@ function PlaceProjectTreeList({
               animate={animate}
               onToggle={() => onToggleProject(group.projectId)}
               onSelectProject={
-                group.projectCandidate && !group.projectCandidate.blockedReason
-                  ? () => onPick(group.projectCandidate!)
+                projectCand && !projectCand.blockedReason
+                  ? () => onPick(projectCand)
                   : undefined
               }
+              batchMode={batchMode}
+              checked={projectChecked}
             />
             {!collapsed && group.tree.length > 0
               ? renderNodes(group.tree, 1, group.candidateById)
@@ -1115,7 +1179,13 @@ export function SchedulePlaceFrogSheet({
   const [taskTreeMap, setTaskTreeMap] = React.useState<Record<string, TaskTreeNode[]>>({});
   const [collapsedProjectIds, setCollapsedProjectIds] = React.useState<Record<string, boolean>>({});
   const [collapsedTaskIds, setCollapsedTaskIds] = React.useState<Record<string, boolean>>({});
-  const [picked, setPicked] = React.useState<DisplayCandidate | null>(null);
+  /** 进入时段步后的已选主体（1+）；null 表示仍在列表步 */
+  const [pickedItems, setPickedItems] = React.useState<DisplayCandidate[] | null>(null);
+  /** 列表步多选：勾选池（尚未点「下一步」） */
+  const [batchMode, setBatchMode] = React.useState(false);
+  const [selectedByKey, setSelectedByKey] = React.useState<Map<string, DisplayCandidate>>(
+    () => new Map(),
+  );
   const [span, setSpan] = React.useState(1);
   const [allDay, setAllDay] = React.useState(!!initialAllDay);
   const [selectedYmd, setSelectedYmd] = React.useState(assignYmd);
@@ -1198,6 +1268,9 @@ export function SchedulePlaceFrogSheet({
     setCollapsedProjectIds({});
     setCollapsedTaskIds({});
     setTaskTreeMap({});
+    setBatchMode(false);
+    setSelectedByKey(new Map());
+    setPickedItems(null);
     const preferAllDay = !!initialAllDay;
     setAllDay(preferAllDay);
     setSpan(preferAllDay ? fullDaySlots : 1);
@@ -1251,16 +1324,18 @@ export function SchedulePlaceFrogSheet({
     setSpan(1);
     setAllDay(false);
     if (preselected) {
-      setPicked(
+      setBatchMode(false);
+      setSelectedByKey(new Map());
+      setPickedItems([
         toDisplayCandidate(preselected, tagColorByName, logicalToday || selectedYmd || assignYmd),
-      );
+      ]);
       setEligible([]);
       setBlocked([]);
       setTaskTreeMap({});
       setLoading(false);
       return;
     }
-    setPicked(null);
+    setPickedItems(null);
     let cancelled = false;
     setLoading(true);
     void (async () => {
@@ -1326,7 +1401,7 @@ export function SchedulePlaceFrogSheet({
     if (!visible) return;
     const today = logicalToday || selectedYmd || assignYmd;
     if (preselected) {
-      setPicked(toDisplayCandidate(preselected, tagColorByName, today));
+      setPickedItems([toDisplayCandidate(preselected, tagColorByName, today)]);
       return;
     }
     setEligible((prev) =>
@@ -1385,15 +1460,54 @@ export function SchedulePlaceFrogSheet({
     }
     return opts.filter((o) => startM + o.minutes <= axisEnd && o.minutes >= 5);
   }, [minuteMode, slotSpanMins, startM, axisEnd]);
+  const pickedCount = pickedItems?.length ?? 0;
+  const selectedCount = selectedByKey.size;
+  const selectedKeys = React.useMemo(() => new Set(selectedByKey.keys()), [selectedByKey]);
+  const batchPackError = React.useMemo(() => {
+    if (!pickedItems || pickedItems.length <= 1) return '';
+    if (allDay) return '';
+    if (minuteMode) {
+      if (!minuteRangeValid) return minuteConflictLabel || '时段无效';
+      const duration = endM - startM;
+      if (duration < 5) return '每段至少 5 分钟';
+      for (let i = 0; i < pickedItems.length; i += 1) {
+        const s = startM + i * duration;
+        const e = s + duration;
+        if (e > axisEnd) return `连续排 ${pickedItems.length} 项会超出可排时间轴`;
+        if (axis && breakIntersectingInterval(axis, s, e)) {
+          return `第 ${i + 1} 段与休息时段重叠，请缩短时长或改全天`;
+        }
+      }
+      return '';
+    }
+    if (span < 1 || span > maxSpan) return '格数无效';
+    if (pickedItems.length * span > maxSpan) {
+      return `从当前格起最多还能连排 ${maxSpan} 格，装不下 ${pickedItems.length} × ${span} 格`;
+    }
+    return '';
+  }, [
+    pickedItems,
+    allDay,
+    minuteMode,
+    minuteRangeValid,
+    minuteConflictLabel,
+    endM,
+    startM,
+    axisEnd,
+    axis,
+    span,
+    maxSpan,
+  ]);
   const canConfirm =
-    !!picked &&
+    pickedCount > 0 &&
     !saving &&
+    !batchPackError &&
     (allDay
       ? canAssignAllDay
       : minuteMode
         ? minuteRangeValid
         : span >= 1 && span <= maxSpan);
-  const showList = !preselected && !picked;
+  const showList = !preselected && pickedItems == null;
   const effectiveYmd = selectedYmd || assignYmd;
   const todayYmd = logicalToday || assignYmd;
   const dateLabel = formatAssignTitle(effectiveYmd);
@@ -1499,24 +1613,78 @@ export function SchedulePlaceFrogSheet({
     setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   }, []);
 
+  const toggleBatchSelect = React.useCallback((item: DisplayCandidate) => {
+    setSelectedByKey((prev) => {
+      const key = candidateKey(item);
+      const next = new Map(prev);
+      if (next.has(key)) next.delete(key);
+      else next.set(key, item);
+      return next;
+    });
+  }, []);
+
+  const handlePickCandidate = React.useCallback(
+    (item: DisplayCandidate) => {
+      if (batchMode) {
+        toggleBatchSelect(item);
+        return;
+      }
+      setPickedItems([item]);
+    },
+    [batchMode, toggleBatchSelect],
+  );
+
+  const enterSpanFromBatch = React.useCallback(() => {
+    if (selectedByKey.size === 0) return;
+    setPickedItems([...selectedByKey.values()]);
+  }, [selectedByKey]);
+
+  const buildResults = React.useCallback(
+    (ymd: string): SchedulePlaceResult[] => {
+      const items = pickedItems ?? [];
+      if (items.length === 0) return [];
+      if (allDay || !minuteMode) {
+        return items.map((item, index) => ({
+          kind: item.kind,
+          id: item.id,
+          title: item.title,
+          spanSlots: effectiveSpan,
+          assignYmd: ymd,
+          allDay: allDay || undefined,
+          startSlotOffset: allDay ? 0 : index * span,
+        }));
+      }
+      const duration = endM - startM;
+      return items.map((item, index) => {
+        const s = startM + index * duration;
+        const e = s + duration;
+        return {
+          kind: item.kind,
+          id: item.id,
+          title: item.title,
+          spanSlots: effectiveSpan,
+          assignYmd: ymd,
+          startMinutes: s,
+          endMinutes: e,
+          startSlotOffset: index * span,
+        };
+      });
+    },
+    [pickedItems, allDay, minuteMode, effectiveSpan, span, startM, endM],
+  );
+
   const submit = React.useCallback(async () => {
-    if (!picked || !canConfirm) return;
+    if (!pickedItems?.length || !canConfirm) return;
     const ymd = selectedYmd || assignYmd;
     if (!isEditableScheduleDay(ymd, logicalToday || assignYmd)) {
       Alert.alert('无法指派', '只能选择今天或未来的日期。');
       return;
     }
+    const results = buildResults(ymd);
+    if (results.length === 0) return;
     setSaving(true);
     try {
-      await onConfirm({
-        kind: picked.kind,
-        id: picked.id,
-        title: picked.title,
-        spanSlots: effectiveSpan,
-        assignYmd: ymd,
-        allDay: allDay || undefined,
-        ...(minuteMode && !allDay ? { startMinutes: startM, endMinutes: endM } : {}),
-      });
+      await onConfirm(results);
       onClose();
     } catch (err) {
       Alert.alert('入格失败', err instanceof Error ? err.message : '请稍后重试');
@@ -1524,17 +1692,13 @@ export function SchedulePlaceFrogSheet({
       setSaving(false);
     }
   }, [
-    picked,
+    pickedItems,
     canConfirm,
+    buildResults,
     onConfirm,
-    effectiveSpan,
     selectedYmd,
     assignYmd,
     logicalToday,
-    allDay,
-    minuteMode,
-    startM,
-    endM,
     onClose,
   ]);
 
@@ -1545,7 +1709,11 @@ export function SchedulePlaceFrogSheet({
   });
   const maxSheetH = Math.round(winH * 0.86);
 
-  const renderSpanStep = (item: DisplayCandidate) => (
+  const renderSpanStep = (items: DisplayCandidate[]) => {
+    const primary = items[0];
+    const isBatch = items.length > 1;
+    if (!primary) return null;
+    return (
     <View style={styles.spanStep}>
       <FoldPopIn animate={animate} delayMs={40} duration={360}>
         <View
@@ -1559,28 +1727,44 @@ export function SchedulePlaceFrogSheet({
           <FrogMark tf={tf} size={27} />
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={[styles.previewTitle, { color: tf.ink2 }]} numberOfLines={2}>
-              {item.title}
+              {isBatch ? `批量指派 ${items.length} 项` : primary.title}
             </Text>
-            <Text style={[styles.previewSub, { color: tf.muted }]} numberOfLines={1}>
-              {candidateSubline(item)}
-              {item.rewardPoints > 0 ? ` · 完成 +${item.rewardPoints} 积分` : ''}
+            <Text style={[styles.previewSub, { color: tf.muted }]} numberOfLines={isBatch ? 3 : 1}>
+              {isBatch
+                ? items.map((it) => it.title).join(' · ')
+                : `${candidateSubline(primary)}${
+                    primary.rewardPoints > 0 ? ` · 完成 +${primary.rewardPoints} 积分` : ''
+                  }`}
             </Text>
           </View>
           <View style={[styles.previewTag, { backgroundColor: tf.lily2 }]}>
-            <Text style={[styles.previewTagText, { color: tf.frog }]}>可放入</Text>
+            <Text style={[styles.previewTagText, { color: tf.frog }]}>
+              {isBatch ? `${items.length} 只` : '可放入'}
+            </Text>
           </View>
         </View>
       </FoldPopIn>
 
       <Text style={[styles.spanHint, { color: tf.muted }]}>
-        {minuteMode
-          ? allDay
-            ? '全天 · 铺满当日可排时段'
-            : '可点快捷时段，或点时刻微调（精确到分钟）'
-          : allDay
-            ? '全天 · 放入顶部全天格，不占用时段'
-            : `连续占用格数（最多 ${maxSpan}）`}
+        {isBatch
+          ? minuteMode
+            ? allDay
+              ? '全天 · 各项同时铺满当日可排时段'
+              : '按所选时长依次顺排；不够装时请缩短或改全天'
+            : allDay
+              ? '全天 · 各项放入顶部全天格'
+              : `每项占 ${span} 格并顺排（从点选格起最多 ${maxSpan} 格）`
+          : minuteMode
+            ? allDay
+              ? '全天 · 铺满当日可排时段'
+              : '可点快捷时段，或点时刻微调（精确到分钟）'
+            : allDay
+              ? '全天 · 放入顶部全天格，不占用时段'
+              : `连续占用格数（最多 ${maxSpan}）`}
       </Text>
+      {batchPackError ? (
+        <Text style={[styles.batchError, { color: tf.rose }]}>{batchPackError}</Text>
+      ) : null}
 
       {minuteMode && !allDay ? (
         <View style={styles.timeFields}>
@@ -1795,7 +1979,7 @@ export function SchedulePlaceFrogSheet({
         <Pressable
           onPress={() => {
             if (preselected) onClose();
-            else setPicked(null);
+            else setPickedItems(null);
           }}
           style={({ pressed }) => [
             styles.ghostBtn,
@@ -1826,14 +2010,23 @@ export function SchedulePlaceFrogSheet({
             <>
               <MaterialIcons name="cruelty-free" size={18} color={tf.onPond} />
               <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
-                {allDay ? '指派全天' : minuteMode ? '确认时段' : '确认入格'}
+                {pickedCount > 1
+                  ? allDay
+                    ? `指派全天 · ${pickedCount}`
+                    : `确认入格 · ${pickedCount}`
+                  : allDay
+                    ? '指派全天'
+                    : minuteMode
+                      ? '确认时段'
+                      : '确认入格'}
               </Text>
             </>
           )}
         </Pressable>
       </View>
     </View>
-  );
+    );
+  };
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
@@ -1868,11 +2061,21 @@ export function SchedulePlaceFrogSheet({
                   styles.sheetTitle,
                   { color: tf.pond, fontFamily: fonts.serif },
                 ]}>
-                {showList ? `把这件事放进 ${dateLabel}` : minuteMode ? '选择时段' : '选择占用格数'}
+                {showList
+                  ? batchMode
+                    ? `批量放入 ${dateLabel}`
+                    : `把这件事放进 ${dateLabel}`
+                  : pickedCount > 1
+                    ? '批量选择时段'
+                    : minuteMode
+                      ? '选择时段'
+                      : '选择占用格数'}
               </Text>
               <Text style={[styles.sheetSub, { color: tf.muted }]}>
                 {showList
-                  ? '先选日期，再选任务或项目 · 已完成 / 搁置 / 未开始项目不可入格'
+                  ? batchMode
+                    ? '勾选多项待办 / 项目，再点下一步统一入格'
+                    : '先选日期，再选任务或项目 · 可开多选批量指派'
                   : minuteMode
                     ? `放入 ${dateLabel} · 选起止时刻或指派全天`
                     : `放入 ${dateLabel} · 选格数或指派全天`}
@@ -1998,6 +2201,38 @@ export function SchedulePlaceFrogSheet({
                         ? '按项目折叠 · 叶子可入格'
                         : '按优先级与截止时间排序'}
                     </Text>
+                    <Pressable
+                      onPress={() => {
+                        setBatchMode((v) => {
+                          if (v) setSelectedByKey(new Map());
+                          return !v;
+                        });
+                      }}
+                      hitSlop={6}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: batchMode }}
+                      accessibilityLabel={batchMode ? '退出多选' : '开启多选批量指派'}
+                      style={[
+                        styles.batchToggle,
+                        {
+                          borderColor: batchMode ? tf.pond : tf.line2,
+                          backgroundColor: batchMode ? tf.lily2 : 'transparent',
+                        },
+                      ]}>
+                      <MaterialIcons
+                        name={batchMode ? 'checklist' : 'library-add-check'}
+                        size={13}
+                        color={batchMode ? tf.pond : tf.muted}
+                      />
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          fontWeight: '700',
+                          color: batchMode ? tf.pond : tf.muted,
+                        }}>
+                        {batchMode ? '多选中' : '多选'}
+                      </Text>
+                    </Pressable>
                   </View>
 
                   {seg === 'projectTask' ? (
@@ -2015,9 +2250,11 @@ export function SchedulePlaceFrogSheet({
                         collapsedProjectIds={collapsedProjectIds}
                         collapsedTaskIds={collapsedTaskIds}
                         animate={animate}
+                        batchMode={batchMode}
+                        selectedKeys={selectedKeys}
                         onToggleProject={toggleProjectCollapsed}
                         onToggleTask={toggleTaskCollapsed}
-                        onPick={setPicked}
+                        onPick={handlePickCandidate}
                       />
                     )
                   ) : filteredEligible.length === 0 ? (
@@ -2035,7 +2272,9 @@ export function SchedulePlaceFrogSheet({
                         item={c}
                         index={i}
                         animate={animate}
-                        onPress={() => setPicked(c)}
+                        batchMode={batchMode}
+                        checked={selectedKeys.has(candidateKey(c))}
+                        onPress={() => handlePickCandidate(c)}
                       />
                     ))
                   )}
@@ -2076,7 +2315,9 @@ export function SchedulePlaceFrogSheet({
                   <View style={styles.candNote}>
                     <MaterialIcons name="lightbulb-outline" size={13} color={tf.faint} />
                     <Text style={[styles.candNoteText, { color: tf.faint, flex: 1 }]}>
-                      长按主屏待办 / 项目后会带上预选，减少一次选择。
+                      {batchMode
+                        ? '勾选多项后点下一步；同日顺排时段，也可改全天。'
+                        : '点「多选」可一次指派多项；长按主屏待办 / 项目可预选单条。'}
                     </Text>
                     {!onlyEligible ? (
                       <Text style={{ color: tf.amberInk, fontWeight: '700', fontSize: 11 }}>
@@ -2086,9 +2327,44 @@ export function SchedulePlaceFrogSheet({
                   </View>
                 </ScrollView>
               )}
+              {batchMode ? (
+                <View style={styles.foot2}>
+                  <Pressable
+                    onPress={() => {
+                      setBatchMode(false);
+                      setSelectedByKey(new Map());
+                    }}
+                    style={({ pressed }) => [
+                      styles.ghostBtn,
+                      {
+                        borderColor: tf.line2,
+                        backgroundColor: isDark ? tf.paper3 : 'rgba(255,252,245,0.55)',
+                        opacity: pressed ? 0.85 : 1,
+                      },
+                    ]}>
+                    <Text style={[styles.ghostBtnText, { color: tf.ink2 }]}>取消多选</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={enterSpanFromBatch}
+                    disabled={selectedCount === 0}
+                    style={({ pressed }) => [
+                      styles.primaryBtn,
+                      {
+                        backgroundColor: selectedCount > 0 ? tf.pond : tf.faint,
+                        opacity: pressed && selectedCount > 0 ? 0.92 : 1,
+                        shadowColor: tf.shadow,
+                      },
+                    ]}>
+                    <MaterialIcons name="arrow-forward" size={18} color={tf.onPond} />
+                    <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
+                      {selectedCount > 0 ? `下一步 · ${selectedCount}` : '请先勾选'}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
-          ) : picked ? (
-            renderSpanStep(picked)
+          ) : pickedItems && pickedItems.length > 0 ? (
+            renderSpanStep(pickedItems)
           ) : null}
         </Animated.View>
       </View>
@@ -2288,6 +2564,30 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
     fontSize: 11,
     fontWeight: '400',
+  },
+  batchToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: 7,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  checkBox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batchError: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    marginTop: 2,
+    paddingHorizontal: 2,
   },
   emptyText: {
     paddingVertical: 16,

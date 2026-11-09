@@ -135,7 +135,7 @@ export function AiLifeRoadAcceptanceSheet({
               <Text style={styles.close}>关闭</Text>
             </Pressable>
           </View>
-          <Text style={styles.sub}>增量草稿 · 勾选合并 · 不自动标完成</Text>
+          <Text style={styles.sub}>基于标题与梗概 · 增量草稿 · 勾选合并</Text>
 
           <ScrollView
             style={styles.body}

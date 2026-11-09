@@ -4,6 +4,7 @@ import {
   type TypographyRole,
 } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { resolveAppFontStyle } from '@/lib/resolve-app-font-style';
 import React from 'react';
 import { Text, type StyleProp, type TextProps, type TextStyle } from 'react-native';
 
@@ -19,7 +20,7 @@ export type AppTextProps = TextProps & {
 };
 
 /**
- * 系统字号缩放友好的 Text。
+ * 系统字号缩放友好的 Text；字族与全局衣橱同款字体包一致。
  * 保留 allowFontScaling，用角色基准尺寸 + 倍率上限对齐 Accessibility 设置。
  */
 export function AppText({
@@ -39,7 +40,7 @@ export function AppText({
     <Text
       allowFontScaling={allowFontScaling}
       maxFontSizeMultiplier={cap}
-      style={[typography[variant] ?? Typography[variant], style]}
+      style={resolveAppFontStyle([typography[variant] ?? Typography[variant], style])}
       {...rest}
     />
   );

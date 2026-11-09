@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { AppSplashScreen } from '@/components/app-splash-screen';
+import { useAppFonts } from '@/hooks/use-app-fonts';
 import { PendingFlushBlockOverlay } from '@/components/pending-flush-block-overlay';
 import { ApiLoadingShell } from '@/components/api-loading-shell';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
@@ -158,6 +159,7 @@ export const unstable_settings = {
 
 function RootLayoutInner() {
   const colorScheme = useColorScheme();
+  const { ready: fontsReady } = useAppFonts();
   const [isDbReady, setIsDbReady] = useState(false);
   const [showMainApp, setShowMainApp] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
@@ -600,7 +602,7 @@ function RootLayoutInner() {
         ) : null}
         {!showMainApp ? (
           <AppSplashScreen
-            exitReady={isDbReady && flushReady && !dbError && !flushError}
+            exitReady={fontsReady && isDbReady && flushReady && !dbError && !flushError}
             onFinish={() => setShowMainApp(true)}
             dbError={dbError ?? flushError}
             syncProgress={syncProgress}

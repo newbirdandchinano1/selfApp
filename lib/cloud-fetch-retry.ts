@@ -125,10 +125,13 @@ export async function fetchWithTimeoutAndRetry(
 
       if (isRetryableHttpStatus(res.status) && attempt < maxAttempts) {
         let retryAfterMs = 0;
-        if (res.status === 429) {
+        // 429 限流 + 503 并发繁忙（业务后端会带 Retry-After: 1）均静默退避，不把瞬时繁忙立刻抛给 UI
+        if (res.status === 429 || res.status === 503) {
           const ra = res.headers.get('Retry-After');
           if (ra != null && /^\d+$/.test(ra.trim())) {
             retryAfterMs = Math.min(120_000, Number(ra.trim()) * 1000);
+          } else if (res.status === 503) {
+            retryAfterMs = 1000;
           }
         }
         await res.text().catch(() => '');

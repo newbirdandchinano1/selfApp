@@ -1,6 +1,10 @@
 ﻿import { ComposerTopBar, taskPriorityKeyToNumber, taskPriorityToKey, type TaskPriorityKey } from '@/components/composer';
 import { labelsFromPickerResult, extractDueDateFromDeadlineText } from '@/components/entity-form';
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
+import {
+  mergeLifeAcceptanceIdIntoExtraData,
+  parseLifeAcceptanceId,
+} from '@/lib/life-road/project-road-link';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
@@ -599,6 +603,7 @@ export default function EditProjectScreen() {
   const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(null);
+  const [selectedAcceptanceId, setSelectedAcceptanceId] = React.useState<string | null>(null);
   const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
@@ -789,6 +794,7 @@ export default function EditProjectScreen() {
             ? project.life_bet_id
             : null,
       );
+      setSelectedAcceptanceId(parseLifeAcceptanceId(project.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
       setTaskTree(projectTasks);
@@ -1120,6 +1126,10 @@ export default function EditProjectScreen() {
       Alert.alert('无法保存项目', '请输入项目名称后再保存。');
       return;
     }
+    if (selectedMonthGoalId && !selectedAcceptanceId) {
+      toast.warn('道路归属须挂到月目标的验收叶子上');
+      return;
+    }
     if (saving) return;
 
     const prereqValidation = validatePrerequisiteSelection(projectId, prerequisiteProjectIds, allProjects);
@@ -1199,8 +1209,13 @@ export default function EditProjectScreen() {
         isLongTermProject,
       );
       const checklist = isLongTermProject ? acceptanceItems : [];
+      const withRoadAcceptance = mergeLifeAcceptanceIdIntoExtraData(
+        withLongTerm,
+        selectedMonthGoalId ? selectedAcceptanceId : null,
+      );
       const withAcceptance =
-        mergeAcceptanceChecklistIntoExtraData(withLongTerm, checklist) ?? withLongTerm;
+        mergeAcceptanceChecklistIntoExtraData(withRoadAcceptance, checklist) ??
+        withRoadAcceptance;
       // 项目一旦有子任务，不再可作为青蛙实体
       const nextExtraAfterTasks =
         subtasks.length > 0 ? clearProjectFrogFields(withAcceptance) : withAcceptance;
@@ -1402,6 +1417,7 @@ export default function EditProjectScreen() {
     saving,
     scheduleMeta,
     selectedMonthGoalId,
+    selectedAcceptanceId,
     selectedTagIds,
     subtasks,
     title,
@@ -2053,14 +2069,18 @@ export default function EditProjectScreen() {
                     },
                   ]}>
                   <MonthGoalPickerField
-                    selectedId={selectedMonthGoalId}
+                    selectedMonthGoalId={selectedMonthGoalId}
+                    selectedAcceptanceId={selectedAcceptanceId}
                     monthGoals={monthGoals}
                     loading={monthGoalsLoading || loading}
                     disabled={formBusy}
-                    onChange={setSelectedMonthGoalId}
+                    onChange={(value) => {
+                      setSelectedMonthGoalId(value?.monthGoalId ?? null);
+                      setSelectedAcceptanceId(value?.acceptanceId ?? null);
+                    }}
                   />
                   <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
-                    道路归属只影响导图里的挂载位置，不会改变项目自身的任务、日历与积分。
+                    道路归属挂在月目标的验收叶子上，只影响导图位置，不改变任务、日历与积分。
                   </Text>
                 </View>
               </FoldRiseIn>

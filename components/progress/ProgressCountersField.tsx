@@ -6,7 +6,6 @@ import {
   PROGRESS_COUNTER_CURRENT_MAX,
   PROGRESS_COUNTER_TARGET_MAX,
   PROGRESS_COUNTER_TARGET_MIN,
-  PROGRESS_COUNTER_TITLE_MAX,
   PROGRESS_COUNTER_UNIT_MAX,
   type ProgressCounter,
   type ProgressCounterPeriod,
@@ -29,6 +28,19 @@ type ProgressCountersFieldProps = {
   surfaceLowest: string;
 };
 
+function parseNonNegInt(raw: string, max: number): number {
+  const digits = raw.replace(/[^\d]/g, '');
+  if (digits === '') return 0;
+  // 超长数字串用 BigInt 截到安全整数，避免 Number 精度丢失后变 Infinity
+  try {
+    const n = BigInt(digits);
+    const capped = n > BigInt(max) ? BigInt(max) : n;
+    return Number(capped);
+  } catch {
+    return 0;
+  }
+}
+
 export function ProgressCountersField({
   counters,
   disabled = false,
@@ -45,7 +57,7 @@ export function ProgressCountersField({
     if (disabled) return;
     onChange([
       ...counters,
-      createEmptyProgressCounter({ title: '', target: 3, unit: '次', sinceYmd: anchorYmd }),
+      createEmptyProgressCounter({ title: '计数目标', target: 3, unit: '次', sinceYmd: anchorYmd }),
     ]);
   }, [anchorYmd, counters, disabled, onChange]);
 
@@ -110,36 +122,6 @@ export function ProgressCountersField({
                   styles.card,
                   { backgroundColor: surfaceLow, borderColor: placeholderColor },
                 ]}>
-                <View style={styles.cardHead}>
-                  <TextInput
-                    value={c.title === '计数目标' ? '' : c.title}
-                    onChangeText={(t) =>
-                      patch(c.id, {
-                        title: t.slice(0, PROGRESS_COUNTER_TITLE_MAX),
-                      })
-                    }
-                    editable={!disabled}
-                    placeholder="如：看书"
-                    placeholderTextColor={placeholderColor}
-                    style={[
-                      styles.titleInput,
-                      {
-                        color: textColor,
-                        borderColor: placeholderColor,
-                        backgroundColor: surfaceLowest,
-                      },
-                    ]}
-                  />
-                  <Pressable
-                    onPress={() => remove(c.id)}
-                    disabled={disabled}
-                    hitSlop={8}
-                    accessibilityLabel="移除计数"
-                    style={({ pressed }) => [{ opacity: disabled ? 0.5 : pressed ? 0.7 : 1 }]}>
-                    <MaterialIcons name="close" size={18} color={outline} />
-                  </Pressable>
-                </View>
-
                 <View style={styles.metaRow}>
                   <Text style={[styles.metaLab, { color: outline }]}>目标</Text>
                   <View style={styles.stepper}>
@@ -163,17 +145,12 @@ export function ProgressCountersField({
                     <TextInput
                       value={targetText}
                       onChangeText={(t) => {
-                        const digits = t.replace(/[^\d]/g, '');
-                        const parsed = digits === '' ? 0 : Math.floor(Number(digits));
                         patch(c.id, {
-                          target: Number.isFinite(parsed)
-                            ? Math.min(PROGRESS_COUNTER_TARGET_MAX, Math.max(0, parsed))
-                            : 0,
+                          target: parseNonNegInt(t, PROGRESS_COUNTER_TARGET_MAX),
                         });
                       }}
                       editable={!disabled}
                       keyboardType="number-pad"
-                      maxLength={4}
                       placeholder={`${PROGRESS_COUNTER_TARGET_MIN}`}
                       placeholderTextColor={placeholderColor}
                       style={[
@@ -222,6 +199,18 @@ export function ProgressCountersField({
                       },
                     ]}
                   />
+
+                  <Pressable
+                    onPress={() => remove(c.id)}
+                    disabled={disabled}
+                    hitSlop={8}
+                    accessibilityLabel="移除计数"
+                    style={({ pressed }) => [
+                      styles.removeBtn,
+                      { opacity: disabled ? 0.5 : pressed ? 0.7 : 1 },
+                    ]}>
+                    <MaterialIcons name="close" size={18} color={outline} />
+                  </Pressable>
                 </View>
 
                 <View style={styles.metaRow}>
@@ -242,17 +231,12 @@ export function ProgressCountersField({
                     <TextInput
                       value={currentText}
                       onChangeText={(t) => {
-                        const digits = t.replace(/[^\d]/g, '');
-                        const parsed = digits === '' ? 0 : Math.floor(Number(digits));
                         patch(c.id, {
-                          current: Number.isFinite(parsed)
-                            ? Math.min(PROGRESS_COUNTER_CURRENT_MAX, Math.max(0, parsed))
-                            : 0,
+                          current: parseNonNegInt(t, PROGRESS_COUNTER_CURRENT_MAX),
                         });
                       }}
                       editable={!disabled}
                       keyboardType="number-pad"
-                      maxLength={5}
                       placeholder="0"
                       placeholderTextColor={placeholderColor}
                       style={[
@@ -397,16 +381,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 8,
   },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  titleInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    fontSize: 13,
-    fontWeight: '700',
-  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -423,11 +397,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   numInput: {
-    width: 48,
+    minWidth: 64,
+    maxWidth: 140,
     borderWidth: 1,
     borderRadius: 8,
     paddingVertical: 4,
-    paddingHorizontal: 4,
+    paddingHorizontal: 6,
     textAlign: 'center',
     fontSize: 13,
     fontWeight: '700',
@@ -441,6 +416,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 13,
     fontWeight: '700',
+  },
+  removeBtn: {
+    marginLeft: 'auto',
+    padding: 2,
   },
   periodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   chip: {

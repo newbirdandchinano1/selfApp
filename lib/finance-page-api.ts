@@ -12,6 +12,7 @@ import {
 import { ymdFromDatetime } from '@/lib/api-read-helpers';
 import { markPageLoadRestFailed } from '@/lib/page-api-session';
 import {
+  getRememberedFinanceAccountBalance,
   rememberFinanceAccountBalances,
   rememberFinanceNetWorth,
 } from '@/lib/finance-account-balance-cache';
@@ -28,6 +29,7 @@ import {
   normalizeFinanceAccountLedgerBalance,
 } from '@/lib/finance-net-worth';
 import { normalizeFinanceSignRule } from '@/lib/repositories/finance/finance';
+import { getDatabase } from '@/lib/database';
 import type {
   FinanceAccountBalanceRow,
   FinanceAccountTypeRow,
@@ -86,6 +88,39 @@ function asBalanceRows(raw: unknown): FinanceAccountBalanceRow[] {
   });
 }
 
+/**
+ * 仅缓存 API 明确下发的 balance；缺字段时勿当成 0 写入。
+ * 账户若仍有未推上云的本地流水，保留已有 remembered（含记账 delta），避免详情/home 用旧服务端余额盖掉。
+ */
+async function rememberExplicitApiAccountBalances(raw: unknown): Promise<void> {
+  const records = asRecordArray(raw).filter(
+    (row) => typeof row.balance === 'number' && Number.isFinite(row.balance),
+  );
+  if (records.length === 0) return;
+
+  const db = await getDatabase();
+  const accepted: Record<string, unknown>[] = [];
+  for (const row of records) {
+    const id = String(row.id ?? '').trim();
+    if (!id) continue;
+    if (db) {
+      const pending = await db.getFirstAsync<{ id: string }>(
+        `SELECT id FROM finance_transactions
+         WHERE account_id = ?
+           AND sync_status IN ('pending_create', 'pending_update', 'pending_delete')
+         LIMIT 1`,
+        [id],
+      );
+      if (pending && getRememberedFinanceAccountBalance(id) != null) {
+        continue;
+      }
+    }
+    accepted.push(row);
+  }
+  if (accepted.length === 0) return;
+  rememberFinanceAccountBalances(asBalanceRows(accepted));
+}
+
 function asTxnRows(raw: unknown): FinanceTransactionRow[] {
   return asRecordArray(raw) as FinanceTransactionRow[];
 }
@@ -95,9 +130,8 @@ async function upsertFinanceRows(table: string, rows: Record<string, unknown>[])
 }
 
 async function syncAccountsWithBalance(raw: unknown): Promise<FinanceAccountBalanceRow[]> {
-  const apiAccounts = asBalanceRows(raw);
   // 先写入服务端余额缓存，再灌库；最终以本地全量账户+规范化负债余额为准返回
-  rememberFinanceAccountBalances(apiAccounts);
+  await rememberExplicitApiAccountBalances(raw);
   await upsertFinanceRows(
     'finance_accounts',
     asRecordArray(raw).map((row) => {

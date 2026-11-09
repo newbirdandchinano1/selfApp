@@ -24,13 +24,55 @@ export const TIMELINE_MIN_EVENT_H = 26;
 
 
 
+/** 起点升序；同起点未完成优先、已完成后置；再按时长降序 */
 function compareByStart(a: TimelineEvent, b: TimelineEvent): number {
 
   if (a.startMinutes !== b.startMinutes) return a.startMinutes - b.startMinutes;
 
+  if (a.done !== b.done) return a.done ? 1 : -1;
+
   if (a.endMinutes !== b.endMinutes) return b.endMinutes - a.endMinutes;
 
   return 0;
+
+}
+
+/** 簇内装栏：未完成优先靠左，已完成后置靠右 */
+function packClusterColumns(events: TimelineEvent[]): { event: TimelineEvent; column: number }[] {
+
+  const ordered = [...events].sort((a, b) => {
+
+    if (a.done !== b.done) return a.done ? 1 : -1;
+
+    if (a.startMinutes !== b.startMinutes) return a.startMinutes - b.startMinutes;
+
+    if (a.endMinutes !== b.endMinutes) return b.endMinutes - a.endMinutes;
+
+    return 0;
+
+  });
+
+  const laneEnds: number[] = [];
+
+  const packed: { event: TimelineEvent; column: number }[] = [];
+
+  for (const event of ordered) {
+
+    let lane = 0;
+
+    for (; lane < laneEnds.length; lane++) {
+
+      if (laneEnds[lane]! <= event.startMinutes) break;
+
+    }
+
+    laneEnds[lane] = event.endMinutes;
+
+    packed.push({ event, column: lane });
+
+  }
+
+  return packed;
 
 }
 
@@ -84,9 +126,7 @@ export function layoutOverlappingEvents(timed: TimelineEvent[]): TimedEventLayou
 
 
 
-  let cluster: { event: TimelineEvent; column: number }[] = [];
-
-  let laneEnds: number[] = [];
+  let cluster: TimelineEvent[] = [];
 
   let clusterMaxEnd = -Infinity;
 
@@ -98,11 +138,13 @@ export function layoutOverlappingEvents(timed: TimelineEvent[]): TimedEventLayou
 
     if (cluster.length === 0) return;
 
-    const columns = laneEnds.length;
+    const packed = packClusterColumns(cluster);
+
+    const columns = Math.max(0, ...packed.map((item) => item.column + 1), 0);
 
     const clusterId = nextClusterId++;
 
-    for (const item of cluster) {
+    for (const item of packed) {
 
       result.push({
 
@@ -120,8 +162,6 @@ export function layoutOverlappingEvents(timed: TimelineEvent[]): TimedEventLayou
 
     cluster = [];
 
-    laneEnds = [];
-
     clusterMaxEnd = -Infinity;
 
   };
@@ -138,19 +178,7 @@ export function layoutOverlappingEvents(timed: TimelineEvent[]): TimedEventLayou
 
     }
 
-    // 找最早释放的栏
-
-    let lane = 0;
-
-    for (; lane < laneEnds.length; lane++) {
-
-      if (laneEnds[lane]! <= event.startMinutes) break;
-
-    }
-
-    laneEnds[lane] = event.endMinutes;
-
-    cluster.push({ event, column: lane });
+    cluster.push(event);
 
     clusterMaxEnd = Math.max(clusterMaxEnd, event.endMinutes);
 

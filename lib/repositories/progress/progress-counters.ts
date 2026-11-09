@@ -15,8 +15,9 @@ import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 export const PROGRESS_COUNTERS_KEY = 'progress_counters';
 
 export const PROGRESS_COUNTER_TARGET_MIN = 1;
-export const PROGRESS_COUNTER_TARGET_MAX = 9999;
-export const PROGRESS_COUNTER_CURRENT_MAX = 99999;
+/** 不卡 4 位数；上限取安全整数，避免 JS Number 精度问题 */
+export const PROGRESS_COUNTER_TARGET_MAX = Number.MAX_SAFE_INTEGER;
+export const PROGRESS_COUNTER_CURRENT_MAX = Number.MAX_SAFE_INTEGER;
 export const PROGRESS_COUNTER_TITLE_MAX = 40;
 export const PROGRESS_COUNTER_UNIT_MAX = 4;
 export const PROGRESS_COUNTER_LOGS_MAX = 40;
@@ -186,8 +187,7 @@ function normalizeCounterList(raw: unknown): ProgressCounter[] {
       typeof idRaw === 'string' && idRaw.trim()
         ? idRaw.trim()
         : makeTimestampEntityId('pc_', 6);
-    const title = normalizeTitle(row.title);
-    if (!title) continue;
+    const title = normalizeTitle(row.title) || '计数目标';
     const target = clampInt(
       row.target,
       PROGRESS_COUNTER_TARGET_MIN,
@@ -302,10 +302,7 @@ export function validateProgressCountersForSave(
   const seen = new Set<string>();
   const next: ProgressCounter[] = [];
   for (const row of counters) {
-    const title = normalizeTitle(row.title);
-    if (!title) {
-      return { ok: false, message: '计数目标名称不能为空。' };
-    }
+    const title = normalizeTitle(row.title) || '计数目标';
     const target = clampInt(
       row.target,
       PROGRESS_COUNTER_TARGET_MIN,
@@ -314,7 +311,7 @@ export function validateProgressCountersForSave(
     if (target == null) {
       return {
         ok: false,
-        message: `计数目标须为 ${PROGRESS_COUNTER_TARGET_MIN}～${PROGRESS_COUNTER_TARGET_MAX} 的整数。`,
+        message: `计数目标须为不少于 ${PROGRESS_COUNTER_TARGET_MIN} 的整数。`,
       };
     }
     const id =

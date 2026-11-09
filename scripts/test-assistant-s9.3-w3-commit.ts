@@ -22,7 +22,9 @@ import {
   commitLifeBet,
   commitRecipeBasket,
   commitRecipeCategory,
+  commitRecipeCategoryDelete,
   commitRecipeCookLog,
+  commitRecipeDelete,
   commitRecipeShop,
   commitReviewColumn,
   commitReviewJournal,
@@ -178,6 +180,18 @@ async function main() {
 
   await checkAsync('缺名称时 commit_recipe_category 失败', async () => {
     const r = await commitRecipeCategory({});
+    assert.equal(r.ok, false);
+    assert.equal(r.error?.code, 'incomplete_draft');
+  });
+
+  await checkAsync('缺菜谱时 commit_recipe_delete 失败', async () => {
+    const r = await commitRecipeDelete({});
+    assert.equal(r.ok, false);
+    assert.equal(r.error?.code, 'incomplete_draft');
+  });
+
+  await checkAsync('缺分类时 commit_recipe_category_delete 失败', async () => {
+    const r = await commitRecipeCategoryDelete({});
     assert.equal(r.ok, false);
     assert.equal(r.error?.code, 'incomplete_draft');
   });

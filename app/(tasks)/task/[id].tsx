@@ -1,6 +1,14 @@
 ﻿import { AddSubtaskSheet, type AddSubtaskDraft } from '@/components/entity-form';
 import { ProjectRoadLinkBar } from '@/components/life-road/ProjectRoadLinkBar';
 import {
+  findAcceptanceById,
+  parseAcceptanceCriteria,
+} from '@/lib/life-road/life-road-acceptance';
+import {
+  formatProjectRoadCaption,
+  parseLifeAcceptanceId,
+} from '@/lib/life-road/project-road-link';
+import {
   FoldRiseIn,
   useFoldMotionGate,
 } from '@/components/review/fold-motion';
@@ -668,11 +676,20 @@ export default function TaskDetailScreen() {
             setRoadMonthGoalId(monthGoalId);
             try {
               const node = await getLifeRoadNodeById(monthGoalId, { serverFallback: true });
-              if (node?.title?.trim()) {
+              const acceptanceId = parseLifeAcceptanceId(project?.extra_data);
+              const leaf = acceptanceId
+                ? findAcceptanceById(
+                    parseAcceptanceCriteria(node?.extra_data),
+                    acceptanceId,
+                  )
+                : null;
+              if (leaf?.text?.trim() || node?.title?.trim()) {
                 setRoadCaption(
-                  node.kind === 'month' && node.month != null
-                    ? `${node.month} 月 · ${node.title.trim()}`
-                    : node.title.trim(),
+                  formatProjectRoadCaption({
+                    month: node?.kind === 'month' ? node.month : null,
+                    monthTitle: node?.title?.trim() || null,
+                    acceptanceText: leaf?.text?.trim() || null,
+                  }),
                 );
               } else {
                 setRoadCaption('');

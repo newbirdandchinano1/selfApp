@@ -10,14 +10,34 @@ import type { ActionCard } from '@/lib/assistant/action-card';
 import type { AgentThinkingState } from '@/lib/assistant/agent-thinking-status';
 import { shouldShowThinkingOrb } from '@/lib/assistant/agent-thinking-status';
 import { ChatMarkdownText } from '@/lib/assistant/chat-markdown';
-import { textFromParts, type ChatMessage, type ChatMessagePart } from '@/lib/assistant/chat-types';
+import {
+  textFromParts,
+  type ChatAnswerMeta,
+  type ChatMessage,
+  type ChatMessagePart,
+  type ChatSourceLabel,
+} from '@/lib/assistant/chat-types';
+
+const SOURCE_CHIP_LABEL: Record<string, string> = {
+  backend: '业务数据',
+  brief_context: 'App 摘要',
+  knowledge_base: '官方知识库',
+  capability_registry: '能力清单',
+  web: '外部网页',
+  execution_result: '写入回执',
+  model_generated: '模型生成',
+  unofficial: '非官方说明',
+  system: '系统',
+};
 
 function MetaChip({
   label,
   danger,
+  accent,
 }: {
   label: string;
   danger?: boolean;
+  accent?: boolean;
 }) {
   const { colors } = useAppTheme();
   return (
@@ -25,12 +45,19 @@ function MetaChip({
       style={[
         styles.chip,
         {
-          backgroundColor: danger ? 'rgba(180,40,40,0.08)' : colors.surfaceMuted,
-          borderColor: colors.outline,
+          backgroundColor: danger
+            ? 'rgba(180,40,40,0.08)'
+            : accent
+              ? 'rgba(180,120,20,0.12)'
+              : colors.surfaceMuted,
+          borderColor: accent ? 'rgba(160,110,20,0.35)' : colors.outline,
         },
       ]}>
       <Text
-        style={[styles.chipText, { color: danger ? colors.danger : colors.textMuted }]}
+        style={[
+          styles.chipText,
+          { color: danger ? colors.danger : accent ? '#8a5a10' : colors.textMuted },
+        ]}
         numberOfLines={2}>
         {label}
       </Text>
@@ -53,6 +80,47 @@ function renderMetaParts(parts: ChatMessagePart[]) {
         />
       );
     });
+}
+
+function renderSourceLabels(labels: ChatSourceLabel[] | undefined) {
+  if (!labels?.length) return null;
+  // 非官方单独用下方卡片；来源条不重复塞「非官方说明」
+  const visible = labels.filter(l => l.source !== 'unofficial');
+  if (!visible.length) return null;
+  return visible.map((l, idx) => (
+    <MetaChip
+      key={`src-${l.source}-${idx}`}
+      label={`来源 · ${SOURCE_CHIP_LABEL[l.source] || l.span}`}
+      accent={l.source === 'web'}
+    />
+  ));
+}
+
+function UnofficialAdviceBlock({ text }: { text: string }) {
+  const { colors } = useAppTheme();
+  return (
+    <View
+      style={[
+        styles.unofficialBox,
+        {
+          backgroundColor: 'rgba(180,120,20,0.08)',
+          borderColor: 'rgba(160,110,20,0.35)',
+        },
+      ]}>
+      <Text style={[styles.unofficialBadge, { color: '#8a5a10' }]}>非官方说明</Text>
+      <Text style={[styles.unofficialText, { color: colors.text }]} selectable>
+        {text}
+      </Text>
+    </View>
+  );
+}
+
+function AnswerStatusHint({ status }: { status?: string }) {
+  if (!status || status === 'answered') return null;
+  const label =
+    status === 'refused' ? '已拒答（无充分依据）' : status === 'partial' ? '部分依据' : null;
+  if (!label) return null;
+  return <MetaChip label={label} danger={status === 'refused'} accent={status === 'partial'} />;
 }
 
 function ChatBubbleImpl({
@@ -79,7 +147,23 @@ function ChatBubbleImpl({
   );
   const pending = message.status === 'sending' || message.status === 'streaming';
   const errored = message.status === 'error';
-  const meta = !isUser ? renderMetaParts(message.parts) : null;
+  const answerMeta: ChatAnswerMeta | undefined = !isUser ? message.meta : undefined;
+  const toolMeta = !isUser ? renderMetaParts(message.parts) : null;
+  const sourceMeta = !isUser ? renderSourceLabels(answerMeta?.source_labels) : null;
+  const showStatusHint =
+    !isUser &&
+    Boolean(
+      answerMeta?.answer_status &&
+        answerMeta.answer_status !== 'answered',
+    );
+  const unofficial =
+    !isUser && answerMeta?.unofficial_advice?.trim()
+      ? answerMeta.unofficial_advice.trim()
+      : '';
+  const hasTopMeta =
+    Boolean(toolMeta && toolMeta.length) ||
+    Boolean(sourceMeta && sourceMeta.length) ||
+    showStatusHint;
   const showThinking =
     !isUser && pending && shouldShowThinkingOrb(thinking, Boolean(text.trim()));
 
@@ -100,7 +184,15 @@ function ChatBubbleImpl({
                 borderBottomLeftRadius: 6,
               },
         ]}>
-        {meta && meta.length ? <View style={styles.metaCol}>{meta}</View> : null}
+        {hasTopMeta ? (
+          <View style={styles.metaCol}>
+            {showStatusHint ? (
+              <AnswerStatusHint status={answerMeta?.answer_status} />
+            ) : null}
+            {sourceMeta}
+            {toolMeta}
+          </View>
+        ) : null}
         {imagePart && imagePart.type === 'image' ? (
           <Image source={{ uri: imagePart.uri }} style={styles.image} resizeMode="cover" />
         ) : null}
@@ -109,7 +201,7 @@ function ChatBubbleImpl({
           <AgentThinkingIndicator
             state={{
               phase: 'thinking',
-              label: meta && meta.length ? '正在整理回答…' : '正在思考…',
+              label: hasTopMeta ? '正在整理回答…' : '正在思考…',
               visual: 'calm',
             }}
           />
@@ -136,6 +228,7 @@ function ChatBubbleImpl({
             />
           )
         ) : null}
+        {unofficial ? <UnofficialAdviceBlock text={unofficial} /> : null}
         {!isUser && actionCards.length
           ? actionCards.map(({ card }) => (
               <ActionConfirmCard
@@ -179,7 +272,8 @@ function bubblePropsEqual(
     if (
       prev.message.id !== next.message.id ||
       prev.message.status !== next.message.status ||
-      prev.message.parts !== next.message.parts
+      prev.message.parts !== next.message.parts ||
+      prev.message.meta !== next.message.meta
     ) {
       return false;
     }
@@ -241,5 +335,24 @@ const styles = StyleSheet.create({
   chipText: {
     fontSize: 12,
     lineHeight: 16,
+  },
+  unofficialBox: {
+    marginTop: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  unofficialBadge: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  unofficialText: {
+    ...Typography.body,
+    fontSize: 14,
+    lineHeight: 20,
   },
 });

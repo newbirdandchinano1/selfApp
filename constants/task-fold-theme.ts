@@ -2,8 +2,7 @@
  * 任务折页视觉令牌 — 对齐 `task-screens/任务APP-设计稿.html`
  * Paper warm · Pond green · Lily lime · Sun amber；仅任务相关页消费。
  */
-import { Platform } from 'react-native';
-
+import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 export const TASK_FOLD_LIGHT = {
@@ -109,8 +108,11 @@ export const TASK_FOLD_DARK: TaskFoldPalette = {
 };
 
 export const taskFoldFonts = {
-  serif: Platform.select({ ios: 'Songti SC', android: 'serif', default: 'serif' }),
-  mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  serif: appFonts.serif,
+  serifBold: appFonts.serifBold,
+  sans: appFonts.sans,
+  mono: appFonts.mono,
+  monoBold: appFonts.monoBold,
 } as const;
 
 /** 设计稿动效时长（ms） */

@@ -43,6 +43,18 @@ function isAbortLike(err: unknown): boolean {
 }
 
 /**
+ * 业务后端并发槽满 / 瞬时 503「服务器繁忙」类错误。
+ * 场景 AI / 助手应静默重试，不要 Toast 连环轰炸。
+ * 注意：勿匹配笼统「请稍后重试」兜底文案，以免吞掉真实业务失败。
+ */
+export function isServerBusyError(err: unknown): boolean {
+  const status = getHttpStatus(err);
+  if (status === 503) return true;
+  const raw = extractRawMessage(err);
+  return /服务器繁忙|同步繁忙/.test(raw);
+}
+
+/**
  * 将任意错误收敛为用户可读中文。展示层兜底；后端 message 友好时原样透出。
  */
 export function toUserMessage(err: unknown, errorFallback = '操作失败，请稍后重试'): string {

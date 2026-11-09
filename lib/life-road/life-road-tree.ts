@@ -16,6 +16,8 @@ export type RoadProjectRef = {
   id: string;
   name: string;
   status: string;
+  /** 挂载的月验收叶子；缺省为旧数据「只挂月」 */
+  acceptanceId?: string | null;
 };
 
 export type RoadMonthSlot = {

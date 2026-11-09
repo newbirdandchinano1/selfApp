@@ -7,6 +7,7 @@ import {
   globalChatCommitExecutor,
   type ChatCommitExecutor,
 } from '@/lib/assistant/chat-commit';
+import { catalogCommitHandlers } from './catalog';
 import { financeCommitHandlers } from './finance';
 import { foodCommitHandlers } from './food';
 import { habitCommitHandlers } from './habit';
@@ -47,6 +48,9 @@ export const W2_COMMIT_ACTIONS = [
   'commit_review_dimension',
 ] as const;
 
+/** Catalog 通用确认写（无精品 commit 映射时兜底） */
+export const CATALOG_COMMIT_ACTIONS = ['commit_catalog_write'] as const;
+
 /** W3：§5.6-B 补洞（对照表 B01–B34） */
 export const W3_COMMIT_ACTIONS = [
   'commit_finance_account',
@@ -62,6 +66,8 @@ export const W3_COMMIT_ACTIONS = [
   'commit_recipe_shop',
   'commit_recipe_cook_log',
   'commit_recipe_category',
+  'commit_recipe_delete',
+  'commit_recipe_category_delete',
   'commit_wardrobe_outfit',
   'commit_wardrobe_wear',
   'commit_wardrobe_meta',
@@ -79,6 +85,7 @@ export const S93_COMMIT_ACTIONS = [
   ...W1_COMMIT_ACTIONS,
   ...W2_COMMIT_ACTIONS,
   ...W3_COMMIT_ACTIONS,
+  ...CATALOG_COMMIT_ACTIONS,
 ] as const;
 
 let registeredForGlobal = false;
@@ -100,6 +107,7 @@ export function registerChatCommitHandlers(
     reviewCommitHandlers,
     tagCommitHandlers,
     scheduleCommitHandlers,
+    catalogCommitHandlers,
   ];
   for (const pack of packs) {
     for (const [action, handler] of Object.entries(pack)) {
@@ -152,6 +160,8 @@ export {
   commitRecipeShop,
   commitRecipeCookLog,
   commitRecipeCategory,
+  commitRecipeDelete,
+  commitRecipeCategoryDelete,
 } from './recipe';
 export {
   commitWardrobeItem,
@@ -170,3 +180,4 @@ export {
 } from './review';
 export { commitTag } from './tag';
 export { commitSchedulePlacement } from './schedule';
+export { commitCatalogWrite } from './catalog';

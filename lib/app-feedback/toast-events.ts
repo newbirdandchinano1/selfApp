@@ -38,9 +38,21 @@ function clearHideTimer(): void {
   }
 }
 
+function isTransientServerBusyMessage(message: string): boolean {
+  return /服务器繁忙|同步繁忙/.test(message);
+}
+
 function show(message: string, kind: AppToastKind, durationMs?: number): number {
   const trimmed = message.trim();
   if (!trimmed) return current?.id ?? 0;
+
+  // 瞬时繁忙由网络层静默重试；error/warn Toast 再弹只会连环打扰（尤其 Agent 占槽时）
+  if ((kind === 'error' || kind === 'warn') && isTransientServerBusyMessage(trimmed)) {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      console.warn('[toast] suppressed server-busy:', trimmed);
+    }
+    return current?.id ?? 0;
+  }
 
   clearHideTimer();
 

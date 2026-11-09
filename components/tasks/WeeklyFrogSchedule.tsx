@@ -186,7 +186,8 @@ type Props = {
   /** 从项目列表长按预选：展开课表并点空格入格 */
   pendingPlace?: SchedulePendingPlace | null;
   onClearPendingPlace?: () => void;
-  onChanged?: (detail?: ScheduleChangedDetail) => void;
+  /** 入格/取消后回调；批量指派时可传多条，父级应一次静默同步 */
+  onChanged?: (detail?: ScheduleChangedDetail | ScheduleChangedDetail[]) => void;
   onOpenSubject?: (kind: 'task' | 'project', id: string) => void;
   onToggleDone?: (info: {
     kind: 'task' | 'project';
@@ -1051,20 +1052,24 @@ export function WeeklyFrogSchedule({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPlace, reassignPending, view, logicalTodayYmd]);
 
-  const handlePlaceConfirm = async (result: SchedulePlaceResult) => {
-    if (!placeTarget || !view) return;
+  const handlePlaceConfirm = async (results: SchedulePlaceResult[]) => {
+    if (!placeTarget || !view || results.length === 0) return;
+    const first = results[0]!;
     const assignYmd =
-      result.assignYmd && isEditableScheduleDay(result.assignYmd, logicalTodayYmd)
-        ? result.assignYmd
+      first.assignYmd && isEditableScheduleDay(first.assignYmd, logicalTodayYmd)
+        ? first.assignYmd
         : placeTarget.assignYmd;
     const weekStartYmd = getWeekStartMondayYmd(assignYmd);
     const weekday = weekdayFromYmd(assignYmd);
     const useMinutePath = timelineWrite;
     const daySlots = getSlotCount(view.axis);
-    const startSlotIndex = result.allDay ? 0 : placeTarget.startSlotIndex;
-    const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
     try {
       if (placeTarget.rematerializePlacementId) {
+        const result = first;
+        const startSlotIndex = result.allDay
+          ? 0
+          : placeTarget.startSlotIndex + (result.startSlotOffset ?? 0);
+        const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
         if (useMinutePath) {
           await rematerializeOrphanedPlacementAtMinutes({
             placementId: placeTarget.rematerializePlacementId,
@@ -1091,48 +1096,61 @@ export function WeeklyFrogSchedule({
         return;
       }
 
-      const row = useMinutePath
-        ? await placeFrogOnScheduleAt({
-            weekStartYmd,
-            weekday,
-            startMinutes: result.startMinutes ?? 0,
-            endMinutes: result.endMinutes ?? 0,
-            allDay: result.allDay,
-            subjectKind: result.kind,
-            subjectId: result.id,
-            logicalTodayYmd,
-          })
-        : await placeFrogOnSchedule({
-            weekStartYmd,
-            weekday,
-            startSlotIndex,
-            spanSlots,
-            subjectKind: result.kind,
-            subjectId: result.id,
-            logicalTodayYmd,
-          });
-      setView((prev) =>
-        prev
-          ? {
-              ...prev,
-              placements: [...prev.placements.filter((p) => p.id !== row.id), row],
-              orphanedCount: prev.placements.filter((p) => p.orphaned || p.startSlotIndex == null)
-                .length,
-            }
-          : prev,
-      );
+      const placedRows: SchedulePlacementRow[] = [];
+      for (const result of results) {
+        const startSlotIndex = result.allDay
+          ? 0
+          : placeTarget.startSlotIndex + (result.startSlotOffset ?? 0);
+        const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
+        const row = useMinutePath
+          ? await placeFrogOnScheduleAt({
+              weekStartYmd,
+              weekday,
+              startMinutes: result.startMinutes ?? 0,
+              endMinutes: result.endMinutes ?? 0,
+              allDay: result.allDay,
+              subjectKind: result.kind,
+              subjectId: result.id,
+              logicalTodayYmd,
+            })
+          : await placeFrogOnSchedule({
+              weekStartYmd,
+              weekday,
+              startSlotIndex,
+              spanSlots,
+              subjectKind: result.kind,
+              subjectId: result.id,
+              logicalTodayYmd,
+            });
+        placedRows.push(row);
+      }
+      if (placedRows.length > 0) {
+        setView((prev) => {
+          if (!prev) return prev;
+          const byId = new Map(prev.placements.map((p) => [p.id, p]));
+          for (const row of placedRows) byId.set(row.id, row);
+          const placements = [...byId.values()];
+          return {
+            ...prev,
+            placements,
+            orphanedCount: placements.filter((p) => p.orphaned || p.startSlotIndex == null).length,
+          };
+        });
+      }
       setPlaceTarget(null);
       onClearPendingPlace?.();
       setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
       await reload([assignYmd], { silent: true });
-      onChanged?.({
-        kind: result.kind,
-        id: result.id,
-        assignYmd,
-        action: 'assign',
-      });
+      onChanged?.(
+        results.map((result) => ({
+          kind: result.kind,
+          id: result.id,
+          assignYmd,
+          action: 'assign' as const,
+        })),
+      );
     } catch (err) {
-      toast.error(toUserMessage(err, '改派失败，请稍后重试'));
+      toast.error(toUserMessage(err, results.length > 1 ? '批量入格失败，请稍后重试' : '改派失败，请稍后重试'));
     }
   };
 

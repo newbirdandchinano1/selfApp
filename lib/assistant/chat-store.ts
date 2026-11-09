@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { parseActionCard } from '@/lib/assistant/action-card';
 import {
+  metaFromAgentResult,
   previewFromSession,
   titleFromFirstUserMessage,
   toSessionSummary,
@@ -53,6 +54,10 @@ function sanitizeMessage(raw: unknown): ChatMessage | null {
       }
     }
   }
+  const meta =
+    o.meta && typeof o.meta === 'object' && !Array.isArray(o.meta)
+      ? metaFromAgentResult(o.meta as Record<string, unknown>)
+      : undefined;
   return {
     id: o.id,
     role: o.role,
@@ -62,6 +67,7 @@ function sanitizeMessage(raw: unknown): ChatMessage | null {
       o.status === 'sending' || o.status === 'streaming' || o.status === 'done' || o.status === 'error'
         ? o.status
         : 'done',
+    ...(meta ? { meta } : {}),
   };
 }
 

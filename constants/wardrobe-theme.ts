@@ -2,18 +2,14 @@
  * ATELIER 衣橱视觉令牌：对齐 `衣橱-UI重构.html` 的 :root。
  * 仅衣橱页消费，不改动全局主题。夜间随 `useAppTheme`（同财务 / 复盘折页）。
  *
- * 字族（与设计稿栈一致）：
- * --serif → Noto Serif SC
- * --sans  → Noto Sans SC（Web 仍走 PingFang / 雅黑栈）
- * --mono  → Roboto Mono（设计稿 mono 栈末位；DIN 无开源授权）
- *
- * Native 必须用「字重内嵌于 fontFamily」的 expo-google-fonts 面名，
- * 不可再叠 fontWeight，否则 Android 会整段回退成系统默认字体。
+ * 字族复用全局 `appFonts`（Noto Serif/Sans SC + Roboto Mono 字体包）。
+ * Native 必须用「字重内嵌于 fontFamily」的面名，不可再叠 fontWeight。
  *
  * 色板约定：`pine` 作标题 / 描边强调（夜间变浅）；实心底（FAB / Dock / 主按钮）用 `pineSolid`。
  */
 import { Platform, type TextStyle } from 'react-native';
 
+import { appFonts, face } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 export const WARDROBE_LIGHT = {
@@ -130,48 +126,12 @@ export function useWardrobeTheme(): {
   };
 }
 
-const IS_WEB = Platform.OS === 'web';
-
-/** 设计稿 :root 字族栈（Web 直接复用，与 HTML 一致） */
-const SERIF_STACK =
-  '"Noto Serif SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif';
-const SANS_STACK = '"PingFang SC","Microsoft YaHei UI","Noto Sans SC",sans-serif';
-const MONO_STACK = '"DIN Alternate","SF Mono","Cascadia Mono","Roboto Mono",monospace';
-const ITALIC_STACK = 'Georgia,"Times New Roman",serif';
-
-/**
- * Native 面名 = expo-google-fonts 注册名。
- * Web 使用设计稿 CSS 栈，字重靠 fontWeight。
- */
-export const wardrobeFonts = {
-  serif: IS_WEB ? SERIF_STACK : 'NotoSerifSC_600SemiBold',
-  serifBold: IS_WEB ? SERIF_STACK : 'NotoSerifSC_700Bold',
-  sans: IS_WEB ? SANS_STACK : 'NotoSansSC_400Regular',
-  sansMedium: IS_WEB ? SANS_STACK : 'NotoSansSC_500Medium',
-  sansSemiBold: IS_WEB ? SANS_STACK : 'NotoSansSC_600SemiBold',
-  sansBold: IS_WEB ? SANS_STACK : 'NotoSansSC_700Bold',
-  mono: IS_WEB ? MONO_STACK : 'RobotoMono_400Regular',
-  monoMedium: IS_WEB ? MONO_STACK : 'RobotoMono_500Medium',
-  monoSemiBold: IS_WEB ? MONO_STACK : 'RobotoMono_600SemiBold',
-  monoBold: IS_WEB ? MONO_STACK : 'RobotoMono_700Bold',
-  displayItalic: IS_WEB ? ITALIC_STACK : Platform.select({ ios: 'Georgia', default: 'NotoSerifSC_600SemiBold' })!,
-} as const;
+/** 全局字族别名（兼容衣橱既有引用） */
+export const wardrobeFonts = appFonts;
 
 /** CSS `letter-spacing: Nem` → RN `letterSpacing`（逻辑像素） */
 export function wardrobeEm(em: number, fontSize: number): number {
   return Math.round(em * fontSize * 100) / 100;
-}
-
-/** Web 可写 fontWeight；Native 字重已烤进 fontFamily，禁止再写 weight */
-function face(
-  family: string,
-  webWeight?: TextStyle['fontWeight'],
-  extra?: TextStyle,
-): TextStyle {
-  if (IS_WEB && webWeight != null) {
-    return { fontFamily: family, fontWeight: webWeight, ...extra };
-  }
-  return { fontFamily: family, ...extra };
 }
 
 type WT = TextStyle;

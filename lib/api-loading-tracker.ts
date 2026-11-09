@@ -3,6 +3,7 @@ import {
   isApiErrorRetryable,
   isDuplicateRecordApiError,
 } from '@/lib/api-client';
+import { isServerBusyError } from '@/lib/app-feedback/to-user-message';
 
 type ApiLoadingListener = () => void;
 
@@ -48,6 +49,13 @@ export function clearApiLoadingError(): void {
 }
 
 export function reportApiLoadingError(err: unknown): void {
+  // 503「服务器繁忙」已在 fetch 层静默重试；再弹全局失败卡会连环提示（Agent 快照占槽时尤甚）
+  if (isServerBusyError(err)) {
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      console.warn('[api-loading] suppressed server-busy:', formatApiErrorMessage(err));
+    }
+    return;
+  }
   loadingError = {
     message: formatApiErrorMessage(err),
     retryable: isApiErrorRetryable(err),

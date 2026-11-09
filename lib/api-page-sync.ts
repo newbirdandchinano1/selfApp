@@ -1,6 +1,6 @@
 import { ensureApiLoggedIn } from '@/lib/api-client';
 import { writeAppMeta } from '@/lib/api-local-bootstrap';
-import { withApiLoading } from '@/lib/api-loading-tracker';
+import { withSilentApiLoading } from '@/lib/api-loading-tracker';
 import { fetchApiTableAll } from '@/lib/api-read';
 import {
   beginCloudSqliteDirtyIgnoreBatch,
@@ -47,6 +47,7 @@ export async function clearTasksBootstrapVersionCache(): Promise<void> {
 /**
  * 页面首次访问：按页面范围从 REST 全量拉取并覆盖本地 SQLite。
  * 任务 / 财务 / 复盘 / 我的 Tab 不走通用 List，由专用 page API 负责读数。
+ * 静默执行：回前台增量由 SyncManager 负责；此处不挂「正在同步数据…」全局蒙层。
  */
 export async function syncPageScopeFromApi(
   pageKey: string,
@@ -71,7 +72,7 @@ export async function syncPageScopeFromApi(
   try {
     throwIfAborted(signal);
     try {
-      const tablesSynced = await withApiLoading(async () => {
+      const tablesSynced = await withSilentApiLoading(async () => {
         await ensureApiLoggedIn({ signal });
         for (const table of ordered) {
           throwIfAborted(signal);

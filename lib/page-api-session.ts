@@ -226,7 +226,7 @@ export function shouldReadPageFromServer(input: {
   return true;
 }
 
-/** wrapLoad 一律打网；forceRefresh 仅表示忽略 inflight 重新请求 */
+/** forceRefresh：忽略 inflight 并允许再次页面 REST；默认回前台/脏表重载只读 SQLite */
 export function resolvePageApiReadOpts(_pageKey: string, _forceRefresh?: boolean): { forceRefresh: boolean } {
   return { forceRefresh: Boolean(_forceRefresh) };
 }
@@ -274,10 +274,16 @@ export async function runPageLoadBody(
     }
   };
 
+  const forceRefresh = Boolean(_forceRefresh || readOpts.forceRefresh);
+
   beginPageApiRead(readOpts);
   try {
     const scopeTables = listPageScopeTables(pageKey);
-    if (scopeTables.length > 0) {
+    // 本会话已加载过：回前台 / 脏表重载只读 SQLite（增量由 SyncManager pull 静默灌入）。
+    // 仅首次进入或 forceRefresh 时再走页面 REST 全量。
+    const shouldSyncScope =
+      scopeTables.length > 0 && (forceRefresh || !hasPageLoadedInSession(pageKey));
+    if (shouldSyncScope) {
       const sync = await syncPageScopeFromApi(pageKey);
       if (!sync.ok) {
         markPageLoadRestFailed();

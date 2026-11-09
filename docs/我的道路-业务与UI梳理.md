@@ -40,7 +40,7 @@ life_directions（总方向 · 一句长文）
 | 层级 | 存什么 | 明确不做 |
 |---|---|---|
 | 总方向 | `life_directions.body` | 任务步骤、完成百分比 |
-| 多年 / 更远 / 年 / 季 / 月 | `title` + 可选 `note` + `status` + 可选**验收标准** checklist | 执行步骤、截止日期、优先级、完成百分比、入格 / 积分 |
+| 多年 / 更远 / 年 / 季 / 月 | `title` + 可选 `note`（梗概）+ `status` + **验收（即任务）** checklist（年可连季 / 季可连月；月可 `children` 嵌套；叶子后可建项目） | 截止日期、优先级、完成百分比、入格 / 积分 |
 | 项目 | 任务域实体；可选挂月目标 | — |
 
 `status` 枚举：`on_track` / `paused` / `arrived` / `dropped`。  

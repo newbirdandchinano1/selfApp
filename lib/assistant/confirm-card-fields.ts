@@ -71,6 +71,15 @@ export const COMMON_FIELD_LABELS: Record<string, string> = {
  * 未列出的 commit_* 走 COMMON_FIELD_LABELS + 通用 preferKeys。
  */
 export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
+  commit_catalog_write: [
+    { key: '_catalog_operation_id', label: '操作', editable: false },
+    { key: '_http_method', label: '方法', editable: false },
+    { key: '_http_path', label: '接口', editable: false },
+    { key: 'name', label: '标题', editable: true, aliases: ['title'] },
+    { key: 'amount', label: '金额', editable: true },
+    { key: 'note', label: '备注', editable: true },
+    { key: 'id', label: '目标ID', editable: true },
+  ],
   commit_finance_txn: [
     { key: 'name', label: '标题', editable: true },
     { key: 'amount', label: '金额', editable: true },
@@ -234,6 +243,12 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
   ],
   commit_recipe_category: [
     { key: 'name', label: '分类名', editable: true, aliases: ['title'] },
+  ],
+  commit_recipe_delete: [
+    { key: 'recipe_title', label: '菜谱', editable: false, aliases: ['title', 'name'] },
+  ],
+  commit_recipe_category_delete: [
+    { key: 'name', label: '分类名', editable: false, aliases: ['title', 'category_name'] },
   ],
   commit_wardrobe_item: [
     { key: 'name', label: '单品', editable: true, aliases: ['title'] },

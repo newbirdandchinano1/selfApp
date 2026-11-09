@@ -5,6 +5,7 @@
 
 import { Platform } from 'react-native';
 
+import { appFonts, APP_MONO_STACK, APP_SANS_STACK, APP_SERIF_STACK } from './app-fonts';
 import { getPalette, PaletteDark, PaletteLight } from './design-tokens';
 
 const light = PaletteLight;
@@ -48,23 +49,18 @@ export const Colors = {
 
 export { getPalette, PaletteDark, PaletteLight };
 
+/** 全局字族：Native 走字体包注册名；Web 走设计稿 CSS 栈 */
 export const Fonts = Platform.select({
-  ios: {
-    sans: 'system-ui',
-    serif: 'ui-serif',
-    rounded: 'ui-rounded',
-    mono: 'ui-monospace',
+  web: {
+    sans: APP_SANS_STACK,
+    serif: APP_SERIF_STACK,
+    rounded: APP_SANS_STACK,
+    mono: APP_MONO_STACK,
   },
   default: {
-    sans: 'normal',
-    serif: 'serif',
-    rounded: 'normal',
-    mono: 'monospace',
-  },
-  web: {
-    sans: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-    serif: "Georgia, 'Times New Roman', serif",
-    rounded: "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
-    mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    sans: appFonts.sans,
+    serif: appFonts.serif,
+    rounded: appFonts.sans,
+    mono: appFonts.mono,
   },
 });

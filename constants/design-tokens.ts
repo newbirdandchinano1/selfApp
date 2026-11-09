@@ -3,6 +3,8 @@
  * 财务 / 任务 / 复盘等折页可另有 fold 令牌；React Native 主路径经 `useAppTheme` 消费本色板。
  */
 
+import { appFonts, face } from '@/constants/app-fonts';
+
 /** 4pt 网格间距 */
 export const Spacing = {
   /** 4 */
@@ -86,25 +88,70 @@ export const TextScalePolicy = {
 
 /**
  * 字重与字号。页面标题用 Semibold/Bold，正文 Regular，大数字才加重并收紧字距。
- * 含 lineHeight，系统缩放时行距同步。不加载自定义字体，使用系统字。
+ * 含 lineHeight，系统缩放时行距同步。
+ * 字族走全局 `appFonts`（衣橱同款 Noto / Roboto Mono）；Native 由 rn-font-text 再解析字重面。
  */
 export const Typography = {
-  display: { fontSize: 44, fontWeight: '700' as const, letterSpacing: -1.1, lineHeight: 52 },
-  h1: { fontSize: 28, fontWeight: '700' as const, letterSpacing: -0.6, lineHeight: 34 },
-  h2: { fontSize: 22, fontWeight: '700' as const, letterSpacing: -0.4, lineHeight: 28 },
-  h3: { fontSize: 18, fontWeight: '600' as const, letterSpacing: -0.3, lineHeight: 24 },
-  title: { fontSize: 16, fontWeight: '600' as const, letterSpacing: -0.2, lineHeight: 22 },
-  body: { fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
-  bodyStrong: { fontSize: 14, fontWeight: '600' as const, letterSpacing: -0.2, lineHeight: 20 },
-  caption: { fontSize: 12, fontWeight: '400' as const, letterSpacing: 0, lineHeight: 16 },
-  label: { fontSize: 11, fontWeight: '600' as const, letterSpacing: 0.2, lineHeight: 14 },
+  display: {
+    fontSize: 44,
+    letterSpacing: -1.1,
+    lineHeight: 52,
+    ...face(appFonts.sansBold, '700'),
+  },
+  h1: {
+    fontSize: 28,
+    letterSpacing: -0.6,
+    lineHeight: 34,
+    ...face(appFonts.sansBold, '700'),
+  },
+  h2: {
+    fontSize: 22,
+    letterSpacing: -0.4,
+    lineHeight: 28,
+    ...face(appFonts.sansBold, '700'),
+  },
+  h3: {
+    fontSize: 18,
+    letterSpacing: -0.3,
+    lineHeight: 24,
+    ...face(appFonts.sansSemiBold, '600'),
+  },
+  title: {
+    fontSize: 16,
+    letterSpacing: -0.2,
+    lineHeight: 22,
+    ...face(appFonts.sansSemiBold, '600'),
+  },
+  body: {
+    fontSize: 14,
+    lineHeight: 20,
+    ...face(appFonts.sans, '400'),
+  },
+  bodyStrong: {
+    fontSize: 14,
+    letterSpacing: -0.2,
+    lineHeight: 20,
+    ...face(appFonts.sansSemiBold, '600'),
+  },
+  caption: {
+    fontSize: 12,
+    letterSpacing: 0,
+    lineHeight: 16,
+    ...face(appFonts.sans, '400'),
+  },
+  label: {
+    fontSize: 11,
+    letterSpacing: 0.2,
+    lineHeight: 14,
+    ...face(appFonts.sansSemiBold, '600'),
+  },
   /** ≥11pt：满足 HIG 可读地板；不再使用 10pt kicker */
   kicker: {
     fontSize: 11,
-    fontWeight: '600' as const,
     letterSpacing: 1.2,
     textTransform: 'uppercase' as const,
     lineHeight: 14,
+    ...face(appFonts.sansSemiBold, '600'),
   },
 } as const;
 

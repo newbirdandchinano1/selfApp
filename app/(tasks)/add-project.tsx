@@ -16,6 +16,11 @@ import {
   validateRequiredTitle,
 } from '@/components/entity-form';
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
+import {
+  findAcceptanceById,
+  parseAcceptanceCriteria,
+} from '@/lib/life-road/life-road-acceptance';
+import { mergeLifeAcceptanceIdIntoExtraData } from '@/lib/life-road/project-road-link';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
@@ -153,8 +158,9 @@ export default function AddProjectScreen() {
     categoryId?: string | string[];
     /** 复盘建议等入口预填项目名 */
     title?: string;
-    /** 从月目标「快速创建项目」预填归属 */
+    /** 从月目标验收叶子「建项目」预填归属 */
     life_month_goal_id?: string | string[];
+    life_acceptance_id?: string | string[];
   }>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
@@ -193,18 +199,31 @@ export default function AddProjectScreen() {
     const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
     return (s ?? '').trim() || null;
   }, [params.life_month_goal_id]);
+  const routeAcceptanceId = React.useMemo(() => {
+    const raw = params.life_acceptance_id;
+    const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
+    return (s ?? '').trim() || null;
+  }, [params.life_acceptance_id]);
   const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(
     routeMonthGoalId,
+  );
+  const [selectedAcceptanceId, setSelectedAcceptanceId] = React.useState<string | null>(
+    routeAcceptanceId,
   );
   const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const monthGoalPrefillBanner = React.useMemo(() => {
-    if (!routeMonthGoalId) return null;
+    if (!routeMonthGoalId || !routeAcceptanceId) return null;
     const g = monthGoals.find((n) => n.id === routeMonthGoalId);
-    if (!g) return '已从道路月目标创建，归属已预填';
+    if (!g) return '已从道路验收创建，归属已预填';
+    const leaf = findAcceptanceById(
+      parseAcceptanceCriteria(g.extra_data),
+      routeAcceptanceId,
+    );
     const m = g.month != null ? `${g.month} 月` : '月目标';
-    return `已从「${m} · ${g.title}」创建，归属已预填`;
-  }, [monthGoals, routeMonthGoalId]);
+    const leafText = leaf?.text?.trim() || '验收';
+    return `已从「${m} · ${leafText}」创建，归属已预填`;
+  }, [monthGoals, routeAcceptanceId, routeMonthGoalId]);
   const [rewardPointsText, setRewardPointsText] = React.useState('20');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('urgent-not-important');
   const [initialTasks, setInitialTasks] = React.useState<InitialTaskDraft[]>([]);
@@ -376,6 +395,10 @@ export default function AddProjectScreen() {
       playTitleShake();
       return;
     }
+    if (selectedMonthGoalId && !selectedAcceptanceId) {
+      toast.warn('道路归属须挂到月目标的验收叶子上');
+      return;
+    }
     if (creating) return;
 
     const prereqValidation = validatePrerequisiteSelection(null, prerequisiteProjectIds, allProjects);
@@ -423,7 +446,13 @@ export default function AddProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       const withIcon = mergeIconIntoExtraData(withReward, entityIcon, DEFAULT_PROJECT_ICON);
-      let withAcceptance = mergeAcceptanceChecklistIntoExtraData(withIcon, checklist) ?? withIcon;
+      const withRoadAcceptance = mergeLifeAcceptanceIdIntoExtraData(
+        withIcon,
+        selectedMonthGoalId ? selectedAcceptanceId : null,
+      );
+      let withAcceptance =
+        mergeAcceptanceChecklistIntoExtraData(withRoadAcceptance, checklist) ??
+        withRoadAcceptance;
       let nextNoteImages = isLongTermProject ? [] : [...noteImageUris];
       if (nextNoteImages.length > 0) {
         nextNoteImages = await ensureNoteImagesRemote({
@@ -516,6 +545,7 @@ export default function AddProjectScreen() {
     isLongTermProject,
     notes,
     noteImageUris,
+    selectedAcceptanceId,
     notifyAncestorsDataChanged,
     playTitleShake,
     prerequisiteProjectIds,
@@ -846,14 +876,18 @@ export default function AddProjectScreen() {
                 { backgroundColor: foldCardBg, borderColor: foldCardBorder, paddingVertical: 12 },
               ]}>
               <MonthGoalPickerField
-                selectedId={selectedMonthGoalId}
+                selectedMonthGoalId={selectedMonthGoalId}
+                selectedAcceptanceId={selectedAcceptanceId}
                 monthGoals={monthGoals}
                 loading={monthGoalsLoading}
-                onChange={setSelectedMonthGoalId}
+                onChange={(value) => {
+                  setSelectedMonthGoalId(value?.monthGoalId ?? null);
+                  setSelectedAcceptanceId(value?.acceptanceId ?? null);
+                }}
                 prefillBanner={monthGoalPrefillBanner}
               />
               <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
-                道路归属只影响导图里的挂载位置，不会改变项目自身的任务、日历与积分。
+                道路归属挂在月目标的验收叶子上，只影响导图位置，不改变任务、日历与积分。
               </Text>
             </View>
           </FoldRiseIn>

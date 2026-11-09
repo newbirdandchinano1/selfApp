@@ -264,7 +264,7 @@ export async function createLifeRoadNode(
 ): Promise<LifeRoadNodeRow> {
   const kind = parseLifeRoadNodeKind(input.kind);
   const title = trimRequiredText(input.title, '标题', LIFE_ROAD_TITLE_MAX);
-  const note = trimOptionalText(input.note, '说明', LIFE_ROAD_NOTE_MAX);
+  const note = trimOptionalText(input.note, '梗概', LIFE_ROAD_NOTE_MAX);
   const status = parseLifeRoadNodeStatus(input.status ?? 'on_track');
   const sortOrder = parseSortOrder(input.sort_order, 1000);
   const extraData = input.extra_data?.trim() ? input.extra_data.trim() : null;
@@ -325,7 +325,7 @@ export async function updateLifeRoadNode(
       : existing.title;
   const note =
     input.note !== undefined
-      ? trimOptionalText(input.note, '说明', LIFE_ROAD_NOTE_MAX)
+      ? trimOptionalText(input.note, '梗概', LIFE_ROAD_NOTE_MAX)
       : existing.note;
   const status =
     input.status !== undefined

@@ -212,6 +212,35 @@ export function computeTransactionLedgerEffect(
 
 const FINANCE_BALANCE_EPS = 1e-4;
 
+/**
+ * 首页卡片与账户详情共用的余额合并规则。
+ * 有服务端余额缓存时优先用缓存（page API 本地流水常不完整，禁止用局部流水覆盖）；
+ * 无缓存时才用本地流水汇总。资产误记负余额时回退流水或取绝对值。
+ */
+export function resolveFinanceAccountDisplayBalance(input: {
+  remembered: number | undefined;
+  ledger: number;
+  sign_rule: -1 | 1;
+  account_type: string;
+  extra_data?: string | null;
+}): number {
+  const meta = {
+    sign_rule: input.sign_rule,
+    account_type: input.account_type,
+    extra_data: input.extra_data,
+  };
+  const liability = isFinanceLiabilityAccount(meta);
+  let rawBalance = input.ledger;
+  if (input.remembered != null && Number.isFinite(input.remembered)) {
+    rawBalance = input.remembered;
+    if (!liability && rawBalance < -FINANCE_BALANCE_EPS) {
+      // 旧逻辑曾把资产余额翻成负数写入缓存：优先用本地流水，否则取绝对值恢复
+      rawBalance = Math.abs(input.ledger) > FINANCE_BALANCE_EPS ? input.ledger : Math.abs(rawBalance);
+    }
+  }
+  return normalizeFinanceAccountLedgerBalance(meta, rawBalance);
+}
+
 /** 与 SQLite / API 读入的 sign_rule 对齐为 -1 | 1；account_type=liability 优先于错误的正 sign_rule */
 export function normalizeFinanceSignRule(
   signRule: unknown,
@@ -366,13 +395,33 @@ export async function resolveFinanceAccountLedgerBalance(accountId: string): Pro
   return getFinanceAccountLedgerBalance(accountId);
 }
 
-/** 与 `getFinanceAccountsWithBalance` 一致：优先服务端余额缓存，否则本地流水汇总。 */
+/** 与 `getFinanceAccountsWithBalance` / 账户详情一致：优先服务端余额缓存，否则本地流水汇总。 */
 export async function getFinanceAccountLedgerBalance(accountId: string): Promise<number> {
-  const remembered = getRememberedFinanceAccountBalance(accountId);
-  if (remembered != null) return remembered;
   await ensureFinanceTablesSyncedFromApi({ cacheOnly: true });
-  const transactions = await readFinanceTransactionsLocalVisible();
-  return computeLedgerBalanceFromTransactions(accountId, transactions);
+  const [accounts, transactions] = await Promise.all([
+    readFinanceAccountsLocalVisible(),
+    readFinanceTransactionsLocalVisible(),
+  ]);
+  const account = accounts.find((row) => row.id === accountId);
+  const ledger = computeLedgerBalanceFromTransactions(accountId, transactions);
+  const remembered = getRememberedFinanceAccountBalance(accountId);
+  if (!account) {
+    return remembered != null && Number.isFinite(remembered) ? remembered : ledger;
+  }
+  const liability = isFinanceLiabilityAccount({
+    sign_rule: account.sign_rule,
+    account_type: account.account_type,
+    extra_data: account.extra_data,
+  });
+  const sign_rule: -1 | 1 = liability ? -1 : 1;
+  const account_type = liability ? 'liability' : account.account_type === 'liability' ? 'asset' : account.account_type;
+  return resolveFinanceAccountDisplayBalance({
+    remembered,
+    ledger,
+    sign_rule,
+    account_type,
+    extra_data: account.extra_data,
+  });
 }
 
 async function getFinanceAccountComputedBalance(accountId: string): Promise<number> {
@@ -472,29 +521,13 @@ export async function getFinanceAccountsWithBalance(_opts?: { cacheOnly?: boolea
 
     const remembered = getRememberedFinanceAccountBalance(a.id);
     const ledger = computeLedgerBalanceFromTransactions(a.id, transactions);
-    const meta = {
+    const balance = resolveFinanceAccountDisplayBalance({
+      remembered,
+      ledger,
       sign_rule,
       account_type,
       extra_data: a.extra_data,
-    };
-
-    let rawBalance = ledger;
-    if (remembered != null && Number.isFinite(remembered)) {
-      const rem = normalizeFinanceAccountLedgerBalance(meta, remembered);
-      const led = normalizeFinanceAccountLedgerBalance(meta, ledger);
-      if (Math.abs(rem) < FINANCE_BALANCE_EPS && Math.abs(led) > FINANCE_BALANCE_EPS) {
-        rawBalance = led;
-      } else if (liability) {
-        rawBalance = Math.abs(rem) >= Math.abs(led) ? rem : led;
-      } else if (rem < -FINANCE_BALANCE_EPS) {
-        // 旧逻辑曾把资产余额翻成负数写入缓存：优先用本地流水，否则取绝对值恢复
-        rawBalance = Math.abs(led) > FINANCE_BALANCE_EPS ? led : Math.abs(rem);
-      } else {
-        rawBalance = rem;
-      }
-    }
-
-    const balance = normalizeFinanceAccountLedgerBalance(meta, rawBalance);
+    });
     // 负余额只在汇总层按负债口径计入（countsAsLiabilityInAggregates），禁止据此改写账户类型。
     // 本地流水常不完整，短暂负余额会把资产永久 heal 成负债，刷新后再把正余额翻成负数。
 
@@ -1221,9 +1254,6 @@ export async function loadFinanceAccountDetail(input: {
     return { account: null, transactions: [] };
   }
 
-  const remembered = getRememberedFinanceAccountBalance(target.id);
-  let rawBalance =
-    remembered != null ? remembered : computeLedgerBalanceFromTransactions(target.id, allTransactions);
   const liability = isFinanceLiabilityAccount({
     sign_rule: target.sign_rule,
     account_type: target.account_type,
@@ -1231,18 +1261,19 @@ export async function loadFinanceAccountDetail(input: {
   });
   const sign_rule: -1 | 1 = liability ? -1 : 1;
   const account_type = liability ? 'liability' : target.account_type === 'liability' ? 'asset' : target.account_type;
-  if (!liability && typeof rawBalance === 'number' && rawBalance < -1e-4) {
-    const ledger = computeLedgerBalanceFromTransactions(target.id, allTransactions);
-    rawBalance = Math.abs(ledger) > 1e-4 ? ledger : Math.abs(rawBalance);
-  }
+  const remembered = getRememberedFinanceAccountBalance(target.id);
+  const ledger = computeLedgerBalanceFromTransactions(target.id, allTransactions);
   const account: FinanceAccountBalanceRow = {
     ...target,
     account_type,
     sign_rule,
-    balance: normalizeFinanceAccountLedgerBalance(
-      { sign_rule, account_type, extra_data: target.extra_data },
-      rawBalance,
-    ),
+    balance: resolveFinanceAccountDisplayBalance({
+      remembered,
+      ledger,
+      sign_rule,
+      account_type,
+      extra_data: target.extra_data,
+    }),
   };
 
   const transactions = sortFinanceTransactionsDesc(

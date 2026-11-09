@@ -23,6 +23,7 @@ import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
 import {
   LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
+  flattenAcceptanceItems,
   parseAcceptanceCriteria,
   writeAcceptanceCriteria,
   type LifeRoadAcceptanceItem,
@@ -34,6 +35,7 @@ import {
   LIFE_ROAD_NOTE_MAX,
   LIFE_ROAD_TITLE_MAX,
   LifeRoadValidationError,
+  QUARTER_MONTHS,
   monthLabel,
   parseLifeRoadNodeKind,
   quarterLabel,
@@ -182,7 +184,9 @@ export default function EditLifeRoadNodeScreen() {
     note: string;
     status: LifeRoadNodeStatus;
     acceptanceKey: string;
-  } | null>(isNew ? { title: '', note: '', status: 'on_track', acceptanceKey: '' } : null);
+  } | null>(
+    isNew ? { title: '', note: '', status: 'on_track', acceptanceKey: '' } : null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -213,11 +217,22 @@ export default function EditLifeRoadNodeScreen() {
   const noteLen = [...note].length;
   const acceptanceKey = useMemo(
     () =>
-      acceptance
-        .map((it) => `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}`)
+      flattenAcceptanceItems(acceptance)
+        .map(
+          (it) =>
+            `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
+        )
         .join('|'),
     [acceptance],
   );
+
+  const linkMode =
+    kind === 'year' ? 'quarter' : kind === 'quarter' ? 'month' : null;
+  const linkMonthOptions = useMemo(() => {
+    if (kind !== 'quarter') return [];
+    const q = (quarter ?? 1) as 1 | 2 | 3 | 4;
+    return [...(QUARTER_MONTHS[q] ?? QUARTER_MONTHS[1])];
+  }, [kind, quarter]);
 
   const dirty = useMemo(() => {
     if (!baseline) return false;
@@ -261,8 +276,11 @@ export default function EditLifeRoadNodeScreen() {
             title: row.title,
             note: row.note ?? '',
             status: row.status,
-            acceptanceKey: items
-              .map((it) => `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}`)
+            acceptanceKey: flattenAcceptanceItems(items)
+              .map(
+                (it) =>
+                  `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
+              )
               .join('|'),
           });
         }, false);
@@ -286,7 +304,7 @@ export default function EditLifeRoadNodeScreen() {
     try {
       const extra_data = writeAcceptanceCriteria(extraDataBase, acceptance);
       if (isNew || !nodeId) {
-        await createLifeRoadNode({
+        const created = await createLifeRoadNode({
           kind,
           title,
           note: note.trim() ? note : null,
@@ -298,6 +316,7 @@ export default function EditLifeRoadNodeScreen() {
           parent_id: parentId,
           extra_data,
         });
+        setNodeId(created.id);
         toast.success('已创建');
       } else {
         await updateLifeRoadNode(nodeId, {
@@ -335,6 +354,7 @@ export default function EditLifeRoadNodeScreen() {
     router,
     notifyAncestorsDataChanged,
   ]);
+
 
   const onDelete = useCallback(() => {
     if (!nodeId) return;
@@ -522,22 +542,44 @@ export default function EditLifeRoadNodeScreen() {
                 <View style={styles.fieldHead}>
                   <View style={styles.fieldLabel}>
                     <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>02</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>说明</Text>
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>梗概</Text>
                   </View>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                    {noteLen} / {LIFE_ROAD_NOTE_MAX}
-                  </Text>
+                  <View style={styles.aiHeadActions}>
+                    <Pressable
+                      onPress={() => setAcceptAiOpen(true)}
+                      disabled={!title.trim()}
+                      style={({ pressed }) => [
+                        styles.aiMiniBtn,
+                        {
+                          borderColor: lr.line,
+                          opacity: !title.trim() ? 0.4 : pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <AppIcon name="auto-awesome" size={12} color={lr.pine} />
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: lr.pine }}>
+                        生成验收
+                      </Text>
+                    </Pressable>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                      {noteLen} / {LIFE_ROAD_NOTE_MAX}
+                    </Text>
+                  </View>
                 </View>
                 <TextInput
                   value={note}
                   onChangeText={(t) => setNote([...t].slice(0, LIFE_ROAD_NOTE_MAX).join(''))}
                   maxLength={LIFE_ROAD_NOTE_MAX}
-                  placeholder="可选：为什么要走这一步？"
+                  placeholder="写清背景与意图，可据此生成验收…"
                   placeholderTextColor={lr.muted2}
                   multiline
                   textAlignVertical="top"
                   style={[styles.noteInput, { color: lr.ink3 }]}
                 />
+                <View style={styles.lineNote}>
+                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
+                    梗概越具体，生成验收越准
+                  </Text>
+                </View>
               </FormCard>
             </FoldRiseIn>
 
@@ -597,33 +639,20 @@ export default function EditLifeRoadNodeScreen() {
                   <View style={styles.fieldLabel}>
                     <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>04</Text>
                     <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>
-                      验收标准
+                      验收
                     </Text>
                   </View>
-                  <View style={styles.aiHeadActions}>
-                    <Pressable
-                      onPress={() => setAcceptAiOpen(true)}
-                      disabled={!title.trim()}
-                      style={({ pressed }) => [
-                        styles.aiMiniBtn,
-                        {
-                          borderColor: lr.line,
-                          opacity: !title.trim() ? 0.4 : pressed ? 0.88 : 1,
-                        },
-                      ]}>
-                      <AppIcon name="auto-awesome" size={12} color={lr.pine} />
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: lr.pine }}>
-                        生成验收
-                      </Text>
-                    </Pressable>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                      {acceptance.length} / {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
-                    </Text>
-                  </View>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
+                    {flattenAcceptanceItems(acceptance).length} /{' '}
+                    {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
+                  </Text>
                 </View>
                 <AcceptanceChecklistEditor
                   items={acceptance}
                   onChange={setAcceptance}
+                  linkMode={linkMode}
+                  linkMonthOptions={linkMonthOptions}
+                  allowChildren={kind === 'month'}
                   ink2={lr.ink2}
                   ink3={lr.ink3}
                   muted={lr.muted}
@@ -636,10 +665,13 @@ export default function EditLifeRoadNodeScreen() {
                 />
                 <View style={styles.lineNote}>
                   <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
-                    勾选会直接写回 extra_data
-                  </Text>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                    最多 {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条
+                    {linkMode === 'quarter'
+                      ? '验收即任务，可连接对应季'
+                      : linkMode === 'month'
+                        ? '验收即任务，可连接对应月'
+                        : kind === 'month'
+                          ? '验收即任务，可拆子任务'
+                          : '勾选表示怎样算抵达'}
                   </Text>
                 </View>
               </FormCard>
@@ -663,7 +695,7 @@ export default function EditLifeRoadNodeScreen() {
                     一句话更新
                   </Text>
                   <Text style={{ fontSize: 11, color: lr.muted, marginTop: 2 }}>
-                    自然语言改状态 / 说明 / 验收草稿
+                    自然语言改状态 / 梗概 / 验收草稿
                   </Text>
                 </View>
               </Pressable>
@@ -672,7 +704,7 @@ export default function EditLifeRoadNodeScreen() {
             <View style={styles.helperNote}>
               <AppIcon name="info-outline" size={12} color={lr.muted2} />
               <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: lr.muted }}>
-                道路只负责方向与验收：这里没有截止日期、优先级、进度条，也不进入任务日历与积分。
+                验收就是任务：年连季、季连月；月可拆子。不进日历与积分。
               </Text>
             </View>
           </ScrollView>
@@ -711,15 +743,24 @@ export default function EditLifeRoadNodeScreen() {
         title={title}
         note={note}
         kind={kind}
-        existingAcceptance={acceptance.map(a => a.text).filter(Boolean)}
+        existingAcceptance={flattenAcceptanceItems(acceptance)
+          .map((a) => a.text)
+          .filter(Boolean)}
         directionBody={directionBody || undefined}
-        currentCount={acceptance.length}
-        onApply={items => {
-          setAcceptance(prev => {
-            const room = Math.max(0, LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - prev.length);
-            const existing = new Set(prev.map(p => p.text.trim().toLowerCase()));
+        currentCount={flattenAcceptanceItems(acceptance).length}
+        onApply={(items) => {
+          setAcceptance((prev) => {
+            const room = Math.max(
+              0,
+              LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - flattenAcceptanceItems(prev).length,
+            );
+            const existing = new Set(
+              flattenAcceptanceItems(prev).map((p) => p.text.trim().toLowerCase()),
+            );
             const add = items
-              .filter(a => a.text.trim() && !existing.has(a.text.trim().toLowerCase()))
+              .filter(
+                (a) => a.text.trim() && !existing.has(a.text.trim().toLowerCase()),
+              )
               .slice(0, room);
             return add.length ? [...prev, ...add] : prev;
           });
@@ -734,7 +775,9 @@ export default function EditLifeRoadNodeScreen() {
           note,
           kind,
           status,
-          acceptance: acceptance.map(a => a.text).filter(Boolean),
+          acceptance: flattenAcceptanceItems(acceptance)
+            .map((a) => a.text)
+            .filter(Boolean),
         }}
         onApply={onApplyNodeUpdate}
       />

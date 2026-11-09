@@ -85,6 +85,8 @@ export type AssistantCommitConfirmAction =
   | 'commit_recipe_shop'
   | 'commit_recipe_cook_log'
   | 'commit_recipe_category'
+  | 'commit_recipe_delete'
+  | 'commit_recipe_category_delete'
   | 'commit_wardrobe_item'
   | 'commit_wardrobe_outfit'
   | 'commit_wardrobe_wear'
@@ -102,6 +104,7 @@ export type AssistantCommitConfirmAction =
   | 'commit_task_category'
   | 'commit_project_category'
   | 'commit_schedule_placement'
+  | 'commit_catalog_write'
   | (string & { readonly __commitBrand?: unique symbol });
 
 export type AssistantConfirmAction =

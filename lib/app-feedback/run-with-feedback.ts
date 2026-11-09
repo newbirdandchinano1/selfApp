@@ -5,7 +5,7 @@ import {
 } from '@/lib/api-loading-tracker';
 
 import { toast } from './toast-events';
-import { toUserMessage } from './to-user-message';
+import { isServerBusyError, toUserMessage } from './to-user-message';
 
 export type RunWithFeedbackOptions = {
   /**
@@ -35,8 +35,8 @@ export async function runWithFeedback<T>(
     if (opts.success) toast.success(opts.success);
     return result;
   } catch (err) {
-    // 双弹规避：壳内已有失败卡时不再 Toast
-    if (!getApiLoadingError()) {
+    // 双弹规避：壳内已有失败卡时不再 Toast；瞬时繁忙由网络层静默重试，不打扰
+    if (!getApiLoadingError() && !isServerBusyError(err)) {
       toast.error(toUserMessage(err, opts.errorFallback ?? '操作失败，请稍后重试'));
     }
     throw err;

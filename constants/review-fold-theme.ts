@@ -5,8 +5,7 @@
  * `fold` 是底层色板（键名沿用设计稿），`palette` 是语义别名，
  * 页面组件优先用语义名（ink / paperAlt / cardRing / amberInk …）。
  */
-import { Platform } from 'react-native';
-
+import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 /** 折页 · FOLD 设计令牌（复盘页面专用，不影响全局蓝色主题） */
@@ -97,8 +96,11 @@ export const FOLD_DARK: FoldPalette = {
 };
 
 export const foldFonts = {
-  serif: Platform.select({ ios: 'Songti SC', android: 'serif', default: 'serif' }),
-  mono: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+  serif: appFonts.serif,
+  serifBold: appFonts.serifBold,
+  sans: appFonts.sans,
+  mono: appFonts.mono,
+  monoBold: appFonts.monoBold,
 } as const;
 
 /** 语义别名：页面组件按「用途」取色，而不是记住设计稿色号。 */

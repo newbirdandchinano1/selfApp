@@ -21,11 +21,16 @@ import {
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
+  acceptanceLinkLabel,
   acceptanceMetaLabel,
+  findAcceptanceById,
+  isAcceptanceLeaf,
   parseAcceptanceCriteria,
+  updateAcceptanceById,
   writeAcceptanceCriteria,
   type LifeRoadAcceptanceItem,
 } from '@/lib/life-road/life-road-acceptance';
+import { parseLifeAcceptanceId } from '@/lib/life-road/project-road-link';
 import {
   LIFE_ROAD_NODE_KIND_LABELS,
   LIFE_ROAD_NODE_STATUS_LABELS,
@@ -179,53 +184,126 @@ function AcceptanceInline({
   items,
   lr,
   onToggleItem,
+  onCreateProject,
+  projectsByAcceptanceId,
+  onOpenProject,
+  depth = 1,
 }: {
   items: LifeRoadAcceptanceItem[];
   lr: LifeRoadPalette;
   onToggleItem: (itemId: string) => void;
+  /** 叶子验收后建项目（仅月） */
+  onCreateProject?: (leaf: LifeRoadAcceptanceItem) => void;
+  /** 按验收叶子挂载的项目（仅月） */
+  projectsByAcceptanceId?: Map<string, RoadProjectRef[]>;
+  onOpenProject?: (projectId: string) => void;
+  depth?: number;
 }) {
   if (items.length === 0) return null;
   return (
-    <View style={styles.accInner}>
-      {items.map((item) => (
-        <Pressable
-          key={item.id}
-          onPress={() => onToggleItem(item.id)}
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: item.done }}
-          style={styles.accItem}>
-          <View
-            style={[
-              styles.accCheck,
-              item.done
-                ? { backgroundColor: lr.pine, borderColor: lr.pine }
-                : {
-                    borderColor: lr.line2,
-                    backgroundColor: 'rgba(255,255,255,0.45)',
-                  },
-            ]}>
-            {item.done ? (
-              <Svg width={9} height={9} viewBox="0 0 24 24" fill="none">
-                <Path
-                  d="M5 12.5l4.5 4.5L19 7"
-                  stroke={lr.onRoad}
-                  strokeWidth={2.4}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </Svg>
+    <View style={depth === 1 ? styles.accInner : undefined}>
+      {items.map((item) => {
+        const link = depth === 1 ? acceptanceLinkLabel(item) : null;
+        const leaf = isAcceptanceLeaf(item);
+        const linkedProjects =
+          leaf && projectsByAcceptanceId ? projectsByAcceptanceId.get(item.id) ?? [] : [];
+        return (
+          <View key={item.id}>
+            <View
+              style={[
+                styles.accItem,
+                depth > 1 ? { paddingLeft: 8 + (depth - 1) * 12 } : null,
+              ]}>
+              <Pressable
+                onPress={() => onToggleItem(item.id)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: item.done }}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                <View
+                  style={[
+                    styles.accCheck,
+                    item.done
+                      ? { backgroundColor: lr.pine, borderColor: lr.pine }
+                      : {
+                          borderColor: lr.line2,
+                          backgroundColor: 'rgba(255,255,255,0.45)',
+                        },
+                  ]}>
+                  {item.done ? (
+                    <Svg width={9} height={9} viewBox="0 0 24 24" fill="none">
+                      <Path
+                        d="M5 12.5l4.5 4.5L19 7"
+                        stroke={lr.onRoad}
+                        strokeWidth={2.4}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </Svg>
+                  ) : null}
+                </View>
+                <Text
+                  style={[
+                    styles.accTxt,
+                    { color: item.done ? lr.muted : lr.ink3 },
+                  ]}
+                  numberOfLines={2}>
+                  {item.text}
+                </Text>
+              </Pressable>
+              {link ? (
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: '700',
+                    color: lr.pine3,
+                    flexShrink: 0,
+                  }}>
+                  {link}
+                </Text>
+              ) : null}
+              {leaf && onCreateProject ? (
+                <Pressable
+                  onPress={() => onCreateProject(item)}
+                  style={[
+                    styles.accCreateProj,
+                    {
+                      borderColor: 'rgba(61,107,88,0.35)',
+                      backgroundColor: 'rgba(220,231,223,0.35)',
+                    },
+                  ]}>
+                  <Text style={{ fontSize: 10, fontWeight: '700', color: lr.pine }}>
+                    建项目
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {linkedProjects.length > 0 && onOpenProject
+              ? linkedProjects.map((p) => (
+                  <View
+                    key={p.id}
+                    style={{ paddingLeft: 8 + depth * 12, marginTop: 4 }}>
+                    <ProjectCard
+                      project={p}
+                      lr={lr}
+                      onPress={() => onOpenProject(p.id)}
+                    />
+                  </View>
+                ))
+              : null}
+            {(item.children ?? []).length > 0 ? (
+              <AcceptanceInline
+                items={item.children ?? []}
+                lr={lr}
+                onToggleItem={onToggleItem}
+                onCreateProject={onCreateProject}
+                projectsByAcceptanceId={projectsByAcceptanceId}
+                onOpenProject={onOpenProject}
+                depth={depth + 1}
+              />
             ) : null}
           </View>
-          <Text
-            style={[
-              styles.accTxt,
-              { color: item.done ? lr.muted : lr.ink3 },
-            ]}
-            numberOfLines={2}>
-            {item.text}
-          </Text>
-        </Pressable>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -473,8 +551,9 @@ export default function LifeRoadScreen() {
         name: string;
         status: string;
         life_month_goal_id: string;
+        extra_data: string | null;
       }>(
-        `SELECT id, name, status, life_month_goal_id FROM projects
+        `SELECT id, name, status, life_month_goal_id, extra_data FROM projects
          WHERE life_month_goal_id IS NOT NULL
            AND life_month_goal_id != ''
            AND sync_status != 'pending_delete'
@@ -487,6 +566,7 @@ export default function LifeRoadScreen() {
           id: String(p.id),
           name: String(p.name),
           status: String(p.status),
+          acceptanceId: parseLifeAcceptanceId(p.extra_data),
         });
         projectsByMonthId.set(mid, list);
       }
@@ -617,19 +697,55 @@ export default function LifeRoadScreen() {
     (node: LifeRoadNodeRow, itemId: string) => {
       void (async () => {
         try {
-          const items = parseAcceptanceCriteria(node.extra_data).map((it) =>
-            it.id === itemId ? { ...it, done: !it.done } : it,
-          );
+          const items = parseAcceptanceCriteria(node.extra_data);
+          const target = items;
+          // 在树中翻转 done
+          const findDone = (list: LifeRoadAcceptanceItem[]): boolean | null => {
+            for (const it of list) {
+              if (it.id === itemId) return !it.done;
+              const nested = findDone(it.children ?? []);
+              if (nested != null) return nested;
+            }
+            return null;
+          };
+          const nextDone = findDone(target);
+          if (nextDone == null) return;
+          const next = updateAcceptanceById(items, itemId, { done: nextDone });
           await updateLifeRoadNode(node.id, {
-            extra_data: writeAcceptanceCriteria(node.extra_data, items),
+            extra_data: writeAcceptanceCriteria(node.extra_data, next),
           });
           await rebuild();
         } catch (e) {
-          toast.error(toUserMessage(e, '更新验收标准失败'));
+          toast.error(toUserMessage(e, '更新验收失败'));
         }
       })();
     },
     [rebuild],
+  );
+
+  /** 仅从月验收叶子建项目（道路归属挂验收，不直接挂月） */
+  const openProjectFromAcceptance = useCallback(
+    (opts: {
+      monthNode: LifeRoadNodeRow;
+      acceptanceId: string;
+      title?: string;
+    }) => {
+      const monthId = opts.monthNode.id;
+      const acceptanceId = opts.acceptanceId.trim();
+      if (!acceptanceId) {
+        toast.warn('请先写验收叶子再挂项目');
+        return;
+      }
+      router.push({
+        pathname: '/add-project',
+        params: {
+          life_month_goal_id: monthId,
+          life_acceptance_id: acceptanceId,
+          ...(opts.title?.trim() ? { title: opts.title.trim() } : {}),
+        },
+      });
+    },
+    [router],
   );
 
   const aboveOpen = expanded.has('above');
@@ -735,7 +851,7 @@ export default function LifeRoadScreen() {
             <AppIcon name="explore" size={12} color={lr.clay} />
             <Text style={{ flex: 1, fontSize: 12, lineHeight: 18, color: lr.muted }}>
               <Text style={{ fontWeight: '600', color: lr.ink3 }}>点标题编辑</Text>
-              {' · 左箭头展开 · 下拉刷新 · 验收可直接勾选'}
+              {' · 验收即任务 · 叶子验收后可建项目'}
             </Text>
           </View>
         </FoldRiseIn>
@@ -1106,16 +1222,16 @@ export default function LifeRoadScreen() {
                                                   styles.metaChip,
                                                   {
                                                     borderColor: 'rgba(33,69,58,0.08)',
-                                                    backgroundColor: 'rgba(255,255,255,0.38)',
+                                                    backgroundColor:
+                                                      'rgba(255,255,255,0.38)',
                                                   },
                                                 ]}>
                                                 <Text style={{ fontSize: 11, color: lr.ink3 }}>
                                                   验收{' '}
                                                   <Text style={{ fontWeight: '700' }}>
-                                                    {acceptanceMetaLabel(mCriteria)?.replace(
-                                                      '验收 ',
-                                                      '',
-                                                    ) ?? '0'}
+                                                    {acceptanceMetaLabel(
+                                                      mCriteria,
+                                                    )?.replace('验收 ', '') ?? '0'}
                                                   </Text>
                                                 </Text>
                                                 <ChevronIcon open={aOpen} color={lr.muted} />
@@ -1126,7 +1242,8 @@ export default function LifeRoadScreen() {
                                                     styles.metaChip,
                                                     {
                                                       borderColor: 'rgba(33,69,58,0.08)',
-                                                      backgroundColor: 'rgba(255,255,255,0.38)',
+                                                      backgroundColor:
+                                                        'rgba(255,255,255,0.38)',
                                                     },
                                                   ]}>
                                                   <Text style={{ fontSize: 11, color: lr.ink3 }}>
@@ -1140,7 +1257,8 @@ export default function LifeRoadScreen() {
                                                     styles.metaChip,
                                                     {
                                                       borderColor: 'rgba(33,69,58,0.08)',
-                                                      backgroundColor: 'rgba(255,255,255,0.38)',
+                                                      backgroundColor:
+                                                        'rgba(255,255,255,0.38)',
                                                     },
                                                   ]}>
                                                   <Text style={{ fontSize: 11, color: lr.ink3 }}>
@@ -1150,73 +1268,72 @@ export default function LifeRoadScreen() {
                                               ) : null}
                                             </View>
                                           ) : null}
-                                          {aOpen && m.node ? (
+                                          {(aOpen || (mOpen && mCriteria.length > 0)) &&
+                                          m.node ? (
                                             <AcceptanceInline
                                               items={mCriteria}
                                               lr={lr}
                                               onToggleItem={(itemId) =>
                                                 toggleAcceptanceItem(m.node!, itemId)
                                               }
+                                              onCreateProject={(leaf) =>
+                                                openProjectFromAcceptance({
+                                                  monthNode: m.node!,
+                                                  acceptanceId: leaf.id,
+                                                  title: leaf.text,
+                                                })
+                                              }
+                                              projectsByAcceptanceId={(() => {
+                                                const map = new Map<string, RoadProjectRef[]>();
+                                                for (const p of m.projects) {
+                                                  const aid = p.acceptanceId?.trim();
+                                                  if (!aid) continue;
+                                                  if (!findAcceptanceById(mCriteria, aid)) continue;
+                                                  const list = map.get(aid) ?? [];
+                                                  list.push(p);
+                                                  map.set(aid, list);
+                                                }
+                                                return map;
+                                              })()}
+                                              onOpenProject={(projectId) =>
+                                                router.push({
+                                                  pathname: '/edit-project',
+                                                  params: { id: projectId },
+                                                })
+                                              }
                                             />
                                           ) : null}
                                           {showKids
-                                            ? m.projects.map((p) => (
-                                                <ProjectCard
-                                                  key={p.id}
-                                                  project={p}
-                                                  lr={lr}
-                                                  onPress={() =>
-                                                    router.push({
-                                                      pathname: '/edit-project',
-                                                      params: { id: p.id },
-                                                    })
-                                                  }
-                                                />
-                                              ))
-                                            : null}
-                                          {m.node ? (
-                                            <Pressable
-                                              onPress={() =>
-                                                router.push({
-                                                  pathname: '/add-project',
-                                                  params: {
-                                                    life_month_goal_id: m.node!.id,
-                                                  },
+                                            ? m.projects
+                                                .filter((p) => {
+                                                  const aid = p.acceptanceId?.trim();
+                                                  if (!aid) return true;
+                                                  return !findAcceptanceById(mCriteria, aid);
                                                 })
-                                              }
-                                              style={[
-                                                styles.addProject,
-                                                {
-                                                  borderColor: 'rgba(61,107,88,0.3)',
-                                                  backgroundColor: 'rgba(220,231,223,0.2)',
-                                                },
-                                              ]}>
-                                              <View
-                                                style={[
-                                                  styles.addProjectPlus,
-                                                  { backgroundColor: lr.pine },
-                                                ]}>
-                                                <Text style={{ color: lr.onRoad, fontSize: 12 }}>
-                                                  +
-                                                </Text>
-                                              </View>
-                                              <Text
-                                                style={{
-                                                  flex: 1,
-                                                  fontSize: 12,
-                                                  fontWeight: '600',
-                                                  color: lr.pine2,
-                                                }}>
-                                                从此月建项目
-                                              </Text>
-                                              <Text
-                                                style={[
-                                                  lifeRoadType.monoTiny,
-                                                  { color: lr.muted },
-                                                ]}>
-                                                预填 {m.month} 月
-                                              </Text>
-                                            </Pressable>
+                                                .map((p) => (
+                                                  <ProjectCard
+                                                    key={p.id}
+                                                    project={p}
+                                                    lr={lr}
+                                                    onPress={() =>
+                                                      router.push({
+                                                        pathname: '/edit-project',
+                                                        params: { id: p.id },
+                                                      })
+                                                    }
+                                                  />
+                                                ))
+                                            : null}
+                                          {m.node && mCriteria.length === 0 ? (
+                                            <Text
+                                              style={{
+                                                fontSize: 11,
+                                                color: lr.muted,
+                                                paddingHorizontal: 10,
+                                                paddingVertical: 6,
+                                              }}>
+                                              先写月验收叶子，再从叶子「建项目」挂道路归属。
+                                            </Text>
                                           ) : null}
                                         </View>
                                       );
@@ -1681,6 +1798,13 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  accCreateProj: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 7,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexShrink: 0,
   },
   addProject: {
     flexDirection: 'row',

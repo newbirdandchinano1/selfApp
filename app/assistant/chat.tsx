@@ -38,10 +38,10 @@ import {
   saveChatSession,
 } from '@/lib/assistant/chat-store';
 import type { ChatMessage, ChatSession, ChatSessionSummary, ChatToolTrace } from '@/lib/assistant/chat-types';
-import { partsFromAgentResult, textFromParts } from '@/lib/assistant/chat-types';
+import { metaFromAgentResult, partsFromAgentResult, textFromParts } from '@/lib/assistant/chat-types';
 import { confirmAssistantCard } from '@/lib/assistant/confirm-execute';
 import { takeAssistantLaunchPayload } from '@/lib/assistant/host-controller';
-import { toast, toUserMessage } from '@/lib/app-feedback';
+import { isServerBusyError, toast, toUserMessage } from '@/lib/app-feedback';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -367,11 +367,18 @@ export default function AssistantChatScreen() {
           });
         }
 
+        // 以服务端 done.reply 为准（ReplyValidator 可能已改写/剔除 tool-call 泄漏）；
+        // streamedText 仅在 done 未带回正文时兜底。
+        const finalReply = (result.reply || '').trim()
+          ? result.reply
+          : streamedText || result.reply;
         const finalParts = partsFromAgentResult({
-          reply: usedStream ? streamedText || result.reply : result.reply,
+          reply: finalReply,
           toolTraces: result.tool_traces.length ? result.tool_traces : liveTraces,
           cards: finalCards,
         });
+        // S10 P3：绑定 unofficial_advice / source_labels / answer_status
+        const finalMeta = metaFromAgentResult(result.metadata);
         trackCommitCardsInMessages([{ id: assistantId, role: 'assistant', parts: finalParts, createdAt: Date.now() }]);
 
         nextSession = {
@@ -382,6 +389,7 @@ export default function AssistantChatScreen() {
               ? {
                   ...m,
                   parts: finalParts,
+                  meta: finalMeta,
                   status: 'done',
                 }
               : m,
@@ -407,7 +415,8 @@ export default function AssistantChatScreen() {
           updatedAt: Date.now(),
         };
         await persist(nextSession);
-        toast.error(errText);
+        // 瞬时繁忙已在网络层静默重试；气泡内已有错误文案，不再 Toast 打扰
+        if (!isServerBusyError(e)) toast.error(errText);
       } finally {
         if (flushTimer) clearTimeout(flushTimer);
         busyRef.current = false;

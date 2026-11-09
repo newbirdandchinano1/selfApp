@@ -205,6 +205,15 @@ import {
   isProjectScheduleNotYetStarted,
 } from '@/lib/repositories/projects/project-schedule-status';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  listAcceptanceLeaves,
+  parseAcceptanceCriteria,
+} from '@/lib/life-road/life-road-acceptance';
+import {
+  formatProjectRoadCaption,
+  parseLifeAcceptanceId,
+  roadAcceptanceCaptionKey,
+} from '@/lib/life-road/project-road-link';
 import { getLifeRoadNodesLocal } from '@/lib/repositories/life-road/life-road-node';
 import {
   insertFrogCompletionEvent,
@@ -2186,21 +2195,31 @@ export default function TasksScreen() {
     }
   }, []);
 
-  /** 道路标题缓存：life_road_nodes 变更经 TABLE_TAB_DIRTY_MAP 触发本页 reload 后重读 */
+  /** 道路标题缓存：月目标 + 验收叶子（`${monthId}::${acceptanceId}`） */
   const refreshLifeRoadTitles = React.useCallback(async () => {
     try {
       const nodes = await getLifeRoadNodesLocal();
-      setLifeRoadTitleById(
-        new Map(
-          nodes.map((n) => {
-            const caption =
-              n.kind === 'month' && n.month != null
-                ? `${n.month} 月 · ${n.title}`
-                : n.title;
-            return [n.id, caption];
-          }),
-        ),
-      );
+      const map = new Map<string, string>();
+      for (const n of nodes) {
+        const monthCaption =
+          n.kind === 'month' && n.month != null
+            ? formatProjectRoadCaption({ month: n.month, monthTitle: n.title })
+            : n.title;
+        map.set(n.id, monthCaption);
+        if (n.kind === 'month') {
+          for (const leaf of listAcceptanceLeaves(parseAcceptanceCriteria(n.extra_data))) {
+            map.set(
+              roadAcceptanceCaptionKey(n.id, leaf.id),
+              formatProjectRoadCaption({
+                month: n.month,
+                monthTitle: n.title,
+                acceptanceText: leaf.text,
+              }),
+            );
+          }
+        }
+      }
+      setLifeRoadTitleById(map);
     } catch (err) {
       console.warn('加载道路标题失败', err);
       setLifeRoadTitleById(new Map());
@@ -5655,10 +5674,13 @@ export default function TasksScreen() {
   );
 
   const onScheduleChanged = React.useCallback(
-    (detail?: ScheduleChangedDetail) => {
+    (detail?: ScheduleChangedDetail | ScheduleChangedDetail[]) => {
       markPageDirty();
-      // 立刻改内存态，待办/项目列表「已指派」不必等本地重载
-      if (detail) applyFrogAssignToVisibleLists(detail);
+      // 立刻改内存态，待办/项目列表「已指派」不必等本地重载（批量一次回写多条）
+      if (detail) {
+        const list = Array.isArray(detail) ? detail : [detail];
+        for (const item of list) applyFrogAssignToVisibleLists(item);
+      }
       notifyFrogScheduleChanged();
       // 无 detail 的路径（改轴重排、复制上周、仅移除时段等）从本地库对齐
       void runSilentPostMutationSync({
@@ -7660,8 +7682,17 @@ export default function TasksScreen() {
                     project.life_month_goal_id?.trim() ||
                     project.life_bet_id?.trim() ||
                     '';
+                  const lifeAcceptanceId = parseLifeAcceptanceId(project.extra_data);
                   const lifeBetTitle = lifeRoadId
-                    ? lifeRoadTitleById.get(lifeRoadId)?.trim() || ''
+                    ? (
+                        (lifeAcceptanceId
+                          ? lifeRoadTitleById
+                              .get(roadAcceptanceCaptionKey(lifeRoadId, lifeAcceptanceId))
+                              ?.trim()
+                          : '') ||
+                        lifeRoadTitleById.get(lifeRoadId)?.trim() ||
+                        ''
+                      )
                     : '';
                   const isLongTermProject = getIsLongTermProject(project.extra_data);
                   const hasReminder = !!schedule?.reminderOption && schedule.reminderOption !== '不提前';
