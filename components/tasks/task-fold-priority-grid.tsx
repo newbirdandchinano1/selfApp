@@ -1,5 +1,6 @@
 /**
  * 独立待办四象限 — 对齐设计稿 `.prio`：2×2 紧凑格，选中 220ms 灰→绿。
+ * 临期/过期时可锁定「不紧急」两格。
  */
 import {
   FOLD_MOTION_EASE,
@@ -7,6 +8,11 @@ import {
 } from '@/components/review/fold-motion';
 import type { TaskPriorityKey } from '@/components/composer';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
+import {
+  isNonUrgentPriorityKey,
+  NON_URGENT_PRIORITY_LOCK_HINT,
+} from '@/lib/due-soon-priority-bump';
+import { toast } from '@/lib/app-feedback';
 import React from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -27,12 +33,14 @@ function PrioCell({
   hint,
   q1,
   active,
+  locked,
   onPress,
 }: {
   title: string;
   hint: string;
   q1?: boolean;
   active: boolean;
+  locked?: boolean;
   onPress: () => void;
 }) {
   const { tf } = useTaskFoldTheme();
@@ -48,13 +56,13 @@ function PrioCell({
     }).start();
   }, [active, animate, progress]);
 
-  const bgIdle = '#F2EEE2';
+  const bgIdle = locked ? '#E8E4D8' : '#F2EEE2';
   const bgOn = q1 ? 'rgba(196,112,85,0.18)' : 'rgba(201,217,163,0.45)';
   const borderIdle = 'transparent';
   const borderOn = q1 ? '#D39A86' : '#AFC38E';
-  const titleIdle = '#59685C';
+  const titleIdle = locked ? '#A4ADA3' : '#59685C';
   const titleOn = q1 ? '#8B4A34' : '#3F5D3E';
-  const hintIdle = '#909A91';
+  const hintIdle = locked ? '#B5BDB4' : '#909A91';
   const hintOn = q1 ? '#A56B55' : '#5A7358';
 
   const backgroundColor = progress.interpolate({
@@ -78,11 +86,13 @@ function PrioCell({
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityState={{ selected: active }}
-      style={({ pressed }) => [styles.cellWrap, { opacity: pressed ? 0.9 : 1 }]}>
+      accessibilityState={{ selected: active, disabled: !!locked }}
+      style={({ pressed }) => [styles.cellWrap, { opacity: pressed ? 0.9 : locked ? 0.72 : 1 }]}>
       <Animated.View style={[styles.cell, { backgroundColor, borderColor }]}>
         <Animated.Text style={[styles.cellTitle, { color: titleColor }]}>{title}</Animated.Text>
-        <Animated.Text style={[styles.cellHint, { color: hintColor }]}>{hint}</Animated.Text>
+        <Animated.Text style={[styles.cellHint, { color: hintColor }]}>
+          {locked ? '临期锁定' : hint}
+        </Animated.Text>
       </Animated.View>
     </Pressable>
   );
@@ -92,32 +102,56 @@ export function TaskFoldPriorityGrid({
   value,
   onChange,
   subtitle = '独立待办使用四象限',
+  lockNonUrgent = false,
+  lockHint = NON_URGENT_PRIORITY_LOCK_HINT,
 }: {
   value: TaskPriorityKey;
   onChange: (key: TaskPriorityKey) => void;
   subtitle?: string;
+  /** 截止日期剩余 ≤3 天或已过期：禁止改为不紧急 */
+  lockNonUrgent?: boolean;
+  lockHint?: string;
 }) {
   const { tf } = useTaskFoldTheme();
+
+  const handleChange = React.useCallback(
+    (key: TaskPriorityKey) => {
+      if (lockNonUrgent && isNonUrgentPriorityKey(key)) {
+        toast.info(lockHint);
+        return;
+      }
+      onChange(key);
+    },
+    [lockHint, lockNonUrgent, onChange],
+  );
 
   return (
     <View>
       <View style={styles.head}>
         <Text style={[styles.headTitle, { color: '#5B6A5D' }]}>优先级</Text>
-        <Text style={[styles.headSub, { color: tf.faint }]}>{subtitle}</Text>
+        <Text style={[styles.headSub, { color: tf.faint }]}>
+          {lockNonUrgent ? lockHint : subtitle}
+        </Text>
       </View>
       <View style={styles.grid}>
-        {CELLS.map((c) => (
-          <PrioCell
-            key={c.key}
-            title={c.title}
-            hint={c.hint}
-            q1={c.q1}
-            active={value === c.key}
-            onPress={() => onChange(c.key)}
-          />
-        ))}
+        {CELLS.map((c) => {
+          const locked = lockNonUrgent && isNonUrgentPriorityKey(c.key);
+          return (
+            <PrioCell
+              key={c.key}
+              title={c.title}
+              hint={c.hint}
+              q1={c.q1}
+              active={value === c.key}
+              locked={locked}
+              onPress={() => handleChange(c.key)}
+            />
+          );
+        })}
       </View>
-      <Text style={[styles.dragHint, { color: '#8E9A90' }]}>可点选改判</Text>
+      <Text style={[styles.dragHint, { color: '#8E9A90' }]}>
+        {lockNonUrgent ? '临期内仅可在紧急象限改判' : '可点选改判'}
+      </Text>
     </View>
   );
 }

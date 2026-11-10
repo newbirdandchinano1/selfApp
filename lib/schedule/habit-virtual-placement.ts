@@ -1,18 +1,21 @@
 /**
  * 习惯 → 日程表虚拟入格（不写 schedule_placements）
- * - 循环规则决定「哪几天」；格子上一律全天（与手动「全天」一致）
- * - 提醒仅驱动通知，不决定是否入格 / 入格时刻
- * - 戒除无循环表时：每天全天，直至现有隐藏规则生效
+ * - 循环规则决定「哪几天」
+ * - 执行时间段（extra_data.executionTime）：默认全天不入格；仅指定起止时间段才入格
+ * - 提醒（reminder）仅驱动通知，不决定是否入格
  */
 import { isHabitScheduledOnLogicalYmd, type HabitCycleTab } from '@/lib/habit-schedule';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { isBuildNDaysPeriodHiddenOnViewDay } from '@/lib/repositories/habits/habit-build-n-days-period';
 import {
+  habitHasTimedExecution,
+  parseHabitExecutionTime,
+} from '@/lib/repositories/habits/habit-execution-time';
+import {
   isHabitDayDisplayCompleted,
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
-import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import {
   areAllSubHabitsCompletedForYmd,
   countSubHabitsCompletedForYmd,
@@ -57,12 +60,15 @@ export type VirtualHabitPlacement = {
   spanSlots: number;
   hour: number;
   minute: number;
+  /** 有具体起止时写入轴分钟，时间线按此时长算高度 */
+  startMinutes?: number;
+  endMinutes?: number;
   todayCount: number;
   dailyGoal: number | null;
   done: boolean;
   extraData: string | null;
-  /** 习惯虚拟入格一律全天 */
-  allDay: true;
+  /** 习惯虚拟入格仅时间段；恒为 false（轴外夹紧后仍按时段） */
+  allDay: boolean;
 };
 
 function parseActiveTab(extraData: string | null): string | null {
@@ -74,6 +80,11 @@ function parseActiveTab(extraData: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** 是否可入日程表：须指定执行时间段（默认全天不入格）。 */
+export function habitHasExecutionTime(extraData: string | null): boolean {
+  return habitHasTimedExecution(extraData);
 }
 
 /** 循环是否属于可入格白名单（养成节奏 / 旧 N 天；周期配额 每日～每年） */
@@ -91,8 +102,7 @@ export function isHabitSchedulePlaceableCycle(extraData: string | null): boolean
 }
 
 /**
- * 习惯入格已与提醒解耦且一律全天 → 不再走日程格提醒通道。
- * 有提醒时仍由习惯提醒通道按时刻推送。
+ * 提醒仍由习惯提醒通道负责；虚拟习惯不走日程格提醒，避免双推。
  */
 export function habitUsesScheduleSlotReminderChannel(_extraData: string | null): boolean {
   return false;
@@ -118,7 +128,22 @@ export function mapHabitTimeToWorkSlotIndex(
   return null;
 }
 
-/** 编辑页提示：当前时刻能否落入工作格（提醒时刻预览，与入格无关） */
+/** 开始落在断开/缝隙时，取最近可排格索引（仅占位；时间线以分钟为准） */
+function nearestWorkSlotIndex(axis: AxisLike, axisMinutes: number): number {
+  const slots = listWorkSlots(axis);
+  if (slots.length === 0) return 0;
+  for (const slot of slots) {
+    if (axisMinutes >= slot.startMinutes && axisMinutes < slot.endMinutes) {
+      return slot.slotIndex;
+    }
+  }
+  for (const slot of slots) {
+    if (slot.startMinutes >= axisMinutes) return slot.slotIndex;
+  }
+  return slots[slots.length - 1]!.slotIndex;
+}
+
+/** 编辑页提示：当前时刻能否落入工作格（提醒时刻预览） */
 export function describeHabitScheduleSlotMapping(
   axis: AxisLike,
   hour: number,
@@ -137,14 +162,16 @@ export function describeHabitScheduleSlotMapping(
 
 export function habitSchedulePlacementEligibilityHint(extraData: string | null): string | null {
   const kind = parseHabitKind(extraData);
-  if (kind === 'break') return null;
   if (kind !== 'build' && kind !== 'task') return null;
+  if (!habitHasTimedExecution(extraData)) {
+    return '默认全天不入日程表；在量化记录指定执行时间段后按循环日入格';
+  }
   const tab = parseActiveTab(extraData);
   if (!tab) return null;
   if (!isHabitSchedulePlaceableCycle(extraData)) {
     return '当前循环模式不按日展开入格（将按现有循环判断）';
   }
-  return null;
+  return '已指定执行时间段：按循环日入格';
 }
 
 /**
@@ -156,7 +183,48 @@ export function allDaySpanForAxis(axis: AxisLike): { startSlotIndex: number; spa
   return { startSlotIndex: 0, spanSlots: Math.max(1, count) };
 }
 
-/** 单日是否应虚拟入格（不含轴映射） */
+function resolveHabitTimedInterval(
+  axis: AxisLike,
+  startHour: number,
+  startMinute: number,
+  endHour: number,
+  endMinute: number,
+): {
+  startSlotIndex: number;
+  spanSlots: number;
+  startMinutes: number;
+  endMinutes: number;
+  allDay: boolean;
+} | null {
+  const rawStart = startHour * 60 + startMinute;
+  const rawEnd = endHour * 60 + endMinute;
+  if (!(rawEnd > rawStart)) return null;
+
+  // 与轴无交集则不入格（不再回退全天）
+  if (rawEnd <= axis.startMinutes || rawStart >= axis.endMinutes) return null;
+
+  const startMinutes = Math.max(rawStart, axis.startMinutes);
+  const endMinutes = Math.min(rawEnd, axis.endMinutes);
+  if (!(endMinutes > startMinutes)) return null;
+
+  const startH = Math.floor(startMinutes / 60);
+  const startM = startMinutes % 60;
+  const mapped = clockHmToAxisMinutes(axis, startH, startM);
+  const startSlotIndex =
+    mapped != null
+      ? (mapHabitTimeToWorkSlotIndex(axis, startH, startM) ?? nearestWorkSlotIndex(axis, mapped))
+      : nearestWorkSlotIndex(axis, startMinutes);
+
+  return {
+    startSlotIndex,
+    spanSlots: 1,
+    startMinutes,
+    endMinutes,
+    allDay: false,
+  };
+}
+
+/** 单日是否应虚拟入格（不含轴映射）；须指定执行时间段 */
 export function shouldShowVirtualHabitOnDay(params: {
   habit: HabitRow;
   viewYmd: string;
@@ -171,6 +239,9 @@ export function shouldShowVirtualHabitOnDay(params: {
   const kind = parseHabitKind(habit.extra_data);
   if (kind !== 'build' && kind !== 'task' && kind !== 'break') return false;
   if (kind === 'build' && isBuildHabitSucceeded(habit.extra_data)) return false;
+
+  // 默认全天 → 不入日程表
+  if (!habitHasTimedExecution(habit.extra_data)) return false;
 
   if (!isHabitVisibleOnCalendarDay(habit.created_at, viewYmd, dayBoundary)) return false;
   // 无循环 tab 时 isHabitScheduledOnLogicalYmd 返回 true → 戒除/未配循环 = 每天
@@ -210,23 +281,30 @@ export function buildVirtualHabitPlacementsForDays(params: {
 }): VirtualHabitPlacement[] {
   const { habits, dayYmds, logicalTodayYmd, axis, dayBoundary, checkInsByHabit } = params;
   const out: VirtualHabitPlacement[] = [];
-  const { startSlotIndex, spanSlots } = allDaySpanForAxis(axis);
-  const axisStartH = Math.floor(axis.startMinutes / 60);
-  const axisStartM = axis.startMinutes % 60;
 
   for (const habit of habits) {
     const kind = parseHabitKind(habit.extra_data);
     if (kind !== 'build' && kind !== 'task' && kind !== 'break') continue;
+
+    const execution = parseHabitExecutionTime(habit.extra_data);
+    if (execution.allDay) continue;
 
     const parsedDailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
     const checkIns = checkInsByHabit?.get(habit.id) ?? {};
     const subActive = hasActiveSubHabits(habit.extra_data);
     const subMeta = subActive ? parseHabitSubHabitsMeta(habit.extra_data) : null;
     const subTotal = subMeta?.items.length ?? 0;
-    // 提醒时刻仅作详情展示；入格位置为全天
-    const rem = parseHabitReminder(habit.extra_data);
-    const hour = rem.enabled ? rem.hour : axisStartH;
-    const minute = rem.enabled ? rem.minute : axisStartM;
+
+    const hour = execution.startHour;
+    const minute = execution.startMinute;
+    const timed = resolveHabitTimedInterval(
+      axis,
+      execution.startHour,
+      execution.startMinute,
+      execution.endHour,
+      execution.endMinute,
+    );
+    if (!timed) continue;
 
     for (const ymd of dayYmds) {
       if (
@@ -276,15 +354,17 @@ export function buildVirtualHabitPlacementsForDays(params: {
         name: habit.name?.trim() || '习惯',
         icon: habit.icon || 'check',
         assignYmd: ymd,
-        startSlotIndex,
-        spanSlots,
+        startSlotIndex: timed.startSlotIndex,
+        spanSlots: timed.spanSlots,
         hour,
         minute,
+        startMinutes: timed.startMinutes,
+        endMinutes: timed.endMinutes,
         todayCount,
         dailyGoal,
         done,
         extraData: habit.extra_data,
-        allDay: true,
+        allDay: timed.allDay,
       });
     }
   }

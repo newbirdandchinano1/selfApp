@@ -45,7 +45,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Alert } from '@/lib/app-feedback';
+import { Alert, toast } from '@/lib/app-feedback';
+import {
+  assertCanAssignSubjectOnDay,
+  canAssignPriorityOnDay,
+  dailyAssignBucketFromPriority,
+  loadDailyAssignQuotaStats,
+  type DailyAssignQuotaBucketStat,
+} from '@/lib/schedule/daily-assign-quota';
 export type SchedulePlaceResult = {
   kind: ScheduleSubjectKind;
   id: string;
@@ -93,6 +100,8 @@ export type SchedulePlacePreselected = {
   tagNames?: string[];
   tags?: SchedulePlaceTag[];
   isOverdue?: boolean;
+  /** 当日已指派（改派时段）：不占新配额 */
+  alreadyAssigned?: boolean;
 };
 
 type Props = {
@@ -1186,6 +1195,7 @@ export function SchedulePlaceFrogSheet({
   const [selectedByKey, setSelectedByKey] = React.useState<Map<string, DisplayCandidate>>(
     () => new Map(),
   );
+  const [quotaStats, setQuotaStats] = React.useState<DailyAssignQuotaBucketStat[]>([]);
   const [span, setSpan] = React.useState(1);
   const [allDay, setAllDay] = React.useState(!!initialAllDay);
   const [selectedYmd, setSelectedYmd] = React.useState(assignYmd);
@@ -1333,7 +1343,20 @@ export function SchedulePlaceFrogSheet({
       setBlocked([]);
       setTaskTreeMap({});
       setLoading(false);
-      return;
+      // 预选路径也要拉配额，避免长按入格绕过上限
+      let cancelled = false;
+      void (async () => {
+        try {
+          const dayQuota = await loadDailyAssignQuotaStats(selectedYmd || assignYmd);
+          if (!cancelled) setQuotaStats(dayQuota);
+        } catch (err) {
+          console.warn('[schedule-place] 预选加载日指派配额失败', err);
+          if (!cancelled) setQuotaStats([]);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
     setPickedItems(null);
     let cancelled = false;
@@ -1352,6 +1375,13 @@ export function SchedulePlaceFrogSheet({
         const locked = lockedProjectIds ?? new Set<string>();
         const canPlace: DisplayCandidate[] = [];
         const cannot: DisplayCandidate[] = [];
+        let dayQuota: DailyAssignQuotaBucketStat[] = [];
+        try {
+          dayQuota = await loadDailyAssignQuotaStats(res.assignYmd || selectedYmd || assignYmd);
+        } catch (err) {
+          console.warn('[schedule-place] 加载日指派配额失败', err);
+        }
+        if (!cancelled) setQuotaStats(dayQuota);
         for (const it of res.items) {
           if (isLockedByProjects(it, locked)) {
             cannot.push(
@@ -1360,8 +1390,18 @@ export function SchedulePlaceFrogSheet({
             continue;
           }
           const display = toDisplayCandidate(it, tagColorByName, today);
-          if (display.blockedReason) cannot.push(display);
-          else canPlace.push(display);
+          if (display.blockedReason) {
+            cannot.push(display);
+            continue;
+          }
+          if (!display.alreadyAssigned) {
+            const gate = canAssignPriorityOnDay(dayQuota, display.priority ?? 0);
+            if (!gate.ok) {
+              cannot.push(toDisplayCandidate(it, tagColorByName, today, gate.message));
+              continue;
+            }
+          }
+          canPlace.push(display);
         }
         setEligible(sortCandidates(canPlace));
         setBlocked(sortCandidates(cannot));
@@ -1613,15 +1653,39 @@ export function SchedulePlaceFrogSheet({
     setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   }, []);
 
-  const toggleBatchSelect = React.useCallback((item: DisplayCandidate) => {
-    setSelectedByKey((prev) => {
-      const key = candidateKey(item);
-      const next = new Map(prev);
-      if (next.has(key)) next.delete(key);
-      else next.set(key, item);
-      return next;
-    });
-  }, []);
+  const toggleBatchSelect = React.useCallback(
+    (item: DisplayCandidate) => {
+      setSelectedByKey((prev) => {
+        const key = candidateKey(item);
+        const next = new Map(prev);
+        if (next.has(key)) {
+          next.delete(key);
+          return next;
+        }
+        if (!item.alreadyAssigned) {
+          const bucket = dailyAssignBucketFromPriority(item.priority ?? 0);
+          const row = quotaStats.find((s) => s.bucket === bucket);
+          const remaining = row?.remaining ?? 0;
+          let selectedSame = 0;
+          for (const c of next.values()) {
+            if (c.alreadyAssigned) continue;
+            if (dailyAssignBucketFromPriority(c.priority ?? 0) === bucket) selectedSame += 1;
+          }
+          if (selectedSame >= remaining) {
+            toast.warn(
+              row
+                ? `今日「${row.label}」仅剩 ${remaining} 个指派名额`
+                : '该优先级今日指派名额已满',
+            );
+            return prev;
+          }
+        }
+        next.set(key, item);
+        return next;
+      });
+    },
+    [quotaStats],
+  );
 
   const handlePickCandidate = React.useCallback(
     (item: DisplayCandidate) => {
@@ -1680,6 +1744,51 @@ export function SchedulePlaceFrogSheet({
       Alert.alert('无法指派', '只能选择今天或未来的日期。');
       return;
     }
+
+    // 配额已满则前端直接拦截（含预选 / 改派到新日 / 批量）；同日已指派会放行
+    try {
+      const liveQuota = await loadDailyAssignQuotaStats(ymd);
+      setQuotaStats(liveQuota);
+      // 批量：先按桶累计「尚未占用」的新指派数
+      const pendingByBucket = new Map<number, { count: number; label: string; remaining: number; max: number }>();
+      for (const item of pickedItems) {
+        let alreadyOnDay = !!item.alreadyAssigned;
+        try {
+          const gate = await assertCanAssignSubjectOnDay({
+            kind: item.kind,
+            id: item.id,
+            assignYmd: ymd,
+          });
+          alreadyOnDay = gate.alreadyAssigned;
+        } catch (err) {
+          Alert.alert('无法指派', err instanceof Error ? err.message : '该优先级今日指派名额已满');
+          return;
+        }
+        if (alreadyOnDay) continue;
+        const bucket = dailyAssignBucketFromPriority(item.priority ?? 0);
+        const row = liveQuota.find((s) => s.bucket === bucket);
+        const cur = pendingByBucket.get(bucket) ?? {
+          count: 0,
+          label: row?.label ?? '该优先级',
+          remaining: row?.remaining ?? 0,
+          max: row?.max ?? 0,
+        };
+        // assert 已对「当前库状态」放行；批量还需防止一次勾选超出剩余
+        pendingByBucket.set(bucket, { ...cur, count: cur.count + 1 });
+      }
+      for (const info of pendingByBucket.values()) {
+        if (info.count > info.remaining) {
+          Alert.alert(
+            '无法指派',
+            `「${info.label}」今日仅剩 ${info.remaining} 个名额（上限 ${info.max}），已选 ${info.count} 项`,
+          );
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[schedule-place] 提交前配额校验失败', err);
+    }
+
     const results = buildResults(ymd);
     if (results.length === 0) return;
     setSaving(true);

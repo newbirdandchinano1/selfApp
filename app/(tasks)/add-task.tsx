@@ -21,6 +21,12 @@ import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
+import {
+  bumpNonUrgentToUrgentPriority,
+  isNonUrgentPriorityKey,
+  shouldLockNonUrgentPriority,
+} from '@/lib/due-soon-priority-bump';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { setAddTaskResult } from '@/lib/add-task-bridge';
@@ -31,16 +37,9 @@ import { toast, Alert, toUserMessage } from '@/lib/app-feedback';
 import type { ScheduleMeta } from '@/lib/schedule/meta';
 import { parseTaskOneLiner } from '@/lib/zhipu-image-parse';
 import { formatWriteError } from '@/lib/format-write-error';
-import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
+import { clearProjectFrogFields } from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
-import { applyAssignFromDueToExtra } from '@/lib/standalone-todo-assign-sync';
-import { assignFrogForDay } from '@/lib/frog-candidates-api';
-import {
-  clearSubjectAssignDay,
-  placeFrogOnScheduleAt,
-} from '@/lib/schedule-service';
-import { parseScheduleTimeHm } from '@/lib/schedule/meta';
-import { getWeekStartMondayYmd, weekdayFromYmd } from '@/lib/schedule/week';
+import { preserveFrogAssignFieldsInExtra } from '@/lib/standalone-todo-assign-sync';
 import {
   acceptanceChecklistToLines,
   createEmptyAcceptanceItem,
@@ -106,7 +105,6 @@ import {
 import { normalizeRouteParam, type SchedulePickerResult, type PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
 import { setPendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
-import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
@@ -283,6 +281,18 @@ export default function AddTaskScreen() {
     },
   });
   const defaultScheduleApplied = React.useRef(false);
+
+  const lockNonUrgentPriority = React.useMemo(() => {
+    const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+    const dueYmd = resolveDueDate()?.trim().slice(0, 10) || null;
+    return shouldLockNonUrgentPriority(todayYmd, dueYmd);
+  }, [resolveDueDate, deadlineText, scheduleMeta]);
+
+  React.useEffect(() => {
+    if (!lockNonUrgentPriority || !isNonUrgentPriorityKey(priority)) return;
+    const bumped = bumpNonUrgentToUrgentPriority(taskPriorityKeyToNumber(priority));
+    if (bumped != null) setPriority(taskPriorityToKey(bumped));
+  }, [lockNonUrgentPriority, priority]);
 
   React.useEffect(() => {
     if (lockScheduleFromParam) setInheritsProjectSchedule(true);
@@ -537,15 +547,14 @@ export default function AddTaskScreen() {
       try {
         setIsSubmitting(true);
         const shelved = standaloneIntent === 'shelved';
+        // 表单日期 = 截止日期；指派日由用户手动入格写入，保存时不得互写
         const dueDate = shelved ? null : resolveDueDate();
-        const dueYmd = dueDate?.trim().slice(0, 10) || null;
-        const dueYmdValid = dueYmd && /^\d{4}-\d{2}-\d{2}$/.test(dueYmd) ? dueYmd : null;
 
-        let previousFrogDates: string[] = [];
+        let previousExtra: string | null = null;
         if (isEditStandalone && editTaskId) {
           try {
             const prev = await ensureLocalRowForWrite<TaskRow>('tasks', editTaskId);
-            if (prev) previousFrogDates = getFrogAssignedDates(prev.extra_data);
+            previousExtra = prev?.extra_data ?? null;
           } catch {
             /* ignore */
           }
@@ -570,7 +579,6 @@ export default function AddTaskScreen() {
         );
         const trimmedNote = note.trim() || null;
         let nextNoteImages = [...noteImageUris];
-        let savedTaskId = editTaskId;
         if (isEditStandalone) {
           const previousNoteImages = loadedNoteImageUrisRef.current;
           if (nextNoteImages.length > 0) {
@@ -581,7 +589,7 @@ export default function AddTaskScreen() {
           }
           let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
           nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
-          nextExtra = applyAssignFromDueToExtra(nextExtra, shelved ? null : dueYmdValid) ?? nextExtra;
+          nextExtra = preserveFrogAssignFieldsInExtra(nextExtra, previousExtra);
           await updateTask(editTaskId, {
             title: trimmedTitle,
             description: null,
@@ -598,7 +606,6 @@ export default function AddTaskScreen() {
           await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
           const id = makeTimestampEntityId('tsk_', 8);
-          savedTaskId = id;
           if (nextNoteImages.length > 0) {
             nextNoteImages = await ensureNoteImagesRemote({
               localUris: nextNoteImages,
@@ -607,7 +614,6 @@ export default function AddTaskScreen() {
           }
           let nextExtra = mergeAcceptanceChecklistIntoExtraData(extraPayload, []) ?? extraPayload;
           nextExtra = mergeNoteImageUrisIntoExtraData(nextExtra, nextNoteImages) ?? nextExtra;
-          nextExtra = applyAssignFromDueToExtra(nextExtra, shelved ? null : dueYmdValid) ?? nextExtra;
           await createTask({
             id,
             project_id: null,
@@ -625,78 +631,6 @@ export default function AddTaskScreen() {
             await bindNoteImages({ table: 'tasks', id }, nextNoteImages);
           }
           await setTaskTagIds(id, selectedTagIds);
-        }
-
-        // 日期 ↔ 指派：先落到新日，再清旧日（避免 unassign 旧日时把 due/frog 清空）
-        const logicalToday = getLogicalLocalYmd(new Date(), getDayBoundarySync());
-        if (!shelved && dueYmdValid && savedTaskId) {
-          try {
-            const startHm = scheduleMeta?.hasExactTime
-              ? parseScheduleTimeHm(scheduleMeta.startTime)
-              : null;
-            const endHm = scheduleMeta?.hasExactTime
-              ? parseScheduleTimeHm(scheduleMeta.endTime)
-              : null;
-            if (startHm) {
-              const startMinutes = startHm.hour * 60 + startHm.minute;
-              const endMinutes = endHm
-                ? endHm.hour * 60 + endHm.minute
-                : startMinutes + 60;
-              await placeFrogOnScheduleAt({
-                weekStartYmd: getWeekStartMondayYmd(dueYmdValid),
-                weekday: weekdayFromYmd(dueYmdValid),
-                startMinutes,
-                endMinutes: endMinutes > startMinutes ? endMinutes : startMinutes + 60,
-                allDay: false,
-                subjectKind: 'task',
-                subjectId: savedTaskId,
-                logicalTodayYmd: logicalToday,
-              });
-            } else if (scheduleMeta?.allDay || scheduleMeta?.date || scheduleMeta?.mode === 'date') {
-              await placeFrogOnScheduleAt({
-                weekStartYmd: getWeekStartMondayYmd(dueYmdValid),
-                weekday: weekdayFromYmd(dueYmdValid),
-                startMinutes: 0,
-                endMinutes: 60,
-                allDay: true,
-                subjectKind: 'task',
-                subjectId: savedTaskId,
-                logicalTodayYmd: logicalToday,
-              });
-            } else {
-              await assignFrogForDay({
-                kind: 'task',
-                id: savedTaskId,
-                assignYmd: dueYmdValid,
-                scheduleTime: { allDay: true },
-              });
-            }
-          } catch (placeErr) {
-            console.warn('保存后入格/指派失败（本地 frog 字段已写入）', placeErr);
-            try {
-              await assignFrogForDay({
-                kind: 'task',
-                id: savedTaskId,
-                assignYmd: dueYmdValid,
-                scheduleTime: { allDay: true },
-              });
-            } catch (assignErr) {
-              console.warn('保存后指派回退失败', assignErr);
-            }
-          }
-        }
-        for (const oldYmd of previousFrogDates) {
-          if (oldYmd === dueYmdValid) continue;
-          try {
-            await clearSubjectAssignDay({
-              subjectKind: 'task',
-              subjectId: savedTaskId,
-              assignYmd: oldYmd,
-              logicalTodayYmd: logicalToday,
-            });
-          } catch (clearErr) {
-            console.warn('清除旧指派日失败', oldYmd, clearErr);
-          }
         }
 
         try {
@@ -1098,7 +1032,11 @@ export default function AddTaskScreen() {
 
                 <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
                   <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                    <TaskFoldPriorityGrid value={priority} onChange={setPriority} />
+                    <TaskFoldPriorityGrid
+                      value={priority}
+                      onChange={setPriority}
+                      lockNonUrgent={lockNonUrgentPriority}
+                    />
                   </View>
                 </FoldRiseIn>
 
@@ -1108,7 +1046,7 @@ export default function AddTaskScreen() {
                       <Pressable
                         onPress={openSchedulePicker}
                         accessibilityRole="button"
-                        accessibilityLabel="修改日程"
+                        accessibilityLabel="设置截止日期"
                         style={({ pressed }) => [
                           styles.calendarbtn,
                           {
@@ -1122,10 +1060,11 @@ export default function AddTaskScreen() {
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <Text style={[styles.calMain, { color: '#59685E' }]} numberOfLines={1}>
-                            {deadlineText || '设置日期 / 时间'}
+                            {deadlineText || '设置截止日期'}
                           </Text>
                           <Text style={[styles.calSub, { color: tf.faint }]} numberOfLines={1}>
-                            {[reminderText, repeatText].filter(Boolean).join(' · ') || '提醒 / 重复可选'}
+                            {[reminderText, repeatText].filter(Boolean).join(' · ') ||
+                              '指派到日程请在列表长按或入格'}
                           </Text>
                         </View>
                         <Text style={{ fontSize: 11, color: '#8C998E' }}>修改 ›</Text>
@@ -1561,6 +1500,7 @@ export default function AddTaskScreen() {
                 value={priority}
                 onChange={setPriority}
                 subtitle={projectName ? '从项目继承，可改' : '四象限优先级'}
+                lockNonUrgent={lockNonUrgentPriority}
               />
             </View>
           </FoldRiseIn>

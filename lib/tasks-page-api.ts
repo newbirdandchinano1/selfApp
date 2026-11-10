@@ -29,7 +29,7 @@ import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
 
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 
-import { overlayServerRowsPassthrough } from '@/lib/api-read-local-sync';
+import { isApiUpdatedAtNewer, overlayServerRowsPassthrough } from '@/lib/api-read-local-sync';
 
 import { fetchTasksCatalog } from '@/lib/tasks-catalog-api';
 
@@ -600,17 +600,35 @@ async function resolveStandaloneTodosList(
 
     )) as TaskRow[];
 
-    const visibleFromApi = withPending.filter((t) =>
+    // 本机刚勾选完成时：上传已把 sync_status 清成 synced，但筛选视图仍可能短暂返回旧 todo。
+    // pending overlay 盖不住这种窗口；用 updated_at LWW 让本地新完成态盖过滞后 API 行。
+    const localStandalone = (await getTasks()).filter((t) => isStandaloneTodoTask(t));
+    const localById = new Map(localStandalone.map((t) => [String(t.id), t]));
+    const withLocalLww = withPending.map((row) => {
+      const local = localById.get(String(row.id));
+      if (!local) return row;
+      if (
+        !isApiUpdatedAtNewer(
+          String(row.updated_at ?? '').trim(),
+          String(local.updated_at ?? '').trim(),
+        )
+      ) {
+        return local;
+      }
+      return row;
+    });
+
+    const visibleFromApi = withLocalLww.filter((t) =>
       standaloneTodoPassesStandaloneListFilter(t, boundary, logicalToday),
     );
 
-    const apiIds = new Set(withPending.map((t) => String(t.id)));
+    const apiIds = new Set(withLocalLww.map((t) => String(t.id)));
 
     const extras: TaskRow[] = [];
 
-    for (const t of await getTasks()) {
+    for (const t of localStandalone) {
 
-      if (!isStandaloneTodoTask(t) || apiIds.has(String(t.id))) continue;
+      if (apiIds.has(String(t.id))) continue;
 
       const syncStatus = String(t.sync_status ?? 'synced');
 

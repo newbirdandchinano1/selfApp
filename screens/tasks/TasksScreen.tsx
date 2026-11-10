@@ -10,7 +10,6 @@ import {
   useTaskStatusToneColors,
   resolveTaskStatusTone,
 } from '@/components/tasks/task-status-tag';
-import { DailyBriefPanel } from '@/components/assistant/daily-brief-panel';
 import { AiHabitNudgeSheet } from '@/components/tasks/ai-habit-nudge-sheet';
 import { AiSuggestTodayTasksSheet } from '@/components/tasks/ai-suggest-today-sheet';
 import { AiTaskFromImageSheet } from '@/components/tasks/ai-task-from-image-sheet';
@@ -68,6 +67,13 @@ import { acknowledgeInboxSources } from '@/lib/repositories/notifications/notifi
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { addDays, formatYmd, formatYmdCN, parseYmd } from '@/lib/date';
+import {
+  bumpNonUrgentToUrgentPriority,
+  getDeadlineEffectivePriority,
+  isDueWithinPriorityWindow,
+  resolveProjectDueYmdForPriority,
+  resolveTaskDueYmdForPriority,
+} from '@/lib/due-soon-priority-bump';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
@@ -294,7 +300,7 @@ import {
   isStandaloneTodoTomorrowPreview,
   isTaskDueOverdue,
   isTaskOverdueForList,
-  isTaskRowOverdue,
+  standaloneTodoPassesDayBoundaryFilter,
 } from '@/lib/standalone-todo-visibility';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { reportTabBarScroll } from '@/lib/tab-bar-auto-hide';
@@ -323,7 +329,6 @@ import {
   fetchTasksPageData,
   sortStandaloneTodosLocally,
 } from '@/lib/tasks-page-api';
-import { backfillStandaloneTodosFrogFromDue } from '@/lib/standalone-todo-assign-sync';
 import {
   loadTasksHideCompletedProjectTasks,
   loadTasksMainListView,
@@ -1259,8 +1264,6 @@ function getTaskPriorityCheckColor(priority: number, isDark: boolean) {
   return getTaskPriorityCheckTone(priority, isDark);
 }
 
-const URGENT_IMPORTANT_PRIORITY = 4;
-
 function trimTaskAcceptanceCriteria(task: Pick<TaskRow, 'description'>): string {
   return (task.description ?? '').trim();
 }
@@ -1278,10 +1281,16 @@ function flattenProjectTaskTreeMap(map: Record<string, TaskTreeNode[]>): TaskRow
   return rows;
 }
 
-/** 过期未完成待办在列表/四象限中按「紧急重要」展示与分组。 */
+/**
+ * 过期或临期 3 天内：不紧急→紧急（保留重要轴）。
+ * 注意：不再把过期一律当成「紧急重要」，避免不重要被刷成重要。
+ */
 function getEffectiveTaskPriority(task: TaskRow, logicalTodayYmd: string): number {
-  if (isTaskOverdueForList(task, logicalTodayYmd)) return URGENT_IMPORTANT_PRIORITY;
-  return normalizeTaskPriority(task.priority);
+  return getDeadlineEffectivePriority(task.priority, {
+    todayYmd: logicalTodayYmd,
+    dueYmd: resolveTaskDueYmdForPriority(task),
+    overdue: isTaskOverdueForList(task, logicalTodayYmd),
+  });
 }
 
 function bucketMatrixTaskByPriority(
@@ -1295,12 +1304,41 @@ function bucketMatrixTaskByPriority(
   else buckets.q00.push(task);
 }
 
-async function applyOverdueTaskPriorityBump(rows: TaskRow[], logicalTodayYmd: string): Promise<number> {
+/** 临期 / 过期：任务与待办优先级落库，与列表展示同一套规则 */
+async function applyDeadlineTaskPriorityBumps(
+  rows: TaskRow[],
+  logicalTodayYmd: string,
+): Promise<number> {
   let count = 0;
   for (const t of rows) {
-    if (normalizeTaskPriority(t.priority) >= URGENT_IMPORTANT_PRIORITY) continue;
-    if (!isTaskRowOverdue(t, logicalTodayYmd)) continue;
-    await updateTask(t.id, { priority: URGENT_IMPORTANT_PRIORITY }, { deferSync: true });
+    if (isTaskShelvedStatus(t.status) || isTaskTerminalStatus(t.status)) continue;
+    const dueYmd = resolveTaskDueYmdForPriority(t);
+    const overdue = isTaskOverdueForList(t, logicalTodayYmd);
+    const next = getDeadlineEffectivePriority(t.priority, {
+      todayYmd: logicalTodayYmd,
+      dueYmd,
+      overdue,
+    });
+    if (next === normalizeTaskPriority(t.priority)) continue;
+    await updateTask(t.id, { priority: next }, { deferSync: true });
+    count += 1;
+  }
+  return count;
+}
+
+/** 临期 3 天内：活跃项目从不紧急升紧急（持久化） */
+async function applyDueSoonProjectPriorityBump(
+  rows: ProjectRow[],
+  logicalTodayYmd: string,
+): Promise<number> {
+  let count = 0;
+  for (const p of rows) {
+    if (p.status !== 'active') continue;
+    const next = bumpNonUrgentToUrgentPriority(p.priority);
+    if (next == null) continue;
+    const dueYmd = resolveProjectDueYmdForPriority(p);
+    if (!isDueWithinPriorityWindow(logicalTodayYmd, dueYmd)) continue;
+    await updateProject(p.id, { priority: next });
     count += 1;
   }
   return count;
@@ -1583,7 +1621,7 @@ export default function TasksScreen() {
   const sourceBadges = useNotificationSourceBadges();
   const { width: windowWidth } = useWindowDimensions();
   const habitGridColumns = habitGridColumnsForWidth(windowWidth);
-  /** 桌面端（web 宽屏）：两栏布局——左列日程表，右列 Tab 窗格（小习惯/待办/项目） */
+  /** 桌面端（web 宽屏）：两栏布局——左列日程表，右列 Tab 窗格（项目/待办/小习惯） */
   const isWideTwoPane = Platform.OS === 'web' && windowWidth >= 1100;
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
@@ -1732,7 +1770,6 @@ export default function TasksScreen() {
     React.useState<TaskListFilterState>(EMPTY_TASK_LIST_FILTER);
   const [matrixWeekTasks, setMatrixWeekTasks] = React.useState<TaskRow[]>([]);
   const [completionHeatmapReloadToken, setCompletionHeatmapReloadToken] = React.useState(0);
-  const [dailyBriefRefreshToken, setDailyBriefRefreshToken] = React.useState(0);
   /** 周条选中日 → 驱动日程跳转到该日课表 */
   const [weekStripSelectedYmd, setWeekStripSelectedYmd] = React.useState<string | null>(null);
   const [scheduleJumpYmd, setScheduleJumpYmd] = React.useState<string | null>(null);
@@ -1767,7 +1804,7 @@ export default function TasksScreen() {
     Map<string, { name: string; icon: string }>
   >(() => new Map());
   const [expandedHabitSections, setExpandedHabitSections] = React.useState<Record<string, boolean>>({});
-  /** 小习惯 / 待办 / 项目并排分段，一次只展示一块 */
+  /** 项目 / 待办 / 小习惯并排分段，一次只展示一块 */
   const [secondaryPane, setSecondaryPane] = React.useState<'habits' | 'todos' | 'projects'>('todos');
   const [subHabitModal, setSubHabitModal] = React.useState<{
     habitId: string;
@@ -2132,7 +2169,12 @@ export default function TasksScreen() {
 
   const loadProjects = React.useCallback(async () => {
     try {
-      const rows = await getProjects();
+      let rows = await getProjects();
+      const dueSoonBumped = await applyDueSoonProjectPriorityBump(rows, logicalTodayYmd);
+      if (dueSoonBumped > 0) {
+        void requestPush({ quiet: true });
+        rows = await getProjects();
+      }
       setProjects(rows);
       void refreshProjectHabitProgress(rows);
       return rows;
@@ -2142,7 +2184,7 @@ export default function TasksScreen() {
       setProjectHabitProgressById(new Map());
       return [];
     }
-  }, [refreshProjectHabitProgress]);
+  }, [logicalTodayYmd, refreshProjectHabitProgress]);
 
   const applyProjectCounterMutation = React.useCallback(
     async (
@@ -2365,8 +2407,8 @@ export default function TasksScreen() {
       let rows = await getTasks(opts);
       const logicalToday = getLogicalLocalYmd(new Date(), dayBoundary);
       const rolled = await applyRepeatingTaskRollovers(rows, logicalToday, dayBoundary);
-      const overdueBumped = await applyOverdueTaskPriorityBump(rows, logicalToday);
-      if (rolled > 0 || overdueBumped > 0) {
+      const priorityBumped = await applyDeadlineTaskPriorityBumps(rows, logicalToday);
+      if (rolled > 0 || priorityBumped > 0) {
         void requestPush({ quiet: true });
         if (!opts?.silent) {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -2380,10 +2422,9 @@ export default function TasksScreen() {
         forceLocal: opts?.forceLocal,
         forceRefresh: opts?.forceRefresh,
       });
-      // 旧数据：有 due 无 frog → 懒对齐为已指派
-      const aligned = await backfillStandaloneTodosFrogFromDue(standalone.tasks);
-      setStandaloneTodos(aligned);
-      return rolled + overdueBumped;
+      // 截止日期与指派日独立：不再把 due 懒对齐成 frog
+      setStandaloneTodos(standalone.tasks);
+      return rolled + priorityBumped;
     } catch (err) {
       console.warn('加载任务列表失败', err);
       return 0;
@@ -2875,9 +2916,8 @@ export default function TasksScreen() {
       : catalogProjects;
     setProjects(mergedProjects);
     setProjectCategories(pageData.projectCategories);
-    const alignedStandalone = await backfillStandaloneTodosFrogFromDue(pageData.standaloneTodos);
     if (isStale()) return;
-    setStandaloneTodos(alignedStandalone);
+    setStandaloneTodos(pageData.standaloneTodos);
     setMatrixWeekTasks(pageData.matrixWeekTasks);
 
     // 与设计稿一致：有任务的项目默认展开树；未知 id 默认 true（否则只见「x / y 任务」不见行）
@@ -2950,14 +2990,24 @@ export default function TasksScreen() {
     }
 
     const rolled = await applyRepeatingTaskRollovers(cachedTasks, logicalToday, dayBoundary);
-    const overdueBumped = await applyOverdueTaskPriorityBump(cachedTasks, logicalToday);
-    const taskRolled = rolled + overdueBumped;
-    if (taskRolled > 0) {
+    const priorityBumped = await applyDeadlineTaskPriorityBumps(cachedTasks, logicalToday);
+    const projectPriorityBumped = await applyDueSoonProjectPriorityBump(
+      workingRows,
+      logicalToday,
+    );
+    const taskRolled = rolled + priorityBumped;
+    if (taskRolled > 0 || projectPriorityBumped > 0) {
       void requestPush({ quiet: true });
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      cachedTasks = await getTasks(localTaskOpts);
-      await loadTasks({ forceLocal: true });
-      if (isStale()) return;
+      if (projectPriorityBumped > 0) {
+        workingRows = await getProjects();
+        setProjects(workingRows);
+      }
+      if (taskRolled > 0) {
+        cachedTasks = await getTasks(localTaskOpts);
+        await loadTasks({ forceLocal: true });
+        if (isStale()) return;
+      }
     }
 
     try {
@@ -3001,7 +3051,6 @@ export default function TasksScreen() {
       }, forceRefresh);
       setInitialTasksLoadPending(false);
       setCompletionHeatmapReloadToken((n) => n + 1);
-      setDailyBriefRefreshToken((n) => n + 1);
     } catch {
       setInitialTasksLoadPending(false);
     }
@@ -3010,8 +3059,15 @@ export default function TasksScreen() {
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
   usePageFocusReload(PAGE_API_KEY, reloadPage, { observeLocal: false });
+  // 本地写库触发的刷新只读 SQLite：勿走 page REST，否则完成态上传前会被滞后筛选视图打回未完成。
   useLocalQuery(LOCAL_TABLES, () => {
-    void reloadPage(false);
+    void runSilentPostMutationSync({
+      frogs: true,
+      tasks: true,
+      projectTasks: true,
+      projects: true,
+    });
+    scheduleHabitsReload();
   });
 
   const reloadPageRef = React.useRef(reloadPage);
@@ -3076,10 +3132,17 @@ export default function TasksScreen() {
     return map;
   }, [standaloneTodos, matrixWeekTasks]);
 
-  // 标签就绪后终排：结构层 + 标签权重等业务键（对齐项目列表）
+  // 标签就绪后终排：先按日界隐藏「今日之前已完成/取消」，再结构层 + 标签权重终排
   const standaloneTodosSorted = React.useMemo(
-    () => sortStandaloneTodosLocally(standaloneTodos, logicalTodayYmd, standaloneTodoTagWeightById),
-    [logicalTodayYmd, standaloneTodoTagWeightById, standaloneTodos],
+    () =>
+      sortStandaloneTodosLocally(
+        standaloneTodos.filter((t) =>
+          standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd),
+        ),
+        logicalTodayYmd,
+        standaloneTodoTagWeightById,
+      ),
+    [dayBoundary, logicalTodayYmd, standaloneTodoTagWeightById, standaloneTodos],
   );
 
   const standaloneTodoTagIdsByTaskId = React.useMemo(() => {
@@ -5621,7 +5684,7 @@ export default function TasksScreen() {
   }, [livePulse, motionReady, reduceMotion]);
 
   React.useEffect(() => {
-    const idx = secondaryPane === 'habits' ? 0 : secondaryPane === 'todos' ? 1 : 2;
+    const idx = secondaryPane === 'projects' ? 0 : secondaryPane === 'todos' ? 1 : 2;
     if (reduceMotion || !motionReady) {
       paneInd.setValue(idx);
       return;
@@ -6059,28 +6122,9 @@ export default function TasksScreen() {
     },
   } as const;
 
-  const dailyBriefBlock = (
-    <View style={stackedSectionStyle}>
-      <View
-        style={[
-          styles.sectionCard,
-          styles.sectionCardQuiet,
-          {
-            backgroundColor: isDark ? tf.paper2 : 'rgba(255,252,245,0.92)',
-            borderColor: isDark ? tf.line : 'rgba(216,205,187,0.75)',
-            paddingHorizontal: 14,
-            paddingVertical: 12,
-          },
-        ]}>
-        <DailyBriefPanel refreshToken={dailyBriefRefreshToken} />
-      </View>
-    </View>
-  );
-
-  /** 两栏布局共用的左列：简报 + 周条 + 日程表 + 完成热力（宽屏放左列，窄屏留在列表头部） */
+  /** 两栏布局共用的左列：周条 + 日程表 + 完成热力（宽屏放左列，窄屏留在列表头部） */
   const schedulePane = (
     <>
-      {dailyBriefBlock}
       {weekStripBlock}
       <WeeklyFrogSchedule {...scheduleSharedProps} />
       {heatmapBlock}
@@ -6303,7 +6347,6 @@ export default function TasksScreen() {
           <>
           {isWideTwoPane ? null : (
           <>
-          {dailyBriefBlock}
           {weekStripBlock}
           <WeeklyFrogSchedule {...scheduleSharedProps} />
           {heatmapBlock}
@@ -6341,10 +6384,10 @@ export default function TasksScreen() {
               {(
                 [
                   {
-                    key: 'habits' as const,
-                    label: '小习惯',
-                    meta: habitsCollapseSummary,
-                    a11y: `小习惯，${habitsCollapseSummary}`,
+                    key: 'projects' as const,
+                    label: '项目',
+                    meta: `${projectsShownInList.length}`,
+                    a11y: `项目，${projectsShownInList.length} 个`,
                   },
                   {
                     key: 'todos' as const,
@@ -6353,10 +6396,10 @@ export default function TasksScreen() {
                     a11y: `待办，进行中 ${standaloneTodoOpenCount}`,
                   },
                   {
-                    key: 'projects' as const,
-                    label: '项目',
-                    meta: `${projectsShownInList.length}`,
-                    a11y: `项目，${projectsShownInList.length} 个`,
+                    key: 'habits' as const,
+                    label: '小习惯',
+                    meta: habitsCollapseSummary,
+                    a11y: `小习惯，${habitsCollapseSummary}`,
                   },
                 ] as const
               ).map((tab) => {
@@ -7143,18 +7186,24 @@ export default function TasksScreen() {
                             if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
                             else if (isTomorrowPreview) todoMetaParts.push('明天');
                             else if (isRepeatWaiting) todoMetaParts.push('未到执行日');
-                            else if (hasFrogAssignment) {
-                              // 状态标签已是「已入格」；meta 只保留指派日，避免与 due 文案叠词
-                              const upcoming = frogAssignedDates.filter((d) => d >= logicalTodayYmd);
-                              const show = upcoming.length > 0 ? upcoming : frogAssignedDates;
-                              todoMetaParts.push(
-                                show.map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd)).join('、') ||
-                                  frogAssignedBadgeText,
-                              );
-                            } else if (overdue) todoMetaParts.push('已过期');
-                            else if (dueDisplayYmd)
-                              todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
-                            else todoMetaParts.push('今天');
+                            else {
+                              // 截止日期与指派日分开展示，互不顶替
+                              if (overdue) todoMetaParts.push('已过期');
+                              else if (due)
+                                todoMetaParts.push(formatTaskDueText(due, logicalTodayYmd));
+                              else if (dueDisplayYmd)
+                                todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
+                              if (hasFrogAssignment) {
+                                const upcoming = frogAssignedDates.filter((d) => d >= logicalTodayYmd);
+                                const show = upcoming.length > 0 ? upcoming : frogAssignedDates;
+                                const assignLabel =
+                                  show.map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd)).join('、') ||
+                                  frogAssignedBadgeText;
+                                todoMetaParts.push(`指派 ${assignLabel}`);
+                              } else if (!overdue && !due && !dueDisplayYmd) {
+                                todoMetaParts.push('今天');
+                              }
+                            }
                             if (repeat) todoMetaParts.push(repeat);
                             else if (reminder) todoMetaParts.push(reminder);
                             else if (noteText) todoMetaParts.push(noteText.slice(0, 24));

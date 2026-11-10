@@ -436,7 +436,7 @@ export function collectAllowedIdsFromBriefContext(ctx: AssistantBriefContext): s
 
 
 
-/** 规则生成的今日 facts 短句（数字以 brief_context 为准；供 daily-brief 回传展示） */
+/** 规则生成的今日 facts 短句（数字以 brief_context 为准） */
 
 export function buildAssistantBriefFactLines(ctx: AssistantBriefContext): { domain: string; text: string }[] {
 

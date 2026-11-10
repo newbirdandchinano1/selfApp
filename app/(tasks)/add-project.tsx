@@ -6,6 +6,7 @@ import {
   ComposerCategoryModal,
   ComposerTopBar,
   taskPriorityKeyToNumber,
+  taskPriorityToKey,
   type TaskPriorityKey,
 } from '@/components/composer';
 import {
@@ -32,6 +33,12 @@ import { NoteImageAttach } from '@/components/tasks/note-image-attach';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import {
+  bumpNonUrgentToUrgentPriority,
+  isNonUrgentPriorityKey,
+  shouldLockNonUrgentPriority,
+} from '@/lib/due-soon-priority-bump';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -71,7 +78,6 @@ import {
   validateProgressCountersForSave,
   type ProgressCounter,
 } from '@/lib/repositories/progress/progress-counters';
-import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import {
   mergePrerequisiteIdsIntoExtraData,
   validatePrerequisiteSelection,
@@ -257,6 +263,18 @@ export default function AddProjectScreen() {
     () => getLogicalLocalYmd(new Date(), getDayBoundarySync()),
     [],
   );
+  const lockNonUrgentPriority = React.useMemo(() => {
+    const dueYmd = dueDateFromScheduleMeta(
+      scheduleMeta,
+      extractDueDateFromDeadlineText(deadlineText),
+    );
+    return shouldLockNonUrgentPriority(logicalTodayYmd, dueYmd);
+  }, [deadlineText, logicalTodayYmd, scheduleMeta]);
+  React.useEffect(() => {
+    if (!lockNonUrgentPriority || !isNonUrgentPriorityKey(priority)) return;
+    const bumped = bumpNonUrgentToUrgentPriority(taskPriorityKeyToNumber(priority));
+    if (bumped != null) setPriority(taskPriorityToKey(bumped));
+  }, [lockNonUrgentPriority, priority]);
   const frowBorder = {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: 'rgba(232,224,210,0.52)',
@@ -677,6 +695,7 @@ export default function AddProjectScreen() {
                 value={priority}
                 onChange={setPriority}
                 subtitle="项目本身不直接进入四象限，任务会"
+                lockNonUrgent={lockNonUrgentPriority}
               />
             </View>
           </FoldRiseIn>

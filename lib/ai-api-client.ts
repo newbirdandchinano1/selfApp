@@ -1501,25 +1501,6 @@ export async function aiAssistantRoute(body: {
   });
 }
 
-/** 全局助手 L2：今日简报 */
-export type AssistantDailyBriefFact = { domain: string; text: string };
-
-export type AssistantDailyBriefResult = {
-  headline: string;
-  facts: AssistantDailyBriefFact[];
-  cards: unknown[];
-};
-
-export async function aiAssistantDailyBrief(body: {
-  brief_context: unknown;
-  locale?: string;
-}): Promise<AssistantDailyBriefResult> {
-  return agentAiRequest<AssistantDailyBriefResult>(`${AI_PREFIX}/assistant/daily-brief`, {
-    method: 'POST',
-    body,
-  });
-}
-
 /** 全局助手 L2：多轮改草稿 / 澄清 */
 export type AssistantTurnResult = {
   session_id: string;

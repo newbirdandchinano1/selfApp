@@ -83,7 +83,13 @@ import {
   setProgressCounterCurrent,
   undoLastProgressCounterChange,
 } from '@/lib/repositories/progress/progress-counters';
+import {
+  getDeadlineEffectivePriority,
+  resolveTaskDueYmdForPriority,
+} from '@/lib/due-soon-priority-bump';
 import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import {
   consumeSchedulePickerResult,
   normalizeRouteParam,
@@ -103,7 +109,6 @@ import {
 } from '@/lib/task-reminder-schedule';
 import { resyncTaskDeadlineReminderForTaskId } from '@/lib/task-deadline-reminder-notifications';
 import { parseTaskRepeatSchedule } from '@/lib/task-repeat-rollover';
-import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -631,7 +636,18 @@ export default function TaskDetailScreen() {
       setTaskNoteImageUris(longTerm ? [] : parseNoteImageUris(row.extra_data));
       setStatus(row.status);
       setUpdatedAt(row.updated_at ?? null);
-      setPriority(row.priority ?? 0);
+      const logicalTodayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+      const effectivePriority = getDeadlineEffectivePriority(row.priority ?? 0, {
+        todayYmd: logicalTodayYmd,
+        dueYmd: resolveTaskDueYmdForPriority(row),
+        overdue: isTaskOverdueForList(row, logicalTodayYmd),
+      });
+      if (effectivePriority !== normalizeTaskPriority(row.priority ?? 0)) {
+        void updateTask(row.id, { priority: effectivePriority }).catch((e) => {
+          if (__DEV__) console.warn('[due-soon-priority]', e);
+        });
+      }
+      setPriority(effectivePriority);
       setDueDate(nextDue);
       setExtraData(nextExtra);
       setProjectId(row.project_id ?? null);

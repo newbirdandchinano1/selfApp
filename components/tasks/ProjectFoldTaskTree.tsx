@@ -11,9 +11,14 @@ import {
 } from '@/components/review/fold-motion';
 import { TaskStatusTag } from '@/components/tasks/task-status-tag';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
+import {
+  getDeadlineEffectivePriority,
+  resolveTaskDueYmdForPriority,
+} from '@/lib/due-soon-priority-bump';
 import { getFrogAssignedDates } from '@/lib/frog-assignment';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
 import { isTaskShelvedStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -86,9 +91,14 @@ function ProjectFoldTaskRow({
     !done && !shelved && getFrogAssignedDates(node.extra_data).length > 0
       ? formatFrogLeaf(node.extra_data, logicalTodayYmd, formatDayLabel)
       : '';
+  const effectivePriority = getDeadlineEffectivePriority(node.priority ?? 0, {
+    todayYmd: logicalTodayYmd,
+    dueYmd: resolveTaskDueYmdForPriority(node),
+    overdue: isTaskOverdueForList(node, logicalTodayYmd),
+  });
   const tp = hasChildren
     ? directProgressLabel(children)
-    : priorityLabel(node.priority ?? 0) || '';
+    : priorityLabel(effectivePriority) || '';
   const padLeft = 3 + depth * 13;
 
   const chev = React.useRef(new Animated.Value(collapsed ? 0 : 1)).current;

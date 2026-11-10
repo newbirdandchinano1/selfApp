@@ -1,6 +1,6 @@
 /**
  * P3：助手 / Widget 深链监听。
- * Widget 只深链打开 App；进 App 后再 brief / 开助手；不在此调 LLM 热路径以外的写库。
+ * Widget 只深链打开 App；进 App 后再开助手；不在此调 LLM 热路径以外的写库。
  */
 import { openGlobalAssistant } from '@/lib/assistant/host-controller';
 import { readClipboardForAssistant } from '@/lib/assistant/clipboard';
@@ -56,7 +56,6 @@ function hrefForKind(
     case 'tab_finance':
       return '/(tabs)/finance';
     case 'tab_tasks':
-    case 'assistant_brief':
       return '/(tabs)/tasks';
     case 'tab_health':
       return '/(tabs)/';
@@ -100,10 +99,11 @@ export function AssistantDeepLinkListener() {
           return;
         }
         if (parsed.kind === 'assistant_brief') {
-          const href = hrefForKind(parsed.kind, parsed.query);
-          if (href) router.push(href as never);
-          // 任务页 DailyBriefPanel 会因 focus 自动加载；再开助手提示
-          openGlobalAssistant({ focusBrief: true, openOnly: true });
+          // 兼容旧简报深链：改为直接打开助手询问今日优先事项
+          openGlobalAssistant({
+            text: '今天该优先做什么？',
+            autoSubmit: true,
+          });
           return;
         }
         const href = hrefForKind(parsed.kind, parsed.query);

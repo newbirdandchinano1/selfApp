@@ -1,7 +1,7 @@
 /**
  * 桌面组件控制中心 · 显示名与深链（与 app.json expo-widgets displayName 保持一致）。
  * Widget UI 须挂 widgetURL(props.deepLink)；点按只深链进 App，不在组件内跑 LLM。
- * 健康默认 zheng://health；简报深链 zheng://assistant/brief → 任务页；财务/任务见各 glance 默认。
+ * 健康默认 zheng://health；旧简报深链 zheng://assistant/brief → 打开助手；财务/任务见各 glance 默认。
  */
 
 export type WidgetBusinessId =

@@ -1,4 +1,9 @@
-﻿import { ComposerTopBar, type TaskPriorityKey } from '@/components/composer';
+﻿import {
+  ComposerTopBar,
+  taskPriorityKeyToNumber,
+  taskPriorityToKey,
+  type TaskPriorityKey,
+} from '@/components/composer';
 import {
   AddSubtaskSheet,
   labelsFromPickerResult,
@@ -68,7 +73,15 @@ import {
 } from '@/lib/repositories/tags/tag';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import {
+  bumpNonUrgentToUrgentPriority,
+  getDeadlineEffectivePriority,
+  isNonUrgentPriorityKey,
+  resolveTaskDueYmdForPriority,
+  shouldLockNonUrgentPriority,
+} from '@/lib/due-soon-priority-bump';
 import { applyTaskCompletionPointsReward } from '@/lib/repositories/habits/habit-points-grant';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import {
   mergeBoundHabitIdsIntoExtraData,
   parseBoundHabitIdsFromExtraData,
@@ -483,6 +496,26 @@ export default function EditTaskScreen() {
   /** 顶层任务可编辑标签（项目未贴标签时）；子任务仅展示继承的项目标签 */
   const showTagField = isRootTask || inheritsProjectTags;
 
+  const editorDueYmd = React.useMemo(
+    () =>
+      dueDateFromScheduleMeta(
+        scheduleMeta,
+        extractDueDateFromDeadlineText(deadlineText) || taskSnapshot?.due_date || null,
+      ),
+    [deadlineText, scheduleMeta, taskSnapshot?.due_date],
+  );
+  const lockNonUrgentPriority = React.useMemo(() => {
+    const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+    const overdue = taskSnapshot ? isTaskOverdueForList(taskSnapshot, todayYmd) : false;
+    return shouldLockNonUrgentPriority(todayYmd, editorDueYmd, { overdue });
+  }, [editorDueYmd, taskSnapshot]);
+
+  React.useEffect(() => {
+    if (!lockNonUrgentPriority || !isNonUrgentPriorityKey(priority)) return;
+    const bumped = bumpNonUrgentToUrgentPriority(taskPriorityKeyToNumber(priority));
+    if (bumped != null) setPriority(taskPriorityToKey(bumped));
+  }, [lockNonUrgentPriority, priority]);
+
   const subtaskDateLimit = React.useMemo<DateLimitYmd | null>(() => {
     const selfLimit = mergeDateLimit(scheduleMetaToDateLimit(scheduleMeta), {
       end: extractDueDateFromDeadlineText(deadlineText) || undefined,
@@ -783,7 +816,18 @@ export default function EditTaskScreen() {
       setNoteImageUris(longTerm ? [] : parseNoteImageUris(task.extra_data));
       setDeadlineText(task.due_date ? formatDate(task.due_date) : '');
       setScheduleMeta(null);
-      const priorityLabel = fromTaskPriority(task.priority);
+      const logicalTodayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+      const effectivePriority = getDeadlineEffectivePriority(task.priority, {
+        todayYmd: logicalTodayYmd,
+        dueYmd: resolveTaskDueYmdForPriority(task),
+        overdue: isTaskOverdueForList(task, logicalTodayYmd),
+      });
+      if (effectivePriority !== normalizeTaskPriority(task.priority)) {
+        void updateTask(task.id, { priority: effectivePriority }).catch((e) => {
+          if (__DEV__) console.warn('[due-soon-priority]', e);
+        });
+      }
+      const priorityLabel = fromTaskPriority(effectivePriority);
       setPriority(mapPriorityTextToKey(priorityLabel));
       const extraData = parseTaskExtraData(task.extra_data);
       const reminder = typeof extraData.reminder === 'string' ? extraData.reminder : '';
@@ -1621,6 +1665,7 @@ export default function EditTaskScreen() {
                       value={priority}
                       onChange={setPriority}
                       subtitle="改判后本周四象限同步移动"
+                      lockNonUrgent={lockNonUrgentPriority}
                     />
                   )}
                 </View>

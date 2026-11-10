@@ -16,7 +16,7 @@ import { mergeFinanceTxnExtraOnApiSync } from '@/lib/repositories/finance/financ
 import { dedupeRowsByPrimaryKey, readTablePrimaryKeyColumns } from '@/lib/sqlite-primary-key-dedupe';
 
 /** LWW：按解析后的时刻比较，避免 ISO 与 MySQL DATETIME 字符串直接比大小误判 */
-function isApiUpdatedAtNewer(apiUpdated: string, localUpdated: string): boolean {
+export function isApiUpdatedAtNewer(apiUpdated: string, localUpdated: string): boolean {
   if (!apiUpdated) return false;
   if (!localUpdated) return true;
   const apiMs = parseStoredDatetime(apiUpdated).getTime();

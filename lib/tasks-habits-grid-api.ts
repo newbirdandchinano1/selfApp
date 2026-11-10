@@ -91,7 +91,13 @@ function readGridItemExtraData(item: HabitsGridSection['items'][number]): string
   return extraDataToString(item.extraData ?? item.extra_data);
 }
 
-const HABIT_EXTRA_NESTED_MERGE_KEYS = ['quantify', 'schedule', 'reminder', 'subHabits'] as const;
+const HABIT_EXTRA_NESTED_MERGE_KEYS = [
+  'quantify',
+  'schedule',
+  'reminder',
+  'executionTime',
+  'subHabits',
+] as const;
 
 /** 浅合并对象，并对 quantify 等嵌套对象再合并一层，避免服务端缺字段时抹掉本地 dailyGoal */
 function mergeHabitExtraObjects(

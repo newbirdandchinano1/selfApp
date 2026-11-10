@@ -66,7 +66,6 @@ export default function AssistantChatScreen() {
     text?: string | string[];
     autoSubmit?: string | string[];
     new?: string | string[];
-    focusBrief?: string | string[];
   }>();
 
   const [session, setSession] = React.useState<ChatSession | null>(null);
@@ -441,7 +440,6 @@ export default function AssistantChatScreen() {
       const launch = takeAssistantLaunchPayload();
       const paramText = firstParam(params.text)?.trim() || '';
       const launchText = launch?.text?.trim() || '';
-      const focusBrief = launch?.focusBrief || firstParam(params.focusBrief) === '1';
       const autoSubmit =
         launch?.autoSubmit === true || firstParam(params.autoSubmit) === '1';
 
@@ -464,20 +462,6 @@ export default function AssistantChatScreen() {
       if (launchImage) {
         pendingImageRef.current = launchImage;
         setPendingImageUri(launchImage);
-      }
-
-      if (focusBrief && !seedText && !launchImage) {
-        const hint = createChatMessage({
-          role: 'assistant',
-          text: '今日任务与习惯简报在任务页顶部，可下拉刷新查看建议卡。需要的话也可以直接问我今天该优先做什么。',
-          status: 'done',
-        });
-        const withHint: ChatSession = {
-          ...next,
-          messages: [...next.messages, hint],
-          updatedAt: Date.now(),
-        };
-        await persist(withHint);
       }
 
       if (autoSubmit && (seedText || launchImage) && !autoSentRef.current) {

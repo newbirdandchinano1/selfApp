@@ -1,5 +1,10 @@
 ﻿import { ComposerTopBar, taskPriorityKeyToNumber, taskPriorityToKey, type TaskPriorityKey } from '@/components/composer';
 import { labelsFromPickerResult, extractDueDateFromDeadlineText } from '@/components/entity-form';
+import {
+  bumpNonUrgentToUrgentPriority,
+  isNonUrgentPriorityKey,
+  shouldLockNonUrgentPriority,
+} from '@/lib/due-soon-priority-bump';
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import {
   mergeLifeAcceptanceIdIntoExtraData,
@@ -626,6 +631,18 @@ export default function EditProjectScreen() {
     () => getLogicalLocalYmd(new Date(), getDayBoundarySync()),
     [],
   );
+  const lockNonUrgentPriority = React.useMemo(() => {
+    const dueYmd = dueDateFromScheduleMeta(
+      scheduleMeta,
+      extractDueDateFromDeadlineText(deadlineText),
+    );
+    return shouldLockNonUrgentPriority(logicalTodayYmd, dueYmd);
+  }, [deadlineText, logicalTodayYmd, scheduleMeta]);
+  React.useEffect(() => {
+    if (!lockNonUrgentPriority || !isNonUrgentPriorityKey(priority)) return;
+    const bumped = bumpNonUrgentToUrgentPriority(taskPriorityKeyToNumber(priority));
+    if (bumped != null) setPriority(taskPriorityToKey(bumped));
+  }, [lockNonUrgentPriority, priority]);
   const weekStartYmd = React.useMemo(() => getWeekStartMondayYmd(logicalTodayYmd), [logicalTodayYmd]);
   const weekEndYmd = React.useMemo(() => addDaysToYmd(weekStartYmd, 6), [weekStartYmd]);
   const frowBorder = {
@@ -1987,6 +2004,7 @@ export default function EditProjectScreen() {
                     value={priority}
                     onChange={setPriority}
                     subtitle="改判后下属任务同步移动"
+                    lockNonUrgent={lockNonUrgentPriority}
                   />
                 </View>
               </FoldRiseIn>

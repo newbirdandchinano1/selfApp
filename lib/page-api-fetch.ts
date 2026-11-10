@@ -17,7 +17,21 @@ export function shouldFetchPageFromApi(): boolean {
   return true;
 }
 
-export function shouldSkipPageNetwork(): boolean {
+export type SkipPageNetworkOpts = {
+  forceLocal?: boolean;
+  forceRefresh?: boolean;
+  /** 兼容日历等读路径的 cacheOnly 帧 */
+  cacheOnly?: boolean;
+};
+
+/**
+ * 写后静默对齐 / 显式 forceLocal：只读本地，避免未推完的 REST 筛选视图把乐观完成态打回未完成。
+ * forceRefresh 优先：下拉刷新仍打网。
+ */
+export function shouldSkipPageNetwork(opts?: SkipPageNetworkOpts): boolean {
+  if (opts?.forceRefresh) return false;
+  if (opts?.forceLocal) return true;
+  if (opts?.cacheOnly) return true;
   return false;
 }
 

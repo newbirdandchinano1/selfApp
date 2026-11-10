@@ -106,6 +106,22 @@ export function buildTimelineEventsForDay(params: {
 
   for (const h of virtualHabits) {
     if (h.assignYmd !== dayYmd) continue;
+    let startMinutes = axis.startMinutes;
+    let endMinutes = axis.endMinutes;
+    const allDay = !!h.allDay;
+    if (!allDay) {
+      if (
+        typeof h.startMinutes === 'number' &&
+        typeof h.endMinutes === 'number' &&
+        h.endMinutes > h.startMinutes
+      ) {
+        startMinutes = h.startMinutes;
+        endMinutes = h.endMinutes;
+      } else {
+        startMinutes = slotStartMinutes(axis, h.startSlotIndex);
+        endMinutes = placementEndMinutes(axis, h.startSlotIndex, Math.max(1, h.spanSlots));
+      }
+    }
     events.push({
       id: `h-${h.habitId}-${h.assignYmd}`,
       kind: 'habit',
@@ -113,9 +129,9 @@ export function buildTimelineEventsForDay(params: {
       icon: h.icon && h.icon !== 'check' ? h.icon : null,
       done: !!h.done,
       overdue: false,
-      allDay: true,
-      startMinutes: axis.startMinutes,
-      endMinutes: axis.endMinutes,
+      allDay,
+      startMinutes,
+      endMinutes,
       priority: 0,
       assignYmd: h.assignYmd,
       source: { type: 'habit', habit: h },

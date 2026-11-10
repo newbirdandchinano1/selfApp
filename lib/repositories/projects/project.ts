@@ -1,15 +1,39 @@
 import { ensureLocalRowPresent, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { sortBySortOrderAsc, sortByUpdatedDesc } from '@/lib/api-read-helpers';
+import {
+  clampPriorityForDeadline,
+  resolveProjectDueYmdForPriority,
+} from '@/lib/due-soon-priority-bump';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { getDatabase } from '../../database.native';
 import { INBOX_PROJECT_CATEGORY_ID } from './constants';
 import type {
   CreateProjectCategoryInput,
   CreateProjectInput,
   ProjectCategoryRow,
+  ProjectPriority,
   ProjectRow,
   UpdateProjectCategoryInput,
   UpdateProjectInput,
 } from './project.types';
+import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
+
+/** 活跃项目：临期/过期写库强制紧急 */
+function resolveWritableProjectPriority(params: {
+  priority: unknown;
+  due_date: string | null;
+  extra_data: string | null;
+  status: string;
+}): ProjectPriority {
+  const current = normalizeTaskPriority(params.priority) as ProjectPriority;
+  if (params.status !== 'active') return current;
+  const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+  const dueYmd = resolveProjectDueYmdForPriority({
+    due_date: params.due_date,
+    extra_data: params.extra_data,
+  });
+  return clampPriorityForDeadline(current, todayYmd, dueYmd) as ProjectPriority;
+}
 
 export async function createProject(input: CreateProjectInput) {
   const db = await getDatabase();
@@ -33,6 +57,15 @@ export async function createProject(input: CreateProjectInput) {
   }
   const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
+  const status = input.status ?? 'active';
+  const dueDate = input.due_date ?? null;
+  const extraData = input.extra_data ?? null;
+  const priority = resolveWritableProjectPriority({
+    priority: input.priority ?? 0,
+    due_date: dueDate,
+    extra_data: extraData,
+    status,
+  });
   await db.runAsync(
     `INSERT INTO projects (
       id, category_id, life_bet_id, life_month_goal_id, name, status, priority, note, due_date, created_at, updated_at, sync_status, extra_data, inbox_entered_at
@@ -43,11 +76,11 @@ export async function createProject(input: CreateProjectInput) {
       lifeBetId,
       lifeMonthGoalId,
       input.name,
-      input.status ?? 'active',
-      input.priority ?? 0,
+      status,
+      priority,
       input.note ?? null,
-      input.due_date ?? null,
-      input.extra_data ?? null,
+      dueDate,
+      extraData,
     ],
   );
   void import('@/lib/widgets/urgency-widget-sync')
@@ -159,6 +192,15 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
     nextInboxEnteredAt = current.inbox_entered_at ?? null;
   }
 
+  const nextStatus = input.status ?? current.status;
+  const nextDueDate = input.due_date !== undefined ? input.due_date : current.due_date;
+  const nextExtraData = input.extra_data !== undefined ? input.extra_data : current.extra_data;
+  const nextPriority = resolveWritableProjectPriority({
+    priority: input.priority !== undefined ? input.priority : (current.priority ?? 0),
+    due_date: nextDueDate,
+    extra_data: nextExtraData,
+    status: nextStatus,
+  });
   const result = await db.runAsync(
     `UPDATE projects
      SET category_id = ?, life_bet_id = ?, life_month_goal_id = ?, name = ?, status = ?, priority = ?, note = ?, due_date = ?, extra_data = ?, inbox_entered_at = ?, updated_at = datetime('now'),
@@ -169,11 +211,11 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
       nextLifeBetId,
       nextMonthGoalId,
       input.name ?? current.name,
-      input.status ?? current.status,
-      input.priority !== undefined ? input.priority : (current.priority ?? 0),
+      nextStatus,
+      nextPriority,
       input.note !== undefined ? input.note : current.note,
-      input.due_date !== undefined ? input.due_date : current.due_date,
-      input.extra_data !== undefined ? input.extra_data : current.extra_data,
+      nextDueDate,
+      nextExtraData,
       nextInboxEnteredAt,
       id,
     ]

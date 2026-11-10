@@ -1,6 +1,6 @@
 /**
  * 课程表占用提醒：业务只决定「哪格何时、给谁」；权限/通道/排期走 scheduler。
- * 亦覆盖养成习惯虚拟入格块（不写占用表）。
+ * 虚拟习惯提醒改由习惯提醒通道负责，本模块只登记真实占用。
  */
 
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
@@ -17,12 +17,6 @@ import {
   scheduleDateRemindersBulk,
   type ScheduleDateReminderParams,
 } from '@/lib/notification-scheduler';
-import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
-import {
-  getAllHabitCheckInsMaps,
-  getCheckInsMapByHabitId,
-} from '@/lib/repositories/habits/habit-check-in';
-import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getProjectsByIds } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
@@ -32,11 +26,7 @@ import {
 } from '@/lib/repositories/schedule/schedule-store';
 import { getTasksByIds } from '@/lib/repositories/tasks/task';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
-import { formatMinutesAsHm, slotStartMinutes } from '@/lib/schedule/axis';
-import {
-  buildVirtualHabitPlacementsForDays,
-  virtualHabitScheduleReminderId,
-} from '@/lib/schedule/habit-virtual-placement';
+import { formatMinutesAsHm } from '@/lib/schedule/axis';
 import {
   axisMinutesToLocalDate,
   resolvePlacementReminderStart,
@@ -44,7 +34,6 @@ import {
 import type { ScheduleAxisSettings, SchedulePlacementRow } from '@/lib/schedule/types';
 import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 import {
-  addDaysToLogicalYmd,
   formatLocalYmdFromDate,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
@@ -64,9 +53,6 @@ const ANDROID_CHANNEL = {
   importance: 'high' as const,
   vibrationPattern: [0, 250, 250, 250],
 };
-
-/** 虚拟习惯入格提醒向前扫描天数 */
-const HABIT_VIRTUAL_LOOKAHEAD_DAYS = 21;
 
 /** 一次性清掉历史截止日待办前缀（不再映射为业务类别） */
 const LEGACY_TASK_PREFIX = 'selfapp-task-reminder:';
@@ -101,25 +87,6 @@ export async function cancelScheduleSlotRemindersForHabit(habitId: string): Prom
   }
 }
 
-function buildHabitVirtualLookaheadYmds(todayYmd: string): string[] {
-  const dayYmds: string[] = [];
-  for (let i = 0; i < HABIT_VIRTUAL_LOOKAHEAD_DAYS; i++) {
-    dayYmds.push(addDaysToLogicalYmd(todayYmd, i));
-  }
-  return dayYmds;
-}
-
-function groupYmdsByWeekMonday(dayYmds: string[]): Map<string, string[]> {
-  const ymdsByWeek = new Map<string, string[]>();
-  for (const ymd of dayYmds) {
-    const monday = getWeekStartMondayYmd(ymd);
-    const list = ymdsByWeek.get(monday) ?? [];
-    list.push(ymd);
-    ymdsByWeek.set(monday, list);
-  }
-  return ymdsByWeek;
-}
-
 function slotReminderCopy(kind: ScheduleSlotSubjectKind, title: string): {
   notifTitle: string;
   typeLabel: string;
@@ -131,107 +98,6 @@ function slotReminderCopy(kind: ScheduleSlotSubjectKind, title: string): {
     return { notifTitle: '习惯时段', typeLabel: '习惯' };
   }
   return { notifTitle: '该做', typeLabel: '待办' };
-}
-
-/** 收集虚拟入格日程提醒参数（不登记）。 */
-async function collectVirtualHabitSlotReminderParams(params: {
-  habits: HabitRow[];
-  checkInsByHabit: Map<string, Record<string, number>>;
-  todayYmd: string;
-  boundary: Awaited<ReturnType<typeof loadTasksDayBoundary>>;
-  advanceMs: number;
-  advanceMinutes: number;
-  axisCache?: Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>;
-}): Promise<ScheduleDateReminderParams[]> {
-  const {
-    habits,
-    checkInsByHabit,
-    todayYmd,
-    boundary,
-    advanceMs,
-    advanceMinutes,
-  } = params;
-  const weekAxisCache =
-    params.axisCache ?? new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
-  const ymdsByWeek = groupYmdsByWeekMonday(buildHabitVirtualLookaheadYmds(todayYmd));
-  const items: ScheduleDateReminderParams[] = [];
-
-  for (const [monday, ymds] of ymdsByWeek) {
-    let axis = weekAxisCache.get(monday);
-    if (!axis) {
-      axis = await resolveAxisForWeek(monday);
-      weekAxisCache.set(monday, axis);
-    }
-    const virtuals = buildVirtualHabitPlacementsForDays({
-      habits,
-      dayYmds: ymds,
-      logicalTodayYmd: todayYmd,
-      axis,
-      dayBoundary: boundary,
-      checkInsByHabit,
-    });
-    for (const v of virtuals) {
-      if (v.done) continue;
-      // 全天入格不走日程格提醒；有提醒时刻由习惯提醒通道负责
-      if (v.allDay) continue;
-      const startMins = slotStartMinutes(axis, v.startSlotIndex);
-      const startAt = axisMinutesToLocalDate(v.assignYmd, startMins);
-      const fireAt = new Date(startAt.getTime() - advanceMs);
-
-      const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
-      const id = scheduleSlotReminderIdentifier(placementId);
-      const startHm = formatMinutesAsHm(startMins);
-      const copy = slotReminderCopy('habit', v.name);
-      const fingerprint = `${placementId}|${v.name}|${v.assignYmd}|${startHm}|${advanceMinutes}`;
-
-      items.push({
-        category: 'schedule-slot-reminder',
-        identifier: id,
-        fireAt,
-        channel: ANDROID_CHANNEL,
-        data: {
-          type: 'schedule-slot-reminder',
-          placementId,
-          subjectKind: 'habit',
-          subjectId: v.habitId,
-        },
-        fallback: {
-          title: copy.notifTitle,
-          body: v.name,
-        },
-        fingerprint,
-        contextBlock: [
-          '【频道】日程表提醒',
-          `【类型】${copy.typeLabel}`,
-          `【标题】${v.name}`,
-          `【开始】${v.assignYmd} ${startHm}`,
-          `【提前】${advanceMinutes} 分钟`,
-        ].join('\n'),
-      });
-    }
-  }
-
-  return items;
-}
-
-/** 为已解析的虚拟入格批量登记日程提醒（skipCancel：外层已清前缀）。 */
-async function scheduleVirtualHabitSlotReminders(params: {
-  habits: HabitRow[];
-  checkInsByHabit: Map<string, Record<string, number>>;
-  todayYmd: string;
-  boundary: Awaited<ReturnType<typeof loadTasksDayBoundary>>;
-  advanceMs: number;
-  advanceMinutes: number;
-  axisCache?: Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>;
-  /** 外层已取消相关前缀时为 true（默认 true） */
-  skipCancel?: boolean;
-}): Promise<{ permissionDenied: boolean }> {
-  const items = await collectVirtualHabitSlotReminderParams(params);
-  if (items.length === 0) return { permissionDenied: false };
-  const result = await scheduleDateRemindersBulk(items, {
-    skipCancel: params.skipCancel !== false,
-  });
-  return { permissionDenied: result.permissionDenied };
 }
 
 async function resolveAxisForWeek(weekStartYmd: string): Promise<{
@@ -404,8 +270,6 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
       project: resolveScheduleAdvanceMinutes(settings.schedule, 'project'),
       habit: resolveScheduleAdvanceMinutes(settings.schedule, 'habit'),
     };
-    const habitAdvanceMinutes = advanceByKind.habit;
-    const habitAdvanceMs = habitAdvanceMinutes * 60_000;
     const axisCache = new Map<string, Awaited<ReturnType<typeof resolveAxisForWeek>>>();
 
     const placementItems = await collectPlacementReminderParams({
@@ -413,40 +277,21 @@ export async function syncScheduleSlotReminderNotifications(): Promise<void> {
       advanceByKind,
       axisCache,
     });
+    // 虚拟习惯提醒由习惯提醒通道负责，此处只登记真实占用
+    if (placementItems.length === 0) return;
 
-    let habitItems: ScheduleDateReminderParams[] = [];
-    try {
-      const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
-      habitItems = await collectVirtualHabitSlotReminderParams({
-        habits,
-        checkInsByHabit: checkInsMaps,
-        todayYmd,
-        boundary,
-        advanceMs: habitAdvanceMs,
-        advanceMinutes: habitAdvanceMinutes,
-        axisCache,
-      });
-    } catch (e) {
-      console.warn('收集习惯虚拟入格提醒失败', e);
-    }
-
-    const allItems = [...placementItems, ...habitItems];
-    if (allItems.length === 0) return;
-
-    await scheduleDateRemindersBulk(allItems, { skipCancel: true });
+    await scheduleDateRemindersBulk(placementItems, { skipCancel: true });
   } finally {
     console.timeEnd('syncScheduleSlotReminderNotifications');
   }
 }
 
 /**
- * 仅重排单个习惯的虚拟入格日程提醒（约 21 天）。
- * 用于习惯新建/编辑保存：不动任务/项目占用，也不重建其它习惯。
- * 可选传入已加载的 checkIns，避免保存路径重复读打卡表。
+ * 习惯提醒改走习惯提醒通道；此处仅清理该习惯残留的日程格预约。
  */
 export async function syncScheduleSlotRemindersForHabit(
   habitId: string,
-  opts?: { checkIns?: Record<string, number> },
+  _opts?: { checkIns?: Record<string, number> },
 ): Promise<{
   permissionDenied: boolean;
 }> {
@@ -457,40 +302,12 @@ export async function syncScheduleSlotRemindersForHabit(
   const key = habitId.trim();
   if (!key) return { permissionDenied: false };
 
-  console.time(`syncScheduleSlotRemindersForHabit:${key}`);
   try {
     await cancelScheduleSlotRemindersForHabit(key);
-
-    const settings = await getNotificationCenterSettings();
-    if (!settings.masterEnabled || settings.categories['schedule-slot-reminder'] === false) {
-      return { permissionDenied: false };
-    }
-
-    const habit = await getHabitById(key);
-    if (!habit) return { permissionDenied: false };
-
-    const checkIns = opts?.checkIns ?? (await getCheckInsMapByHabitId(key));
-    const checkInsByHabit = new Map<string, Record<string, number>>([[key, checkIns]]);
-
-    const boundary = await loadTasksDayBoundary();
-    const todayYmd = getLogicalLocalYmd(new Date(), boundary);
-    const advanceMinutes = resolveScheduleAdvanceMinutes(settings.schedule, 'habit');
-    const advanceMs = advanceMinutes * 60_000;
-
-    return await scheduleVirtualHabitSlotReminders({
-      habits: [habit],
-      checkInsByHabit,
-      todayYmd,
-      boundary,
-      advanceMs,
-      advanceMinutes,
-    });
   } catch (e) {
-    console.warn('增量同步习惯日程格提醒失败', key, e);
-    return { permissionDenied: false };
-  } finally {
-    console.timeEnd(`syncScheduleSlotRemindersForHabit:${key}`);
+    console.warn('清理习惯日程格提醒失败', key, e);
   }
+  return { permissionDenied: false };
 }
 
 export async function listScheduleSlotReminderBusinessItems(): Promise<
@@ -572,58 +389,7 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     });
   }
 
-  try {
-    const [habits, checkInsMaps] = await Promise.all([getHabits(), getAllHabitCheckInsMaps()]);
-    const dayYmds: string[] = [];
-    for (let i = 0; i < HABIT_VIRTUAL_LOOKAHEAD_DAYS; i++) {
-      dayYmds.push(addDaysToLogicalYmd(todayYmd, i));
-    }
-    const ymdsByWeek = new Map<string, string[]>();
-    for (const ymd of dayYmds) {
-      const monday = getWeekStartMondayYmd(ymd);
-      const list = ymdsByWeek.get(monday) ?? [];
-      list.push(ymd);
-      ymdsByWeek.set(monday, list);
-    }
-    for (const [monday, ymds] of ymdsByWeek) {
-      let axis = axisCache.get(monday);
-      if (!axis) {
-        axis = await resolveAxisForWeek(monday);
-        axisCache.set(monday, axis);
-      }
-      const virtuals = buildVirtualHabitPlacementsForDays({
-        habits,
-        dayYmds: ymds,
-        logicalTodayYmd: todayYmd,
-        axis,
-        dayBoundary: boundary,
-        checkInsByHabit: checkInsMaps,
-      });
-      const habitAdvanceMs = advanceByKind.habit * 60_000;
-      for (const v of virtuals) {
-        if (v.done) continue;
-        if (v.allDay) continue;
-        const startMins = slotStartMinutes(axis, v.startSlotIndex);
-        const startAt = axisMinutesToLocalDate(v.assignYmd, startMins);
-        const fireAt = new Date(startAt.getTime() - habitAdvanceMs);
-        if (fireAt.getTime() <= now) continue;
-        const placementId = virtualHabitScheduleReminderId(v.habitId, v.assignYmd);
-        const copy = slotReminderCopy('habit', v.name);
-        items.push({
-          identifier: scheduleSlotReminderIdentifier(placementId),
-          title: copy.notifTitle,
-          body: `${v.name} · ${v.assignYmd} ${formatMinutesAsHm(startMins)}`,
-          subjectKind: 'habit',
-          subjectId: v.habitId,
-          placementId,
-          fireAt,
-          customizeHref: `/add-habit?id=${encodeURIComponent(v.habitId)}`,
-        });
-      }
-    }
-  } catch (e) {
-    console.warn('列举习惯日程提醒失败', e);
-  }
+  // 虚拟习惯提醒由习惯提醒通道负责，此处不再枚举，避免双推
 
   return items;
 }

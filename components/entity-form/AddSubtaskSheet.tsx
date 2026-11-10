@@ -16,12 +16,20 @@ import {
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
+  bumpNonUrgentToUrgentPriority,
+  isNonUrgentPriorityKey,
+  NON_URGENT_PRIORITY_LOCK_HINT,
+  shouldLockNonUrgentPriority,
+} from '@/lib/due-soon-priority-bump';
+import {
+  dueDateFromScheduleMeta,
   parseDateLimitParam,
   parseDefaultScheduleParam,
   resolveInheritedDefaultSchedule,
   type DateLimitYmd,
 } from '@/lib/schedule-inherit';
 import type { PickedScheduleMeta } from '@/lib/schedule-picker-bridge';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { toast } from '@/lib/app-feedback';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -122,6 +130,18 @@ export function AddSubtaskSheet({
       dateLimit: resolvedDateLimit,
       locked: lockSchedule,
     });
+
+  const lockNonUrgentPriority = React.useMemo(() => {
+    const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+    const dueYmd = dueDateFromScheduleMeta(scheduleMeta, deadlineText || null);
+    return shouldLockNonUrgentPriority(todayYmd, dueYmd);
+  }, [deadlineText, scheduleMeta]);
+
+  React.useEffect(() => {
+    if (!lockNonUrgentPriority || !isNonUrgentPriorityKey(priority)) return;
+    const bumped = bumpNonUrgentToUrgentPriority(taskPriorityKeyToNumber(priority));
+    if (bumped != null) setPriority(taskPriorityToKey(bumped));
+  }, [lockNonUrgentPriority, priority]);
 
   React.useEffect(() => {
     if (!visible) return;
@@ -345,15 +365,23 @@ export function AddSubtaskSheet({
                 <View style={styles.chipRow}>
                   {PRIO_CHIPS.map((chip) => {
                     const on = priority === chip.key;
+                    const locked = lockNonUrgentPriority && isNonUrgentPriorityKey(chip.key);
                     return (
                       <Pressable
                         key={chip.key}
-                        onPress={() => setPriority(chip.key)}
+                        onPress={() => {
+                          if (locked) {
+                            toast.info(NON_URGENT_PRIORITY_LOCK_HINT);
+                            return;
+                          }
+                          setPriority(chip.key);
+                        }}
                         accessibilityRole="button"
-                        accessibilityState={{ selected: on }}
+                        accessibilityState={{ selected: on, disabled: locked }}
                         style={[
                           styles.fchip,
                           on && { backgroundColor: tf.pond, borderColor: tf.pond },
+                          locked && { opacity: 0.45 },
                         ]}>
                         <Text style={[styles.fchipText, { color: on ? tf.onPond : '#7C897E' }]}>
                           {chip.label}

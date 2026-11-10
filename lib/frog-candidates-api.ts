@@ -6,11 +6,7 @@ import {
 import { applyServerFrogExtraLocally, assignFrogToApi, assignProjectFrogToApi } from '@/lib/frog-assignment';
 import { getProjects } from '@/lib/repositories/projects/project';
 import { getTaskById } from '@/lib/repositories/tasks/task';
-import {
-  syncStandaloneTodoAfterAssign,
-  syncStandaloneTodoAfterUnassign,
-  type StandaloneAssignScheduleTime,
-} from '@/lib/standalone-todo-assign-sync';
+import type { StandaloneAssignScheduleTime } from '@/lib/standalone-todo-assign-sync';
 import {
   getLogicalLocalYmd,
   loadTasksDayBoundary,
@@ -49,15 +45,22 @@ export async function fetchFrogCandidates(opts: {
 
 /**
  * 优先走服务端 frog-assign，成功后回写本地；失败则回退原 PATCH 写入链路。
- * 独立待办额外双向同步 due_date / schedule。
+ * 仅写入指派日（frog 字段），不改动截止日期 due_date / schedule。
  */
 export async function assignFrogForDay(params: {
   kind: 'task' | 'project';
   id: string;
   assignYmd: string;
-  /** 独立待办：入格时段（缺省按全天写回日期） */
+  /** 入格时段提示（占位兼容；不再回写 due/schedule） */
   scheduleTime?: StandaloneAssignScheduleTime;
 }): Promise<void> {
+  const { assertCanAssignSubjectOnDay } = await import('@/lib/schedule/daily-assign-quota');
+  await assertCanAssignSubjectOnDay({
+    kind: params.kind,
+    id: params.id,
+    assignYmd: params.assignYmd,
+  });
+
   let assigned = false;
   try {
     const result = await apiPostFrogAssign({
@@ -100,13 +103,6 @@ export async function assignFrogForDay(params: {
     }
   }
 
-  if (params.kind === 'task') {
-    try {
-      await syncStandaloneTodoAfterAssign(params.id, params.assignYmd, params.scheduleTime);
-    } catch (syncErr) {
-      console.warn('[frog-assign] 独立待办日期回写失败', syncErr);
-    }
-  }
 }
 
 /** 优先走服务端 frog-assign 取消；失败回退 PATCH extra_data */
@@ -159,11 +155,4 @@ export async function unassignFrogForDay(params: {
     }
   }
 
-  if (params.kind === 'task') {
-    try {
-      await syncStandaloneTodoAfterUnassign(params.id, params.assignYmd);
-    } catch (syncErr) {
-      console.warn('[frog-assign] 独立待办取消指派日期同步失败', syncErr);
-    }
-  }
 }

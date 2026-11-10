@@ -18,7 +18,6 @@ export * from './compose-client';
 export * from './compose-intent';
 export * from './confirm';
 export * from './confirm-execute';
-export * from './daily-brief-client';
 export * from './deeplink';
 export * from './food-intake-sheet';
 export * from './host-controller';

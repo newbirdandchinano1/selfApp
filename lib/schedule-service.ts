@@ -60,6 +60,18 @@ import { clampSlotHours } from '@/lib/schedule/axis';
 import { normalizePlacementsMinutesInMemory, resolvePlacementInterval } from '@/lib/schedule/timeline/from-placement';
 import { mergeRemotePlacementMinutes } from '@/lib/schedule/timeline/merge-remote-minutes';
 
+/**
+ * 本地入格/指派已成功后，云端占用同步失败不应回滚整次操作，
+ * 否则 UI 会当成失败（预选横幅残留、无成功提示），但格子里其实已有占用。
+ */
+async function pushPlacementUpsertBestEffort(row: SchedulePlacementRow): Promise<void> {
+  try {
+    await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  } catch (err) {
+    console.warn('[schedule] 占用云端同步失败（本地已入格）', err);
+  }
+}
+
 export type WeekScheduleView = {
   weekStartYmd: string;
   editable: boolean;
@@ -414,7 +426,7 @@ export async function placeFrogOnSchedule(params: {
     throw err;
   }
 
-  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  await pushPlacementUpsertBestEffort(row);
   notifyFrogScheduleChanged();
   return row;
 }
@@ -574,7 +586,7 @@ export async function placeFrogOnScheduleAt(params: {
     throw err;
   }
 
-  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  await pushPlacementUpsertBestEffort(row);
   notifyFrogScheduleChanged();
   return row;
 }
@@ -664,7 +676,7 @@ export async function rematerializeOrphanedPlacement(params: {
   }
 
   const row = (await getPlacementById(placement.id))!;
-  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  await pushPlacementUpsertBestEffort(row);
   notifyFrogScheduleChanged();
   return row;
 }
@@ -761,7 +773,7 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
   }
 
   const row = (await getPlacementById(placement.id))!;
-  await apiPostFrogSchedulePlacement({ action: 'upsert', placement: row });
+  await pushPlacementUpsertBestEffort(row);
   notifyFrogScheduleChanged();
   return row;
 }

@@ -1,4 +1,3 @@
-import { parseTaskAuditDatetimeForLogicalDay } from '@/lib/api-mysql-datetime';
 import {
   addDaysToYmd,
   isLogicalDayInYmdRange,
@@ -8,13 +7,13 @@ import {
   ymdToLocalDate,
 } from '@/lib/schedule';
 import {
+  getCompletedLogicalYmd,
   getRepeatDoneOnYmd,
   isTaskRepeatDueOnLogicalDay,
   parseTaskRepeatSchedule,
   type TaskRepeatSchedule,
 } from '@/lib/task-repeat-rollover';
 import type { TasksDayBoundary } from '@/lib/tasks-logical-day';
-import { getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
 import {
   isTaskActiveStatus,
@@ -128,14 +127,14 @@ export function standaloneTodoPassesDayBoundaryFilter(
 ): boolean {
   if (task.status !== 'done' && task.status !== 'cancelled') return true;
 
+  // 重复待办：以逻辑完成日为准（今日及之后仍展示）
   const repeatDone = getRepeatDoneOnYmd(task.extra_data);
   if (repeatDone && repeatDone >= logicalTodayYmd) return true;
 
-  const raw = task.completed_at?.trim() || task.updated_at?.trim();
-  if (!raw) return true;
-  const doneAt = parseTaskAuditDatetimeForLogicalDay(raw);
-  if (Number.isNaN(doneAt.getTime())) return true;
-  const doneLogicalYmd = getLogicalLocalYmd(doneAt, boundary);
+  // 只用 completed_at（墙上时钟逻辑日）：updated_at 会被同步刷新，不能当完成日。
+  // 无法证明完成落在今日日界内则隐藏。
+  const doneLogicalYmd = getCompletedLogicalYmd(task.completed_at, boundary);
+  if (!doneLogicalYmd) return false;
   return doneLogicalYmd >= logicalTodayYmd;
 }
 

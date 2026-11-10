@@ -30,6 +30,10 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { syncScheduleSlotRemindersForHabit } from '@/lib/schedule-slot-reminder-notifications';
 import { isHabitSchedulePlaceableCycle } from '@/lib/schedule/habit-virtual-placement';
+import {
+  normalizeHabitExecutionRange,
+  parseHabitExecutionTime,
+} from '@/lib/repositories/habits/habit-execution-time';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
 import { toast, Alert } from '@/lib/app-feedback';
@@ -271,6 +275,19 @@ export default function AddHabitScreen() {
   const [reminderEnabled, setReminderEnabled] = React.useState(false);
   const [reminderTime, setReminderTime] = React.useState<Date>(() => defaultReminderTime());
   const [reminderTimePickerOpen, setReminderTimePickerOpen] = React.useState(false);
+  /** 日程执行时间段：默认全天（不入格）；指定起止后才入格 */
+  const [executionAllDay, setExecutionAllDay] = React.useState(true);
+  const [executionStartTime, setExecutionStartTime] = React.useState<Date>(() => {
+    const d = defaultReminderTime();
+    d.setHours(8, 0, 0, 0);
+    return d;
+  });
+  const [executionEndTime, setExecutionEndTime] = React.useState<Date>(() => {
+    const d = defaultReminderTime();
+    d.setHours(8, 30, 0, 0);
+    return d;
+  });
+  const [executionTimePicker, setExecutionTimePicker] = React.useState<'start' | 'end' | null>(null);
   const [aiHabitOpen, setAiHabitOpen] = React.useState(false);
   const [reminderIntensity, setReminderIntensity] = React.useState<'soft' | 'normal' | 'strong'>(
     'normal',
@@ -498,6 +515,23 @@ export default function AddHabitScreen() {
               setReminderEnabled(false);
               setReminderIntensity('normal');
             }
+
+            const execution = parseHabitExecutionTime(row.extra_data);
+            if (execution.allDay) {
+              setExecutionAllDay(true);
+            } else {
+              setExecutionAllDay(false);
+              setExecutionStartTime(() => {
+                const d = defaultReminderTime();
+                d.setHours(execution.startHour, execution.startMinute, 0, 0);
+                return d;
+              });
+              setExecutionEndTime(() => {
+                const d = defaultReminderTime();
+                d.setHours(execution.endHour, execution.endMinute, 0, 0);
+                return d;
+              });
+            }
             const subMeta = parseHabitSubHabitsMeta(row.extra_data);
             setSubHabitsEnabled(subMeta.enabled);
             setSubHabits(subMeta.items);
@@ -538,14 +572,17 @@ export default function AddHabitScreen() {
     if (!isHabitSchedulePlaceableCycle(cycleExtra)) {
       return null;
     }
+    if (executionAllDay) {
+      return '默认全天不入日程表；在量化记录指定执行时间段后才会按循环日入格';
+    }
     if (habitKind === 'build' && (activeTab === '每周N天' || activeTab === '每月N天')) {
-      return '按循环以全天入格日程表；本周期完成天数达标后，剩余日格子不再显示';
+      return '已指定时间段：按循环入格；本周期完成天数达标后，剩余日格子不再显示';
     }
     if (habitKind === 'task') {
-      return '按循环以全天入格日程表；本周期完成预期目标后，剩余日格子不再显示';
+      return '已指定时间段：按循环入格；本周期完成预期目标后，剩余日格子不再显示';
     }
-    return '按循环以全天入格日程表（与提醒开关无关）';
-  }, [habitKind, activeTab]);
+    return '已指定时间段：按循环日入格日程表';
+  }, [habitKind, activeTab, executionAllDay]);
 
   const taskGoalTypeOptions = React.useMemo(
     () => getTaskExpectedGoalTypeOptions(taskRepeatPeriod),
@@ -767,6 +804,14 @@ export default function AddHabitScreen() {
                 monthlyNDays,
               },
         reminder: reminderPayload,
+        executionTime: executionAllDay
+          ? { allDay: true }
+          : normalizeHabitExecutionRange({
+              startHour: executionStartTime.getHours(),
+              startMinute: executionStartTime.getMinutes(),
+              endHour: executionEndTime.getHours(),
+              endMinute: executionEndTime.getMinutes(),
+            }),
       }),
       {
         enabled: resolvedSubEnabled,
@@ -924,6 +969,9 @@ export default function AddHabitScreen() {
     monthlySpecificDays,
     notifyAncestorsDataChanged,
     quantifyEnabled,
+    executionAllDay,
+    executionStartTime,
+    executionEndTime,
     reminderEnabled,
     reminderIntensity,
     reminderTime,
@@ -1581,6 +1629,102 @@ export default function AddHabitScreen() {
                     ) : null}
                   </View>
                 ) : null}
+
+                <View
+                  style={[
+                    styles.executionTimeBlock,
+                    {
+                      borderTopColor: colors.outline,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      marginTop: Spacing.sm,
+                      paddingTop: Spacing.md,
+                    },
+                  ]}>
+                  <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
+                    执行时间
+                  </Text>
+                  <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
+                    默认全天不入日程表；指定时间段后才会入格。与打卡提醒相互独立
+                  </Text>
+                  <View style={styles.executionModeRow}>
+                    {(
+                      [
+                        { key: 'allDay' as const, label: '全天' },
+                        { key: 'range' as const, label: '指定时间段' },
+                      ] as const
+                    ).map((opt) => {
+                      const on = opt.key === 'allDay' ? executionAllDay : !executionAllDay;
+                      return (
+                        <Pressable
+                          key={opt.key}
+                          onPress={() => setExecutionAllDay(opt.key === 'allDay')}
+                          style={[
+                            styles.executionModeChip,
+                            {
+                              borderColor: on ? colors.primary : colors.outline,
+                              backgroundColor: on ? colors.primaryMuted : colors.surfaceSubtle,
+                            },
+                          ]}>
+                          <Text
+                            style={[
+                              Typography.bodyStrong,
+                              { color: on ? colors.primary : colors.textSecondary, fontSize: 13 },
+                            ]}>
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  {!executionAllDay ? (
+                    <View style={{ gap: Spacing.sm }}>
+                      <Pressable
+                        onPress={() => {
+                          if (Platform.OS === 'web') return;
+                          setExecutionTimePicker('start');
+                        }}
+                        style={[
+                          styles.reminderTimeRow,
+                          { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle },
+                          Platform.OS === 'web' && { opacity: 0.65 },
+                        ]}>
+                        <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
+                          开始
+                        </Text>
+                        <View style={styles.reminderTimeRight}>
+                          <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
+                            {pad2(executionStartTime.getHours())}:{pad2(executionStartTime.getMinutes())}
+                          </Text>
+                          {Platform.OS !== 'web' ? (
+                            <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
+                          ) : null}
+                        </View>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          if (Platform.OS === 'web') return;
+                          setExecutionTimePicker('end');
+                        }}
+                        style={[
+                          styles.reminderTimeRow,
+                          { borderColor: colors.outline, backgroundColor: colors.surfaceSubtle },
+                          Platform.OS === 'web' && { opacity: 0.65 },
+                        ]}>
+                        <Text style={[Typography.bodyStrong, styles.numberLabel, { color: colors.text }]}>
+                          结束
+                        </Text>
+                        <View style={styles.reminderTimeRight}>
+                          <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
+                            {pad2(executionEndTime.getHours())}:{pad2(executionEndTime.getMinutes())}
+                          </Text>
+                          {Platform.OS !== 'web' ? (
+                            <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
                 {habitKind === 'task' ? (
                   <View
                     style={[
@@ -1902,7 +2046,7 @@ export default function AddHabitScreen() {
                       打卡提醒
                     </Text>
                     <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                      开启后按设定时刻推送提醒；习惯按循环规则以全天形式出现在日程表（与提醒开关无关）
+                      开启后按设定时刻推送打卡提醒；日程入格请在量化记录「执行时间」指定时间段（默认全天不入格）
                       {Platform.OS === 'web' ? '；网页版不会登记系统提醒' : ''}
                     </Text>
                   </View>
@@ -2479,6 +2623,81 @@ export default function AddHabitScreen() {
         </View>
       </Modal>
 
+      <Modal
+        visible={executionTimePicker != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setExecutionTimePicker(null)}>
+        <View style={styles.iconModalRoot}>
+          <Pressable
+            style={[styles.iconModalBackdrop, { backgroundColor: colors.overlay }]}
+            onPress={() => setExecutionTimePicker(null)}
+          />
+          <View style={[styles.reminderPickerCard, { backgroundColor: colors.surface, borderColor: colors.outline }]}>
+            <Text style={[Typography.title, styles.iconModalTitle, { color: colors.text }]}>
+              {executionTimePicker === 'end' ? '选择结束时间' : '选择开始时间'}
+            </Text>
+            <DateTimePicker
+              value={executionTimePicker === 'end' ? executionEndTime : executionStartTime}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'spinner'}
+              themeVariant={scheme === 'dark' ? 'dark' : 'light'}
+              locale={Platform.OS === 'ios' ? 'zh_CN' : undefined}
+              onChange={(_, date) => {
+                if (!date || !executionTimePicker) return;
+                if (executionTimePicker === 'start') {
+                  setExecutionStartTime(date);
+                  setExecutionEndTime((prev) => {
+                    const startM = date.getHours() * 60 + date.getMinutes();
+                    const endM = prev.getHours() * 60 + prev.getMinutes();
+                    if (endM > startM) return prev;
+                    const next = new Date(date);
+                    const bump = Math.min(startM + 30, 23 * 60 + 59);
+                    next.setHours(Math.floor(bump / 60), bump % 60, 0, 0);
+                    return next;
+                  });
+                } else {
+                  setExecutionEndTime(date);
+                }
+              }}
+            />
+            <View style={styles.reminderPickerActions}>
+              <Pressable
+                onPress={() => setExecutionTimePicker(null)}
+                style={({ pressed }) => [
+                  styles.reminderPickerBtnGhost,
+                  { borderColor: colors.outline },
+                  pressed && { opacity: 0.85 },
+                ]}>
+                <Text style={[Typography.bodyStrong, styles.reminderPickerBtnGhostText, { color: colors.textSecondary }]}>
+                  取消
+                </Text>
+              </Pressable>
+              <AppButton
+                variant="primary"
+                size="md"
+                label="确定"
+                onPress={() => {
+                  if (executionTimePicker === 'end') {
+                    const startM =
+                      executionStartTime.getHours() * 60 + executionStartTime.getMinutes();
+                    const endM = executionEndTime.getHours() * 60 + executionEndTime.getMinutes();
+                    if (!(endM > startM)) {
+                      const next = new Date(executionStartTime);
+                      const bump = Math.min(startM + 30, 23 * 60 + 59);
+                      next.setHours(Math.floor(bump / 60), bump % 60, 0, 0);
+                      setExecutionEndTime(next);
+                      toast.info('结束须晚于开始，已自动调整');
+                    }
+                  }
+                  setExecutionTimePicker(null);
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <AiParseHabitSheet
         visible={aiHabitOpen}
         onClose={() => setAiHabitOpen(false)}
@@ -2765,6 +2984,14 @@ const styles = StyleSheet.create({
   iconPickerEmoji: { fontSize: 26 },
   iconModalCloseBtn: { alignSelf: 'center', paddingVertical: Spacing.lg, paddingHorizontal: Spacing['3xl'], marginTop: Spacing.xs },
   iconModalCloseText: { fontSize: 14 },
+  executionTimeBlock: { gap: Spacing.sm, paddingHorizontal: 2 },
+  executionModeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  executionModeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   reminderTimeRow: {
     flexDirection: 'row',
     alignItems: 'center',

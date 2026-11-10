@@ -105,12 +105,25 @@ export function parseAuditDatetimeUtc(value: string): Date {
 }
 
 /**
- * 任务 completed_at / updated_at / 执行事件 created_at：无时区 DATETIME 按墙上时钟，不做 UTC 偏移。
+ * 任务 completed_at / updated_at / 执行事件 created_at 的逻辑日解析。
+ *
+ * 与后端 `parseTaskAuditWallClockParts` 对齐：优先取数字前缀当墙上时钟，
+ * **即使后面带 Z/offset 也不当 UTC 瞬间**。否则东八区会把
+ * `2026-11-09T16:00:00.000Z`（墙钟昨晚）错算成今天 00:00，导致昨日已完成仍留在待办栏。
+ *
+ * 通用瞬间解析请用 `parseStoredDatetime`（Z 优先）。
  */
 export function parseTaskAuditDatetimeForLogicalDay(value: string): Date {
   const trimmed = value.trim();
   if (!trimmed) return new Date(Number.NaN);
-  return parseStoredDatetime(trimmed);
+  const m = MYSQL_DATETIME_RE.exec(trimmed);
+  if (m) {
+    const [, y, mo, d, h, mi, se = '0'] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(se));
+  }
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) return new Date(Number.NaN);
+  return new Date(ms);
 }
 
 /** 任务完成/更新时间写入本地 SQLite 与 REST（墙上时钟，与界面一致） */

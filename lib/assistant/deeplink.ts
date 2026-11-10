@@ -17,7 +17,7 @@ export type AssistantDeepLinkKind =
 
 export type ParsedAssistantDeepLink = {
   kind: AssistantDeepLinkKind;
-  /** brief 可选域提示 */
+  /** 旧 brief 深链可选域提示（兼容保留） */
   domain?: string;
   /** tasks placement 等 */
   query: Record<string, string>;

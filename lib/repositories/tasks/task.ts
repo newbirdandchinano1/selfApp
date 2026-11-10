@@ -1,4 +1,8 @@
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
+import {
+  clampPriorityForDeadline,
+  resolveTaskDueYmdForPriority,
+} from '@/lib/due-soon-priority-bump';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
@@ -9,18 +13,59 @@ import {
   sortByUpdatedDesc,
   ymdFromDatetime,
 } from '@/lib/api-read-helpers';
+import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import { taskHasRepeatingSchedule } from '@/lib/task-repeat-rollover';
+import { getDayBoundarySync, getLogicalLocalYmd } from '@/lib/tasks-logical-day';
 import { getDatabase } from '../../database.native';
 import type {
   CreateTaskCategoryInput,
   CreateTaskInput,
   TaskCategoryRow,
+  TaskPriority,
   TaskRow,
   UpdateTaskCategoryInput,
   UpdateTaskInput,
 } from './task.types';
 import { ensureTaskCategoryMirrorLocally } from './task-category-mirror';
-import { isTaskShelvedStatus, isTaskTerminalStatus } from './task.types';
+import { isTaskShelvedStatus, isTaskTerminalStatus, normalizeTaskPriority } from './task.types';
+
+/** 临期/过期写库强制紧急（保留重要轴）；搁置/终态不改 */
+function resolveWritableTaskPriority(params: {
+  priority: unknown;
+  due_date: string | null;
+  extra_data: string | null;
+  status: string;
+  id?: string;
+}): TaskPriority {
+  const current = normalizeTaskPriority(params.priority);
+  if (isTaskShelvedStatus(params.status) || isTaskTerminalStatus(params.status)) return current;
+  const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
+  const dueYmd = resolveTaskDueYmdForPriority({
+    due_date: params.due_date,
+    extra_data: params.extra_data,
+  });
+  const probe: TaskRow = {
+    id: params.id ?? '_priority_probe',
+    project_id: null,
+    category_id: null,
+    parent_task_id: null,
+    title: '',
+    description: null,
+    note: null,
+    status: params.status as TaskRow['status'],
+    priority: current,
+    due_date: params.due_date,
+    completed_at: null,
+    created_at: '',
+    updated_at: '',
+    sync_status: 'synced',
+    extra_data: params.extra_data,
+    sort_order: 0,
+  };
+  return clampPriorityForDeadline(current, todayYmd, dueYmd, {
+    overdue: isTaskOverdueForList(probe, todayYmd),
+  });
+}
 
 export type TaskTreeNode = TaskRow & { children: TaskTreeNode[] };
 
@@ -371,6 +416,16 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
     resolved.parent_task_id ?? null,
   );
   const nowLocal = sqlLocalNow();
+  const status = resolved.status ?? 'todo';
+  const dueDate = resolved.due_date ?? null;
+  const extraData = resolved.extra_data ?? null;
+  const priority = resolveWritableTaskPriority({
+    priority: resolved.priority ?? 0,
+    due_date: dueDate,
+    extra_data: extraData,
+    status,
+    id: resolved.id,
+  });
   await db.runAsync(
     `INSERT INTO tasks (
       id, project_id, category_id, parent_task_id, title, description, note, status, priority, due_date, completed_at,
@@ -384,13 +439,13 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
       resolved.title,
       resolved.description ?? null,
       resolved.note ?? null,
-      resolved.status ?? 'todo',
-      resolved.priority ?? 0,
-      resolved.due_date ?? null,
+      status,
+      priority,
+      dueDate,
       sortOrder,
       nowLocal,
       nowLocal,
-      resolved.extra_data ?? null,
+      extraData,
     ]
   );
 
@@ -633,6 +688,16 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
     { preserveCategoryId: current.category_id },
   );
   const nowLocal = sqlLocalNow();
+  const nextStatus = input.status ?? current.status;
+  const nextDueDate = input.due_date !== undefined ? input.due_date : current.due_date;
+  const nextExtraData = input.extra_data !== undefined ? input.extra_data : current.extra_data;
+  const nextPriority = resolveWritableTaskPriority({
+    priority: input.priority !== undefined ? input.priority : current.priority,
+    due_date: nextDueDate,
+    extra_data: nextExtraData,
+    status: nextStatus,
+    id,
+  });
   const result = await db.runAsync(
     `UPDATE tasks
      SET project_id = ?, category_id = ?, parent_task_id = ?, title = ?, description = ?, note = ?, status = ?, priority = ?, due_date = ?,
@@ -646,11 +711,11 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
       input.title ?? current.title,
       input.description ?? current.description,
       input.note ?? current.note,
-      input.status ?? current.status,
-      input.priority ?? current.priority,
-      input.due_date !== undefined ? input.due_date : current.due_date,
+      nextStatus,
+      nextPriority,
+      nextDueDate,
       input.completed_at !== undefined ? input.completed_at : current.completed_at,
-      input.extra_data !== undefined ? input.extra_data : current.extra_data,
+      nextExtraData,
       input.sort_order ?? current.sort_order ?? 1000,
       nowLocal,
       id,

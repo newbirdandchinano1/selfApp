@@ -12,8 +12,6 @@ export type OpenGlobalAssistantOpts = {
   autoSubmit?: boolean;
   /** 仅打开聊天页，不改预填 */
   openOnly?: boolean;
-  /** 打开并提示今日简报 */
-  focusBrief?: boolean;
 };
 
 type Listener = (opts: OpenGlobalAssistantOpts) => void;

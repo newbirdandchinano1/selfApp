@@ -97,6 +97,13 @@ import {
   buildAcceptance,
 } from '@/components/tasks/SchedulePlacementDetailSheet';
 import { loadScheduleTimelineWriteEnabled } from '@/lib/schedule/timeline-flags';
+import {
+  listAssignedSubjectsForBucket,
+  summarizeDailyAssignQuota,
+  type DailyAssignBucket,
+  type DailyAssignedSubject,
+  type DailyAssignQuotaBucketStat,
+} from '@/lib/schedule/daily-assign-quota';
 
 /** 日程表缩放：最简（当前时段）↔ 时间线日视图 */
 export type ScheduleZoomMode = 'minimal' | 'day';
@@ -578,6 +585,8 @@ export function WeeklyFrogSchedule({
   } | null>(null);
 
   const [orphanListOpen, setOrphanListOpen] = React.useState(false);
+  /** 点配额条：查看该优先级当日已指派列表 */
+  const [quotaDetailBucket, setQuotaDetailBucket] = React.useState<DailyAssignBucket | null>(null);
 
   /** 点选格子为未入格项重新指派时间 */
   const [reassignPending, setReassignPending] = React.useState<{
@@ -987,6 +996,49 @@ export function WeeklyFrogSchedule({
     return { inGrid, total: map.size };
   }, [view, subjects]);
 
+  /** 当前查看日：各优先级已指派 / 剩余（2/3/4/5 上限） */
+  const dailyAssignQuota = React.useMemo((): DailyAssignQuotaBucketStat[] => {
+    const items: { priority: number; extraData: string | null }[] = [];
+    for (const t of subjects.tasks) {
+      items.push({ priority: t.priority ?? 0, extraData: t.extra_data });
+    }
+    for (const p of subjects.projects) {
+      items.push({ priority: p.priority ?? 0, extraData: p.extra_data });
+    }
+    return summarizeDailyAssignQuota(items, centerYmd);
+  }, [subjects, centerYmd]);
+
+  const quotaDetailStat = React.useMemo(
+    () =>
+      quotaDetailBucket == null
+        ? null
+        : dailyAssignQuota.find((q) => q.bucket === quotaDetailBucket) ?? null,
+    [quotaDetailBucket, dailyAssignQuota],
+  );
+
+  const quotaDetailItems = React.useMemo((): DailyAssignedSubject[] => {
+    if (quotaDetailBucket == null) return [];
+    const listed = listAssignedSubjectsForBucket({
+      assignYmd: centerYmd,
+      bucket: quotaDetailBucket,
+      tasks: subjects.tasks,
+      projects: subjects.projects,
+    });
+    // 完成态与课表青蛙会话一致（指派日 session）
+    return listed.map((item) => {
+      const status =
+        item.kind === 'project'
+          ? subjects.projects.find((p) => p.id === item.id)?.status ?? null
+          : subjects.tasks.find((t) => t.id === item.id)?.status ?? null;
+      const statusForDone =
+        status === 'completed' || status === 'archived' || status === 'done' ? 'done' : 'todo';
+      return {
+        ...item,
+        done: isFrogDoneForToday(item.extraData, statusForDone, centerYmd),
+      };
+    });
+  }, [quotaDetailBucket, centerYmd, subjects]);
+
   const openPlace = (
     assignYmd: string,
     startSlotIndex: number,
@@ -1052,27 +1104,43 @@ export function WeeklyFrogSchedule({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPlace, reassignPending, view, logicalTodayYmd]);
 
+  const finishPlaceSuccessUi = (assignYmd: string, successMessage: string) => {
+    setPlaceTarget(null);
+    setReassignPending(null);
+    onClearPendingPlace?.();
+    autoOpenedPendingKeyRef.current = null;
+    toast.success(successMessage);
+    setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+  };
+
   const handlePlaceConfirm = async (results: SchedulePlaceResult[]) => {
     if (!placeTarget || !view || results.length === 0) return;
+    const target = placeTarget;
     const first = results[0]!;
     const assignYmd =
       first.assignYmd && isEditableScheduleDay(first.assignYmd, logicalTodayYmd)
         ? first.assignYmd
-        : placeTarget.assignYmd;
+        : target.assignYmd;
     const weekStartYmd = getWeekStartMondayYmd(assignYmd);
     const weekday = weekdayFromYmd(assignYmd);
     const useMinutePath = timelineWrite;
     const daySlots = getSlotCount(view.axis);
+    const successLabel =
+      results.length > 1
+        ? `已入格 ${results.length} 项`
+        : first.title.trim()
+          ? `已入格「${first.title.trim()}」`
+          : '已入格';
     try {
-      if (placeTarget.rematerializePlacementId) {
+      if (target.rematerializePlacementId) {
         const result = first;
         const startSlotIndex = result.allDay
           ? 0
-          : placeTarget.startSlotIndex + (result.startSlotOffset ?? 0);
+          : target.startSlotIndex + (result.startSlotOffset ?? 0);
         const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
         if (useMinutePath) {
           await rematerializeOrphanedPlacementAtMinutes({
-            placementId: placeTarget.rematerializePlacementId,
+            placementId: target.rematerializePlacementId,
             assignYmd,
             startMinutes: result.startMinutes ?? 0,
             endMinutes: result.endMinutes ?? 0,
@@ -1081,16 +1149,14 @@ export function WeeklyFrogSchedule({
           });
         } else {
           await rematerializeOrphanedPlacement({
-            placementId: placeTarget.rematerializePlacementId,
+            placementId: target.rematerializePlacementId,
             assignYmd,
             startSlotIndex,
             spanSlots,
             logicalTodayYmd,
           });
         }
-        setPlaceTarget(null);
-        setReassignPending(null);
-        setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+        finishPlaceSuccessUi(assignYmd, successLabel.replace(/^已入格/, '已改派'));
         await reload([assignYmd], { silent: true });
         onChanged?.();
         return;
@@ -1100,7 +1166,7 @@ export function WeeklyFrogSchedule({
       for (const result of results) {
         const startSlotIndex = result.allDay
           ? 0
-          : placeTarget.startSlotIndex + (result.startSlotOffset ?? 0);
+          : target.startSlotIndex + (result.startSlotOffset ?? 0);
         const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
         const row = useMinutePath
           ? await placeFrogOnScheduleAt({
@@ -1137,9 +1203,8 @@ export function WeeklyFrogSchedule({
           };
         });
       }
-      setPlaceTarget(null);
-      onClearPendingPlace?.();
-      setPeriodIndex(dayOffsetFromToday(assignYmd, logicalTodayYmd));
+      // 先清预选横幅与成功提示，再静默刷新；避免云端慢/失败时横幅残留且无反馈
+      finishPlaceSuccessUi(assignYmd, successLabel);
       await reload([assignYmd], { silent: true });
       onChanged?.(
         results.map((result) => ({
@@ -1150,7 +1215,14 @@ export function WeeklyFrogSchedule({
         })),
       );
     } catch (err) {
-      toast.error(toUserMessage(err, results.length > 1 ? '批量入格失败，请稍后重试' : '改派失败，请稍后重试'));
+      toast.error(
+        toUserMessage(
+          err,
+          results.length > 1 ? '批量入格失败，请稍后重试' : '入格失败，请稍后重试',
+        ),
+      );
+      // 真正失败时抛出让 Sheet 保持打开，便于改时段重试
+      throw err;
     }
   };
 
@@ -1343,9 +1415,17 @@ export function WeeklyFrogSchedule({
     for (const h of virtualHabitsResolved) {
       if (h.assignYmd !== logicalTodayYmd) continue;
       const span = Math.max(1, h.spanSlots);
-      const startMins = slotStartMinutes(view.axis, h.startSlotIndex);
-      const endMins = placementEndMinutes(view.axis, h.startSlotIndex, span);
-      const allDay = h.allDay || (h.startSlotIndex === 0 && span >= daySlotCount);
+      const hasMins =
+        typeof h.startMinutes === 'number' &&
+        typeof h.endMinutes === 'number' &&
+        h.endMinutes > h.startMinutes;
+      const startMins = hasMins
+        ? h.startMinutes!
+        : slotStartMinutes(view.axis, h.startSlotIndex);
+      const endMins = hasMins
+        ? h.endMinutes!
+        : placementEndMinutes(view.axis, h.startSlotIndex, span);
+      const allDay = h.allDay || (!hasMins && h.startSlotIndex === 0 && span >= daySlotCount);
       items.push({
         placement: null,
         habit: h,
@@ -1917,6 +1997,50 @@ export function WeeklyFrogSchedule({
           </Pressable>
         </View>
 
+        <View
+          style={[styles.quotaRow, { borderBottomColor: isDark ? tf.line : 'rgba(230,221,206,0.55)' }]}
+          accessibilityLabel={`当日指派配额 ${dailyAssignQuota
+            .map((q) => `${q.shortLabel}已指派${q.used}剩余${q.remaining}`)
+            .join('，')}`}>
+          {dailyAssignQuota.map((q) => {
+            const full = q.remaining <= 0;
+            return (
+              <Pressable
+                key={q.bucket}
+                onPress={() => setQuotaDetailBucket(q.bucket)}
+                accessibilityRole="button"
+                accessibilityLabel={`${q.shortLabel} ${q.label}，已指派 ${q.used}，剩余 ${q.remaining}，点按查看`}
+                style={({ pressed }) => [
+                  styles.quotaChip,
+                  {
+                    backgroundColor: full
+                      ? isDark
+                        ? `${tf.rose}22`
+                        : 'rgba(186,26,26,0.08)'
+                      : isDark
+                        ? tf.paper3
+                        : '#F4EFE2',
+                    opacity: pressed ? 0.82 : 1,
+                  },
+                ]}>
+                <Text style={[styles.quotaChipLabel, { color: full ? tf.rose : tf.muted }]}>
+                  {q.shortLabel}
+                </Text>
+                <Text
+                  style={[
+                    styles.quotaChipValue,
+                    { color: full ? tf.rose : tf.ink2, fontFamily: foldFonts.mono },
+                  ]}>
+                  {q.used}/{q.max}
+                </Text>
+                <Text style={[styles.quotaChipRemain, { color: full ? tf.rose : tf.faint }]}>
+                  余{q.remaining}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         {isMinimal && minimalFocus.kind !== 'empty' ? (
           <Text
             style={[styles.summaryMeta, { color: outline, paddingHorizontal: Spacing['2xl'], paddingTop: 6 }]}
@@ -2317,6 +2441,105 @@ export function WeeklyFrogSchedule({
         </Pressable>
       </Modal>
 
+      <Modal
+        visible={quotaDetailBucket != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setQuotaDetailBucket(null)}>
+        <Pressable style={styles.listBackdrop} onPress={() => setQuotaDetailBucket(null)}>
+          <Pressable
+            onPress={() => {}}
+            style={[
+              styles.listCard,
+              shadows.card,
+              { backgroundColor: theme.surface, borderColor: theme.outline },
+            ]}>
+            <Text style={[styles.listTitle, { color: theme.text }]}>
+              {quotaDetailStat
+                ? `${quotaDetailStat.shortLabel} · ${quotaDetailStat.label}`
+                : '已指派'}
+            </Text>
+            <Text style={{ color: outline, fontSize: 12, lineHeight: 17, marginBottom: Spacing.md }}>
+              {formatDayScheduleLabel(centerYmd)} · 已指派{' '}
+              {quotaDetailStat?.used ?? 0}/{quotaDetailStat?.max ?? 0}
+              {quotaDetailStat != null
+                ? ` · 剩余 ${quotaDetailStat.remaining}`
+                : ''}
+              {quotaDetailStat != null && quotaDetailStat.remaining <= 0
+                ? ' · 已满，无法再指派同优先级'
+                : ''}
+            </Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {quotaDetailItems.length === 0 ? (
+                <Text style={{ color: outline, paddingVertical: 16 }}>该优先级今日暂无指派</Text>
+              ) : (
+                quotaDetailItems.map((item) => {
+                  const kindLabel = item.kind === 'project'
+                    ? '项目'
+                    : item.isStandaloneTodo
+                      ? '独立待办'
+                      : '任务';
+                  return (
+                    <Pressable
+                      key={`${item.kind}:${item.id}`}
+                      onPress={() => {
+                        setQuotaDetailBucket(null);
+                        runAfterUiSettles(() => {
+                          onOpenSubject?.(item.kind, item.id);
+                        }, MODAL_HANDOFF_MS);
+                      }}
+                      style={({ pressed }) => [
+                        styles.listRow,
+                        {
+                          backgroundColor: surfaceLow,
+                          opacity: pressed ? 0.88 : 1,
+                        },
+                      ]}>
+                      <View
+                        style={[
+                          styles.listRowRail,
+                          { backgroundColor: item.done ? tf.sage : tf.frog },
+                        ]}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text
+                          style={{
+                            color: theme.text,
+                            fontWeight: '700',
+                            fontSize: 14,
+                            textDecorationLine: item.done ? 'line-through' : 'none',
+                            opacity: item.done ? 0.65 : 1,
+                          }}
+                          numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                        <Text style={{ color: outline, fontSize: 11, marginTop: 2 }} numberOfLines={1}>
+                          {kindLabel}
+                          {item.projectName ? ` · ${item.projectName}` : ''}
+                          {item.done ? ' · 已完成' : ''}
+                        </Text>
+                      </View>
+                      <MaterialIcons name="chevron-right" size={18} color={outline} />
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+            <Pressable
+              onPress={() => setQuotaDetailBucket(null)}
+              style={({ pressed }) => [
+                styles.quotaDetailClose,
+                {
+                  backgroundColor: isDark ? tf.paper3 : '#F4EFE2',
+                  opacity: pressed ? 0.85 : 1,
+                },
+              ]}>
+              <Text style={{ color: tf.ink2, fontWeight: '700', fontSize: 13 }}>关闭</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <SchedulePlacementDetailSheet
         visible={!!detail}
         onClose={() => setDetail(null)}
@@ -2452,6 +2675,44 @@ const styles = StyleSheet.create({
   scHeadCnt: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  quotaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  quotaChip: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 4,
+    alignItems: 'center',
+    gap: 1,
+  },
+  quotaChipLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  quotaChipValue: {
+    fontSize: 11,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  quotaChipRemain: {
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  quotaDetailClose: {
+    marginTop: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
   },
   zseg: {
     marginLeft: 'auto',
