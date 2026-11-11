@@ -84,8 +84,10 @@ export function buildTimelineEventsForDay(params: {
       assignYmd: ymd,
     });
     if (!display) continue;
+    const rawAllDay = p.allDay as number | boolean | null | undefined;
     const allDay =
-      p.allDay === 1 ||
+      rawAllDay === 1 ||
+      rawAllDay === true ||
       isAllDaySpan(p.startSlotIndex, p.spanSlots, daySlots) ||
       isAllDayByWorkCoverage(axis, iv.startMinutes, iv.endMinutes);
     events.push({

@@ -1138,27 +1138,40 @@ export function WeeklyFrogSchedule({
           ? 0
           : target.startSlotIndex + (result.startSlotOffset ?? 0);
         const spanSlots = result.allDay ? Math.max(1, daySlots) : result.spanSlots;
-        if (useMinutePath) {
-          await rematerializeOrphanedPlacementAtMinutes({
-            placementId: target.rematerializePlacementId,
+        const rematerializeId = target.rematerializePlacementId;
+        const row = useMinutePath
+          ? await rematerializeOrphanedPlacementAtMinutes({
+              placementId: rematerializeId,
+              assignYmd,
+              startMinutes: result.startMinutes ?? 0,
+              endMinutes: result.endMinutes ?? 0,
+              allDay: result.allDay,
+              logicalTodayYmd,
+            })
+          : await rematerializeOrphanedPlacement({
+              placementId: rematerializeId,
+              assignYmd,
+              startSlotIndex,
+              spanSlots,
+              logicalTodayYmd,
+            });
+        // 跨日且保留旧日时会新建占用（id 变化）；同日/过去日迁移则沿用原 id
+        const keptAsAdd = row.id !== rematerializeId;
+        finishPlaceSuccessUi(
+          assignYmd,
+          keptAsAdd ? successLabel : successLabel.replace(/^已入格/, '已改派'),
+        );
+        await reload([assignYmd], { silent: true });
+        if (keptAsAdd) {
+          onChanged?.({
+            kind: row.subjectKind,
+            id: row.subjectId,
             assignYmd,
-            startMinutes: result.startMinutes ?? 0,
-            endMinutes: result.endMinutes ?? 0,
-            allDay: result.allDay,
-            logicalTodayYmd,
+            action: 'assign',
           });
         } else {
-          await rematerializeOrphanedPlacement({
-            placementId: target.rematerializePlacementId,
-            assignYmd,
-            startSlotIndex,
-            spanSlots,
-            logicalTodayYmd,
-          });
+          onChanged?.();
         }
-        finishPlaceSuccessUi(assignYmd, successLabel.replace(/^已入格/, '已改派'));
-        await reload([assignYmd], { silent: true });
-        onChanged?.();
         return;
       }
 
@@ -1380,8 +1393,10 @@ export function WeeklyFrogSchedule({
       const endMins = hasMins
         ? p.endMinutes!
         : placementEndMinutes(view.axis, p.startSlotIndex, span);
+      const rawAllDay = p.allDay as number | boolean | null | undefined;
       const allDay =
-        p.allDay === 1 ||
+        rawAllDay === 1 ||
+        rawAllDay === true ||
         (p.startSlotIndex === 0 && span >= daySlotCount) ||
         (hasMins &&
           startMins <= view.axis.startMinutes &&
@@ -1404,8 +1419,9 @@ export function WeeklyFrogSchedule({
         title: sub?.title?.trim() || '青蛙',
         done,
         overdue,
-        timeLabel: overdue ? '过期' : allDay ? '全天' : formatMinutesAsHm(startMins),
-        endLabel: overdue || allDay ? '' : formatMinutesAsHm(endMins),
+        // 过期全天仍标「全天」，否则最简全天区 / 时段焦点两边都漏掉
+        timeLabel: allDay ? '全天' : overdue ? '过期' : formatMinutesAsHm(startMins),
+        endLabel: allDay || overdue ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
         tagWeight: weightOf(p.subjectId),
@@ -1465,8 +1481,8 @@ export function WeeklyFrogSchedule({
         title: t.title,
         done: t.done,
         overdue,
-        timeLabel: overdue ? '过期' : allDay ? '全天' : formatMinutesAsHm(startMins),
-        endLabel: overdue || allDay ? '' : formatMinutesAsHm(endMins),
+        timeLabel: allDay ? '全天' : overdue ? '过期' : formatMinutesAsHm(startMins),
+        endLabel: allDay || overdue ? '' : formatMinutesAsHm(endMins),
         startMins,
         endMins,
         tagWeight: weightOf(t.taskId),
@@ -1503,7 +1519,7 @@ export function WeeklyFrogSchedule({
       return [...byId.values()].sort(compareTodayCompactByWeight);
     };
 
-    /** 当前格：起点落在本格，或时段覆盖本格（跨格；全天改走顶部专属格，不挤占时段焦点） */
+    /** 当前格：起点落在本格，或时段覆盖本格（跨格；全天走顶部专属区，不挤占时段焦点） */
     const itemsCoveringSlot = (slot: {
       slotIndex: number;
       startMinutes: number;
@@ -1591,6 +1607,15 @@ export function WeeklyFrogSchedule({
       countdownLabel: '今日暂无安排',
     };
   }, [todayCompactItems, axisNowMins, view]);
+
+  /**
+   * 最简态顶部全天区：经典课表「全天格」退役后，时段焦点仍排除全天块，
+   * 须在此独立展示，否则已指派的全天待办/任务会「消失」。
+   */
+  const minimalAllDayItems = React.useMemo(
+    () => todayCompactItems.filter((x) => x.timeLabel === '全天'),
+    [todayCompactItems],
+  );
 
   // 从时间线折回最简时归位今天（避免跳转过程中被清掉）
   React.useEffect(() => {
@@ -2151,6 +2176,34 @@ export function WeeklyFrogSchedule({
             <View style={styles.minimalBody}>
               <View
                 style={[
+                  styles.minimalAllDayWrap,
+                  { backgroundColor: surfaceLow, borderColor: gridLineSoft },
+                ]}>
+                <View style={styles.minimalAllDayHead}>
+                  <Text style={[styles.minimalCountdownLabel, { color: outline }]}>全天</Text>
+                  {dayEditable(centerYmd, logicalTodayYmd) ? (
+                    <Pressable
+                      onPress={() => openPlace(centerYmd, 0, { preferAllDay: true })}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel="添加全天安排"
+                      style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+                      <MaterialIcons name="add" size={16} color={tf.pond} />
+                    </Pressable>
+                  ) : null}
+                </View>
+                {minimalAllDayItems.length > 0 ? (
+                  <View style={styles.todayAgenda}>
+                    {minimalAllDayItems.map((item, index) =>
+                      renderCompactRow(item, index, minimalAllDayItems, { dense: true }),
+                    )}
+                  </View>
+                ) : (
+                  <Text style={[styles.minimalAllDayEmpty, { color: tf.faint }]}>暂无全天安排</Text>
+                )}
+              </View>
+              <View
+                style={[
                   styles.minimalCountdownRow,
                   { backgroundColor: surfaceLow, borderColor: gridLineSoft },
                 ]}>
@@ -2197,23 +2250,25 @@ export function WeeklyFrogSchedule({
                   )}
                 </View>
               ) : minimalFocus.kind === 'empty' || minimalFocus.kind === 'finished' ? (
-                <Pressable
-                  onPress={() => goZoom('day')}
-                  style={({ pressed }) => [
-                    styles.todayEmpty,
-                    styles.todayEmptyCompact,
-                    {
-                      backgroundColor: surfaceLow,
-                      borderColor: gridLineSoft,
-                      opacity: pressed ? 0.85 : 1,
-                    },
-                  ]}>
-                  <Text style={[styles.todayEmptyHint, { color: outline }]}>
-                    {minimalFocus.kind === 'finished'
-                      ? '点开时间线查看今日安排'
-                      : '点开时间线添加或查看安排'}
-                  </Text>
-                </Pressable>
+                minimalAllDayItems.length > 0 ? null : (
+                  <Pressable
+                    onPress={() => goZoom('day')}
+                    style={({ pressed }) => [
+                      styles.todayEmpty,
+                      styles.todayEmptyCompact,
+                      {
+                        backgroundColor: surfaceLow,
+                        borderColor: gridLineSoft,
+                        opacity: pressed ? 0.85 : 1,
+                      },
+                    ]}>
+                    <Text style={[styles.todayEmptyHint, { color: outline }]}>
+                      {minimalFocus.kind === 'finished'
+                        ? '点开时间线查看今日安排'
+                        : '点开时间线添加或查看安排'}
+                    </Text>
+                  </Pressable>
+                )
               ) : null}
             </View>
           )
@@ -2789,6 +2844,25 @@ const styles = StyleSheet.create({
   },
   minimalBody: {
     gap: Spacing.md,
+  },
+  minimalAllDayWrap: {
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    gap: Spacing.xs,
+  },
+  minimalAllDayHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 22,
+  },
+  minimalAllDayEmpty: {
+    fontSize: 12,
+    fontWeight: '600',
+    paddingVertical: 4,
   },
   minimalCountdownRow: {
     flexDirection: 'row',

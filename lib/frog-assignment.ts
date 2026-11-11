@@ -83,7 +83,7 @@ export function mergeFrogAssignedOn(extraData: string | null, frogAssignedOn: st
   return writeFrogAssignedDates(extraData, dates) ?? JSON.stringify({ frogAssignedOn: ymd });
 }
 
-/** 独立待办：指派日替换为单日（不累加多日） */
+/** @deprecated 显式单日替换；常规指派请用 mergeFrogAssignedOn（可同时保留今天与明天） */
 export function replaceFrogAssignedOn(extraData: string | null, frogAssignedOn: string): string {
   const ymd = normalizeYmd(frogAssignedOn);
   if (!ymd) {

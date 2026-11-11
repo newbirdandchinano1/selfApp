@@ -606,6 +606,9 @@ export default function EditProjectScreen() {
   const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
   const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
   const [tagsLoading, setTagsLoading] = React.useState(true);
+  /** 次要栏目默认折叠：标签/依赖/推进/积分/道路；本周与活动另折 */
+  const [moreOpen, setMoreOpen] = React.useState(false);
+  const [overviewOpen, setOverviewOpen] = React.useState(false);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(null);
   const [selectedAcceptanceId, setSelectedAcceptanceId] = React.useState<string | null>(null);
@@ -1516,6 +1519,29 @@ export default function EditProjectScreen() {
     .map((id) => allProjects.find((p) => p.id === id)?.name)
     .filter(Boolean) as string[];
 
+  const moreSummary = React.useMemo(() => {
+    const bits: string[] = [];
+    if (selectedTagIds.length > 0) bits.push(`标签 ${selectedTagIds.length}`);
+    if (prerequisiteProjectIds.length > 0) bits.push(`依赖 ${prerequisiteProjectIds.length}`);
+    const progressN = progressHabitBindings.length + progressCounters.length;
+    if (progressN > 0) bits.push(`推进 ${progressN}`);
+    if (rewardN > 0) bits.push(`+${rewardN}`);
+    return bits.length > 0 ? bits.join(' · ') : '标签 / 依赖 / 推进 / 积分';
+  }, [
+    prerequisiteProjectIds.length,
+    progressCounters.length,
+    progressHabitBindings.length,
+    rewardN,
+    selectedTagIds.length,
+  ]);
+
+  const overviewSummary = React.useMemo(() => {
+    const bits: string[] = [];
+    if (weekPlanItems.length > 0) bits.push(`本周 ${weekPlanItems.length}`);
+    if (activityFeed.length > 0) bits.push(`动态 ${activityFeed.length}`);
+    return bits.length > 0 ? bits.join(' · ') : '本周安排与项目活动';
+  }, [activityFeed.length, weekPlanItems.length]);
+
   const beginPlaceProjectOnSchedule = React.useCallback(() => {
     const snap = projectSnapshotRef.current;
     if (!projectId || !snap) return;
@@ -1605,6 +1631,7 @@ export default function EditProjectScreen() {
             </View>
           ) : (
             <>
+              {/* 1. Hero：名称 / 进度 / 日程 / 分类 */}
               <FoldRiseIn animate={foldAnimate} index={0} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
                 <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                   <View style={styles.heroRow}>
@@ -1632,13 +1659,11 @@ export default function EditProjectScreen() {
                       />
                       <Text style={{ fontSize: 11, color: tf.faint, marginTop: 2 }} numberOfLines={1}>
                         {[
-                          selectedCategoryName || '未分类',
                           formatTaskPriorityShort(taskPriorityKeyToNumber(priority)),
-                          deadlineText || null,
                           prereqLabels[0] ? `前置：${prereqLabels[0]}${prereqLabels.length > 1 ? '…' : ''}` : null,
                         ]
                           .filter(Boolean)
-                          .join(' · ')}
+                          .join(' · ') || '编辑项目'}
                       </Text>
                     </View>
                     {progress.total > 0 ? (
@@ -1686,10 +1711,138 @@ export default function EditProjectScreen() {
                       </Pressable>
                     ) : null}
                   </View>
+
+                  <Pressable
+                    onPress={openSchedulePicker}
+                    disabled={formBusy}
+                    style={({ pressed }) => [
+                      styles.frow,
+                      frowBorder,
+                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>日程</Text>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                        {deadlineText || '未设置'}
+                      </Text>
+                      {reminderText || repeatText ? (
+                        <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                          {[reminderText, repeatText].filter(Boolean).join(' · ')}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setCategoryModalVisible(true)}
+                    disabled={formBusy}
+                    style={({ pressed }) => [
+                      styles.frow,
+                      frowBorder,
+                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
+                    ]}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>分类</Text>
+                    <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]} numberOfLines={1}>
+                      {selectedCategoryName || '未分类'}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                  </Pressable>
                 </View>
               </FoldRiseIn>
 
+              {/* 2. 备注 / 验收 + 长期 */}
               <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <View style={styles.frow}>
+                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: tf.faint }}>
+                      开启后写验收标准；无子任务时可指派青蛙
+                    </Text>
+                    <TaskFoldSwitch
+                      value={isLongTermProject}
+                      onValueChange={(next) => {
+                        if (next) {
+                          setAcceptanceItems((prev) => {
+                            const hasText = prev.some((i) => i.text.trim());
+                            if (hasText) return prev;
+                            const fromNote = linesToAcceptanceChecklist(notes);
+                            return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
+                          });
+                          setNotes('');
+                          setNoteImageUris([]);
+                        } else {
+                          setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
+                          setAcceptanceItems([createEmptyAcceptanceItem()]);
+                        }
+                        setIsLongTermProject(next);
+                      }}
+                      disabled={formBusy}
+                      accessibilityLabel="长期项目"
+                    />
+                  </View>
+                  {isLongTermProject ? (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>验收标准</Text>
+                      <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
+                        <AcceptanceChecklistEditor
+                          items={acceptanceItems}
+                          onChange={setAcceptanceItems}
+                          mode="edit"
+                          disabled={formBusy}
+                          inkColor={tf.ink2}
+                          faintColor={tf.faint}
+                          frogColor={tf.frog}
+                          onPondColor={tf.onPond}
+                          lineColor={tf.line2}
+                        />
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
+                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
+                      <View style={{ flex: 1, minWidth: 0, gap: 8, opacity: formBusy ? 0.65 : 1 }}>
+                        <TextInput
+                          value={notes}
+                          onChangeText={setNotes}
+                          placeholder="可选补充说明，下方可贴多图"
+                          placeholderTextColor={tf.faint}
+                          editable={!formBusy}
+                          multiline
+                          style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
+                        />
+                        <NoteImageAttach
+                          uris={noteImageUris}
+                          onChangeUris={setNoteImageUris}
+                          disabled={formBusy}
+                          borderColor={tf.line2}
+                          mutedColor={tf.faint}
+                          surfaceColor={isDark ? colors.input : '#F1EDE1'}
+                        />
+                      </View>
+                    </View>
+                  )}
+                </View>
+              </FoldRiseIn>
+
+              {/* 3. 优先级 */}
+              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
+                  <TaskFoldPriorityGrid
+                    value={priority}
+                    onChange={setPriority}
+                    subtitle="改判后下属任务同步移动"
+                    lockNonUrgent={lockNonUrgentPriority}
+                  />
+                </View>
+              </FoldRiseIn>
+
+              {/* 4. 任务树 */}
+              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
                 <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
                   <View style={styles.treeHead}>
                     <Text style={{ fontSize: 14, fontWeight: '800', color: tf.ink2 }}>任务树</Text>
@@ -1754,357 +1907,8 @@ export default function EditProjectScreen() {
                 </View>
               </FoldRiseIn>
 
-              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View
-                  style={[
-                    styles.fcard,
-                    styles.fcardTight,
-                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
-                  ]}>
-                  <View style={styles.frow}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>依赖</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <PrerequisiteProjectPickerField
-                        selectedIds={prerequisiteProjectIds}
-                        allProjects={allProjects}
-                        excludeProjectId={projectId}
-                        loading={projectsLoading || loading}
-                        disabled={formBusy}
-                        onChange={setPrerequisiteProjectIds}
-                        textColor={tf.ink}
-                        outline={outline}
-                        placeholderColor={tf.faint}
-                        primary={primary}
-                        surfaceLow={surfaceLow}
-                        surfaceLowest={surfaceLowest}
-                        isDark={isDark}
-                      />
-                    </View>
-                  </View>
-                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>推进进度</Text>
-                    <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
-                      <ProgressHabitBindingsField
-                        bindings={progressHabitBindings}
-                        sections={progressHabitSections}
-                        loading={habitsLoading || loading}
-                        disabled={formBusy}
-                        onChange={setProgressHabitBindings}
-                        anchorYmd={logicalTodayYmd}
-                        textColor={tf.ink}
-                        outline={outline}
-                        placeholderColor={tf.faint}
-                        primary={primary}
-                        surfaceLow={surfaceLow}
-                        surfaceLowest={surfaceLowest}
-                        isDark={isDark}
-                      />
-                      <View style={{ marginTop: 10, opacity: formBusy ? 0.65 : 1 }}>
-                        <ProgressCountersField
-                          counters={progressCounters}
-                          disabled={formBusy}
-                          onChange={setProgressCounters}
-                          anchorYmd={logicalTodayYmd}
-                          textColor={tf.ink}
-                          outline={outline}
-                          placeholderColor={tf.faint}
-                          primary={primary}
-                          surfaceLow={surfaceLow}
-                          surfaceLowest={surfaceLowest}
-                        />
-                      </View>
-                    </View>
-                  </View>
-                  <Pressable
-                    onPress={openSchedulePicker}
-                    disabled={formBusy}
-                    style={({ pressed }) => [
-                      styles.frow,
-                      frowBorder,
-                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
-                    ]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>日程</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
-                        {deadlineText || '未设置'}
-                      </Text>
-                      {reminderText || repeatText ? (
-                        <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
-                          {[reminderText, repeatText].filter(Boolean).join(' · ')}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
-                  </Pressable>
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <ProjectTagPickerField
-                        selectedIds={selectedTagIds}
-                        allTags={allTags}
-                        loading={tagsLoading || loading}
-                        disabled={formBusy}
-                        onChange={setSelectedTagIds}
-                        textColor={tf.ink}
-                        outline={outline}
-                        placeholderColor={tf.faint}
-                        primary={primary}
-                        surfaceLow={surfaceLow}
-                        surfaceLowest={surfaceLowest}
-                        isDark={isDark}
-                      />
-                    </View>
-                  </View>
-                  {isLongTermProject ? (
-                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
-                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>验收标准</Text>
-                      <View style={{ flex: 1, minWidth: 0, opacity: formBusy ? 0.65 : 1 }}>
-                        <AcceptanceChecklistEditor
-                          items={acceptanceItems}
-                          onChange={setAcceptanceItems}
-                          mode="edit"
-                          disabled={formBusy}
-                          inkColor={tf.ink2}
-                          faintColor={tf.faint}
-                          frogColor={tf.frog}
-                          onPondColor={tf.onPond}
-                          lineColor={tf.line2}
-                        />
-                      </View>
-                    </View>
-                  ) : (
-                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 8 }]}>
-                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 4 }]}>备注</Text>
-                      <View style={{ flex: 1, minWidth: 0, gap: 8, opacity: formBusy ? 0.65 : 1 }}>
-                        <TextInput
-                          value={notes}
-                          onChangeText={setNotes}
-                          placeholder="可选补充说明，下方可贴多图"
-                          placeholderTextColor={tf.faint}
-                          editable={!formBusy}
-                          multiline
-                          style={[styles.frowInput, { color: tf.ink2, minHeight: 36 }]}
-                        />
-                        <NoteImageAttach
-                          uris={noteImageUris}
-                          onChangeUris={setNoteImageUris}
-                          disabled={formBusy}
-                          borderColor={tf.line2}
-                          mutedColor={tf.faint}
-                          surfaceColor={isDark ? colors.input : '#F1EDE1'}
-                        />
-                      </View>
-                    </View>
-                  )}
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                  <View style={styles.sectionHead}>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>本周安排</Text>
-                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>
-                      {weekPlanItems.length > 0
-                        ? `${weekPlanItems.length} 个叶子待推进`
-                        : '暂无叶子'}
-                    </Text>
-                    <Pressable
-                      onPress={() => router.push('/tasks-calendar')}
-                      hitSlop={8}
-                      style={{ marginLeft: 'auto' }}>
-                      <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>日程 ›</Text>
-                    </Pressable>
-                  </View>
-                  {weekPlanItems.length === 0 ? (
-                    <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
-                      本周尚无入格或到期的叶子任务
-                    </Text>
-                  ) : (
-                    weekPlanItems.map((item, i) => (
-                      <Pressable
-                        key={item.id}
-                        onPress={() => openEditTask(item.id)}
-                        style={[styles.histrow, i === 0 ? { borderTopWidth: 0 } : null]}>
-                        <View
-                          style={[
-                            styles.hiBox,
-                            {
-                              backgroundColor: item.inGrid
-                                ? 'rgba(79,124,81,0.12)'
-                                : isDark
-                                  ? tf.mist
-                                  : '#F1EDE1',
-                            },
-                          ]}>
-                          {item.inGrid ? (
-                            <MaterialIcons name="eco" size={12} color={tf.frog} />
-                          ) : (
-                            <Text style={{ fontSize: 11 }}>·</Text>
-                          )}
-                        </View>
-                        <View style={styles.hc2}>
-                          <Text style={[styles.hcTitle, { color: tf.ink2 }]} numberOfLines={1}>
-                            {item.title}
-                          </Text>
-                          <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
-                            {[item.dayLabel, item.timeLabel].filter(Boolean).join(' · ')}
-                            {' · '}
-                            {item.inGrid ? '已入格' : '尚未入格'}
-                          </Text>
-                        </View>
-                        <Text style={{ fontSize: 11, color: '#9DA69D', fontWeight: '600' }}>
-                          {item.dayLabel}
-                        </Text>
-                      </Pressable>
-                    ))
-                  )}
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View style={[styles.fcard, styles.extraCard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                  <View style={styles.sectionHead}>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>项目活动</Text>
-                    <Pressable
-                      onPress={() => router.push('/tasks-overview')}
-                      hitSlop={8}
-                      style={{ marginLeft: 'auto' }}>
-                      <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>全部 ›</Text>
-                    </Pressable>
-                  </View>
-                  {activityFeed.length === 0 ? (
-                    <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
-                      入格、完成或恢复任务后会出现在这里
-                    </Text>
-                  ) : (
-                    activityFeed.map((row, i) => (
-                      <View
-                        key={row.key}
-                        style={[styles.actrow, i === 0 ? { borderTopWidth: 0, paddingTop: 2 } : null]}>
-                        <View
-                          style={[
-                            styles.ad,
-                            { backgroundColor: row.tone === 'frog' ? tf.frog : tf.amber },
-                          ]}
-                        />
-                        <Text style={[styles.at, { color: tf.ink2 }]} numberOfLines={2}>
-                          <Text style={{ fontWeight: '700' }}>{row.title}</Text>
-                          {row.detail}
-                        </Text>
-                        <Text style={[styles.aw, { color: tf.faint }]}>{row.when}</Text>
-                      </View>
-                    ))
-                  )}
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                  <TaskFoldPriorityGrid
-                    value={priority}
-                    onChange={setPriority}
-                    subtitle="改判后下属任务同步移动"
-                    lockNonUrgent={lockNonUrgentPriority}
-                  />
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={6} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View
-                  style={[
-                    styles.fcard,
-                    styles.fcardTight,
-                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
-                  ]}>
-                  <Pressable
-                    onPress={() => setCategoryModalVisible(true)}
-                    disabled={formBusy}
-                    style={({ pressed }) => [
-                      styles.frow,
-                      { opacity: formBusy ? 0.65 : pressed ? 0.88 : 1 },
-                    ]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>分类</Text>
-                    <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]} numberOfLines={1}>
-                      {selectedCategoryName || '未分类'}
-                    </Text>
-                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
-                  </Pressable>
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.frowValBold, { color: tf.ink2 }]}>
-                        {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
-                      </Text>
-                      <Text style={{ fontSize: 10, color: tf.faint }}>项目完成时结算</Text>
-                    </View>
-                    <RewardPointsStepper
-                      value={rewardPointsText}
-                      onChange={setRewardPointsText}
-                      disabled={formBusy}
-                      monoFontFamily={fonts.mono}
-                    />
-                  </View>
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期</Text>
-                    <Text style={{ flex: 1, fontSize: 12, color: tf.faint }}>
-                      无子任务时可指派青蛙
-                    </Text>
-                    <TaskFoldSwitch
-                      value={isLongTermProject}
-                      onValueChange={(next) => {
-                        if (next) {
-                          setAcceptanceItems((prev) => {
-                            const hasText = prev.some((i) => i.text.trim());
-                            if (hasText) return prev;
-                            const fromNote = linesToAcceptanceChecklist(notes);
-                            return fromNote.length > 0 ? fromNote : [createEmptyAcceptanceItem()];
-                          });
-                          setNotes('');
-                          setNoteImageUris([]);
-                        } else {
-                          setNotes((prev) => prev.trim() || acceptanceChecklistToLines(acceptanceItems));
-                          setAcceptanceItems([createEmptyAcceptanceItem()]);
-                        }
-                        setIsLongTermProject(next);
-                      }}
-                      disabled={formBusy}
-                      accessibilityLabel="长期项目"
-                    />
-                  </View>
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View
-                  style={[
-                    styles.fcard,
-                    styles.fcardTight,
-                    {
-                      backgroundColor: foldCardBg,
-                      borderColor: foldCardBorder,
-                      paddingVertical: 12,
-                      opacity: formBusy ? 0.65 : 1,
-                    },
-                  ]}>
-                  <MonthGoalPickerField
-                    selectedMonthGoalId={selectedMonthGoalId}
-                    selectedAcceptanceId={selectedAcceptanceId}
-                    monthGoals={monthGoals}
-                    loading={monthGoalsLoading || loading}
-                    disabled={formBusy}
-                    onChange={(value) => {
-                      setSelectedMonthGoalId(value?.monthGoalId ?? null);
-                      setSelectedAcceptanceId(value?.acceptanceId ?? null);
-                    }}
-                  />
-                  <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
-                    道路归属挂在月目标的验收叶子上，只影响导图位置，不改变任务、日历与积分。
-                  </Text>
-                </View>
-              </FoldRiseIn>
-
               {hasChildTasks ? (
-                <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                   <View
                     style={[
                       styles.lockBanner,
@@ -2135,7 +1939,277 @@ export default function EditProjectScreen() {
                 </FoldRiseIn>
               ) : null}
 
-              <FoldRiseIn animate={foldAnimate} index={9} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+              {/* 5. 道路归属 */}
+              <FoldRiseIn animate={foldAnimate} index={5} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    {
+                      backgroundColor: foldCardBg,
+                      borderColor: foldCardBorder,
+                      paddingVertical: 12,
+                      opacity: formBusy ? 0.65 : 1,
+                    },
+                  ]}>
+                  <MonthGoalPickerField
+                    selectedMonthGoalId={selectedMonthGoalId}
+                    selectedAcceptanceId={selectedAcceptanceId}
+                    monthGoals={monthGoals}
+                    loading={monthGoalsLoading || loading}
+                    disabled={formBusy}
+                    onChange={(value) => {
+                      setSelectedMonthGoalId(value?.monthGoalId ?? null);
+                      setSelectedAcceptanceId(value?.acceptanceId ?? null);
+                    }}
+                  />
+                  <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
+                    道路归属只影响导图位置，不改变任务、日历与积分。
+                  </Text>
+                </View>
+              </FoldRiseIn>
+
+              {/* 6. 更多设置：默认折叠 */}
+              <FoldRiseIn animate={foldAnimate} index={6} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={() => setMoreOpen((v) => !v)}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: moreOpen }}
+                    style={({ pressed }) => [styles.collapseHead, { opacity: pressed ? 0.85 : 1 }]}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>更多设置</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                      {moreSummary}
+                    </Text>
+                    <MaterialIcons
+                      name={moreOpen ? 'expand-less' : 'expand-more'}
+                      size={20}
+                      color="#8C998E"
+                    />
+                  </Pressable>
+
+                  {moreOpen ? (
+                    <View style={{ gap: 10, marginTop: 6, opacity: formBusy ? 0.65 : 1 }}>
+                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <ProjectTagPickerField
+                            selectedIds={selectedTagIds}
+                            allTags={allTags}
+                            loading={tagsLoading || loading}
+                            disabled={formBusy}
+                            compact
+                            onChange={setSelectedTagIds}
+                            textColor={tf.ink}
+                            outline={outline}
+                            placeholderColor={tf.faint}
+                            primary={primary}
+                            surfaceLow={surfaceLow}
+                            surfaceLowest={surfaceLowest}
+                            isDark={isDark}
+                          />
+                        </View>
+                      </View>
+                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>依赖</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <PrerequisiteProjectPickerField
+                            selectedIds={prerequisiteProjectIds}
+                            allProjects={allProjects}
+                            excludeProjectId={projectId}
+                            loading={projectsLoading || loading}
+                            disabled={formBusy}
+                            compact
+                            onChange={setPrerequisiteProjectIds}
+                            textColor={tf.ink}
+                            outline={outline}
+                            placeholderColor={tf.faint}
+                            primary={primary}
+                            surfaceLow={surfaceLow}
+                            surfaceLowest={surfaceLowest}
+                            isDark={isDark}
+                          />
+                        </View>
+                      </View>
+                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>推进</Text>
+                        <View style={{ flex: 1, minWidth: 0, gap: 10 }}>
+                          <ProgressHabitBindingsField
+                            bindings={progressHabitBindings}
+                            sections={progressHabitSections}
+                            loading={habitsLoading || loading}
+                            disabled={formBusy}
+                            onChange={setProgressHabitBindings}
+                            anchorYmd={logicalTodayYmd}
+                            textColor={tf.ink}
+                            outline={outline}
+                            placeholderColor={tf.faint}
+                            primary={primary}
+                            surfaceLow={surfaceLow}
+                            surfaceLowest={surfaceLowest}
+                            isDark={isDark}
+                          />
+                          <ProgressCountersField
+                            counters={progressCounters}
+                            disabled={formBusy}
+                            onChange={setProgressCounters}
+                            anchorYmd={logicalTodayYmd}
+                            textColor={tf.ink}
+                            outline={outline}
+                            placeholderColor={tf.faint}
+                            primary={primary}
+                            surfaceLow={surfaceLow}
+                            surfaceLowest={surfaceLowest}
+                          />
+                        </View>
+                      </View>
+                      <View style={[styles.frow, frowBorder]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.frowValBold, { color: tf.ink2 }]}>
+                            {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                          </Text>
+                          <Text style={{ fontSize: 10, color: tf.faint }}>项目完成时结算</Text>
+                        </View>
+                        <RewardPointsStepper
+                          value={rewardPointsText}
+                          onChange={setRewardPointsText}
+                          disabled={formBusy}
+                          monoFontFamily={fonts.mono}
+                        />
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              </FoldRiseIn>
+
+              {/* 7. 本周与动态：只读，默认折叠 */}
+              <FoldRiseIn animate={foldAnimate} index={7} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.extraCard,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={() => setOverviewOpen((v) => !v)}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: overviewOpen }}
+                    style={({ pressed }) => [styles.collapseHead, { opacity: pressed ? 0.85 : 1 }]}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>本周与动态</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                      {overviewSummary}
+                    </Text>
+                    <MaterialIcons
+                      name={overviewOpen ? 'expand-less' : 'expand-more'}
+                      size={20}
+                      color="#8C998E"
+                    />
+                  </Pressable>
+
+                  {overviewOpen ? (
+                    <View style={{ marginTop: 4 }}>
+                      <View style={[styles.sectionHead, { marginTop: 6 }]}>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#5B6A5D' }}>本周安排</Text>
+                        <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>
+                          {weekPlanItems.length > 0
+                            ? `${weekPlanItems.length} 个叶子待推进`
+                            : '暂无叶子'}
+                        </Text>
+                        <Pressable
+                          onPress={() => router.push('/tasks-calendar')}
+                          hitSlop={8}
+                          style={{ marginLeft: 'auto' }}>
+                          <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>日程 ›</Text>
+                        </Pressable>
+                      </View>
+                      {weekPlanItems.length === 0 ? (
+                        <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
+                          本周尚无入格或到期的叶子任务
+                        </Text>
+                      ) : (
+                        weekPlanItems.map((item, i) => (
+                          <Pressable
+                            key={item.id}
+                            onPress={() => openEditTask(item.id)}
+                            style={[styles.histrow, i === 0 ? { borderTopWidth: 0 } : null]}>
+                            <View
+                              style={[
+                                styles.hiBox,
+                                {
+                                  backgroundColor: item.inGrid
+                                    ? 'rgba(79,124,81,0.12)'
+                                    : isDark
+                                      ? tf.mist
+                                      : '#F1EDE1',
+                                },
+                              ]}>
+                              {item.inGrid ? (
+                                <MaterialIcons name="eco" size={12} color={tf.frog} />
+                              ) : (
+                                <Text style={{ fontSize: 11 }}>·</Text>
+                              )}
+                            </View>
+                            <View style={styles.hc2}>
+                              <Text style={[styles.hcTitle, { color: tf.ink2 }]} numberOfLines={1}>
+                                {item.title}
+                              </Text>
+                              <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                                {[item.dayLabel, item.timeLabel].filter(Boolean).join(' · ')}
+                                {' · '}
+                                {item.inGrid ? '已入格' : '尚未入格'}
+                              </Text>
+                            </View>
+                            <Text style={{ fontSize: 11, color: '#9DA69D', fontWeight: '600' }}>
+                              {item.dayLabel}
+                            </Text>
+                          </Pressable>
+                        ))
+                      )}
+
+                      <View style={[styles.sectionHead, { marginTop: 12 }]}>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#5B6A5D' }}>项目活动</Text>
+                        <Pressable
+                          onPress={() => router.push('/tasks-overview')}
+                          hitSlop={8}
+                          style={{ marginLeft: 'auto' }}>
+                          <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>全部 ›</Text>
+                        </Pressable>
+                      </View>
+                      {activityFeed.length === 0 ? (
+                        <Text style={{ fontSize: 12, color: tf.faint, paddingVertical: 4 }}>
+                          入格、完成或恢复任务后会出现在这里
+                        </Text>
+                      ) : (
+                        activityFeed.map((row, i) => (
+                          <View
+                            key={row.key}
+                            style={[styles.actrow, i === 0 ? { borderTopWidth: 0, paddingTop: 2 } : null]}>
+                            <View
+                              style={[
+                                styles.ad,
+                                { backgroundColor: row.tone === 'frog' ? tf.frog : tf.amber },
+                              ]}
+                            />
+                            <Text style={[styles.at, { color: tf.ink2 }]} numberOfLines={2}>
+                              <Text style={{ fontWeight: '700' }}>{row.title}</Text>
+                              {row.detail}
+                            </Text>
+                            <Text style={[styles.aw, { color: tf.faint }]}>{row.when}</Text>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  ) : null}
+                </View>
+              </FoldRiseIn>
+
+              <FoldRiseIn animate={foldAnimate} index={8} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                 <View style={styles.hintline}>
                   <MaterialIcons name="lightbulb-outline" size={13} color={tf.faint} />
                   <Text style={{ flex: 1, fontSize: 11, color: tf.faint, lineHeight: 15 }}>
@@ -2144,7 +2218,7 @@ export default function EditProjectScreen() {
                 </View>
               </FoldRiseIn>
 
-              <FoldRiseIn animate={foldAnimate} index={10} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+              <FoldRiseIn animate={foldAnimate} index={9} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                 <View style={styles.deleteRow}>
                   <Pressable
                     onPress={removeProject}
@@ -2259,6 +2333,12 @@ const styles = StyleSheet.create({
   },
   fcardTight: { paddingVertical: 8 },
   extraCard: { paddingVertical: 9 },
+  collapseHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+  },
   sectionHead: {
     flexDirection: 'row',
     alignItems: 'center',

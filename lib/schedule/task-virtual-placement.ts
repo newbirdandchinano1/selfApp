@@ -6,7 +6,8 @@
  * - 有日期无时间 → 今天起至截止日每天全天；过期未完成继续每日
  * - 该日无青蛙指派 → 未入格，不虚拟铺进时间线
  * - 无日期无重复且无该日指派 → 未入格，不虚拟铺进时间线
- * - 同日已有占用行（含未入格）则不再叠虚拟块
+ * - 无日期无重复但该日已指派 → 虚拟全天（时间线顶栏可见）
+ * - 同日已有有效占用行（非未入格）则不再叠虚拟块
  * - 定点时刻落在轴外时回退全天，避免整条消失
  */
 import {
@@ -256,8 +257,8 @@ export function shouldShowVirtualTaskOnDay(params: {
         endYmd: bounds.endYmd,
       });
     }
-    // 有时刻、无日期无重复：未指派日 → 不入时间线
-    return false;
+    // 有时刻、无日期无重复：上方已确认该日指派 → 虚拟入格
+    return true;
   }
 
   // 全天
@@ -273,8 +274,8 @@ export function shouldShowVirtualTaskOnDay(params: {
     });
   }
 
-  // 无日期无重复：未入格，不虚拟铺块
-  return false;
+  // 无日期无重复：上方已确认该日指派 → 虚拟全天（否则时间线顶栏空白）
+  return true;
 }
 
 function buildPlacedTaskDayKeys(placements: SchedulePlacementRow[] | undefined): Set<string> {
@@ -282,7 +283,8 @@ function buildPlacedTaskDayKeys(placements: SchedulePlacementRow[] | undefined):
   if (!placements) return keys;
   for (const p of placements) {
     if (p.subjectKind !== 'task') continue;
-    // 含未入格：已有占用行则不再虚拟顶替（未入格只留在候选池）
+    // 未入格/无格：勿拦虚拟块，否则占用行被时间线跳过 + 虚拟也被去重 = 整条消失
+    if (p.orphaned || p.startSlotIndex == null) continue;
     const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
     keys.add(`${p.subjectId}:${ymd}`);
   }
@@ -398,7 +400,8 @@ export function buildOverdueFrogCarryPlacementsForToday(params: {
   const onToday = new Set<string>();
   if (placements) {
     for (const p of placements) {
-      // 含未入格：今日已有占用行则不再滞留虚拟块（避免与未入格池重复上时间线）
+      // 未入格/无格仍允许滞留虚拟块上轴（与 buildPlacedTaskDayKeys 同口径）
+      if (p.orphaned || p.startSlotIndex == null) continue;
       const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (ymd !== logicalTodayYmd) continue;
       onToday.add(`${p.subjectKind}:${p.subjectId}`);

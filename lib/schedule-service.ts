@@ -591,7 +591,12 @@ export async function placeFrogOnScheduleAt(params: {
   return row;
 }
 
-/** 改派 / 未入格重落入格（可改日、改时段）；已指派日按需迁移 */
+/**
+ * 改派 / 未入格重落入格（可改日、改时段）。
+ * - 同日：更新本条占用时段
+ * - 改到另一天且旧日仍可编辑：新建占用并累加指派日，保留旧日（不取消今天再派明天）
+ * - 改到另一天且旧日已过去：迁移占用，并取消旧日指派
+ */
 export async function rematerializeOrphanedPlacement(params: {
   placementId: string;
   assignYmd: string;
@@ -617,6 +622,21 @@ export async function rematerializeOrphanedPlacement(params: {
     throw new Error(`连续格数须为 1–${maxSpan}`);
   }
 
+  const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+
+  // 旧日仍可编辑且改到另一天：累加新日，保留旧日指派/占用
+  if (oldYmd !== params.assignYmd && isEditableScheduleDay(oldYmd, params.logicalTodayYmd)) {
+    return placeFrogOnSchedule({
+      weekStartYmd,
+      weekday,
+      startSlotIndex: params.startSlotIndex,
+      spanSlots: params.spanSlots,
+      subjectKind: placement.subjectKind,
+      subjectId: placement.subjectId,
+      logicalTodayYmd: params.logicalTodayYmd,
+    });
+  }
+
   await assertSubjectNotAlreadyInSlots({
     weekStartYmd,
     weekday,
@@ -626,8 +646,6 @@ export async function rematerializeOrphanedPlacement(params: {
     subjectId: placement.subjectId,
     excludePlacementId: placement.id,
   });
-
-  const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
 
   await updatePlacementSlots(placement.id, {
     weekStartYmd,
@@ -660,7 +678,7 @@ export async function rematerializeOrphanedPlacement(params: {
     throw err;
   }
 
-  // 先指派新日再取消旧日，避免独立待办 due 被中间态清空
+  // 仅过去日迁移：旧日已无占用时取消旧日指派
   if (oldYmd !== params.assignYmd) {
     const remainOnOld = (
       await listSubjectPlacementsOnDay(
@@ -681,7 +699,10 @@ export async function rematerializeOrphanedPlacement(params: {
   return row;
 }
 
-/** 阶段 G：改派 / 未入格按分钟重落时段（可改日）；已指派日按需迁移 */
+/**
+ * 阶段 G：改派 / 未入格按分钟重落时段（可改日）。
+ * 跨日且旧日仍可编辑时累加新日、保留旧日；仅过去日迁移时取消旧日指派。
+ */
 export async function rematerializeOrphanedPlacementAtMinutes(params: {
   placementId: string;
   assignYmd: string;
@@ -707,6 +728,22 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
     allDay: params.allDay,
   });
 
+  const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
+
+  // 旧日仍可编辑且改到另一天：累加新日，保留旧日指派/占用
+  if (oldYmd !== params.assignYmd && isEditableScheduleDay(oldYmd, params.logicalTodayYmd)) {
+    return placeFrogOnScheduleAt({
+      weekStartYmd,
+      weekday,
+      startMinutes: resolved.startMinutes,
+      endMinutes: resolved.endMinutes,
+      allDay: params.allDay,
+      subjectKind: placement.subjectKind,
+      subjectId: placement.subjectId,
+      logicalTodayYmd: params.logicalTodayYmd,
+    });
+  }
+
   await assertSubjectNotAlreadyInInterval({
     axis,
     weekStartYmd,
@@ -717,8 +754,6 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
     subjectId: placement.subjectId,
     excludePlacementId: placement.id,
   });
-
-  const oldYmd = ymdForWeekday(placement.weekStartYmd, placement.weekday);
 
   await updatePlacementSlots(placement.id, {
     weekStartYmd,

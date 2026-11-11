@@ -450,6 +450,8 @@ export default function EditTaskScreen() {
     Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
   >([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
+  /** 次要栏目默认折叠：归属 / 标签 / 积分 / 习惯 / 计数 */
+  const [moreOpen, setMoreOpen] = React.useState(false);
 
   const skipAutoSaveRef = React.useRef(false);
   const exitingAfterSaveRef = React.useRef(false);
@@ -1468,6 +1470,24 @@ export default function EditTaskScreen() {
   const projectScheduleHint = inheritsProjectSchedule
     ? deadlineText || (projectDateLimit.end ? `日程继承 ${projectDateLimit.end}` : '继承项目日程')
     : '';
+  const moreSummary = React.useMemo(() => {
+    const bits: string[] = [];
+    if (parentTask) bits.push(`父：${parentTask.title}`);
+    else if (projectName) bits.push(projectName);
+    if (showTagField && selectedTagIds.length > 0) bits.push(`标签 ${selectedTagIds.length}`);
+    if (rewardN > 0) bits.push(`+${rewardN}`);
+    if (boundHabitIds.length > 0) bits.push(`习惯 ${boundHabitIds.length}`);
+    if (progressCounters.length > 0) bits.push(`计数 ${progressCounters.length}`);
+    return bits.length > 0 ? bits.join(' · ') : '归属 / 标签 / 积分 / 习惯 / 计数';
+  }, [
+    boundHabitIds.length,
+    parentTask,
+    progressCounters.length,
+    projectName,
+    rewardN,
+    selectedTagIds.length,
+    showTagField,
+  ]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: tf.paper }]} edges={['left', 'right']}>
@@ -1586,92 +1606,8 @@ export default function EditTaskScreen() {
                 </View>
               </FoldRiseIn>
 
+              {/* 1. 核心：日程 + 优先级 */}
               <FoldRiseIn animate={foldAnimate} index={1} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View
-                  style={[
-                    styles.fcard,
-                    styles.fcardTight,
-                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
-                  ]}>
-                  <Pressable
-                    onPress={() =>
-                      router.push({
-                        pathname: '/pick-parent-task',
-                        params: {
-                          taskId,
-                          source: pickParentTaskSource,
-                          currentParentId: parentTask?.id ?? taskSnapshot?.parent_task_id ?? '',
-                        },
-                      })
-                    }
-                    disabled={loading}
-                    style={({ pressed }) => [
-                      styles.frow,
-                      { opacity: loading ? 0.65 : pressed ? 0.88 : 1 },
-                    ]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>父任务</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      {parentTask ? (
-                        <>
-                          <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
-                            {parentTask.title}
-                          </Text>
-                          {parentTask.deadline || parentTask.deadlineText ? (
-                            <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
-                              {parentTask.deadline || parentTask.deadlineText}
-                            </Text>
-                          ) : null}
-                        </>
-                      ) : (
-                        <Text style={[styles.frowVal, { color: tf.faint }]}>未关联 · 可选</Text>
-                      )}
-                    </View>
-                    <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
-                  </Pressable>
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>项目</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
-                        {projectName || '未关联项目'}
-                      </Text>
-                      {projectScheduleHint ? (
-                        <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
-                          {projectScheduleHint}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
-                  </View>
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-                <View style={[styles.fcard, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                  {inheritsProjectPriority ? (
-                    <>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>优先级</Text>
-                        <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>与项目一致，不可单独改判</Text>
-                      </View>
-                      <View style={[styles.frow, { minHeight: 32 }]}>
-                        <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]}>
-                          {projectPriorityLabel || priorityKeyToLabel(priority) || '未设置'}
-                        </Text>
-                        <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
-                      </View>
-                    </>
-                  ) : (
-                    <TaskFoldPriorityGrid
-                      value={priority}
-                      onChange={setPriority}
-                      subtitle="改判后本周四象限同步移动"
-                      lockNonUrgent={lockNonUrgentPriority}
-                    />
-                  )}
-                </View>
-              </FoldRiseIn>
-
-              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
                 <View
                   style={[
                     styles.fcard,
@@ -1719,50 +1655,43 @@ export default function EditTaskScreen() {
                     )}
                   </Pressable>
 
-                  {showTagField ? (
-                    <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
-                      <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <ProjectTagPickerField
-                          selectedIds={selectedTagIds}
-                          allTags={allTags}
-                          loading={tagsLoading}
-                          disabled={loading}
-                          locked={inheritsProjectTags}
-                          onChange={setSelectedTagIds}
-                          textColor={tf.ink2}
-                          outline={tf.muted}
-                          placeholderColor={tf.faint}
-                          primary={tf.frog}
-                          surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                          surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                          isDark={isDark}
-                        />
-                      </View>
-                      {inheritsProjectTags ? (
-                        <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" style={{ marginTop: 8 }} />
-                      ) : null}
-                    </View>
-                  ) : null}
-
-                  <View style={[styles.frow, frowBorder]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
-                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={{ fontSize: 14, fontWeight: '700', color: tf.ink2, fontFamily: fonts.mono }}>
-                        {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
-                      </Text>
-                    </View>
-                    <RewardPointsStepper
-                      value={rewardPointsText}
-                      onChange={setRewardPointsText}
-                      disabled={loading}
-                      monoFontFamily={fonts.mono}
-                    />
+                  <View style={{ marginTop: 4 }}>
+                    {inheritsProjectPriority ? (
+                      <>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                          <Text style={{ fontSize: 12, fontWeight: '800', color: '#5B6A5D' }}>优先级</Text>
+                          <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }}>与项目一致，不可单独改判</Text>
+                        </View>
+                        <View style={[styles.frow, { minHeight: 32 }]}>
+                          <Text style={[styles.frowValBold, { color: tf.ink2, flex: 1 }]}>
+                            {projectPriorityLabel || priorityKeyToLabel(priority) || '未设置'}
+                          </Text>
+                          <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
+                        </View>
+                      </>
+                    ) : (
+                      <TaskFoldPriorityGrid
+                        value={priority}
+                        onChange={setPriority}
+                        subtitle="改判后本周四象限同步移动"
+                        lockNonUrgent={lockNonUrgentPriority}
+                      />
+                    )}
                   </View>
+                </View>
+              </FoldRiseIn>
 
-                  <View style={[styles.frow, frowBorder, { opacity: loading ? 0.65 : 1 }]}>
+              {/* 2. 备注 / 验收 + 长期（耦合） */}
+              <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <View style={[styles.frow, { opacity: loading ? 0.65 : 1 }]}>
                     <Text style={[styles.frowLab, { color: '#8A968C' }]}>长期任务</Text>
-                    <Text style={{ flex: 1, fontSize: 11, color: tf.faint }}>完成时确认是否结束整项</Text>
+                    <Text style={{ flex: 1, fontSize: 11, color: tf.faint }}>开启后写验收标准</Text>
                     <TaskFoldSwitch
                       value={isLongTermTask}
                       onValueChange={(next) => {
@@ -1827,47 +1756,11 @@ export default function EditTaskScreen() {
                       </View>
                     </View>
                   )}
-
-                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>绑定习惯</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <BoundHabitPickerField
-                        selectedHabitIds={boundHabitIds}
-                        sections={habitSections}
-                        loading={habitsLoading}
-                        disabled={loading}
-                        onChange={setBoundHabitIds}
-                        textColor={tf.ink2}
-                        outline={tf.muted}
-                        placeholderColor={tf.faint}
-                        primary={tf.frog}
-                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                        isDark={isDark}
-                      />
-                    </View>
-                  </View>
-                  <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
-                    <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>计数进度</Text>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <ProgressCountersField
-                        counters={progressCounters}
-                        disabled={loading}
-                        onChange={setProgressCounters}
-                        anchorYmd={getLogicalLocalYmd(new Date(), getDayBoundarySync())}
-                        textColor={tf.ink2}
-                        outline={tf.muted}
-                        placeholderColor={tf.faint}
-                        primary={tf.frog}
-                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                      />
-                    </View>
-                  </View>
                 </View>
               </FoldRiseIn>
 
-              <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+              {/* 3. 子任务 */}
+              <FoldRiseIn animate={foldAnimate} index={3} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
                 <View
                   style={[
                     styles.fcard,
@@ -1927,6 +1820,166 @@ export default function EditTaskScreen() {
                     <View style={[styles.emptySubtaskRow, { borderColor: foldCardBorder }]}>
                       <MaterialIcons name="playlist-add-check" size={16} color={tf.faint} />
                       <Text style={{ fontSize: 12, color: tf.faint, flex: 1 }}>暂无子任务</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </FoldRiseIn>
+
+              {/* 4. 更多设置：默认折叠 */}
+              <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
+                <View
+                  style={[
+                    styles.fcard,
+                    styles.fcardTight,
+                    { backgroundColor: foldCardBg, borderColor: foldCardBorder },
+                  ]}>
+                  <Pressable
+                    onPress={() => setMoreOpen((v) => !v)}
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: moreOpen }}
+                    style={({ pressed }) => [styles.collapseHead, { opacity: pressed ? 0.85 : 1 }]}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: tf.ink2 }}>更多设置</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                      {moreSummary}
+                    </Text>
+                    <MaterialIcons
+                      name={moreOpen ? 'expand-less' : 'expand-more'}
+                      size={20}
+                      color="#8C998E"
+                    />
+                  </Pressable>
+
+                  {moreOpen ? (
+                    <View style={{ marginTop: 4 }}>
+                      <Pressable
+                        onPress={() =>
+                          router.push({
+                            pathname: '/pick-parent-task',
+                            params: {
+                              taskId,
+                              source: pickParentTaskSource,
+                              currentParentId: parentTask?.id ?? taskSnapshot?.parent_task_id ?? '',
+                            },
+                          })
+                        }
+                        disabled={loading}
+                        style={({ pressed }) => [
+                          styles.frow,
+                          frowBorder,
+                          { opacity: loading ? 0.65 : pressed ? 0.88 : 1 },
+                        ]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>父任务</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          {parentTask ? (
+                            <>
+                              <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                                {parentTask.title}
+                              </Text>
+                              {parentTask.deadline || parentTask.deadlineText ? (
+                                <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                                  {parentTask.deadline || parentTask.deadlineText}
+                                </Text>
+                              ) : null}
+                            </>
+                          ) : (
+                            <Text style={[styles.frowVal, { color: tf.faint }]}>未关联 · 可选</Text>
+                          )}
+                        </View>
+                        <Text style={{ fontSize: 11, color: '#6F856B' }}>选择 ›</Text>
+                      </Pressable>
+                      <View style={[styles.frow, frowBorder]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>项目</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[styles.frowValBold, { color: tf.ink2 }]} numberOfLines={1}>
+                            {projectName || '未关联项目'}
+                          </Text>
+                          {projectScheduleHint ? (
+                            <Text style={{ fontSize: 10, color: tf.faint, marginTop: 1 }} numberOfLines={1}>
+                              {projectScheduleHint}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
+                      </View>
+
+                      {showTagField ? (
+                        <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                          <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <ProjectTagPickerField
+                              selectedIds={selectedTagIds}
+                              allTags={allTags}
+                              loading={tagsLoading}
+                              disabled={loading}
+                              locked={inheritsProjectTags}
+                              compact
+                              onChange={setSelectedTagIds}
+                              textColor={tf.ink2}
+                              outline={tf.muted}
+                              placeholderColor={tf.faint}
+                              primary={tf.frog}
+                              surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                              surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                              isDark={isDark}
+                            />
+                          </View>
+                          {inheritsProjectTags ? (
+                            <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" style={{ marginTop: 8 }} />
+                          ) : null}
+                        </View>
+                      ) : null}
+
+                      <View style={[styles.frow, frowBorder]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>
+                        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Text style={{ fontSize: 14, fontWeight: '700', color: tf.ink2, fontFamily: fonts.mono }}>
+                            {rewardN > 0 ? `+${rewardN}` : String(rewardN)}
+                          </Text>
+                        </View>
+                        <RewardPointsStepper
+                          value={rewardPointsText}
+                          onChange={setRewardPointsText}
+                          disabled={loading}
+                          monoFontFamily={fonts.mono}
+                        />
+                      </View>
+
+                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>绑定习惯</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <BoundHabitPickerField
+                            selectedHabitIds={boundHabitIds}
+                            sections={habitSections}
+                            loading={habitsLoading}
+                            disabled={loading}
+                            onChange={setBoundHabitIds}
+                            textColor={tf.ink2}
+                            outline={tf.muted}
+                            placeholderColor={tf.faint}
+                            primary={tf.frog}
+                            surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                            surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                            isDark={isDark}
+                          />
+                        </View>
+                      </View>
+                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 10 }]}>
+                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 10 }]}>计数进度</Text>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <ProgressCountersField
+                            counters={progressCounters}
+                            disabled={loading}
+                            onChange={setProgressCounters}
+                            anchorYmd={getLogicalLocalYmd(new Date(), getDayBoundarySync())}
+                            textColor={tf.ink2}
+                            outline={tf.muted}
+                            placeholderColor={tf.faint}
+                            primary={tf.frog}
+                            surfaceLow={isDark ? colors.input : '#F1EDE1'}
+                            surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
+                          />
+                        </View>
+                      </View>
                     </View>
                   ) : null}
                 </View>
@@ -2032,6 +2085,12 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   fcardTight: { paddingVertical: 8 },
+  collapseHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+  },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   foldTitleInput: {
     padding: 0,

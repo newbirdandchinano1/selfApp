@@ -2,6 +2,10 @@
 import { FoldProgressBar } from '@/components/tasks/fold-progress-bar';
 import { FoldProgressRing } from '@/components/tasks/fold-progress-ring';
 import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
+import {
+  QuickPrioritySheet,
+  type QuickPriorityTarget,
+} from '@/components/tasks/QuickPrioritySheet';
 import { TaskCompletionHeatmap } from '@/components/tasks/TaskCompletionHeatmap';
 import { TaskListFilterBar } from '@/components/tasks/TaskListFilterBar';
 import {
@@ -73,6 +77,7 @@ import {
   isDueWithinPriorityWindow,
   resolveProjectDueYmdForPriority,
   resolveTaskDueYmdForPriority,
+  shouldLockNonUrgentPriority,
 } from '@/lib/due-soon-priority-bump';
 import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
@@ -1824,6 +1829,10 @@ export default function TasksScreen() {
   /** 设计稿 shot 06：行下操作抽屉 / 新建行高亮 */
   const [todoDrawerId, setTodoDrawerId] = React.useState<string | null>(null);
   const [highlightTodoId, setHighlightTodoId] = React.useState<string | null>(null);
+  /** 列表图标快捷设置优先级 */
+  const [prioritySheetTarget, setPrioritySheetTarget] = React.useState<QuickPriorityTarget | null>(
+    null,
+  );
   const quickInputCollapse = React.useRef(new Animated.Value(1)).current;
   const [mutationOverlayLabel, setMutationOverlayLabel] = React.useState<string | null>(null);
   const mutationInFlightRef = React.useRef(false);
@@ -4025,6 +4034,73 @@ export default function TasksScreen() {
       );
     },
     [shelveStandaloneTodo]
+  );
+
+  const openQuickPriorityForTodo = React.useCallback(
+    (task: TaskRow) => {
+      const overdue = isStandaloneTodoOverdue(task, logicalTodayYmd);
+      const dueYmd = resolveTaskDueYmdForPriority(task);
+      setPrioritySheetTarget({
+        kind: 'task',
+        id: task.id,
+        title: task.title?.trim() || '待办',
+        priority: normalizeTaskPriority(task.priority),
+        lockNonUrgent: shouldLockNonUrgentPriority(logicalTodayYmd, dueYmd, { overdue }),
+      });
+    },
+    [logicalTodayYmd],
+  );
+
+  const openQuickPriorityForProject = React.useCallback(
+    (project: ProjectRow) => {
+      const overdue = isProjectScheduleExpired(project, logicalTodayYmd);
+      const dueYmd = resolveProjectDueYmdForPriority(project);
+      setPrioritySheetTarget({
+        kind: 'project',
+        id: project.id,
+        title: project.name?.trim() || '项目',
+        priority: normalizeTaskPriority(project.priority),
+        lockNonUrgent: shouldLockNonUrgentPriority(logicalTodayYmd, dueYmd, { overdue }),
+      });
+    },
+    [logicalTodayYmd],
+  );
+
+  const applyQuickPriority = React.useCallback(
+    async (target: QuickPriorityTarget, priority: 0 | 1 | 2 | 3 | 4) => {
+      const next = normalizeTaskPriority(priority);
+      markPageDirty();
+      if (target.kind === 'task') {
+        const prev = findVisibleTask(target.id);
+        patchVisibleTask(target.id, { priority: next });
+        try {
+          await updateTask(target.id, { priority: next });
+          toast.success('已更新优先级');
+        } catch (err) {
+          console.warn('快捷设置待办优先级失败', err);
+          if (prev) patchVisibleTask(target.id, { priority: prev.priority });
+          toast.error(toUserMessage(err, '优先级更新失败'));
+        }
+        return;
+      }
+      const prevProject = projects.find((p) => p.id === target.id);
+      setProjects((rows) =>
+        rows.map((p) => (p.id === target.id ? { ...p, priority: next } : p)),
+      );
+      try {
+        await updateProject(target.id, { priority: next });
+        toast.success('已更新优先级');
+      } catch (err) {
+        console.warn('快捷设置项目优先级失败', err);
+        if (prevProject) {
+          setProjects((rows) =>
+            rows.map((p) => (p.id === target.id ? { ...p, priority: prevProject.priority } : p)),
+          );
+        }
+        toast.error(toUserMessage(err, '优先级更新失败'));
+      }
+    },
+    [findVisibleTask, markPageDirty, patchVisibleTask, projects],
   );
 
   const toggleTaskDone = React.useCallback(
@@ -7316,13 +7392,18 @@ export default function TasksScreen() {
                               </FoldStampPop>
                             </Pressable>
                           )}
-                          <View
-                            style={[styles.habitCardIconWrap, { backgroundColor: todoIconBg }]}
-                            accessibilityElementsHidden
-                            importantForAccessibility="no-hide-descendants">
+                          <Pressable
+                            onPress={() => openQuickPriorityForTodo(t)}
+                            hitSlop={6}
+                            accessibilityRole="button"
+                            accessibilityLabel={`设置优先级 ${t.title}`}
+                            style={({ pressed }) => [
+                              styles.habitCardIconWrap,
+                              { backgroundColor: todoIconBg, opacity: pressed ? 0.82 : 1 },
+                            ]}>
                             <Text style={styles.habitCardIcon}>{todoIcon}</Text>
                             <InboxSourceDot visible={sourceBadges.hasEntity('task', t.id)} size={7} />
-                          </View>
+                          </Pressable>
                           <Pressable
                             style={[styles.habitCardBody, { flex: 1 }]}
                             onPress={() => openTask(t.id)}
@@ -7948,8 +8029,15 @@ export default function TasksScreen() {
                               <MaterialIcons name="check" size={14} color={outline} style={{ opacity: 0.35 }} />
                             )}
                           </Pressable>
-                          <View
-                            style={[
+                          <Pressable
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              openQuickPriorityForProject(project);
+                            }}
+                            hitSlop={6}
+                            accessibilityRole="button"
+                            accessibilityLabel={`设置优先级 ${project.name}`}
+                            style={({ pressed }) => [
                               styles.projectAvatar,
                               {
                                 backgroundColor: isScheduleExpired
@@ -7959,12 +8047,13 @@ export default function TasksScreen() {
                                     : (project.priority ?? 0) >= 3
                                       ? tf.sun2
                                       : tf.lily2,
+                                opacity: pressed ? 0.82 : 1,
                               },
                             ]}>
                             <Text style={styles.projectAvatarEmoji}>
                               {projectAvatarEmoji(project.name, project.extra_data)}
                             </Text>
-                          </View>
+                          </Pressable>
                           <View style={styles.projectHeadMainColumn}>
                             <View style={styles.projectTitleRow}>
                               <Text
@@ -8833,6 +8922,16 @@ export default function TasksScreen() {
           </View>
         </View>
       </Modal>
+
+      <QuickPrioritySheet
+        target={prioritySheetTarget}
+        onClose={() => setPrioritySheetTarget(null)}
+        onSelect={(priority) => {
+          const target = prioritySheetTarget;
+          if (!target) return;
+          void applyQuickPriority(target, priority);
+        }}
+      />
 
       <Modal visible={categoryModalVisible} transparent animationType="fade" onRequestClose={closeCategoryMenu}>
         <View style={styles.modalRoot}>

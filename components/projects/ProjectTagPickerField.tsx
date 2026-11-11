@@ -1,3 +1,7 @@
+import {
+  FoldBottomSheet,
+  useFoldBottomSheetRequestClose,
+} from '@/components/ui/fold-bottom-sheet';
 import type { ProjectTagRow, TagDomain } from '@/lib/repositories/projects/project-tag.types';
 import { filterTagsByDomain, normalizeTagDomain } from '@/lib/repositories/tags/tag';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -5,7 +9,6 @@ import { useRouter } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,6 +25,8 @@ type ProjectTagPickerFieldProps = {
   locked?: boolean;
   /** locked 时主文案前缀，默认「与项目一致」 */
   lockedHint?: string;
+  /** 标签式紧凑展示：芯片行 + 轻触发，无大框摘要 */
+  compact?: boolean;
   /** 标签域：任务侧 / 备忘录互斥；决定可选列表与「管理标签」跳转 */
   tagDomain?: TagDomain;
   onChange: (ids: string[]) => void;
@@ -41,6 +46,8 @@ export function ProjectTagPickerField({
   disabled = false,
   locked = false,
   lockedHint = '与项目一致',
+  /** 默认芯片态；需要旧大框时显式传 compact={false} */
+  compact = true,
   tagDomain = 'task',
   onChange,
   textColor,
@@ -97,7 +104,7 @@ export function ProjectTagPickerField({
     setModalVisible(true);
   }, [disabled, locked, selectableIdSet, selectedIds]);
 
-  const closeModal = useCallback(() => {
+  const handleSheetClose = useCallback(() => {
     setModalVisible(false);
     setDraftIds([]);
   }, []);
@@ -108,155 +115,267 @@ export function ProjectTagPickerField({
     );
   }, []);
 
-  const confirmModal = useCallback(() => {
-    onChange(draftIds.filter((id) => selectableIdSet.has(id)));
-    closeModal();
-  }, [closeModal, draftIds, onChange, selectableIdSet]);
-
-  const openManageTags = useCallback(() => {
-    closeModal();
-    router.push({ pathname: '/project-tags', params: { domain } });
-  }, [closeModal, domain, router]);
+  const removeSelected = useCallback(
+    (tagId: string) => {
+      if (disabled || loading || locked) return;
+      onChange(selectedIds.filter((id) => id !== tagId));
+    },
+    [disabled, loading, locked, onChange, selectedIds],
+  );
 
   // 夜间模式强制实色底，避免调用方传入的半透明 surface 叠在深色背景上发虚
   const fieldBg = isDark ? '#161d2b' : surfaceLow;
-  const modalBg = isDark ? '#1e293b' : surfaceLowest;
   const manageBg = isDark ? '#243044' : `${primary}10`;
+
+  const renderTagChip = (tag: ProjectTagRow, removable: boolean) => (
+    <View
+      key={tag.id}
+      style={[
+        styles.miniChip,
+        isDark
+          ? { backgroundColor: tag.color, borderColor: tag.color }
+          : { backgroundColor: `${tag.color}22`, borderColor: `${tag.color}55` },
+      ]}>
+      {!isDark ? <View style={[styles.miniDot, { backgroundColor: tag.color }]} /> : null}
+      <Text style={[styles.miniChipText, { color: isDark ? '#ffffff' : tag.color }]} numberOfLines={1}>
+        {tag.name}
+      </Text>
+      {removable ? (
+        <Pressable onPress={() => removeSelected(tag.id)} hitSlop={8} accessibilityLabel={`移除 ${tag.name}`}>
+          <MaterialIcons name="close" size={13} color={isDark ? '#ffffff' : tag.color} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
 
   return (
     <>
-      <Pressable
-        onPress={openModal}
-        disabled={disabled || loading || locked}
-        style={({ pressed }) => [
-          styles.select,
-          { backgroundColor: fieldBg, borderColor: placeholderColor },
-          (disabled || loading || locked) && { opacity: locked ? 1 : 0.65 },
-          pressed && !disabled && !loading && !locked && { opacity: 0.8 },
-        ]}>
-        <View style={styles.selectLeft}>
-          <MaterialIcons name="local-offer" size={18} color={primary} />
-          <View style={{ flex: 1, gap: 6 }}>
-            <Text style={[styles.selectValue, { color: textColor }]} numberOfLines={2}>
-              {loading ? '加载标签…' : selectedSummary}
-            </Text>
-            {selectedTags.length > 0 ? (
-              <View style={styles.chipRow}>
-                {selectedTags.slice(0, 4).map((tag) => (
-                  <View
-                    key={tag.id}
-                    style={[
-                      styles.miniChip,
-                      // 夜间模式用不透明实色，避免半透明底在深色背景上发虚
-                      isDark
-                        ? { backgroundColor: tag.color, borderColor: tag.color }
-                        : { backgroundColor: `${tag.color}22`, borderColor: `${tag.color}55` },
-                    ]}>
-                    {!isDark ? <View style={[styles.miniDot, { backgroundColor: tag.color }]} /> : null}
-                    <Text
-                      style={[styles.miniChipText, { color: isDark ? '#ffffff' : tag.color }]}
-                      numberOfLines={1}>
-                      {tag.name}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ) : locked ? null : (
-              <Text style={[styles.selectHint, { color: outline }]}>可选多个标签；可在标签管理中新建</Text>
+      {compact ? (
+        <View style={styles.compactWrap}>
+          <View style={styles.chipRow}>
+            {loading ? (
+              <Text style={[styles.compactEmpty, { color: outline }]}>加载标签…</Text>
+            ) : selectedTags.length === 0 ? (
+              <Text style={[styles.compactEmpty, { color: outline }]}>
+                {locked ? `${lockedHint}：未贴标签` : '未贴标签'}
+              </Text>
+            ) : (
+              selectedTags.map((tag) => renderTagChip(tag, !locked && !disabled))
             )}
           </View>
-        </View>
-        {loading ? (
-          <ActivityIndicator size="small" color={primary} />
-        ) : locked ? null : (
-          <MaterialIcons name="expand-more" size={20} color={outline} />
-        )}
-      </Pressable>
-
-      <Modal transparent visible={modalVisible} animationType="fade" onRequestClose={closeModal}>
-        <Pressable style={styles.modalOverlay} onPress={closeModal}>
-          <Pressable
-            onPress={() => {}}
-            style={[styles.modalCard, { backgroundColor: modalBg, borderColor: placeholderColor }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>选择标签</Text>
-              <Pressable onPress={closeModal} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
-                <MaterialIcons name="close" size={22} color={outline} />
-              </Pressable>
-            </View>
-            <Text style={[styles.modalDesc, { color: outline }]}>
-              {domain === 'memo'
-                ? '仅备忘录标签；与项目/待办标签相互独立。可贴多个，权重高的优先展示。'
-                : '仅项目/习惯/待办标签；与备忘录标签相互独立。可贴多个，权重高的优先展示。'}
-            </Text>
-
+          {!locked ? (
             <Pressable
-              onPress={openManageTags}
+              onPress={openModal}
+              disabled={disabled || loading}
               style={({ pressed }) => [
-                styles.manageBtn,
-                // 夜间模式用实色底与描边，取消半透明 primary / surface 叠色
-                isDark
-                  ? { borderColor: primary, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 }
-                  : { borderColor: `${primary}33`, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 },
+                styles.compactAdd,
+                {
+                  borderColor: placeholderColor,
+                  backgroundColor: fieldBg,
+                  opacity: disabled || loading ? 0.55 : pressed ? 0.8 : 1,
+                },
               ]}>
-              <MaterialIcons name="settings" size={16} color={primary} />
-              <Text style={[styles.manageBtnText, { color: primary }]}>管理标签（新建 / 删除 / 权重）</Text>
-            </Pressable>
-
-            {selectableTags.length === 0 ? (
-              <Text style={[styles.modalEmpty, { color: outline }]}>暂无标签，请先去管理页新建</Text>
-            ) : (
-              <>
-                <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                  {selectableTags.map((tag) => {
-                    const picked = draftIds.includes(tag.id);
-                    return (
-                      <Pressable
-                        key={tag.id}
-                        onPress={() => toggleDraft(tag.id)}
-                        style={({ pressed }) => [
-                          styles.modalRow,
-                          {
-                            borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.35)',
-                            opacity: pressed ? 0.88 : 1,
-                          },
-                        ]}>
-                        <View style={[styles.colorDot, { backgroundColor: tag.color }]} />
-                        <View style={{ flex: 1, gap: 2 }}>
-                          <Text style={[styles.modalRowTitle, { color: textColor }]} numberOfLines={1}>
-                            {tag.name}
-                          </Text>
-                          <Text style={[styles.modalRowSub, { color: outline }]} numberOfLines={1}>
-                            权重 {tag.weight}
-                            {tag.description?.trim() ? ` · ${tag.description.trim()}` : ''}
-                          </Text>
-                        </View>
-                        {picked ? (
-                          <MaterialIcons name="check-circle" size={22} color={primary} />
-                        ) : (
-                          <MaterialIcons name="radio-button-unchecked" size={22} color={outline} />
-                        )}
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-                <Pressable
-                  onPress={confirmModal}
-                  style={({ pressed }) => [styles.confirmBtn, { backgroundColor: primary, opacity: pressed ? 0.9 : 1 }]}>
-                  <Text style={styles.confirmBtnText}>
-                    确定{draftIds.length > 0 ? `（已选 ${draftIds.length} 个）` : ''}
+              {loading ? (
+                <ActivityIndicator size="small" color={primary} />
+              ) : (
+                <>
+                  <MaterialIcons name="add" size={15} color={primary} />
+                  <Text style={[styles.compactAddText, { color: primary }]}>
+                    {selectedTags.length > 0 ? '调整标签' : '添加标签'}
                   </Text>
-                </Pressable>
-              </>
-            )}
-          </Pressable>
+                </>
+              )}
+            </Pressable>
+          ) : null}
+        </View>
+      ) : (
+        <Pressable
+          onPress={openModal}
+          disabled={disabled || loading || locked}
+          style={({ pressed }) => [
+            styles.select,
+            { backgroundColor: fieldBg, borderColor: placeholderColor },
+            (disabled || loading || locked) && { opacity: locked ? 1 : 0.65 },
+            pressed && !disabled && !loading && !locked && { opacity: 0.8 },
+          ]}>
+          <View style={styles.selectLeft}>
+            <MaterialIcons name="local-offer" size={18} color={primary} />
+            <View style={{ flex: 1, gap: 6 }}>
+              <Text style={[styles.selectValue, { color: textColor }]} numberOfLines={2}>
+                {loading ? '加载标签…' : selectedSummary}
+              </Text>
+              {selectedTags.length > 0 ? (
+                <View style={styles.chipRow}>
+                  {selectedTags.slice(0, 4).map((tag) => renderTagChip(tag, false))}
+                </View>
+              ) : locked ? null : (
+                <Text style={[styles.selectHint, { color: outline }]}>可选多个标签；可在标签管理中新建</Text>
+              )}
+            </View>
+          </View>
+          {loading ? (
+            <ActivityIndicator size="small" color={primary} />
+          ) : locked ? null : (
+            <MaterialIcons name="expand-more" size={20} color={outline} />
+          )}
         </Pressable>
-      </Modal>
+      )}
+
+      <FoldBottomSheet
+        visible={modalVisible}
+        onClose={handleSheetClose}
+        accessibilityLabel="关闭标签选择">
+        <TagPickerSheetBody
+          domain={domain}
+          textColor={textColor}
+          outline={outline}
+          primary={primary}
+          manageBg={manageBg}
+          isDark={isDark}
+          selectableTags={selectableTags}
+          draftIds={draftIds}
+          toggleDraft={toggleDraft}
+          onChange={onChange}
+          selectableIdSet={selectableIdSet}
+          routerPushManage={() => {
+            router.push({ pathname: '/project-tags', params: { domain } });
+          }}
+        />
+      </FoldBottomSheet>
     </>
   );
 }
 
+function TagPickerSheetBody({
+  domain,
+  textColor,
+  outline,
+  primary,
+  manageBg,
+  isDark,
+  selectableTags,
+  draftIds,
+  toggleDraft,
+  onChange,
+  selectableIdSet,
+  routerPushManage,
+}: {
+  domain: TagDomain;
+  textColor: string;
+  outline: string;
+  primary: string;
+  manageBg: string;
+  isDark: boolean;
+  selectableTags: ProjectTagRow[];
+  draftIds: string[];
+  toggleDraft: (id: string) => void;
+  onChange: (ids: string[]) => void;
+  selectableIdSet: Set<string>;
+  routerPushManage: () => void;
+}) {
+  const requestClose = useFoldBottomSheetRequestClose();
+
+  const confirm = useCallback(() => {
+    onChange(draftIds.filter((id) => selectableIdSet.has(id)));
+    requestClose();
+  }, [draftIds, onChange, requestClose, selectableIdSet]);
+
+  const openManage = useCallback(() => {
+    requestClose();
+    // 等弹层退场后再跳转，避免叠层闪烁
+    setTimeout(routerPushManage, 280);
+  }, [requestClose, routerPushManage]);
+
+  return (
+    <View style={styles.sheetBody}>
+      <View style={styles.modalHeader}>
+        <Text style={[styles.modalTitle, { color: textColor }]}>选择标签</Text>
+        <Pressable onPress={requestClose} hitSlop={10} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+          <MaterialIcons name="close" size={22} color={outline} />
+        </Pressable>
+      </View>
+      <Text style={[styles.modalDesc, { color: outline }]}>
+        {domain === 'memo'
+          ? '仅备忘录标签；与项目/待办标签相互独立。可贴多个，权重高的优先展示。'
+          : '仅项目/习惯/待办标签；与备忘录标签相互独立。可贴多个，权重高的优先展示。'}
+      </Text>
+
+      <Pressable
+        onPress={openManage}
+        style={({ pressed }) => [
+          styles.manageBtn,
+          isDark
+            ? { borderColor: primary, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 }
+            : { borderColor: `${primary}33`, backgroundColor: manageBg, opacity: pressed ? 0.85 : 1 },
+        ]}>
+        <MaterialIcons name="settings" size={16} color={primary} />
+        <Text style={[styles.manageBtnText, { color: primary }]}>管理标签（新建 / 删除 / 权重）</Text>
+      </Pressable>
+
+      {selectableTags.length === 0 ? (
+        <Text style={[styles.modalEmpty, { color: outline }]}>暂无标签，请先去管理页新建</Text>
+      ) : (
+        <>
+          <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {selectableTags.map((tag) => {
+              const picked = draftIds.includes(tag.id);
+              return (
+                <Pressable
+                  key={tag.id}
+                  onPress={() => toggleDraft(tag.id)}
+                  style={({ pressed }) => [
+                    styles.modalRow,
+                    {
+                      borderBottomColor: isDark ? 'rgba(148,163,184,0.18)' : 'rgba(194,198,214,0.35)',
+                      opacity: pressed ? 0.88 : 1,
+                    },
+                  ]}>
+                  <View style={[styles.colorDot, { backgroundColor: tag.color }]} />
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text style={[styles.modalRowTitle, { color: textColor }]} numberOfLines={1}>
+                      {tag.name}
+                    </Text>
+                    <Text style={[styles.modalRowSub, { color: outline }]} numberOfLines={1}>
+                      权重 {tag.weight}
+                      {tag.description?.trim() ? ` · ${tag.description.trim()}` : ''}
+                    </Text>
+                  </View>
+                  {picked ? (
+                    <MaterialIcons name="check-circle" size={22} color={primary} />
+                  ) : (
+                    <MaterialIcons name="radio-button-unchecked" size={22} color={outline} />
+                  )}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <Pressable
+            onPress={confirm}
+            style={({ pressed }) => [styles.confirmBtn, { backgroundColor: primary, opacity: pressed ? 0.9 : 1 }]}>
+            <Text style={styles.confirmBtnText}>
+              确定{draftIds.length > 0 ? `（已选 ${draftIds.length} 个）` : ''}
+            </Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  compactWrap: { gap: 8 },
+  compactEmpty: { fontSize: 12, fontWeight: '600' },
+  compactAdd: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  compactAddText: { fontSize: 12, fontWeight: '700' },
   select: {
     borderWidth: 1,
     borderRadius: 14,
@@ -270,7 +389,7 @@ const styles = StyleSheet.create({
   selectLeft: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, flex: 1 },
   selectValue: { fontSize: 14, fontWeight: '700' },
   selectHint: { fontSize: 11, fontWeight: '600' },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center' },
   miniChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -279,17 +398,11 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    maxWidth: 120,
+    maxWidth: 140,
   },
   miniDot: { width: 6, height: 6, borderRadius: 3 },
-  miniChipText: { fontSize: 11, fontWeight: '700' },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15,23,42,0.38)',
-    justifyContent: 'center',
-    paddingHorizontal: 18,
-  },
-  modalCard: { borderWidth: 1, borderRadius: 16, padding: 14, maxHeight: '78%', gap: 8 },
+  miniChipText: { fontSize: 11, fontWeight: '700', maxWidth: 100 },
+  sheetBody: { gap: 8, paddingBottom: 4 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { fontSize: 16, fontWeight: '800' },
   modalDesc: { fontSize: 12, fontWeight: '600', lineHeight: 18, marginBottom: 2 },

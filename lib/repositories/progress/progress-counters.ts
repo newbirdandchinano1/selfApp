@@ -221,6 +221,7 @@ export function createProgressCounterId(): string {
 export function createEmptyProgressCounter(opts?: {
   title?: string;
   target?: number;
+  current?: number;
   unit?: string;
   period?: ProgressCounterPeriod;
   periodReset?: ProgressCounterPeriodReset;
@@ -228,11 +229,13 @@ export function createEmptyProgressCounter(opts?: {
 }): ProgressCounter {
   const target =
     clampInt(opts?.target ?? 3, PROGRESS_COUNTER_TARGET_MIN, PROGRESS_COUNTER_TARGET_MAX) ?? 3;
+  const current =
+    clampInt(opts?.current ?? 0, 0, PROGRESS_COUNTER_CURRENT_MAX) ?? 0;
   return {
     id: createProgressCounterId(),
     title: normalizeTitle(opts?.title ?? '') || '计数目标',
     target,
-    current: 0,
+    current: Math.min(current, target),
     unit: normalizeUnit(opts?.unit ?? '次'),
     period: opts?.period === 'week' ? 'week' : 'none',
     periodReset: opts?.periodReset === 'manual' ? 'manual' : 'auto',
