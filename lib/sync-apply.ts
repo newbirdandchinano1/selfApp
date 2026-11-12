@@ -94,45 +94,54 @@ export async function readLocalRowState(table: string, pk: string): Promise<Loca
 }
 
 export async function applyOneEvent(table: string, pk: string, event: PullEvent, decision: ApplyDecision): Promise<void> {
-  const db = await getDatabase();
-  const pkCol = await resolvePkCol(db, table);
-  const cols = await getCols(db, table);
-  const hasRev = cols.has('server_rev');
-  if (decision === 'IGNORE') return;
-  if (decision === 'ACK_REBASE') {
-    if (hasRev && event.serverRev != null) {
-      await db.runAsync(`UPDATE \`${table}\` SET \`server_rev\` = ? WHERE \`${pkCol}\` = ?`, [event.serverRev, pk]);
+  // 服务端权威落库：不得 mark 脏表 / 清页面会话，否则回前台 pull 会连环触发「正在同步数据…」
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  beginCloudSqliteDirtyIgnoreBatch();
+  try {
+    const db = await getDatabase();
+    const pkCol = await resolvePkCol(db, table);
+    const cols = await getCols(db, table);
+    const hasRev = cols.has('server_rev');
+    if (decision === 'IGNORE') return;
+    if (decision === 'ACK_REBASE') {
+      if (hasRev && event.serverRev != null) {
+        await db.runAsync(`UPDATE \`${table}\` SET \`server_rev\` = ? WHERE \`${pkCol}\` = ?`, [event.serverRev, pk]);
+      }
+      if (cols.has('last_pushed_mutation_id')) {
+        try {
+          await db.runAsync(`UPDATE \`${table}\` SET \`last_pushed_mutation_id\` = NULL WHERE \`${pkCol}\` = ?`, [pk]);
+        } catch {}
+      }
+      return;
     }
-    if (cols.has('last_pushed_mutation_id')) {
-      try {
-        await db.runAsync(`UPDATE \`${table}\` SET \`last_pushed_mutation_id\` = NULL WHERE \`${pkCol}\` = ?`, [pk]);
-      } catch {}
+    if (decision === 'ACK_EXACT') {
+      if (event.op === 'delete') {
+        await db.runAsync(`DELETE FROM \`${table}\` WHERE \`${pkCol}\` = ?`, [pk]);
+        return;
+      }
+      if (hasRev) {
+        await db.runAsync(
+          `UPDATE \`${table}\` SET \`sync_status\`='synced', \`server_rev\`=?, \`mutation_id\`=NULL, \`last_pushed_mutation_id\`=NULL WHERE \`${pkCol}\` = ?`,
+          [event.serverRev ?? 0, pk],
+        );
+      } else {
+        await db.runAsync(`UPDATE \`${table}\` SET \`sync_status\`='synced' WHERE \`${pkCol}\` = ?`, [pk]);
+      }
+      return;
     }
-    return;
-  }
-  if (decision === 'ACK_EXACT') {
     if (event.op === 'delete') {
       await db.runAsync(`DELETE FROM \`${table}\` WHERE \`${pkCol}\` = ?`, [pk]);
       return;
     }
-    if (hasRev) {
-      await db.runAsync(
-        `UPDATE \`${table}\` SET \`sync_status\`='synced', \`server_rev\`=?, \`mutation_id\`=NULL, \`last_pushed_mutation_id\`=NULL WHERE \`${pkCol}\` = ?`,
-        [event.serverRev ?? 0, pk],
-      );
-    } else {
-      await db.runAsync(`UPDATE \`${table}\` SET \`sync_status\`='synced' WHERE \`${pkCol}\` = ?`, [pk]);
+    if (event.row) {
+      await upsertRowFromServer(db, table, pkCol, cols, event.row, event.serverRev ?? 0);
+    } else if (decision === 'APPLY_SERVER') {
+      await db.runAsync(`DELETE FROM \`${table}\` WHERE \`${pkCol}\` = ?`, [pk]);
     }
-    return;
-  }
-  if (event.op === 'delete') {
-    await db.runAsync(`DELETE FROM \`${table}\` WHERE \`${pkCol}\` = ?`, [pk]);
-    return;
-  }
-  if (event.row) {
-    await upsertRowFromServer(db, table, pkCol, cols, event.row, event.serverRev ?? 0);
-  } else if (decision === 'APPLY_SERVER') {
-    await db.runAsync(`DELETE FROM \`${table}\` WHERE \`${pkCol}\` = ?`, [pk]);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
   }
 }
 

@@ -3,15 +3,11 @@ import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { throwIfAborted } from '@/lib/cloud-fetch-retry';
-import {
-  buildHabitTagWeightMap,
-  sortHabitGridSectionsByTagWeight,
-} from '@/lib/habit-grid-sort';
+import { sortHabitGridSections } from '@/lib/habit-grid-sort';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
 import { getTodayHabitCountsMap } from '@/lib/repositories/habits/habit-check-in';
 import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
-import { getTagsByEntityIds } from '@/lib/repositories/tags/tag';
 import {
   isHabitDayDisplayCompleted,
   parseHabitDailyGoal,
@@ -391,11 +387,6 @@ async function readHabitsGridFromLocal(logicalToday: string): Promise<TasksHabit
     });
   }
 
-  const habitIds = rawSections.flatMap((sec) => sec.items.map((it) => it.id));
-  const tagsByHabitId = await getTagsByEntityIds('habit', habitIds).catch(
-    () => new Map<string, { weight?: number | null }[]>(),
-  );
-  const weightByHabitId = buildHabitTagWeightMap(tagsByHabitId);
   const contextSortOrderById = new Map<string, number>();
   for (const ctx of contexts) {
     const id = String(ctx.id ?? '').trim();
@@ -403,14 +394,11 @@ async function readHabitsGridFromLocal(logicalToday: string): Promise<TasksHabit
     contextSortOrderById.set(id, Number(ctx.sort_order ?? 1000));
   }
 
-  // 先合并完成态，再排序：已完成不计入情境总权重、组内也不参与权重排序
+  // 先合并完成态，再按完成态 + 情境序排序
   const merged = await mergeHabitGridExtraFields(rawSections, logicalToday);
-  const sections = sortHabitGridSectionsByTagWeight(
-    merged,
-    weightByHabitId,
-    contextSortOrderById,
-    { isCompleted: (it) => Boolean(it.displayCompleted) },
-  );
+  const sections = sortHabitGridSections(merged, contextSortOrderById, {
+    isCompleted: (it) => Boolean(it.displayCompleted),
+  });
   return {
     logicalToday,
     sections,

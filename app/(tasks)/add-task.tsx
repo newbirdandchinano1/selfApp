@@ -37,7 +37,10 @@ import { toast, Alert, toUserMessage } from '@/lib/app-feedback';
 import type { ScheduleMeta } from '@/lib/schedule/meta';
 import { parseTaskOneLiner } from '@/lib/zhipu-image-parse';
 import { formatWriteError } from '@/lib/format-write-error';
-import { clearProjectFrogFields } from '@/lib/frog-assignment';
+import {
+  frogAssignedBlocksChildMessage,
+  hasFrogAssignment,
+} from '@/lib/frog-assignment';
 import { mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import { preserveFrogAssignFieldsInExtra } from '@/lib/standalone-todo-assign-sync';
 import {
@@ -69,7 +72,6 @@ import {
   validateProgressCountersForSave,
   type ProgressCounter,
 } from '@/lib/repositories/progress/progress-counters';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import {
   DEFAULT_TODO_ICON,
@@ -77,7 +79,7 @@ import {
   parseIconFromExtraData,
 } from '@/lib/constants/entity-icon-choices';
 import { INBOX_PROJECT_CATEGORY_ID } from '@/lib/repositories/projects/constants';
-import { getProjectById, updateProject } from '@/lib/repositories/projects/project';
+import { getProjectById } from '@/lib/repositories/projects/project';
 import { ensureLocalRowForWrite } from '@/lib/api-local-row';
 import { createTask, deleteTask, updateTask } from '@/lib/repositories/tasks/task';
 import {
@@ -86,14 +88,6 @@ import {
   type TaskRow,
   type TaskStatus,
 } from '@/lib/repositories/tasks/task.types';
-import {
-  getTagIdsByEntity,
-  getTagIdsByProjectId,
-  getProjectTags,
-  getTagsByProjectId,
-  setTaskTagIds,
-} from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
     extractScheduleLimitFromExtra,
     formatDate,
@@ -225,14 +219,10 @@ export default function AddTaskScreen() {
   /** 独立待办：正常待办 vs 暂时搁置（时间未定，不可直接完成） */
   const [standaloneIntent, setStandaloneIntent] = React.useState<'active' | 'shelved'>('active');
   const [loadingEdit, setLoadingEdit] = React.useState(false);
-  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
-  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
-  const [tagsLoading, setTagsLoading] = React.useState(false);
   const [aiFillOpen, setAiFillOpen] = React.useState(false);
   const [aiFillText, setAiFillText] = React.useState('');
   const [aiFillBusy, setAiFillBusy] = React.useState(false);
   const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
-  const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const editTaskStatusRef = React.useRef<string>('todo');
   const loadedNoteImageUrisRef = React.useRef<string[]>([]);
 
@@ -375,48 +365,6 @@ export default function AddTaskScreen() {
     };
   }, [applySchedule, params.dateLimit, params.defaultSchedule, quickProjectId, scheduleMeta]);
 
-  React.useEffect(() => {
-    if (isStandalone || !quickProjectId) {
-      if (!isStandalone) {
-        setInheritsProjectTags(false);
-      }
-      return;
-    }
-    let cancelled = false;
-    setTagsLoading(true);
-    void (async () => {
-      try {
-        const [tags, projectTagIds] = await Promise.all([
-          getProjectTags(),
-          getTagIdsByProjectId(quickProjectId),
-        ]);
-        if (cancelled) return;
-        const inheritsTags = projectTagIds.length > 0;
-        setInheritsProjectTags(inheritsTags);
-        if (inheritsTags) {
-          const projectTags = await getTagsByProjectId(quickProjectId);
-          if (cancelled) return;
-          setAllTags(projectTags);
-          setSelectedTagIds(projectTagIds);
-        } else {
-          setAllTags(tags);
-          setSelectedTagIds([]);
-        }
-      } catch {
-        if (!cancelled) {
-          setAllTags([]);
-          setSelectedTagIds([]);
-          setInheritsProjectTags(false);
-        }
-      } finally {
-        if (!cancelled) setTagsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isStandalone, quickProjectId]);
-
   const priorityLabel = taskPriorityLabel(priority);
 
   const applyLoadedStandaloneTask = React.useCallback((task: TaskRow) => {
@@ -465,17 +413,6 @@ export default function AddTaskScreen() {
   const reloadAddTaskData = React.useCallback(
     async (forceRefresh = false) => {
       await wrapLoad(async () => {
-        if (isStandalone) {
-          setTagsLoading(true);
-          try {
-            setAllTags(await getProjectTags());
-          } catch (err) {
-            console.warn('加载标签失败', err);
-            setAllTags([]);
-          } finally {
-            setTagsLoading(false);
-          }
-        }
         if (isEditStandalone && editTaskId) {
           setLoadingEdit(true);
           try {
@@ -486,12 +423,6 @@ export default function AddTaskScreen() {
               return;
             }
             applyLoadedStandaloneTask(task);
-            try {
-              setSelectedTagIds(await getTagIdsByEntity('task', editTaskId));
-            } catch (tagErr) {
-              console.warn('加载待办标签失败', tagErr);
-              setSelectedTagIds([]);
-            }
           } catch (error) {
             console.warn('加载待办失败', error);
             Alert.alert('加载失败', '无法读取待办，请稍后重试。');
@@ -603,7 +534,6 @@ export default function AddTaskScreen() {
           await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
           loadedNoteImageUrisRef.current = nextNoteImages;
           if (!noteImageUrisEqual(nextNoteImages, noteImageUris)) setNoteImageUris(nextNoteImages);
-          await setTaskTagIds(editTaskId, selectedTagIds);
         } else {
           const id = makeTimestampEntityId('tsk_', 8);
           if (nextNoteImages.length > 0) {
@@ -630,7 +560,6 @@ export default function AddTaskScreen() {
           if (nextNoteImages.length > 0) {
             await bindNoteImages({ table: 'tasks', id }, nextNoteImages);
           }
-          await setTaskTagIds(id, selectedTagIds);
         }
 
         try {
@@ -654,6 +583,15 @@ export default function AddTaskScreen() {
     if (quickProjectId) {
       try {
         setIsSubmitting(true);
+        try {
+          const hostProject = await getProjectById(quickProjectId);
+          if (hostProject && hasFrogAssignment(hostProject.extra_data)) {
+            toast.warn(frogAssignedBlocksChildMessage('project'));
+            return;
+          }
+        } catch (checkErr) {
+          console.warn('检查项目指派状态失败', checkErr);
+        }
         const id = makeTimestampEntityId('tsk_', 8);
         const checklist = isLongTermTask ? acceptanceItems : [];
         const description = isLongTermTask
@@ -703,23 +641,8 @@ export default function AddTaskScreen() {
         if (nextNoteImages.length > 0) {
           await bindNoteImages({ table: 'tasks', id }, nextNoteImages);
         }
-        // 项目未贴标签时才保存任务自有标签
-        if (!inheritsProjectTags && selectedTagIds.length > 0) {
-          await setTaskTagIds(id, selectedTagIds);
-        }
         try {
-          const hostProject = await getProjectById(quickProjectId);
-          if (hostProject) {
-            const cleared = clearProjectFrogFields(hostProject.extra_data);
-            if (cleared !== hostProject.extra_data) {
-              await updateProject(quickProjectId, { extra_data: cleared });
-            }
-          }
-        } catch (clearErr) {
-          console.warn('清除空项目青蛙指派失败', clearErr);
-        }
-        try {
-          await markPendingTablesDirty(['tasks', 'projects', 'tags', 'tag_links']);
+          await markPendingTablesDirty(['tasks', 'projects']);
           void requestPush();
         } catch (syncErr) {
           console.warn('任务保存后标记同步失败', syncErr);
@@ -782,7 +705,7 @@ export default function AddTaskScreen() {
       const r = await parseTaskOneLiner({
         text,
         todayYmd: getLogicalLocalYmd(new Date(), getDayBoundarySync()),
-        tagNames: allTags.map((t) => t.name).filter(Boolean).slice(0, 40),
+        tagNames: [],
       });
       if (!r.ok) {
         toast.error(r.error || 'AI 解析失败');
@@ -806,13 +729,6 @@ export default function AddTaskScreen() {
         });
         setStandaloneIntent('active');
       }
-      if (d.tag_hints.length && allTags.length) {
-        const lowerHints = new Set(d.tag_hints.map((x) => x.toLowerCase()));
-        const matched = allTags
-          .filter((t) => lowerHints.has(t.name.trim().toLowerCase()))
-          .map((t) => t.id);
-        if (matched.length) setSelectedTagIds(matched);
-      }
       setAiFillOpen(false);
       setAiFillText('');
       toast.success('已填入，请确认后保存');
@@ -821,7 +737,7 @@ export default function AddTaskScreen() {
     } finally {
       setAiFillBusy(false);
     }
-  }, [aiFillText, allTags, applySchedule, titleMaxLength]);
+  }, [aiFillText, applySchedule, titleMaxLength]);
 
   const beginPlaceStandaloneOnSchedule = React.useCallback(() => {
     if (!isEditStandalone || !editTaskId || formBusy) return;
@@ -993,20 +909,6 @@ export default function AddTaskScreen() {
                       </Text>
                     ) : null}
                     <View style={{ marginTop: 8 }}>
-                      <ProjectTagPickerField
-                        selectedIds={selectedTagIds}
-                        allTags={allTags}
-                        loading={tagsLoading}
-                        locked={false}
-                        onChange={setSelectedTagIds}
-                        textColor={tf.ink2}
-                        outline={tf.muted}
-                        placeholderColor={tf.faint}
-                        primary={tf.frog}
-                        surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                        surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                        isDark={isDark}
-                      />
                     </View>
                     {!isEditStandalone ? (
                       <Pressable
@@ -1450,43 +1352,6 @@ export default function AddTaskScreen() {
               </View>
             </View>
           </FoldRiseIn>
-
-          {quickProjectId ? (
-            <FoldRiseIn animate={foldAnimate} index={2} duration={520} staggerMs={42} fromY={10} holdHidden={foldAnimate}>
-              <View style={[styles.fcard, styles.fcardTight, { backgroundColor: foldCardBg, borderColor: foldCardBorder }]}>
-                <View style={styles.frow}>
-                  <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <ProjectTagPickerField
-                      selectedIds={selectedTagIds}
-                      allTags={allTags}
-                      loading={tagsLoading}
-                      locked={inheritsProjectTags}
-                      onChange={setSelectedTagIds}
-                      textColor={tf.ink2}
-                      outline={tf.muted}
-                      placeholderColor={tf.faint}
-                      primary={tf.frog}
-                      surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                      surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                      isDark={isDark}
-                    />
-                  </View>
-                  {inheritsProjectTags ? (
-                    <MaterialIcons name="lock-outline" size={14} color={tf.faint} />
-                  ) : null}
-                </View>
-                {inheritsProjectTags ? (
-                  <View style={styles.hintline}>
-                    <MaterialIcons name="lock-outline" size={12} color="#8A5F25" />
-                    <Text style={{ fontSize: 10, color: '#8A5F25', flex: 1 }}>
-                      项目标签与任务自有标签互斥，创建后继承项目标签。
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            </FoldRiseIn>
-          ) : null}
 
           <FoldRiseIn
             animate={foldAnimate}

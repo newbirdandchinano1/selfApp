@@ -15,9 +15,13 @@ import {
   getDeadlineEffectivePriority,
   resolveTaskDueYmdForPriority,
 } from '@/lib/due-soon-priority-bump';
-import { getFrogAssignedDates } from '@/lib/frog-assignment';
+import { getActiveFrogAssignedDates, hasActiveFrogAssignment } from '@/lib/frog-assignment';
 import type { TaskTreeNode } from '@/lib/repositories/tasks/task';
-import { isTaskShelvedStatus, type TaskRow } from '@/lib/repositories/tasks/task.types';
+import {
+  isTaskShelvedStatus,
+  isTaskTerminalStatus,
+  type TaskRow,
+} from '@/lib/repositories/tasks/task.types';
 import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -28,11 +32,9 @@ function formatFrogLeaf(
   todayYmd: string,
   formatDayLabel: (ymd: string, today: string) => string,
 ): string {
-  const dates = getFrogAssignedDates(extraData);
+  const dates = getActiveFrogAssignedDates(extraData, todayYmd);
   if (dates.length === 0) return '';
-  const upcoming = dates.filter((d) => d >= todayYmd);
-  const show = upcoming.length > 0 ? upcoming : dates;
-  const label = formatDayLabel(show[0], todayYmd);
+  const label = formatDayLabel(dates[0]!, todayYmd);
   return `🐸 ${label}`;
 }
 
@@ -45,6 +47,19 @@ function directProgressLabel(children: TaskTreeNode[]): string {
   }
   if (total <= 0) return '';
   return `${done}/${total}`;
+}
+
+/** 子树下全部叶子均为完成/取消时，父节点才允许显示勾选框 */
+function areAllLeafDescendantsTerminal(nodes: TaskTreeNode[]): boolean {
+  for (const n of nodes) {
+    const ch = Array.isArray(n.children) ? n.children : [];
+    if (ch.length === 0) {
+      if (!isTaskTerminalStatus(n.status)) return false;
+    } else if (!areAllLeafDescendantsTerminal(ch)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function ProjectFoldTaskRow({
@@ -87,8 +102,10 @@ function ProjectFoldTaskRow({
   const shelved = isTaskShelvedStatus(node.status);
   const children = Array.isArray(node.children) ? node.children : [];
   const hasChildren = children.length > 0;
+  /** 叶子始终可勾；父节点仅在其下叶子全部完成后显示勾选框 */
+  const showCheck = !hasChildren || areAllLeafDescendantsTerminal(children);
   const frogLeaf =
-    !done && !shelved && getFrogAssignedDates(node.extra_data).length > 0
+    !done && !shelved && hasActiveFrogAssignment(node.extra_data, logicalTodayYmd)
       ? formatFrogLeaf(node.extra_data, logicalTodayYmd, formatDayLabel)
       : '';
   const effectivePriority = getDeadlineEffectivePriority(node.priority ?? 0, {
@@ -153,30 +170,40 @@ function ProjectFoldTaskRow({
           </View>
         )}
 
-        <Pressable
-          onPress={onToggleDone}
-          disabled={locked || shelved}
-          hitSlop={8}
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: done, disabled: locked || shelved }}
-          style={({ pressed }) => [
-            styles.cb,
-            {
-              borderColor: done ? tf.frog : shelved ? tf.line2 : '#C8D1C0',
-              backgroundColor: done
-                ? tf.frog
-                : shelved
-                  ? isDark
-                    ? tf.paper3
-                    : '#EAE6DC'
-                  : 'rgba(255,255,255,0.5)',
-              opacity: locked || shelved ? 0.55 : pressed ? 0.85 : 1,
-            },
-          ]}>
-          {done ? <MaterialIcons name="check" size={10} color={tf.onPond} /> : null}
-          {shelved && !done ? <MaterialIcons name="pause" size={9} color={tf.muted} /> : null}
-          {locked && !done && !shelved ? <MaterialIcons name="lock" size={9} color={tf.muted} /> : null}
-        </Pressable>
+        {showCheck ? (
+          <Pressable
+            onPress={onToggleDone}
+            disabled={locked || shelved}
+            hitSlop={8}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: done, disabled: locked || shelved }}
+            style={({ pressed }) => [
+              styles.cb,
+              {
+                borderColor: done ? tf.frog : shelved ? tf.line2 : '#C8D1C0',
+                backgroundColor: done
+                  ? tf.frog
+                  : shelved
+                    ? isDark
+                      ? tf.paper3
+                      : '#EAE6DC'
+                    : 'rgba(255,255,255,0.5)',
+                opacity: locked || shelved ? 0.55 : pressed ? 0.85 : 1,
+              },
+            ]}>
+            {done ? <MaterialIcons name="check" size={10} color={tf.onPond} /> : null}
+            {shelved && !done ? <MaterialIcons name="pause" size={9} color={tf.muted} /> : null}
+            {locked && !done && !shelved ? (
+              <MaterialIcons name="lock" size={9} color={tf.muted} />
+            ) : null}
+          </Pressable>
+        ) : (
+          <View
+            style={[styles.cb, { borderColor: 'transparent', backgroundColor: 'transparent' }]}
+            accessibilityElementsHidden
+            importantForAccessibility="no"
+          />
+        )}
 
         <Pressable
           onPress={onOpen}

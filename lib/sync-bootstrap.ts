@@ -103,38 +103,46 @@ async function runFullSnapshot(cursor0: number): Promise<boolean> {
 }
 
 async function applySnapshotTable(table: string, rows: Record<string, unknown>[]): Promise<void> {
-  if (!rows || rows.length === 0) {
-    await deleteSyncedAbsent(table, new Set());
-    return;
-  }
-  const db = await getDatabase();
-  let pkCol = 'id';
+  const { beginCloudSqliteDirtyIgnoreBatch, endCloudSqliteDirtyIgnoreBatch } = await import(
+    '@/lib/cloud-sql-dirty-track'
+  );
+  beginCloudSqliteDirtyIgnoreBatch();
   try {
-    const info = await db.getAllAsync<{ name: string; pk: number }>(`PRAGMA table_info(\`${table}\`)`);
-    const pk = (info ?? []).find((c) => Number(c.pk) === 1);
-    if (pk?.name) pkCol = String(pk.name);
-  } catch { /* ignore */ }
-  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(\`${table}\`)`);
-  const colSet = new Set((cols ?? []).map((c) => String(c.name)));
-  if (!colSet.has('sync_status')) return;
-  const hasRev = colSet.has('server_rev');
-  for (const row of rows) {
-    const pk = String((row as Record<string, unknown>)[pkCol] ?? (row as Record<string, unknown>).id ?? '');
-    if (!pk) continue;
-    const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id');
-    if (!keys.includes(pkCol)) continue;
-    const placeholders = keys.map(() => '?').join(',');
-    const vals = keys.map((k) => (row as Record<string, unknown>)[k] ?? null);
-    const updates = keys.filter((k) => k !== pkCol).map((k) => `\`${k}\`=excluded.\`${k}\``).join(',');
-    const extra = `, \`sync_status\`='synced'` + (hasRev ? `, \`server_rev\`=COALESCE(excluded.\`server_rev\`, \`server_rev\`)` : '');
-    if (!updates && !extra) continue;
-    await db.runAsync(
-      `INSERT INTO \`${table}\` (\`${keys.join('`,`')}\`) VALUES (${placeholders}) ON CONFLICT(\`${pkCol}\`) DO UPDATE SET ${updates}${extra}`,
-      vals,
-    );
+    if (!rows || rows.length === 0) {
+      await deleteSyncedAbsent(table, new Set());
+      return;
+    }
+    const db = await getDatabase();
+    let pkCol = 'id';
+    try {
+      const info = await db.getAllAsync<{ name: string; pk: number }>(`PRAGMA table_info(\`${table}\`)`);
+      const pk = (info ?? []).find((c) => Number(c.pk) === 1);
+      if (pk?.name) pkCol = String(pk.name);
+    } catch { /* ignore */ }
+    const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(\`${table}\`)`);
+    const colSet = new Set((cols ?? []).map((c) => String(c.name)));
+    if (!colSet.has('sync_status')) return;
+    const hasRev = colSet.has('server_rev');
+    for (const row of rows) {
+      const pk = String((row as Record<string, unknown>)[pkCol] ?? (row as Record<string, unknown>).id ?? '');
+      if (!pk) continue;
+      const keys = Object.keys(row).filter((k) => k !== 'sync_status' && k !== 'last_pushed_mutation_id');
+      if (!keys.includes(pkCol)) continue;
+      const placeholders = keys.map(() => '?').join(',');
+      const vals = keys.map((k) => (row as Record<string, unknown>)[k] ?? null);
+      const updates = keys.filter((k) => k !== pkCol).map((k) => `\`${k}\`=excluded.\`${k}\``).join(',');
+      const extra = `, \`sync_status\`='synced'` + (hasRev ? `, \`server_rev\`=COALESCE(excluded.\`server_rev\`, \`server_rev\`)` : '');
+      if (!updates && !extra) continue;
+      await db.runAsync(
+        `INSERT INTO \`${table}\` (\`${keys.join('`,`')}\`) VALUES (${placeholders}) ON CONFLICT(\`${pkCol}\`) DO UPDATE SET ${updates}${extra}`,
+        vals,
+      );
+    }
+    const pkSet = new Set(rows.map((r) => String((r as Record<string, unknown>)[pkCol] ?? (r as Record<string, unknown>).id ?? '')));
+    await deleteSyncedAbsent(table, pkSet, pkCol);
+  } finally {
+    endCloudSqliteDirtyIgnoreBatch();
   }
-  const pkSet = new Set(rows.map((r) => String((r as Record<string, unknown>)[pkCol] ?? (r as Record<string, unknown>).id ?? '')));
-  await deleteSyncedAbsent(table, pkSet, pkCol);
 }
 
 async function deleteSyncedAbsent(table: string, present: Set<string>, pkCol = 'id'): Promise<void> {

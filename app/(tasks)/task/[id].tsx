@@ -41,7 +41,13 @@ import { formatYmd, parseYmd } from '@/lib/date';
 import { daysBetweenYmd } from '@/lib/project-progress-reminder-logic';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { formatWriteError } from '@/lib/format-write-error';
-import { getFrogAssignedDates } from '@/lib/frog-assignment';
+import {
+  frogAssignedBlocksChildMessage,
+  getActiveFrogAssignedDates,
+  getFrogAssignedDates,
+  hasActiveFrogAssignment,
+  hasFrogAssignment,
+} from '@/lib/frog-assignment';
 import { clearFrogSessionCompletedOn, getIsLongTermTask } from '@/lib/long-term-task';
 import { parseNoteImageUris } from '@/lib/note-image-extra';
 import { notifyPageDataChanged } from '@/lib/page-api-session';
@@ -71,8 +77,6 @@ import {
   insertTaskExecutionEvent,
   type TaskExecutionEventWithTitle,
 } from '@/lib/repositories/tasks/task-execution-events';
-import { getTagsByEntity, getTagsByProjectId } from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import {
   bumpProgressCounter,
@@ -500,7 +504,6 @@ export default function TaskDetailScreen() {
   const [parentTaskId, setParentTaskId] = React.useState<string | null>(null);
   const [rewardPoints, setRewardPoints] = React.useState(0);
   const [activityEvents, setActivityEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
-  const [relatedTags, setRelatedTags] = React.useState<TagRow[]>([]);
   const [linkTasks, setLinkTasks] = React.useState<LinkTaskRef[]>([]);
   const [settingPickerType, setSettingPickerType] = React.useState<SettingPickerType>(null);
   const [repeatDetailVisible, setRepeatDetailVisible] = React.useState(false);
@@ -740,22 +743,6 @@ export default function TaskDetailScreen() {
         setParentTitle('');
       }
 
-      try {
-        const [ownTags, projectTags] = await Promise.all([
-          getTagsByEntity('task', taskId),
-          row.project_id ? getTagsByProjectId(row.project_id) : Promise.resolve([] as TagRow[]),
-        ]);
-        const seen = new Set<string>();
-        const merged: TagRow[] = [];
-        for (const tag of [...projectTags, ...ownTags]) {
-          if (seen.has(tag.id)) continue;
-          seen.add(tag.id);
-          merged.push(tag);
-        }
-        setRelatedTags(merged);
-      } catch {
-        setRelatedTags([]);
-      }
     } else {
       setTaskLoaded(false);
       setLoadedScheduleSnapshot(null);
@@ -773,7 +760,6 @@ export default function TaskDetailScreen() {
       setParentTitle('');
       setParentTaskId(null);
       setRewardPoints(0);
-      setRelatedTags([]);
       setLinkTasks([]);
       setActivityEvents([]);
       setAcceptanceReviewOpen(false);
@@ -857,6 +843,10 @@ export default function TaskDetailScreen() {
   const createSubtaskFromDraft = React.useCallback(
     async (draft: AddSubtaskDraft) => {
       if (!taskId || creatingSubtaskIdRef.current === draft.id) return;
+      if (hasFrogAssignment(extraDataRef.current)) {
+        toast.warn(frogAssignedBlocksChildMessage('task'));
+        throw new Error(frogAssignedBlocksChildMessage('task'));
+      }
       creatingSubtaskIdRef.current = draft.id;
       try {
         const subtaskSchedule = draft.schedule ?? null;
@@ -1090,8 +1080,18 @@ export default function TaskDetailScreen() {
     [dueDate, meta.schedule],
   );
   const frogDates = React.useMemo(() => getFrogAssignedDates(extraData), [extraData]);
-  const hasFrog = frogDates.length > 0;
+  const activeFrogDates = React.useMemo(
+    () => getActiveFrogAssignedDates(extraData, logicalToday),
+    [extraData, logicalToday],
+  );
+  /** 列表/徽章：仅今日及以后，避免往日未完成指派残留 */
+  const hasActiveFrog = activeFrogDates.length > 0;
+  /** 取消指派 / 拦子任务：含历史指派日 */
+  const hasAnyFrog = frogDates.length > 0;
   const latestFrogYmd = frogDates.length > 0 ? frogDates[frogDates.length - 1]! : '';
+  const latestActiveFrogYmd =
+    activeFrogDates.length > 0 ? activeFrogDates[activeFrogDates.length - 1]! : '';
+  const hasFrog = hasActiveFrog;
   const isLeaf = (tree?.children?.length ?? 0) === 0;
   const incompleteChildren = React.useMemo(
     () => (tree?.children ?? []).filter((c) => c.status !== 'done' && c.status !== 'cancelled').length,
@@ -1167,6 +1167,10 @@ export default function TaskDetailScreen() {
   const applyAiBreakdown = React.useCallback(
     async (draft: TaskBreakdownJson) => {
       if (!taskId) return;
+      if (hasFrogAssignment(extraDataRef.current)) {
+        toast.warn(frogAssignedBlocksChildMessage('task'));
+        throw new Error(frogAssignedBlocksChildMessage('task'));
+      }
       for (const sub of draft.subtasks) {
         const id = makeTimestampEntityId('tsk');
         await createTask({
@@ -1401,7 +1405,7 @@ export default function TaskDetailScreen() {
   const activityFeed = React.useMemo(() => {
     type FeedRow = { key: string; title: string; detail: string; when: string; tone: 'frog' | 'amber' };
     const rows: FeedRow[] = [];
-    if (hasFrog && latestFrogYmd) {
+    if (hasAnyFrog && latestFrogYmd) {
       const slot = buildFrogSlotLabel(meta.schedule, latestFrogYmd).replace(/^已入格 ·\s*/, '');
       rows.push({
         key: `frog-${latestFrogYmd}`,
@@ -1429,7 +1433,7 @@ export default function TaskDetailScreen() {
     return rows.slice(0, 3);
   }, [
     activityEvents,
-    hasFrog,
+    hasAnyFrog,
     latestFrogYmd,
     logicalToday,
     meta.schedule,
@@ -1549,7 +1553,7 @@ export default function TaskDetailScreen() {
     isLeaf &&
     !isTaskTerminalStatus(status) &&
     !isTaskShelvedStatus(status);
-  const showFrogCard = hasFrog || canPlaceOnSchedule;
+  const showFrogCard = hasAnyFrog || canPlaceOnSchedule;
 
   const beginPlaceOnSchedule = React.useCallback(() => {
     if (!taskId || !canPlaceOnSchedule) {
@@ -1817,10 +1821,10 @@ export default function TaskDetailScreen() {
                     style={[
                       styles.fcard,
                       {
-                        backgroundColor: hasFrog
+                        backgroundColor: hasActiveFrog
                           ? 'rgba(232,239,217,0.36)'
                           : foldCardBg,
-                        borderColor: hasFrog ? '#C8D8B1' : foldCardBorder,
+                        borderColor: hasActiveFrog ? '#C8D8B1' : foldCardBorder,
                       },
                     ]}>
                     <View style={styles.frogRow}>
@@ -1831,14 +1835,18 @@ export default function TaskDetailScreen() {
                       </FrogMarkHop>
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={[styles.frogTitle, { color: '#445E45' }]} numberOfLines={1}>
-                          {hasFrog
-                            ? buildFrogSlotLabel(meta.schedule, latestFrogYmd)
-                            : '尚未入格'}
+                          {hasActiveFrog
+                            ? buildFrogSlotLabel(meta.schedule, latestActiveFrogYmd || latestFrogYmd)
+                            : hasAnyFrog
+                              ? buildFrogSlotLabel(meta.schedule, latestFrogYmd)
+                              : '尚未入格'}
                         </Text>
                         <Text style={{ fontSize: 11, color: '#7F947B', marginTop: 2 }}>
-                          {hasFrog
-                            ? `${latestFrogYmd === logicalToday ? '今日指派' : '已指派'} · 可再放入其它日`
-                            : '点右侧放入日程时间线'}
+                          {hasActiveFrog
+                            ? `${(latestActiveFrogYmd || latestFrogYmd) === logicalToday ? '今日指派' : '已指派'} · 可再放入其它日`
+                            : hasAnyFrog
+                              ? '往日指派未完成 · 列表不再显示，可取消或再入格'
+                              : '点右侧放入日程时间线'}
                         </Text>
                       </View>
                       {canPlaceOnSchedule ? (
@@ -1849,15 +1857,15 @@ export default function TaskDetailScreen() {
                             {
                               backgroundColor: tf.lily,
                               opacity: pressed ? 0.8 : 1,
-                              marginRight: hasFrog ? 6 : 0,
+                              marginRight: hasAnyFrog ? 6 : 0,
                             },
                           ]}>
                           <Text style={{ fontSize: 11, color: tf.frog, fontWeight: '700' }}>
-                            {hasFrog ? '再入一日' : '放入日程'}
+                            {hasActiveFrog ? '再入一日' : '放入日程'}
                           </Text>
                         </Pressable>
                       ) : null}
-                      {hasFrog ? (
+                      {hasAnyFrog ? (
                         <Pressable
                           onPress={cancelFrogPlacement}
                           disabled={unassigning}
@@ -1966,7 +1974,7 @@ export default function TaskDetailScreen() {
                 </View>
                 {(tree?.children ?? []).map((child) => {
                   const done = child.status === 'done' || child.status === 'cancelled';
-                  const childFrog = getFrogAssignedDates(child.extra_data).length > 0;
+                  const childFrog = hasActiveFrogAssignment(child.extra_data, logicalToday);
                   const pShort = formatPriorityShort(child.priority ?? 0);
                   return (
                     <View key={child.id} style={styles.trow}>
@@ -2018,25 +2026,39 @@ export default function TaskDetailScreen() {
                 })}
                 <View style={styles.treefoot}>
                   <Pressable
-                    onPress={() => setAddSubtaskOpen(true)}
+                    onPress={() => {
+                      if (hasAnyFrog) {
+                        toast.warn(frogAssignedBlocksChildMessage('task'));
+                        return;
+                      }
+                      setAddSubtaskOpen(true);
+                    }}
+                    disabled={hasAnyFrog}
                     style={({ pressed }) => [
                       styles.addSub,
-                      { opacity: pressed ? 0.75 : 1 },
+                      { opacity: hasAnyFrog ? 0.45 : pressed ? 0.75 : 1 },
                     ]}>
                     <MaterialIcons name="add" size={14} color={tf.frog} />
                     <Text style={{ fontSize: 12, color: tf.frog, fontWeight: '700' }}>添加子任务</Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setAiBreakdownOpen(true)}
+                    onPress={() => {
+                      if (hasAnyFrog) {
+                        toast.warn(frogAssignedBlocksChildMessage('task'));
+                        return;
+                      }
+                      setAiBreakdownOpen(true);
+                    }}
+                    disabled={hasAnyFrog}
                     style={({ pressed }) => [
                       styles.addSub,
-                      { opacity: pressed ? 0.75 : 1, marginLeft: 8 },
+                      { opacity: hasAnyFrog ? 0.45 : pressed ? 0.75 : 1, marginLeft: 8 },
                     ]}>
                     <MaterialIcons name="auto-awesome" size={14} color={tf.frog} />
                     <Text style={{ fontSize: 12, color: tf.frog, fontWeight: '700' }}>AI 拆解</Text>
                   </Pressable>
                   <Text style={{ fontSize: 10, color: tf.faint, marginLeft: 'auto' }}>
-                    子任务不可直接入格
+                    {hasAnyFrog ? '已指派，请先取消指派' : '子任务不可直接入格'}
                   </Text>
                 </View>
               </View>,
@@ -2135,15 +2157,6 @@ export default function TaskDetailScreen() {
                   </Pressable>
                 </View>
                 <View style={styles.chipWrap}>
-                  {relatedTags.map((tag) => (
-                    <View
-                      key={tag.id}
-                      style={[styles.fchipSoft, { backgroundColor: '#E8EFD9' }]}>
-                      <Text style={{ fontSize: 11, color: '#4F7450', fontWeight: '650' }} numberOfLines={1}>
-                        {tag.name}
-                      </Text>
-                    </View>
-                  ))}
                   {parentTitle ? (
                     <Pressable
                       onPress={() =>
@@ -2155,10 +2168,9 @@ export default function TaskDetailScreen() {
                         {parentTitle}
                       </Text>
                     </Pressable>
-                  ) : null}
-                  {relatedTags.length === 0 && !parentTitle ? (
-                    <Text style={{ fontSize: 12, color: tf.faint }}>暂无标签或关联主任务</Text>
-                  ) : null}
+                  ) : (
+                    <Text style={{ fontSize: 12, color: tf.faint }}>暂无关联主任务</Text>
+                  )}
                 </View>
               </View>,
             )}

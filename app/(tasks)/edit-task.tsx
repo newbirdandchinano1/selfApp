@@ -10,7 +10,6 @@ import {
   extractDueDateFromDeadlineText,
   type AddSubtaskDraft,
 } from '@/components/entity-form';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import {
   FoldRiseIn,
   useFoldMotionGate,
@@ -47,6 +46,10 @@ import {
   parseIconFromExtraData,
 } from '@/lib/constants/entity-icon-choices';
 import { formatWriteError } from '@/lib/format-write-error';
+import {
+  frogAssignedBlocksChildMessage,
+  hasFrogAssignment,
+} from '@/lib/frog-assignment';
 import { getIsLongTermTask, mergeLongTermTaskIntoExtraData } from '@/lib/long-term-task';
 import {
   mergeNoteImageUrisIntoExtraData,
@@ -64,14 +67,6 @@ import { getHabitContexts } from '@/lib/repositories/habits/habit-context';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import { getProjectById } from '@/lib/repositories/projects/project';
-import {
-  getTagIdsByEntity,
-  getProjectTags,
-  getTagsByProjectId,
-  getTagIdsByProjectId,
-  setTaskTagIds,
-} from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import {
   bumpNonUrgentToUrgentPriority,
@@ -438,19 +433,15 @@ export default function EditTaskScreen() {
   const [projectDateLimit, setProjectDateLimit] = React.useState<DateLimitYmd>({});
   const [projectScheduleMeta, setProjectScheduleMeta] = React.useState<ScheduleMetaLike | null>(null);
   const [inheritsProjectSchedule, setInheritsProjectSchedule] = React.useState(false);
-  const [inheritsProjectTags, setInheritsProjectTags] = React.useState(false);
   const [boundHabitIds, setBoundHabitIds] = React.useState<string[]>([]);
   const [progressCounters, setProgressCounters] = React.useState<ProgressCounter[]>([]);
   const [isLongTermTask, setIsLongTermTask] = React.useState(false);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
-  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
-  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
-  const [tagsLoading, setTagsLoading] = React.useState(false);
   const [habitSections, setHabitSections] = React.useState<
     Array<{ contextId: string; contextName: string; habits: HabitRow[] }>
   >([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
-  /** 次要栏目默认折叠：归属 / 标签 / 积分 / 习惯 / 计数 */
+  /** 次要栏目默认折叠：归属 / 积分 / 习惯 / 计数 */
   const [moreOpen, setMoreOpen] = React.useState(false);
 
   const skipAutoSaveRef = React.useRef(false);
@@ -474,7 +465,6 @@ export default function EditTaskScreen() {
   const progressCountersRef = React.useRef(progressCounters);
   const isLongTermTaskRef = React.useRef(isLongTermTask);
   const rewardPointsTextRef = React.useRef(rewardPointsText);
-  const selectedTagIdsRef = React.useRef(selectedTagIds);
   titleRef.current = title;
   entityIconRef.current = entityIcon;
   statusRef.current = status;
@@ -491,12 +481,18 @@ export default function EditTaskScreen() {
   progressCountersRef.current = progressCounters;
   isLongTermTaskRef.current = isLongTermTask;
   rewardPointsTextRef.current = rewardPointsText;
-  selectedTagIdsRef.current = selectedTagIds;
 
   const inheritsProjectPriority = !!taskSnapshot?.project_id;
   const isRootTask = !taskSnapshot?.parent_task_id;
-  /** 顶层任务可编辑标签（项目未贴标签时）；子任务仅展示继承的项目标签 */
-  const showTagField = isRootTask || inheritsProjectTags;
+  const taskFrogAssigned = hasFrogAssignment(taskSnapshot?.extra_data);
+
+  const openAddSubtask = React.useCallback(() => {
+    if (taskFrogAssigned) {
+      toast.warn(frogAssignedBlocksChildMessage('task'));
+      return;
+    }
+    setAddSubtaskOpen(true);
+  }, [taskFrogAssigned]);
 
   const editorDueYmd = React.useMemo(
     () =>
@@ -677,6 +673,10 @@ export default function EditTaskScreen() {
         toast.error('父任务尚未加载完成，请稍后重试。');
         throw new Error('父任务尚未加载');
       }
+      if (hasFrogAssignment(parent.extra_data)) {
+        toast.warn(frogAssignedBlocksChildMessage('task'));
+        throw new Error(frogAssignedBlocksChildMessage('task'));
+      }
 
       creatingSubtaskIdRef.current = draft.id;
       try {
@@ -852,24 +852,6 @@ export default function EditTaskScreen() {
       // 任务主体已加载完成，附属数据不应阻塞编辑操作。
       setLoading(false);
 
-      if (!task.parent_task_id) {
-        setTagsLoading(true);
-        try {
-          const tags = await getProjectTags();
-          setAllTags(tags);
-          setSelectedTagIds(await getTagIdsByEntity('task', taskId));
-        } catch (tagErr) {
-          console.warn('加载任务标签失败', tagErr);
-          setAllTags([]);
-          setSelectedTagIds([]);
-        } finally {
-          setTagsLoading(false);
-        }
-      } else {
-        setAllTags([]);
-        setSelectedTagIds([]);
-      }
-
       try {
         setHabitsLoading(true);
         const [contexts, habits] = await Promise.all([getHabitContexts(), getHabits()]);
@@ -908,7 +890,6 @@ export default function EditTaskScreen() {
       let projectLimit: DateLimitYmd = {};
       let inheritedPriorityLabel = '';
       let nextInheritsSchedule = false;
-      let nextInheritsTags = false;
       let nextProjectSchedule: ScheduleMetaLike | null = null;
       if (task.project_id) {
         const project = await getProjectById(task.project_id);
@@ -958,23 +939,6 @@ export default function EditTaskScreen() {
                 }
               : prev,
           );
-          try {
-            const [projectTags, projectTagIds] = await Promise.all([
-              getTagsByProjectId(task.project_id),
-              getTagIdsByProjectId(task.project_id),
-            ]);
-            nextInheritsTags = projectTagIds.length > 0;
-            if (nextInheritsTags) {
-              setAllTags(projectTags);
-              setSelectedTagIds(projectTagIds);
-              setTagsLoading(false);
-            } else if (task.parent_task_id) {
-              setAllTags([]);
-              setSelectedTagIds([]);
-            }
-          } catch (tagErr) {
-            console.warn('加载项目标签失败', tagErr);
-          }
         }
       }
       setProjectPriorityLabel(inheritedPriorityLabel);
@@ -983,7 +947,6 @@ export default function EditTaskScreen() {
       setProjectDateLimit(projectLimit);
       setProjectScheduleMeta(nextProjectSchedule);
       setInheritsProjectSchedule(nextInheritsSchedule);
-      setInheritsProjectTags(nextInheritsTags);
 
       // 子任务列表属于附属数据，失败或变慢不能阻塞主表单。
       void reload();
@@ -1060,7 +1023,6 @@ export default function EditTaskScreen() {
       let reminderForExtra = reminderTextRef.current;
       let repeatForExtra = repeatTextRef.current;
       let nextInheritsSchedule = inheritsProjectSchedule;
-      let nextInheritsTags = inheritsProjectTags;
       let forcedProjectSchedule = projectScheduleMeta;
 
       if (snapshot.project_id) {
@@ -1096,18 +1058,6 @@ export default function EditTaskScreen() {
           } else {
             setInheritsProjectSchedule(false);
             setProjectScheduleMeta(null);
-          }
-          try {
-            const projectTagIds = await getTagIdsByProjectId(snapshot.project_id);
-            nextInheritsTags = projectTagIds.length > 0;
-            setInheritsProjectTags(nextInheritsTags);
-            if (nextInheritsTags) {
-              const projectTags = await getTagsByProjectId(snapshot.project_id);
-              setAllTags(projectTags);
-              setSelectedTagIds(projectTagIds);
-            }
-          } catch {
-            /* ignore */
           }
         }
       }
@@ -1244,9 +1194,7 @@ export default function EditTaskScreen() {
       }
 
       if (!snapshot.parent_task_id) {
-        // 项目已贴标签 → 清空任务自有标签；否则保存任务标签
-        await setTaskTagIds(taskId, nextInheritsTags ? [] : selectedTagIdsRef.current);
-        await markPendingTablesDirty(['tasks', 'tags', 'tag_links']);
+        await markPendingTablesDirty(['tasks']);
       }
       const parentFrame = mergeDateLimit(scheduleMetaToDateLimit(meta), {
         end: toYmd(dueDate ?? undefined) ?? undefined,
@@ -1317,7 +1265,7 @@ export default function EditTaskScreen() {
     } finally {
       setSaving(false);
     }
-  }, [inheritsProjectSchedule, inheritsProjectTags, loading, projectDateLimit, projectScheduleMeta, taskId]);
+  }, [inheritsProjectSchedule, loading, projectDateLimit, projectScheduleMeta, taskId]);
 
   /** 从详情→编辑离开（保存或删除）时跳过详情页，直接回到任务 Tab */
   const navigateAfterLeaveEdit = React.useCallback(() => {
@@ -1474,19 +1422,16 @@ export default function EditTaskScreen() {
     const bits: string[] = [];
     if (parentTask) bits.push(`父：${parentTask.title}`);
     else if (projectName) bits.push(projectName);
-    if (showTagField && selectedTagIds.length > 0) bits.push(`标签 ${selectedTagIds.length}`);
     if (rewardN > 0) bits.push(`+${rewardN}`);
     if (boundHabitIds.length > 0) bits.push(`习惯 ${boundHabitIds.length}`);
     if (progressCounters.length > 0) bits.push(`计数 ${progressCounters.length}`);
-    return bits.length > 0 ? bits.join(' · ') : '归属 / 标签 / 积分 / 习惯 / 计数';
+    return bits.length > 0 ? bits.join(' · ') : '归属 / 积分 / 习惯 / 计数';
   }, [
     boundHabitIds.length,
     parentTask,
     progressCounters.length,
     projectName,
     rewardN,
-    selectedTagIds.length,
-    showTagField,
   ]);
 
   return (
@@ -1773,13 +1718,21 @@ export default function EditTaskScreen() {
                       {subtasks.length > 0 ? `${incompleteSubtaskCount} 未完成` : '可拆成更小步骤'}
                     </Text>
                     <Pressable
-                      onPress={() => setAddSubtaskOpen(true)}
-                      disabled={loading}
+                      onPress={openAddSubtask}
+                      disabled={loading || taskFrogAssigned}
                       hitSlop={8}
-                      style={{ marginLeft: 'auto', opacity: loading ? 0.55 : 1 }}>
+                      style={{
+                        marginLeft: 'auto',
+                        opacity: loading || taskFrogAssigned ? 0.45 : 1,
+                      }}>
                       <Text style={{ fontSize: 11, color: '#6F856B', fontWeight: '600' }}>＋ 新建</Text>
                     </Pressable>
                   </View>
+                  {taskFrogAssigned ? (
+                    <Text style={{ fontSize: 10, color: tf.faint, marginBottom: 6 }}>
+                      已指派到日程，请先取消指派再新增子任务
+                    </Text>
+                  ) : null}
 
                   {subtasks.map((s) => {
                     const tp = priorityShortLabel(s.priority || s.priorityLabel);
@@ -1901,33 +1854,6 @@ export default function EditTaskScreen() {
                         </View>
                         <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" />
                       </View>
-
-                      {showTagField ? (
-                        <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
-                          <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <ProjectTagPickerField
-                              selectedIds={selectedTagIds}
-                              allTags={allTags}
-                              loading={tagsLoading}
-                              disabled={loading}
-                              locked={inheritsProjectTags}
-                              compact
-                              onChange={setSelectedTagIds}
-                              textColor={tf.ink2}
-                              outline={tf.muted}
-                              placeholderColor={tf.faint}
-                              primary={tf.frog}
-                              surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                              surfaceLowest={isDark ? colors.surfaceSubtle : '#FFFCF5'}
-                              isDark={isDark}
-                            />
-                          </View>
-                          {inheritsProjectTags ? (
-                            <MaterialIcons name="lock-outline" size={14} color="#A4ADA3" style={{ marginTop: 8 }} />
-                          ) : null}
-                        </View>
-                      ) : null}
 
                       <View style={[styles.frow, frowBorder]}>
                         <Text style={[styles.frowLab, { color: '#8A968C' }]}>奖励积分</Text>

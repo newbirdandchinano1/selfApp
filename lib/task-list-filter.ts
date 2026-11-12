@@ -24,7 +24,7 @@ export type TaskEntityScopeFilter = 'all' | 'project' | 'task';
 export type TaskListFilterState = {
   search: string;
   datePreset: TaskDatePreset | null;
-  /** 空 = 不限；多选 OR */
+  /** @deprecated 任务侧标签已下线；恒为空 */
   tagIds: string[];
   /** 空 = 不限；1–4 对应四象限 */
   priorities: number[];
@@ -76,7 +76,6 @@ export function isTaskListFilterActive(filter: TaskListFilterState): boolean {
   return (
     filter.search.trim().length > 0 ||
     filter.datePreset != null ||
-    filter.tagIds.length > 0 ||
     filter.priorities.length > 0 ||
     filter.longTerm !== 'all' ||
     (filter.entityScope ?? 'all') !== 'all'
@@ -87,7 +86,6 @@ export function countActiveTaskListFilterDims(filter: TaskListFilterState): numb
   let n = 0;
   if (filter.search.trim()) n += 1;
   if (filter.datePreset) n += 1;
-  if (filter.tagIds.length > 0) n += 1;
   if (filter.priorities.length > 0) n += 1;
   if (filter.longTerm !== 'all') n += 1;
   if ((filter.entityScope ?? 'all') !== 'all') n += 1;
@@ -175,18 +173,6 @@ function matchesSearchText(haystackParts: Array<string | null | undefined>, quer
     .includes(q);
 }
 
-function matchesTags(
-  entityId: string,
-  selectedTagIds: string[],
-  tagIdsByEntityId: Map<string, string[]> | undefined,
-): boolean {
-  if (selectedTagIds.length === 0) return true;
-  const have = tagIdsByEntityId?.get(entityId) ?? [];
-  if (have.length === 0) return false;
-  const set = new Set(have);
-  return selectedTagIds.some((id) => set.has(id));
-}
-
 function matchesPriority(priority: number | null | undefined, priorities: number[]): boolean {
   if (priorities.length === 0) return true;
   return priorities.includes(normalizeTaskPriority(priority));
@@ -199,21 +185,16 @@ function matchesLongTermFlag(isLongTerm: boolean, longTerm: TaskLongTermFilter):
 
 export type ApplyTaskListFilterOpts = {
   logicalTodayYmd: string;
-  /** entityId → tagId[] */
-  tagIdsByTaskId?: Map<string, string[]>;
 };
 
 /** 项目筛选 opts（与任务同形，命名区分调用点） */
 export type ApplyProjectListFilterOpts = {
   logicalTodayYmd: string;
-  tagIdsByProjectId?: Map<string, string[]>;
   /**
    * 项目 id → 扁平任务（含子任务）。
    * 项目本身不匹配时，只要任一子任务匹配仍保留该项目。
    */
   tasksByProjectId?: Record<string, TaskRow[]>;
-  /** 子任务标签；与 tasksByProjectId 配合做标签维度匹配 */
-  tagIdsByTaskId?: Map<string, string[]>;
 };
 
 export function taskPassesListFilter(
@@ -225,7 +206,6 @@ export function taskPassesListFilter(
   if (filter.datePreset && !matchesDatePreset(task, filter.datePreset, opts.logicalTodayYmd)) {
     return false;
   }
-  if (!matchesTags(task.id, filter.tagIds, opts.tagIdsByTaskId)) return false;
   if (!matchesPriority(task.priority, filter.priorities)) return false;
   if (!matchesLongTermFlag(getIsLongTermTask(task.extra_data), filter.longTerm)) return false;
   return true;
@@ -249,7 +229,6 @@ export function projectPassesListFilter(
   if (filter.datePreset && !matchesDatePreset(project, filter.datePreset, opts.logicalTodayYmd)) {
     return false;
   }
-  if (!matchesTags(project.id, filter.tagIds, opts.tagIdsByProjectId)) return false;
   if (!matchesPriority(project.priority, filter.priorities)) return false;
   if (!matchesLongTermFlag(getIsLongTermProject(project.extra_data), filter.longTerm)) return false;
   return true;
@@ -264,7 +243,6 @@ export function projectHasMatchingDescendantTask(
   if (!tasks || tasks.length === 0) return false;
   const taskOpts: ApplyTaskListFilterOpts = {
     logicalTodayYmd: opts.logicalTodayYmd,
-    tagIdsByTaskId: opts.tagIdsByTaskId,
   };
   return tasks.some((t) => taskPassesListFilter(t, filter, taskOpts));
 }
@@ -298,7 +276,6 @@ export function collectMatchingTaskIdsInProject(
   if (!tasks || tasks.length === 0) return out;
   const taskOpts: ApplyTaskListFilterOpts = {
     logicalTodayYmd: opts.logicalTodayYmd,
-    tagIdsByTaskId: opts.tagIdsByTaskId,
   };
   for (const t of tasks) {
     if (taskPassesListFilter(t, filter, taskOpts)) out.add(t.id);

@@ -25,7 +25,6 @@ import { mergeLifeAcceptanceIdIntoExtraData } from '@/lib/life-road/project-road
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
@@ -84,9 +83,7 @@ import {
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
 import { createProject, getProjectCategories, getProjects, isProjectNameDuplicate } from '@/lib/repositories/projects/project';
-import { getProjectTags, setProjectTagIds } from '@/lib/repositories/projects/project-tag';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import { createTask } from '@/lib/repositories/tasks/task';
 import {
   mergeRewardPointsIntoExtraData,
@@ -96,7 +93,7 @@ import { dueDateFromScheduleMeta } from '@/lib/schedule-inherit';
 import { normalizeRouteParam } from '@/lib/schedule-picker-bridge';
 import { requestPush } from '@/lib/sync-manager';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
   Animated,
@@ -196,9 +193,6 @@ export default function AddProjectScreen() {
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
-  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
-  const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
-  const [tagsLoading, setTagsLoading] = React.useState(true);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const routeMonthGoalId = React.useMemo(() => {
     const raw = params.life_month_goal_id;
@@ -280,20 +274,6 @@ export default function AddProjectScreen() {
     borderTopColor: 'rgba(232,224,210,0.52)',
   } as const;
 
-  useFocusEffect(
-    React.useCallback(() => {
-      void (async () => {
-        try {
-          const tags = await getProjectTags();
-          setAllTags(tags);
-          setSelectedTagIds((prev) => prev.filter((id) => tags.some((t) => t.id === id)));
-        } catch (error) {
-          console.warn('刷新项目标签失败', error);
-        }
-      })();
-    }, []),
-  );
-
   const reload = React.useCallback(async (forceRefresh = false) => {
     await wrapLoad(async () => {
       try {
@@ -312,15 +292,6 @@ export default function AddProjectScreen() {
         setAllProjects([]);
       } finally {
         setProjectsLoading(false);
-      }
-      setTagsLoading(true);
-      try {
-        setAllTags(await getProjectTags());
-      } catch (error) {
-        console.warn('加载项目标签失败', error);
-        setAllTags([]);
-      } finally {
-        setTagsLoading(false);
       }
       setMonthGoalsLoading(true);
       try {
@@ -501,7 +472,6 @@ export default function AddProjectScreen() {
       if (nextNoteImages.length > 0) {
         await bindNoteImages({ table: 'projects', id: projectId }, nextNoteImages);
       }
-      await setProjectTagIds(projectId, selectedTagIds);
 
       const seededTasks = initialTasks
         .map((t) => ({ id: t.id, title: t.title.trim() }))
@@ -573,7 +543,6 @@ export default function AddProjectScreen() {
     scheduleMeta,
     selectedCategoryId,
     selectedMonthGoalId,
-    selectedTagIds,
     title,
   ]);
 
@@ -866,24 +835,6 @@ export default function AddProjectScreen() {
                   </View>
                 </View>
               )}
-              <View style={[styles.frow, frowBorder]}>
-                <Text style={[styles.frowLab, { color: '#8A968C' }]}>标签</Text>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <ProjectTagPickerField
-                    selectedIds={selectedTagIds}
-                    allTags={allTags}
-                    loading={tagsLoading}
-                    onChange={setSelectedTagIds}
-                    textColor={tf.ink}
-                    outline={tf.muted}
-                    placeholderColor={tf.faint}
-                    primary={tf.pond}
-                    surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                    surfaceLowest={isDark ? colors.surface : tf.card}
-                    isDark={isDark}
-                  />
-                </View>
-              </View>
             </View>
           </FoldRiseIn>
 

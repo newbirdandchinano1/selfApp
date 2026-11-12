@@ -22,6 +22,10 @@ export async function commitTag(
   const { createTag, setEntityTagIds } = await import('@/lib/repositories/tags/tag');
   const { DEFAULT_TAG_COLOR } = await import('@/lib/repositories/tags/tag.types');
 
+  if (entityType && entityType !== 'memo') {
+    return fail('incomplete_draft', 'entity_type 仅支持 memo（任务侧标签已下线）');
+  }
+
   let resolvedTagId = tagId;
   if (!resolvedTagId) {
     resolvedTagId = makeTimestampEntityId('tag_', 8);
@@ -30,32 +34,19 @@ export async function commitTag(
       name: name.slice(0, 40),
       color: draftString(draft, 'color') || DEFAULT_TAG_COLOR,
       description: draftString(draft, 'note') || null,
-      domain:
-        entityType === 'memo'
-          ? 'memo'
-          : entityType === 'habit' || entityType === 'project' || entityType === 'task'
-            ? 'task'
-            : 'task',
+      domain: 'memo',
       extra_data: JSON.stringify({ source: 'assistant_chat_commit' }),
     });
   }
 
   if (entityType && entityId) {
-    const allowed = new Set(['project', 'habit', 'task', 'memo']);
-    if (!allowed.has(entityType)) {
-      return fail('incomplete_draft', 'entity_type 仅支持 project/habit/task/memo');
-    }
     const extraIds = Array.isArray(draft.tag_ids)
       ? draft.tag_ids.filter((x): x is string => typeof x === 'string' && !!x.trim())
       : [];
     const ids = Array.from(new Set([resolvedTagId, ...extraIds]));
-    await setEntityTagIds(
-      entityType as 'project' | 'habit' | 'task' | 'memo',
-      entityId,
-      ids,
-    );
+    await setEntityTagIds('memo', entityId, ids);
     await requestPushPending();
-    return ok(resolvedTagId, `已为 ${entityType} 绑定标签`);
+    return ok(resolvedTagId, `已为 memo 绑定标签`);
   }
 
   await requestPushPending();

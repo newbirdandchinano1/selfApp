@@ -4,7 +4,6 @@
  */
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AppButton, AppCard } from '@/components/ui';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { AiParseHabitSheet } from '@/components/tasks/ai-parse-habit-sheet';
 import { EntityIconPickerField } from '@/components/tasks/EntityIconPickerField';
 import type { TaskParseHabitJson } from '@/lib/ai-api-client';
@@ -40,12 +39,6 @@ import { toast, Alert } from '@/lib/app-feedback';
 import { formatWriteError } from '@/lib/format-write-error';
 import { markPendingTablesDirty } from '@/lib/api-incremental-sync';
 import { requestPush } from '@/lib/sync-manager';
-import {
-  getTagIdsByEntity,
-  getProjectTags,
-  setHabitTagIds,
-} from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import { ensureBreakHabitCycleExtra } from '@/lib/repositories/habits/habit-break-success';
 import {
   isBuildHabitSucceeded,
@@ -296,9 +289,6 @@ export default function AddHabitScreen() {
   const [subHabitsOpen, setSubHabitsOpen] = React.useState(false);
   const [subHabitsEnabled, setSubHabitsEnabled] = React.useState(false);
   const [subHabits, setSubHabits] = React.useState<HabitSubItem[]>([]);
-  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
-  const [allTags, setAllTags] = React.useState<TagRow[]>([]);
-  const [tagsLoading, setTagsLoading] = React.useState(true);
   const [subHabitEditor, setSubHabitEditor] = React.useState<{
     visible: boolean;
     editingId: string | null;
@@ -336,15 +326,6 @@ export default function AddHabitScreen() {
       }
     } catch (err) {
       console.warn('加载情境分类失败', err);
-    }
-    setTagsLoading(true);
-    try {
-      setAllTags(await getProjectTags());
-    } catch (err) {
-      console.warn('加载标签失败', err);
-      setAllTags([]);
-    } finally {
-      setTagsLoading(false);
     }
     }, forceRefresh);
   }, [isEditMode, wrapLoad]);
@@ -402,12 +383,6 @@ export default function AddHabitScreen() {
         });
         setSelectedContext(rawCtx);
         setHabitNote(row.note?.trim() ? row.note.trim().slice(0, HABIT_NOTE_MAX_LEN) : '');
-        try {
-          setSelectedTagIds(await getTagIdsByEntity('habit', habitId));
-        } catch (tagErr) {
-          console.warn('加载习惯标签失败', tagErr);
-          setSelectedTagIds([]);
-        }
         setHabitKind(parseHabitKind(row.extra_data));
         setRewardPointsText(String(parseHabitRewardPoints(row.extra_data)));
         try {
@@ -882,7 +857,6 @@ export default function AddHabitScreen() {
         });
         savedHabitId = id;
       }
-      await setHabitTagIds(savedHabitId, selectedTagIds);
       try {
         await markPendingTablesDirty(['habits', 'tags', 'tag_links']);
         // 本地已写入；后台推送即可，勿 awaitSync 阻塞返回（否则其它脏表卡住时页面无反应）
@@ -979,7 +953,6 @@ export default function AddHabitScreen() {
     saving,
     selectedContext,
     selectedDays,
-    selectedTagIds,
     unitInput,
     weeklyNDays,
     subHabits,
@@ -1241,19 +1214,6 @@ export default function AddHabitScreen() {
                 </Text>
               </View>
               <View style={styles.tagsRow}>
-                <ProjectTagPickerField
-                  selectedIds={selectedTagIds}
-                  allTags={allTags}
-                  loading={tagsLoading}
-                  onChange={setSelectedTagIds}
-                  textColor={colors.text}
-                  outline={colors.textSecondary}
-                  placeholderColor={colors.textMuted}
-                  primary={colors.primary}
-                  surfaceLow={colors.input}
-                  surfaceLowest={colors.surface}
-                  isDark={isDark}
-                />
               </View>
             </HabitCard>
           </FoldRiseIn>

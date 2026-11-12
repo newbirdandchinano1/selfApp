@@ -8,7 +8,7 @@ import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { addDaysToYmd } from '@/lib/date';
-import { sortHabitGridSectionsByTagWeight } from '@/lib/habit-grid-sort';
+import { sortHabitGridSections } from '@/lib/habit-grid-sort';
 import { cancelScheduledHabitReminder } from '@/lib/habit-reminder-notifications';
 import { getHabits, deleteHabit as deleteHabitById } from '@/lib/repositories/habits/habit';
 import {
@@ -43,7 +43,6 @@ import {
   parseTaskRepeatPeriod,
 } from '@/lib/repositories/habits/habit-task-period';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
-import { getTagsByEntityIds } from '@/lib/repositories/tags/tag';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router/react-navigation';
 import { useRouter } from 'expo-router';
@@ -564,17 +563,6 @@ export default function HabitManageScreen() {
             .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
           const allContexts = [...orderedContexts, ...legacyContexts];
 
-          const habitIds = rows.map((r) => r.id);
-          const tagsByHabitId = await getTagsByEntityIds('habit', habitIds).catch(
-            () => new Map<string, { weight?: number | null }[]>(),
-          );
-          const weightByHabitId = new Map<string, number>();
-          for (const [id, tags] of tagsByHabitId) {
-            weightByHabitId.set(
-              id,
-              tags.reduce((m, t) => Math.max(m, typeof t.weight === 'number' ? t.weight : 0), 0),
-            );
-          }
           const contextSortOrderById = new Map<string, number>();
           const contextIdByName = new Map<string, string>();
           for (const c of contextRows) {
@@ -589,11 +577,7 @@ export default function HabitManageScreen() {
               title: ctx,
               items: byCtx.get(ctx) ?? [],
             }));
-          const sortedSections = sortHabitGridSectionsByTagWeight(
-            rawSections,
-            weightByHabitId,
-            contextSortOrderById,
-          );
+          const sortedSections = sortHabitGridSections(rawSections, contextSortOrderById);
 
           const flat: HabitItem[] = [];
           for (const sec of sortedSections) flat.push(...sec.items);

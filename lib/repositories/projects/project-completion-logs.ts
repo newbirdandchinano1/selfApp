@@ -4,7 +4,6 @@ import { makeTimestampEntityId } from '@/lib/entity-id';
 import { readApiTable } from '@/lib/api-read';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
-import { getTagsByProjectId } from '@/lib/repositories/projects/project-tag';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { getDatabase, type SyncStatus } from '../../database.native';
 
@@ -143,14 +142,6 @@ export async function ensureProjectCompletionLogFromProject(
     return false;
   }
 
-  let tagNames: string[] = [];
-  try {
-    const tags = await getTagsByProjectId(project.id);
-    tagNames = tags.map((t) => t.name);
-  } catch {
-    tagNames = [];
-  }
-
   const pointsFromExtra = parseRewardPointsFromExtraData(project.extra_data);
   await insertProjectCompletionLog({
     projectId: project.id,
@@ -159,7 +150,7 @@ export async function ensureProjectCompletionLogFromProject(
     taskCount: options.taskCount,
     doneTaskCount: options.doneTaskCount,
     pointsDelta: options.pointsDelta ?? pointsFromExtra,
-    tagNames,
+    tagNames: [],
     note: project.note,
     source: options.source ?? 'archive',
   });

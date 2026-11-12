@@ -3,6 +3,10 @@ import {
   clampPriorityForDeadline,
   resolveTaskDueYmdForPriority,
 } from '@/lib/due-soon-priority-bump';
+import {
+  frogAssignedBlocksChildMessage,
+  hasFrogAssignment,
+} from '@/lib/frog-assignment';
 import { persistTaskPatchToApi } from '@/lib/task-api-write';
 import { ensureLocalRowForWrite, ensureLocalRowPresent, readLocalRowForWrite, requireLocalRowForWrite } from '@/lib/api-local-row';
 import { invalidateInflightApiTableFetch } from '@/lib/api-read';
@@ -28,6 +32,33 @@ import type {
 } from './task.types';
 import { ensureTaskCategoryMirrorLocally } from './task-category-mirror';
 import { isTaskShelvedStatus, isTaskTerminalStatus, normalizeTaskPriority } from './task.types';
+
+/**
+ * 已指派为青蛙的项目/任务不可再挂子级。
+ * 有 parent_task_id 时只校验父任务；否则若挂在项目下则校验项目。
+ */
+async function assertHostAllowsNewChild(opts: {
+  parentTaskId: string | null;
+  projectId: string | null;
+}): Promise<void> {
+  const parentId = opts.parentTaskId?.trim() || '';
+  if (parentId) {
+    const parent = await ensureLocalRowForWrite<TaskRow>('tasks', parentId);
+    if (parent && hasFrogAssignment(parent.extra_data)) {
+      throw new Error(frogAssignedBlocksChildMessage('task'));
+    }
+    return;
+  }
+  const projectId = opts.projectId?.trim() || '';
+  if (!projectId) return;
+  const project = await ensureLocalRowForWrite<{ extra_data: string | null } & Record<string, unknown>>(
+    'projects',
+    projectId,
+  );
+  if (project && hasFrogAssignment(project.extra_data)) {
+    throw new Error(frogAssignedBlocksChildMessage('project'));
+  }
+}
 
 /** 临期/过期写库强制紧急（保留重要轴）；搁置/终态不改 */
 function resolveWritableTaskPriority(params: {
@@ -410,6 +441,11 @@ export async function createTask(input: CreateTaskInput, opts?: TaskWriteOptions
   const existing = await readLocalRowForWrite<TaskRow>('tasks', resolved.id);
   if (existing) return;
 
+  await assertHostAllowsNewChild({
+    parentTaskId: resolved.parent_task_id ?? null,
+    projectId: resolved.project_id ?? null,
+  });
+
   const sortOrder = await getNextTaskSortOrderForSiblings(
     db,
     resolved.project_id ?? null,
@@ -687,6 +723,16 @@ export async function updateTask(id: string, input: UpdateTaskInput, opts?: Task
     },
     { preserveCategoryId: current.category_id },
   );
+  const nextParentId = foreignKeys.parent_task_id ?? null;
+  const prevParentId = current.parent_task_id ?? null;
+  const nextProjectId = foreignKeys.project_id ?? null;
+  const prevProjectId = current.project_id ?? null;
+  // 挂到新的父任务，或从未挂项目改为挂在已指派项目下（作为项目根任务）
+  if (nextParentId && nextParentId !== prevParentId) {
+    await assertHostAllowsNewChild({ parentTaskId: nextParentId, projectId: null });
+  } else if (!nextParentId && nextProjectId && nextProjectId !== prevProjectId) {
+    await assertHostAllowsNewChild({ parentTaskId: null, projectId: nextProjectId });
+  }
   const nowLocal = sqlLocalNow();
   const nextStatus = input.status ?? current.status;
   const nextDueDate = input.due_date !== undefined ? input.due_date : current.due_date;

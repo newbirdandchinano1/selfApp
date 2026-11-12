@@ -13,7 +13,6 @@ import {
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
-import { ProjectTagPickerField } from '@/components/projects/ProjectTagPickerField';
 import { FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { AcceptanceChecklistEditor } from '@/components/tasks/AcceptanceChecklistEditor';
 import { AiPlanProjectSheet } from '@/components/tasks/ai-plan-project-sheet';
@@ -53,7 +52,13 @@ import {
 import { getDatabase } from '@/lib/database.native';
 import { formatWriteError } from '@/lib/format-write-error';
 import { addDaysToYmd } from '@/lib/date';
-import { clearProjectFrogFields, getFrogAssignedDates } from '@/lib/frog-assignment';
+import {
+  clearProjectFrogFields,
+  frogAssignedBlocksChildMessage,
+  getFrogAssignedDates,
+  hasActiveFrogAssignment,
+  hasFrogAssignment,
+} from '@/lib/frog-assignment';
 import { isProjectEligibleAsFrog } from '@/lib/project-frog';
 import { setPendingSchedulePlace } from '@/lib/schedule-place-bridge';
 import {
@@ -105,12 +110,6 @@ import {
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
-import {
-  getProjectTags,
-  getTagIdsByProjectId,
-  setProjectTagIds,
-} from '@/lib/repositories/projects/project-tag';
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
   mergeRewardPointsIntoExtraObject,
@@ -135,7 +134,6 @@ import {
   type SchedulePickerInitPayload,
 } from '@/lib/schedule-picker-bridge';
 import { requestPush } from '@/lib/sync-manager';
-import { setTaskTagIds } from '@/lib/repositories/tags/tag';
 import {
   getRecentExecutionEventsForTaskIds,
   type TaskExecutionEventWithTitle,
@@ -204,12 +202,12 @@ function getProjectTreeTaskProgress(nodes: TaskTreeNode[]): { total: number; don
   return { total, done, ratio: total > 0 ? done / total : 0 };
 }
 
-function countFrogLeaves(nodes: TaskTreeNode[]): number {
+function countFrogLeaves(nodes: TaskTreeNode[], todayYmd: string): number {
   let n = 0;
   const walk = (list: TaskTreeNode[]) => {
     for (const node of list) {
       const children = Array.isArray(node.children) ? node.children : [];
-      if (children.length === 0 && getFrogAssignedDates(node.extra_data).length > 0) n += 1;
+      if (children.length === 0 && hasActiveFrogAssignment(node.extra_data, todayYmd)) n += 1;
       if (children.length > 0) walk(children);
     }
   };
@@ -603,10 +601,7 @@ export default function EditProjectScreen() {
   const [allHabits, setAllHabits] = React.useState<HabitRow[]>([]);
   const [habitContexts, setHabitContexts] = React.useState<{ id: string; name: string }[]>([]);
   const [habitsLoading, setHabitsLoading] = React.useState(true);
-  const [selectedTagIds, setSelectedTagIds] = React.useState<string[]>([]);
-  const [allTags, setAllTags] = React.useState<ProjectTagRow[]>([]);
-  const [tagsLoading, setTagsLoading] = React.useState(true);
-  /** 次要栏目默认折叠：标签/依赖/推进/积分/道路；本周与活动另折 */
+  /** 次要栏目默认折叠：依赖/推进/积分/道路；本周与活动另折 */
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [overviewOpen, setOverviewOpen] = React.useState(false);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
@@ -736,16 +731,6 @@ export default function EditProjectScreen() {
       if (nextNoteImages.length > 0) {
         await bindNoteImages({ table: 'tasks', id: task.id }, nextNoteImages);
       }
-      // 项目一旦有子任务，不再可作为青蛙实体
-      const snap = projectSnapshotRef.current;
-      if (snap) {
-        const cleared = clearProjectFrogFields(snap.extra_data);
-        if (cleared !== snap.extra_data) {
-          await updateProject(projectId, { extra_data: cleared });
-          projectSnapshotRef.current = { ...snap, extra_data: cleared };
-          setProjectExtraData(parseProjectExtraData(cleared));
-        }
-      }
       setPersistedTaskIds((prev) => new Set(prev).add(task.id));
       try {
         const projectTasks = await getTasksByProjectId(projectId);
@@ -800,12 +785,6 @@ export default function EditProjectScreen() {
       setPrerequisiteProjectIds(parsePrerequisiteProjectIds(project.extra_data));
       setProgressHabitBindings(parseProgressHabitBindings(project.extra_data));
       setProgressCounters(parseProgressCounters(project.extra_data));
-      try {
-        setSelectedTagIds(await getTagIdsByProjectId(projectId));
-      } catch (tagErr) {
-        console.warn('加载项目标签关联失败', tagErr);
-        setSelectedTagIds([]);
-      }
       setIsLongTermProject(longTerm);
       setSelectedMonthGoalId(
         project.life_month_goal_id?.trim()
@@ -851,15 +830,6 @@ export default function EditProjectScreen() {
           setAllProjects([]);
         } finally {
           setProjectsLoading(false);
-        }
-        setTagsLoading(true);
-        try {
-          setAllTags(await getProjectTags());
-        } catch (error) {
-          console.warn('加载项目标签失败', error);
-          setAllTags([]);
-        } finally {
-          setTagsLoading(false);
         }
         setMonthGoalsLoading(true);
         try {
@@ -975,15 +945,6 @@ export default function EditProjectScreen() {
           await reloadProjectSnapshotOnlyRef.current();
           await reloadSubtasksOnlyRef.current();
         }
-        try {
-          const tags = await getProjectTags();
-          if (!cancelled) {
-            setAllTags(tags);
-            setSelectedTagIds((prev) => prev.filter((id) => tags.some((t) => t.id === id)));
-          }
-        } catch (error) {
-          console.warn('刷新项目标签失败', error);
-        }
       })();
       return () => {
         cancelled = true;
@@ -1033,7 +994,10 @@ export default function EditProjectScreen() {
   );
 
   const progress = React.useMemo(() => getProjectTreeTaskProgress(taskTree), [taskTree]);
-  const frogLeafCount = React.useMemo(() => countFrogLeaves(taskTree), [taskTree]);
+  const frogLeafCount = React.useMemo(
+    () => countFrogLeaves(taskTree, logicalTodayYmd),
+    [logicalTodayYmd, taskTree],
+  );
   const displayTaskTree = React.useMemo(
     () => (hideCompletedTasks ? filterTreeHideCompleted(taskTree) : taskTree),
     [hideCompletedTasks, taskTree],
@@ -1085,6 +1049,7 @@ export default function EditProjectScreen() {
   }, [activityEvents, logicalTodayYmd, progress.done, progress.total, taskTree, weekEndYmd, weekStartYmd]);
   const rewardN = Math.round(Number(rewardPointsText) || 0);
   const hasChildTasks = progress.total > 0;
+  const projectFrogAssigned = hasFrogAssignment(JSON.stringify(projectExtraData));
 
   const toggleTaskCollapse = React.useCallback((taskId: string) => {
     setCollapsedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
@@ -1256,7 +1221,6 @@ export default function EditProjectScreen() {
       await releaseRemovedNoteImages(previousNoteImages, nextNoteImages);
       if (!noteImageUrisEqual(nextNoteImages, noteImageUris)) setNoteImageUris(nextNoteImages);
       setProjectExtraData(parseProjectExtraData(nextExtraAfterTasks));
-      await setProjectTagIds(projectId, selectedTagIds);
       const projectFrame = mergeDateLimit(scheduleMetaToDateLimit(scheduleToSave), {
         end: projectDueDate ?? undefined,
       });
@@ -1351,13 +1315,6 @@ export default function EditProjectScreen() {
       if (scheduleForInherit) {
         await applyProjectScheduleToAllTasks(projectId, scheduleForInherit, writeOpts);
       }
-      // 项目已贴标签 → 清除任务自有标签（展示/排序走项目标签）
-      if (selectedTagIds.length > 0) {
-        for (const [tid, existingTask] of existingTaskById) {
-          if (existingTask.parent_task_id) continue;
-          await setTaskTagIds(tid, []);
-        }
-      }
       await db.execAsync('COMMIT');
       committed = true;
     } catch (error) {
@@ -1438,7 +1395,6 @@ export default function EditProjectScreen() {
     scheduleMeta,
     selectedMonthGoalId,
     selectedAcceptanceId,
-    selectedTagIds,
     subtasks,
     title,
   ]);
@@ -1521,18 +1477,16 @@ export default function EditProjectScreen() {
 
   const moreSummary = React.useMemo(() => {
     const bits: string[] = [];
-    if (selectedTagIds.length > 0) bits.push(`标签 ${selectedTagIds.length}`);
     if (prerequisiteProjectIds.length > 0) bits.push(`依赖 ${prerequisiteProjectIds.length}`);
     const progressN = progressHabitBindings.length + progressCounters.length;
     if (progressN > 0) bits.push(`推进 ${progressN}`);
     if (rewardN > 0) bits.push(`+${rewardN}`);
-    return bits.length > 0 ? bits.join(' · ') : '标签 / 依赖 / 推进 / 积分';
+    return bits.length > 0 ? bits.join(' · ') : '依赖 / 推进 / 积分';
   }, [
     prerequisiteProjectIds.length,
     progressCounters.length,
     progressHabitBindings.length,
     rewardN,
-    selectedTagIds.length,
   ]);
 
   const overviewSummary = React.useMemo(() => {
@@ -1594,6 +1548,10 @@ export default function EditProjectScreen() {
   ]);
 
   const openAddTask = () => {
+    if (projectFrogAssigned) {
+      toast.warn(frogAssignedBlocksChildMessage('project'));
+      return;
+    }
     router.push({
       pathname: '/add-task',
       params: {
@@ -1606,6 +1564,14 @@ export default function EditProjectScreen() {
             : '',
       },
     });
+  };
+
+  const openAiPlan = () => {
+    if (projectFrogAssigned) {
+      toast.warn(frogAssignedBlocksChildMessage('project'));
+      return;
+    }
+    setAiPlanOpen(true);
   };
 
   return (
@@ -1882,32 +1848,67 @@ export default function EditProjectScreen() {
                   <View style={styles.treefoot}>
                     <Pressable
                       onPress={openAddTask}
-                      disabled={formBusy}
+                      disabled={formBusy || projectFrogAssigned}
                       style={({ pressed }) => [
                         styles.treeAdd,
-                        { opacity: formBusy ? 0.5 : pressed ? 0.8 : 1 },
+                        {
+                          opacity:
+                            formBusy || projectFrogAssigned ? 0.45 : pressed ? 0.8 : 1,
+                        },
                       ]}>
                       <MaterialIcons name="add" size={12} color={tf.frog} />
                       <Text style={{ fontSize: 12, fontWeight: '700', color: tf.frog }}>加任务</Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => setAiPlanOpen(true)}
-                      disabled={formBusy || !projectId || !title.trim()}
+                      onPress={openAiPlan}
+                      disabled={formBusy || projectFrogAssigned || !projectId || !title.trim()}
                       style={({ pressed }) => [
                         styles.treeAdd,
                         {
-                          opacity: formBusy || !projectId || !title.trim() ? 0.5 : pressed ? 0.8 : 1,
+                          opacity:
+                            formBusy || projectFrogAssigned || !projectId || !title.trim()
+                              ? 0.45
+                              : pressed
+                                ? 0.8
+                                : 1,
                         },
                       ]}>
                       <MaterialIcons name="auto-awesome" size={12} color={tf.frog} />
                       <Text style={{ fontSize: 12, fontWeight: '700', color: tf.frog }}>AI 规划</Text>
                     </Pressable>
-                    <Text style={{ fontSize: 10, color: tf.faint }}>未落库临时任务不能进编辑</Text>
+                    <Text style={{ fontSize: 10, color: tf.faint }}>
+                      {projectFrogAssigned
+                        ? '已指派到日程，请先取消指派再加任务'
+                        : '未落库临时任务不能进编辑'}
+                    </Text>
                   </View>
                 </View>
               </FoldRiseIn>
 
-              {hasChildTasks ? (
+              {projectFrogAssigned && !hasChildTasks ? (
+                <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
+                  <View
+                    style={[
+                      styles.lockBanner,
+                      {
+                        backgroundColor: isDark ? 'rgba(245,237,224,0.12)' : 'rgba(245,237,224,0.7)',
+                        borderColor: isDark ? tf.line2 : '#E4D3B9',
+                      },
+                    ]}>
+                    <View style={[styles.lockIcon, { backgroundColor: '#F1E3CC' }]}>
+                      <MaterialIcons name="lock-outline" size={14} color="#A87C3E" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#8B6B37' }}>
+                        已指派，不可再加任务
+                      </Text>
+                      <Text style={{ fontSize: 10, color: '#A38B63', marginTop: 2 }}>
+                        请先在日程中取消本项目指派，再拆分子任务
+                      </Text>
+                    </View>
+                  </View>
+                </FoldRiseIn>
+              ) : hasChildTasks ? (
                 <FoldRiseIn animate={foldAnimate} index={4} duration={520} staggerMs={42} fromY={8} holdHidden={foldAnimate}>
                   <View
                     style={[
@@ -1995,26 +1996,6 @@ export default function EditProjectScreen() {
 
                   {moreOpen ? (
                     <View style={{ gap: 10, marginTop: 6, opacity: formBusy ? 0.65 : 1 }}>
-                      <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
-                        <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>标签</Text>
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <ProjectTagPickerField
-                            selectedIds={selectedTagIds}
-                            allTags={allTags}
-                            loading={tagsLoading || loading}
-                            disabled={formBusy}
-                            compact
-                            onChange={setSelectedTagIds}
-                            textColor={tf.ink}
-                            outline={outline}
-                            placeholderColor={tf.faint}
-                            primary={primary}
-                            surfaceLow={surfaceLow}
-                            surfaceLowest={surfaceLowest}
-                            isDark={isDark}
-                          />
-                        </View>
-                      </View>
                       <View style={[styles.frow, frowBorder, { alignItems: 'flex-start', paddingVertical: 6 }]}>
                         <Text style={[styles.frowLab, { color: '#8A968C', marginTop: 6 }]}>依赖</Text>
                         <View style={{ flex: 1, minWidth: 0 }}>
@@ -2213,7 +2194,7 @@ export default function EditProjectScreen() {
                 <View style={styles.hintline}>
                   <MaterialIcons name="lightbulb-outline" size={13} color={tf.faint} />
                   <Text style={{ flex: 1, fontSize: 11, color: tf.faint, lineHeight: 15 }}>
-                    项目标签会清空任务自有标签；下属任务继承项目日程。
+                    下属任务继承项目日程。
                   </Text>
                 </View>
               </FoldRiseIn>

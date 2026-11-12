@@ -158,18 +158,14 @@ export function validatePrerequisiteSelection(
  * 项目列表排序（结构性置底优先，再按业务键级联）：
  * 1. 上锁 → 置底
  * 2. 已完成 / 归档 → 靠后
- * 3. 标签权重分降序（取已贴标签的最大权重；无标签=0 → 靠后）
- *    ——标签表示「人生领域/该优先做什么」（如收入 > 爱好）；多标签取 max
- * 4. 紧急程度 priority 降序（0/未设最低 → 靠后）
- *    ——同一权重档内的相对紧急/重要（四象限），不是全局人生优先级
- * 5. 有截止日期的在前；同有截止则越早越前；无截止 → 靠后
- * 6. 积分奖励降序（无积分 / 0 → 靠后）
- * 7. updated_at 降序作最后平局
+ * 3. 紧急程度 priority 降序（0/未设最低 → 靠后）——主业务权重
+ * 4. 有截止日期的在前；同有截止则越早越前；无截止 → 靠后
+ * 5. 积分奖励降序（无积分 / 0 → 靠后）
+ * 6. updated_at 降序作最后平局
  */
 export function sortProjectsForList(
   rows: ProjectRow[],
   lockedProjectIds?: Set<string>,
-  tagWeightByProjectId?: Map<string, number>,
 ): ProjectRow[] {
   const safeTime = (value: string | null | undefined) => {
     if (!value) return 0;
@@ -199,11 +195,6 @@ export function sortProjectsForList(
     return null;
   };
 
-  const getTagWeight = (projectId: string): number => {
-    const w = tagWeightByProjectId?.get(projectId);
-    return typeof w === 'number' && Number.isFinite(w) ? w : 0;
-  };
-
   const clone = [...rows];
   clone.sort((a, b) => {
     const lockA = lockedProjectIds?.has(a.id) ?? false;
@@ -214,12 +205,6 @@ export function sortProjectsForList(
     const doneB = b.status === 'completed' || b.status === 'archived';
     if (doneA !== doneB) return doneA ? 1 : -1;
 
-    // 人生领域优先：收入类应整体压过爱好类
-    const tagA = getTagWeight(a.id);
-    const tagB = getTagWeight(b.id);
-    if (tagA !== tagB) return tagB - tagA;
-
-    // 同领域内再比紧急程度
     const priorityA = a.priority ?? 0;
     const priorityB = b.priority ?? 0;
     if (priorityA !== priorityB) return priorityB - priorityA;

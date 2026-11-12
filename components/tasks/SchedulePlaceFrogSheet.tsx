@@ -12,7 +12,6 @@ import {
 } from '@/constants/task-fold-theme';
 import { fetchFrogCandidates, type FrogCandidate } from '@/lib/frog-candidates-api';
 import { DEFAULT_PROJECT_TAG_COLOR } from '@/lib/repositories/projects/project-tag.types';
-import { getProjectTags } from '@/lib/repositories/projects/project-tag';
 import {
   getProjectTaskTreeMap,
   type TaskTreeNode,
@@ -1309,24 +1308,7 @@ export function SchedulePlaceFrogSheet({
 
   React.useEffect(() => {
     if (!visible) return;
-    let cancelled = false;
-    void getProjectTags()
-      .then((rows) => {
-        if (cancelled) return;
-        const map = new Map<string, string>();
-        for (const t of rows) {
-          const name = t.name?.trim();
-          if (!name) continue;
-          map.set(name, normalizeChipColor(t.color || DEFAULT_PROJECT_TAG_COLOR));
-        }
-        setTagColorByName(map);
-      })
-      .catch(() => {
-        if (!cancelled) setTagColorByName(new Map());
-      });
-    return () => {
-      cancelled = true;
-    };
+    setTagColorByName(new Map());
   }, [visible]);
 
   React.useEffect(() => {

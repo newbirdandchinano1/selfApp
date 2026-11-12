@@ -1,5 +1,5 @@
 /**
- * 任务列表筛选条：搜索 + 快速日期/优先级/长期 + 展开组合（标签等多选）。
+ * 任务列表筛选条：搜索 + 快速日期/优先级/长期 + 展开组合。
  */
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -34,7 +34,8 @@ import {
 type Props = {
   value: TaskListFilterState;
   onChange: (next: TaskListFilterState) => void;
-  tags: TagRow[];
+  /** @deprecated 任务侧标签已下线；可传空数组 */
+  tags?: TagRow[];
   resultCount?: number;
   /** 搜索框占位 */
   searchPlaceholder?: string;
@@ -94,12 +95,13 @@ function FilterChip({
 export function TaskListFilterBar({
   value,
   onChange,
-  tags,
+  tags: _tags = [],
   resultCount,
   searchPlaceholder = '搜索标题或备注…',
   longTermSectionLabel = '长期任务',
   showEntityScope = false,
 }: Props) {
+  void _tags;
   const { tf, isDark } = useTaskFoldTheme();
   const [expanded, setExpanded] = React.useState(false);
   const [searchFocused, setSearchFocused] = React.useState(false);
@@ -219,7 +221,7 @@ export function TaskListFilterBar({
       <AiParseFilterSheet
         visible={aiFilterOpen}
         onClose={() => setAiFilterOpen(false)}
-        tags={tags}
+        tags={[]}
         onApply={onChange}
       />
 
@@ -331,25 +333,6 @@ export function TaskListFilterBar({
               active={value.longTerm === 'no'}
               onPress={() => patch({ longTerm: 'no' })}
             />
-          </View>
-
-          <Text style={[styles.sectionLabel, { color: tf.muted, marginTop: 10 }]}>
-            标签（可多选，满足其一）
-          </Text>
-          <View style={styles.wrapChips}>
-            {tags.length === 0 ? (
-              <Text style={[styles.emptyHint, { color: tf.faint }]}>暂无可用标签</Text>
-            ) : (
-              tags.map((tag) => (
-                <FilterChip
-                  key={tag.id}
-                  label={tag.name}
-                  dot={tag.color}
-                  active={value.tagIds.includes(tag.id)}
-                  onPress={() => patch({ tagIds: toggleInList(value.tagIds, tag.id) })}
-                />
-              ))
-            )}
           </View>
 
           <View style={styles.panelFoot}>

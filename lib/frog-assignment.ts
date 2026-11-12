@@ -53,6 +53,34 @@ export function isFrogAssignedOn(extraData: string | null, ymd: string): boolean
   return getFrogAssignedDates(extraData).includes(target);
 }
 
+/**
+ * 今日及以后的青蛙指派日。
+ * 列表徽章 / 叶子标记只用此集合，避免「以前指派未完成」在列表里残留。
+ * 历史指派日仍保留在 extra_data（供日程过期滞留等），不在此清除。
+ */
+export function getActiveFrogAssignedDates(extraData: string | null, todayYmd: string): string[] {
+  const today = normalizeYmd(todayYmd);
+  if (!today) return [];
+  return getFrogAssignedDates(extraData).filter((d) => d >= today);
+}
+
+/** 是否仍有「生效中」的青蛙指派（今日或未来） */
+export function hasActiveFrogAssignment(extraData: string | null, todayYmd: string): boolean {
+  return getActiveFrogAssignedDates(extraData, todayYmd).length > 0;
+}
+
+/** 是否已有任意青蛙指派日（今日/明日/更远均算「已指派」） */
+export function hasFrogAssignment(extraData: string | null | undefined): boolean {
+  return getFrogAssignedDates(extraData ?? null).length > 0;
+}
+
+/** 已指派的项目/任务不可再挂子任务时的提示文案 */
+export function frogAssignedBlocksChildMessage(kind: 'project' | 'task'): string {
+  return kind === 'project'
+    ? '项目已指派到日程，不能再新增任务。请先取消指派。'
+    : '任务已指派到日程，不能再新增子任务。请先取消指派。';
+}
+
 function writeFrogAssignedDates(extraData: string | null, dates: string[]): string | null {
   const current = parseTaskExtraObject(extraData);
   const { frogAssignedOn: _a, frogAssignedDates: _b, ...rest } = current;
@@ -115,7 +143,10 @@ export function clearFrogAssignedOn(extraData: string | null): string | null {
   }
 }
 
-/** 项目新增子任务后：清除青蛙指派与当日会话标记 */
+/**
+ * 清除项目青蛙指派与当日会话标记。
+ * 已指派项目应禁止新增任务；此函数仅作「项目已有任务」时的落库保洁。
+ */
 export function clearProjectFrogFields(extraData: string | null): string | null {
   if (!extraData) return null;
   try {

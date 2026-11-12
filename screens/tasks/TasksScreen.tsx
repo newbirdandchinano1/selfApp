@@ -83,8 +83,10 @@ import { requestPush } from '@/lib/sync-manager';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import {
+  getActiveFrogAssignedDates,
   getFrogAssignedDates,
   getFrogAssignedOn,
+  hasActiveFrogAssignment,
   isFrogAssignedOn,
   mergeFrogAssignedOn,
   persistProjectFrogExtraToApi,
@@ -200,10 +202,6 @@ import {
   parseCompletionLogTagNames,
   type ProjectCompletionLogRow,
 } from '@/lib/repositories/projects/project-completion-logs';
-import { getTagsByProjectIds } from '@/lib/repositories/projects/project-tag';
-import type { ProjectTagRow } from '@/lib/repositories/projects/project-tag.types';
-import { getTagsByEntityIds, normalizeTagColor, tagColorWithAlpha } from '@/lib/repositories/tags/tag';
-import type { TagRow } from '@/lib/repositories/tags/tag.types';
 import {
   buildProjectLockMap,
   sortProjectsForList,
@@ -283,6 +281,7 @@ import {
 } from '@/lib/repositories/tasks/task.types';
 import { isStandaloneTodoTask, standaloneTodoEditorHref } from '@/lib/standalone-todo-task';
 import { upgradeStandaloneTodoToProject } from '@/lib/standalone-todo-to-project';
+import { isTaskInScheduleGridOnDay } from '@/lib/schedule/task-virtual-placement';
 import {
   applyProjectListFilter,
   applyTaskListFilter,
@@ -320,8 +319,7 @@ import {
   taskHasRepeatingSchedule,
 } from '@/lib/task-repeat-rollover';
 import {
-  maxTagWeight,
-  sortHabitGridSectionsByTagWeight,
+  sortHabitGridSections,
 } from '@/lib/habit-grid-sort';
 import { fetchTasksHabitsGrid } from '@/lib/tasks-habits-grid-api';
 import {
@@ -1237,15 +1235,13 @@ function formatFrogAssignDayLabel(ymd: string, todayYmd: string): string {
 }
 
 /**
- * 列表「已指派」徽章文案：任意指派日都展示，并注明指派到的日期。
- * 数据仅存日历日（无入格时刻），故展示到日。
+ * 列表「已指派」徽章文案：仅今日及以后的指派日。
+ * 历史未完成指派不在列表残留（数据仍保留，供日程滞留）。
  */
 function formatFrogAssignedBadgeText(extraData: string | null, todayYmd: string): string {
-  const dates = getFrogAssignedDates(extraData);
-  if (dates.length === 0) return '已指派';
-  const upcoming = dates.filter((d) => d >= todayYmd);
-  const show = upcoming.length > 0 ? upcoming : dates;
-  const labels = show.map((d) => formatFrogAssignDayLabel(d, todayYmd));
+  const dates = getActiveFrogAssignedDates(extraData, todayYmd);
+  if (dates.length === 0) return '';
+  const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
   if (labels.length === 1) return `已指派 · ${labels[0]}`;
   if (labels.length <= 3) return `已指派 · ${labels.join('、')}`;
   return `已指派 · ${labels.slice(0, 2).join('、')}等${labels.length}天`;
@@ -1256,11 +1252,9 @@ function getFrogAssignedHint(
   todayYmd: string,
   longPressHint = '长按可将待办放入日程时间线',
 ): string {
-  const dates = getFrogAssignedDates(extraData);
+  const dates = getActiveFrogAssignedDates(extraData, todayYmd);
   if (dates.length === 0) return longPressHint;
-  const upcoming = dates.filter((d) => d >= todayYmd);
-  const show = upcoming.length > 0 ? upcoming : dates;
-  const labels = show.map((d) => formatFrogAssignDayLabel(d, todayYmd));
+  const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
   return `已指派到日程表：${labels.join('、')}`;
 }
 
@@ -1355,6 +1349,19 @@ function areAllTasksInProjectTreeDone(nodes: TaskTreeNode[]): boolean {
     if (n.status !== 'done' && n.status !== 'cancelled') return false;
     const ch = n.children;
     if (ch.length > 0 && !areAllTasksInProjectTreeDone(ch)) return false;
+  }
+  return true;
+}
+
+/** 项目/父节点勾选：仅看叶子是否全部完成或取消 */
+function areAllLeafTasksInTreeDone(nodes: TaskTreeNode[]): boolean {
+  for (const n of nodes) {
+    const ch = Array.isArray(n.children) ? n.children : [];
+    if (ch.length === 0) {
+      if (n.status !== 'done' && n.status !== 'cancelled') return false;
+    } else if (!areAllLeafTasksInTreeDone(ch)) {
+      return false;
+    }
   }
   return true;
 }
@@ -1755,17 +1762,8 @@ export default function TasksScreen() {
     Map<string, ProjectProgressHabitsEvaluation>
   >(() => new Map());
   const [projectCategories, setProjectCategories] = React.useState<ProjectCategoryRow[]>([]);
-  const [projectTagsByProjectId, setProjectTagsByProjectId] = React.useState<
-    Map<string, ProjectTagRow[]>
-  >(() => new Map());
   /** life_road_nodes.id → 标题；任务列表归属 caption 本地 JOIN */
   const [lifeRoadTitleById, setLifeRoadTitleById] = React.useState<Map<string, string>>(
-    () => new Map(),
-  );
-  const [habitTagsByHabitId, setHabitTagsByHabitId] = React.useState<Map<string, TagRow[]>>(
-    () => new Map(),
-  );
-  const [standaloneTagsByTaskId, setStandaloneTagsByTaskId] = React.useState<Map<string, TagRow[]>>(
     () => new Map(),
   );
   const [standaloneTodos, setStandaloneTodos] = React.useState<TaskRow[]>([]);
@@ -1945,55 +1943,6 @@ export default function TasksScreen() {
     return ids;
   }, [projectLockMap]);
 
-  const projectTagWeightById = React.useMemo(() => {
-    const map = new Map<string, number>();
-    projectTagsByProjectId.forEach((tags, projectId) => {
-      let max = 0;
-      for (const tag of tags) {
-        const w = typeof tag.weight === 'number' && Number.isFinite(tag.weight) ? tag.weight : 0;
-        if (w > max) max = w;
-      }
-      map.set(projectId, max);
-    });
-    return map;
-  }, [projectTagsByProjectId]);
-
-  // 独立待办：多标签取 max 权重，供列表终排（对齐项目列表）
-  const standaloneTodoTagWeightById = React.useMemo(() => {
-    const map = new Map<string, number>();
-    standaloneTagsByTaskId.forEach((tags, taskId) => {
-      let max = 0;
-      for (const tag of tags) {
-        const w = typeof tag.weight === 'number' && Number.isFinite(tag.weight) ? tag.weight : 0;
-        if (w > max) max = w;
-      }
-      map.set(taskId, max);
-    });
-    return map;
-  }, [standaloneTagsByTaskId]);
-
-  const projectTagIdsByProjectId = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    projectTagsByProjectId.forEach((tags, projectId) => {
-      map.set(
-        projectId,
-        tags.map((t) => t.id),
-      );
-    });
-    return map;
-  }, [projectTagsByProjectId]);
-
-  const projectFilterTags = React.useMemo(() => {
-    const byId = new Map<string, TagRow>();
-    projectTagsByProjectId.forEach((tags) => {
-      for (const tag of tags) byId.set(tag.id, tag as TagRow);
-    });
-    return [...byId.values()].sort((a, b) => {
-      if (b.weight !== a.weight) return b.weight - a.weight;
-      return a.name.localeCompare(b.name, 'zh-CN');
-    });
-  }, [projectTagsByProjectId]);
-
   const projectsInActiveTab = React.useMemo(() => {
     const base =
       projectTab === 'all'
@@ -2001,8 +1950,8 @@ export default function TasksScreen() {
         : projectTab === INBOX_PROJECT_CATEGORY_ID
           ? projects.filter((p) => isProjectInInboxCategory(p.category_id))
           : projects.filter((p) => p.category_id === projectTab);
-    return sortProjectsForList(base, lockedProjectIds, projectTagWeightById);
-  }, [lockedProjectIds, projectTagWeightById, projects, projectTab]);
+    return sortProjectsForList(base, lockedProjectIds);
+  }, [lockedProjectIds, projects, projectTab]);
 
   const projectListTasksByProjectId = React.useMemo(() => {
     const map: Record<string, TaskRow[]> = {};
@@ -2026,14 +1975,12 @@ export default function TasksScreen() {
     () =>
       applyProjectListFilter(projectsInActiveTab, projectListFilter, {
         logicalTodayYmd,
-        tagIdsByProjectId: projectTagIdsByProjectId,
         tasksByProjectId: projectListTasksByProjectId,
       }),
     [
       logicalTodayYmd,
       projectListFilter,
       projectListTasksByProjectId,
-      projectTagIdsByProjectId,
       projectsInActiveTab,
     ],
   );
@@ -2232,20 +2179,6 @@ export default function TasksScreen() {
     [loadProjects, markPageDirty],
   );
 
-  const refreshProjectTags = React.useCallback(async (projectRows?: ProjectRow[]) => {
-    const ids = (projectRows ?? projectsRef.current).map((p) => p.id);
-    if (ids.length === 0) {
-      setProjectTagsByProjectId(new Map());
-      return;
-    }
-    try {
-      setProjectTagsByProjectId(await getTagsByProjectIds(ids));
-    } catch (err) {
-      console.warn('加载项目标签失败', err);
-      setProjectTagsByProjectId(new Map());
-    }
-  }, []);
-
   /** 道路标题缓存：月目标 + 验收叶子（`${monthId}::${acceptanceId}`） */
   const refreshLifeRoadTitles = React.useCallback(async () => {
     try {
@@ -2278,48 +2211,10 @@ export default function TasksScreen() {
   }, []);
 
   React.useEffect(() => {
-    void refreshProjectTags(projects);
-  }, [projects, refreshProjectTags]);
-
-  React.useEffect(() => {
     void refreshLifeRoadTitles();
   }, [projects, refreshLifeRoadTitles]);
 
-  const refreshHabitTags = React.useCallback(async () => {
-    const ids = habitSections.flatMap((s) => s.items.map((h) => h.id));
-    if (ids.length === 0) {
-      setHabitTagsByHabitId(new Map());
-      return;
-    }
-    try {
-      setHabitTagsByHabitId(await getTagsByEntityIds('habit', ids));
-    } catch (err) {
-      console.warn('加载习惯标签失败', err);
-      setHabitTagsByHabitId(new Map());
-    }
-  }, [habitSections]);
 
-  React.useEffect(() => {
-    void refreshHabitTags();
-  }, [refreshHabitTags]);
-
-  const refreshStandaloneTags = React.useCallback(async () => {
-    const ids = standaloneTodos.map((t) => t.id);
-    if (ids.length === 0) {
-      setStandaloneTagsByTaskId(new Map());
-      return;
-    }
-    try {
-      setStandaloneTagsByTaskId(await getTagsByEntityIds('task', ids));
-    } catch (err) {
-      console.warn('加载待办标签失败', err);
-      setStandaloneTagsByTaskId(new Map());
-    }
-  }, [standaloneTodos]);
-
-  React.useEffect(() => {
-    void refreshStandaloneTags();
-  }, [refreshStandaloneTags]);
 
   const loadExpandedProjectState = React.useCallback(async () => {
     try {
@@ -3112,13 +3007,11 @@ export default function TasksScreen() {
       setStandaloneTodos((prev) =>
         sortStandaloneTodosLocally(
           prev.map((t) => (t.id === taskId ? apply(t) : t)),
-          logicalTodayYmd,
-          standaloneTodoTagWeightById,
-        ),
+          logicalTodayYmd),
       );
       setMatrixWeekTasks((prev) => prev.map((t) => (t.id === taskId ? apply(t) : t)));
     },
-    [logicalTodayYmd, standaloneTodoTagWeightById],
+    [logicalTodayYmd],
   );
 
   const taskTitleById = React.useMemo(() => {
@@ -3148,41 +3041,16 @@ export default function TasksScreen() {
         standaloneTodos.filter((t) =>
           standaloneTodoPassesDayBoundaryFilter(t, dayBoundary, logicalTodayYmd),
         ),
-        logicalTodayYmd,
-        standaloneTodoTagWeightById,
-      ),
-    [dayBoundary, logicalTodayYmd, standaloneTodoTagWeightById, standaloneTodos],
+        logicalTodayYmd),
+    [dayBoundary, logicalTodayYmd, standaloneTodos],
   );
-
-  const standaloneTodoTagIdsByTaskId = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    standaloneTagsByTaskId.forEach((tags, taskId) => {
-      map.set(
-        taskId,
-        tags.map((t) => t.id),
-      );
-    });
-    return map;
-  }, [standaloneTagsByTaskId]);
-
-  const standaloneFilterTags = React.useMemo(() => {
-    const byId = new Map<string, TagRow>();
-    standaloneTagsByTaskId.forEach((tags) => {
-      for (const tag of tags) byId.set(tag.id, tag);
-    });
-    return [...byId.values()].sort((a, b) => {
-      if (b.weight !== a.weight) return b.weight - a.weight;
-      return a.name.localeCompare(b.name, 'zh-CN');
-    });
-  }, [standaloneTagsByTaskId]);
 
   const standaloneTodosShown = React.useMemo(
     () =>
       applyTaskListFilter(standaloneTodosSorted, todoListFilter, {
         logicalTodayYmd,
-        tagIdsByTaskId: standaloneTodoTagIdsByTaskId,
       }),
-    [logicalTodayYmd, standaloneTodoTagIdsByTaskId, standaloneTodosSorted, todoListFilter],
+    [logicalTodayYmd, standaloneTodosSorted, todoListFilter],
   );
 
   const standaloneTodoOpenCount = React.useMemo(
@@ -3343,8 +3211,6 @@ export default function TasksScreen() {
         Alert.alert('无法入格', '已完成/已取消的任务不能指派为青蛙。');
         return;
       }
-      const tagRows =
-        task.project_id != null ? (projectTagsByProjectId.get(task.project_id) ?? []) : [];
       const dueDate = task.due_date?.slice(0, 10) ?? null;
       const standalone = isStandaloneTodoTask(task);
       beginSchedulePlace({
@@ -3357,14 +3223,14 @@ export default function TasksScreen() {
         rewardPoints: parseRewardPointsFromExtraData(task.extra_data),
         projectId: task.project_id,
         projectName: projectName ?? null,
-        tagNames: tagRows.map((t) => t.name),
-        tags: tagRows.map((t) => ({ name: t.name, color: t.color })),
+        tagNames: [],
+        tags: [],
         isOverdue: standalone
           ? isStandaloneTodoOverdue(task, logicalTodayYmd)
           : isTaskDueOverdue(dueDate ?? '', false, logicalTodayYmd),
       });
     },
-    [beginSchedulePlace, logicalTodayYmd, projectTagsByProjectId],
+    [beginSchedulePlace, logicalTodayYmd],
   );
 
   const handleProjectLongPressForSchedule = React.useCallback(
@@ -3376,7 +3242,6 @@ export default function TasksScreen() {
       const taskCount = getProjectTreeTaskProgress(tree).total;
 
       if (isProjectEligibleAsFrog(project, taskCount, locked)) {
-        const tagRows = projectTagsByProjectId.get(project.id) ?? [];
         beginSchedulePlace({
           kind: 'project',
           id: project.id,
@@ -3387,8 +3252,8 @@ export default function TasksScreen() {
           rewardPoints: parseRewardPointsFromExtraData(project.extra_data),
           projectId: project.id,
           projectName: project.name,
-          tagNames: tagRows.map((t) => t.name),
-          tags: tagRows.map((t) => ({ name: t.name, color: t.color })),
+          tagNames: [],
+        tags: [],
           isOverdue: isProjectScheduleExpired(project, logicalTodayYmd),
         });
         return;
@@ -3447,7 +3312,6 @@ export default function TasksScreen() {
       beginSchedulePlaceForTask,
       logicalTodayYmd,
       projectLockMap,
-      projectTagsByProjectId,
       projectTaskTreeMap,
     ],
   );
@@ -3553,9 +3417,7 @@ export default function TasksScreen() {
             if (!change) return task;
             return { ...task, status: change.status, completed_at: change.completed_at };
           }),
-          logicalTodayYmd,
-          standaloneTodoTagWeightById,
-        ),
+          logicalTodayYmd),
       );
       setMatrixWeekTasks((prev) =>
         prev.map((task) => {
@@ -3576,7 +3438,7 @@ export default function TasksScreen() {
         return next;
       });
     },
-    [logicalTodayYmd, standaloneTodoTagWeightById, updateTaskInProjectTree],
+    [logicalTodayYmd, updateTaskInProjectTree],
   );
 
   const syncHabitBoundTasksForHabit = React.useCallback(
@@ -3815,7 +3677,11 @@ export default function TasksScreen() {
 
   const handleProjectCompleteToggle = React.useCallback(
     (project: ProjectRow) => {
+      const tree = projectTaskTreeMap[project.id] ?? [];
       const isCompleted = project.status === 'completed' || project.status === 'archived';
+      /** 有未完成叶子时不在此结案；叶子齐了才允许点项目勾选框 */
+      if (!isCompleted && tree.length > 0 && !areAllLeafTasksInTreeDone(tree)) return;
+
       if (isCompleted) {
         Alert.alert('恢复项目', `确定将「${project.name}」恢复为进行中吗？`, [
           { text: '取消', style: 'cancel' },
@@ -3836,7 +3702,6 @@ export default function TasksScreen() {
         return;
       }
 
-      const tree = projectTaskTreeMap[project.id] ?? [];
       const incomplete = collectIncompleteTasksFromProjectTree(tree);
       promptProjectCompletionDisposition(project, incomplete.length);
     },
@@ -3855,7 +3720,7 @@ export default function TasksScreen() {
       if (!isProjectInboxProgressComplete(project, tree)) {
         Alert.alert(
           '暂时无法收纳',
-                          '请先完成项目内的全部任务（或将任务标记为取消）后，再收入收集箱归档。\n\n也可点击项目左侧按钮强制完成项目。',
+                          '请先完成项目内的全部任务（或将任务标记为取消）后，再收入收集箱归档。',
         );
         projectSwipeableRefs.current[project.id]?.close();
         return;
@@ -4784,9 +4649,7 @@ export default function TasksScreen() {
         setStandaloneTodos((prev) =>
           sortStandaloneTodosLocally(
             [optimisticTask, ...prev],
-            logicalTodayYmd,
-            standaloneTodoTagWeightById,
-          ),
+            logicalTodayYmd),
         );
         setQuickTodoDraft('');
         setHighlightTodoId(id);
@@ -4820,7 +4683,6 @@ export default function TasksScreen() {
     quickTodoSaving,
     runExclusiveMutation,
     schedulePostMutationSync,
-    standaloneTodoTagWeightById,
   ]);
 
   /** 左滑删除：软删除整棵子树，并刷新列表（与 DB deleteTask 行为一致） */
@@ -5681,19 +5543,12 @@ export default function TasksScreen() {
     [isDark, tf.line, todoListSurface],
   );
 
-  /**
-   * 情境：仅累加未完成习惯的标签权重总和；
-   * 情境内：未完成按权重降序，已完成沉底且不参与权重排序。
-   */
+  /** 情境内：未完成在前、已完成沉底；不再按标签权重排序。 */
   const displayHabitSections = React.useMemo(() => {
-    const weightByHabitId = new Map<string, number>();
-    for (const [id, tags] of habitTagsByHabitId) {
-      weightByHabitId.set(id, maxTagWeight(tags));
-    }
-    return sortHabitGridSectionsByTagWeight(habitSections, weightByHabitId, undefined, {
+    return sortHabitGridSections(habitSections, undefined, {
       isCompleted: (it) => isHabitGridItemCompletedToday(it, logicalTodayYmd),
     });
-  }, [habitSections, habitTagsByHabitId, logicalTodayYmd]);
+  }, [habitSections, logicalTodayYmd]);
 
   const habitsCollapseSummary = React.useMemo(() => {
     let total = 0;
@@ -6125,25 +5980,6 @@ export default function TasksScreen() {
     </View>
   );
 
-  const scheduleTagWeightBySubjectId = React.useMemo(() => {
-    const map = new Map<string, number>();
-    projectTagWeightById.forEach((w, id) => map.set(id, w));
-    standaloneTodoTagWeightById.forEach((w, id) => map.set(id, w));
-    habitTagsByHabitId.forEach((tags, id) => map.set(id, maxTagWeight(tags)));
-    // 项目任务：继承所属项目标签权重（与项目树一致）
-    for (const t of scheduleSubjects.tasks) {
-      if (!t.project_id || map.has(t.id)) continue;
-      const pw = projectTagWeightById.get(t.project_id);
-      if (typeof pw === 'number') map.set(t.id, pw);
-    }
-    return map;
-  }, [
-    projectTagWeightById,
-    standaloneTodoTagWeightById,
-    habitTagsByHabitId,
-    scheduleSubjects.tasks,
-  ]);
-
   /** 小习惯今日完成态 → 时间线/全天区强绑定，避免打卡后仍显示待打卡 */
   const habitDoneTodayById = React.useMemo(() => {
     const map = new Map<string, boolean>();
@@ -6160,7 +5996,6 @@ export default function TasksScreen() {
     sectionCardStyle,
     lockedProjectIds,
     subjects: scheduleSubjects,
-    tagWeightBySubjectId: scheduleTagWeightBySubjectId,
     habitDoneTodayById,
     pendingPlace: pendingSchedulePlace,
     onClearPendingPlace: () => setPendingSchedulePlace(null),
@@ -6409,7 +6244,6 @@ export default function TasksScreen() {
           expandedProjectIds,
           collapsedTaskIds,
           hideCompletedProjectTasks,
-          projectTagsByProjectId,
           projectLockMap,
           projectTab,
           logicalTodayYmd,
@@ -6632,11 +6466,7 @@ export default function TasksScreen() {
                           .sort((a, b) => {
                             // 展示层再按「今日完成」沉底（含戒除日程等与 displayCompleted 略异的情况）
                             if (a.goalMet !== b.goalMet) return a.goalMet ? 1 : -1;
-                            if (a.goalMet && b.goalMet) return 0;
-                            const wa = maxTagWeight(habitTagsByHabitId.get(a.item.id));
-                            const wb = maxTagWeight(habitTagsByHabitId.get(b.item.id));
-                            if (wa !== wb) return wb - wa;
-                            return 0;
+                            return a.item.id.localeCompare(b.item.id);
                           })
                           .map(({ item, scheduleAllowsToday, isBreak, isTask, goalMet }) => {
                           const taskPeriodProgress = item.periodProgress ?? 0;
@@ -6733,8 +6563,6 @@ export default function TasksScreen() {
                             );
                           }
                           const metaLine = metaParts.join(' · ');
-                          const habitTags = (habitTagsByHabitId.get(item.id) ?? []).slice(0, 2);
-
                           const openHabitDetail = () => {
                             void acknowledgeInboxSources({
                               entity: { kind: 'habit', id: item.id },
@@ -6845,38 +6673,6 @@ export default function TasksScreen() {
                                   numberOfLines={1}>
                                   {metaLine}
                                 </Text>
-                                {habitTags.length > 0 ? (
-                                  <View style={styles.habitTagChipRow}>
-                                    {habitTags.map((tag) => {
-                                      const chipColor = normalizeTagColor(tag.color);
-                                      return (
-                                        <View
-                                          key={tag.id}
-                                          style={[
-                                            styles.habitTagChip,
-                                            {
-                                              backgroundColor: tagColorWithAlpha(chipColor, '18'),
-                                              borderColor: tagColorWithAlpha(chipColor, '44'),
-                                            },
-                                          ]}>
-                                          <View
-                                            style={{
-                                              width: 4,
-                                              height: 4,
-                                              borderRadius: 2,
-                                              backgroundColor: chipColor,
-                                            }}
-                                          />
-                                          <Text
-                                            style={[styles.habitTagChipText, { color: chipColor }]}
-                                            numberOfLines={1}>
-                                            {tag.name}
-                                          </Text>
-                                        </View>
-                                      );
-                                    })}
-                                  </View>
-                                ) : null}
                               </View>
 
                               {useProgressDots ? (
@@ -7099,7 +6895,7 @@ export default function TasksScreen() {
                 <TaskListFilterBar
                   value={todoListFilter}
                   onChange={setTodoListFilter}
-                  tags={standaloneFilterTags}
+                  tags={[]}
                   resultCount={standaloneTodosShown.length}
                 />
               ) : null}
@@ -7117,7 +6913,7 @@ export default function TasksScreen() {
                 <EmptyPlaceholder
                   icon="filter-list-off"
                   title="没有匹配的待办"
-                  subtitle="试试换个日期、标签或紧急程度，或清除筛选。"
+                  subtitle="试试换个日期或紧急程度，或清除筛选。"
                   color={primary}
                   muted={outline}
                   cardBg={emptyCardBg}
@@ -7127,8 +6923,13 @@ export default function TasksScreen() {
                   {standaloneTodosShown.map((t) => {
                     const isDone = isTaskTerminalStatus(t.status);
                     const isShelved = isTaskShelvedStatus(t.status);
-                    const frogAssignedDates = getFrogAssignedDates(t.extra_data);
-                    const hasFrogAssignment = frogAssignedDates.length > 0;
+                    const frogAssignedDates = getActiveFrogAssignedDates(t.extra_data, logicalTodayYmd);
+                    const hasManualFrogAssignment = frogAssignedDates.length > 0;
+                    /** 今日入格：手拖指派，或重复规则自动入格指定日 */
+                    const inGridToday =
+                      !isShelved &&
+                      isTaskInScheduleGridOnDay(t, logicalTodayYmd, logicalTodayYmd);
+                    const hasFrogAssignment = hasManualFrogAssignment || inGridToday;
                     const frogAssignedBadgeText = formatFrogAssignedBadgeText(t.extra_data, logicalTodayYmd);
                     const noteText = (t.note ?? '').trim();
                     const acceptanceText = trimTaskAcceptanceCriteria(t);
@@ -7269,13 +7070,14 @@ export default function TasksScreen() {
                                 todoMetaParts.push(formatTaskDueText(due, logicalTodayYmd));
                               else if (dueDisplayYmd)
                                 todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
-                              if (hasFrogAssignment) {
-                                const upcoming = frogAssignedDates.filter((d) => d >= logicalTodayYmd);
-                                const show = upcoming.length > 0 ? upcoming : frogAssignedDates;
+                              if (hasManualFrogAssignment) {
                                 const assignLabel =
-                                  show.map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd)).join('、') ||
-                                  frogAssignedBadgeText;
+                                  frogAssignedDates
+                                    .map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd))
+                                    .join('、') || frogAssignedBadgeText;
                                 todoMetaParts.push(`指派 ${assignLabel}`);
+                              } else if (inGridToday) {
+                                todoMetaParts.push('重复日入格');
                               } else if (!overdue && !due && !dueDisplayYmd) {
                                 todoMetaParts.push('今天');
                               }
@@ -7648,7 +7450,7 @@ export default function TasksScreen() {
                   <TaskListFilterBar
                     value={projectListFilter}
                     onChange={setProjectListFilter}
-                    tags={projectFilterTags}
+                    tags={[]}
                     resultCount={projectsShownInList.length}
                     searchPlaceholder="搜索项目名称或备注…"
                     longTermSectionLabel="长期项目"
@@ -7688,7 +7490,7 @@ export default function TasksScreen() {
                       </Text>
                       <Text style={[styles.projectSub, { color: outline }]}>
                         {projectsInActiveTab.length > 0
-                          ? '试试换个日期、标签或紧急程度，或清除筛选'
+                          ? '试试换个日期或紧急程度，或清除筛选'
                           : '可点击右上角“新建项目”添加'}
                       </Text>
                     </View>
@@ -7781,8 +7583,10 @@ export default function TasksScreen() {
                   const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
                   const isLocked = !!(lockInfo?.locked || isScheduleNotStarted);
                   const isCompleted = project.status === 'completed' || project.status === 'archived';
-                  const frogAssignedDates = getFrogAssignedDates(project.extra_data);
-                  const hasFrogAssignment = frogAssignedDates.length > 0;
+                  const hasFrogAssignment = hasActiveFrogAssignment(
+                    project.extra_data,
+                    logicalTodayYmd,
+                  );
                   const frogAssignedBadgeText = formatFrogAssignedBadgeText(
                     project.extra_data,
                     logicalTodayYmd,
@@ -7807,7 +7611,6 @@ export default function TasksScreen() {
                   const isScheduleExpired = !isCompleted && isProjectScheduleExpired(project, todayYmd);
                   const noteText = project.note?.trim();
                   const categoryLabel = !project.category_id || project.category_id === INBOX_PROJECT_CATEGORY_ID ? '收集箱' : projectCategoryMap.get(project.category_id) ?? '未分类';
-                  const projectTags = projectTagsByProjectId.get(project.id) ?? [];
                   const lifeRoadId =
                     project.life_month_goal_id?.trim() ||
                     project.life_bet_id?.trim() ||
@@ -7832,7 +7635,6 @@ export default function TasksScreen() {
                   const taskTree = sortTaskTree(projectTaskTreeMap[project.id] ?? []);
                   const projectFilterOpts = {
                     logicalTodayYmd,
-                    tagIdsByProjectId: projectTagIdsByProjectId,
                     tasksByProjectId: projectListTasksByProjectId,
                   };
                   const projectFilterActive = isTaskListFilterActive(projectListFilter);
@@ -7869,6 +7671,11 @@ export default function TasksScreen() {
                     listFilteredTaskTree,
                     hideCompletedProjectTasks,
                   );
+                  /** 无任务，或叶子任务全部完成后，才显示项目勾选框 */
+                  const showProjectCheck =
+                    isCompleted ||
+                    taskTree.length === 0 ||
+                    areAllLeafTasksInTreeDone(taskTree);
                   const isExpanded =
                     !!expandedProjectIds[project.id] ||
                     (projectFilterActive && filterMatchKind === 'task');
@@ -7995,40 +7802,56 @@ export default function TasksScreen() {
                         )}>
                       <View style={styles.projectHead}>
                         <View style={styles.projectHeadLeft}>
-                          <Pressable
-                            onPress={(e) => {
-                              e.stopPropagation?.();
-                              handleProjectCompleteToggle(project);
-                            }}
-                            hitSlop={8}
-                            accessibilityRole="checkbox"
-                            accessibilityLabel={
-                              isLocked && !isCompleted
-                                ? '项目已锁定，暂不可完成'
-                                : isCompleted
-                                  ? `恢复项目 ${project.name}`
-                                  : `完成项目 ${project.name}`
-                            }
-                            accessibilityState={{ disabled: isLocked && !isCompleted, checked: isCompleted }}
-                            style={({ pressed }) => [
-                              styles.projectIconWrap,
-                              {
-                                backgroundColor: isLocked
-                                  ? taskUi.hairlineMuted
+                          {showProjectCheck ? (
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation?.();
+                                handleProjectCompleteToggle(project);
+                              }}
+                              hitSlop={8}
+                              accessibilityRole="checkbox"
+                              accessibilityLabel={
+                                isLocked && !isCompleted
+                                  ? '项目已锁定，暂不可完成'
                                   : isCompleted
-                                    ? taskUi.successWashStrong
-                                    : taskUi.primaryWash,
-                              },
-                              pressed && { opacity: 0.75 },
-                            ]}>
-                            {isLocked && !isCompleted ? (
-                              <MaterialIcons name="lock" size={16} color={projectAccent} />
-                            ) : isCompleted ? (
-                              <MaterialIcons name="check" size={16} color={projectAccent} />
-                            ) : (
-                              <MaterialIcons name="check" size={14} color={outline} style={{ opacity: 0.35 }} />
-                            )}
-                          </Pressable>
+                                    ? `恢复项目 ${project.name}`
+                                    : `完成项目 ${project.name}`
+                              }
+                              accessibilityState={{
+                                disabled: isLocked && !isCompleted,
+                                checked: isCompleted,
+                              }}
+                              style={({ pressed }) => [
+                                styles.projectIconWrap,
+                                {
+                                  backgroundColor: isLocked
+                                    ? taskUi.hairlineMuted
+                                    : isCompleted
+                                      ? taskUi.successWashStrong
+                                      : taskUi.primaryWash,
+                                },
+                                pressed && { opacity: 0.75 },
+                              ]}>
+                              {isLocked && !isCompleted ? (
+                                <MaterialIcons name="lock" size={16} color={projectAccent} />
+                              ) : isCompleted ? (
+                                <MaterialIcons name="check" size={16} color={projectAccent} />
+                              ) : (
+                                <MaterialIcons
+                                  name="check"
+                                  size={14}
+                                  color={outline}
+                                  style={{ opacity: 0.35 }}
+                                />
+                              )}
+                            </Pressable>
+                          ) : (
+                            <View
+                              style={[styles.projectIconWrap, { backgroundColor: 'transparent' }]}
+                              accessibilityElementsHidden
+                              importantForAccessibility="no"
+                            />
+                          )}
                           <Pressable
                             onPress={(e) => {
                               e.stopPropagation?.();
@@ -8271,57 +8094,6 @@ export default function TasksScreen() {
                                     ]}
                                     numberOfLines={1}>
                                     长期
-                                  </Text>
-                                </View>
-                              ) : null}
-                              {projectTags.slice(0, 3).map((tag) => {
-                                const chipColor = normalizeTagColor(tag.color);
-                                return (
-                                  <View
-                                    key={tag.id}
-                                    style={[
-                                      styles.projectMetaChip,
-                                      {
-                                        backgroundColor: isCompleted
-                                          ? taskUi.hairlineMuted
-                                          : tagColorWithAlpha(chipColor, '18'),
-                                        borderColor: isCompleted
-                                          ? taskUi.hairlineMutedBorder
-                                          : tagColorWithAlpha(chipColor, '44'),
-                                      },
-                                    ]}>
-                                    <View
-                                      style={{
-                                        width: 7,
-                                        height: 7,
-                                        borderRadius: 3.5,
-                                        backgroundColor: isCompleted ? doneMuted : chipColor,
-                                      }}
-                                    />
-                                    <Text
-                                      style={[
-                                        styles.projectMetaChipText,
-                                        { color: isCompleted ? doneMuted : chipColor },
-                                      ]}
-                                      numberOfLines={1}>
-                                      {tag.name}
-                                    </Text>
-                                  </View>
-                                );
-                              })}
-                              {projectTags.length > 3 ? (
-                                <View
-                                  style={[
-                                    styles.projectMetaChip,
-                                    {
-                                      backgroundColor: taskUi.hairlineMuted,
-                                      borderColor: taskUi.hairlineMutedBorder,
-                                    },
-                                  ]}>
-                                  <Text
-                                    style={[styles.projectMetaChipText, { color: outline }]}
-                                    numberOfLines={1}>
-                                    +{projectTags.length - 3}
                                   </Text>
                                 </View>
                               ) : null}
@@ -8958,10 +8730,6 @@ export default function TasksScreen() {
                     closeCategoryMenu();
                     router.push({ pathname: '/category-sort', params: { scope: 'project' } });
                   } },
-                  { icon: 'local-offer', label: '管理标签', color: tertiary, onPress: () => {
-                    closeCategoryMenu();
-                    router.push({ pathname: '/project-tags', params: { domain: 'task' } });
-                  } },
                   { icon: 'edit', label: '修改分类', color: tertiary, onPress: () => {
                     if (!activeCategoryId) {
                       Alert.alert('提示', '请先长按某个分类进入。');
@@ -9049,16 +8817,7 @@ export default function TasksScreen() {
             streak: 0,
           })),
         )}
-        tagsByTaskId={(() => {
-          const map = new Map<string, string[]>();
-          standaloneTagsByTaskId.forEach((tags, id) => {
-            map.set(
-              id,
-              tags.map((t) => t.name).filter(Boolean),
-            );
-          });
-          return map;
-        })()}
+        tagsByTaskId={new Map()}
         onOpenTask={(id) => router.push({ pathname: '/task/[id]', params: { id } })}
         onAssignedFrog={() => {
           markPageDirty();

@@ -280,17 +280,15 @@ export function resolveMatrixProjectIds(projects: ProjectRow[]): string | undefi
  * 3. 搁置
  * 4. 已完成 / 取消
  * 5. 明天预览 → 今日已完成之下
- * 6. 标签权重分降序（取已贴标签的最大权重；无标签=0 → 靠后）
- * 7. 紧急程度 priority 降序
- * 8. 有有效截止的在前；同有截止则越早越前；无截止 → 靠后
+ * 6. 紧急程度 priority 降序（主业务权重）
+ * 7. 有有效截止的在前；同有截止则越早越前；无截止 → 靠后
  *    （due_date → schedule.range.end → schedule.date）
- * 9. 积分奖励降序（无积分 / 0 → 靠后）
- * 10. updated_at 降序 → id 升序作最后平局
+ * 8. 积分奖励降序（无积分 / 0 → 靠后）
+ * 9. updated_at 降序 → id 升序作最后平局
  */
 export function sortStandaloneTodosLocally(
   rows: TaskRow[],
   logicalTodayYmd?: string,
-  tagWeightByTaskId?: Map<string, number>,
 ): TaskRow[] {
   const isDoneRow = (t: TaskRow) => t.status === 'done' || t.status === 'cancelled';
 
@@ -298,11 +296,6 @@ export function sortStandaloneTodosLocally(
     if (!value) return 0;
     const ms = Date.parse(value);
     return Number.isNaN(ms) ? 0 : ms;
-  };
-
-  const getTagWeight = (taskId: string): number => {
-    const w = tagWeightByTaskId?.get(taskId);
-    return typeof w === 'number' && Number.isFinite(w) ? w : 0;
   };
 
   /** 越小越靠前：活跃 → waiting → 搁置 → 已完成 → 明天预览 */
@@ -326,11 +319,7 @@ export function sortStandaloneTodosLocally(
     const ob = isOverdue(b);
     if (oa !== ob) return oa ? -1 : 1;
 
-    // 业务层：对齐项目列表（标签 → 优先级 → 截止 → 积分 → 更新时间）
-    const tagA = getTagWeight(a.id);
-    const tagB = getTagWeight(b.id);
-    if (tagA !== tagB) return tagB - tagA;
-
+    // 业务层：对齐项目列表（优先级 → 截止 → 积分 → 更新时间）
     const priorityA = a.priority ?? 0;
     const priorityB = b.priority ?? 0;
     if (priorityA !== priorityB) return priorityB - priorityA;

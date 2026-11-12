@@ -13,7 +13,10 @@ import { startSyncSse, stopSyncSse } from '@/lib/sync-sse';
 
 const PUSH_COALESCE_MS = 300;
 const MAX_PUSH_BACKOFF_MS = 30_000;
+/** 极短后台（通知栏 / 权限弹窗）回来不 pull，避免无意义闪「正在同步数据…」 */
 const SHORT_BACKGROUND_SKIP_MS = 2_500;
+/** 与桌面端一致：回前台 pull 冷却，防止 focus/visibility 连打 */
+const FOREGROUND_PULL_COOLDOWN_MS = 4_000;
 const SSE_PULL_DEBOUNCE_MS = 400;
 
 function envFlagOn(raw: string | undefined, defaultOn: boolean): boolean {
@@ -147,19 +150,31 @@ export async function refreshFromUser(opts?: { signal?: AbortSignal }): Promise<
 let syncRuntimeStarted = false;
 let appStateSub: { remove: () => void } | null = null;
 let backgroundedAtMs: number | null = null;
+let lastForegroundPullAt = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let sseDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 回前台增量：静默 pull，副作用写请求也不挂全局蒙层 */
+async function pullChangesQuietly(): Promise<void> {
+  const { withSuppressedApiWriteOverlay } = await import('@/lib/api-loading-tracker');
+  await withSuppressedApiWriteOverlay(async () => {
+    await pullChanges();
+  });
+}
 
 function onAppStateChange(next: AppStateStatus): void {
   if (next !== 'active') {
     if (backgroundedAtMs == null) backgroundedAtMs = Date.now();
     return;
   }
+  const now = Date.now();
   const started = backgroundedAtMs;
   backgroundedAtMs = null;
-  const backgroundMs = started != null ? Date.now() - started : 0;
+  const backgroundMs = started != null ? now - started : 0;
   if (backgroundMs > 0 && backgroundMs < SHORT_BACKGROUND_SKIP_MS) return;
-  void pullChanges();
+  if (now - lastForegroundPullAt < FOREGROUND_PULL_COOLDOWN_MS) return;
+  lastForegroundPullAt = now;
+  void pullChangesQuietly();
 }
 
 function schedulePullFromSse(): void {
@@ -215,6 +230,7 @@ export function stopSyncRuntime(): void {
   appStateSub?.remove();
   appStateSub = null;
   backgroundedAtMs = null;
+  lastForegroundPullAt = 0;
 }
 
 export const SyncManager = {

@@ -42,6 +42,15 @@ const manager = read('lib/sync-manager.ts');
 assert(/function startSyncRuntime/.test(manager), '须有进程级 startSyncRuntime');
 assert(/AppState/.test(manager), '回前台 pull 须在 Manager');
 assert(/refreshFromUser/.test(manager), '须有 refreshFromUser');
+assert(/FOREGROUND_PULL_COOLDOWN_MS/.test(manager), '回前台 pull 须有冷却');
+assert(/pullChangesQuietly/.test(manager), '回前台 pull 须静默抑制写蒙层');
+assert(/withSuppressedApiWriteOverlay/.test(manager), '回前台须抑制全局同步蒙层');
+
+const apply = read('lib/sync-apply.ts');
+assert(
+  /beginCloudSqliteDirtyIgnoreBatch/.test(apply),
+  'applyOneEvent 须 dirty-ignore，避免回前台清会话',
+);
 
 const layout = read('app/_layout.tsx');
 assert(/SyncManager\.start/.test(layout), '_layout 应 SyncManager.start');

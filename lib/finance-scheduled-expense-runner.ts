@@ -165,7 +165,9 @@ export async function runScheduledFinanceExpenses(opts?: {
 export function scheduleRunScheduledFinanceExpenses(reason: string): void {
   const task = runnerChain.then(async () => {
     try {
-      const result = await runScheduledFinanceExpenses();
+      // 回前台自动入账：静默推送，勿弹「正在同步数据…」全屏蒙层
+      const { withSuppressedApiWriteOverlay } = await import('@/lib/api-loading-tracker');
+      const result = await withSuppressedApiWriteOverlay(() => runScheduledFinanceExpenses());
       if (__DEV__ && (result.createdCount > 0 || result.skippedCount > 0)) {
         console.log('[scheduled-expense]', reason, result);
       }

@@ -30,6 +30,7 @@ import {
 import {
   buildOverdueFrogCarryPlacementsForToday,
   buildVirtualTaskPlacementsForDays,
+  isTaskInScheduleGridOnDay,
   type VirtualTaskPlacement,
 } from '@/lib/schedule/task-virtual-placement';
 import { getHabits } from '@/lib/repositories/habits/habit';
@@ -121,17 +122,16 @@ type TodayCompactItem = {
   endLabel: string;
   startMins: number;
   endMins: number;
-  /** 标签最大权重（与待办/项目树一致） */
+  /** @deprecated 任务侧标签已下线；恒为 0 */
   tagWeight: number;
-  /** 四象限 priority，同权重次级键；习惯无此字段时为 0 */
+  /** 四象限 priority（主业务权重） */
   priority: number;
 };
 
-/** 最简态焦点：未完成优先 → 过期置顶 → 标签权重↓ → priority↓ → 标题 → 时刻 */
+/** 最简态焦点：未完成优先 → 过期置顶 → priority↓ → 标题 → 时刻 */
 function compareTodayCompactByWeight(a: TodayCompactItem, b: TodayCompactItem): number {
   if (a.done !== b.done) return a.done ? 1 : -1;
   if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-  if (a.tagWeight !== b.tagWeight) return b.tagWeight - a.tagWeight;
   if (a.priority !== b.priority) return b.priority - a.priority;
   const byTitle = a.title.localeCompare(b.title, 'zh');
   if (byTitle !== 0) return byTitle;
@@ -493,12 +493,22 @@ export function WeeklyFrogSchedule({
       const info = resolveSubject(kind, id, subjects, assignYmd);
       if (!info) return null;
       /**
-       * 未入格（该日无青蛙指派）不进入时间线：
-       * 兼容历史「取消指派只清 frog 字段、占用行残留」的数据，
-       * 与列表「已入格 / 未入格」徽章口径一致。
+       * 未入格不进入时间线：
+       * - 青蛙指派日，或
+       * - 独立待办重复规则指定日（自动入格，无需手拖）
+       * 兼容历史「取消指派只清 frog 字段、占用行残留」的数据。
        */
-      if (!info.deletedSnapshot && !isFrogAssignedOn(info.extraData, assignYmd)) {
-        return null;
+      if (!info.deletedSnapshot) {
+        if (kind === 'project') {
+          if (!isFrogAssignedOn(info.extraData, assignYmd)) return null;
+        } else {
+          const task = subjects.tasks.find((t) => t.id === id);
+          if (!task) {
+            if (!isFrogAssignedOn(info.extraData, assignYmd)) return null;
+          } else if (!isTaskInScheduleGridOnDay(task, assignYmd, logicalTodayYmd)) {
+            return null;
+          }
+        }
       }
       if (kind === 'project') {
         const due = info.dueDate?.slice(0, 10) ?? '';
@@ -962,19 +972,33 @@ export function WeeklyFrogSchedule({
     if (w > 0 && w !== gridWidth) setGridWidth(w);
   }, [gridWidth]);
 
+  const subjectInGridOnDay = React.useCallback(
+    (kind: 'task' | 'project', id: string, assignYmd: string, extraData: string | null) => {
+      if (kind === 'project') return isFrogAssignedOn(extraData, assignYmd);
+      const task = subjects.tasks.find((t) => t.id === id);
+      if (!task) return isFrogAssignedOn(extraData, assignYmd);
+      return isTaskInScheduleGridOnDay(task, assignYmd, logicalTodayYmd);
+    },
+    [subjects.tasks, logicalTodayYmd],
+  );
+
   const orphanedPlacements = React.useMemo(() => {
     if (!view) return [] as SchedulePlacementRow[];
     return view.placements.filter((p) => {
       if (p.orphaned || p.startSlotIndex == null) return true;
-      // 格内但无该日青蛙指派：与时间线过滤一致，归入未入格池供重新落入
+      // 格内但该日未入格（无青蛙指派且非重复自动日）：归入未入格池供重新落入
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-      if (sub && !sub.deletedSnapshot && !isFrogAssignedOn(sub.extraData, assignYmd)) {
+      if (
+        sub &&
+        !sub.deletedSnapshot &&
+        !subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData)
+      ) {
         return true;
       }
       return false;
     });
-  }, [view, subjects]);
+  }, [view, subjects, subjectInGridOnDay]);
 
   /** sc-head cnt：「N/M 只已入格」 */
   const frogPlaceStats = React.useMemo(() => {
@@ -985,16 +1009,25 @@ export function WeeklyFrogSchedule({
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
       const assigned =
-        !sub || sub.deletedSnapshot || isFrogAssignedOn(sub.extraData, assignYmd);
+        !sub ||
+        sub.deletedSnapshot ||
+        subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData);
       const inGrid = assigned && !p.orphaned && p.startSlotIndex != null;
       const prev = map.get(k);
       if (prev == null) map.set(k, inGrid);
       else if (inGrid) map.set(k, true);
     }
+    // 无真实占用、仅重复规则虚拟入格的独立待办也计入「已入格」
+    for (const t of virtualTasks) {
+      if (t.carrySubjectKind) continue;
+      if (t.assignYmd !== centerYmd) continue;
+      const k = `task:${t.taskId}`;
+      if (!map.has(k)) map.set(k, true);
+    }
     let inGrid = 0;
     for (const v of map.values()) if (v) inGrid += 1;
     return { inGrid, total: map.size };
-  }, [view, subjects]);
+  }, [view, subjects, subjectInGridOnDay, virtualTasks, centerYmd]);
 
   /** 当前查看日：各优先级已指派 / 剩余（2/3/4/5 上限） */
   const dailyAssignQuota = React.useMemo((): DailyAssignQuotaBucketStat[] => {
@@ -1378,8 +1411,12 @@ export function WeeklyFrogSchedule({
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (assignYmd !== logicalTodayYmd) continue;
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-      // 未入格（无该日青蛙指派）不进时间线/最简焦点，兼容残留占用
-      if (sub && !sub.deletedSnapshot && !isFrogAssignedOn(sub.extraData, assignYmd)) {
+      // 未入格（无青蛙指派且非重复自动日）不进时间线/最简焦点，兼容残留占用
+      if (
+        sub &&
+        !sub.deletedSnapshot &&
+        !subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData)
+      ) {
         continue;
       }
       const span = Math.max(1, p.spanSlots);
@@ -1459,8 +1496,17 @@ export function WeeklyFrogSchedule({
     }
     for (const t of virtualTasks) {
       if (t.assignYmd !== logicalTodayYmd) continue;
-      // 当日未指派 / 未入格不进最简焦点（含过期滞留；与时间线一致）
-      if (!isFrogAssignedOn(t.extraData, t.assignYmd)) continue;
+      // 当日未入格不进最简焦点：过期滞留青蛙仍须指派；独立待办重复日可自动入格
+      if (t.carrySubjectKind) {
+        if (!isFrogAssignedOn(t.extraData, t.assignYmd)) continue;
+      } else {
+        const task = subjects.tasks.find((x) => x.id === t.taskId);
+        if (task) {
+          if (!isTaskInScheduleGridOnDay(task, t.assignYmd, logicalTodayYmd)) continue;
+        } else if (!isFrogAssignedOn(t.extraData, t.assignYmd)) {
+          continue;
+        }
+      }
       const span = Math.max(1, t.spanSlots);
       const hasMins =
         typeof t.startMinutes === 'number' &&
@@ -1491,7 +1537,15 @@ export function WeeklyFrogSchedule({
     }
     items.sort(compareTodayCompactByWeight);
     return items;
-  }, [view, logicalTodayYmd, subjects, virtualHabitsResolved, virtualTasks, tagWeightBySubjectId]);
+  }, [
+    view,
+    logicalTodayYmd,
+    subjects,
+    virtualHabitsResolved,
+    virtualTasks,
+    tagWeightBySubjectId,
+    subjectInGridOnDay,
+  ]);
 
   const minimalFocus = React.useMemo(() => {
     const nowMins = axisNowMins ?? -1;

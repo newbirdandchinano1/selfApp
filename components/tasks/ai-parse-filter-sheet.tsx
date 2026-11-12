@@ -40,11 +40,9 @@ function mapToFilterState(
   const nameToId = new Map(
     tags.map(t => [t.name.trim().toLowerCase(), t.id] as const).filter(([n]) => !!n),
   );
+  void nameToId;
+  void data.tag_hints;
   const tagIds: string[] = [];
-  for (const hint of data.tag_hints ?? []) {
-    const id = nameToId.get(hint.trim().toLowerCase());
-    if (id && !tagIds.includes(id)) tagIds.push(id);
-  }
   const datePreset =
     data.date_preset && ['today', 'tomorrow', 'week', 'month', 'year'].includes(data.date_preset)
       ? (data.date_preset as TaskDatePreset)

@@ -2,10 +2,9 @@
  * 独立待办 → 日程表虚拟入格（不写 schedule_placements）
  * - 仅独立待办；项目任务仍靠手动青蛙（过期未完成青蛙另见滞留今日）
  * - 有具体时间 → 按时刻落格；无具体时间 → 全天
- * - 有重复 → 按重复日；漏做/过期 → 今天起每日入格直至完成
- * - 有日期无时间 → 今天起至截止日每天全天；过期未完成继续每日
- * - 该日无青蛙指派 → 未入格，不虚拟铺进时间线
- * - 无日期无重复且无该日指派 → 未入格，不虚拟铺进时间线
+ * - 有重复 → 按重复日自动入格（无需青蛙指派）；漏做/过期 → 今天起每日入格直至完成
+ * - 有日期无时间 → 须该日已指派后，今天起至截止日每天全天；过期未完成继续每日
+ * - 无重复且该日无青蛙指派 → 未入格，不虚拟铺进时间线
  * - 无日期无重复但该日已指派 → 虚拟全天（时间线顶栏可见）
  * - 同日已有有效占用行（非未入格）则不再叠虚拟块
  * - 定点时刻落在轴外时回退全天，避免整条消失
@@ -220,6 +219,32 @@ function shouldShowRepeatingVirtualTaskOnDay(
   return viewYmd >= logicalTodayYmd && isTaskOverdueForList(task, logicalTodayYmd);
 }
 
+/**
+ * 独立待办因重复规则（或漏做滞留）在该日自动入格——不写 frog 指派字段。
+ * 供时间线 / 焦点列表 / 列表「已入格」徽章与虚拟落格共用。
+ */
+export function isStandaloneRepeatAutoInGridOnDay(
+  task: TaskRow,
+  viewYmd: string,
+  logicalTodayYmd: string,
+): boolean {
+  if (!isStandaloneTodoTask(task)) return false;
+  if (isTaskShelvedStatus(task.status) || task.status === 'cancelled') return false;
+  const repeat = parseTaskRepeatSchedule(task.extra_data);
+  if (!repeat) return false;
+  return shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
+}
+
+/** 该日是否算已入格：青蛙指派，或独立待办重复日自动入格 */
+export function isTaskInScheduleGridOnDay(
+  task: TaskRow,
+  viewYmd: string,
+  logicalTodayYmd: string,
+): boolean {
+  if (isFrogAssignedOn(task.extra_data, viewYmd)) return true;
+  return isStandaloneRepeatAutoInGridOnDay(task, viewYmd, logicalTodayYmd);
+}
+
 /** 单日是否应虚拟入格（不含轴映射；不含与真实占用去重） */
 export function shouldShowVirtualTaskOnDay(params: {
   task: TaskRow;
@@ -232,22 +257,30 @@ export function shouldShowVirtualTaskOnDay(params: {
   if (viewYmd < logicalTodayYmd) return false;
   if (isTaskShelvedStatus(task.status) || task.status === 'cancelled') return false;
   if (!isHabitVisibleOnCalendarDay(task.created_at, viewYmd, dayBoundary)) return false;
-  /**
-   * 与时间线 resolve / 列表入格口径一致：必须是「该日」已指派，
-   * 不因截止日 / 日程窗 / 其它指派日而虚拟铺进当天时间线。
-   */
-  if (!isFrogAssignedOn(task.extra_data, viewYmd)) return false;
-
-  if (!isTaskActiveStatus(task.status)) {
-    return isTaskDoneOnAssignYmd(task, viewYmd);
-  }
 
   const schedule = parseScheduleMetaFromExtra(task.extra_data);
   const hasExactTime = scheduleMetaHasExactTimeForAutoPlace(schedule);
   const repeat = parseTaskRepeatSchedule(task.extra_data);
+  const frogOnDay = isFrogAssignedOn(task.extra_data, viewYmd);
+  const repeatAuto =
+    !!repeat && shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
+
+  if (!isTaskActiveStatus(task.status)) {
+    if (!isTaskDoneOnAssignYmd(task, viewYmd)) return false;
+    // 完成态：该日指派或重复执行日仍展示已完成块
+    return frogOnDay || (!!repeat && isTaskRepeatDueOnLogicalDay(viewYmd, repeat));
+  }
+
+  // 有重复：执行日 / 漏做滞留日自动入格（无需青蛙指派）
+  if (repeatAuto) return true;
+
+  /**
+   * 无重复：与时间线 / 列表入格口径一致，必须是「该日」已指派，
+   * 不因截止日 / 日程窗 / 其它指派日而虚拟铺进当天时间线。
+   */
+  if (!frogOnDay) return false;
 
   if (hasExactTime) {
-    if (repeat) return shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
     const bounds = scheduleMetaToYmdBounds(schedule, task.due_date);
     if (bounds.startYmd || bounds.endYmd) {
       return isViewYmdInDatedAllDayWindow({
@@ -260,9 +293,6 @@ export function shouldShowVirtualTaskOnDay(params: {
     // 有时刻、无日期无重复：上方已确认该日指派 → 虚拟入格
     return true;
   }
-
-  // 全天
-  if (repeat) return shouldShowRepeatingVirtualTaskOnDay(task, viewYmd, logicalTodayYmd, repeat);
 
   const bounds = scheduleMetaToYmdBounds(schedule, task.due_date);
   if (bounds.startYmd || bounds.endYmd) {

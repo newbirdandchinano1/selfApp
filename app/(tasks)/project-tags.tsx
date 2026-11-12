@@ -1,6 +1,6 @@
 ﻿/**
- * 项目标签 / 备忘标签 — 对齐设计稿 shot 20
- * 共用页面标题随域名 · 权重条补间 · 行内删除确认 · 同域重名即时提示
+ * 备忘标签 — 对齐设计稿 shot 20
+ * 任务侧标签已下线；本页仅管理备忘录域。
  */
 import { FoldRiseIn, FOLD_MOTION_EASE, useFoldMotionGate } from '@/components/review/fold-motion';
 import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
@@ -13,12 +13,9 @@ import { hasPageLoadedFromServer } from '@/lib/page-api-session';
 import { fetchProfileMemoList } from '@/lib/profile-page-api';
 import {
   createMemoTag,
-  createProjectTag,
   deleteProjectTag,
   getMemoTags,
-  getProjectTags,
   isMemoTagNameDuplicate,
-  isProjectTagNameDuplicate,
   updateProjectTag,
 } from '@/lib/repositories/projects/project-tag';
 import type { ProjectTagRow, TagDomain } from '@/lib/repositories/projects/project-tag.types';
@@ -50,8 +47,9 @@ function buildTagId() {
 }
 
 function resolveDomain(raw: string | string[] | undefined): TagDomain {
-  const v = Array.isArray(raw) ? raw[0] : raw;
-  return v === 'memo' ? 'memo' : 'task';
+  // 任务侧标签已下线：本页仅管理备忘录标签
+  void raw;
+  return 'memo';
 }
 
 function TagWeightBar({
@@ -216,16 +214,11 @@ export default function ProjectTagsScreen() {
   const enterAnimate = foldAnimate && enterReady;
   const holdEntrance = !motionReduced;
 
-  const titleText = isMemoDomain ? '备忘标签' : '项目标签';
-  const subtitleText = isMemoDomain
-    ? '同一标签也用于备忘 · 名称不可重复'
-    : '同一标签也用于备忘 · 名称不可重复';
-  const hintText = isMemoDomain
-    ? '仅用于备忘录分类；与任务侧标签相互独立。权重越大在列表中越靠前。'
-    : '用于项目、习惯与独立待办；与备忘录标签相互独立。权重越大在列表中越靠前。';
-  const deleteScopeHint = isMemoDomain
-    ? '删除标签只移除此标签，不删除备忘；已贴关联会一并移除。'
-    : '删除标签只移除此标签，不删除项目与备忘；已贴关联会一并移除。';
+  const titleText = '备忘标签';
+  const subtitleText = '仅用于备忘录 · 名称不可重复';
+  const hintText = '仅用于备忘录分类。权重越大在列表中越靠前。';
+  const deleteScopeHint = '删除标签只移除此标签，不删除备忘；已贴关联会一并移除。';
+  void isMemoDomain;
 
   const maxWeight = React.useMemo(
     () => Math.max(1, ...tags.map((t) => (typeof t.weight === 'number' ? t.weight : 0)), 1),
@@ -243,16 +236,16 @@ export default function ProjectTagsScreen() {
       try {
         await wrapLoad(async () => {
           await fetchProfileMemoList({ forceRefresh: hitApi });
-          setTags(isMemoDomain ? await getMemoTags() : await getProjectTags());
+          setTags(await getMemoTags());
         }, hitApi);
       } catch (err) {
-        console.warn(isMemoDomain ? '加载备忘录标签失败' : '加载任务标签失败', err);
+        console.warn('加载备忘录标签失败', err);
         setTags([]);
       } finally {
         setLoading(false);
       }
     },
-    [isMemoDomain, wrapLoad],
+    [wrapLoad],
   );
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, load);
@@ -272,9 +265,7 @@ export default function ProjectTagsScreen() {
     }
     const timer = setTimeout(() => {
       void (async () => {
-        const dup = isMemoDomain
-          ? await isMemoTagNameDuplicate(trimmed, editingId ?? undefined)
-          : await isProjectTagNameDuplicate(trimmed, editingId ?? undefined);
+        const dup = await isMemoTagNameDuplicate(trimmed, editingId ?? undefined);
         if (!cancelled) setNameDup(dup);
       })();
     }, 220);
@@ -282,7 +273,7 @@ export default function ProjectTagsScreen() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [editingId, editorVisible, isMemoDomain, name]);
+  }, [editingId, editorVisible, name]);
 
   const openCreate = () => {
     setEditingId(null);
@@ -322,9 +313,7 @@ export default function ProjectTagsScreen() {
       toast.warn('权重请输入整数');
       return;
     }
-    const dup = isMemoDomain
-      ? await isMemoTagNameDuplicate(trimmed, editingId ?? undefined)
-      : await isProjectTagNameDuplicate(trimmed, editingId ?? undefined);
+    const dup = await isMemoTagNameDuplicate(trimmed, editingId ?? undefined);
     if (dup) {
       setNameDup(true);
       toast.warn('同域内标签名称不能重复');
@@ -339,18 +328,10 @@ export default function ProjectTagsScreen() {
           color,
           description: description.trim() || null,
           weight,
-          domain,
-        });
-      } else if (isMemoDomain) {
-        await createMemoTag({
-          id: buildTagId(),
-          name: trimmed,
-          color,
-          description: description.trim() || null,
-          weight,
+          domain: 'memo',
         });
       } else {
-        await createProjectTag({
+        await createMemoTag({
           id: buildTagId(),
           name: trimmed,
           color,
