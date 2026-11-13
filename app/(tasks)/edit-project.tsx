@@ -186,7 +186,7 @@ const STATUS_CHIPS: Array<{ key: Exclude<ProjectStatus, 'done'>; label: string }
   { key: 'doing', label: '进行中' },
   { key: 'todo', label: '待办' },
   { key: 'blocked', label: '受阻' },
-  { key: 'cancelled', label: '已取消' },
+  { key: 'cancelled', label: '已放弃' },
   { key: 'shelved', label: '暂时搁置' },
 ];
 

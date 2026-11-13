@@ -1,7 +1,7 @@
 import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 import type { RecipePlanStore } from '@/lib/recipe-plan';
 import type { RecipeItem, RecipeStore } from '@/lib/recipes';
-import { recipeListPreviewTitle } from '@/lib/recipes';
+import { getRecipe, recipeListPreviewTitle } from '@/lib/recipes';
 
 export type ShopItemStatus = 'todo' | 'stock' | 'bought';
 
@@ -17,6 +17,8 @@ export type RecipeShopState = {
   overrides: Record<string, ShopItemStatus>;
   /** 从详情页「加入采购」的菜谱（不依赖用餐计划） */
   addedRecipes: RecipeShopAddedRecipe[];
+  /** 用户从清单移除的食材 key（不影响用餐计划，仅隐藏采购项） */
+  dismissedKeys: string[];
 };
 
 export type ShopListItem = {
@@ -86,7 +88,21 @@ const COMMON_SEASONING_NAMES = [
 ];
 
 function emptyState(): RecipeShopState {
-  return { version: 1, overrides: {}, addedRecipes: [] };
+  return { version: 1, overrides: {}, addedRecipes: [], dismissedKeys: [] };
+}
+
+function parseDismissedKeys(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    if (typeof row !== 'string') continue;
+    const key = row.trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
 }
 
 function parseAddedRecipes(raw: unknown): RecipeShopAddedRecipe[] {
@@ -122,6 +138,7 @@ function parseState(raw: unknown): RecipeShopState {
     version: 1,
     overrides,
     addedRecipes: parseAddedRecipes(o.addedRecipes),
+    dismissedKeys: parseDismissedKeys(o.dismissedKeys),
   };
 }
 
@@ -199,8 +216,10 @@ export function buildShopList(
     absorbRecipeIngredients(byKey, added.recipeId, title, recipe?.ingredients ?? []);
   }
 
+  const dismissed = new Set(state.dismissedKeys);
   const items: ShopListItem[] = [];
   for (const [key, acc] of byKey) {
+    if (dismissed.has(key)) continue;
     const common = isCommonSeasoning(acc.name);
     const override = state.overrides[key];
     const status: ShopItemStatus = override ?? (common ? 'stock' : 'todo');
@@ -255,6 +274,20 @@ export async function addRecipeToShop(input: {
     recipeId,
     recipeTitle: title.length > 80 ? title.slice(0, 80) : title,
   });
+  // 再次加入时恢复该菜谱食材，避免清空后重新加入仍被 dismissed 隐藏
+  try {
+    const recipe = await getRecipe(recipeId);
+    if (recipe?.ingredients?.length) {
+      const restore = new Set(
+        recipe.ingredients.map(ing => shopItemKey(ing.name)).filter(Boolean),
+      );
+      if (restore.size > 0) {
+        state.dismissedKeys = state.dismissedKeys.filter(k => !restore.has(k));
+      }
+    }
+  } catch {
+    /* 菜谱读取失败不影响加入采购本身 */
+  }
   await persist(state);
   return { state, alreadyAdded: false };
 }
@@ -280,11 +313,38 @@ export async function setShopItemsStatus(
 }
 
 /**
- * 清空：去掉详情页手动加入的菜谱，并清除状态覆盖。
- * 用餐计划里的菜仍会留在清单中。
+ * 从清单移除指定食材（计划中的菜不受影响，仅隐藏对应采购项）。
  */
-export async function clearRecipeShopState(): Promise<RecipeShopState> {
+export async function dismissShopItems(keys: string[]): Promise<RecipeShopState> {
+  const state = await loadRecipeShopState();
+  const dismissed = new Set(state.dismissedKeys);
+  for (const key of keys) {
+    const k = key.trim();
+    if (!k) continue;
+    dismissed.add(k);
+    delete state.overrides[k];
+  }
+  state.dismissedKeys = [...dismissed];
+  await persist(state);
+  return state;
+}
+
+/**
+ * 清空采购清单：去掉手动加入的菜谱、清除状态覆盖，
+ * 并把当前可见食材记入 dismissed（用餐计划本身不动）。
+ * 会保留此前已移除的 key，避免「再次清空」后旧项重新冒出来。
+ */
+export async function clearRecipeShopState(
+  dismissKeys: string[] = [],
+): Promise<RecipeShopState> {
+  const prev = await loadRecipeShopState();
   const next = emptyState();
+  const dismissed = new Set(prev.dismissedKeys);
+  for (const key of dismissKeys) {
+    const k = key.trim();
+    if (k) dismissed.add(k);
+  }
+  next.dismissedKeys = [...dismissed];
   await persist(next);
   return next;
 }

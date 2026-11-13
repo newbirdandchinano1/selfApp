@@ -7,6 +7,7 @@ import { loadRecipePlanStore, type RecipePlanStore } from '@/lib/recipe-plan';
 import {
   buildShopList,
   clearRecipeShopState,
+  dismissShopItems,
   formatShopSources,
   loadRecipeShopState,
   setShopItemStatus,
@@ -45,6 +46,7 @@ export default function RecipeShopScreen() {
     version: 1,
     overrides: {},
     addedRecipes: [],
+    dismissedKeys: [],
   });
 
   const [viewMode, setViewMode] = useState<ViewMode>('status');
@@ -137,6 +139,20 @@ export default function RecipeShopScreen() {
     setSelected(new Set());
   }, []);
 
+  const allSelected = items.length > 0 && selected.size === items.length;
+
+  const toggleSelectAll = useCallback(() => {
+    if (items.length === 0) {
+      toast.info('清单为空');
+      return;
+    }
+    if (allSelected) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(items.map(it => it.key)));
+  }, [allSelected, items]);
+
   const onToggleItem = useCallback(
     async (item: ShopListItem) => {
       if (batchMode) {
@@ -213,14 +229,49 @@ export default function RecipeShopScreen() {
     [exitBatch, selected],
   );
 
+  const removeSelected = useCallback(() => {
+    const keys = [...selected];
+    if (keys.length === 0) {
+      toast.info('请先勾选项目');
+      return;
+    }
+    Alert.alert('移除选中', `将从采购清单移除已选的 ${keys.length} 项（不影响用餐计划）。`, [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '移除',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setBusy(true);
+            try {
+              setShopState(await dismissShopItems(keys));
+              exitBatch();
+              toast.success('已移除');
+            } catch (e) {
+              toast.error(toUserMessage(e, '移除失败'));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [exitBatch, selected]);
+
   const onClear = useCallback(() => {
     if (items.length === 0) {
       toast.info('清单为空');
       return;
     }
+    // 批量勾选后点「清空」→ 只移除选中项
+    if (batchMode && selected.size > 0) {
+      removeSelected();
+      return;
+    }
+    const keys = items.map(it => it.key);
     Alert.alert(
       '清空采购',
-      '将移除详情页「加入采购」的菜谱，并恢复默认状态。计划中的菜仍会留在清单里。',
+      '将清空当前采购清单（含计划汇总出的食材）。用餐计划本身不会删除。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -230,7 +281,7 @@ export default function RecipeShopScreen() {
             void (async () => {
               setBusy(true);
               try {
-                setShopState(await clearRecipeShopState());
+                setShopState(await clearRecipeShopState(keys));
                 exitBatch();
                 toast.success('已清空');
               } catch (e) {
@@ -243,7 +294,7 @@ export default function RecipeShopScreen() {
         },
       ],
     );
-  }, [exitBatch, items.length]);
+  }, [batchMode, exitBatch, items, removeSelected, selected.size]);
 
   const renderItemRow = (item: ShopListItem, isLast: boolean) => {
     const checked = item.status === 'bought';
@@ -335,7 +386,7 @@ export default function RecipeShopScreen() {
     <View style={[styles.root, { backgroundColor: p.bg }]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: tabBarInset + (batchMode ? 72 : 16) }]}
+        contentContainerStyle={[styles.content, { paddingBottom: tabBarInset + (batchMode ? 96 : 16) }]}
         showsVerticalScrollIndicator={false}>
         <View style={styles.pageHead}>
           <View style={styles.headRow}>
@@ -426,9 +477,13 @@ export default function RecipeShopScreen() {
           </View>
         ) : items.length === 0 ? (
           <View style={[styles.emptyCard, { backgroundColor: p.card, borderColor: p.border }]}>
-            <Text style={[styles.emptyTitle, { color: p.text }]}>还没有可采购的食材</Text>
+            <Text style={[styles.emptyTitle, { color: p.text }]}>
+              {shopState.dismissedKeys.length > 0 ? '采购清单已清空' : '还没有可采购的食材'}
+            </Text>
             <Text style={[styles.emptySub, { color: p.outlineMuted }]}>
-              给相关菜谱补上食材后，这里会自动出现采购项
+              {shopState.dismissedKeys.length > 0
+                ? '计划中的菜还在。再次「加入采购」或安排新菜后，对应食材会重新出现。'
+                : '给相关菜谱补上食材后，这里会自动出现采购项'}
             </Text>
           </View>
         ) : viewMode === 'status' ? (
@@ -450,9 +505,21 @@ export default function RecipeShopScreen() {
               bottom: tabBarInset - 4,
             },
           ]}>
-          <Text style={[styles.batchHint, { color: p.outlineMuted }]}>
-            已选 {selected.size} 项
-          </Text>
+          <View style={styles.batchTopRow}>
+            <Text style={[styles.batchHint, { color: p.outlineMuted }]}>
+              已选 {selected.size}/{items.length} 项
+            </Text>
+            <View style={styles.batchTopActions}>
+              <Pressable onPress={toggleSelectAll} hitSlop={8}>
+                <Text style={[styles.batchLink, { color: p.primary }]}>
+                  {allSelected ? '取消全选' : '全选'}
+                </Text>
+              </Pressable>
+              <Pressable onPress={removeSelected} hitSlop={8}>
+                <Text style={[styles.batchLink, { color: p.danger }]}>移除</Text>
+              </Pressable>
+            </View>
+          </View>
           <View style={styles.batchActions}>
             <Pressable
               onPress={() => applyBatchStatus('todo')}
@@ -594,7 +661,15 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 10,
   },
+  batchTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  batchTopActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   batchHint: { fontSize: 12, fontWeight: '600' },
+  batchLink: { fontSize: 13, fontWeight: '700' },
   batchActions: { flexDirection: 'row', gap: 8 },
   batchChip: {
     flex: 1,

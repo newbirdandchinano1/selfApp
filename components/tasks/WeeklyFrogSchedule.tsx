@@ -7,7 +7,7 @@ import {
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
-import { isFrogAssignedOn } from '@/lib/frog-assignment';
+import { mergeFrogAssignedOn, removeFrogAssignedOn } from '@/lib/frog-assignment';
 import { isFrogDoneForToday } from '@/lib/long-term-task';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
@@ -28,14 +28,13 @@ import {
   type VirtualHabitPlacement,
 } from '@/lib/schedule/habit-virtual-placement';
 import {
+  buildAssignedFrogVirtualPlacementsForDays,
   buildOverdueFrogCarryPlacementsForToday,
   buildVirtualTaskPlacementsForDays,
-  isTaskInScheduleGridOnDay,
   type VirtualTaskPlacement,
 } from '@/lib/schedule/task-virtual-placement';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
-import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 import {
   getStandaloneTodoDueMs,
@@ -234,6 +233,8 @@ type Props = {
   /** 入格/取消后回调；批量指派时可传多条，父级应一次静默同步 */
   onChanged?: (detail?: ScheduleChangedDetail | ScheduleChangedDetail[]) => void;
   onOpenSubject?: (kind: 'task' | 'project', id: string) => void;
+  /** 点日程习惯详情「习惯详情」：进入小习惯详情页 */
+  onOpenHabit?: (habitId: string) => void;
   onToggleDone?: (info: {
     kind: 'task' | 'project';
     id: string;
@@ -504,6 +505,7 @@ export function WeeklyFrogSchedule({
   onClearPendingPlace,
   onChanged,
   onOpenSubject,
+  onOpenHabit,
   onToggleDone,
   onHabitCheckIn,
   onHabitUndo,
@@ -538,23 +540,10 @@ export function WeeklyFrogSchedule({
       const info = resolveSubject(kind, id, subjects, assignYmd);
       if (!info) return null;
       /**
-       * 未入格不进入时间线：
-       * - 青蛙指派日，或
-       * - 独立待办重复规则指定日（自动入格，无需手拖）
-       * 兼容历史「取消指派只清 frog 字段、占用行残留」的数据。
+       * 只补展示元数据，不再用 subjects 指派态二次过滤。
+       * 入格后父级 extra_data 常滞后一拍；若此处 return null，真实占用会从日程「丢失」。
+       * 是否入轴由占用行 / 虚拟 builder 决定。
        */
-      if (!info.deletedSnapshot) {
-        if (kind === 'project') {
-          if (!isFrogAssignedOn(info.extraData, assignYmd)) return null;
-        } else {
-          const task = subjects.tasks.find((t) => t.id === id);
-          if (!task) {
-            if (!isFrogAssignedOn(info.extraData, assignYmd)) return null;
-          } else if (!isTaskInScheduleGridOnDay(task, assignYmd, logicalTodayYmd)) {
-            return null;
-          }
-        }
-      }
       if (kind === 'project') {
         const due = info.dueDate?.slice(0, 10) ?? '';
         const overdue =
@@ -912,6 +901,14 @@ export function WeeklyFrogSchedule({
           dayBoundary: boundary,
           placements: data.placements,
         });
+        const assignedFrogs = buildAssignedFrogVirtualPlacementsForDays({
+          tasks: lookup.tasks,
+          projects: lookup.projects,
+          dayYmds: days,
+          logicalTodayYmd,
+          axis: data.axis,
+          placements: data.placements,
+        });
         const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
           tasks: lookup.tasks,
           projects: lookup.projects,
@@ -919,7 +916,7 @@ export function WeeklyFrogSchedule({
           axis: data.axis,
           placements: data.placements,
         });
-        setVirtualTasks([...virtualTodos, ...overdueFrogs]);
+        setVirtualTasks([...virtualTodos, ...assignedFrogs, ...overdueFrogs]);
       } catch (err) {
         if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
@@ -954,6 +951,14 @@ export function WeeklyFrogSchedule({
         dayBoundary: boundary,
         placements: view.placements,
       });
+      const assignedFrogs = buildAssignedFrogVirtualPlacementsForDays({
+        tasks: subjects.tasks,
+        projects: subjects.projects,
+        dayYmds: loadDayYmdsRef.current,
+        logicalTodayYmd,
+        axis: view.axis,
+        placements: view.placements,
+      });
       const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
         tasks: subjects.tasks,
         projects: subjects.projects,
@@ -961,7 +966,7 @@ export function WeeklyFrogSchedule({
         axis: view.axis,
         placements: view.placements,
       });
-      setVirtualTasks([...virtualTodos, ...overdueFrogs]);
+      setVirtualTasks([...virtualTodos, ...assignedFrogs, ...overdueFrogs]);
     });
     return () => {
       cancelled = true;
@@ -1037,33 +1042,42 @@ export function WeeklyFrogSchedule({
     if (w > 0 && w !== gridWidth) setGridWidth(w);
   }, [gridWidth]);
 
-  const subjectInGridOnDay = React.useCallback(
-    (kind: 'task' | 'project', id: string, assignYmd: string, extraData: string | null) => {
-      if (kind === 'project') return isFrogAssignedOn(extraData, assignYmd);
-      const task = subjects.tasks.find((t) => t.id === id);
-      if (!task) return isFrogAssignedOn(extraData, assignYmd);
-      return isTaskInScheduleGridOnDay(task, assignYmd, logicalTodayYmd);
+  /** 入格成功后立刻改 subjectsRef，避免 reload 时父级 setState 尚未提交导致虚拟块漏建 */
+  const patchSubjectsRefAssign = React.useCallback(
+    (detail: ScheduleChangedDetail | ScheduleChangedDetail[]) => {
+      const list = Array.isArray(detail) ? detail : [detail];
+      let next = subjectsRef.current;
+      for (const item of list) {
+        const applyExtra = (extra: string | null) =>
+          item.action === 'assign'
+            ? mergeFrogAssignedOn(extra, item.assignYmd)
+            : removeFrogAssignedOn(extra, item.assignYmd);
+        if (item.kind === 'project') {
+          next = {
+            ...next,
+            projects: next.projects.map((p) =>
+              p.id === item.id ? { ...p, extra_data: applyExtra(p.extra_data) } : p,
+            ),
+          };
+        } else {
+          next = {
+            ...next,
+            tasks: next.tasks.map((t) =>
+              t.id === item.id ? { ...t, extra_data: applyExtra(t.extra_data) } : t,
+            ),
+          };
+        }
+      }
+      subjectsRef.current = next;
     },
-    [subjects.tasks, logicalTodayYmd],
+    [],
   );
 
   const orphanedPlacements = React.useMemo(() => {
     if (!view) return [] as SchedulePlacementRow[];
-    return view.placements.filter((p) => {
-      if (p.orphaned || p.startSlotIndex == null) return true;
-      // 格内但该日未入格（无青蛙指派且非重复自动日）：归入未入格池供重新落入
-      const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
-      const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-      if (
-        sub &&
-        !sub.deletedSnapshot &&
-        !subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData)
-      ) {
-        return true;
-      }
-      return false;
-    });
-  }, [view, subjects, subjectInGridOnDay]);
+    // 仅真实未入格（改轴 orphaned / 无格）。勿再用 subjects 指派态把刚入格项打进未入格池。
+    return view.placements.filter((p) => p.orphaned || p.startSlotIndex == null);
+  }, [view]);
 
   /** sc-head cnt：「N/M 只已入格」 */
   const frogPlaceStats = React.useMemo(() => {
@@ -1071,28 +1085,21 @@ export function WeeklyFrogSchedule({
     const map = new Map<string, boolean>();
     for (const p of view.placements) {
       const k = `${p.subjectKind}:${p.subjectId}`;
-      const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
-      const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-      const assigned =
-        !sub ||
-        sub.deletedSnapshot ||
-        subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData);
-      const inGrid = assigned && !p.orphaned && p.startSlotIndex != null;
+      const inGrid = !p.orphaned && p.startSlotIndex != null;
       const prev = map.get(k);
       if (prev == null) map.set(k, inGrid);
       else if (inGrid) map.set(k, true);
     }
-    // 无真实占用、仅重复规则虚拟入格的独立待办也计入「已入格」
+    // 无真实占用的虚拟入格（独立待办重复日 / 当日已指派全天块）也计入「已入格」
     for (const t of virtualTasks) {
-      if (t.carrySubjectKind) continue;
       if (t.assignYmd !== centerYmd) continue;
-      const k = `task:${t.taskId}`;
+      const k = `${t.carrySubjectKind === 'project' ? 'project' : 'task'}:${t.taskId}`;
       if (!map.has(k)) map.set(k, true);
     }
     let inGrid = 0;
     for (const v of map.values()) if (v) inGrid += 1;
     return { inGrid, total: map.size };
-  }, [view, subjects, subjectInGridOnDay, virtualTasks, centerYmd]);
+  }, [view, virtualTasks, centerYmd]);
 
   /** 当前查看日：各优先级已指派 / 剩余（2/3/4/5 上限） */
   const dailyAssignQuota = React.useMemo((): DailyAssignQuotaBucketStat[] => {
@@ -1266,17 +1273,20 @@ export function WeeklyFrogSchedule({
           assignYmd,
           keptAsAdd ? successLabel : successLabel.replace(/^已入格/, '已改派'),
         );
-        await reload([assignYmd], { silent: true });
+        // 先回写指派态再 reload，避免 subjects 滞后时虚拟块漏建
         if (keptAsAdd) {
-          onChanged?.({
+          const detail: ScheduleChangedDetail = {
             kind: row.subjectKind,
             id: row.subjectId,
             assignYmd,
             action: 'assign',
-          });
+          };
+          patchSubjectsRefAssign(detail);
+          onChanged?.(detail);
         } else {
           onChanged?.();
         }
+        await reload([assignYmd], { silent: true });
         return;
       }
 
@@ -1323,15 +1333,16 @@ export function WeeklyFrogSchedule({
       }
       // 先清预选横幅与成功提示，再静默刷新；避免云端慢/失败时横幅残留且无反馈
       finishPlaceSuccessUi(assignYmd, successLabel);
+      const assignDetails: ScheduleChangedDetail[] = results.map((result) => ({
+        kind: result.kind,
+        id: result.id,
+        assignYmd,
+        action: 'assign' as const,
+      }));
+      // 先回写指派态再 reload，避免 subjects 滞后时「已入格却日程空白」
+      patchSubjectsRefAssign(assignDetails);
+      onChanged?.(assignDetails);
       await reload([assignYmd], { silent: true });
-      onChanged?.(
-        results.map((result) => ({
-          kind: result.kind,
-          id: result.id,
-          assignYmd,
-          action: 'assign' as const,
-        })),
-      );
     } catch (err) {
       toast.error(
         toUserMessage(
@@ -1418,19 +1429,10 @@ export function WeeklyFrogSchedule({
 
   const tapVirtualHabit = React.useCallback(
     (habit: VirtualHabitPlacement) => {
-      if (habit.assignYmd !== logicalTodayYmd) {
-        Alert.alert(habit.name, '未到打卡日，请到当天再打卡。');
-        return;
-      }
-      // 子习惯走清单弹窗，不在此做整卡确认
-      if (hasActiveSubHabits(habit.extraData)) {
-        if (habit.done) onHabitUndo?.(habit.habitId);
-        else onHabitCheckIn?.(habit.habitId);
-        return;
-      }
+      // 统一打开详情 sheet（含「习惯详情」入口）；子习惯打卡仍从 sheet 完成按钮进入清单
       openVirtualHabitDetail(habit);
     },
-    [logicalTodayYmd, onHabitCheckIn, onHabitUndo, openVirtualHabitDetail],
+    [openVirtualHabitDetail],
   );
 
   const tapVirtualTask = React.useCallback(
@@ -1483,14 +1485,6 @@ export function WeeklyFrogSchedule({
       const assignYmd = ymdForWeekday(p.weekStartYmd, p.weekday);
       if (assignYmd !== logicalTodayYmd) continue;
       const sub = resolveSubject(p.subjectKind, p.subjectId, subjects, assignYmd);
-      // 未入格（无青蛙指派且非重复自动日）不进时间线/最简焦点，兼容残留占用
-      if (
-        sub &&
-        !sub.deletedSnapshot &&
-        !subjectInGridOnDay(p.subjectKind, p.subjectId, assignYmd, sub.extraData)
-      ) {
-        continue;
-      }
       const span = Math.max(1, p.spanSlots);
       const hasMins =
         typeof p.startMinutes === 'number' &&
@@ -1543,7 +1537,7 @@ export function WeeklyFrogSchedule({
         title: sub?.title?.trim() || '青蛙',
         done,
         overdue,
-        // 过期全天仍标「全天」，否则最简全天区 / 时段焦点两边都漏掉
+        // 过期全天仍标「全天」，否则最简混排末尾漏掉
         timeLabel: allDay ? '全天' : overdue ? '过期' : formatMinutesAsHm(startMins),
         endLabel: allDay || overdue ? '' : formatMinutesAsHm(endMins),
         startMins,
@@ -1607,17 +1601,7 @@ export function WeeklyFrogSchedule({
     }
     for (const t of virtualTasks) {
       if (t.assignYmd !== logicalTodayYmd) continue;
-      // 当日未入格不进最简焦点：过期滞留青蛙仍须指派；独立待办重复日可自动入格
-      if (t.carrySubjectKind) {
-        if (!isFrogAssignedOn(t.extraData, t.assignYmd)) continue;
-      } else {
-        const task = subjects.tasks.find((x) => x.id === t.taskId);
-        if (task) {
-          if (!isTaskInScheduleGridOnDay(task, t.assignYmd, logicalTodayYmd)) continue;
-        } else if (!isFrogAssignedOn(t.extraData, t.assignYmd)) {
-          continue;
-        }
-      }
+      // 虚拟块是否展示由上游 builder 决定；此处不再用 subjects 指派态二次过滤
       const span = Math.max(1, t.spanSlots);
       const hasMins =
         typeof t.startMinutes === 'number' &&
@@ -1684,7 +1668,6 @@ export function WeeklyFrogSchedule({
     virtualHabitsResolved,
     virtualTasks,
     tagWeightBySubjectId,
-    subjectInGridOnDay,
   ]);
 
   const minimalFocus = React.useMemo(() => {
@@ -1692,15 +1675,36 @@ export function WeeklyFrogSchedule({
     const timeline = view ? buildScheduleTimeline(view.axis) : [];
     const workSlots = view ? listWorkSlots(view.axis) : [];
 
-    /** 已超时：时段已结束且未完成（按格宽轴，而非任务自身跨度「仍在进行」） */
-    const overdueItems = todayCompactItems.filter(
-      (x) => !x.done && axisNowMins != null && x.endMins <= nowMins,
-    );
-
     const compactItemId = (x: TodayCompactItem) =>
       x.placement?.id ??
       (x.habit ? `habit:${x.habit.habitId}` : null) ??
       (x.virtualTask ? `vtask:${x.virtualTask.taskId}` : x.title);
+
+    const isAllDayItem = (x: TodayCompactItem) => x.timeLabel === '全天';
+
+    /** 全天块：沿用原 compareTodayCompactByWeight（类型优先 + 同类别内部规则） */
+    const allDaySorted = todayCompactItems
+      .filter(isAllDayItem)
+      .sort(compareTodayCompactByWeight);
+
+    /**
+     * 已超时：时段已结束且未完成（按格宽轴）。
+     * 全天不进时段超时桶——末尾由 appendAllDay 统一挂上。
+     */
+    const overdueItems = todayCompactItems.filter(
+      (x) =>
+        !isAllDayItem(x) &&
+        !x.done &&
+        axisNowMins != null &&
+        x.endMins <= nowMins,
+    );
+
+    /** 时段（含超时）在前，全天在后；两边各自内部排序不变 */
+    const appendAllDay = (timed: TodayCompactItem[]) => {
+      const timedIds = new Set(timed.map(compactItemId));
+      const allDayTail = allDaySorted.filter((x) => !timedIds.has(compactItemId(x)));
+      return [...timed, ...allDayTail];
+    };
 
     const mergeFocusItems = (slotItems: TodayCompactItem[]) => {
       const byId = new Map<string, TodayCompactItem>();
@@ -1710,17 +1714,18 @@ export function WeeklyFrogSchedule({
       for (const x of slotItems) {
         byId.set(compactItemId(x), x);
       }
-      return [...byId.values()].sort(compareTodayCompactByWeight);
+      const timed = [...byId.values()].sort(compareTodayCompactByWeight);
+      return appendAllDay(timed);
     };
 
-    /** 当前格：起点落在本格，或时段覆盖本格（跨格；全天走顶部专属区，不挤占时段焦点） */
+    /** 当前格：起点落在本格，或时段覆盖本格（跨格）；全天不参与时段匹配，只挂在列表末尾 */
     const itemsCoveringSlot = (slot: {
       slotIndex: number;
       startMinutes: number;
       endMinutes: number;
     }) =>
       todayCompactItems.filter((x) => {
-        if (x.timeLabel === '全天') return false;
+        if (isAllDayItem(x)) return false;
         const startSlot =
           x.placement?.startSlotIndex ??
           x.habit?.startSlotIndex ??
@@ -1781,7 +1786,7 @@ export function WeeklyFrogSchedule({
     if (overdueItems.length > 0) {
       return {
         kind: 'finished' as const,
-        items: overdueItems,
+        items: appendAllDay([...overdueItems].sort(compareTodayCompactByWeight)),
         rangeLabel: '',
         countdownLabel: '有超时未完成',
       };
@@ -1789,7 +1794,7 @@ export function WeeklyFrogSchedule({
     if (todayCompactItems.length > 0) {
       return {
         kind: 'finished' as const,
-        items: [] as TodayCompactItem[],
+        items: appendAllDay([]),
         rangeLabel: '',
         countdownLabel: '今日安排已结束',
       };
@@ -1801,15 +1806,6 @@ export function WeeklyFrogSchedule({
       countdownLabel: '今日暂无安排',
     };
   }, [todayCompactItems, axisNowMins, view]);
-
-  /**
-   * 最简态顶部全天区：经典课表「全天格」退役后，时段焦点仍排除全天块，
-   * 须在此独立展示，否则已指派的全天待办/任务会「消失」。
-   */
-  const minimalAllDayItems = React.useMemo(
-    () => todayCompactItems.filter((x) => x.timeLabel === '全天'),
-    [todayCompactItems],
-  );
 
   // 从时间线折回最简时归位今天（避免跳转过程中被清掉）
   React.useEffect(() => {
@@ -2331,34 +2327,6 @@ export function WeeklyFrogSchedule({
             <View style={styles.minimalBody}>
               <View
                 style={[
-                  styles.minimalAllDayWrap,
-                  { backgroundColor: surfaceLow, borderColor: gridLineSoft },
-                ]}>
-                <View style={styles.minimalAllDayHead}>
-                  <Text style={[styles.minimalCountdownLabel, { color: outline }]}>全天</Text>
-                  {dayEditable(centerYmd, logicalTodayYmd) ? (
-                    <Pressable
-                      onPress={() => openPlace(centerYmd, 0, { preferAllDay: true })}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel="添加全天安排"
-                      style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
-                      <MaterialIcons name="add" size={16} color={tf.pond} />
-                    </Pressable>
-                  ) : null}
-                </View>
-                {minimalAllDayItems.length > 0 ? (
-                  <View style={styles.todayAgenda}>
-                    {minimalAllDayItems.map((item, index) =>
-                      renderCompactRow(item, index, minimalAllDayItems, { dense: true }),
-                    )}
-                  </View>
-                ) : (
-                  <Text style={[styles.minimalAllDayEmpty, { color: tf.faint }]}>暂无全天安排</Text>
-                )}
-              </View>
-              <View
-                style={[
                   styles.minimalCountdownRow,
                   { backgroundColor: surfaceLow, borderColor: gridLineSoft },
                 ]}>
@@ -2382,6 +2350,16 @@ export function WeeklyFrogSchedule({
                     </Text>
                   ) : null}
                 </View>
+                {dayEditable(centerYmd, logicalTodayYmd) ? (
+                  <Pressable
+                    onPress={() => openPlace(centerYmd, 0, { preferAllDay: true })}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="添加全天安排"
+                    style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, marginRight: 4 }]}>
+                    <MaterialIcons name="add" size={16} color={tf.pond} />
+                  </Pressable>
+                ) : null}
                 <Text
                   style={[
                     styles.minimalCountdown,
@@ -2405,25 +2383,23 @@ export function WeeklyFrogSchedule({
                   )}
                 </View>
               ) : minimalFocus.kind === 'empty' || minimalFocus.kind === 'finished' ? (
-                minimalAllDayItems.length > 0 ? null : (
-                  <Pressable
-                    onPress={() => goZoom('day')}
-                    style={({ pressed }) => [
-                      styles.todayEmpty,
-                      styles.todayEmptyCompact,
-                      {
-                        backgroundColor: surfaceLow,
-                        borderColor: gridLineSoft,
-                        opacity: pressed ? 0.85 : 1,
-                      },
-                    ]}>
-                    <Text style={[styles.todayEmptyHint, { color: outline }]}>
-                      {minimalFocus.kind === 'finished'
-                        ? '点开时间线查看今日安排'
-                        : '点开时间线添加或查看安排'}
-                    </Text>
-                  </Pressable>
-                )
+                <Pressable
+                  onPress={() => goZoom('day')}
+                  style={({ pressed }) => [
+                    styles.todayEmpty,
+                    styles.todayEmptyCompact,
+                    {
+                      backgroundColor: surfaceLow,
+                      borderColor: gridLineSoft,
+                      opacity: pressed ? 0.85 : 1,
+                    },
+                  ]}>
+                  <Text style={[styles.todayEmptyHint, { color: outline }]}>
+                    {minimalFocus.kind === 'finished'
+                      ? '点开时间线查看今日安排'
+                      : '点开时间线添加或查看安排'}
+                  </Text>
+                </Pressable>
               ) : null}
             </View>
           )
@@ -2843,16 +2819,22 @@ export function WeeklyFrogSchedule({
             : undefined
         }
         onEdit={
-          detail?.surface === 'habit'
-            ? undefined
-            : detail
-              ? () => {
+          detail
+            ? detail.surface === 'habit'
+              ? detail.habitId && onOpenHabit
+                ? () => {
+                    const id = detail.habitId!;
+                    setDetail(null);
+                    onOpenHabit(id);
+                  }
+                : undefined
+              : () => {
                   const kind = detail.placement?.subjectKind ?? detail.subject.kind;
                   const id = detail.placement?.subjectId ?? detail.subject.id;
                   onOpenSubject?.(kind, id);
                   setDetail(null);
                 }
-              : undefined
+            : undefined
         }
       />
 
@@ -2999,25 +2981,6 @@ const styles = StyleSheet.create({
   },
   minimalBody: {
     gap: Spacing.md,
-  },
-  minimalAllDayWrap: {
-    borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.sm,
-    gap: Spacing.xs,
-  },
-  minimalAllDayHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 22,
-  },
-  minimalAllDayEmpty: {
-    fontSize: 12,
-    fontWeight: '600',
-    paddingVertical: 4,
   },
   minimalCountdownRow: {
     flexDirection: 'row',

@@ -39,7 +39,7 @@ function useApiLoadingError(): ApiLoadingErrorState | null {
 export { useApiLoadingRaw };
 
 /**
- * 全局 API 加载蒙层：最短展示时间、全屏阻塞、超时/失败提示与重试。
+ * 全局 API 加载提示：最短展示时间；同步中非阻塞，超时/失败可重试。
  */
 export function useApiLoadingOverlay(
   minVisibleMs = DEFAULT_MIN_VISIBLE_MS,

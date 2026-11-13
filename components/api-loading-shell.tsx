@@ -1,5 +1,4 @@
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
-import { useApiLoading } from '@/hooks/use-api-loading';
 import { useApiLoadingOverlay } from '@/hooks/use-api-loading-overlay';
 import { useActivePageApiKey } from '@/hooks/use-active-page-api-key';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -32,39 +31,13 @@ type ApiLoadingShellProps = {
 };
 
 /**
- * 统一全局 API 加载壳：内容区淡入淡出 + 顶部进度条 / 阻塞蒙层 / 超时重试。
- * 骨架屏 Tab 仅顶部进度条，不遮挡页面内骨架。
+ * 统一全局 API 加载壳：同步中仅顶部进度条 + 非阻塞提示，不遮罩、不拦截操作；
+ * 超时 / 失败仍弹可操作卡片。骨架屏 Tab 仅顶部进度条。
  */
 export function ApiLoadingShell({ children, style }: ApiLoadingShellProps) {
-  const activePageKey = useActivePageApiKey();
-  const suppressDim = isSkeletonLoadingTabPageKey(activePageKey);
-  const isLoading = useApiLoading(suppressDim ? 0 : 480);
-  const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
-  const opacity = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    const target = suppressDim || !isLoading ? 1 : 0.78;
-    if (!motionReady || reduceMotion) {
-      opacity.stopAnimation();
-      opacity.setValue(target);
-      return;
-    }
-    const dim = Animated.timing(opacity, {
-      toValue: target,
-      duration: suppressDim || !isLoading ? 340 : 180,
-      easing: isLoading && !suppressDim ? Easing.out(Easing.quad) : Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
-    dim.start();
-    return () => {
-      dim.stop();
-      opacity.stopAnimation();
-    };
-  }, [isLoading, motionReady, opacity, reduceMotion, suppressDim]);
-
   return (
     <View style={styles.root}>
-      <Animated.View style={[styles.content, style, { opacity }]}>{children}</Animated.View>
+      <View style={[styles.content, style]}>{children}</View>
       <ApiLoadingOverlay />
     </View>
   );
@@ -159,7 +132,7 @@ function ApiLoadingOverlay() {
 
   const progressBar = (
     <View
-      style={[styles.topBar, suppressForSkeletonTab ? styles.topBarNonBlocking : { top: insets.top }]}
+      style={[styles.topBar, { top: suppressForSkeletonTab ? 0 : insets.top }]}
       pointerEvents="none"
       accessibilityRole="progressbar"
       accessibilityLabel="加载中"
@@ -179,11 +152,28 @@ function ApiLoadingOverlay() {
     </View>
   );
 
-  if (suppressForSkeletonTab && !error && !timedOut) {
+  // 同步进行中：仅后台提示，不遮罩、不拦截触摸
+  if (!error && !timedOut) {
     if (!visible) return null;
     return (
-      <View style={styles.barOnlyRoot} pointerEvents="none">
+      <View style={styles.hintRoot} pointerEvents="none">
         {progressBar}
+        {!suppressForSkeletonTab ? (
+          <Animated.View
+            style={[
+              styles.pill,
+              {
+                opacity: pillOpacity,
+                top: insets.top + 15,
+                backgroundColor: isDark ? 'rgba(31,41,55,0.96)' : 'rgba(255,255,255,0.98)',
+                borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(30,57,50,0.28)',
+              },
+            ]}
+          >
+            <ActivityIndicator size="small" color={primary} />
+            <Text style={[styles.pillText, { color: primary }]}>正在同步数据…</Text>
+          </Animated.View>
+        ) : null}
       </View>
     );
   }
@@ -237,7 +227,7 @@ function ApiLoadingOverlay() {
             </Pressable>
           )}
         </View>
-      ) : timedOut ? (
+      ) : (
         <View
           style={[
             styles.timeoutCard,
@@ -263,24 +253,6 @@ function ApiLoadingOverlay() {
             <Text style={styles.retryBtnText}>重试</Text>
           </Pressable>
         </View>
-      ) : (
-        <>
-          {progressBar}
-          <Animated.View
-            style={[
-              styles.pill,
-              {
-                opacity: pillOpacity,
-                marginTop: insets.top + 15,
-                backgroundColor: isDark ? 'rgba(31,41,55,0.96)' : 'rgba(255,255,255,0.98)',
-                borderColor: isDark ? 'rgba(169,199,185,0.45)' : 'rgba(30,57,50,0.28)',
-              },
-            ]}
-          >
-            <ActivityIndicator size="small" color={primary} />
-            <Text style={[styles.pillText, { color: primary }]}>正在同步数据…</Text>
-          </Animated.View>
-        </>
       )}
     </View>
   );
@@ -293,7 +265,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
-  barOnlyRoot: {
+  hintRoot: {
     ...StyleSheet.absoluteFill,
     zIndex: 9999,
     elevation: 9999,
@@ -313,9 +285,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
-  },
-  topBarNonBlocking: {
-    top: 0,
   },
   track: {
     width: '100%',

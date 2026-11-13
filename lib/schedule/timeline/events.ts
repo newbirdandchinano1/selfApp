@@ -166,10 +166,9 @@ export function buildTimelineEventsForDay(params: {
       assignYmd: t.assignYmd,
     });
     /**
-     * 与真实占用同一口径：resolve 拒绝（该日无青蛙指派 / 未入格）不进时间线。
-     * 过期滞留块也不得例外——否则未入格项目/待办会以全天虚拟条漏进轴内。
+     * 虚拟块是否入轴由上游 builder 决定（独立待办 / 当日指派无占用 / 过期滞留）。
+     * resolve 只补展示元数据；不得因 subjects 指派态滞后而整条丢弃。
      */
-    if (!display) continue;
     let startMinutes = axis.startMinutes;
     let endMinutes = axis.endMinutes;
     if (!t.allDay) {
@@ -188,21 +187,21 @@ export function buildTimelineEventsForDay(params: {
     events.push({
       id: `vt-${t.taskId}-${t.assignYmd}`,
       kind: blockKind,
-      title: (t.title ?? '').trim() || '待办',
+      title: (t.title ?? '').trim() || display?.title || '待办',
       icon: display?.icon ?? null,
-      done: !!t.done,
-      overdue: !!t.overdue || !!t.carrySubjectKind,
+      done: display?.done ?? !!t.done,
+      overdue: !!t.overdue || !!t.carrySubjectKind || !!display?.overdue,
       allDay: !!t.allDay,
       startMinutes,
       endMinutes,
-      priority: t.priority ?? 0,
+      priority: display?.priority ?? t.priority ?? 0,
       assignYmd: t.assignYmd,
       source: { type: 'virtualTask', task: t },
-      sortOrder: display.sortOrder,
-      dueMs: display.dueMs,
-      rewardPoints: display.rewardPoints,
-      updatedAt: display.updatedAt,
-      subjectId: display.subjectId ?? t.taskId,
+      sortOrder: display?.sortOrder,
+      dueMs: display?.dueMs,
+      rewardPoints: display?.rewardPoints,
+      updatedAt: display?.updatedAt,
+      subjectId: display?.subjectId ?? t.taskId,
     });
   }
 

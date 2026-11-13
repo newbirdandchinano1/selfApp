@@ -5736,6 +5736,8 @@ export default function TasksScreen() {
     outputRange: [0.35, 0.08],
   });
   const projectDoneSurface = isDark ? colors.surfaceMuted : colors.capsule;
+  /** 已放弃项目：红色底，与完成绿底区分 */
+  const projectCancelledSurface = isDark ? taskUi.overdueSurface : taskUi.dangerSoftWash;
 
   const sectionCardStyle = React.useMemo(
     () => [styles.sectionCard, shadows.card, { backgroundColor: card, borderColor: colors.outline }],
@@ -6238,6 +6240,10 @@ export default function TasksScreen() {
     onOpenSubject: (kind: 'task' | 'project', id: string) => {
       if (kind === 'project') openProject(id);
       else openTask(id);
+    },
+    onOpenHabit: (habitId: string) => {
+      void acknowledgeInboxSources({ entity: { kind: 'habit', id: habitId } });
+      router.push({ pathname: '/habit-detail', params: { habitId } });
     },
     onToggleDone: ({ id, assignYmd }: { id: string; assignYmd: string }) => {
       toggleFrogDone(id, assignYmd);
@@ -7867,14 +7873,22 @@ export default function TasksScreen() {
                     logicalTodayYmd,
                   );
                   const isArchived = isProjectInInboxCategory(project.category_id);
-                  const projectAccent = isLocked ? outline : isCompleted ? success : primary;
+                  const projectAccent = isLocked
+                    ? outline
+                    : isCancelledProject
+                      ? error
+                      : isCompleted
+                        ? success
+                        : primary;
                   const projectCardBg = isLocked
                     ? isDark
                       ? colors.surfaceMuted
                       : colors.surfaceSubtle
-                    : isCompleted
-                      ? projectDoneSurface
-                      : card;
+                    : isCancelledProject
+                      ? projectCancelledSurface
+                      : isCompleted
+                        ? projectDoneSurface
+                        : card;
                   const doneMuted = colors.textMuted;
                   const schedule = parseProjectSchedule(project.extra_data);
                   const dueDateLabel = getProjectScheduleLabel(project);
@@ -8069,9 +8083,11 @@ export default function TasksScreen() {
                                   ? tf.pond
                                   : isLocked
                                     ? taskUi.hairlineMutedStrong
-                                    : isCompleted
-                                      ? taskUi.successWashLine
-                                      : taskUi.hairline,
+                                    : isCancelledProject
+                                      ? taskUi.dangerWashBorder
+                                      : isCompleted
+                                        ? taskUi.successWashLine
+                                        : taskUi.hairline,
                               borderWidth:
                                 filterMatchKind !== 'none' ? 1.5 : StyleSheet.hairlineWidth,
                               opacity: hasFrogAssignment && !isCompleted ? 0.72 : 1,
@@ -8093,13 +8109,15 @@ export default function TasksScreen() {
                                 ? tf.pond
                                 : filterMatchKind === 'project' || filterMatchKind === 'both'
                                   ? tf.frog
-                                  : isCompleted
-                                    ? tf.sage
-                                    : (project.priority ?? 0) >= 4
-                                      ? tf.rose
-                                      : (project.priority ?? 0) >= 2
-                                        ? tf.sun
-                                        : tf.frog,
+                                  : isCancelledProject
+                                    ? tf.rose
+                                    : isCompleted
+                                      ? tf.sage
+                                      : (project.priority ?? 0) >= 4
+                                        ? tf.rose
+                                        : (project.priority ?? 0) >= 2
+                                          ? tf.sun
+                                          : tf.frog,
                             width: filterMatchKind !== 'none' ? 4 : undefined,
                           },
                         ]}
@@ -8142,14 +8160,18 @@ export default function TasksScreen() {
                                 {
                                   backgroundColor: isLocked
                                     ? taskUi.hairlineMuted
-                                    : isCompleted
-                                      ? taskUi.successWashStrong
-                                      : taskUi.primaryWash,
+                                    : isCancelledProject
+                                      ? taskUi.dangerWash
+                                      : isCompleted
+                                        ? taskUi.successWashStrong
+                                        : taskUi.primaryWash,
                                 },
                                 pressed && { opacity: 0.75 },
                               ]}>
                               {isLocked && !isCompleted ? (
                                 <MaterialIcons name="lock" size={16} color={projectAccent} />
+                              ) : isCancelledProject ? (
+                                <MaterialIcons name="block" size={16} color={projectAccent} />
                               ) : isCompleted ? (
                                 <MaterialIcons name="check" size={16} color={projectAccent} />
                               ) : (
@@ -8181,11 +8203,13 @@ export default function TasksScreen() {
                               {
                                 backgroundColor: isScheduleExpired
                                   ? tf.rose2
-                                  : isCompleted
-                                    ? tf.lily2
-                                    : (project.priority ?? 0) >= 3
-                                      ? tf.sun2
-                                      : tf.lily2,
+                                  : isCancelledProject
+                                    ? tf.rose2
+                                    : isCompleted
+                                      ? tf.lily2
+                                      : (project.priority ?? 0) >= 3
+                                        ? tf.sun2
+                                        : tf.lily2,
                                 opacity: pressed ? 0.82 : 1,
                               },
                             ]}>
@@ -8271,6 +8295,20 @@ export default function TasksScreen() {
                                   ]}>
                                   <MaterialIcons name="lock" size={12} color={outline} />
                                   <Text style={[styles.projectDoneBadgeText, { color: outline }]}>待解锁</Text>
+                                </View>
+                              ) : isCancelledProject ? (
+                                <View
+                                  style={[
+                                    styles.projectDoneBadge,
+                                    {
+                                      backgroundColor: taskUi.dangerWash,
+                                      borderColor: taskUi.dangerWashBorder,
+                                    },
+                                  ]}>
+                                  <MaterialIcons name="block" size={12} color={error} />
+                                  <Text style={[styles.projectDoneBadgeText, { color: error }]}>
+                                    已放弃
+                                  </Text>
                                 </View>
                               ) : isCompleted ? (
                                 <View
@@ -8582,9 +8620,15 @@ export default function TasksScreen() {
                               <View style={{ marginTop: 6 }}>
                                 <FoldProgressBar
                                   ratio={progress.ratio}
-                                  colorFrom={isScheduleExpired ? '#E3B39C' : '#A9C184'}
+                                  colorFrom={
+                                    isScheduleExpired || isCancelledProject ? '#E3B39C' : '#A9C184'
+                                  }
                                   colorTo={
-                                    isScheduleExpired ? tf.rose : isCompleted ? tf.sage : tf.frog
+                                    isScheduleExpired || isCancelledProject
+                                      ? tf.rose
+                                      : isCompleted
+                                        ? tf.sage
+                                        : tf.frog
                                   }
                                 />
                               </View>
@@ -8595,9 +8639,15 @@ export default function TasksScreen() {
                                 muted={tf.muted}
                                 faint={tf.faint}
                                 ink={isCompleted ? doneMuted : tf.ink}
-                                trackAccentFrom={isScheduleExpired ? '#E3B39C' : '#A9C184'}
+                                trackAccentFrom={
+                                  isScheduleExpired || isCancelledProject ? '#E3B39C' : '#A9C184'
+                                }
                                 trackAccentTo={
-                                  isScheduleExpired ? tf.rose : isCompleted ? tf.sage : tf.frog
+                                  isScheduleExpired || isCancelledProject
+                                    ? tf.rose
+                                    : isCompleted
+                                      ? tf.sage
+                                      : tf.frog
                                 }
                               />
                             ) : null}
@@ -8610,9 +8660,15 @@ export default function TasksScreen() {
                                 primary={tf.frog}
                                 surface={tf.card}
                                 surfaceLow={isDark ? colors.input : '#F1EDE1'}
-                                trackAccentFrom={isScheduleExpired ? '#E3B39C' : '#7BA3C9'}
+                                trackAccentFrom={
+                                  isScheduleExpired || isCancelledProject ? '#E3B39C' : '#7BA3C9'
+                                }
                                 trackAccentTo={
-                                  isScheduleExpired ? tf.rose : isCompleted ? tf.sage : '#4F7FA8'
+                                  isScheduleExpired || isCancelledProject
+                                    ? tf.rose
+                                    : isCompleted
+                                      ? tf.sage
+                                      : '#4F7FA8'
                                 }
                                 interactive={!isCompleted}
                                 disabled={isCompleted}

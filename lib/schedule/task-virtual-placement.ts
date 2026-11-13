@@ -1,11 +1,8 @@
 /**
- * 独立待办 → 日程表虚拟入格（不写 schedule_placements）
- * - 仅独立待办；项目任务仍靠手动青蛙（过期未完成青蛙另见滞留今日）
- * - 有具体时间 → 按时刻落格；无具体时间 → 全天
- * - 有重复 → 按重复日自动入格（无需青蛙指派）；漏做/过期 → 今天起每日入格直至完成
- * - 有日期无时间 → 须该日已指派后，今天起至截止日每天全天；过期未完成继续每日
- * - 无重复且该日无青蛙指派 → 未入格，不虚拟铺进时间线
- * - 无日期无重复但该日已指派 → 虚拟全天（时间线顶栏可见）
+ * 日程表虚拟入格（不写 schedule_placements）
+ * - 独立待办：有时刻/重复/指派日规则（见 shouldShowVirtualTaskOnDay）
+ * - 项目任务 / 项目：该日已青蛙指派但尚无真实占用 → 全天虚拟块（避免「已指派却日程空白」）
+ * - 过期未完成青蛙：滞留今日全天（buildOverdueFrogCarryPlacementsForToday）
  * - 同日已有有效占用行（非未入格）则不再叠虚拟块
  * - 定点时刻落在轴外时回退全天，避免整条消失
  */
@@ -321,6 +318,18 @@ function buildPlacedTaskDayKeys(placements: SchedulePlacementRow[] | undefined):
   return keys;
 }
 
+/** 有效占用主体日键：`task|project:id:ymd` */
+function buildPlacedSubjectDayKeys(placements: SchedulePlacementRow[] | undefined): Set<string> {
+  const keys = new Set<string>();
+  if (!placements) return keys;
+  for (const p of placements) {
+    if (p.orphaned || p.startSlotIndex == null) continue;
+    const ymd = ymdForWeekday(p.weekStartYmd, p.weekday);
+    keys.add(`${p.subjectKind}:${p.subjectId}:${ymd}`);
+  }
+  return keys;
+}
+
 export function buildVirtualTaskPlacementsForDays(params: {
   tasks: TaskRow[];
   dayYmds: string[];
@@ -408,6 +417,81 @@ export function buildVirtualTaskPlacementsForDays(params: {
           overdue,
         });
       }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * 该日已青蛙指派、但尚无真实占用的项目任务 / 项目 → 全天虚拟块。
+ * 覆盖 AI/助手仅写指派字段、或占用未落成时「列表已指派、日程空白」的空洞。
+ * 独立待办仍走 buildVirtualTaskPlacementsForDays。
+ */
+export function buildAssignedFrogVirtualPlacementsForDays(params: {
+  tasks: TaskRow[];
+  projects: ProjectRow[];
+  dayYmds: string[];
+  logicalTodayYmd: string;
+  axis: AxisLike;
+  placements?: SchedulePlacementRow[];
+}): VirtualTaskPlacement[] {
+  const { tasks, projects, dayYmds, logicalTodayYmd, axis, placements } = params;
+  const placedKeys = buildPlacedSubjectDayKeys(placements);
+  const allDay = allDaySpanForAxis(axis);
+  const axisStartH = Math.floor(axis.startMinutes / 60);
+  const axisStartM = axis.startMinutes % 60;
+  const out: VirtualTaskPlacement[] = [];
+  const seen = new Set<string>();
+
+  const pushAssigned = (
+    kind: 'task' | 'project',
+    id: string,
+    title: string,
+    priority: number,
+    extraData: string | null,
+    status: string,
+    ymd: string,
+  ) => {
+    if (ymd < logicalTodayYmd) return;
+    if (!isFrogAssignedOn(extraData, ymd)) return;
+    if (isTaskTerminalStatus(status) || isTaskShelvedStatus(status)) return;
+    const key = `${kind}:${id}:${ymd}`;
+    if (seen.has(key) || placedKeys.has(key)) return;
+    seen.add(key);
+    out.push({
+      taskId: id,
+      title: title.trim() || (kind === 'project' ? '项目' : '青蛙'),
+      assignYmd: ymd,
+      startSlotIndex: allDay.startSlotIndex,
+      spanSlots: allDay.spanSlots,
+      hour: axisStartH,
+      minute: axisStartM,
+      done: isFrogDoneForToday(extraData, status, ymd),
+      priority,
+      extraData,
+      allDay: true,
+      overdue: false,
+      carrySubjectKind: kind,
+    });
+  };
+
+  for (const ymd of dayYmds) {
+    for (const t of tasks) {
+      if (isStandaloneTodoTask(t)) continue;
+      pushAssigned('task', t.id, t.title, t.priority ?? 0, t.extra_data, t.status, ymd);
+    }
+    for (const p of projects) {
+      const status =
+        p.status === 'done' ||
+        p.status === 'cancelled' ||
+        p.status === 'completed' ||
+        p.status === 'archived'
+          ? 'done'
+          : p.status === 'doing' || p.status === 'blocked' || p.status === 'shelved'
+            ? p.status
+            : 'todo';
+      pushAssigned('project', p.id, p.name, p.priority ?? 0, p.extra_data, status, ymd);
     }
   }
 

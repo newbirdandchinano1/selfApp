@@ -40,6 +40,7 @@ import {
   ActivityIndicator,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -97,6 +98,15 @@ export default function RecipeEditScreen() {
   const [aiText, setAiText] = useState('');
   const [aiParsing, setAiParsing] = useState(false);
   const aiParseGenRef = React.useRef(0);
+  /** Modal 独立窗口，需自行抬高，避免输入法上方大片空白 */
+  const [aiKeyboardInset, setAiKeyboardInset] = useState(0);
+  /** 主表单：键盘顶边 / 高度，用于把备注等底部输入滚进可视区 */
+  const [formKeyboardInset, setFormKeyboardInset] = useState(0);
+  const formKeyboardTopRef = React.useRef<number | null>(null);
+  const scrollRef = React.useRef<ScrollView>(null);
+  const scrollYRef = React.useRef(0);
+  const notesSectionRef = React.useRef<View>(null);
+  const notesFocusedRef = React.useRef(false);
 
   const selectedCategoryName = useMemo(() => {
     if (!selectedCategoryId) return '';
@@ -148,7 +158,69 @@ export default function RecipeEditScreen() {
     Keyboard.dismiss();
     setAiModalVisible(false);
     setAiSheetMode('menu');
+    setAiKeyboardInset(0);
   }, []);
+
+  useEffect(() => {
+    if (!aiModalVisible) {
+      setAiKeyboardInset(0);
+      return;
+    }
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = Keyboard.addListener(showEvent, e => {
+      setAiKeyboardInset(Math.max(0, e.endCoordinates.height));
+    });
+    const onHide = Keyboard.addListener(hideEvent, () => setAiKeyboardInset(0));
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, [aiModalVisible]);
+
+  const ensureNotesVisible = useCallback(() => {
+    const run = () => {
+      const node = notesSectionRef.current;
+      const scroll = scrollRef.current;
+      if (!node || !scroll) return;
+      node.measureInWindow((_x, y, _w, h) => {
+        const keyboardTop = formKeyboardTopRef.current;
+        const margin = 20;
+        if (keyboardTop == null) {
+          scroll.scrollToEnd({ animated: true });
+          return;
+        }
+        const fieldBottom = y + h;
+        if (fieldBottom <= keyboardTop - margin) return;
+        const delta = fieldBottom - (keyboardTop - margin);
+        scroll.scrollTo({
+          y: Math.max(0, scrollYRef.current + delta),
+          animated: true,
+        });
+      });
+    };
+    requestAnimationFrame(run);
+    setTimeout(run, Platform.OS === 'ios' ? 80 : 40);
+    setTimeout(run, Platform.OS === 'ios' ? 280 : 160);
+  }, []);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = Keyboard.addListener(showEvent, e => {
+      formKeyboardTopRef.current = e.endCoordinates.screenY;
+      setFormKeyboardInset(Math.max(0, e.endCoordinates.height));
+      if (notesFocusedRef.current) ensureNotesVisible();
+    });
+    const onHide = Keyboard.addListener(hideEvent, () => {
+      formKeyboardTopRef.current = null;
+      setFormKeyboardInset(0);
+    });
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, [ensureNotesVisible]);
 
   const runAiParseFromText = useCallback(async () => {
     const text = aiText.trim();
@@ -499,13 +571,31 @@ export default function RecipeEditScreen() {
         error={error}
         onRetryError={() => void reload()}
         style={{ backgroundColor: p.bg }}
+        // 与备忘编辑一致：关 KAV，避免 padding 在输入法上方留出大片空白
+        keyboardAvoiding={false}
       >
         <ScrollView
+          ref={scrollRef}
           refreshControl={refreshControl}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          onScroll={e => {
+            scrollYRef.current = e.nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={16}
           contentContainerStyle={[
             styles.scrollInner,
-            { paddingBottom: Math.max(insets.bottom, 20) + 24 },
+            {
+              // iOS 需按键盘高度垫高才能滚出备注；Android 已是 resize，只加少量余量
+              paddingBottom:
+                Math.max(insets.bottom, 20) +
+                24 +
+                (formKeyboardInset > 0
+                  ? Platform.OS === 'ios'
+                    ? formKeyboardInset
+                    : 56
+                  : 0),
+            },
           ]}
           showsVerticalScrollIndicator={false}
         >
@@ -640,7 +730,11 @@ export default function RecipeEditScreen() {
             />
           </View>
 
-          <View style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}>
+          <View
+            ref={notesSectionRef}
+            collapsable={false}
+            style={[styles.formSection, { backgroundColor: p.card, borderColor: p.border }]}
+          >
             <Text style={[styles.sectionLabel, { color: p.text }]}>备注</Text>
             <Text style={[styles.label, { color: p.outline }]}>可选，最多 {RECIPE_NOTES_MAX} 字</Text>
             <TextInput
@@ -650,6 +744,13 @@ export default function RecipeEditScreen() {
               placeholderTextColor={p.outlineMuted}
               multiline
               textAlignVertical="top"
+              onFocus={() => {
+                notesFocusedRef.current = true;
+                ensureNotesVisible();
+              }}
+              onBlur={() => {
+                notesFocusedRef.current = false;
+              }}
               style={[
                 styles.inputMulti,
                 { color: p.text, borderColor: p.border, backgroundColor: p.inputBg },
@@ -666,9 +767,21 @@ export default function RecipeEditScreen() {
         onRequestClose={closeAiModal}
       >
         {/* 遮罩与内容分离：勿用外层 Pressable 包裹 TextInput，iOS 易卡触摸/焦点 */}
-        <View style={[styles.modalOverlay, { backgroundColor: p.overlay }]}>
+        <View style={[styles.aiModalOverlay, { backgroundColor: p.overlay }]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeAiModal} accessibilityLabel="关闭" />
-          <View style={[styles.modalCard, { backgroundColor: p.card, borderColor: p.border }]}>
+          <View
+            style={[
+              styles.aiModalCard,
+              {
+                backgroundColor: p.card,
+                borderColor: p.border,
+                paddingBottom:
+                  aiKeyboardInset > 0
+                    ? aiKeyboardInset + 8
+                    : Math.max(insets.bottom, 12) + 8,
+              },
+            ]}
+          >
             {aiSheetMode === 'menu' ? (
               <>
                 <Text style={[styles.modalTitle, { color: p.text }]}>AI 填入</Text>
@@ -750,7 +863,10 @@ export default function RecipeEditScreen() {
                 </Text>
                 <View style={styles.aiModalActions}>
                   <Pressable
-                    onPress={() => setAiSheetMode('menu')}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setAiSheetMode('menu');
+                    }}
                     style={({ pressed }) => [
                       styles.aiModalCancel,
                       { borderColor: p.border, opacity: pressed ? 0.7 : 1 },
@@ -981,6 +1097,20 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
+  },
+  /** AI 弹层贴底，键盘升起时用 inset 顶起，避免居中留下空白 */
+  aiModalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  aiModalCard: {
+    zIndex: 1,
+    borderWidth: 1,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    maxHeight: '78%',
   },
   modalCard: {
     zIndex: 1,

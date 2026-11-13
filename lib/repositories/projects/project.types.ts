@@ -6,7 +6,7 @@ import type { SyncStatus } from '../../database.native';
  * - doing 进行中：已被指派
  * - blocked 受阻：有未满足的前置
  * - done 已完成
- * - cancelled 已取消：用户主动放弃
+ * - cancelled 已放弃：用户主动放弃
  * - shelved 搁置：用户暂时搁置
  *
  * 旧值兼容：active→todo，paused→shelved，completed/archived→done
@@ -64,7 +64,7 @@ export function formatProjectStatusLabel(status: ProjectStatus | string): string
     case 'done':
       return '已完成';
     case 'cancelled':
-      return '已取消';
+      return '已放弃';
     case 'shelved':
       return '搁置';
     case 'todo':
