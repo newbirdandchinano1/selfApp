@@ -1,9 +1,9 @@
 /**
- * 阶段 F：时间线单条事件卡（右侧浅底圆角卡 + 左侧粗色条 + 图标 + 标题 + 友好时长）
+ * 阶段 F：时间线单条事件卡（右侧浅底圆角卡 + 左侧粗色条 + 图标 + 标题 + 类型）
  */
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { formatEventDuration } from '@/lib/schedule/timeline/layout';
+import { assignDisplayKindLabel } from '@/lib/schedule/assign-kind-sort';
 import type { TimelineEvent } from '@/lib/schedule/timeline/types';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -21,8 +21,7 @@ type Props = {
 export function TimelineEventCard({ event, height, onPress }: Props) {
   const { isDark } = useAppTheme();
   const { tf } = useTaskFoldTheme();
-  /** 多栏已按全宽横滑，不再因栏数压缩文案；仅矮卡收紧 */
-  const compact = height < 38;
+  const compact = height < 40;
   const tone = resolveTimelineTone(event.id, {
     done: event.done,
     isDark,
@@ -30,20 +29,16 @@ export function TimelineEventCard({ event, height, onPress }: Props) {
     overdue: event.overdue,
   });
 
-  const duration = formatEventDuration(event.startMinutes, event.endMinutes);
-  const metaLabel =
-    event.overdue && !event.done
-      ? duration
-        ? `过期 · ${duration}`
-        : '过期'
-      : duration;
+  const kindLabel = assignDisplayKindLabel(event.kind);
+  const kindLine =
+    event.overdue && !event.done ? `${kindLabel} · 过期` : kindLabel;
 
   return (
     <Pressable
       onPress={() => onPress(event)}
       accessibilityRole="button"
-      accessibilityLabel={`${event.title}${event.done ? '，已完成' : ''}${
-        duration ? `，${duration}` : ''
+      accessibilityLabel={`${kindLabel} ${event.title}${event.done ? '，已完成' : ''}${
+        event.overdue && !event.done ? '，过期' : ''
       }`}
       style={({ pressed }) => [
         styles.card,
@@ -68,19 +63,25 @@ export function TimelineEventCard({ event, height, onPress }: Props) {
             {
               color: tone.titleColor,
               fontSize: compact ? 11 : 12,
+              lineHeight: compact ? 14 : 15,
               textDecorationLine: event.done ? 'line-through' : 'none',
               opacity: event.done ? 0.72 : 1,
             },
           ]}>
           {event.title}
         </Text>
-        {!compact && metaLabel ? (
-          <Text
-            numberOfLines={1}
-            style={[styles.meta, { color: tone.metaColor }]}>
-            {metaLabel}
-          </Text>
-        ) : null}
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.kind,
+            {
+              color: tone.barColor,
+              fontSize: compact ? 9 : 10,
+              lineHeight: compact ? 11 : 12,
+            },
+          ]}>
+          {kindLine}
+        </Text>
       </View>
       {event.done ? (
         <MaterialIcons name="check-circle" size={compact ? 12 : 14} color={tone.barColor} style={styles.ck} />
@@ -116,17 +117,17 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     justifyContent: 'center',
+    gap: 1,
   },
   title: {
     fontWeight: '700',
     letterSpacing: -0.1,
   },
-  meta: {
-    fontSize: 9,
-    fontWeight: '500',
-    marginTop: 1,
+  kind: {
+    fontWeight: '700',
   },
   ck: {
     marginLeft: 4,
+    flexShrink: 0,
   },
 });

@@ -61,7 +61,7 @@ export async function upgradeStandaloneTodoToProject(taskId: string): Promise<Up
     id: projectId,
     name: projectName,
     category_id: null,
-    status: 'active',
+    status: 'todo',
     note: task.note?.trim() || null,
     due_date: task.due_date,
     extra_data: buildProjectExtraDataFromTask(task),

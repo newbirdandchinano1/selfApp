@@ -1,8 +1,9 @@
 /**
- * 阶段 F：全天区独立顶栏（色点 + 图标 + 标题的胶囊，自动换行）。
+ * 阶段 F：全天区独立顶栏（色点 + 图标 + 标题 + 类型副标，自动换行）。
  */
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { assignDisplayKindLabel } from '@/lib/schedule/assign-kind-sort';
 import type { TimelineEvent } from '@/lib/schedule/timeline/types';
 import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
@@ -33,12 +34,15 @@ export function AllDayRow({ events, onPress }: Props) {
               tf,
               overdue: event.overdue,
             });
+            const kindLabel = assignDisplayKindLabel(event.kind);
+            /** 类型放标题右侧副标，避免前置徽章挤掉标题 */
+            const trailing = event.done ? null : kindLabel;
             return (
               <Pressable
                 key={event.id}
                 onPress={() => onPress(event)}
                 accessibilityRole="button"
-                accessibilityLabel={`全天 ${event.title}${
+                accessibilityLabel={`全天 ${kindLabel} ${event.title}${
                   event.done ? '，已完成' : event.kind === 'habit' ? '，待打卡' : ''
                 }`}
                 style={({ pressed }) => [
@@ -65,8 +69,8 @@ export function AllDayRow({ events, onPress }: Props) {
                 </Text>
                 {event.done ? (
                   <MaterialIcons name="check" size={11} color={tone.barColor} />
-                ) : event.kind === 'habit' ? (
-                  <Text style={[styles.chipMeta, { color: tone.metaColor }]}>待打卡</Text>
+                ) : trailing ? (
+                  <Text style={[styles.chipMeta, { color: tone.metaColor }]}>{trailing}</Text>
                 ) : null}
               </Pressable>
             );
@@ -128,6 +132,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   chipMeta: {
+    flexShrink: 0,
     fontSize: 9,
     fontWeight: '600',
     marginLeft: 1,

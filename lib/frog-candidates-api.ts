@@ -103,6 +103,14 @@ export async function assignFrogForDay(params: {
     }
   }
 
+  try {
+    const { syncSubjectWorkflowStatusAfterAssign } = await import(
+      '@/lib/repositories/projects/sync-workflow-status'
+    );
+    await syncSubjectWorkflowStatusAfterAssign({ kind: params.kind, id: params.id });
+  } catch (err) {
+    console.warn('[frog-assign] 同步进行中状态失败', err);
+  }
 }
 
 /** 优先走服务端 frog-assign 取消；失败回退 PATCH extra_data */
@@ -155,4 +163,12 @@ export async function unassignFrogForDay(params: {
     }
   }
 
+  try {
+    const { syncSubjectWorkflowStatusAfterAssign } = await import(
+      '@/lib/repositories/projects/sync-workflow-status'
+    );
+    await syncSubjectWorkflowStatusAfterAssign({ kind: params.kind, id: params.id });
+  } catch (err) {
+    console.warn('[frog-assign] 同步待办状态失败', err);
+  }
 }

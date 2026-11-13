@@ -571,7 +571,13 @@ export function formatProjectProgressHabitsFullMessage(
 }
 
 function isActiveProject(project: ProjectRow): boolean {
-  return project.status !== 'completed' && project.status !== 'archived';
+  const s = String(project.status ?? '');
+  return (
+    s === 'todo' ||
+    s === 'doing' ||
+    s === 'blocked' ||
+    s === 'active'
+  );
 }
 
 /**

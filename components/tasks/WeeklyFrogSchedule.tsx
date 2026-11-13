@@ -37,7 +37,10 @@ import { getHabits } from '@/lib/repositories/habits/habit';
 import { getAllHabitCheckInsMaps } from '@/lib/repositories/habits/habit-check-in';
 import { hasActiveSubHabits } from '@/lib/repositories/habits/habit-sub';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
-import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
+import {
+  getStandaloneTodoDueMs,
+  isTaskOverdueForList,
+} from '@/lib/standalone-todo-visibility';
 import {
   centerYmdForPeriod,
   dayOffsetFromToday,
@@ -99,6 +102,13 @@ import {
 } from '@/components/tasks/SchedulePlacementDetailSheet';
 import { loadScheduleTimelineWriteEnabled } from '@/lib/schedule/timeline-flags';
 import {
+  assignDisplayKindLabel,
+  compareAssignedScheduleItems,
+  projectDueMsFromFields,
+  rewardPointsFromExtra,
+  type AssignDisplayKind,
+} from '@/lib/schedule/assign-kind-sort';
+import {
   listAssignedSubjectsForBucket,
   summarizeDailyAssignQuota,
   type DailyAssignBucket,
@@ -126,17 +136,45 @@ type TodayCompactItem = {
   tagWeight: number;
   /** 四象限 priority（主业务权重） */
   priority: number;
+  /** 项目 / 任务 / 待办 / 小习惯 */
+  assignKind: AssignDisplayKind;
+  sortOrder: number;
+  dueMs: number | null;
+  rewardPoints: number;
+  updatedAt: string | null;
+  subjectId: string;
 };
 
-/** 最简态焦点：未完成优先 → 过期置顶 → priority↓ → 标题 → 时刻 */
+/** 最简态 / 全天：类型优先（项目→任务→待办→小习惯），再同类别内部规则 */
 function compareTodayCompactByWeight(a: TodayCompactItem, b: TodayCompactItem): number {
-  if (a.done !== b.done) return a.done ? 1 : -1;
-  if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
-  if (a.priority !== b.priority) return b.priority - a.priority;
-  const byTitle = a.title.localeCompare(b.title, 'zh');
-  if (byTitle !== 0) return byTitle;
-  if (a.startMins !== b.startMins) return a.startMins - b.startMins;
-  return 0;
+  return compareAssignedScheduleItems(
+    {
+      kind: a.assignKind,
+      done: a.done,
+      overdue: a.overdue,
+      priority: a.priority,
+      title: a.title,
+      id: a.subjectId,
+      sortOrder: a.sortOrder,
+      dueMs: a.dueMs,
+      rewardPoints: a.rewardPoints,
+      updatedAt: a.updatedAt,
+      startMins: a.startMins,
+    },
+    {
+      kind: b.assignKind,
+      done: b.done,
+      overdue: b.overdue,
+      priority: b.priority,
+      title: b.title,
+      id: b.subjectId,
+      sortOrder: b.sortOrder,
+      dueMs: b.dueMs,
+      rewardPoints: b.rewardPoints,
+      updatedAt: b.updatedAt,
+      startMins: b.startMins,
+    },
+  );
 }
 
 function formatRemainLabel(remainSec: number, opts?: { untilStart?: boolean }): string {
@@ -245,7 +283,14 @@ function resolveSubject(
     const statusRaw = p?.status;
     const statusForDone =
       fromFrogRow?.status ??
-      (statusRaw === 'completed' || statusRaw === 'archived' ? 'done' : 'todo');
+      (statusRaw === 'completed' ||
+      statusRaw === 'archived' ||
+      statusRaw === 'done' ||
+      statusRaw === 'cancelled'
+        ? 'done'
+        : statusRaw === 'doing' || statusRaw === 'blocked' || statusRaw === 'shelved'
+          ? statusRaw
+          : 'todo');
     return {
       kind: 'project',
       id,
@@ -514,13 +559,22 @@ export function WeeklyFrogSchedule({
         const due = info.dueDate?.slice(0, 10) ?? '';
         const overdue =
           !info.done && /^\d{4}-\d{2}-\d{2}$/.test(due) && due < logicalTodayYmd;
+        const project = subjects.projects.find((p) => p.id === id);
         return {
           title: info.title,
           done: info.done,
           priority: info.priority,
-          blockKind: 'proj',
+          blockKind: 'proj' as const,
           icon: resolveProjectDisplayIcon(info.title, info.extraData),
           overdue,
+          sortOrder: 0,
+          dueMs: projectDueMsFromFields({
+            dueDate: project?.due_date ?? info.dueDate,
+            extraData: info.extraData,
+          }),
+          rewardPoints: rewardPointsFromExtra(info.extraData),
+          updatedAt: project?.updated_at ?? null,
+          subjectId: id,
         };
       }
       const task = subjects.tasks.find((t) => t.id === id);
@@ -534,6 +588,17 @@ export function WeeklyFrogSchedule({
         blockKind,
         icon: resolveTaskDisplayIcon(info.extraData),
         overdue,
+        sortOrder: task?.sort_order ?? 0,
+        dueMs: task
+          ? blockKind === 'todo'
+            ? getStandaloneTodoDueMs(task)
+            : task.due_date
+              ? Date.parse(task.due_date)
+              : null
+          : null,
+        rewardPoints: rewardPointsFromExtra(info.extraData),
+        updatedAt: task?.updated_at ?? null,
+        subjectId: id,
       };
     },
     [subjects, logicalTodayYmd],
@@ -1064,7 +1129,14 @@ export function WeeklyFrogSchedule({
           ? subjects.projects.find((p) => p.id === item.id)?.status ?? null
           : subjects.tasks.find((t) => t.id === item.id)?.status ?? null;
       const statusForDone =
-        status === 'completed' || status === 'archived' || status === 'done' ? 'done' : 'todo';
+        status === 'completed' ||
+        status === 'archived' ||
+        status === 'done' ||
+        status === 'cancelled'
+          ? 'done'
+          : status === 'doing' || status === 'blocked' || status === 'shelved'
+            ? status
+            : 'todo';
       return {
         ...item,
         done: isFrogDoneForToday(item.extraData, statusForDone, centerYmd),
@@ -1449,6 +1521,21 @@ export function WeeklyFrogSchedule({
           overdue = /^\d{4}-\d{2}-\d{2}$/.test(due) && due < logicalTodayYmd;
         }
       }
+      const assignKind: AssignDisplayKind =
+        p.subjectKind === 'project'
+          ? 'proj'
+          : (() => {
+              const task = subjects.tasks.find((x) => x.id === p.subjectId);
+              return task && isStandaloneTodoTask(task) ? 'todo' : 'frog';
+            })();
+      const taskRow =
+        p.subjectKind === 'task'
+          ? subjects.tasks.find((x) => x.id === p.subjectId)
+          : null;
+      const projectRow =
+        p.subjectKind === 'project'
+          ? subjects.projects.find((x) => x.id === p.subjectId)
+          : null;
       items.push({
         placement: p,
         habit: null,
@@ -1463,6 +1550,24 @@ export function WeeklyFrogSchedule({
         endMins,
         tagWeight: weightOf(p.subjectId),
         priority: sub?.priority ?? 0,
+        assignKind,
+        sortOrder: taskRow?.sort_order ?? 0,
+        dueMs:
+          assignKind === 'proj'
+            ? projectDueMsFromFields({
+                dueDate: projectRow?.due_date ?? sub?.dueDate,
+                extraData: sub?.extraData ?? null,
+              })
+            : taskRow
+              ? assignKind === 'todo'
+                ? getStandaloneTodoDueMs(taskRow)
+                : taskRow.due_date
+                  ? Date.parse(taskRow.due_date)
+                  : null
+              : null,
+        rewardPoints: rewardPointsFromExtra(sub?.extraData),
+        updatedAt: (taskRow?.updated_at ?? projectRow?.updated_at) ?? null,
+        subjectId: p.subjectId,
       });
     }
     for (const h of virtualHabitsResolved) {
@@ -1492,6 +1597,12 @@ export function WeeklyFrogSchedule({
         endMins,
         tagWeight: weightOf(h.habitId),
         priority: 0,
+        assignKind: 'habit',
+        sortOrder: 0,
+        dueMs: null,
+        rewardPoints: rewardPointsFromExtra(h.extraData),
+        updatedAt: null,
+        subjectId: h.habitId,
       });
     }
     for (const t of virtualTasks) {
@@ -1520,6 +1631,17 @@ export function WeeklyFrogSchedule({
         : placementEndMinutes(view.axis, t.startSlotIndex, span);
       const allDay = t.allDay || (!hasMins && t.startSlotIndex === 0 && span >= daySlotCount);
       const overdue = !t.done && (!!t.overdue || !!t.carrySubjectKind);
+      const assignKind: AssignDisplayKind =
+        t.carrySubjectKind === 'project'
+          ? 'proj'
+          : t.carrySubjectKind === 'task'
+            ? 'frog'
+            : 'todo';
+      const taskRow = subjects.tasks.find((x) => x.id === t.taskId) ?? null;
+      const projectRow =
+        assignKind === 'proj'
+          ? subjects.projects.find((x) => x.id === t.taskId) ?? null
+          : null;
       items.push({
         placement: null,
         habit: null,
@@ -1533,6 +1655,24 @@ export function WeeklyFrogSchedule({
         endMins,
         tagWeight: weightOf(t.taskId),
         priority: t.priority ?? 0,
+        assignKind,
+        sortOrder: taskRow?.sort_order ?? 0,
+        dueMs:
+          assignKind === 'proj'
+            ? projectDueMsFromFields({
+                dueDate: projectRow?.due_date,
+                extraData: t.extraData,
+              })
+            : taskRow
+              ? assignKind === 'todo'
+                ? getStandaloneTodoDueMs(taskRow)
+                : taskRow.due_date
+                  ? Date.parse(taskRow.due_date)
+                  : null
+              : null,
+        rewardPoints: rewardPointsFromExtra(t.extraData),
+        updatedAt: (taskRow?.updated_at ?? projectRow?.updated_at) ?? null,
+        subjectId: t.taskId,
       });
     }
     items.sort(compareTodayCompactByWeight);
@@ -1822,55 +1962,13 @@ export function WeeklyFrogSchedule({
     list: TodayCompactItem[],
     opts?: { dense?: boolean },
   ) => {
-    const kind: ScheduleBlockKind = item.habit
-      ? 'habit'
-      : item.virtualTask?.carrySubjectKind === 'project'
-        ? 'proj'
-        : item.virtualTask?.carrySubjectKind === 'task'
-          ? 'frog'
-          : item.virtualTask
-            ? 'todo'
-            : item.placement
-              ? blockKindForPlacement(item.placement, subjects)
-              : 'frog';
+    const kind: ScheduleBlockKind = item.assignKind;
+    const kindLabel = assignDisplayKindLabel(kind);
     const fill = scheduleBlockStyle(kind, {
       isPast: false,
       allDone: item.done,
       isDark,
     });
-    const durMin = Math.max(0, item.endMins - item.startMins);
-    const isAllDayRow = item.timeLabel === '全天';
-    const durLabel = isAllDayRow
-      ? '全天'
-      : durMin >= 60
-        ? `${Math.round((durMin / 60) * 10) / 10}h`.replace(/\.0h$/, 'h')
-        : `${durMin}m`;
-    const sub = item.placement
-      ? resolveSubject(
-          item.placement.subjectKind,
-          item.placement.subjectId,
-          subjects,
-          logicalTodayYmd,
-        )
-      : null;
-    const meta =
-      kind === 'habit'
-        ? item.done
-          ? '习惯 · 已完成'
-          : '习惯虚拟块'
-        : kind === 'todo'
-          ? item.virtualTask?.allDay
-            ? '独立待办 · 全天'
-            : '独立待办 · 定点'
-          : item.virtualTask?.carrySubjectKind === 'project'
-            ? `过期项目 · ${item.done ? '已完成' : '待处理'}`
-            : item.virtualTask?.carrySubjectKind === 'task'
-              ? `过期青蛙 · ${item.done ? '已完成' : '待处理'}`
-              : item.placement?.subjectKind === 'project'
-                ? `项目 · ${item.done ? '已完成' : '进行中'}`
-                : [sub?.projectName?.trim() || '青蛙', item.done ? '已完成' : '进行中']
-                    .filter(Boolean)
-                    .join(' · ');
     return (
       <Pressable
         key={
@@ -1891,7 +1989,7 @@ export function WeeklyFrogSchedule({
           if (item.placement) openDetail(item.placement);
         }}
         accessibilityRole="button"
-        accessibilityLabel={`${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
+        accessibilityLabel={`${kindLabel} ${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
         style={({ pressed }) => [
           styles.dlRow,
           index < list.length - 1 && { marginBottom: 2 },
@@ -1899,7 +1997,6 @@ export function WeeklyFrogSchedule({
         ]}>
         <View style={styles.dlTime}>
           <Text style={[styles.dlTimeStart, { color: outline }]}>{item.timeLabel}</Text>
-          <Text style={[styles.dlTimeDur, { color: tf.faint }]}>{durLabel}</Text>
         </View>
         <View
           style={[
@@ -1911,22 +2008,28 @@ export function WeeklyFrogSchedule({
               borderStyle: fill.borderStyle,
             },
           ]}>
-          <Text
-            style={[
-              styles.dlBlockTitle,
-              {
-                color: fill.titleColor,
-                textDecorationLine: item.done ? 'line-through' : 'none',
-              },
-            ]}
-            numberOfLines={1}>
-            {item.title}
-          </Text>
-          {!opts?.dense ? (
-            <Text style={[styles.dlBlockMeta, { color: fill.metaColor }]} numberOfLines={1}>
-              {meta}
+          <View style={styles.dlBlockMain}>
+            <Text
+              style={[
+                styles.dlBlockTitle,
+                {
+                  color: fill.titleColor,
+                  textDecorationLine: item.done ? 'line-through' : 'none',
+                },
+              ]}
+              numberOfLines={1}>
+              {item.title}
             </Text>
-          ) : null}
+            <Text
+              style={[
+                styles.dlBlockKind,
+                opts?.dense && styles.dlBlockKindDense,
+                { color: fill.titleColor },
+              ]}
+              numberOfLines={1}>
+              {kindLabel}
+            </Text>
+          </View>
           <View
             style={[
               styles.dlBlockCk,
@@ -1944,8 +2047,6 @@ export function WeeklyFrogSchedule({
                       : fill.titleColor
                   : 'transparent',
                 opacity: item.done ? 1 : 0.5,
-                alignItems: 'center',
-                justifyContent: 'center',
               },
             ]}>
             {item.done ? (
@@ -3121,7 +3222,8 @@ const styles = StyleSheet.create({
     minHeight: 41,
   },
   dlTime: {
-    width: 36,
+    width: 42,
+    flexShrink: 0,
     alignItems: 'flex-end',
     paddingTop: 2,
   },
@@ -3130,46 +3232,50 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
-  dlTimeDur: {
-    fontSize: 9,
-    fontWeight: '500',
-    marginTop: 1,
-    fontVariant: ['tabular-nums'],
-  },
   dlBlock: {
     flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     borderRadius: 9,
     borderWidth: 1,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    paddingRight: 22,
-    minHeight: 36,
-    justifyContent: 'center',
-    position: 'relative',
-    overflow: 'hidden',
+    minHeight: 40,
   },
   dlBlockDense: {
-    minHeight: 30,
+    minHeight: 36,
     paddingVertical: 4,
+  },
+  dlBlockMain: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
   },
   dlBlockTitle: {
     fontSize: 13,
     fontWeight: '700',
     lineHeight: 17,
   },
-  dlBlockMeta: {
+  dlBlockKind: {
     fontSize: 10,
-    fontWeight: '500',
-    marginTop: 2,
+    fontWeight: '700',
+    lineHeight: 13,
+    marginTop: 1,
+  },
+  dlBlockKindDense: {
+    fontSize: 10,
+    lineHeight: 12,
   },
   dlBlockCk: {
-    position: 'absolute',
-    right: 6,
-    top: 6,
     width: 12,
     height: 12,
     borderRadius: 6,
     borderWidth: 1,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   listBackdrop: {
     flex: 1,

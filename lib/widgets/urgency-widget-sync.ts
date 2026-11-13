@@ -99,7 +99,14 @@ function collectDueSoonProjects(
 ): UrgencyCandidate[] {
   const out: UrgencyCandidate[] = [];
   for (const project of projects) {
-    if (project.status !== 'active') continue;
+    if (
+      project.status !== 'todo' &&
+      project.status !== 'doing' &&
+      project.status !== 'blocked' &&
+      project.status !== 'active'
+    ) {
+      continue;
+    }
     const dueYmd = resolveProjectDueYmd(project);
     if (
       !isProjectDueSoonForProgress({

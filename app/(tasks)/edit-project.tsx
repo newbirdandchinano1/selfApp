@@ -24,6 +24,10 @@ import { ProjectFoldTaskTree } from '@/components/tasks/ProjectFoldTaskTree';
 import { RewardPointsStepper } from '@/components/tasks/RewardPointsStepper';
 import { TaskFoldPriorityGrid } from '@/components/tasks/task-fold-priority-grid';
 import { TaskFoldSwitch } from '@/components/tasks/task-fold-switch';
+import {
+  resolveTaskStatusTone,
+  useTaskStatusToneColors,
+} from '@/components/tasks/task-status-tag';
 import { useTaskFoldTheme } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -110,7 +114,16 @@ import {
   validatePrerequisiteSelection,
 } from '@/lib/repositories/projects/project-prerequisites';
 import { ensureProjectScheduleMetaForSave } from '@/lib/repositories/projects/project-schedule-save';
-import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import type {
+  ProjectCategoryRow,
+  ProjectRow,
+  ProjectStatus,
+} from '@/lib/repositories/projects/project.types';
+import { normalizeProjectStatus } from '@/lib/repositories/projects/project.types';
+import {
+  clearCancelledAt,
+  mergeCancelledAt,
+} from '@/lib/repositories/workflow-status';
 import {
   mergeRewardPointsIntoExtraObject,
   normalizeRewardPoints,
@@ -167,6 +180,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/** 与任务编辑页一致：不含已完成；done 仍可在快照中保留展示 */
+const STATUS_CHIPS: Array<{ key: Exclude<ProjectStatus, 'done'>; label: string }> = [
+  { key: 'doing', label: '进行中' },
+  { key: 'todo', label: '待办' },
+  { key: 'blocked', label: '受阻' },
+  { key: 'cancelled', label: '已取消' },
+  { key: 'shelved', label: '暂时搁置' },
+];
 
 function formatTaskPriorityShort(priority: number): string {
   if (priority >= 4) return 'P1';
@@ -611,9 +633,11 @@ export default function EditProjectScreen() {
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('not-urgent-not-important');
+  const [status, setStatus] = React.useState<ProjectStatus>('todo');
   const [saving, setSaving] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [activityEvents, setActivityEvents] = React.useState<TaskExecutionEventWithTitle[]>([]);
+  const taskStatusTones = useTaskStatusToneColors();
 
   const scheduleSource =
     normalizeRouteParam(params.source as string | string[] | undefined) || `edit-project-${projectId || 'unknown'}`;
@@ -769,6 +793,7 @@ export default function EditProjectScreen() {
       setTitle(project.name);
       setEntityIcon(resolveProjectDisplayIcon(project.name, project.extra_data));
       setSelectedCategoryId(normalizeProjectCategoryId(project.category_id));
+      setStatus(normalizeProjectStatus(project.status));
       setPriority(taskPriorityToKey(project.priority ?? 0));
       const longTerm = getIsLongTermProject(project.extra_data);
       const checklist = parseAcceptanceChecklist(project.extra_data, longTerm ? project.note : null, null);
@@ -1104,6 +1129,14 @@ export default function EditProjectScreen() {
     });
   }, [router, scheduleMeta, scheduleSource]);
 
+  const handleStatusChipPress = React.useCallback(
+    (next: Exclude<ProjectStatus, 'done'>) => {
+      if (loading || saving) return;
+      setStatus(next);
+    },
+    [loading, saving],
+  );
+
   const saveProject = React.useCallback(async () => {
     if (!projectId) return;
     const trimmedTitle = title.trim();
@@ -1202,14 +1235,22 @@ export default function EditProjectScreen() {
         mergeAcceptanceChecklistIntoExtraData(withRoadAcceptance, checklist) ??
         withRoadAcceptance;
       // 项目一旦有子任务，不再可作为青蛙实体
-      const nextExtraAfterTasks =
+      let nextExtraAfterTasks =
         subtasks.length > 0 ? clearProjectFrogFields(withAcceptance) : withAcceptance;
+      const prevStatus = normalizeProjectStatus(projectSnapshotRef.current?.status);
+      const nextStatus = normalizeProjectStatus(status);
+      if (nextStatus === 'cancelled' && prevStatus !== 'cancelled') {
+        nextExtraAfterTasks = mergeCancelledAt(nextExtraAfterTasks, logicalTodayYmd);
+      } else if (nextStatus !== 'cancelled') {
+        nextExtraAfterTasks = clearCancelledAt(nextExtraAfterTasks);
+      }
       const projectDueDate = dueDateFromScheduleMeta(scheduleToSave, extractDueDateFromDeadlineText(deadlineText));
       await updateProject(projectId, {
         ...(categoryTouched ? { category_id: normalizedCategoryId } : {}),
         life_month_goal_id: selectedMonthGoalId,
         life_bet_id: null,
         name: trimmedTitle,
+        status: nextStatus,
         priority: taskPriorityKeyToNumber(priority),
         note: isLongTermProject
           ? acceptanceChecklistToLines(acceptanceItems) || null
@@ -1386,6 +1427,8 @@ export default function EditProjectScreen() {
     noteImageUris,
     prerequisiteProjectIds,
     priority,
+    status,
+    logicalTodayYmd,
     projectExtraData,
     projectId,
     rewardPointsText,
@@ -1503,8 +1546,13 @@ export default function EditProjectScreen() {
       Alert.alert('无法入格', '收集箱中的项目请先移到正式分类后再指派。');
       return;
     }
-    if (snap.status !== 'active') {
-      Alert.alert('无法入格', '仅进行中的项目可指派为青蛙。');
+    if (
+      snap.status !== 'todo' &&
+      snap.status !== 'doing' &&
+      snap.status !== 'blocked' &&
+      snap.status !== 'active'
+    ) {
+      Alert.alert('无法入格', '仅待办/进行中/受阻的项目可指派为青蛙。');
       return;
     }
     if (hasChildTasks) {
@@ -1639,6 +1687,53 @@ export default function EditProjectScreen() {
                         strokeWidth={3}
                         color={tf.rose}
                       />
+                    ) : null}
+                  </View>
+                  <View style={styles.foldChipRow}>
+                    {STATUS_CHIPS.map((chip) => {
+                      const active = status === chip.key;
+                      const toneColors = taskStatusTones[resolveTaskStatusTone(chip.key)];
+                      return (
+                        <Pressable
+                          key={chip.key}
+                          onPress={() => handleStatusChipPress(chip.key)}
+                          disabled={formBusy}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          accessibilityLabel={`项目状态：${chip.label}`}
+                          style={[
+                            styles.fchip,
+                            active
+                              ? {
+                                  backgroundColor: toneColors.bg,
+                                  borderColor: toneColors.fg,
+                                }
+                              : null,
+                            formBusy && { opacity: 0.65 },
+                          ]}>
+                          <Text
+                            style={[
+                              styles.fchipText,
+                              { color: active ? toneColors.fg : '#7C897E' },
+                            ]}>
+                            {chip.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                    {status === 'done' ? (
+                      <View
+                        style={[
+                          styles.fchip,
+                          {
+                            backgroundColor: taskStatusTones.green.bg,
+                            borderColor: taskStatusTones.green.fg,
+                          },
+                        ]}>
+                        <Text style={[styles.fchipText, { color: taskStatusTones.green.fg }]}>
+                          已完成
+                        </Text>
+                      </View>
                     ) : null}
                   </View>
                   {progress.total > 0 ? (
@@ -2405,6 +2500,18 @@ const styles = StyleSheet.create({
   frowLab: { width: 52, fontSize: 12, flexShrink: 0 },
   frowValBold: { fontSize: 13, fontWeight: '700' },
   frowInput: { fontSize: 13, paddingVertical: 4, paddingHorizontal: 0, fontWeight: '600' },
+  foldChipRow: { flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap' },
+  fchip: {
+    height: 28,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(124,137,126,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,252,245,0.72)',
+  },
+  fchipText: { fontSize: 12, fontWeight: '600' },
   miniChip: {
     height: 22,
     paddingHorizontal: 8,

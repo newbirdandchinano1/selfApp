@@ -30,9 +30,12 @@ import { syncHabitReminderNotification, cancelScheduledHabitReminder } from '@/l
 import { syncScheduleSlotRemindersForHabit } from '@/lib/schedule-slot-reminder-notifications';
 import { isHabitSchedulePlaceableCycle } from '@/lib/schedule/habit-virtual-placement';
 import {
+  formatHabitExecutionHmLabel,
   normalizeHabitExecutionRange,
   parseHabitExecutionTime,
+  wallHmToHabitLogicalMinutes,
 } from '@/lib/repositories/habits/habit-execution-time';
+import { SCHEDULE_DAY_END_MAX_MINUTES, scheduleEndMinutesFromDayBoundary } from '@/lib/schedule/axis';
 import { createHabit, deleteHabit, getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import { getCheckInsMapByHabitId } from '@/lib/repositories/habits/habit-check-in';
 import { toast, Alert } from '@/lib/app-feedback';
@@ -491,7 +494,7 @@ export default function AddHabitScreen() {
               setReminderIntensity('normal');
             }
 
-            const execution = parseHabitExecutionTime(row.extra_data);
+            const execution = parseHabitExecutionTime(row.extra_data, dayBoundary);
             if (execution.allDay) {
               setExecutionAllDay(true);
             } else {
@@ -521,7 +524,7 @@ export default function AddHabitScreen() {
     return () => {
       cancelled = true;
     };
-  }, [habitId, isEditMode]);
+  }, [habitId, isEditMode, dayBoundary]);
 
   const taskRepeatPeriod = React.useMemo((): TaskRepeatPeriod => {
     if (habitKind !== 'task') return DEFAULT_TASK_REPEAT_PERIOD;
@@ -781,12 +784,15 @@ export default function AddHabitScreen() {
         reminder: reminderPayload,
         executionTime: executionAllDay
           ? { allDay: true }
-          : normalizeHabitExecutionRange({
-              startHour: executionStartTime.getHours(),
-              startMinute: executionStartTime.getMinutes(),
-              endHour: executionEndTime.getHours(),
-              endMinute: executionEndTime.getMinutes(),
-            }),
+          : normalizeHabitExecutionRange(
+              {
+                startHour: executionStartTime.getHours(),
+                startMinute: executionStartTime.getMinutes(),
+                endHour: executionEndTime.getHours(),
+                endMinute: executionEndTime.getMinutes(),
+              },
+              dayBoundary,
+            ),
       }),
       {
         enabled: resolvedSubEnabled,
@@ -1604,7 +1610,7 @@ export default function AddHabitScreen() {
                     执行时间
                   </Text>
                   <Text style={[Typography.caption, styles.quantifyHint, { color: colors.textSecondary }]}>
-                    默认全天不入日程表；指定时间段后才会入格。与打卡提醒相互独立
+                    默认全天不入日程表；指定时间段后才会入格。可跨自然日午夜，但须落在同一逻辑日（与日界对齐）。与打卡提醒相互独立
                   </Text>
                   <View style={styles.executionModeRow}>
                     {(
@@ -1653,7 +1659,11 @@ export default function AddHabitScreen() {
                         </Text>
                         <View style={styles.reminderTimeRight}>
                           <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
-                            {pad2(executionStartTime.getHours())}:{pad2(executionStartTime.getMinutes())}
+                            {formatHabitExecutionHmLabel(
+                              executionStartTime.getHours(),
+                              executionStartTime.getMinutes(),
+                              dayBoundary,
+                            )}
                           </Text>
                           {Platform.OS !== 'web' ? (
                             <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
@@ -1675,7 +1685,11 @@ export default function AddHabitScreen() {
                         </Text>
                         <View style={styles.reminderTimeRight}>
                           <Text style={[Typography.title, styles.reminderTimeValue, { color: colors.text }]}>
-                            {pad2(executionEndTime.getHours())}:{pad2(executionEndTime.getMinutes())}
+                            {formatHabitExecutionHmLabel(
+                              executionEndTime.getHours(),
+                              executionEndTime.getMinutes(),
+                              dayBoundary,
+                            )}
                           </Text>
                           {Platform.OS !== 'web' ? (
                             <MaterialIcons name="schedule" size={20} color={colors.textSecondary} />
@@ -2608,12 +2622,34 @@ export default function AddHabitScreen() {
                 if (executionTimePicker === 'start') {
                   setExecutionStartTime(date);
                   setExecutionEndTime((prev) => {
-                    const startM = date.getHours() * 60 + date.getMinutes();
-                    const endM = prev.getHours() * 60 + prev.getMinutes();
-                    if (endM > startM) return prev;
+                    const startAxis = wallHmToHabitLogicalMinutes(
+                      date.getHours(),
+                      date.getMinutes(),
+                      dayBoundary,
+                    );
+                    let endAxis = wallHmToHabitLogicalMinutes(
+                      prev.getHours(),
+                      prev.getMinutes(),
+                      dayBoundary,
+                    );
+                    const dayEnd = scheduleEndMinutesFromDayBoundary(dayBoundary);
+                    if (!(endAxis > startAxis) && dayEnd > SCHEDULE_DAY_END_MAX_MINUTES) {
+                      const asNext =
+                        prev.getHours() * 60 + prev.getMinutes() + SCHEDULE_DAY_END_MAX_MINUTES;
+                      if (asNext > startAxis && asNext <= dayEnd) endAxis = asNext;
+                    }
+                    if (endAxis > startAxis) return prev;
+                    const range = normalizeHabitExecutionRange(
+                      {
+                        startHour: date.getHours(),
+                        startMinute: date.getMinutes(),
+                        endHour: date.getHours(),
+                        endMinute: date.getMinutes(),
+                      },
+                      dayBoundary,
+                    );
                     const next = new Date(date);
-                    const bump = Math.min(startM + 30, 23 * 60 + 59);
-                    next.setHours(Math.floor(bump / 60), bump % 60, 0, 0);
+                    next.setHours(range.endHour, range.endMinute, 0, 0);
                     return next;
                   });
                 } else {
@@ -2639,15 +2675,38 @@ export default function AddHabitScreen() {
                 label="确定"
                 onPress={() => {
                   if (executionTimePicker === 'end') {
-                    const startM =
-                      executionStartTime.getHours() * 60 + executionStartTime.getMinutes();
-                    const endM = executionEndTime.getHours() * 60 + executionEndTime.getMinutes();
-                    if (!(endM > startM)) {
+                    const startAxis = wallHmToHabitLogicalMinutes(
+                      executionStartTime.getHours(),
+                      executionStartTime.getMinutes(),
+                      dayBoundary,
+                    );
+                    let endAxis = wallHmToHabitLogicalMinutes(
+                      executionEndTime.getHours(),
+                      executionEndTime.getMinutes(),
+                      dayBoundary,
+                    );
+                    const dayEnd = scheduleEndMinutesFromDayBoundary(dayBoundary);
+                    if (!(endAxis > startAxis) && dayEnd > SCHEDULE_DAY_END_MAX_MINUTES) {
+                      const asNext =
+                        executionEndTime.getHours() * 60 +
+                        executionEndTime.getMinutes() +
+                        SCHEDULE_DAY_END_MAX_MINUTES;
+                      if (asNext > startAxis && asNext <= dayEnd) endAxis = asNext;
+                    }
+                    if (!(endAxis > startAxis)) {
+                      const range = normalizeHabitExecutionRange(
+                        {
+                          startHour: executionStartTime.getHours(),
+                          startMinute: executionStartTime.getMinutes(),
+                          endHour: executionEndTime.getHours(),
+                          endMinute: executionEndTime.getMinutes(),
+                        },
+                        dayBoundary,
+                      );
                       const next = new Date(executionStartTime);
-                      const bump = Math.min(startM + 30, 23 * 60 + 59);
-                      next.setHours(Math.floor(bump / 60), bump % 60, 0, 0);
+                      next.setHours(range.endHour, range.endMinute, 0, 0);
                       setExecutionEndTime(next);
-                      toast.info('结束须晚于开始，已自动调整');
+                      toast.info('结束须晚于开始（按日界逻辑日），已自动调整');
                     }
                   }
                   setExecutionTimePicker(null);

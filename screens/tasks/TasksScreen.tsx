@@ -215,6 +215,23 @@ import {
 } from '@/lib/repositories/projects/project-schedule-status';
 import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
 import {
+  formatProjectStatusLabel,
+  isProjectActiveStatus,
+  isProjectShelvedStatus,
+  isProjectTerminalStatus,
+  normalizeProjectStatus,
+} from '@/lib/repositories/projects/project.types';
+import {
+  activateShelvedOrCancelledProject,
+  archiveCancelledEntitiesDueForInbox,
+  markProjectCancelled,
+  markProjectShelved,
+  markTaskCancelled,
+  syncDerivedWorkflowStatuses,
+  uncancelTask,
+} from '@/lib/repositories/projects/sync-workflow-status';
+import { isProjectPriorityBumpEligible } from '@/lib/repositories/workflow-status';
+import {
   listAcceptanceLeaves,
   parseAcceptanceCriteria,
 } from '@/lib/life-road/life-road-acceptance';
@@ -1332,7 +1349,7 @@ async function applyDueSoonProjectPriorityBump(
 ): Promise<number> {
   let count = 0;
   for (const p of rows) {
-    if (p.status !== 'active') continue;
+    if (!isProjectPriorityBumpEligible(p.status)) continue;
     const next = bumpNonUrgentToUrgentPriority(p.priority);
     if (next == null) continue;
     const dueYmd = resolveProjectDueYmdForPriority(p);
@@ -1593,7 +1610,7 @@ function pickFirstNonInboxProjectCategoryId(categories: ProjectCategoryRow[]): s
 }
 
 /**
- * 收集箱内且状态为「已完成」的项目，若任务树中仍有未完成/未取消的任务（例如新加任务），则恢复为「进行中」
+ * 收集箱内且状态为「已完成/已取消」的项目，若任务树中仍有未完成/未取消的任务（例如新加任务），则恢复为「待办」
  * 并移出收集箱：归入当前第一个非收集箱项目分类；若仅有收集箱则 category_id 置为 null（与新建项目「未分类」一致）。
  */
 async function reactivateInboxCompletedProjectsWithOpenTasks(
@@ -1604,14 +1621,15 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
   const nextCategoryId = pickFirstNonInboxProjectCategoryId(categories);
   let changed = 0;
   for (const p of rows) {
-    if (p.status !== 'completed') continue;
+    const status = normalizeProjectStatus(p.status);
+    if (status !== 'done' && status !== 'cancelled') continue;
     if (!isProjectInInboxCategory(p.category_id)) continue;
     const tree = treeMap[p.id] ?? [];
     if (tree.length === 0) continue;
     if (areAllTasksInProjectTreeDone(tree)) continue;
     try {
       await updateProject(p.id, {
-        status: 'active',
+        status: 'todo',
         category_id: nextCategoryId,
       });
       try {
@@ -1621,7 +1639,7 @@ async function reactivateInboxCompletedProjectsWithOpenTasks(
       }
       changed += 1;
     } catch (e) {
-      console.warn('收集箱已完成项目恢复进行中失败', p.id, e);
+      console.warn('收集箱已完成项目恢复待办失败', p.id, e);
     }
   }
   return changed;
@@ -2154,7 +2172,7 @@ export default function TasksScreen() {
     ) => {
       const project = projectsRef.current.find((p) => p.id === projectId);
       if (!project) return;
-      if (project.status === 'completed' || project.status === 'archived') return;
+      if (isProjectTerminalStatus(project.status)) return;
       const currentCounters = parseProgressCounters(project.extra_data);
       const result = mutate(currentCounters);
       const nextExtra = JSON.stringify(
@@ -2893,6 +2911,38 @@ export default function TasksScreen() {
       if (isStale()) return;
     }
 
+    try {
+      const archivedCancelled = await archiveCancelledEntitiesDueForInbox(logicalToday);
+      if (archivedCancelled.projects > 0 || archivedCancelled.tasks > 0) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        workingRows = await loadProjects();
+        if (isStale()) return;
+        cachedTasks = await getTasks(localTaskOpts);
+        treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
+        if (isStale()) return;
+      }
+    } catch (e) {
+      console.warn('归档已取消项失败', e);
+    }
+
+    try {
+      const derived = await syncDerivedWorkflowStatuses({
+        projects: workingRows,
+        treeMap,
+        standaloneTasks: cachedTasks.filter((t) => !t.project_id),
+        todayYmd: logicalToday,
+      });
+      if (derived.projectsChanged > 0 || derived.tasksChanged > 0) {
+        workingRows = await loadProjects();
+        if (isStale()) return;
+        cachedTasks = await getTasks(localTaskOpts);
+        treeMap = await loadProjectTasks(workingRows, projectTaskOpts({ preloadedTasks: cachedTasks }));
+        if (isStale()) return;
+      }
+    } catch (e) {
+      console.warn('同步工作流状态失败', e);
+    }
+
     const rolled = await applyRepeatingTaskRollovers(cachedTasks, logicalToday, dayBoundary);
     const priorityBumped = await applyDeadlineTaskPriorityBumps(cachedTasks, logicalToday);
     const projectPriorityBumped = await applyDueSoonProjectPriorityBump(
@@ -3268,8 +3318,8 @@ export default function TasksScreen() {
         return;
       }
 
-      if (project.status !== 'active') {
-        Alert.alert('无法入格', '仅进行中的项目可指派为青蛙。');
+      if (!isProjectActiveStatus(project.status)) {
+        Alert.alert('无法入格', '仅待办/进行中/受阻的项目可指派为青蛙。');
         return;
       }
 
@@ -3462,10 +3512,10 @@ export default function TasksScreen() {
         const progress = getProjectTreeTaskProgress(tree);
         await updateProject(projectId, {
           category_id: INBOX_PROJECT_CATEGORY_ID,
-          status: 'completed',
+          status: 'done',
         });
         let pointsDelta = 0;
-        if (proj && proj.status !== 'completed' && proj.status !== 'archived') {
+        if (proj && !isProjectTerminalStatus(proj.status)) {
           pointsDelta = await grantProjectPointsWithToast(projectId, 'earn', proj.extra_data);
         }
         if (proj) {
@@ -3588,7 +3638,7 @@ export default function TasksScreen() {
           const { proj, nextProjectExtra } = await completeIncompleteProjectTasksForProject(project);
           await updateProject(project.id, {
             category_id: INBOX_PROJECT_CATEGORY_ID,
-            status: 'completed',
+            status: 'done',
             ...(nextProjectExtra !== proj.extra_data ? { extra_data: nextProjectExtra } : {}),
           });
           const pointsDelta = await grantProjectPointsWithToast(
@@ -3657,10 +3707,10 @@ export default function TasksScreen() {
             ? pickFirstNonInboxProjectCategoryId(projectCategories)
             : project.category_id;
           await updateProject(project.id, {
-            status: 'active',
+            status: 'todo',
             category_id: nextCategoryId,
           });
-          if (project.status === 'completed' || project.status === 'archived') {
+          if (isProjectTerminalStatus(project.status)) {
             await grantProjectPointsWithToast(project.id, 'undo', project.extra_data);
           }
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -3678,12 +3728,12 @@ export default function TasksScreen() {
   const handleProjectCompleteToggle = React.useCallback(
     (project: ProjectRow) => {
       const tree = projectTaskTreeMap[project.id] ?? [];
-      const isCompleted = project.status === 'completed' || project.status === 'archived';
+      const isCompleted = isProjectTerminalStatus(project.status);
       /** 有未完成叶子时不在此结案；叶子齐了才允许点项目勾选框 */
       if (!isCompleted && tree.length > 0 && !areAllLeafTasksInTreeDone(tree)) return;
 
       if (isCompleted) {
-        Alert.alert('恢复项目', `确定将「${project.name}」恢复为进行中吗？`, [
+        Alert.alert('恢复项目', `确定将「${project.name}」恢复为待办吗？`, [
           { text: '取消', style: 'cancel' },
           { text: '恢复', onPress: () => void reopenProjectFromList(project) },
         ]);
@@ -3901,6 +3951,180 @@ export default function TasksScreen() {
     [shelveStandaloneTodo]
   );
 
+  const cancelStandaloneTodo = React.useCallback(
+    async (taskId: string) => {
+      const current = findVisibleTask(taskId);
+      if (!current || isTaskTerminalStatus(current.status)) return;
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      markPageDirty();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      patchVisibleTask(taskId, { status: 'cancelled', completed_at: null });
+      try {
+        await markTaskCancelled(taskId, logicalTodayYmd);
+      } catch (err) {
+        console.warn('放弃待办失败', err);
+        Alert.alert('放弃失败', '请稍后重试。');
+        await loadTasks({ forceLocal: true });
+      }
+    },
+    [findVisibleTask, loadTasks, logicalTodayYmd, markPageDirty, patchVisibleTask],
+  );
+
+  const confirmCancelStandaloneTodo = React.useCallback(
+    (taskId: string, titleLabel: string) => {
+      Alert.alert(
+        '放弃待办',
+        `确定放弃「${titleLabel}」吗？若已设置时间，将在次日或过期后收入收集箱；可随时取消放弃。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '放弃',
+            style: 'destructive',
+            onPress: () => void cancelStandaloneTodo(taskId),
+          },
+        ],
+      );
+    },
+    [cancelStandaloneTodo],
+  );
+
+  const uncancelStandaloneTodo = React.useCallback(
+    async (taskId: string) => {
+      const current = findVisibleTask(taskId);
+      if (!current || current.status !== 'cancelled') return;
+      standaloneTodoSwipeableRefs.current[taskId]?.close();
+      markPageDirty();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      patchVisibleTask(taskId, { status: 'todo', completed_at: null });
+      try {
+        await uncancelTask(taskId);
+      } catch (err) {
+        console.warn('取消放弃失败', err);
+        Alert.alert('恢复失败', '请稍后重试。');
+        await loadTasks({ forceLocal: true });
+      }
+    },
+    [findVisibleTask, loadTasks, markPageDirty, patchVisibleTask],
+  );
+
+  const confirmUncancelStandaloneTodo = React.useCallback(
+    (taskId: string, titleLabel: string) => {
+      Alert.alert('取消放弃', `将「${titleLabel}」恢复为待办吗？`, [
+        { text: '取消', style: 'cancel' },
+        { text: '恢复', onPress: () => void uncancelStandaloneTodo(taskId) },
+      ]);
+    },
+    [uncancelStandaloneTodo],
+  );
+
+  const shelveProjectFromList = React.useCallback(
+    async (projectId: string) => {
+      const project = projects.find((p) => p.id === projectId);
+      if (!project || !isProjectActiveStatus(project.status)) return;
+      projectSwipeableRefs.current[projectId]?.close();
+      markPageDirty();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, status: 'shelved' } : p)),
+      );
+      try {
+        await markProjectShelved(projectId);
+      } catch (err) {
+        console.warn('搁置项目失败', err);
+        Alert.alert('搁置失败', '请稍后重试。');
+        await loadProjects();
+      }
+    },
+    [loadProjects, markPageDirty, projects],
+  );
+
+  const confirmShelveProject = React.useCallback(
+    (projectId: string, nameLabel: string) => {
+      Alert.alert(
+        '搁置项目',
+        `确定将「${nameLabel}」暂时搁置吗？可随时再恢复。`,
+        [
+          { text: '取消', style: 'cancel' },
+          { text: '搁置', onPress: () => void shelveProjectFromList(projectId) },
+        ],
+      );
+    },
+    [shelveProjectFromList],
+  );
+
+  const cancelProjectFromList = React.useCallback(
+    async (projectId: string) => {
+      const project = projects.find((p) => p.id === projectId);
+      if (!project || isProjectTerminalStatus(project.status)) return;
+      projectSwipeableRefs.current[projectId]?.close();
+      markPageDirty();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, status: 'cancelled' } : p)),
+      );
+      try {
+        await markProjectCancelled(projectId, logicalTodayYmd);
+      } catch (err) {
+        console.warn('放弃项目失败', err);
+        Alert.alert('放弃失败', '请稍后重试。');
+        await loadProjects();
+      }
+    },
+    [loadProjects, logicalTodayYmd, markPageDirty, projects],
+  );
+
+  const confirmCancelProject = React.useCallback(
+    (projectId: string, nameLabel: string) => {
+      Alert.alert(
+        '放弃项目',
+        `确定放弃「${nameLabel}」吗？若已设置时间，将在次日或过期后收入收集箱；可随时取消放弃。`,
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '放弃',
+            style: 'destructive',
+            onPress: () => void cancelProjectFromList(projectId),
+          },
+        ],
+      );
+    },
+    [cancelProjectFromList],
+  );
+
+  const activateProjectWorkflow = React.useCallback(
+    async (projectId: string) => {
+      const project = projects.find((p) => p.id === projectId);
+      if (!project) return;
+      const status = normalizeProjectStatus(project.status);
+      if (status !== 'shelved' && status !== 'cancelled') return;
+      projectSwipeableRefs.current[projectId]?.close();
+      markPageDirty();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      const blocked = projectLockMap.get(projectId)?.locked === true;
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, status: blocked ? 'blocked' : 'todo' } : p)),
+      );
+      try {
+        await activateShelvedOrCancelledProject(projectId, { blocked });
+      } catch (err) {
+        console.warn('恢复项目失败', err);
+        Alert.alert('恢复失败', '请稍后重试。');
+        await loadProjects();
+      }
+    },
+    [loadProjects, markPageDirty, projectLockMap, projects],
+  );
+
+  const confirmActivateProjectWorkflow = React.useCallback(
+    (projectId: string, nameLabel: string) => {
+      Alert.alert('恢复项目', `将「${nameLabel}」恢复为待办吗？`, [
+        { text: '取消', style: 'cancel' },
+        { text: '恢复', onPress: () => void activateProjectWorkflow(projectId) },
+      ]);
+    },
+    [activateProjectWorkflow],
+  );
+
   const openQuickPriorityForTodo = React.useCallback(
     (task: TaskRow) => {
       const overdue = isStandaloneTodoOverdue(task, logicalTodayYmd);
@@ -3975,7 +4199,7 @@ export default function TasksScreen() {
         leafProject &&
         isLeafProjectWithoutTasks(leafProject, (projectTaskTreeMap[leafProject.id] ?? []).length)
       ) {
-        const wasDone = leafProject.status === 'completed' || leafProject.status === 'archived';
+        const wasDone = isProjectTerminalStatus(leafProject.status);
         if (wasDone) {
           void reopenProjectFromList(leafProject);
         } else {
@@ -4136,8 +4360,7 @@ export default function TasksScreen() {
           const proj = projects.find((p) => p.id === pid);
           if (
             proj &&
-            proj.status !== 'completed' &&
-            proj.status !== 'archived' &&
+            !isProjectTerminalStatus(proj.status) &&
             !isProjectInInboxCategory(proj.category_id)
           ) {
             let nextTreeMap = updateTaskInProjectTree(projectTaskTreeMap, taskId, (node) => ({
@@ -4167,7 +4390,14 @@ export default function TasksScreen() {
           void (async () => {
             try {
               const proj = await getProjectById(pid);
-              if (!proj || proj.status !== 'completed' || !isProjectInInboxCategory(proj.category_id)) return;
+              if (
+                !proj ||
+                (normalizeProjectStatus(proj.status) !== 'done' &&
+                  normalizeProjectStatus(proj.status) !== 'cancelled') ||
+                !isProjectInInboxCategory(proj.category_id)
+              ) {
+                return;
+              }
               const tree = await getTasksByProjectId(pid);
               const cats = await getProjectCategories();
               const n = await reactivateInboxCompletedProjectsWithOpenTasks([proj], { [pid]: tree }, cats);
@@ -4282,7 +4512,7 @@ export default function TasksScreen() {
   const offerCompleteProjectAfterCounterFull = React.useCallback(
     (projectId: string) => {
       const project = projectsRef.current.find((p) => p.id === projectId);
-      if (!project || project.status === 'completed' || project.status === 'archived') return;
+      if (!project || isProjectTerminalStatus(project.status)) return;
 
       void (async () => {
         try {
@@ -6769,7 +6999,7 @@ export default function TasksScreen() {
               style={styles.secondaryPaneBody}>
               <View style={styles.habitHeaderRow}>
                 <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
-                  独立待办 · 左滑升级 / 搁置
+                  独立待办 · 左滑搁置 / 放弃 / 升级
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <ScalePressable
@@ -6970,9 +7200,29 @@ export default function TasksScreen() {
                             styles.standaloneTodoSwipeChild,
                             { backgroundColor: todoListSurface },
                           ]}
-                          renderRightActions={() => (
+                          renderRightActions={() => {
+                            const isCancelledTodo = t.status === 'cancelled';
+                            return (
                             <View style={styles.standaloneSwipeActions}>
-                              {isShelved ? (
+                              {isCancelledTodo ? (
+                                <Pressable
+                                  onPress={() => confirmUncancelStandaloneTodo(t.id, t.title)}
+                                  disabled={swipeBusy}
+                                  style={({ pressed }) => [
+                                    styles.standaloneSwipeUpgrade,
+                                    {
+                                      backgroundColor: primary,
+                                      opacity: pressed ? 0.9 : 1,
+                                    },
+                                  ]}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`取消放弃 ${t.title}`}>
+                                  <MaterialIcons name="undo" size={22} color={taskUi.onAccent} />
+                                  <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                    取消放弃
+                                  </Text>
+                                </Pressable>
+                              ) : isShelved ? (
                                 <Pressable
                                   onPress={() => confirmActivateShelvedTodo(t.id, t.title)}
                                   disabled={swipeBusy}
@@ -6997,27 +7247,46 @@ export default function TasksScreen() {
                               ) : (
                                 <>
                                   {!isDone ? (
-                                    <Pressable
-                                      onPress={() => confirmShelveStandaloneTodo(t.id, t.title)}
-                                      disabled={swipeBusy}
-                                      style={({ pressed }) => [
-                                        styles.standaloneSwipeUpgrade,
-                                        {
-                                          backgroundColor: outline,
-                                          opacity: isShelving ? 0.55 : pressed ? 0.9 : 1,
-                                        },
-                                      ]}
-                                      accessibilityRole="button"
-                                      accessibilityLabel={`搁置 ${t.title}`}>
-                                      {isShelving ? (
-                                        <ActivityIndicator color={taskUi.onAccent} size="small" />
-                                      ) : (
-                                        <MaterialIcons name="inventory-2" size={20} color={taskUi.onAccent} />
-                                      )}
-                                      <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
-                                        搁置
-                                      </Text>
-                                    </Pressable>
+                                    <>
+                                      <Pressable
+                                        onPress={() => confirmShelveStandaloneTodo(t.id, t.title)}
+                                        disabled={swipeBusy}
+                                        style={({ pressed }) => [
+                                          styles.standaloneSwipeUpgrade,
+                                          {
+                                            backgroundColor: outline,
+                                            opacity: isShelving ? 0.55 : pressed ? 0.9 : 1,
+                                          },
+                                        ]}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`搁置 ${t.title}`}>
+                                        {isShelving ? (
+                                          <ActivityIndicator color={taskUi.onAccent} size="small" />
+                                        ) : (
+                                          <MaterialIcons name="inventory-2" size={20} color={taskUi.onAccent} />
+                                        )}
+                                        <Text style={styles.standaloneSwipeUpgradeText} numberOfLines={1}>
+                                          搁置
+                                        </Text>
+                                      </Pressable>
+                                      <Pressable
+                                        onPress={() => confirmCancelStandaloneTodo(t.id, t.title)}
+                                        disabled={swipeBusy}
+                                        style={({ pressed }) => [
+                                          styles.standaloneSwipeDelete,
+                                          {
+                                            backgroundColor: colors.danger,
+                                            opacity: pressed ? 0.9 : 1,
+                                          },
+                                        ]}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`放弃 ${t.title}`}>
+                                        <MaterialIcons name="block" size={20} color={taskUi.onAccent} />
+                                        <Text style={styles.standaloneSwipeDeleteText} numberOfLines={1}>
+                                          放弃
+                                        </Text>
+                                      </Pressable>
+                                    </>
                                   ) : null}
                                   <Pressable
                                     onPress={() => void handleUpgradeStandaloneTodo(t.id)}
@@ -7042,6 +7311,7 @@ export default function TasksScreen() {
                                   </Pressable>
                                 </>
                               )}
+                              {!isCancelledTodo ? (
                               <Pressable
                                 onPress={() => confirmDeleteStandaloneTodo(t.id, t.title)}
                                 disabled={swipeBusy}
@@ -7056,11 +7326,14 @@ export default function TasksScreen() {
                                   删除
                                 </Text>
                               </Pressable>
+                              ) : null}
                             </View>
-                          )}>
+                            );
+                          }}>
                           {(() => {
                             const todoMetaParts: string[] = [];
-                            if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
+                            if (t.status === 'cancelled') todoMetaParts.push('已取消 · 可取消放弃');
+                            else if (isShelved) todoMetaParts.push('暂时搁置 · 不可入格');
                             else if (isTomorrowPreview) todoMetaParts.push('明天');
                             else if (isRepeatWaiting) todoMetaParts.push('未到执行日');
                             else {
@@ -7582,7 +7855,9 @@ export default function TasksScreen() {
                   const lockInfo = projectLockMap.get(project.id);
                   const isScheduleNotStarted = isProjectScheduleNotYetStarted(project, logicalTodayYmd);
                   const isLocked = !!(lockInfo?.locked || isScheduleNotStarted);
-                  const isCompleted = project.status === 'completed' || project.status === 'archived';
+                  const isCompleted = isProjectTerminalStatus(project.status);
+                  const isShelvedProject = isProjectShelvedStatus(project.status);
+                  const isCancelledProject = normalizeProjectStatus(project.status) === 'cancelled';
                   const hasFrogAssignment = hasActiveFrogAssignment(
                     project.extra_data,
                     logicalTodayYmd,
@@ -7591,7 +7866,7 @@ export default function TasksScreen() {
                     project.extra_data,
                     logicalTodayYmd,
                   );
-                  const isArchived = project.status === 'archived';
+                  const isArchived = isProjectInInboxCategory(project.category_id);
                   const projectAccent = isLocked ? outline : isCompleted ? success : primary;
                   const projectCardBg = isLocked
                     ? isDark
@@ -7695,10 +7970,12 @@ export default function TasksScreen() {
 
                   const hasAnyTasks = taskTree.length > 0;
                   const isInInbox = isProjectInInboxCategory(project.category_id);
-                  const canSwipeArchiveToInbox =
-                    project.status !== 'completed' &&
-                    project.status !== 'archived' &&
-                    !isInInbox;
+                  const canSwipeWorkflowActions =
+                    !isInInbox &&
+                    !isCompleted &&
+                    (isProjectActiveStatus(project.status) ||
+                      isShelvedProject ||
+                      isCancelledProject);
                   const canSwipeDeleteFromInbox = isInInbox;
                   return (
                     <View key={project.id} style={styles.projectSwipeWrap}>
@@ -7706,7 +7983,7 @@ export default function TasksScreen() {
                         ref={(r) => {
                           projectSwipeableRefs.current[project.id] = r;
                         }}
-                        enabled={canSwipeArchiveToInbox || canSwipeDeleteFromInbox}
+                        enabled={canSwipeWorkflowActions || canSwipeDeleteFromInbox}
                         overshootRight={false}
                         friction={2}
                         childrenContainerStyle={{ backgroundColor: bg }}
@@ -7726,20 +8003,59 @@ export default function TasksScreen() {
                                   删细节
                                 </Text>
                               </Pressable>
-                            ) : canSwipeArchiveToInbox ? (
-                              <Pressable
-                                onPress={() => void handleProjectSwipeArchive(project)}
-                                style={({ pressed }) => [
-                                  styles.projectSwipeArchive,
-                                  { opacity: pressed ? 0.9 : 1, backgroundColor: secondary },
-                                ]}
-                                accessibilityRole="button"
-                                accessibilityLabel={`将 ${project.name} 收入收集箱归档`}>
-                                <MaterialIcons name="inventory-2" size={22} color={taskUi.onAccent} />
-                                <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
-                                  归档
-                                </Text>
-                              </Pressable>
+                            ) : canSwipeWorkflowActions ? (
+                              <>
+                                {isCancelledProject || isShelvedProject ? (
+                                  <Pressable
+                                    onPress={() =>
+                                      confirmActivateProjectWorkflow(project.id, project.name)
+                                    }
+                                    style={({ pressed }) => [
+                                      styles.projectSwipeArchive,
+                                      { opacity: pressed ? 0.9 : 1, backgroundColor: primary },
+                                    ]}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`恢复 ${project.name}`}>
+                                    <MaterialIcons name="play-arrow" size={22} color={taskUi.onAccent} />
+                                    <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
+                                      恢复
+                                    </Text>
+                                  </Pressable>
+                                ) : (
+                                  <>
+                                    <Pressable
+                                      onPress={() =>
+                                        confirmShelveProject(project.id, project.name)
+                                      }
+                                      style={({ pressed }) => [
+                                        styles.projectSwipeArchive,
+                                        { opacity: pressed ? 0.9 : 1, backgroundColor: outline },
+                                      ]}
+                                      accessibilityRole="button"
+                                      accessibilityLabel={`搁置 ${project.name}`}>
+                                      <MaterialIcons name="inventory-2" size={20} color={taskUi.onAccent} />
+                                      <Text style={styles.projectSwipeArchiveText} numberOfLines={1}>
+                                        搁置
+                                      </Text>
+                                    </Pressable>
+                                    <Pressable
+                                      onPress={() =>
+                                        confirmCancelProject(project.id, project.name)
+                                      }
+                                      style={({ pressed }) => [
+                                        styles.projectSwipeDelete,
+                                        { opacity: pressed ? 0.9 : 1, backgroundColor: error },
+                                      ]}
+                                      accessibilityRole="button"
+                                      accessibilityLabel={`放弃 ${project.name}`}>
+                                      <MaterialIcons name="block" size={20} color={taskUi.onAccent} />
+                                      <Text style={styles.projectSwipeDeleteText} numberOfLines={1}>
+                                        放弃
+                                      </Text>
+                                    </Pressable>
+                                  </>
+                                )}
+                              </>
                             ) : null}
                           </View>
                         )}>
@@ -8132,14 +8448,22 @@ export default function TasksScreen() {
                             ) : null}
                             <View style={styles.projectMetaRow}>
                               {!isCompleted ? (() => {
-                                const isPaused = project.status === 'paused';
-                                const statusLabel =
-                                  project.status === 'active'
-                                    ? '进行中'
-                                    : isPaused
-                                      ? '已暂停'
-                                      : '未知状态';
-                                const statusColor = isPaused ? taskUi.priorityP3 : secondary;
+                                const normalized = normalizeProjectStatus(project.status);
+                                const statusLabel = formatProjectStatusLabel(normalized);
+                                const statusColor =
+                                  normalized === 'shelved' || normalized === 'blocked'
+                                    ? taskUi.priorityP3
+                                    : normalized === 'doing'
+                                      ? secondary
+                                      : outline;
+                                const statusIcon =
+                                  normalized === 'shelved'
+                                    ? 'inventory-2'
+                                    : normalized === 'blocked'
+                                      ? 'block'
+                                      : normalized === 'doing'
+                                        ? 'play-circle-filled'
+                                        : 'radio-button-unchecked';
                                 return (
                                   <View
                                     style={[
@@ -8150,7 +8474,7 @@ export default function TasksScreen() {
                                       },
                                     ]}>
                                     <MaterialIcons
-                                      name={isPaused ? 'pause-circle-filled' : 'play-circle-filled'}
+                                      name={statusIcon}
                                       size={13}
                                       color={statusColor}
                                     />
@@ -9463,10 +9787,16 @@ const styles = StyleSheet.create({
   },
   /** 外边距放在 Swipeable 外，保证侧滑层高度与卡片本体一致 */
   projectSwipeWrap: { marginBottom: 0 },
+  /**
+   * 与项目卡片等高；负 margin 压住卡片右缘；
+   * 容器圆角 + overflow 裁切，搁置/放弃两钮无缝拼接。
+   */
   projectSwipeActions: {
     flexDirection: 'row',
     alignItems: 'stretch',
     marginLeft: -10,
+    borderRadius: 15,
+    overflow: 'hidden',
   },
   projectSwipeArchive: {
     flexDirection: 'row',
@@ -9475,8 +9805,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     minWidth: 100,
     paddingHorizontal: 16,
-    borderTopRightRadius: Radius.xl,
-    borderBottomRightRadius: Radius.xl,
+    borderRadius: 0,
     gap: 8,
   },
   projectSwipeArchiveText: {
@@ -9492,8 +9821,7 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     minWidth: 100,
     paddingHorizontal: 16,
-    borderTopRightRadius: Radius.xl,
-    borderBottomRightRadius: Radius.xl,
+    borderRadius: 0,
     gap: 8,
   },
   projectSwipeDeleteText: {

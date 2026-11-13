@@ -28,6 +28,12 @@ export type PlacementDisplay = {
   blockKind: TimelineEventKind;
   icon: string | null;
   overdue: boolean;
+  /** 同类别内部排序键（对齐项目/任务/待办列表） */
+  sortOrder?: number;
+  dueMs?: number | null;
+  rewardPoints?: number;
+  updatedAt?: string | null;
+  subjectId?: string | null;
 };
 
 export type PlacementDisplayResolver = (params: {
@@ -103,6 +109,11 @@ export function buildTimelineEventsForDay(params: {
       priority: display.priority,
       assignYmd: ymd,
       source: { type: 'placement', placement: p },
+      sortOrder: display.sortOrder,
+      dueMs: display.dueMs,
+      rewardPoints: display.rewardPoints,
+      updatedAt: display.updatedAt,
+      subjectId: display.subjectId ?? p.subjectId,
     });
   }
 
@@ -137,6 +148,7 @@ export function buildTimelineEventsForDay(params: {
       priority: 0,
       assignYmd: h.assignYmd,
       source: { type: 'habit', habit: h },
+      subjectId: h.habitId,
     });
   }
 
@@ -186,6 +198,11 @@ export function buildTimelineEventsForDay(params: {
       priority: t.priority ?? 0,
       assignYmd: t.assignYmd,
       source: { type: 'virtualTask', task: t },
+      sortOrder: display.sortOrder,
+      dueMs: display.dueMs,
+      rewardPoints: display.rewardPoints,
+      updatedAt: display.updatedAt,
+      subjectId: display.subjectId ?? t.taskId,
     });
   }
 

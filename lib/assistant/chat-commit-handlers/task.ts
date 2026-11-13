@@ -138,7 +138,7 @@ export async function commitProject(
     id: projectId,
     name: name.slice(0, 80),
     category_id: INBOX_PROJECT_CATEGORY_ID,
-    status: 'active',
+    status: 'todo',
     note,
     priority: asPriority(draft.priority),
     extra_data: JSON.stringify({ source: 'assistant_chat_commit' }),

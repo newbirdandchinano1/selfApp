@@ -150,7 +150,11 @@ export function listAssignedSubjectsForBucket(params: {
       priority: p.priority ?? 0,
       isStandaloneTodo: false,
       projectName: null,
-      done: p.status === 'completed' || p.status === 'archived' || p.status === 'done',
+      done:
+        p.status === 'done' ||
+        p.status === 'cancelled' ||
+        p.status === 'completed' ||
+        p.status === 'archived',
       extraData: p.extra_data,
     });
   }

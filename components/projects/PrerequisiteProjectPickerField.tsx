@@ -59,6 +59,8 @@ export function PrerequisiteProjectPickerField({
       allProjects.filter(
         (p) =>
           p.id !== excludeProjectId &&
+          p.status !== 'done' &&
+          p.status !== 'cancelled' &&
           p.status !== 'completed' &&
           p.status !== 'archived',
       ),

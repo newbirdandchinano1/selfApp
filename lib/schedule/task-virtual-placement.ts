@@ -485,7 +485,14 @@ export function buildOverdueFrogCarryPlacementsForToday(params: {
   }
   for (const p of projects) {
     const status =
-      p.status === 'completed' || p.status === 'archived' ? 'done' : 'todo';
+      p.status === 'done' ||
+      p.status === 'cancelled' ||
+      p.status === 'completed' ||
+      p.status === 'archived'
+        ? 'done'
+        : p.status === 'doing' || p.status === 'blocked' || p.status === 'shelved'
+          ? p.status
+          : 'todo';
     pushCarry('project', p.id, p.name, p.priority ?? 0, p.extra_data, status);
   }
   return out;

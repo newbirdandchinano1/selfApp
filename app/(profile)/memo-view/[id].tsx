@@ -307,7 +307,13 @@ export default function MemoViewScreen() {
       }
       const [projects, tasks] = await Promise.all([getProjects(), getTasks()]);
       const openProjects = projects
-        .filter(p => p.status !== 'completed' && p.status !== 'archived')
+        .filter(
+          p =>
+            p.status !== 'done' &&
+            p.status !== 'cancelled' &&
+            p.status !== 'completed' &&
+            p.status !== 'archived',
+        )
         .slice(0, 40)
         .map(p => ({ id: p.id, name: p.name }));
       const openTodos = tasks

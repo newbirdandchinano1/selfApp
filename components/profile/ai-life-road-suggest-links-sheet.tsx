@@ -83,7 +83,15 @@ export function AiLifeRoadSuggestLinksSheet({
         .map(t => ({ id: t.id, title: t.title }));
       const candHabits = habitRows.slice(0, 30).map(h => ({ id: h.id, title: h.name }));
       const candProjects = projectRows
-        .filter(p => p.status === 'active' || p.status === 'paused')
+        .filter(
+          p =>
+            p.status === 'todo' ||
+            p.status === 'doing' ||
+            p.status === 'blocked' ||
+            p.status === 'shelved' ||
+            p.status === 'active' ||
+            p.status === 'paused',
+        )
         .slice(0, 30)
         .map(p => ({ id: p.id, title: p.name }));
 

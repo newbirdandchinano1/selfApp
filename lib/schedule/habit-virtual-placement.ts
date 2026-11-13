@@ -10,6 +10,7 @@ import { isBuildNDaysPeriodHiddenOnViewDay } from '@/lib/repositories/habits/hab
 import {
   habitHasTimedExecution,
   parseHabitExecutionTime,
+  wallHmToHabitLogicalMinutes,
 } from '@/lib/repositories/habits/habit-execution-time';
 import {
   isHabitDayDisplayCompleted,
@@ -29,9 +30,11 @@ import {
 } from '@/lib/repositories/habits/habit-task-period';
 import type { HabitRow } from '@/lib/repositories/habits/habit.types';
 import {
+  SCHEDULE_DAY_END_MAX_MINUTES,
   clockHmToAxisMinutes,
   getSlotCount,
   listWorkSlots,
+  scheduleEndMinutesFromDayBoundary,
   type AxisLike,
 } from '@/lib/schedule/axis';
 import { isHabitVisibleOnCalendarDay } from '@/lib/tasks-calendar-data';
@@ -189,6 +192,7 @@ function resolveHabitTimedInterval(
   startMinute: number,
   endHour: number,
   endMinute: number,
+  dayBoundary: TasksDayBoundary,
 ): {
   startSlotIndex: number;
   spanSlots: number;
@@ -196,8 +200,14 @@ function resolveHabitTimedInterval(
   endMinutes: number;
   allDay: boolean;
 } | null {
-  const rawStart = startHour * 60 + startMinute;
-  const rawEnd = endHour * 60 + endMinute;
+  let rawStart = wallHmToHabitLogicalMinutes(startHour, startMinute, dayBoundary);
+  let rawEnd = wallHmToHabitLogicalMinutes(endHour, endMinute, dayBoundary);
+  // 日界允许跨午夜时：墙钟 end≤start 解为次日晨（与 normalizeHabitExecutionRange 一致）
+  const dayEnd = scheduleEndMinutesFromDayBoundary(dayBoundary);
+  if (!(rawEnd > rawStart) && dayEnd > SCHEDULE_DAY_END_MAX_MINUTES) {
+    const asNext = endHour * 60 + endMinute + SCHEDULE_DAY_END_MAX_MINUTES;
+    if (asNext > rawStart && asNext <= dayEnd) rawEnd = asNext;
+  }
   if (!(rawEnd > rawStart)) return null;
 
   // 与轴无交集则不入格（不再回退全天）
@@ -207,12 +217,11 @@ function resolveHabitTimedInterval(
   const endMinutes = Math.min(rawEnd, axis.endMinutes);
   if (!(endMinutes > startMinutes)) return null;
 
-  const startH = Math.floor(startMinutes / 60);
-  const startM = startMinutes % 60;
-  const mapped = clockHmToAxisMinutes(axis, startH, startM);
+  const mapped = clockHmToAxisMinutes(axis, startHour, startMinute);
   const startSlotIndex =
     mapped != null
-      ? (mapHabitTimeToWorkSlotIndex(axis, startH, startM) ?? nearestWorkSlotIndex(axis, mapped))
+      ? (mapHabitTimeToWorkSlotIndex(axis, startHour, startMinute) ??
+        nearestWorkSlotIndex(axis, mapped))
       : nearestWorkSlotIndex(axis, startMinutes);
 
   return {
@@ -286,7 +295,7 @@ export function buildVirtualHabitPlacementsForDays(params: {
     const kind = parseHabitKind(habit.extra_data);
     if (kind !== 'build' && kind !== 'task' && kind !== 'break') continue;
 
-    const execution = parseHabitExecutionTime(habit.extra_data);
+    const execution = parseHabitExecutionTime(habit.extra_data, dayBoundary);
     if (execution.allDay) continue;
 
     const parsedDailyGoal = parseHabitDailyGoal(habit.extra_data, kind);
@@ -303,6 +312,7 @@ export function buildVirtualHabitPlacementsForDays(params: {
       execution.startMinute,
       execution.endHour,
       execution.endMinute,
+      dayBoundary,
     );
     if (!timed) continue;
 

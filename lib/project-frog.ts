@@ -1,12 +1,17 @@
 import { isProjectInInboxCategory } from '@/lib/repositories/projects/constants';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  isProjectActiveStatus,
+  isProjectTerminalStatus,
+  normalizeProjectStatus,
+} from '@/lib/repositories/projects/project.types';
 import { isMatrixTaskInCurrentWeek } from '@/lib/standalone-todo-visibility';
 import type { TaskPriority, TaskRow } from '@/lib/repositories/tasks/task.types';
 
 /** 无子任务的项目（任务树为空） */
 export function isLeafProjectWithoutTasks(project: ProjectRow, taskCount: number): boolean {
   if (taskCount > 0) return false;
-  if (project.status === 'completed' || project.status === 'archived') return false;
+  if (isProjectTerminalStatus(project.status)) return false;
   return true;
 }
 
@@ -25,7 +30,7 @@ export function isMatrixProjectInCurrentWeek(
   );
 }
 
-/** 无子任务的活跃项目可被指派为青蛙（收集箱/终态/暂停除外） */
+/** 无子任务的活跃项目可被指派为青蛙（收集箱/终态/搁置除外） */
 export function isProjectEligibleAsFrog(
   project: ProjectRow,
   taskCount: number,
@@ -33,14 +38,15 @@ export function isProjectEligibleAsFrog(
 ): boolean {
   if (taskCount > 0) return false;
   if (locked) return false;
-  if (project.status !== 'active') return false;
+  if (!isProjectActiveStatus(project.status)) return false;
   if (isProjectInInboxCategory(project.category_id)) return false;
   return true;
 }
 
 /** 将项目映射为课程表/完成流所用的 TaskRow 形态（id 仍为项目 id） */
 export function projectToFrogTaskRow(project: ProjectRow): TaskRow {
-  const terminal = project.status === 'completed' || project.status === 'archived';
+  const status = normalizeProjectStatus(project.status);
+  const terminal = isProjectTerminalStatus(status);
   return {
     id: project.id,
     project_id: null,
@@ -49,7 +55,7 @@ export function projectToFrogTaskRow(project: ProjectRow): TaskRow {
     title: project.name,
     description: null,
     note: project.note,
-    status: terminal ? 'done' : 'todo',
+    status: terminal ? 'done' : status === 'doing' || status === 'blocked' || status === 'shelved' ? status : 'todo',
     priority: (project.priority ?? 0) as TaskPriority,
     due_date: project.due_date,
     completed_at: null,

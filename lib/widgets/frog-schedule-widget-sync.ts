@@ -110,6 +110,9 @@ export async function buildTodayFrogScheduleGlance(now = new Date()): Promise<Fr
     const project = projectMap.get(p.subjectId);
     if (!project) continue;
     const done =
+      project.status === 'done' ||
+      project.status === 'cancelled' ||
+      project.status === 'shelved' ||
       project.status === 'completed' ||
       project.status === 'archived' ||
       project.status === 'paused';

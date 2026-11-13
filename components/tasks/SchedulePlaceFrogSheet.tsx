@@ -44,7 +44,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Alert, toast } from '@/lib/app-feedback';
+import { toast } from '@/lib/app-feedback';
 import {
   assertCanAssignSubjectOnDay,
   canAssignPriorityOnDay,
@@ -1520,10 +1520,41 @@ export function SchedulePlaceFrogSheet({
     span,
     maxSpan,
   ]);
+  /** 预选/已选主体：当前日该优先级是否已无新名额（同日已指派不占新名额） */
+  const quotaBlockMessage = React.useMemo(() => {
+    if (!pickedItems?.length || quotaStats.length === 0) return null;
+    const pendingByBucket = new Map<
+      number,
+      { count: number; label: string; remaining: number; max: number }
+    >();
+    for (const item of pickedItems) {
+      if (item.alreadyAssigned) continue;
+      const bucket = dailyAssignBucketFromPriority(item.priority ?? 0);
+      const row = quotaStats.find((s) => s.bucket === bucket);
+      const cur = pendingByBucket.get(bucket) ?? {
+        count: 0,
+        label: row?.label ?? '该优先级',
+        remaining: row?.remaining ?? 0,
+        max: row?.max ?? 0,
+      };
+      pendingByBucket.set(bucket, { ...cur, count: cur.count + 1 });
+    }
+    for (const info of pendingByBucket.values()) {
+      if (info.remaining <= 0) {
+        return `今日「${info.label}」已达上限 ${info.max} 项，无法再指派`;
+      }
+      if (info.count > info.remaining) {
+        return `「${info.label}」今日仅剩 ${info.remaining} 个名额（上限 ${info.max}），已选 ${info.count} 项`;
+      }
+    }
+    return null;
+  }, [pickedItems, quotaStats]);
+
   const canConfirm =
     pickedCount > 0 &&
     !saving &&
     !batchPackError &&
+    !quotaBlockMessage &&
     (allDay
       ? canAssignAllDay
       : minuteMode
@@ -1558,7 +1589,7 @@ export function SchedulePlaceFrogSheet({
   const commitDatePicker = React.useCallback(() => {
     const ymd = formatYmd(datePickerDraft);
     if (!isEditableScheduleDay(ymd, todayYmd)) {
-      Alert.alert('无法指派', '只能选择今天或未来的日期。');
+      toast.warn('只能选择今天或未来的日期。');
       return;
     }
     applySelectedYmd(ymd);
@@ -1720,19 +1751,24 @@ export function SchedulePlaceFrogSheet({
   );
 
   const submit = React.useCallback(async () => {
-    if (!pickedItems?.length || !canConfirm) return;
+    if (!pickedItems?.length || !canConfirm || saving) return;
     const ymd = selectedYmd || assignYmd;
     if (!isEditableScheduleDay(ymd, logicalToday || assignYmd)) {
-      Alert.alert('无法指派', '只能选择今天或未来的日期。');
+      // Sheet 已是 Modal：勿再 Alert（嵌套 Modal 易无提示并卡死），用 toast
+      toast.warn('只能选择今天或未来的日期。');
       return;
     }
 
-    // 配额已满则前端直接拦截（含预选 / 改派到新日 / 批量）；同日已指派会放行
+    setSaving(true);
     try {
+      // 配额已满则前端直接拦截（含预选 / 改派到新日 / 批量）；同日已指派会放行
+      // 校验失败必须阻断，不可吞错后继续入格
       const liveQuota = await loadDailyAssignQuotaStats(ymd);
       setQuotaStats(liveQuota);
-      // 批量：先按桶累计「尚未占用」的新指派数
-      const pendingByBucket = new Map<number, { count: number; label: string; remaining: number; max: number }>();
+      const pendingByBucket = new Map<
+        number,
+        { count: number; label: string; remaining: number; max: number }
+      >();
       for (const item of pickedItems) {
         let alreadyOnDay = !!item.alreadyAssigned;
         try {
@@ -1743,7 +1779,9 @@ export function SchedulePlaceFrogSheet({
           });
           alreadyOnDay = gate.alreadyAssigned;
         } catch (err) {
-          Alert.alert('无法指派', err instanceof Error ? err.message : '该优先级今日指派名额已满');
+          toast.warn(
+            err instanceof Error ? err.message : '该优先级今日指派名额已满',
+          );
           return;
         }
         if (alreadyOnDay) continue;
@@ -1755,36 +1793,31 @@ export function SchedulePlaceFrogSheet({
           remaining: row?.remaining ?? 0,
           max: row?.max ?? 0,
         };
-        // assert 已对「当前库状态」放行；批量还需防止一次勾选超出剩余
         pendingByBucket.set(bucket, { ...cur, count: cur.count + 1 });
       }
       for (const info of pendingByBucket.values()) {
         if (info.count > info.remaining) {
-          Alert.alert(
-            '无法指派',
+          toast.warn(
             `「${info.label}」今日仅剩 ${info.remaining} 个名额（上限 ${info.max}），已选 ${info.count} 项`,
           );
           return;
         }
       }
-    } catch (err) {
-      console.warn('[schedule-place] 提交前配额校验失败', err);
-    }
 
-    const results = buildResults(ymd);
-    if (results.length === 0) return;
-    setSaving(true);
-    try {
+      const results = buildResults(ymd);
+      if (results.length === 0) return;
       await onConfirm(results);
       onClose();
     } catch (err) {
-      Alert.alert('入格失败', err instanceof Error ? err.message : '请稍后重试');
+      console.warn('[schedule-place] 提交失败', err);
+      toast.error(err instanceof Error ? err.message : '入格失败，请稍后重试');
     } finally {
       setSaving(false);
     }
   }, [
     pickedItems,
     canConfirm,
+    saving,
     buildResults,
     onConfirm,
     selectedYmd,
@@ -2066,6 +2099,19 @@ export function SchedulePlaceFrogSheet({
           : null}
       </View>
 
+      {quotaBlockMessage ? (
+        <Text
+          style={{
+            color: tf.rose,
+            fontSize: 12,
+            fontWeight: '650',
+            paddingHorizontal: 4,
+            paddingBottom: 8,
+            lineHeight: 17,
+          }}>
+          {quotaBlockMessage}
+        </Text>
+      ) : null}
       <View style={styles.foot2}>
         <Pressable
           onPress={() => {
@@ -2085,8 +2131,14 @@ export function SchedulePlaceFrogSheet({
           </Text>
         </Pressable>
         <Pressable
-          onPress={() => void submit()}
-          disabled={!canConfirm}
+          onPress={() => {
+            if (quotaBlockMessage) {
+              toast.warn(quotaBlockMessage);
+              return;
+            }
+            void submit();
+          }}
+          disabled={!canConfirm && !quotaBlockMessage}
           style={({ pressed }) => [
             styles.primaryBtn,
             {
@@ -2101,15 +2153,17 @@ export function SchedulePlaceFrogSheet({
             <>
               <MaterialIcons name="cruelty-free" size={18} color={tf.onPond} />
               <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
-                {pickedCount > 1
-                  ? allDay
-                    ? `指派全天 · ${pickedCount}`
-                    : `确认入格 · ${pickedCount}`
-                  : allDay
-                    ? '指派全天'
-                    : minuteMode
-                      ? '确认时段'
-                      : '确认入格'}
+                {quotaBlockMessage
+                  ? '名额已满'
+                  : pickedCount > 1
+                    ? allDay
+                      ? `指派全天 · ${pickedCount}`
+                      : `确认入格 · ${pickedCount}`
+                    : allDay
+                      ? '指派全天'
+                      : minuteMode
+                        ? '确认时段'
+                        : '确认入格'}
               </Text>
             </>
           )}

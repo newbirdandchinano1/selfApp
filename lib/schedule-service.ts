@@ -1,4 +1,5 @@
 import { assignFrogForDay, unassignFrogForDay } from '@/lib/frog-candidates-api';
+import { assertCanAssignSubjectOnDay } from '@/lib/schedule/daily-assign-quota';
 import {
   axisFromSnapshot,
   breakIntersectingInterval,
@@ -401,6 +402,13 @@ export async function placeFrogOnSchedule(params: {
     subjectId: params.subjectId,
   });
 
+  // 配额满则在写占用前拦截，避免先入格再回滚触发课表连环刷新/卡死感
+  await assertCanAssignSubjectOnDay({
+    kind: params.subjectKind,
+    id: params.subjectId,
+    assignYmd,
+  });
+
   // 先写本地占用并广播，避免指派接口挂起时页面一直不刷新
   const input: SchedulePlacementInput = {
     weekStartYmd: params.weekStartYmd,
@@ -555,6 +563,12 @@ export async function placeFrogOnScheduleAt(params: {
     subjectId: params.subjectId,
   });
 
+  await assertCanAssignSubjectOnDay({
+    kind: params.subjectKind,
+    id: params.subjectId,
+    assignYmd,
+  });
+
   const input: SchedulePlacementInput = {
     weekStartYmd: params.weekStartYmd,
     weekday: params.weekday,
@@ -645,6 +659,12 @@ export async function rematerializeOrphanedPlacement(params: {
     subjectKind: placement.subjectKind,
     subjectId: placement.subjectId,
     excludePlacementId: placement.id,
+  });
+
+  await assertCanAssignSubjectOnDay({
+    kind: placement.subjectKind,
+    id: placement.subjectId,
+    assignYmd: params.assignYmd,
   });
 
   await updatePlacementSlots(placement.id, {
@@ -753,6 +773,12 @@ export async function rematerializeOrphanedPlacementAtMinutes(params: {
     subjectKind: placement.subjectKind,
     subjectId: placement.subjectId,
     excludePlacementId: placement.id,
+  });
+
+  await assertCanAssignSubjectOnDay({
+    kind: placement.subjectKind,
+    id: placement.subjectId,
+    assignYmd: params.assignYmd,
   });
 
   await updatePlacementSlots(placement.id, {

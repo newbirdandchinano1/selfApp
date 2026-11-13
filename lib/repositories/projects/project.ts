@@ -16,7 +16,15 @@ import type {
   UpdateProjectCategoryInput,
   UpdateProjectInput,
 } from './project.types';
+import {
+  isProjectActiveStatus,
+  normalizeProjectStatus,
+} from './project.types';
 import { normalizeTaskPriority } from '@/lib/repositories/tasks/task.types';
+
+function normalizeProjectRow(row: ProjectRow): ProjectRow {
+  return { ...row, status: normalizeProjectStatus(row.status) };
+}
 
 /** 活跃项目：临期/过期写库强制紧急 */
 function resolveWritableProjectPriority(params: {
@@ -26,7 +34,7 @@ function resolveWritableProjectPriority(params: {
   status: string;
 }): ProjectPriority {
   const current = normalizeTaskPriority(params.priority) as ProjectPriority;
-  if (params.status !== 'active') return current;
+  if (!isProjectActiveStatus(params.status)) return current;
   const todayYmd = getLogicalLocalYmd(new Date(), getDayBoundarySync());
   const dueYmd = resolveProjectDueYmdForPriority({
     due_date: params.due_date,
@@ -57,7 +65,7 @@ export async function createProject(input: CreateProjectInput) {
   }
   const inStrictInbox = categoryId === INBOX_PROJECT_CATEGORY_ID;
   const inboxAtSql = inStrictInbox ? `datetime('now')` : 'NULL';
-  const status = input.status ?? 'active';
+  const status = normalizeProjectStatus(input.status ?? 'todo');
   const dueDate = input.due_date ?? null;
   const extraData = input.extra_data ?? null;
   const priority = resolveWritableProjectPriority({
@@ -96,7 +104,7 @@ async function readLocalProjectsVisible(): Promise<ProjectRow[]> {
   const rows = await db.getAllAsync<ProjectRow>(
     `SELECT * FROM projects WHERE sync_status != 'pending_delete'`,
   );
-  return rows ?? [];
+  return (rows ?? []).map(normalizeProjectRow);
 }
 
 async function readLocalProjectCategoriesVisible(): Promise<ProjectCategoryRow[]> {
@@ -113,7 +121,7 @@ export async function getProjectById(id: string) {
     `SELECT * FROM projects WHERE id = ? AND sync_status != 'pending_delete' LIMIT 1`,
     [id],
   );
-  return row ?? null;
+  return row ? normalizeProjectRow(row) : null;
 }
 
 /** 按 id 批量读项目（去重）；用于日程提醒等避免 N+1 */
@@ -126,7 +134,7 @@ export async function getProjectsByIds(ids: string[]): Promise<ProjectRow[]> {
     `SELECT * FROM projects WHERE id IN (${placeholders}) AND sync_status != 'pending_delete'`,
     unique,
   );
-  return rows ?? [];
+  return (rows ?? []).map(normalizeProjectRow);
 }
 
 /** 项目列表：仅读本地 SQLite（后端拉取逻辑待重写） */
@@ -192,7 +200,9 @@ export async function updateProject(id: string, input: UpdateProjectInput) {
     nextInboxEnteredAt = current.inbox_entered_at ?? null;
   }
 
-  const nextStatus = input.status ?? current.status;
+  const nextStatus = normalizeProjectStatus(
+    input.status !== undefined ? input.status : current.status,
+  );
   const nextDueDate = input.due_date !== undefined ? input.due_date : current.due_date;
   const nextExtraData = input.extra_data !== undefined ? input.extra_data : current.extra_data;
   const nextPriority = resolveWritableProjectPriority({

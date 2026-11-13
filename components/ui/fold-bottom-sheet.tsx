@@ -11,7 +11,9 @@ import { TaskFoldMotion, useTaskFoldTheme } from '@/constants/task-fold-theme';
 import React from 'react';
 import {
   Animated,
+  Keyboard,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   useWindowDimensions,
@@ -51,6 +53,9 @@ export function FoldBottomSheet({
   const { animate } = useFoldMotionGate();
 
   const [presented, setPresented] = React.useState(false);
+  // Modal 独立窗口，Android 的 adjustResize / softwareKeyboardLayoutMode 管不到，
+  // 用键盘高度把整块面板顶上去，避免「添加计数目标」等表单被挡住。
+  const [keyboardInset, setKeyboardInset] = React.useState(0);
   const closingRef = React.useRef(false);
   const scrim = React.useRef(new Animated.Value(0)).current;
   const sheetY = React.useRef(new Animated.Value(1)).current;
@@ -85,6 +90,9 @@ export function FoldBottomSheet({
     (after?: () => void) => {
       if (closingRef.current) return;
       closingRef.current = true;
+      // Modal 关掉后焦点可能悬空，不主动收键盘会把输入法留在底层页面上
+      Keyboard.dismiss();
+      setKeyboardInset(0);
       const finish = () => {
         setPresented(false);
         scrim.setValue(0);
@@ -124,12 +132,31 @@ export function FoldBottomSheet({
       return;
     }
     // 父级强制关掉：跳过动画直接收起（正常关闭走 runClose → onClose）
+    Keyboard.dismiss();
+    setKeyboardInset(0);
     if (!closingRef.current) {
       setPresented(false);
       scrim.setValue(0);
       sheetY.setValue(1);
     }
   }, [visible, runOpen, scrim, sheetY]);
+
+  React.useEffect(() => {
+    if (!presented) {
+      setKeyboardInset(0);
+      return;
+    }
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = Keyboard.addListener(showEvent, (e) => {
+      setKeyboardInset(Math.max(0, e.endCoordinates.height));
+    });
+    const onHide = Keyboard.addListener(hideEvent, () => setKeyboardInset(0));
+    return () => {
+      onShow.remove();
+      onHide.remove();
+    };
+  }, [presented]);
 
   const footPad = Math.max(insets.bottom, 12);
   const slidePx = Math.min(DEFAULT_SLIDE_PX, Math.round(winH * 0.55));
@@ -139,6 +166,8 @@ export function FoldBottomSheet({
   });
   const sheetBg = isDark ? tf.paper2 : tf.card;
   const maxH = Math.round(winH * maxHeightRatio);
+  // 键盘升起时安全区已被键盘盖住，用键盘高度替代底部安全 padding
+  const bottomPad = keyboardInset > 0 ? keyboardInset : footPad;
 
   if (!presented && !visible) return null;
 
@@ -166,7 +195,7 @@ export function FoldBottomSheet({
             {
               backgroundColor: sheetBg,
               borderTopColor: tf.line,
-              paddingBottom: footPad,
+              paddingBottom: bottomPad,
               maxHeight: maxH,
               transform: [{ translateY }],
               shadowColor: tf.shadow,

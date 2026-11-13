@@ -339,7 +339,12 @@ export function isProjectRedeemConditionMet(
   project: Pick<ProjectRow, 'status'> | null | undefined,
 ): boolean {
   if (!project) return false;
-  return project.status === 'completed' || project.status === 'archived';
+  return (
+    project.status === 'done' ||
+    project.status === 'cancelled' ||
+    project.status === 'completed' ||
+    project.status === 'archived'
+  );
 }
 
 export function isTaskRedeemConditionMet(task: Pick<TaskRow, 'status'> | null | undefined): boolean {

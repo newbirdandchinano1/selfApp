@@ -1,6 +1,7 @@
 import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
 import type { TaskTreeNode } from '../tasks/task';
 import type { ProjectRow } from './project.types';
+import { isProjectTerminalStatus } from './project.types';
 import { parseProjectExtraData, type ProjectExtraDataBag } from './project-extra-data';
 import {
   getProjectScheduleYmdBounds,
@@ -48,7 +49,7 @@ export function normalizePrerequisiteProjectIds(raw: unknown): string[] {
 
 /** 前置项目是否已执行完毕：已完结/归档，或任务树（非空）全部完成 */
 export function isPrerequisiteProjectFulfilled(project: ProjectRow, tree: TaskTreeNode[] = []): boolean {
-  if (project.status === 'completed' || project.status === 'archived') return true;
+  if (isProjectTerminalStatus(project.status)) return true;
   if (tree.length === 0) return false;
   return areAllTasksInProjectTreeDone(tree);
 }
@@ -201,8 +202,8 @@ export function sortProjectsForList(
     const lockB = lockedProjectIds?.has(b.id) ?? false;
     if (lockA !== lockB) return lockA ? 1 : -1;
 
-    const doneA = a.status === 'completed' || a.status === 'archived';
-    const doneB = b.status === 'completed' || b.status === 'archived';
+    const doneA = isProjectTerminalStatus(a.status);
+    const doneB = isProjectTerminalStatus(b.status);
     if (doneA !== doneB) return doneA ? 1 : -1;
 
     const priorityA = a.priority ?? 0;

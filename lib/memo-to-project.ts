@@ -59,7 +59,7 @@ export async function createProjectFromMemoInInbox(
     id: projectId,
     name,
     category_id: INBOX_PROJECT_CATEGORY_ID,
-    status: 'active',
+    status: 'todo',
     note,
     due_date: null,
     extra_data: JSON.stringify({

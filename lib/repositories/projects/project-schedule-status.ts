@@ -1,4 +1,5 @@
 import type { ProjectRow } from './project.types';
+import { isProjectTerminalStatus } from './project.types';
 import {
   compareYmd,
   hasScheduleRange,
@@ -32,7 +33,7 @@ export function projectHasScheduleBounds(project: ProjectRow): boolean {
 }
 
 export function isProjectScheduleNotYetStarted(project: ProjectRow, todayYmd: string): boolean {
-  if (project.status === 'completed' || project.status === 'archived') return false;
+  if (isProjectTerminalStatus(project.status)) return false;
   const bounds = getProjectScheduleYmdBounds(project);
   if (!bounds.startYmd || !bounds.endYmd) return false;
 
@@ -48,7 +49,7 @@ export function isProjectScheduleNotYetStarted(project: ProjectRow, todayYmd: st
 }
 
 export function isProjectScheduleExpired(project: ProjectRow, todayYmd: string): boolean {
-  if (project.status === 'completed' || project.status === 'archived') return false;
+  if (isProjectTerminalStatus(project.status)) return false;
   if (isProjectScheduleNotYetStarted(project, todayYmd)) return false;
 
   const schedule = parseScheduleMetaFromExtra(project.extra_data);

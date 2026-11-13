@@ -23,11 +23,17 @@ import {
   semanticLabelForMinutes,
 } from '../lib/schedule/timeline/labels.ts';
 
-const ev = (id, startMinutes, endMinutes, allDay = false) => ({
+const ev = (id, startMinutes, endMinutes, allDay = false, extra = {}) => ({
   id,
   startMinutes,
   endMinutes,
   allDay,
+  kind: 'frog',
+  title: id,
+  done: false,
+  overdue: false,
+  priority: 0,
+  ...extra,
 });
 
 // 传递重叠簇：A 9-11 与 B 9:30-10:30 重叠；C 11:30-12:30 独立

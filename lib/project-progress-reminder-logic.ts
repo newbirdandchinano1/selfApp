@@ -55,7 +55,14 @@ export function isProjectDueSoonForProgress(params: {
 
 export function shouldSuppressProjectProgressReminder(status: string | null | undefined): boolean {
   const s = (status ?? '').trim();
-  return s === 'completed' || s === 'archived' || s === 'paused';
+  return (
+    s === 'done' ||
+    s === 'cancelled' ||
+    s === 'shelved' ||
+    s === 'completed' ||
+    s === 'archived' ||
+    s === 'paused'
+  );
 }
 
 /** 下一次推进提醒：今日默认时刻；已过则明天同时刻 */

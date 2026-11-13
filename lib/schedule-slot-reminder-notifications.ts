@@ -159,6 +159,9 @@ function resolveSubjectTitle(
   const project = lookup.projects.get(subjectId);
   if (!project) return null;
   if (
+    project.status === 'done' ||
+    project.status === 'cancelled' ||
+    project.status === 'shelved' ||
     project.status === 'completed' ||
     project.status === 'archived' ||
     project.status === 'paused'

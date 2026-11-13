@@ -19,6 +19,7 @@
     "test:schedule-minutes-backfill": "npx --yes tsx scripts/test-schedule-minutes-backfill.mjs",
     "test:schedule-placement-api-minutes": "npx --yes tsx scripts/test-schedule-placement-api-minutes.mjs",
     "test:schedule-timeline-layout": "npx --yes tsx scripts/test-schedule-timeline-layout.mjs",
+    "test:assign-kind-sort": "npx --yes tsx scripts/test-assign-kind-sort.mjs",
     "test:schedule-timed-placement": "npx --yes tsx scripts/test-schedule-timed-placement.mjs",
     "test:schedule-axis-remap-minutes": "npx --yes tsx scripts/test-schedule-axis-remap-minutes.mjs",
     "test:schedule-reminder-minutes": "npx --yes tsx scripts/test-schedule-reminder-minutes.mjs",

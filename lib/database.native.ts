@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 60;
+export const DB_VERSION = 61;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -476,6 +476,25 @@ async function migrateEnsureLifeRoadNodesV60(db: SQLite.SQLiteDatabase): Promise
 
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'life_road_nodes_v60',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 项目 status 对齐任务：active→todo，paused→shelved，completed/archived→done */
+async function migrateProjectStatusAlignTaskV61(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['project_status_align_task_v61'],
+  );
+  if (done) return;
+
+  await db.runAsync(`UPDATE projects SET status = 'todo' WHERE status = 'active'`);
+  await db.runAsync(`UPDATE projects SET status = 'shelved' WHERE status = 'paused'`);
+  await db.runAsync(`UPDATE projects SET status = 'done' WHERE status IN ('completed', 'archived')`);
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'project_status_align_task_v61',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -2640,6 +2659,7 @@ export async function initDatabase() {
   await migrateEnsureSyncRevisionColumns(db);
   await migrateEnsureLifeRoadTables(db);
   await migrateEnsureLifeRoadNodesV60(db);
+  await migrateProjectStatusAlignTaskV61(db);
   await migrateEnsureNotificationInboxLocal(db);
   await migrateEnsureWardrobeTables(db);
 

@@ -18,7 +18,18 @@ import {
 } from '@/lib/repositories/progress/progress-counters';
 import { MaterialIcons } from '@expo/vector-icons';
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+
+/** 带「完成」键的数字键盘；number-pad 无收起键 */
+const INT_KEYBOARD = Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric';
 
 type ProgressCountersFieldProps = {
   counters: ProgressCounter[];
@@ -168,7 +179,10 @@ export function ProgressCountersField({
                         });
                       }}
                       editable={!disabled}
-                      keyboardType="number-pad"
+                      keyboardType={INT_KEYBOARD}
+                      returnKeyType="done"
+                      blurOnSubmit
+                      onSubmitEditing={Keyboard.dismiss}
                       placeholder={`${PROGRESS_COUNTER_TARGET_MIN}`}
                       placeholderTextColor={placeholderColor}
                       style={[
@@ -254,7 +268,10 @@ export function ProgressCountersField({
                         });
                       }}
                       editable={!disabled}
-                      keyboardType="number-pad"
+                      keyboardType={INT_KEYBOARD}
+                      returnKeyType="done"
+                      blurOnSubmit
+                      onSubmitEditing={Keyboard.dismiss}
                       placeholder="0"
                       placeholderTextColor={placeholderColor}
                       style={[
@@ -418,6 +435,7 @@ function AddCounterSheetBody({
   const requestClose = useFoldBottomSheetRequestClose();
 
   const confirm = useCallback(() => {
+    Keyboard.dismiss();
     onConfirm();
     requestClose();
   }, [onConfirm, requestClose]);
@@ -439,6 +457,9 @@ function AddCounterSheetBody({
           onChangeText={setDraftTitle}
           placeholder="计数目标"
           placeholderTextColor={placeholderColor}
+          returnKeyType="done"
+          blurOnSubmit
+          onSubmitEditing={Keyboard.dismiss}
           style={[
             styles.titleInput,
             { color: textColor, borderColor: placeholderColor, backgroundColor: surfaceLowest },
@@ -466,7 +487,10 @@ function AddCounterSheetBody({
               setDraftTarget(next);
               if (draftCurrent > next) setDraftCurrent(next);
             }}
-            keyboardType="number-pad"
+            keyboardType={INT_KEYBOARD}
+            returnKeyType="done"
+            blurOnSubmit
+            onSubmitEditing={Keyboard.dismiss}
             placeholder={`${PROGRESS_COUNTER_TARGET_MIN}`}
             placeholderTextColor={placeholderColor}
             style={[
@@ -494,6 +518,9 @@ function AddCounterSheetBody({
           onChangeText={(t) => setDraftUnit(t.slice(0, PROGRESS_COUNTER_UNIT_MAX))}
           placeholder="次"
           placeholderTextColor={placeholderColor}
+          returnKeyType="done"
+          blurOnSubmit
+          onSubmitEditing={Keyboard.dismiss}
           style={[
             styles.unitInput,
             { color: textColor, borderColor: placeholderColor, backgroundColor: surfaceLowest },
@@ -519,7 +546,10 @@ function AddCounterSheetBody({
               );
               setDraftCurrent(Math.min(cap, parseNonNegInt(t, PROGRESS_COUNTER_CURRENT_MAX)));
             }}
-            keyboardType="number-pad"
+            keyboardType={INT_KEYBOARD}
+            returnKeyType="done"
+            blurOnSubmit
+            onSubmitEditing={Keyboard.dismiss}
             placeholder="0"
             placeholderTextColor={placeholderColor}
             style={[

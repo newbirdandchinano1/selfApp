@@ -17,6 +17,7 @@ import {
 } from '@/lib/repositories/projects/constants';
 import { getProjects } from '@/lib/repositories/projects/project';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { normalizeProjectStatus } from '@/lib/repositories/projects/project.types';
 import {
   buildTaskTreeFromRows,
   countTaskTreeNodes,
@@ -299,7 +300,8 @@ function buildProjectTaskTreeMap(list: ApiProjectListItem[]): Record<string, Tas
 
 function normalizeProjectRow(row: ApiProjectListItem): ProjectRow {
   const { tasks: _tasks, taskCount: _taskCount, task_count: _taskCountSnake, ...rest } = row;
-  return rest as ProjectRow;
+  const base = rest as ProjectRow;
+  return { ...base, status: normalizeProjectStatus(base.status) };
 }
 
 /** 父任务先于子任务，避免同批写入时 parent_task_id 外键失败 */

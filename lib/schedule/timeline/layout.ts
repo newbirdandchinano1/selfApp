@@ -10,6 +10,11 @@
 
  */
 
+import {
+  compareAssignedScheduleItems,
+  compareTimelineTimedEvents,
+  type AssignSortableItem,
+} from '@/lib/schedule/assign-kind-sort';
 import type { TimelineEvent, TimedEventLayout } from '@/lib/schedule/timeline/types';
 
 
@@ -20,36 +25,48 @@ export const TIMELINE_MINUTE_PX = 0.85;
 
 /** 单条事件最小高度，保证可点 */
 
-export const TIMELINE_MIN_EVENT_H = 26;
+export const TIMELINE_MIN_EVENT_H = 36;
 
 
 
-/** 起点升序；同起点未完成优先、已完成后置；再按时长降序 */
-function compareByStart(a: TimelineEvent, b: TimelineEvent): number {
-
-  if (a.startMinutes !== b.startMinutes) return a.startMinutes - b.startMinutes;
-
-  if (a.done !== b.done) return a.done ? 1 : -1;
-
-  if (a.endMinutes !== b.endMinutes) return b.endMinutes - a.endMinutes;
-
-  return 0;
-
+function toAssignSortable(e: TimelineEvent): AssignSortableItem {
+  return {
+    kind: e.kind,
+    done: e.done,
+    overdue: e.overdue,
+    priority: e.priority,
+    title: e.title,
+    id: e.subjectId,
+    sortOrder: e.sortOrder,
+    dueMs: e.dueMs,
+    rewardPoints: e.rewardPoints,
+    updatedAt: e.updatedAt,
+    startMins: e.startMinutes,
+  };
 }
 
-/** 簇内装栏：未完成优先靠左，已完成后置靠右 */
+/** 定时：起点升序；同起点按项目→任务→待办→小习惯 + 类别内部规则 */
+function compareByStart(a: TimelineEvent, b: TimelineEvent): number {
+  return compareTimelineTimedEvents(
+    { ...toAssignSortable(a), startMinutes: a.startMinutes, endMinutes: a.endMinutes },
+    { ...toAssignSortable(b), startMinutes: b.startMinutes, endMinutes: b.endMinutes },
+  );
+}
+
+/** 全天区：类型优先，再同类别内部规则（不跟轴上时刻抢序） */
+function compareAllDay(a: TimelineEvent, b: TimelineEvent): number {
+  return compareAssignedScheduleItems(toAssignSortable(a), toAssignSortable(b));
+}
+
+/** 簇内装栏：类型优先靠左，再类别内部规则 */
 function packClusterColumns(events: TimelineEvent[]): { event: TimelineEvent; column: number }[] {
 
   const ordered = [...events].sort((a, b) => {
-
-    if (a.done !== b.done) return a.done ? 1 : -1;
-
+    const byAssign = compareAssignedScheduleItems(toAssignSortable(a), toAssignSortable(b));
+    if (byAssign !== 0) return byAssign;
     if (a.startMinutes !== b.startMinutes) return a.startMinutes - b.startMinutes;
-
     if (a.endMinutes !== b.endMinutes) return b.endMinutes - a.endMinutes;
-
     return 0;
-
   });
 
   const laneEnds: number[] = [];
@@ -100,7 +117,7 @@ export function splitAllDayEvents(events: TimelineEvent[]): {
 
   }
 
-  allDay.sort(compareByStart);
+  allDay.sort(compareAllDay);
 
   timed.sort(compareByStart);
 

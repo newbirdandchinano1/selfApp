@@ -47,6 +47,16 @@ export type TimelineEvent = {
   priority: number;
   assignYmd: string;
   source: TimelineEventSource;
+  /** 同类别内部排序：任务树 sort_order */
+  sortOrder?: number;
+  /** 同类别内部排序：有效截止毫秒 */
+  dueMs?: number | null;
+  /** 同类别内部排序：奖励积分 */
+  rewardPoints?: number;
+  /** 同类别内部排序：更新时间 */
+  updatedAt?: string | null;
+  /** 同类别内部排序：主体 id（习惯稳定序） */
+  subjectId?: string | null;
 };
 
 /** 定时事件并排分栏后的布局结果 */
