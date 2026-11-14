@@ -27,6 +27,7 @@ type Props = {
   onConfirmCard?: (card: ActionCard) => void;
   onCancelCard?: (card: ActionCard) => void;
   onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
+  onClarifyChoice?: (card: ActionCard, choice: string) => void;
   streamingMessageId?: string | null;
   thinking?: AgentThinkingState | null;
   /** 外部可强制滚到底（发送后） */
@@ -52,6 +53,7 @@ export function ChatMessageList({
   onConfirmCard,
   onCancelCard,
   onDraftFieldChange,
+  onClarifyChoice,
   streamingMessageId,
   thinking,
   stickToBottomToken = 0,
@@ -107,6 +109,7 @@ export function ChatMessageList({
           onConfirmCard={onConfirmCard}
           onCancelCard={onCancelCard}
           onDraftFieldChange={onDraftFieldChange}
+          onClarifyChoice={onClarifyChoice}
           thinking={item.id === streamingMessageId ? thinking : null}
         />
       );
@@ -116,6 +119,7 @@ export function ChatMessageList({
       onConfirmCard,
       onCancelCard,
       onDraftFieldChange,
+      onClarifyChoice,
       streamingMessageId,
       thinking,
     ],

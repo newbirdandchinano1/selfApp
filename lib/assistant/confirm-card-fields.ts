@@ -217,38 +217,80 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'body', label: '正文', editable: true, aliases: ['content', 'text'] },
   ],
   commit_recipe: [
-    { key: 'name', label: '菜名', editable: true, aliases: ['title', 'recipe_name'] },
+    { key: 'title', label: '菜名', editable: true, aliases: ['name', 'recipe_name'] },
     { key: 'servings', label: '份量', editable: true },
-    { key: 'category', label: '分类', editable: true, aliases: ['category_name'] },
-    { key: 'note', label: '备注', editable: true, aliases: ['description'] },
+    { key: 'category_name', label: '分类', editable: true, aliases: ['category', 'category_hint'] },
+    { key: 'notes', label: '备注', editable: true, aliases: ['note', 'description'] },
   ],
   commit_recipe_plan: [
-    { key: 'recipe_name', label: '菜谱', editable: true, aliases: ['name', 'title'] },
+    { key: 'action', label: '操作', editable: false },
+    {
+      key: 'recipe_title',
+      label: '菜谱',
+      editable: true,
+      aliases: ['recipe_name', 'name', 'title'],
+    },
     { key: 'date', label: '日期', editable: true, aliases: ['ymd', 'day'] },
-    { key: 'meal', label: '餐次', editable: true, aliases: ['meal_slot'] },
+    { key: 'slot', label: '餐次', editable: true, aliases: ['meal', 'meal_slot'] },
+    { key: 'entry_id', label: '计划条目', editable: false, aliases: ['plan_entry_id', 'id'] },
   ],
   commit_recipe_basket: [
-    { key: 'recipe_name', label: '菜谱', editable: true, aliases: ['name', 'title'] },
+    { key: 'action', label: '操作', editable: false },
+    {
+      key: 'recipe_title',
+      label: '菜谱',
+      editable: true,
+      aliases: ['recipe_name', 'name', 'title'],
+    },
+    { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
+    { key: 'slot', label: '餐次', editable: true, aliases: ['meal', 'meal_slot'] },
     { key: 'note', label: '备注', editable: true },
   ],
   commit_recipe_shop: [
-    { key: 'name', label: '商品', editable: true, aliases: ['title', 'item'] },
-    { key: 'quantity', label: '数量', editable: true, aliases: ['qty'] },
+    { key: 'action', label: '操作', editable: false },
+    {
+      key: 'recipe_title',
+      label: '菜谱',
+      editable: true,
+      aliases: ['recipe_name', 'title'],
+    },
+    { key: 'keys', label: '食材', editable: true, aliases: ['key', 'item', 'name'] },
+    { key: 'status', label: '状态', editable: true, aliases: ['shop_status'] },
     { key: 'note', label: '备注', editable: true },
   ],
   commit_recipe_cook_log: [
-    { key: 'recipe_name', label: '菜谱', editable: true, aliases: ['name', 'title'] },
-    { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
+    {
+      key: 'recipe_title',
+      label: '菜谱',
+      editable: true,
+      aliases: ['recipe_name', 'name', 'title'],
+    },
+    { key: 'rating', label: '评分', editable: true },
+    {
+      key: 'cooked_on',
+      label: '日期',
+      editable: true,
+      aliases: ['cooked_at', 'date', 'ymd'],
+    },
     { key: 'note', label: '备注', editable: true },
   ],
   commit_recipe_category: [
-    { key: 'name', label: '分类名', editable: true, aliases: ['title'] },
+    {
+      key: 'name',
+      label: '分类名',
+      editable: true,
+      aliases: ['title', 'new_name'],
+    },
+    { key: 'old_name', label: '原名称', editable: false, aliases: ['category_name'] },
+    { key: 'category_id', label: '分类ID', editable: false, aliases: ['id'] },
   ],
   commit_recipe_delete: [
     { key: 'recipe_title', label: '菜谱', editable: false, aliases: ['title', 'name'] },
+    { key: 'recipe_id', label: '菜谱ID', editable: false, aliases: ['id'] },
   ],
   commit_recipe_category_delete: [
     { key: 'name', label: '分类名', editable: false, aliases: ['title', 'category_name'] },
+    { key: 'category_id', label: '分类ID', editable: false, aliases: ['id'] },
   ],
   commit_wardrobe_item: [
     { key: 'name', label: '单品', editable: true, aliases: ['title'] },
@@ -369,6 +411,13 @@ export function readDraftScalar(
     if (!(k in draft)) continue;
     const v = draft[k];
     if (v == null || v === '') continue;
+    if (Array.isArray(v)) {
+      const parts = v
+        .map(x => (typeof x === 'string' ? x.trim() : ''))
+        .filter(Boolean);
+      if (!parts.length) continue;
+      return { key: k === key ? key : k, value: parts.join('、') };
+    }
     if (typeof v === 'object') continue;
     return { key: k === key ? key : k, value: String(v) };
   }
@@ -382,7 +431,7 @@ export function isMultilineFieldKey(key: string): boolean {
 
 /** 数字键盘字段 */
 export function isNumericFieldKey(key: string): boolean {
-  return /(amount|kcal|protein|carb|fat|hydration|weight|points|price|servings|balance|budget|deposit|target|cm|ml|g$|_g$|_kg$|_ml$)/i.test(
+  return /(amount|kcal|protein|carb|fat|hydration|weight|points|price|servings|balance|budget|deposit|target|rating|cm|ml|g$|_g$|_kg$|_ml$)/i.test(
     key,
   );
 }

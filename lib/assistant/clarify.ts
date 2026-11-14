@@ -44,6 +44,11 @@ export function composeClarifyResubmitText(originalText: string, choice: string)
     return `${choiceT} ${orig}`;
   }
 
+  // Agent 域澄清选项：「菜谱 · 新建/管理分类」→ 拼回原文，避免丢槽位
+  if (/[·・]/.test(choiceT) || /新建\/管理/.test(choiceT)) {
+    return `${choiceT} ${orig}`;
+  }
+
   return choiceT;
 }
 

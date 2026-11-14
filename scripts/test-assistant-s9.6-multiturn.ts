@@ -162,6 +162,29 @@ check('用例9：再记一笔开新 operation_id', () => {
   }
 });
 
+check('流式已画同卡：收尾仍保留在 reconciled，避免闪消失', () => {
+  const painted = card({
+    id: 'c_recipe_cat',
+    domain: 'recipe',
+    confirm_action: 'commit_recipe_category',
+    operation_id: 'op_recipe_cat',
+    idempotency_key: 'op_recipe_cat',
+    title: '新建菜谱分类',
+    draft: { name: '北京菜' },
+  })!;
+  // 模拟：流式过程已把卡写进当前助手气泡
+  const session = sessionWithCards([painted]);
+  const { cards } = reconcileIncomingCommitCards({
+    session,
+    incoming: [painted],
+    userMessage: '新建菜谱分类：北京菜',
+  });
+  assert.equal(cards.length, 1, '同 id 自命中应保留为当前轮新卡');
+  assert.equal(cards[0].id, 'c_recipe_cat');
+  assert.equal(resolveOperationId(cards[0]), 'op_recipe_cat');
+  assert.equal(cards[0].draft?.name, '北京菜');
+});
+
 check('pending_operations 收集未确认卡', () => {
   const session = sessionWithCards([card({}), card({
     id: 'c_memo',

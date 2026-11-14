@@ -39,9 +39,19 @@ import {
 } from '@/lib/assistant/chat-store';
 import type { ChatMessage, ChatSession, ChatSessionSummary, ChatToolTrace } from '@/lib/assistant/chat-types';
 import { metaFromAgentResult, partsFromAgentResult, textFromParts } from '@/lib/assistant/chat-types';
+import { composeClarifyResubmitText } from '@/lib/assistant/clarify';
 import { confirmAssistantCard } from '@/lib/assistant/confirm-execute';
 import { takeAssistantLaunchPayload } from '@/lib/assistant/host-controller';
-import { isServerBusyError, toast, toUserMessage } from '@/lib/app-feedback';
+import {
+  isMostlyToolCallLeak,
+  stripAssistantToolCallLeak,
+} from '@/lib/assistant/strip-tool-call-leak';
+import {
+  CHAT_FRIENDLY_LEN,
+  isServerBusyError,
+  toast,
+  toUserMessage,
+} from '@/lib/app-feedback';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
 import {
@@ -350,8 +360,21 @@ export default function AssistantChatScreen() {
         }
 
         const rawFinalCards = result.cards.length ? result.cards : liveCards;
-        // S9.6：同卡改稿合并进原 operation_id；「再记一笔」保留新卡
-        const baseForReconcile = sessionRef.current ?? nextSession;
+        // S9.6：同卡改稿合并进原 operation_id；「再记一笔」保留新卡。
+        // 调和时去掉「本轮助手气泡」里已流式画出的卡，避免 open 扫描命中自己，
+        // 导致 merge-only 后 finalParts 无卡、确认卡闪一下消失。
+        const baseSession = sessionRef.current ?? nextSession;
+        const baseForReconcile: ChatSession = {
+          ...baseSession,
+          messages: baseSession.messages.map(m =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  parts: m.parts.filter(p => p.type !== 'action_card'),
+                }
+              : m,
+          ),
+        };
         const reconciled = reconcileIncomingCommitCards({
           session: baseForReconcile,
           incoming: rawFinalCards,
@@ -368,9 +391,17 @@ export default function AssistantChatScreen() {
 
         // 以服务端 done.reply 为准（ReplyValidator 可能已改写/剔除 tool-call 泄漏）；
         // streamedText 仅在 done 未带回正文时兜底。
-        const finalReply = (result.reply || '').trim()
+        // 再剥一层：模型把 tool 写成正文时，避免最终气泡残留 recipe.xxx + JSON。
+        let finalReply = (result.reply || '').trim()
           ? result.reply
           : streamedText || result.reply;
+        finalReply = stripAssistantToolCallLeak(finalReply);
+        if (!finalReply.trim() && finalCards.length) {
+          finalReply = '已为你准备好操作卡，请点击确认。';
+        } else if (!finalReply.trim() && isMostlyToolCallLeak(streamedText)) {
+          finalReply =
+            '刚才工具调用写成了文字。请再说一次你想做什么，我会重新出确认卡。';
+        }
         const finalParts = partsFromAgentResult({
           reply: finalReply,
           toolTraces: result.tool_traces.length ? result.tool_traces : liveTraces,
@@ -398,7 +429,7 @@ export default function AssistantChatScreen() {
         await persist(nextSession);
       } catch (e) {
         if ((e as Error)?.name === 'AbortError') return;
-        const errText = toUserMessage(e, '助手请求失败');
+        const errText = toUserMessage(e, '助手请求失败', { maxLen: CHAT_FRIENDLY_LEN });
         setThinkingState(createThinkingState('error', { label: '请求失败' }));
         nextSession = {
           ...(sessionRef.current ?? nextSession),
@@ -601,6 +632,30 @@ export default function AssistantChatScreen() {
     [],
   );
 
+  const onClarifyChoice = React.useCallback(
+    (card: ActionCard, choice: string) => {
+      if (busyRef.current) return;
+      const draftOrig =
+        typeof card.draft?.original_message === 'string'
+          ? card.draft.original_message.trim()
+          : '';
+      let orig = draftOrig;
+      if (!orig) {
+        const msgs = sessionRef.current?.messages ?? [];
+        for (let i = msgs.length - 1; i >= 0; i -= 1) {
+          if (msgs[i]?.role === 'user') {
+            orig = textFromParts(msgs[i].parts).trim();
+            break;
+          }
+        }
+      }
+      const nextText = composeClarifyResubmitText(orig, choice);
+      if (!nextText.trim()) return;
+      void sendMessage(nextText);
+    },
+    [sendMessage],
+  );
+
   const title = session?.title && session.title !== '新对话'
     ? session.title
     : session?.messages.some(m => m.role === 'user' && textFromParts(m.parts))
@@ -633,6 +688,7 @@ export default function AssistantChatScreen() {
           onConfirmCard={card => void onConfirmCard(card)}
           onCancelCard={onCancelCard}
           onDraftFieldChange={onDraftFieldChange}
+          onClarifyChoice={onClarifyChoice}
           streamingMessageId={streamingMessageId}
           thinking={thinking}
           stickToBottomToken={stickToBottomToken}

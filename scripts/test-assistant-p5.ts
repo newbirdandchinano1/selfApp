@@ -81,6 +81,8 @@ check('resolveModuleHref：S1 横切模块（衣橱/心愿/复盘/道路）', ()
   }
   assert.equal(resolveModuleHref('finance.stats'), '/finance-stats');
   assert.equal(resolveModuleHref('recipe.home'), '/my-recipes');
+  assert.equal(resolveModuleHref('recipe.basket'), '/recipe-basket');
+  assert.equal(resolveModuleHref('recipe.shop'), '/my-recipes/shop');
   assert.equal(resolveModuleHref('memo.home'), '/memo-list');
 });
 

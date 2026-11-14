@@ -133,6 +133,40 @@ check('parseActionCard 写库类强制 needs_confirm', () => {
   assert.equal(card.confirm_action, 'preview_finance_txn');
 });
 
+check('parseActionCard 接受 intent=update 的改名确认卡', () => {
+  const card = parseActionCard({
+    id: 'rc1',
+    domain: 'recipe',
+    intent: 'update',
+    title: '重命名菜谱分类',
+    summary: '测试 → 测试改名版',
+    confidence: 0.86,
+    needs_confirm: true,
+    confirm_action: 'commit_recipe_category',
+    draft: { category_id: 'rcat_1', name: '测试改名版', old_name: '测试' },
+  });
+  assert.equal(card.intent, 'update');
+  assert.equal(card.confirm_action, 'commit_recipe_category');
+  assert.equal(card.needs_confirm, true);
+  assert.equal(card.write_status, 'awaiting_confirmation');
+});
+
+check('parseActionCard 未知 intent 但有 commit_* 时不降成 clarify', () => {
+  const card = parseActionCard({
+    id: 'rc2',
+    domain: 'recipe',
+    intent: 'upsert',
+    title: '改分类',
+    confidence: 0.8,
+    needs_confirm: true,
+    confirm_action: 'commit_recipe_category',
+    draft: { category_id: 'rcat_1', name: '新名' },
+  });
+  assert.notEqual(card.intent, 'clarify');
+  assert.equal(card.confirm_action, 'commit_recipe_category');
+  assert.equal(card.needs_confirm, true);
+});
+
 check('sanitizeActionCardAgainstWhitelist 丢弃非法 ref_ids / draft id', () => {
   const card: ActionCard = {
     id: 'b1',

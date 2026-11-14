@@ -22,6 +22,8 @@ export type AssistantModuleId =
   | 'recipe.home'
   | 'recipe.add'
   | 'recipe.plan'
+  | 'recipe.basket'
+  | 'recipe.shop'
   | 'wardrobe.home'
   | 'wardrobe.outfit'
   | 'wish.home'
@@ -56,6 +58,8 @@ const MODULE_ROUTES: Record<AssistantModuleId, ModuleRoute> = {
   'recipe.home': { pathname: '/my-recipes' },
   'recipe.add': { pathname: '/recipe-edit/[id]', defaultParams: { id: 'new' } },
   'recipe.plan': { pathname: '/my-recipes/plan' },
+  'recipe.basket': { pathname: '/recipe-basket' },
+  'recipe.shop': { pathname: '/my-recipes/shop' },
   'wardrobe.home': { pathname: '/my-wardrobe' },
   'wardrobe.outfit': { pathname: '/my-wardrobe', defaultParams: { tab: 'outfits' } },
   'wish.home': { pathname: '/wish-board' },

@@ -16,11 +16,12 @@ let current: AppToastPayload | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 let toastSeq = 0;
 
-const DEFAULT_DURATION: Record<AppToastKind, number> = {
+  const DEFAULT_DURATION: Record<AppToastKind, number> = {
   success: 2000,
-  error: 2600,
+  // 错误文案可能更长，多留一点阅读时间
+  error: 4200,
   info: 2200,
-  warn: 2400,
+  warn: 3200,
   loading: 0,
 };
 

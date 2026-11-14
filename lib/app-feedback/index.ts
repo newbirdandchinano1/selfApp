@@ -1,4 +1,9 @@
-export { toUserMessage, isServerBusyError } from './to-user-message';
+export {
+  toUserMessage,
+  isServerBusyError,
+  CHAT_FRIENDLY_LEN,
+  type ToUserMessageOptions,
+} from './to-user-message';
 export {
   toast,
   subscribeAppToast,

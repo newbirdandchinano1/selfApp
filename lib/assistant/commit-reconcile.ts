@@ -133,6 +133,19 @@ export function reconcileIncomingCommitCards(opts: {
     }
 
     if (matched && !sibling) {
+      // 流式过程中当前助手气泡已画过同一张卡时，open 里会扫到「自己」；
+      // 若再走 merge-only，finalParts 无卡 → 生成结束后卡片消失。
+      if (matched.id === raw.id) {
+        const oid = targetOid || raw.id;
+        reconciled.push({
+          ...raw,
+          operation_id: oid,
+          idempotency_key: raw.idempotency_key || matched.idempotency_key || oid,
+          write_status: raw.write_status ?? 'awaiting_confirmation',
+          needs_confirm: true,
+        });
+        continue;
+      }
       const merged: ActionCard = {
         ...matched,
         ...raw,

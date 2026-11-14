@@ -27,6 +27,8 @@ export type ActionConfirmCardProps = {
   onConfirm?: (card: ActionCard) => void;
   onCancel?: (card: ActionCard) => void;
   onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
+  /** 澄清卡选项点击（回投下一轮） */
+  onClarifyChoice?: (card: ActionCard, choice: string) => void;
 };
 
 function statusLabel(card: ActionCard): string | null {
@@ -55,6 +57,7 @@ export function ActionConfirmCard({
   onConfirm,
   onCancel,
   onDraftFieldChange,
+  onClarifyChoice,
 }: ActionConfirmCardProps) {
   const { colors } = useAppTheme();
   const isCommit =
@@ -64,6 +67,10 @@ export function ActionConfirmCard({
   const terminal =
     writeStatus === 'succeeded' || writeStatus === 'cancelled';
   const committing = writeStatus === 'committing' || busy;
+  const clarifyChoices =
+    card.intent === 'clarify' || Boolean(card.clarify_question?.trim())
+      ? (card.clarify_choices ?? []).map(c => c.trim()).filter(Boolean).slice(0, 8)
+      : [];
   const canAct =
     Boolean(card.confirm_action || card.commit_action) &&
     card.intent !== 'clarify' &&
@@ -154,9 +161,28 @@ export function ActionConfirmCard({
                     : colors.textMuted,
             },
           ]}
-          numberOfLines={3}>
+          // 失败原因可能较长，聊天内需完整展示；成功/进行中仍限 3 行
+          numberOfLines={writeStatus === 'failed' ? undefined : 3}
+          selectable={writeStatus === 'failed'}>
           {statusText}
         </Text>
+      ) : null}
+
+      {clarifyChoices.length && onClarifyChoice ? (
+        <View style={styles.choiceWrap}>
+          {clarifyChoices.map(choice => (
+            <AppButton
+              key={choice}
+              label={choice}
+              size="sm"
+              variant="secondary"
+              disabled={Boolean(busy)}
+              onPress={() => onClarifyChoice(card, choice)}
+              accessibilityLabel={`选择：${choice}`}
+              style={styles.choiceBtn}
+            />
+          ))}
+        </View>
       ) : null}
 
       {canAct && onConfirm ? (
@@ -264,5 +290,14 @@ const styles = StyleSheet.create({
   cardBtn: {
     alignSelf: 'flex-start',
     marginTop: 4,
+  },
+  choiceWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  choiceBtn: {
+    alignSelf: 'flex-start',
   },
 });

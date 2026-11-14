@@ -1,4 +1,7 @@
+/** Toast 等短反馈默认上限；聊天气泡可传更大 maxLen 以免截断原因 */
 const MAX_FRIENDLY_LEN = 96;
+/** 聊天内错误气泡：允许更长中文业务原因完整展示 */
+export const CHAT_FRIENDLY_LEN = 480;
 
 function extractRawMessage(err: unknown): string {
   if (typeof err === 'string') return err.trim();
@@ -13,9 +16,9 @@ function getHttpStatus(err: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
-function truncate(message: string): string {
-  if (message.length <= MAX_FRIENDLY_LEN) return message;
-  return `${message.slice(0, MAX_FRIENDLY_LEN - 1)}…`;
+function truncate(message: string, maxLen: number): string {
+  if (message.length <= maxLen) return message;
+  return `${message.slice(0, Math.max(1, maxLen - 1))}…`;
 }
 
 function hasChinese(text: string): boolean {
@@ -54,10 +57,21 @@ export function isServerBusyError(err: unknown): boolean {
   return /服务器繁忙|同步繁忙/.test(raw);
 }
 
+export type ToUserMessageOptions = {
+  /** 友好中文原文最大长度；默认 96（Toast）；聊天气泡建议 CHAT_FRIENDLY_LEN */
+  maxLen?: number;
+};
+
 /**
  * 将任意错误收敛为用户可读中文。展示层兜底；后端 message 友好时原样透出。
  */
-export function toUserMessage(err: unknown, errorFallback = '操作失败，请稍后重试'): string {
+export function toUserMessage(
+  err: unknown,
+  errorFallback = '操作失败，请稍后重试',
+  opts?: ToUserMessageOptions,
+): string {
+  const maxLen =
+    typeof opts?.maxLen === 'number' && opts.maxLen > 0 ? opts.maxLen : MAX_FRIENDLY_LEN;
   const raw = extractRawMessage(err);
   const status = getHttpStatus(err);
   const lower = raw.toLowerCase();
@@ -111,12 +125,8 @@ export function toUserMessage(err: unknown, errorFallback = '操作失败，请�
     return '网络异常，请检查连接后重试';
   }
 
-  if (raw && hasChinese(raw) && !looksLikeNativeLeak(raw) && raw.length <= MAX_FRIENDLY_LEN) {
-    return truncate(raw);
-  }
-
   if (raw && hasChinese(raw) && !looksLikeNativeLeak(raw)) {
-    return truncate(raw);
+    return truncate(raw, maxLen);
   }
 
   if (looksLikeNativeLeak(raw) || !raw) {

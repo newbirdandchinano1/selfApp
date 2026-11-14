@@ -170,13 +170,51 @@ export async function commitRecipe(
 export async function commitRecipePlan(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const planRaw = draft.plan ?? draft.entries ?? draft.days;
-  const rows = Array.isArray(planRaw) ? planRaw : [];
-  if (!rows.length) {
-    return fail('incomplete_draft', '周排餐草稿为空，请先生成排餐候选');
+  const action = (
+    draftString(draft, 'action') ||
+    draftString(draft, 'op') ||
+    ''
+  ).toLowerCase();
+  const { addRecipePlanEntry, removeRecipePlanEntry } = await import(
+    '@/lib/recipe-plan'
+  );
+
+  if (action === 'remove' || action === 'delete') {
+    const entryId =
+      draftString(draft, 'entry_id') ||
+      draftString(draft, 'plan_entry_id') ||
+      draftString(draft, 'id');
+    if (!entryId) return fail('incomplete_draft', '缺少要移除的计划条目 id');
+    const removed = await removeRecipePlanEntry(entryId);
+    if (!removed) return fail('plan_missing', '找不到该计划条目');
+    return ok(entryId, '已移除用餐计划条目');
   }
 
-  const { addRecipePlanEntry } = await import('@/lib/recipe-plan');
+  const planRaw = draft.plan ?? draft.entries ?? draft.days;
+  let rows = Array.isArray(planRaw) ? planRaw : [];
+
+  // 单条添加：周五晚饭做红烧肉（可仅菜名，对齐 recipe.draft_plan_add）
+  if (!rows.length) {
+    const date =
+      draftString(draft, 'date') ||
+      draftString(draft, 'ymd') ||
+      draftString(draft, 'day');
+    const slot =
+      asMealSlot(draft.slot) ||
+      asMealSlot(draft.meal) ||
+      asMealSlot(draft.meal_slot);
+    if (date && slot) {
+      const ref = await resolveRecipeRef(draft);
+      if (!('error' in ref)) {
+        rows = [{ recipe_id: ref.id, recipe_title: ref.title, date, slot }];
+      }
+    }
+  }
+
+  if (!rows.length) {
+    return fail('incomplete_draft', '周排餐草稿为空，请先生成排餐候选或指定日期/餐次/菜谱');
+  }
+
   let saved = 0;
   let lastId = '';
 
@@ -248,12 +286,82 @@ async function resolveRecipeRef(draft: Record<string, unknown>): Promise<
   return { id: hit.id, title: hit.title };
 }
 
+function basketAction(draft: Record<string, unknown>): string {
+  return (
+    draftString(draft, 'action') ||
+    draftString(draft, 'op') ||
+    'add'
+  ).toLowerCase();
+}
+
 export async function commitRecipeBasket(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
+  const action = basketAction(draft);
+  const {
+    addRecipeToBasket,
+    removeRecipeFromBasket,
+    clearRecipeBasket,
+    loadRecipeBasketStore,
+  } = await import('@/lib/recipe-basket');
+
+  if (action === 'clear') {
+    await clearRecipeBasket();
+    return ok('basket_cleared', '已清空菜单篮');
+  }
+
+  if (action === 'to_shop' || action === 'to-shop' || action === 'generate_shop') {
+    const store = await loadRecipeBasketStore();
+    if (!store.items.length) return fail('empty_basket', '菜单篮是空的');
+    const { addRecipeToShop } = await import('@/lib/recipe-shop');
+    let added = 0;
+    for (const item of store.items) {
+      const r = await addRecipeToShop({
+        recipeId: item.recipeId,
+        recipeTitle: item.recipeTitle,
+      });
+      if (!r.alreadyAdded) added += 1;
+    }
+    return ok('basket_to_shop', `已从菜单篮写入采购（新增 ${added} 道）`);
+  }
+
+  if (action === 'to_plan' || action === 'to-plan' || action === 'arrange_plan') {
+    const store = await loadRecipeBasketStore();
+    if (!store.items.length) return fail('empty_basket', '菜单篮是空的');
+    const date =
+      draftString(draft, 'date') ||
+      draftString(draft, 'ymd') ||
+      new Date().toISOString().slice(0, 10);
+    const slot =
+      asMealSlot(draft.slot) ||
+      asMealSlot(draft.meal) ||
+      asMealSlot(draft.meal_slot) ||
+      'dinner';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return fail('incomplete_draft', '日期须为 YYYY-MM-DD');
+    }
+    const { addRecipePlanEntry } = await import('@/lib/recipe-plan');
+    let added = 0;
+    for (const item of store.items) {
+      await addRecipePlanEntry({
+        date,
+        slot,
+        recipeId: item.recipeId,
+        recipeTitle: item.recipeTitle,
+      });
+      added += 1;
+    }
+    return ok('basket_to_plan', `已将菜单篮 ${added} 道安排到 ${date} ${slot}`);
+  }
+
   const ref = await resolveRecipeRef(draft);
   if ('error' in ref) return fail('incomplete_draft', ref.error);
-  const { addRecipeToBasket } = await import('@/lib/recipe-basket');
+
+  if (action === 'remove' || action === 'delete') {
+    await removeRecipeFromBasket(ref.id);
+    return ok(ref.id, `已从菜单篮移出「${ref.title.slice(0, 40)}」`);
+  }
+
   const categoryName =
     draftString(draft, 'category_name') || draftString(draft, 'category') || undefined;
   const result = await addRecipeToBasket({
@@ -269,12 +377,99 @@ export async function commitRecipeBasket(
   );
 }
 
+function shopAction(draft: Record<string, unknown>): string {
+  return (
+    draftString(draft, 'action') ||
+    draftString(draft, 'op') ||
+    'add'
+  ).toLowerCase();
+}
+
+function readShopKeys(draft: Record<string, unknown>): string[] {
+  const keys: string[] = [];
+  const pushSplit = (raw: string) => {
+    for (const part of raw.split(/[,，、\n]/)) {
+      const k = part.trim();
+      if (k) keys.push(k);
+    }
+  };
+  const one =
+    draftString(draft, 'key') ||
+    draftString(draft, 'item_key') ||
+    draftString(draft, 'name') ||
+    draftString(draft, 'item');
+  if (one) pushSplit(one);
+  const raw = draft.keys ?? draft.item_keys ?? draft.items;
+  if (typeof raw === 'string' && raw.trim()) {
+    pushSplit(raw);
+  } else if (Array.isArray(raw)) {
+    for (const row of raw) {
+      if (typeof row === 'string' && row.trim()) pushSplit(row);
+      else if (row && typeof row === 'object') {
+        const o = row as Record<string, unknown>;
+        const k =
+          (typeof o.key === 'string' && o.key.trim()) ||
+          (typeof o.name === 'string' && o.name.trim()) ||
+          '';
+        if (k) pushSplit(k);
+      }
+    }
+  }
+  return [...new Set(keys.map(k => k.trim().toLowerCase()).filter(Boolean))];
+}
+
 export async function commitRecipeShop(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
+  const action = shopAction(draft);
+  const {
+    addRecipeToShop,
+    setShopItemStatus,
+    setShopItemsStatus,
+    dismissShopItems,
+    clearRecipeShopState,
+    buildShopList,
+    loadRecipeShopState,
+  } = await import('@/lib/recipe-shop');
+
+  if (action === 'clear') {
+    const state = await loadRecipeShopState();
+    const { loadRecipePlanStore } = await import('@/lib/recipe-plan');
+    const { loadRecipeStore } = await import('@/lib/recipes');
+    const [plan, recipes] = await Promise.all([
+      loadRecipePlanStore(),
+      loadRecipeStore(),
+    ]);
+    const visible = buildShopList(plan, recipes, state).map(i => i.key);
+    await clearRecipeShopState(visible);
+    return ok('shop_cleared', '已清空采购清单');
+  }
+
+  if (action === 'status' || action === 'mark') {
+    const keys = readShopKeys(draft);
+    if (!keys.length) return fail('incomplete_draft', '请指定要标记的食材');
+    const statusRaw =
+      draftString(draft, 'status') || draftString(draft, 'shop_status') || 'bought';
+    const status =
+      statusRaw === 'stock' || statusRaw === '库存' || statusRaw === '已有库存'
+        ? 'stock'
+        : statusRaw === 'todo' || statusRaw === '待采购' || statusRaw === '待买'
+          ? 'todo'
+          : 'bought';
+    if (keys.length === 1) await setShopItemStatus(keys[0], status);
+    else await setShopItemsStatus(keys, status);
+    return ok(keys[0], `已将 ${keys.length} 项标为${status}`);
+  }
+
+  if (action === 'dismiss' || action === 'remove' || action === 'delete') {
+    const keys = readShopKeys(draft);
+    if (!keys.length) return fail('incomplete_draft', '请指定要移除的食材');
+    await dismissShopItems(keys);
+    return ok(keys[0], `已从采购清单移除 ${keys.length} 项`);
+  }
+
   const ref = await resolveRecipeRef(draft);
   if ('error' in ref) return fail('incomplete_draft', ref.error);
-  const { addRecipeToShop } = await import('@/lib/recipe-shop');
   const result = await addRecipeToShop({
     recipeId: ref.id,
     recipeTitle: ref.title,
@@ -292,9 +487,39 @@ export async function commitRecipeCookLog(
 ): Promise<ChatCommitHandlerResult> {
   const ref = await resolveRecipeRef(draft);
   if ('error' in ref) return fail('incomplete_draft', ref.error);
+  const action = (
+    draftString(draft, 'action') ||
+    draftString(draft, 'op') ||
+    'add'
+  ).toLowerCase();
+  const noteOnly =
+    action === 'note' ||
+    draft.note_only === true ||
+    draft.noteOnly === true ||
+    (draft.rating == null && Boolean(draftString(draft, 'note')));
+
+  const { addRecipeCookLog, loadRecipeCookLogStore, logsForRecipe } = await import(
+    '@/lib/recipe-cook-log'
+  );
+  const { setAppSetting, AppSettingKey } = await import('@/lib/app-settings-store');
+
+  if (noteOnly) {
+    const note = draftString(draft, 'note');
+    if (!note) return fail('incomplete_draft', '缺少备注内容');
+    const store = await loadRecipeCookLogStore();
+    const logs = logsForRecipe(store, ref.id);
+    const logId = draftString(draft, 'log_id') || draftString(draft, 'id');
+    const target = logId
+      ? store.logs.find(l => l.id === logId)
+      : logs[0];
+    if (!target) return fail('cook_log_missing', '还没有制作记录，请先评分记账');
+    target.note = note.slice(0, 200);
+    await setAppSetting(AppSettingKey.recipeCookLogs, store);
+    return ok(target.id, `已更新「${ref.title.slice(0, 40)}」制作备注`);
+  }
+
   const rating = draftNumber(draft, 'rating') ?? 5;
   const clamped = Math.max(1, Math.min(5, Math.round(rating)));
-  const { addRecipeCookLog } = await import('@/lib/recipe-cook-log');
   const { recordRecipeCooked } = await import('@/lib/recipes');
   const log = await addRecipeCookLog({
     recipeId: ref.id,
@@ -313,12 +538,38 @@ export async function commitRecipeCookLog(
 export async function commitRecipeCategory(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const name = draftString(draft, 'name') || draftString(draft, 'title');
+  const name =
+    draftString(draft, 'name') ||
+    draftString(draft, 'title') ||
+    draftString(draft, 'new_name');
   if (!name) return fail('incomplete_draft', '缺少菜谱分类名称');
-  const existingId =
+  let existingId =
     draftString(draft, 'category_id') || draftString(draft, 'id');
-  const { createRecipeCategory, renameRecipeCategory } = await import('@/lib/recipes');
+  const oldNameHint =
+    draftString(draft, 'old_name') || draftString(draft, 'category_name');
+  const {
+    createRecipeCategory,
+    renameRecipeCategory,
+    getRecipeCategory,
+    listRecipeCategories,
+  } = await import('@/lib/recipes');
   if (existingId) {
+    let row = await getRecipeCategory(existingId);
+    if (!row) {
+      // Agent 偶发把旧分类名塞进 category_id
+      const cats = await listRecipeCategories();
+      const needle = existingId.trim().toLowerCase();
+      row =
+        cats.find(c => c.name.trim().toLowerCase() === needle) ||
+        (oldNameHint
+          ? cats.find(
+              c => c.name.trim().toLowerCase() === oldNameHint.trim().toLowerCase(),
+            )
+          : undefined) ||
+        null;
+      if (row) existingId = row.id;
+    }
+    if (!existingId) return fail('category_missing', '找不到要改名的分类');
     const renamed = await renameRecipeCategory(existingId, name.slice(0, 40));
     if (!renamed) return fail('category_missing', '找不到要改名的分类');
     return ok(renamed.id, `已重命名菜谱分类为「${renamed.name}」`);

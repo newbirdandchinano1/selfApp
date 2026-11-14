@@ -30,6 +30,8 @@ export type AssistantDomain =
 
 export type AssistantIntent =
   | 'create'
+  | 'update'
+  | 'delete'
   | 'insight'
   | 'navigate'
   | 'clarify'
@@ -203,12 +205,24 @@ const DOMAINS = new Set<string>([
 
 const INTENTS = new Set<string>([
   'create',
+  'update',
+  'delete',
   'insight',
   'navigate',
   'clarify',
   'suggest_today',
   'multi',
 ]);
+
+/** Agent 偶发用 edit/rename/remove 等近义词；归一到正式 intent */
+const INTENT_ALIASES: Record<string, AssistantIntent> = {
+  edit: 'update',
+  rename: 'update',
+  modify: 'update',
+  patch: 'update',
+  remove: 'delete',
+  destroy: 'delete',
+};
 
 const CONFIRM_SET = new Set<string>(ASSISTANT_CONFIRM_ACTIONS);
 const FORBIDDEN_SET = new Set<string>(FORBIDDEN_CONFIRM_ACTIONS);
@@ -373,8 +387,10 @@ export function parseActionCard(raw: unknown, fallbackId = 'c0'): ActionCard {
   const id = asTrimmedString(o.id) || fallbackId;
   const domainRaw = asTrimmedString(o.domain) || 'general';
   const domain: AssistantDomain = DOMAINS.has(domainRaw) ? (domainRaw as AssistantDomain) : 'general';
-  const intentRaw = asTrimmedString(o.intent) || 'clarify';
-  let intent: AssistantIntent = INTENTS.has(intentRaw) ? (intentRaw as AssistantIntent) : 'clarify';
+  const intentRaw = (asTrimmedString(o.intent) || 'clarify').toLowerCase();
+  let intent: AssistantIntent = INTENTS.has(intentRaw)
+    ? (intentRaw as AssistantIntent)
+    : INTENT_ALIASES[intentRaw] || 'clarify';
 
   const title = asTrimmedString(o.title) || (intent === 'clarify' ? '需要补充' : '助手建议');
   const summary = asTrimmedString(o.summary) ?? undefined;
@@ -388,6 +404,12 @@ export function parseActionCard(raw: unknown, fallbackId = 'c0'): ActionCard {
       confirm_action = undefined;
     } else if (isAllowedConfirmAction(confirmRaw)) {
       confirm_action = confirmRaw as AssistantConfirmAction;
+      // 有合法 commit/preview 时，未知 intent 勿降成 clarify（否则确认按钮被藏）
+      if (intent === 'clarify' && !INTENTS.has(intentRaw) && !INTENT_ALIASES[intentRaw]) {
+        intent = confirmRaw.startsWith('commit_') || confirmRaw.startsWith('preview_')
+          ? 'create'
+          : intent;
+      }
     }
   }
 

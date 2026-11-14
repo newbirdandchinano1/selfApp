@@ -165,6 +165,8 @@ App **不直连**智谱。场景请求经 `lib/ai-api-client.ts` → **Agent** `
 配置：`lib/agent-config.ts`（`EXPO_PUBLIC_AGENT_BASE_URL` / `EXPO_PUBLIC_AGENT_API_KEY`）。  
 门面：`lib/zhipu-image-parse.ts`。接口清单见 [AI_API.md](./AI_API.md)。
 
+**助手聊天 · 报错展示**：工具失败条（`chat-bubble` MetaChip）与确认卡 `failed` 状态不再行数截断，铺满气泡宽并可长按选择；请求失败气泡用 `toUserMessage(..., { maxLen: CHAT_FRIENDLY_LEN })`（480 字），Toast 仍默认 96 字、error/warn 最多 5 行。
+
 ## 复盘（折页）
 
 - **排版规范（日 / 周 / 月共用）**（`lib/review-day-facts.ts`）：区块用【】、列表用「· 」、块间空行。健康只写摄入汇总（+ 体重），不含逐条记录 / AI 点评；任务分【任务（青蛙）】【待办】【小习惯】并列出未完成；财务为周期汇总 + 流水。日复盘「一键写入」；周/月空栏 rollup 时健康/任务/财务优先写结构化周期事实（`rollupWeekly*` / `rollupMonthly*`），日常/缺陷/新想法仍拼接子周期原文。

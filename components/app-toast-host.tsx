@@ -147,7 +147,10 @@ export function AppToastHost() {
             size={11}
           />
         </FeedbackIconSlot>
-        <Text style={styles.text} numberOfLines={2}>
+        <Text
+          style={styles.text}
+          // error/warn 可能含业务原因，多留几行；成功/加载仍两行
+          numberOfLines={payload.kind === 'error' || payload.kind === 'warn' ? 5 : 2}>
           {payload.message}
         </Text>
       </View>

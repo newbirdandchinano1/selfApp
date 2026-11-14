@@ -1,11 +1,14 @@
-import React from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { ActionConfirmCard } from '@/components/assistant/chat/action-confirm-card';
 import { AgentThinkingIndicator } from '@/components/assistant/chat/agent-thinking-indicator';
 import { StreamingCursor } from '@/components/assistant/chat/streaming-cursor';
 import { Radius, Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { toast } from '@/lib/app-feedback';
 import type { ActionCard } from '@/lib/assistant/action-card';
 import type { AgentThinkingState } from '@/lib/assistant/agent-thinking-status';
 import { shouldShowThinkingOrb } from '@/lib/assistant/agent-thinking-status';
@@ -34,16 +37,20 @@ function MetaChip({
   label,
   danger,
   accent,
+  /** 工具失败等长文：铺满气泡宽、不截行，便于读完整报错 */
+  full,
 }: {
   label: string;
   danger?: boolean;
   accent?: boolean;
+  full?: boolean;
 }) {
   const { colors } = useAppTheme();
   return (
     <View
       style={[
         styles.chip,
+        full ? styles.chipFull : null,
         {
           backgroundColor: danger
             ? 'rgba(180,40,40,0.08)'
@@ -56,9 +63,11 @@ function MetaChip({
       <Text
         style={[
           styles.chipText,
+          full ? styles.chipTextFull : null,
           { color: danger ? colors.danger : accent ? '#8a5a10' : colors.textMuted },
         ]}
-        numberOfLines={2}>
+        numberOfLines={full ? undefined : 2}
+        selectable={Boolean(full)}>
         {label}
       </Text>
     </View>
@@ -72,11 +81,13 @@ function renderMetaParts(parts: ChatMessagePart[]) {
       if (p.type === 'kb_hits') {
         return <MetaChip key={`kb-${idx}`} label={`知识库 · ${p.summary}`} />;
       }
+      const failed = p.ok === false;
       return (
         <MetaChip
           key={`tool-${idx}`}
-          label={`${p.ok === false ? '工具失败' : '已查询'} · ${p.summary}`}
-          danger={p.ok === false}
+          label={`${failed ? '工具失败' : '已查询'} · ${p.summary}`}
+          danger={failed}
+          full={failed}
         />
       );
     });
@@ -129,6 +140,7 @@ function ChatBubbleImpl({
   onConfirmCard,
   onCancelCard,
   onDraftFieldChange,
+  onClarifyChoice,
   thinking,
 }: {
   message: ChatMessage;
@@ -136,6 +148,7 @@ function ChatBubbleImpl({
   onConfirmCard?: (card: ActionCard) => void;
   onCancelCard?: (card: ActionCard) => void;
   onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
+  onClarifyChoice?: (card: ActionCard, choice: string) => void;
   thinking?: AgentThinkingState | null;
 }) {
   const { colors } = useAppTheme();
@@ -169,82 +182,136 @@ function ChatBubbleImpl({
 
   // 无 thinking 对象时（边缘态）也立刻出三点气泡
   const showFallbackTyping = !isUser && pending && !text.trim() && !showThinking;
+  const canCopy = !isUser && !pending && Boolean(text.trim());
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    };
+  }, []);
+
+  const onCopyAnswer = useCallback(async () => {
+    const payload = unofficial ? `${text.trim()}\n\n非官方说明\n${unofficial}` : text.trim();
+    if (!payload) return;
+    try {
+      await Clipboard.setStringAsync(payload);
+      setCopied(true);
+      toast.success('已复制回答');
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1600);
+    } catch {
+      toast.error('复制失败');
+    }
+  }, [text, unofficial]);
 
   return (
     <View style={[styles.row, isUser ? styles.rowUser : styles.rowAssistant]}>
-      <View
-        style={[
-          styles.bubble,
-          isUser
-            ? { backgroundColor: colors.primary, borderBottomRightRadius: 6 }
-            : {
-                backgroundColor: colors.surface,
+      <View style={styles.col}>
+        <View
+          style={[
+            styles.bubble,
+            isUser
+              ? { backgroundColor: colors.primary, borderBottomRightRadius: 6 }
+              : {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.outline,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderBottomLeftRadius: 6,
+                },
+          ]}>
+          {hasTopMeta ? (
+            <View style={styles.metaCol}>
+              {showStatusHint ? (
+                <AnswerStatusHint status={answerMeta?.answer_status} />
+              ) : null}
+              {sourceMeta}
+              {toolMeta}
+            </View>
+          ) : null}
+          {imagePart && imagePart.type === 'image' ? (
+            <Image source={{ uri: imagePart.uri }} style={styles.image} resizeMode="cover" />
+          ) : null}
+          {showThinking && thinking ? <AgentThinkingIndicator state={thinking} /> : null}
+          {showFallbackTyping ? (
+            <AgentThinkingIndicator
+              state={{
+                phase: 'thinking',
+                label: hasTopMeta ? '正在整理回答…' : '正在思考…',
+                visual: 'calm',
+              }}
+            />
+          ) : null}
+          {text ? (
+            isUser || errored ? (
+              <Text
+                style={[
+                  styles.text,
+                  { color: isUser ? colors.onPrimary : colors.text },
+                  errored && { color: colors.danger },
+                ]}
+                selectable>
+                {text}
+              </Text>
+            ) : (
+              <ChatMarkdownText
+                text={text}
+                color={colors.text}
+                mutedColor={colors.textMuted}
+                codeBg={colors.surfaceMuted}
+                selectable
+                trailing={pending ? <StreamingCursor color={colors.primarySoft} /> : null}
+              />
+            )
+          ) : null}
+          {unofficial ? <UnofficialAdviceBlock text={unofficial} /> : null}
+          {!isUser && actionCards.length
+            ? actionCards.map(({ card }) => (
+                <ActionConfirmCard
+                  key={card.operation_id || card.id}
+                  card={card}
+                  busy={
+                    confirmingCardId === card.id ||
+                    confirmingCardId === card.operation_id ||
+                    card.write_status === 'committing'
+                  }
+                  onConfirm={onConfirmCard}
+                  onCancel={onCancelCard}
+                  onDraftFieldChange={onDraftFieldChange}
+                  onClarifyChoice={onClarifyChoice}
+                />
+              ))
+            : null}
+        </View>
+        {canCopy ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="复制回答"
+            hitSlop={8}
+            onPress={() => void onCopyAnswer()}
+            style={({ pressed }) => [
+              styles.copyBtn,
+              {
                 borderColor: colors.outline,
-                borderWidth: StyleSheet.hairlineWidth,
-                borderBottomLeftRadius: 6,
+                backgroundColor: colors.surfaceMuted,
+                opacity: pressed ? 0.85 : 1,
               },
-        ]}>
-        {hasTopMeta ? (
-          <View style={styles.metaCol}>
-            {showStatusHint ? (
-              <AnswerStatusHint status={answerMeta?.answer_status} />
-            ) : null}
-            {sourceMeta}
-            {toolMeta}
-          </View>
-        ) : null}
-        {imagePart && imagePart.type === 'image' ? (
-          <Image source={{ uri: imagePart.uri }} style={styles.image} resizeMode="cover" />
-        ) : null}
-        {showThinking && thinking ? <AgentThinkingIndicator state={thinking} /> : null}
-        {showFallbackTyping ? (
-          <AgentThinkingIndicator
-            state={{
-              phase: 'thinking',
-              label: hasTopMeta ? '正在整理回答…' : '正在思考…',
-              visual: 'calm',
-            }}
-          />
-        ) : null}
-        {text ? (
-          isUser || errored ? (
+            ]}>
+            <MaterialIcons
+              name={copied ? 'check' : 'content-copy'}
+              size={14}
+              color={copied ? colors.primary : colors.textMuted}
+            />
             <Text
               style={[
-                styles.text,
-                { color: isUser ? colors.onPrimary : colors.text },
-                errored && { color: colors.danger },
-              ]}
-              selectable>
-              {text}
+                styles.copyBtnText,
+                { color: copied ? colors.primary : colors.textMuted },
+              ]}>
+              {copied ? '已复制' : '复制'}
             </Text>
-          ) : (
-            <ChatMarkdownText
-              text={text}
-              color={colors.text}
-              mutedColor={colors.textMuted}
-              codeBg={colors.surfaceMuted}
-              selectable
-              trailing={pending ? <StreamingCursor color={colors.primarySoft} /> : null}
-            />
-          )
+          </Pressable>
         ) : null}
-        {unofficial ? <UnofficialAdviceBlock text={unofficial} /> : null}
-        {!isUser && actionCards.length
-          ? actionCards.map(({ card }) => (
-              <ActionConfirmCard
-                key={card.operation_id || card.id}
-                card={card}
-                busy={
-                  confirmingCardId === card.id ||
-                  confirmingCardId === card.operation_id ||
-                  card.write_status === 'committing'
-                }
-                onConfirm={onConfirmCard}
-                onCancel={onCancelCard}
-                onDraftFieldChange={onDraftFieldChange}
-              />
-            ))
-          : null}
       </View>
     </View>
   );
@@ -257,6 +324,7 @@ function bubblePropsEqual(
     onConfirmCard?: (card: ActionCard) => void;
     onCancelCard?: (card: ActionCard) => void;
     onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
+    onClarifyChoice?: (card: ActionCard, choice: string) => void;
     thinking?: AgentThinkingState | null;
   }>,
   next: Readonly<{
@@ -265,6 +333,7 @@ function bubblePropsEqual(
     onConfirmCard?: (card: ActionCard) => void;
     onCancelCard?: (card: ActionCard) => void;
     onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
+    onClarifyChoice?: (card: ActionCard, choice: string) => void;
     thinking?: AgentThinkingState | null;
   }>,
 ): boolean {
@@ -281,6 +350,7 @@ function bubblePropsEqual(
   if (prev.confirmingCardId !== next.confirmingCardId) return false;
   if (prev.onConfirmCard !== next.onConfirmCard) return false;
   if (prev.onCancelCard !== next.onCancelCard) return false;
+  if (prev.onClarifyChoice !== next.onClarifyChoice) return false;
   if (prev.onDraftFieldChange !== next.onDraftFieldChange) return false;
   if (prev.thinking !== next.thinking) {
     if (
@@ -303,13 +373,33 @@ const styles = StyleSheet.create({
   },
   rowUser: { alignItems: 'flex-end' },
   rowAssistant: { alignItems: 'flex-start' },
-  bubble: {
+  col: {
     maxWidth: '86%',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+  },
+  bubble: {
+    width: '100%',
     borderRadius: Radius.xl,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
     gap: Spacing.sm,
   },
+  copyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  copyBtnText: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+
   text: {
     ...Typography.body,
     fontSize: 15,
@@ -332,9 +422,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
+  chipFull: {
+    alignSelf: 'stretch',
+    paddingVertical: 6,
+  },
   chipText: {
     fontSize: 12,
     lineHeight: 16,
+  },
+  chipTextFull: {
+    lineHeight: 18,
   },
   unofficialBox: {
     marginTop: 4,

@@ -39,6 +39,16 @@ check('取消保留原文', () => {
   assert.equal(composeClarifyResubmitText('随便', '取消'), '随便');
 });
 
+check('Agent 域澄清选项拼回原文', () => {
+  assert.equal(
+    composeClarifyResubmitText(
+      '可以新建一个分类吗？名字叫北京菜',
+      '菜谱 · 新建/管理分类',
+    ),
+    '菜谱 · 新建/管理分类 可以新建一个分类吗？名字叫北京菜',
+  );
+});
+
 check('isClarifyCard', () => {
   assert.equal(isClarifyCard('clarify'), true);
   assert.equal(isClarifyCard('create'), false);
