@@ -1,5 +1,8 @@
 /**
  * S9.6：多轮草稿调和 — 同 operation_id 改稿不双建；「再记一笔」开新卡。
+ *
+ * 出卡铁律：本轮 `cards` 必须带回要展示的确认卡。
+ * 旧实现把改稿卡只 patch 进历史气泡且 `cards=[]`，导致最新回复「说有卡但看不见」。
  */
 
 import type { ActionCard } from '@/lib/assistant/action-card';
@@ -93,10 +96,17 @@ function mergeDraft(
   return { ...(base || {}), ...(patch || {}) };
 }
 
+function sameWriteAction(a: ActionCard, b: ActionCard): boolean {
+  const aa = resolveCommitAction(a) || a.confirm_action || '';
+  const bb = resolveCommitAction(b) || b.confirm_action || '';
+  if (!aa || !bb) return true;
+  return aa === bb;
+}
+
 /**
  * 将本轮 Agent 返回的 commit 卡与会话未确认卡调和：
- * - 同 operation_id → 原地更新 draft，不追加第二张
- * - 「改成…」且同域仅一张未确认 → 强制复用该 operation_id
+ * - 同 operation_id / 「改成…」同域 → 合并 draft，并**迁到本轮 cards**（最新气泡可见）
+ * - 不同 confirm_action → 绝不串卡（删卡不能吞掉移动分类卡）
  * - 「再记一笔」→ 保留新卡新 id
  */
 export function reconcileIncomingCommitCards(opts: {
@@ -108,7 +118,8 @@ export function reconcileIncomingCommitCards(opts: {
   const amend = looksLikeDraftAmendment(opts.userMessage || '');
   const sibling = looksLikeNewSiblingWrite(opts.userMessage || '');
   const reconciled: ActionCard[] = [];
-  const mergeTargets = new Map<string, ActionCard>(); // operation_id → patched card
+  /** 需从历史气泡移除的 operation_id（已迁到本轮） */
+  const relocateOids = new Set<string>();
 
   for (const raw of opts.incoming) {
     const isCommit =
@@ -122,36 +133,34 @@ export function reconcileIncomingCommitCards(opts: {
     let matched = open.find(c => resolveOperationId(c) === targetOid);
 
     if (!matched && !sibling && amend) {
-      const sameDomain = open.filter(c => c.domain === raw.domain);
+      const sameDomain = open.filter(c => c.domain === raw.domain && sameWriteAction(c, raw));
       if (sameDomain.length === 1) {
         matched = sameDomain[0];
         targetOid = resolveOperationId(matched);
-      } else if (open.length === 1 && (!raw.domain || open[0].domain === raw.domain || raw.domain === 'general')) {
+      } else if (
+        open.length === 1 &&
+        sameWriteAction(open[0], raw) &&
+        (!raw.domain || open[0].domain === raw.domain || raw.domain === 'general')
+      ) {
         matched = open[0];
         targetOid = resolveOperationId(matched);
       }
     }
 
+    // 不同写动作：强制新卡，禁止未确认的删除卡吞掉更新/移动卡
+    if (matched && !sibling && matched.id !== raw.id && !sameWriteAction(matched, raw)) {
+      matched = undefined;
+    }
+
     if (matched && !sibling) {
-      // 流式过程中当前助手气泡已画过同一张卡时，open 里会扫到「自己」；
-      // 若再走 merge-only，finalParts 无卡 → 生成结束后卡片消失。
-      if (matched.id === raw.id) {
-        const oid = targetOid || raw.id;
-        reconciled.push({
-          ...raw,
-          operation_id: oid,
-          idempotency_key: raw.idempotency_key || matched.idempotency_key || oid,
-          write_status: raw.write_status ?? 'awaiting_confirmation',
-          needs_confirm: true,
-        });
-        continue;
-      }
+      const oid = targetOid || raw.id;
       const merged: ActionCard = {
         ...matched,
         ...raw,
+        // 自命中保留原 id；跨气泡改稿也保留稳定 id，便于 commit 控制器追踪
         id: matched.id,
-        operation_id: targetOid,
-        idempotency_key: matched.idempotency_key || targetOid,
+        operation_id: oid,
+        idempotency_key: matched.idempotency_key || raw.idempotency_key || oid,
         draft: mergeDraft(matched.draft, raw.draft),
         draft_fields: raw.draft_fields?.length ? raw.draft_fields : matched.draft_fields,
         write_status: 'awaiting_confirmation',
@@ -163,8 +172,11 @@ export function reconcileIncomingCommitCards(opts: {
         confirm_action: raw.confirm_action || matched.confirm_action,
         commit_action: raw.commit_action || matched.commit_action,
       };
-      mergeTargets.set(targetOid, merged);
-      // 不放入 reconciled 作为「新卡」——由 session patch 体现
+      // 本轮必须带回卡；若来自历史气泡则迁走，避免「最新消息没卡」
+      if (matched.id !== raw.id) {
+        relocateOids.add(oid);
+      }
+      reconciled.push(merged);
       continue;
     }
 
@@ -179,18 +191,15 @@ export function reconcileIncomingCommitCards(opts: {
   }
 
   let session = opts.session;
-  if (mergeTargets.size) {
+  if (relocateOids.size) {
     const messages: ChatMessage[] = session.messages.map(m => {
-      let changed = false;
-      const parts = m.parts.map(p => {
-        if (p.type !== 'action_card') return p;
+      const nextParts = m.parts.filter(p => {
+        if (p.type !== 'action_card') return true;
         const oid = resolveOperationId(p.card);
-        const next = mergeTargets.get(oid);
-        if (!next) return p;
-        changed = true;
-        return { ...p, card: next };
+        return !relocateOids.has(oid);
       });
-      return changed ? { ...m, parts } : m;
+      if (nextParts.length === m.parts.length) return m;
+      return { ...m, parts: nextParts };
     });
     session = { ...session, messages, updatedAt: Date.now() };
   }

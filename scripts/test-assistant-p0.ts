@@ -205,6 +205,29 @@ check('sanitize：核心 id 全失效 → 降级 clarify', () => {
   assert.ok(r.dropped_ids.includes('tsk_FORGED'));
 });
 
+check('sanitize：菜谱移动保留 recipe_id / recipe_ids（brief 无菜谱白名单）', () => {
+  const card: ActionCard = {
+    id: 'r_move',
+    domain: 'recipe',
+    intent: 'update',
+    title: '移动菜谱分类',
+    confidence: 0.9,
+    needs_confirm: true,
+    confirm_action: 'commit_recipe',
+    draft: {
+      recipe_ids: ['rcp_a', 'rcp_b'],
+      recipe_id: 'rcp_solo',
+      from_category_name: '焖饭',
+      category_name: '凉菜',
+    },
+  };
+  const r = sanitizeActionCardAgainstWhitelist(card, ['tsk_aaa']);
+  assert.equal(r.degraded_to_clarify, false);
+  assert.deepEqual(r.card.draft?.recipe_ids, ['rcp_a', 'rcp_b']);
+  assert.equal(r.card.draft?.recipe_id, 'rcp_solo');
+  assert.equal(r.card.draft?.category_name, '凉菜');
+});
+
 check('mapConfirm：finance / task / open_route / frog_assign', () => {
   const finance = mapActionCardToConfirmPlan({
     id: 'c1',

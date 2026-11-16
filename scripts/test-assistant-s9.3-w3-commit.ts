@@ -20,12 +20,9 @@ import {
   commitHabitContext,
   commitIntakeTargets,
   commitLifeBet,
-  commitRecipeBasket,
   commitRecipeCategory,
   commitRecipeCategoryDelete,
-  commitRecipeCookLog,
   commitRecipeDelete,
-  commitRecipeShop,
   commitReviewColumn,
   commitReviewJournal,
   commitSavingsDeposit,
@@ -97,7 +94,7 @@ check('测试 executor 不自动灌真实 handler（保护 mock）', () => {
   assert.ok(ex.has('commit_finance_account'));
   assert.ok(ex.has('commit_habit_checkin'));
   assert.ok(ex.has('commit_weight'));
-  assert.ok(ex.has('commit_recipe_basket'));
+  assert.ok(ex.has('commit_recipe_category'));
   assert.ok(ex.has('commit_wardrobe_outfit'));
   assert.ok(ex.has('commit_review_journal'));
   assert.ok(ex.has('commit_life_bet'));
@@ -156,24 +153,6 @@ async function main() {
 
   await checkAsync('空目标时 commit_intake_targets 失败', async () => {
     const r = await commitIntakeTargets({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('缺菜谱时 commit_recipe_basket 失败', async () => {
-    const r = await commitRecipeBasket({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('缺菜谱时 commit_recipe_shop 失败', async () => {
-    const r = await commitRecipeShop({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('缺菜谱时 commit_recipe_cook_log 失败', async () => {
-    const r = await commitRecipeCookLog({});
     assert.equal(r.ok, false);
     assert.equal(r.error?.code, 'incomplete_draft');
   });

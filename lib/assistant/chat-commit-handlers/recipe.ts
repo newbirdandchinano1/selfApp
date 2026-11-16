@@ -1,16 +1,44 @@
 /**
- * S9.3 W2：commit_recipe / commit_recipe_plan（动态 import）。
+ * S9.3：commit_recipe / category / delete（动态 import）。
+ * shop / cook_log / basket / plan 仅保留原生 UI，不走 Agent chat-commit。
  */
 
 import type { ChatCommitHandler, ChatCommitHandlerResult } from '@/lib/assistant/chat-commit';
-import { draftNumber, draftString, fail, ok, requestPushPending } from './shared';
+import { draftString, fail, ok, requestPushPending } from './shared';
+
+function parseIngredientsText(text: string): Array<{
+  name: string;
+  amount: string;
+  remark?: string;
+}> {
+  const out: Array<{ name: string; amount: string; remark?: string }> = [];
+  for (const line of text.split(/\n/).slice(0, 80)) {
+    const raw = line.trim();
+    if (!raw) continue;
+    const parts = raw.split(/[｜|]/).map(s => s.trim());
+    const name = (parts[0] || '').slice(0, 200);
+    const amount = (parts[1] || '').slice(0, 200);
+    const remark = (parts[2] || '').slice(0, 200);
+    if (!name && !amount && !remark) continue;
+    out.push({
+      name,
+      amount,
+      ...(remark ? { remark } : {}),
+    });
+  }
+  return out;
+}
 
 function readIngredients(draft: Record<string, unknown>): Array<{
   name: string;
   amount: string;
   remark?: string;
 }> {
+  const text = draftString(draft, 'ingredients_text');
+  if (text) return parseIngredientsText(text);
+
   const raw = draft.ingredients;
+  if (typeof raw === 'string' && raw.trim()) return parseIngredientsText(raw);
   if (!Array.isArray(raw)) return [];
   const out: Array<{ name: string; amount: string; remark?: string }> = [];
   for (const row of raw.slice(0, 80)) {
@@ -54,7 +82,7 @@ function readSteps(draft: Record<string, unknown>): string[] {
 
 async function resolveRecipeCategoryId(hint: string): Promise<string> {
   const { listRecipeCategories, createRecipeCategory } = await import('@/lib/recipes');
-  let cats = await listRecipeCategories();
+  const cats = await listRecipeCategories();
   const needle = hint.trim().toLowerCase();
   if (needle) {
     const exact = cats.find(c => c.name.trim().toLowerCase() === needle);
@@ -62,32 +90,90 @@ async function resolveRecipeCategoryId(hint: string): Promise<string> {
     const fuzzy = cats.find(c => c.name.trim().toLowerCase().includes(needle));
     if (fuzzy) return fuzzy.id;
   }
-  if (!cats.length) {
-    const created = await createRecipeCategory(hint.trim() || '未分类');
-    return created.id;
-  }
-  if (hint.trim()) {
-    try {
-      const created = await createRecipeCategory(hint.trim().slice(0, 40));
-      return created.id;
-    } catch {
-      cats = await listRecipeCategories();
-    }
-  }
-  const fallback =
-    cats.find(c => c.name.trim() === '未分类') ?? cats[0];
-  return fallback.id;
+  // 不按 AI 编造的分类名新建；优先落「未分类」，否则第一个现有分类
+  const fallback = cats.find(c => c.name.trim() === '未分类') ?? cats[0];
+  if (fallback) return fallback.id;
+  const created = await createRecipeCategory('未分类');
+  return created.id;
 }
 
-function asMealSlot(raw: unknown): 'breakfast' | 'lunch' | 'dinner' | 'snack' | null {
-  const s = String(raw ?? '')
-    .trim()
-    .toLowerCase();
-  if (s === 'breakfast' || s === '早' || s === '早餐') return 'breakfast';
-  if (s === 'lunch' || s === '午' || s === '午餐' || s === '中餐') return 'lunch';
-  if (s === 'dinner' || s === '晚' || s === '晚餐') return 'dinner';
-  if (s === 'snack' || s === '加餐' || s === '点心') return 'snack';
-  return null;
+function readRecipeIds(draft: Record<string, unknown>): string[] {
+  const raw = draft.recipe_ids;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of raw.slice(0, 200)) {
+    const id = typeof row === 'string' ? row.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+async function resolveCategoryLabel(
+  categoryHint: string,
+  explicitCategoryId: string,
+): Promise<string> {
+  if (categoryHint) return categoryHint.slice(0, 40);
+  if (!explicitCategoryId) return '目标分类';
+  try {
+    const { listRecipeCategories } = await import('@/lib/recipes');
+    const cats = await listRecipeCategories();
+    return (
+      cats.find(c => c.id === explicitCategoryId)?.name.slice(0, 40) ||
+      explicitCategoryId.slice(0, 40)
+    );
+  } catch {
+    return explicitCategoryId.slice(0, 40);
+  }
+}
+
+async function moveRecipesToCategory(opts: {
+  recipeIds: string[];
+  categoryId: string;
+  destLabel: string;
+  fromCategoryName?: string;
+}): Promise<ChatCommitHandlerResult> {
+  const { updateRecipe } = await import('@/lib/recipes');
+  let moved = 0;
+  let lastTitle = '';
+  for (const id of opts.recipeIds) {
+    const updated = await updateRecipe(id, { category_id: opts.categoryId });
+    if (!updated) continue;
+    moved += 1;
+    lastTitle = updated.title;
+  }
+  if (moved === 0) {
+    return fail('recipe_missing', '找不到要移动的菜谱');
+  }
+  await requestPushPending();
+  const srcHint = opts.fromCategoryName
+    ? `「${opts.fromCategoryName.slice(0, 40)}」`
+    : '';
+  return ok(
+    opts.recipeIds[0]!,
+    srcHint
+      ? `已将${srcHint}下 ${moved} 道菜移到「${opts.destLabel}」`
+      : `已将 ${moved} 道菜移到「${opts.destLabel}」${
+          lastTitle ? `（含「${lastTitle.slice(0, 24)}」）` : ''
+        }`,
+  );
+}
+
+async function resolveSourceCategoryId(
+  fromCategoryId: string,
+  fromCategoryName: string,
+): Promise<string | null> {
+  if (fromCategoryId) return fromCategoryId;
+  if (!fromCategoryName) return null;
+  const { listRecipeCategories } = await import('@/lib/recipes');
+  const cats = await listRecipeCategories();
+  const needle = fromCategoryName.trim().toLowerCase();
+  const exact = cats.find(c => c.name.trim().toLowerCase() === needle);
+  if (exact) return exact.id;
+  const fuzzy = cats.find(c => c.name.trim().toLowerCase().includes(needle));
+  return fuzzy?.id ?? null;
 }
 
 export async function commitRecipe(
@@ -95,7 +181,9 @@ export async function commitRecipe(
 ): Promise<ChatCommitHandlerResult> {
   const title = draftString(draft, 'title') || draftString(draft, 'name');
   const hasIngredients =
-    Array.isArray(draft.ingredients) || typeof draft.ingredients === 'string';
+    Array.isArray(draft.ingredients) ||
+    typeof draft.ingredients === 'string' ||
+    typeof draft.ingredients_text === 'string';
   const hasSteps =
     Array.isArray(draft.steps) ||
     typeof draft.steps_text === 'string' ||
@@ -105,11 +193,12 @@ export async function commitRecipe(
   const steps = hasSteps ? readSteps(draft) : [];
   const notes = draftString(draft, 'notes') || draftString(draft, 'note') || undefined;
 
-  const { createRecipe, updateRecipe } = await import('@/lib/recipes');
-  const existingId =
+  const { createRecipe, updateRecipe, listRecipes } = await import('@/lib/recipes');
+  let existingId =
     draftString(draft, 'recipe_id') ||
     draftString(draft, 'id') ||
     draftString(draft, 'recipeId');
+  let bulkIds = readRecipeIds(draft);
   const categoryHint =
     draftString(draft, 'category_hint') ||
     draftString(draft, 'category_name') ||
@@ -119,6 +208,53 @@ export async function commitRecipe(
     draftString(draft, 'finished_image_uri') ||
     draftString(draft, 'image_uri') ||
     null;
+  const fromCategoryName =
+    draftString(draft, 'from_category_name') || draftString(draft, 'from_category');
+  const fromCategoryId = draftString(draft, 'from_category_id');
+  const recipeTitleHint = draftString(draft, 'recipe_title');
+  const moveOnlyIntent =
+    Boolean(explicitCategoryId || categoryHint) &&
+    !hasIngredients &&
+    !hasSteps &&
+    !hasNotes &&
+    !finishedImage &&
+    !title;
+
+  // 整类移动兜底：白名单可能剃掉 recipe_ids，按源分类本地重解析
+  if (
+    bulkIds.length === 0 &&
+    moveOnlyIntent &&
+    (fromCategoryId || fromCategoryName)
+  ) {
+    const srcId = await resolveSourceCategoryId(fromCategoryId, fromCategoryName);
+    if (srcId) {
+      const rows = await listRecipes(srcId);
+      bulkIds = rows.map(r => r.id);
+    }
+  }
+
+  // 单道移动兜底：recipe_id 被剃掉时按菜名定位
+  if (!existingId && moveOnlyIntent && recipeTitleHint && bulkIds.length === 0) {
+    const needle = recipeTitleHint.trim().toLowerCase();
+    const rows = await listRecipes();
+    const exact = rows.find(r => r.title.trim().toLowerCase() === needle);
+    const fuzzy =
+      exact || rows.find(r => r.title.trim().toLowerCase().includes(needle));
+    if (fuzzy) existingId = fuzzy.id;
+  }
+
+  // 整类移动：recipe_ids[]（或本地重解析）+ 目标分类
+  if (bulkIds.length > 0 && (explicitCategoryId || categoryHint)) {
+    const categoryId =
+      explicitCategoryId || (await resolveRecipeCategoryId(categoryHint));
+    const destLabel = await resolveCategoryLabel(categoryHint, explicitCategoryId);
+    return moveRecipesToCategory({
+      recipeIds: bulkIds,
+      categoryId,
+      destLabel,
+      fromCategoryName: fromCategoryName || undefined,
+    });
+  }
 
   if (existingId) {
     const patch: {
@@ -146,15 +282,55 @@ export async function commitRecipe(
       return fail('recipe_missing', '找不到要更新的菜谱，请改为新建或打开菜谱页');
     }
     await requestPushPending();
+    const movedOnly =
+      Boolean(patch.category_id) &&
+      !patch.title &&
+      !hasIngredients &&
+      !hasSteps &&
+      !hasNotes &&
+      !finishedImage;
+    if (movedOnly) {
+      const dest = (categoryHint || '目标分类').slice(0, 40);
+      return ok(updated.id, `已将「${updated.title.slice(0, 40)}」移到「${dest}」`);
+    }
     return ok(updated.id, `已更新菜谱「${updated.title.slice(0, 40)}」`);
+  }
+
+  // 移动意图但解析失败：勿落到新建空菜谱
+  if (moveOnlyIntent || fromCategoryName || fromCategoryId || recipeTitleHint) {
+    return fail(
+      'incomplete_draft',
+      fromCategoryName || fromCategoryId
+        ? '未能定位源分类下的菜谱，请确认分类名后重试'
+        : '未能定位要移动的菜谱，请确认菜名后重试',
+    );
   }
 
   if (!title && ingredients.length === 0 && steps.length === 0) {
     return fail('incomplete_draft', '菜谱标题、食材与步骤不能都为空');
   }
 
-  const categoryId =
-    explicitCategoryId || (await resolveRecipeCategoryId(categoryHint));
+  if (!explicitCategoryId && !categoryHint.trim()) {
+    return fail('incomplete_draft', '请先在确认卡选择目标分类（须为现有分类）');
+  }
+
+  let categoryId = explicitCategoryId;
+  if (!categoryId) {
+    const { listRecipeCategories } = await import('@/lib/recipes');
+    const cats = await listRecipeCategories();
+    const needle = categoryHint.trim().toLowerCase();
+    const hit =
+      cats.find(c => c.name.trim().toLowerCase() === needle) ||
+      cats.find(c => c.name.trim().toLowerCase().includes(needle));
+    if (!hit) {
+      return fail(
+        'incomplete_draft',
+        `「${categoryHint.slice(0, 40)}」不是现有分类，请在确认卡重新选择`,
+      );
+    }
+    categoryId = hit.id;
+  }
+
   const item = await createRecipe({
     category_id: categoryId,
     title: (title || '新菜谱').slice(0, 120),
@@ -165,96 +341,6 @@ export async function commitRecipe(
   });
   await requestPushPending();
   return ok(item.id, `已保存菜谱「${item.title.slice(0, 40)}」`);
-}
-
-export async function commitRecipePlan(
-  draft: Record<string, unknown>,
-): Promise<ChatCommitHandlerResult> {
-  const action = (
-    draftString(draft, 'action') ||
-    draftString(draft, 'op') ||
-    ''
-  ).toLowerCase();
-  const { addRecipePlanEntry, removeRecipePlanEntry } = await import(
-    '@/lib/recipe-plan'
-  );
-
-  if (action === 'remove' || action === 'delete') {
-    const entryId =
-      draftString(draft, 'entry_id') ||
-      draftString(draft, 'plan_entry_id') ||
-      draftString(draft, 'id');
-    if (!entryId) return fail('incomplete_draft', '缺少要移除的计划条目 id');
-    const removed = await removeRecipePlanEntry(entryId);
-    if (!removed) return fail('plan_missing', '找不到该计划条目');
-    return ok(entryId, '已移除用餐计划条目');
-  }
-
-  const planRaw = draft.plan ?? draft.entries ?? draft.days;
-  let rows = Array.isArray(planRaw) ? planRaw : [];
-
-  // 单条添加：周五晚饭做红烧肉（可仅菜名，对齐 recipe.draft_plan_add）
-  if (!rows.length) {
-    const date =
-      draftString(draft, 'date') ||
-      draftString(draft, 'ymd') ||
-      draftString(draft, 'day');
-    const slot =
-      asMealSlot(draft.slot) ||
-      asMealSlot(draft.meal) ||
-      asMealSlot(draft.meal_slot);
-    if (date && slot) {
-      const ref = await resolveRecipeRef(draft);
-      if (!('error' in ref)) {
-        rows = [{ recipe_id: ref.id, recipe_title: ref.title, date, slot }];
-      }
-    }
-  }
-
-  if (!rows.length) {
-    return fail('incomplete_draft', '周排餐草稿为空，请先生成排餐候选或指定日期/餐次/菜谱');
-  }
-
-  let saved = 0;
-  let lastId = '';
-
-  for (const row of rows.slice(0, 40)) {
-    if (!row || typeof row !== 'object') continue;
-    const o = row as Record<string, unknown>;
-    const recipeId =
-      (typeof o.recipeId === 'string' && o.recipeId.trim()) ||
-      (typeof o.recipe_id === 'string' && o.recipe_id.trim()) ||
-      '';
-    const recipeTitle =
-      (typeof o.recipeTitle === 'string' && o.recipeTitle.trim()) ||
-      (typeof o.recipe_title === 'string' && o.recipe_title.trim()) ||
-      (typeof o.title === 'string' && o.title.trim()) ||
-      '未命名菜谱';
-    const date =
-      (typeof o.date === 'string' && o.date.trim()) ||
-      (typeof o.ymd === 'string' && o.ymd.trim()) ||
-      '';
-    const slot = asMealSlot(o.slot ?? o.meal_slot ?? o.meal);
-    if (!recipeId || !date || !slot) continue;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-
-    const entry = await addRecipePlanEntry({
-      date,
-      slot,
-      recipeId,
-      recipeTitle: recipeTitle.slice(0, 80),
-    });
-    saved += 1;
-    lastId = entry.id;
-  }
-
-  if (!saved) {
-    return fail(
-      'incomplete_draft',
-      '排餐条目缺少有效的日期/餐次/菜谱 id，请补充后再确认',
-    );
-  }
-  return ok(lastId || `plan_${saved}`, `已写入 ${saved} 条周排餐`);
 }
 
 async function resolveRecipeRef(draft: Record<string, unknown>): Promise<
@@ -284,255 +370,6 @@ async function resolveRecipeRef(draft: Record<string, unknown>): Promise<
     recipes.find(r => r.title.trim().toLowerCase().includes(needle));
   if (!hit) return { error: `找不到菜谱「${titleHint}」` };
   return { id: hit.id, title: hit.title };
-}
-
-function basketAction(draft: Record<string, unknown>): string {
-  return (
-    draftString(draft, 'action') ||
-    draftString(draft, 'op') ||
-    'add'
-  ).toLowerCase();
-}
-
-export async function commitRecipeBasket(
-  draft: Record<string, unknown>,
-): Promise<ChatCommitHandlerResult> {
-  const action = basketAction(draft);
-  const {
-    addRecipeToBasket,
-    removeRecipeFromBasket,
-    clearRecipeBasket,
-    loadRecipeBasketStore,
-  } = await import('@/lib/recipe-basket');
-
-  if (action === 'clear') {
-    await clearRecipeBasket();
-    return ok('basket_cleared', '已清空菜单篮');
-  }
-
-  if (action === 'to_shop' || action === 'to-shop' || action === 'generate_shop') {
-    const store = await loadRecipeBasketStore();
-    if (!store.items.length) return fail('empty_basket', '菜单篮是空的');
-    const { addRecipeToShop } = await import('@/lib/recipe-shop');
-    let added = 0;
-    for (const item of store.items) {
-      const r = await addRecipeToShop({
-        recipeId: item.recipeId,
-        recipeTitle: item.recipeTitle,
-      });
-      if (!r.alreadyAdded) added += 1;
-    }
-    return ok('basket_to_shop', `已从菜单篮写入采购（新增 ${added} 道）`);
-  }
-
-  if (action === 'to_plan' || action === 'to-plan' || action === 'arrange_plan') {
-    const store = await loadRecipeBasketStore();
-    if (!store.items.length) return fail('empty_basket', '菜单篮是空的');
-    const date =
-      draftString(draft, 'date') ||
-      draftString(draft, 'ymd') ||
-      new Date().toISOString().slice(0, 10);
-    const slot =
-      asMealSlot(draft.slot) ||
-      asMealSlot(draft.meal) ||
-      asMealSlot(draft.meal_slot) ||
-      'dinner';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return fail('incomplete_draft', '日期须为 YYYY-MM-DD');
-    }
-    const { addRecipePlanEntry } = await import('@/lib/recipe-plan');
-    let added = 0;
-    for (const item of store.items) {
-      await addRecipePlanEntry({
-        date,
-        slot,
-        recipeId: item.recipeId,
-        recipeTitle: item.recipeTitle,
-      });
-      added += 1;
-    }
-    return ok('basket_to_plan', `已将菜单篮 ${added} 道安排到 ${date} ${slot}`);
-  }
-
-  const ref = await resolveRecipeRef(draft);
-  if ('error' in ref) return fail('incomplete_draft', ref.error);
-
-  if (action === 'remove' || action === 'delete') {
-    await removeRecipeFromBasket(ref.id);
-    return ok(ref.id, `已从菜单篮移出「${ref.title.slice(0, 40)}」`);
-  }
-
-  const categoryName =
-    draftString(draft, 'category_name') || draftString(draft, 'category') || undefined;
-  const result = await addRecipeToBasket({
-    recipeId: ref.id,
-    recipeTitle: ref.title,
-    categoryName,
-  });
-  return ok(
-    ref.id,
-    result.alreadyAdded
-      ? `「${ref.title.slice(0, 40)}」已在菜篮子中`
-      : `已将「${ref.title.slice(0, 40)}」加入菜篮子`,
-  );
-}
-
-function shopAction(draft: Record<string, unknown>): string {
-  return (
-    draftString(draft, 'action') ||
-    draftString(draft, 'op') ||
-    'add'
-  ).toLowerCase();
-}
-
-function readShopKeys(draft: Record<string, unknown>): string[] {
-  const keys: string[] = [];
-  const pushSplit = (raw: string) => {
-    for (const part of raw.split(/[,，、\n]/)) {
-      const k = part.trim();
-      if (k) keys.push(k);
-    }
-  };
-  const one =
-    draftString(draft, 'key') ||
-    draftString(draft, 'item_key') ||
-    draftString(draft, 'name') ||
-    draftString(draft, 'item');
-  if (one) pushSplit(one);
-  const raw = draft.keys ?? draft.item_keys ?? draft.items;
-  if (typeof raw === 'string' && raw.trim()) {
-    pushSplit(raw);
-  } else if (Array.isArray(raw)) {
-    for (const row of raw) {
-      if (typeof row === 'string' && row.trim()) pushSplit(row);
-      else if (row && typeof row === 'object') {
-        const o = row as Record<string, unknown>;
-        const k =
-          (typeof o.key === 'string' && o.key.trim()) ||
-          (typeof o.name === 'string' && o.name.trim()) ||
-          '';
-        if (k) pushSplit(k);
-      }
-    }
-  }
-  return [...new Set(keys.map(k => k.trim().toLowerCase()).filter(Boolean))];
-}
-
-export async function commitRecipeShop(
-  draft: Record<string, unknown>,
-): Promise<ChatCommitHandlerResult> {
-  const action = shopAction(draft);
-  const {
-    addRecipeToShop,
-    setShopItemStatus,
-    setShopItemsStatus,
-    dismissShopItems,
-    clearRecipeShopState,
-    buildShopList,
-    loadRecipeShopState,
-  } = await import('@/lib/recipe-shop');
-
-  if (action === 'clear') {
-    const state = await loadRecipeShopState();
-    const { loadRecipePlanStore } = await import('@/lib/recipe-plan');
-    const { loadRecipeStore } = await import('@/lib/recipes');
-    const [plan, recipes] = await Promise.all([
-      loadRecipePlanStore(),
-      loadRecipeStore(),
-    ]);
-    const visible = buildShopList(plan, recipes, state).map(i => i.key);
-    await clearRecipeShopState(visible);
-    return ok('shop_cleared', '已清空采购清单');
-  }
-
-  if (action === 'status' || action === 'mark') {
-    const keys = readShopKeys(draft);
-    if (!keys.length) return fail('incomplete_draft', '请指定要标记的食材');
-    const statusRaw =
-      draftString(draft, 'status') || draftString(draft, 'shop_status') || 'bought';
-    const status =
-      statusRaw === 'stock' || statusRaw === '库存' || statusRaw === '已有库存'
-        ? 'stock'
-        : statusRaw === 'todo' || statusRaw === '待采购' || statusRaw === '待买'
-          ? 'todo'
-          : 'bought';
-    if (keys.length === 1) await setShopItemStatus(keys[0], status);
-    else await setShopItemsStatus(keys, status);
-    return ok(keys[0], `已将 ${keys.length} 项标为${status}`);
-  }
-
-  if (action === 'dismiss' || action === 'remove' || action === 'delete') {
-    const keys = readShopKeys(draft);
-    if (!keys.length) return fail('incomplete_draft', '请指定要移除的食材');
-    await dismissShopItems(keys);
-    return ok(keys[0], `已从采购清单移除 ${keys.length} 项`);
-  }
-
-  const ref = await resolveRecipeRef(draft);
-  if ('error' in ref) return fail('incomplete_draft', ref.error);
-  const result = await addRecipeToShop({
-    recipeId: ref.id,
-    recipeTitle: ref.title,
-  });
-  return ok(
-    ref.id,
-    result.alreadyAdded
-      ? `「${ref.title.slice(0, 40)}」已在购物清单`
-      : `已将「${ref.title.slice(0, 40)}」加入购物清单`,
-  );
-}
-
-export async function commitRecipeCookLog(
-  draft: Record<string, unknown>,
-): Promise<ChatCommitHandlerResult> {
-  const ref = await resolveRecipeRef(draft);
-  if ('error' in ref) return fail('incomplete_draft', ref.error);
-  const action = (
-    draftString(draft, 'action') ||
-    draftString(draft, 'op') ||
-    'add'
-  ).toLowerCase();
-  const noteOnly =
-    action === 'note' ||
-    draft.note_only === true ||
-    draft.noteOnly === true ||
-    (draft.rating == null && Boolean(draftString(draft, 'note')));
-
-  const { addRecipeCookLog, loadRecipeCookLogStore, logsForRecipe } = await import(
-    '@/lib/recipe-cook-log'
-  );
-  const { setAppSetting, AppSettingKey } = await import('@/lib/app-settings-store');
-
-  if (noteOnly) {
-    const note = draftString(draft, 'note');
-    if (!note) return fail('incomplete_draft', '缺少备注内容');
-    const store = await loadRecipeCookLogStore();
-    const logs = logsForRecipe(store, ref.id);
-    const logId = draftString(draft, 'log_id') || draftString(draft, 'id');
-    const target = logId
-      ? store.logs.find(l => l.id === logId)
-      : logs[0];
-    if (!target) return fail('cook_log_missing', '还没有制作记录，请先评分记账');
-    target.note = note.slice(0, 200);
-    await setAppSetting(AppSettingKey.recipeCookLogs, store);
-    return ok(target.id, `已更新「${ref.title.slice(0, 40)}」制作备注`);
-  }
-
-  const rating = draftNumber(draft, 'rating') ?? 5;
-  const clamped = Math.max(1, Math.min(5, Math.round(rating)));
-  const { recordRecipeCooked } = await import('@/lib/recipes');
-  const log = await addRecipeCookLog({
-    recipeId: ref.id,
-    rating: clamped,
-    note: draftString(draft, 'note') || undefined,
-    cookedAt: draftString(draft, 'cooked_on') || draftString(draft, 'cooked_at') || undefined,
-  });
-  try {
-    await recordRecipeCooked(ref.id);
-  } catch {
-    /* ignore */
-  }
-  return ok(log.id, `已记录「${ref.title.slice(0, 40)}」做菜 ${clamped} 星`);
 }
 
 export async function commitRecipeCategory(
@@ -646,10 +483,6 @@ export async function commitRecipeCategoryDelete(
 
 export const recipeCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_recipe: async input => commitRecipe(input.draft),
-  commit_recipe_plan: async input => commitRecipePlan(input.draft),
-  commit_recipe_basket: async input => commitRecipeBasket(input.draft),
-  commit_recipe_shop: async input => commitRecipeShop(input.draft),
-  commit_recipe_cook_log: async input => commitRecipeCookLog(input.draft),
   commit_recipe_category: async input => commitRecipeCategory(input.draft),
   commit_recipe_delete: async input => commitRecipeDelete(input.draft),
   commit_recipe_category_delete: async input =>

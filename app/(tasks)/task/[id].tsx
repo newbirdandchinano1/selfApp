@@ -1,13 +1,10 @@
 ﻿import { AddSubtaskSheet, type AddSubtaskDraft } from '@/components/entity-form';
 import { ProjectRoadLinkBar } from '@/components/life-road/ProjectRoadLinkBar';
 import {
-  findAcceptanceById,
-  parseAcceptanceCriteria,
-} from '@/lib/life-road/life-road-acceptance';
-import {
   formatProjectRoadCaption,
-  parseLifeAcceptanceId,
+  parseLifeWeekKey,
 } from '@/lib/life-road/project-road-link';
+import { listWeeksInMonth } from '@/lib/life-road/life-road-weeks';
 import {
   FoldRiseIn,
   useFoldMotionGate,
@@ -695,19 +692,23 @@ export default function TaskDetailScreen() {
             setRoadMonthGoalId(monthGoalId);
             try {
               const node = await getLifeRoadNodeById(monthGoalId, { serverFallback: true });
-              const acceptanceId = parseLifeAcceptanceId(project?.extra_data);
-              const leaf = acceptanceId
-                ? findAcceptanceById(
-                    parseAcceptanceCriteria(node?.extra_data),
-                    acceptanceId,
-                  )
-                : null;
-              if (leaf?.text?.trim() || node?.title?.trim()) {
+              const weekKey = parseLifeWeekKey(project?.extra_data);
+              const week =
+                weekKey &&
+                node?.kind === 'month' &&
+                node.calendar_year != null &&
+                node.month != null
+                  ? listWeeksInMonth(node.calendar_year, node.month).find(
+                      (w) => w.weekKey === weekKey,
+                    )
+                  : null;
+              if (week?.label || node?.title?.trim()) {
                 setRoadCaption(
                   formatProjectRoadCaption({
                     month: node?.kind === 'month' ? node.month : null,
                     monthTitle: node?.title?.trim() || null,
-                    acceptanceText: leaf?.text?.trim() || null,
+                    weekKey: weekKey,
+                    weekLabel: week?.label ?? null,
                   }),
                 );
               } else {

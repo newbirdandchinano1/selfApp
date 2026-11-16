@@ -1,5 +1,6 @@
 /**
- * 道路「AI 拆解方向」：年/季/月节点预览 → 确认后批量创建（跳过已占槽位）。
+ * 道路「AI 拆解」：基于总方向或节点梗概 → 年/季/月预览 → 确认后批量创建（跳过已占槽位）。
+ * 节点编辑页可传 scope，只拆当前层的子节点。
  */
 import { useLifeRoadTheme } from '@/constants/life-road-theme';
 import type { LifeRoadPlanFromDirectionJson, LifeRoadPlanNodeJson } from '@/lib/ai-api-client';
@@ -7,6 +8,7 @@ import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   createAcceptanceItem,
   writeAcceptanceCriteria,
+  type LifeRoadAcceptanceItem,
 } from '@/lib/life-road/life-road-acceptance';
 import {
   LIFE_ROAD_NODE_KIND_LABELS,
@@ -55,30 +57,128 @@ function occupiedSlots(nodes: LifeRoadNodeRow[], year: number): Set<string> {
   return set;
 }
 
+export type AiLifeRoadPlanScope = {
+  /** 当前编辑节点类型：只产出其子层 */
+  kind: 'year' | 'quarter' | 'month';
+  quarter?: number | null;
+  month?: number | null;
+  /** 已存在节点 id；新建子节点时挂到此 parent */
+  parentId?: string | null;
+};
+
+function filterNodesForScope(
+  nodes: LifeRoadPlanNodeJson[],
+  scope: AiLifeRoadPlanScope | undefined,
+  calendarYear: number,
+): LifeRoadPlanNodeJson[] {
+  if (!scope) return nodes;
+  if (scope.kind === 'year') {
+    return nodes
+      .filter((n) => n.kind === 'quarter' || n.kind === 'month')
+      .map((n) => ({
+        ...n,
+        calendar_year: n.calendar_year ?? calendarYear,
+        parent_hint: null,
+      }));
+  }
+  if (scope.kind === 'quarter') {
+    const q = scope.quarter ?? null;
+    return nodes
+      .filter((n) => {
+        if (n.kind !== 'month') return false;
+        if (q == null) return true;
+        return n.quarter == null || n.quarter === q;
+      })
+      .map((n) => ({
+        ...n,
+        kind: 'month',
+        calendar_year: calendarYear,
+        quarter: q ?? n.quarter,
+        parent_hint: null,
+      }));
+  }
+  // month：保留同月草稿，供写回表单验收
+  const m = scope.month ?? null;
+  const q = scope.quarter ?? null;
+  const matched = nodes.filter((n) => {
+    if (n.kind !== 'month') return false;
+    if (m != null && n.month != null && n.month !== m) return false;
+    if (q != null && n.quarter != null && n.quarter !== q) return false;
+    return true;
+  });
+  if (matched.length) return matched.map((n) => ({ ...n, calendar_year: calendarYear }));
+  // 没有精确月时，把所有 month 的验收合并成一条草稿
+  const acceptance = nodes.flatMap((n) => n.acceptance_items ?? []).slice(0, 12);
+  if (!acceptance.length && !nodes.length) return [];
+  const first = nodes.find((n) => n.kind === 'month') ?? nodes[0];
+  return [
+    {
+      kind: 'month',
+      title: first?.title ?? '本月焦点',
+      note: first?.note ?? null,
+      quarter: q,
+      month: m,
+      calendar_year: calendarYear,
+      parent_hint: null,
+      acceptance_items: acceptance.length
+        ? acceptance
+        : (first?.acceptance_items ?? []),
+    },
+  ];
+}
+
 export type AiLifeRoadPlanSheetProps = {
   visible: boolean;
   onClose: () => void;
-  directionId: string | null;
+  /** 总方向 id；节点编辑页可不传 */
+  directionId?: string | null;
+  /** 拆解源文本：总方向或节点梗概 */
   directionBody: string;
   yearTheme?: string | null;
   calendarYear: number;
   existingNodeTitles?: string[];
   onCreated?: () => void;
+  /** 编辑页作用域：只拆子层 */
+  scope?: AiLifeRoadPlanScope;
+  sheetTitle?: string;
+  sheetSub?: string;
+  emptyHint?: string;
+  /** 月节点：把拆解结果写回表单，不新建月槽 */
+  onApplyToForm?: (patch: {
+    title?: string;
+    note?: string | null;
+    acceptance: LifeRoadAcceptanceItem[];
+  }) => void;
 };
 
 export function AiLifeRoadPlanSheet({
   visible,
   onClose,
-  directionId,
+  directionId = null,
   directionBody,
   yearTheme,
   calendarYear,
   existingNodeTitles = [],
   onCreated,
+  scope,
+  sheetTitle = 'AI 拆解',
+  sheetSub,
+  emptyHint = '请先写下梗概',
+  onApplyToForm,
 }: AiLifeRoadPlanSheetProps) {
   const insets = useSafeAreaInsets();
   const { lr } = useLifeRoadTheme();
   const styles = useMemo(() => createStyles(lr.pine), [lr.pine]);
+  const applyMode = scope?.kind === 'month' && typeof onApplyToForm === 'function';
+  const resolvedSub =
+    sheetSub ??
+    (scope?.kind === 'year'
+      ? '基于梗概拆季/月 · 勾选后创建'
+      : scope?.kind === 'quarter'
+        ? '基于梗概拆月份 · 勾选后创建'
+        : applyMode
+          ? '基于梗概拆验收 · 确认写回本页'
+          : '勾选后批量建年/季/月 · 不自动建任务');
 
   const [preference, setPreference] = useState<(typeof PREFS)[number]['key']>('偏少而硬');
   const [loading, setLoading] = useState(false);
@@ -100,7 +200,7 @@ export function AiLifeRoadPlanSheet({
 
   const run = useCallback(async () => {
     if (!directionBody.trim()) {
-      toast.info('请先写下总方向');
+      toast.info(emptyHint);
       return;
     }
     setLoading(true);
@@ -118,34 +218,64 @@ export function AiLifeRoadPlanSheet({
         toast.error(r.error || '拆解失败');
         return;
       }
+      const filtered = filterNodesForScope(r.data.nodes, scope, calendarYear);
+      if (!filtered.length) {
+        toast.info('未拆出可用子节点，请补充梗概后再试');
+        setData({ year_theme: r.data.year_theme, nodes: [] });
+        setBlocked(new Set());
+        setSelected(new Set());
+        setFetched(true);
+        return;
+      }
       const nextBlocked = new Set<number>();
       const nextSelected = new Set<number>();
-      r.data.nodes.forEach((n, i) => {
+      filtered.forEach((n, i) => {
+        if (applyMode) {
+          nextSelected.add(i);
+          return;
+        }
         const key = slotKey({
           kind: n.kind,
           calendar_year: n.calendar_year ?? calendarYear,
           quarter: n.quarter,
           month: n.month,
         });
-        if (occ.has(key)) {
+        // 作用域父节点自身槽位不算阻塞
+        const isSelfSlot =
+          scope?.parentId &&
+          ((scope.kind === 'year' && n.kind === 'year') ||
+            (scope.kind === 'quarter' &&
+              n.kind === 'quarter' &&
+              n.quarter === scope.quarter) ||
+            (scope.kind === 'month' && n.kind === 'month' && n.month === scope.month));
+        if (occ.has(key) && !isSelfSlot) {
           nextBlocked.add(i);
         } else {
           nextSelected.add(i);
         }
       });
-      setData(r.data);
+      setData({ year_theme: r.data.year_theme, nodes: filtered });
       setBlocked(nextBlocked);
       setSelected(nextSelected);
       setFetched(true);
       if (nextBlocked.size > 0 && nextSelected.size === 0) {
-        toast.info('对应年/季/月槽位已有节点，请先编辑或删除后再拆解');
+        toast.info('对应槽位已有节点，请先编辑或删除后再拆解');
       }
     } catch (e) {
       toast.error(toUserMessage(e, '拆解失败'));
     } finally {
       setLoading(false);
     }
-  }, [calendarYear, directionBody, existingNodeTitles, preference, yearTheme]);
+  }, [
+    applyMode,
+    calendarYear,
+    directionBody,
+    emptyHint,
+    existingNodeTitles,
+    preference,
+    scope,
+    yearTheme,
+  ]);
 
   useEffect(() => {
     if (visible && !fetched && !loading && directionBody.trim()) {
@@ -155,7 +285,7 @@ export function AiLifeRoadPlanSheet({
 
   const toggle = (i: number) => {
     if (blocked.has(i)) return;
-    setSelected(prev => {
+    setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(i)) next.delete(i);
       else next.add(i);
@@ -165,15 +295,34 @@ export function AiLifeRoadPlanSheet({
 
   const handleConfirm = async () => {
     if (!data) return;
-    const chosenIdx = data.nodes.map((_, i) => i).filter(i => selected.has(i) && !blocked.has(i));
+    const chosenIdx = data.nodes
+      .map((_, i) => i)
+      .filter((i) => selected.has(i) && !blocked.has(i));
     if (!chosenIdx.length) {
-      toast.info('请至少勾选一个可创建节点');
+      toast.info(applyMode ? '请至少勾选一项' : '请至少勾选一个可创建节点');
       return;
     }
+
+    if (applyMode && onApplyToForm) {
+      const chosen = chosenIdx.map((i) => data.nodes[i]);
+      const acceptance = chosen
+        .flatMap((n) => n.acceptance_items ?? [])
+        .map((a) => createAcceptanceItem(a.text))
+        .filter((a) => a.text.trim());
+      const first = chosen[0];
+      onApplyToForm({
+        title: first?.title?.trim() || undefined,
+        note: first?.note ?? undefined,
+        acceptance,
+      });
+      toast.success(acceptance.length ? `已写入 ${acceptance.length} 条验收草稿` : '已应用拆解');
+      onClose();
+      return;
+    }
+
     setSaving(true);
     try {
       const createdIds: (string | null)[] = data.nodes.map(() => null);
-      // 按 year → quarter → month 顺序创建，便于挂 parent
       const order = [...chosenIdx].sort((a, b) => {
         const rank = (k: string) => (k === 'year' ? 0 : k === 'quarter' ? 1 : 2);
         return rank(data.nodes[a].kind) - rank(data.nodes[b].kind);
@@ -182,24 +331,24 @@ export function AiLifeRoadPlanSheet({
       for (const i of order) {
         const n = data.nodes[i];
         const kind = n.kind as LifeRoadNodeKind;
-        let parentId: string | null = null;
+        let parentId: string | null = scope?.parentId ?? null;
         if (n.parent_hint != null && createdIds[n.parent_hint]) {
           parentId = createdIds[n.parent_hint];
-        } else if (kind === 'quarter') {
+        } else if (!parentId && kind === 'quarter') {
           const yearIdx = data.nodes.findIndex(
             (x, j) =>
-              j < i &&
+              j !== i &&
               x.kind === 'year' &&
               selected.has(j) &&
               !blocked.has(j) &&
               createdIds[j],
           );
           if (yearIdx >= 0) parentId = createdIds[yearIdx];
-        } else if (kind === 'month') {
+        } else if (!parentId && kind === 'month') {
           const q = n.quarter;
           const qIdx = data.nodes.findIndex(
             (x, j) =>
-              j < i &&
+              j !== i &&
               x.kind === 'quarter' &&
               x.quarter === q &&
               selected.has(j) &&
@@ -207,9 +356,16 @@ export function AiLifeRoadPlanSheet({
               createdIds[j],
           );
           if (qIdx >= 0) parentId = createdIds[qIdx];
+          else if (scope?.kind === 'quarter' && scope.parentId) {
+            parentId = scope.parentId;
+          }
+        } else if (kind === 'month' && scope?.kind === 'quarter' && scope.parentId) {
+          parentId = scope.parentId;
+        } else if (kind === 'quarter' && scope?.kind === 'year' && scope.parentId) {
+          parentId = scope.parentId;
         }
 
-        const acceptance = (n.acceptance_items ?? []).map(a => createAcceptanceItem(a.text));
+        const acceptance = (n.acceptance_items ?? []).map((a) => createAcceptanceItem(a.text));
         const extra = writeAcceptanceCriteria(null, acceptance);
         const row = await createLifeRoadNode({
           kind,
@@ -224,7 +380,7 @@ export function AiLifeRoadPlanSheet({
         createdIds[i] = row.id;
       }
 
-      if (directionId && data.year_theme?.trim()) {
+      if (!scope && directionId && data.year_theme?.trim()) {
         try {
           await updateLifeDirection(directionId, { year_theme: data.year_theme.trim() });
         } catch {
@@ -270,7 +426,7 @@ export function AiLifeRoadPlanSheet({
           </Text>
           {(n.acceptance_items?.length ?? 0) > 0 ? (
             <Text style={styles.rowAcc} numberOfLines={3}>
-              {n.acceptance_items.map(a => `· ${a.text}`).join('\n')}
+              {n.acceptance_items.map((a) => `· ${a.text}`).join('\n')}
             </Text>
           ) : null}
         </View>
@@ -285,15 +441,15 @@ export function AiLifeRoadPlanSheet({
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={styles.handle} />
           <View style={styles.head}>
-            <Text style={styles.title}>AI 拆解方向</Text>
+            <Text style={styles.title}>{sheetTitle}</Text>
             <Pressable onPress={onClose} hitSlop={10}>
               <Text style={styles.close}>关闭</Text>
             </Pressable>
           </View>
-          <Text style={styles.sub}>勾选后批量建年/季/月 · 不自动建任务</Text>
+          <Text style={styles.sub}>{resolvedSub}</Text>
 
           <View style={styles.prefRow}>
-            {PREFS.map(p => {
+            {PREFS.map((p) => {
               const on = preference === p.key;
               return (
                 <Pressable
@@ -309,7 +465,7 @@ export function AiLifeRoadPlanSheet({
             })}
           </View>
 
-          {!loading && data?.year_theme ? (
+          {!loading && !scope && data?.year_theme ? (
             <Text style={styles.themeLine}>年主题建议 · {data.year_theme}</Text>
           ) : null}
 
@@ -340,7 +496,9 @@ export function AiLifeRoadPlanSheet({
               style={[styles.primaryBtn, (loading || saving || !data) && styles.btnDisabled]}
               disabled={loading || saving || !data}
               onPress={() => void handleConfirm()}>
-              <Text style={styles.primaryText}>{saving ? '写入中…' : '确认创建'}</Text>
+              <Text style={styles.primaryText}>
+                {saving ? '写入中…' : applyMode ? '确认应用' : '确认创建'}
+              </Text>
             </Pressable>
           </View>
         </View>

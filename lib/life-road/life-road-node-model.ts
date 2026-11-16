@@ -1,6 +1,6 @@
 /**
  * 道路年 / 季 / 月节点：枚举、时间骨架与字段校验。
- * 方向拆解 + 可选验收标准 checklist；不设截止日期 / 优先级 / 完成百分比。
+ * 方向拆解 + 可选目标/任务清单（条目可设 P0/P1/P2）；节点本身不设截止日期 / 完成百分比。
  */
 
 export const LIFE_ROAD_NODE_KINDS = ['multi', 'farther', 'year', 'quarter', 'month'] as const;
@@ -221,4 +221,5 @@ export function assertLifeRoadNodeShape(input: {
 
 /** 标题上限：方向短句 */
 export const LIFE_ROAD_TITLE_MAX = 40;
-export const LIFE_ROAD_NOTE_MAX = 200;
+/** 梗概上限：供页内 AI 拆解读取 */
+export const LIFE_ROAD_NOTE_MAX = 2000;

@@ -1,14 +1,15 @@
 /**
- * 道路节点「验收」= 任务树：存于 life_road_nodes.extra_data.acceptance_criteria。
- * 年验收可连接季（link_quarter）；季验收可连接月（link_month）；
- * 月验收可嵌套子任务（children，结构对齐项目）；叶子验收后可快速建项目。
- * 不进任务日历 / 积分 / 截止日期。
+ * 道路节点清单：存于 life_road_nodes.extra_data.acceptance_criteria。
+ * 年 / 季 =「目标」；月 =「任务」。
+ * 顶层条目按 priority（p0 / p1 / p2）分层；年可连季、季可连月；
+ * 月可嵌套子任务；叶子后可快速建项目。不进任务日历 / 积分 / 截止日期。
  */
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import {
   LifeRoadValidationError,
   monthLabel,
   quarterLabel,
+  type LifeRoadNodeKind,
 } from '@/lib/life-road/life-road-node-model';
 
 export const LIFE_ROAD_ACCEPTANCE_EXTRA_KEY = 'acceptance_criteria';
@@ -16,15 +17,36 @@ export const LIFE_ROAD_ACCEPTANCE_MAX_ITEMS = 40;
 export const LIFE_ROAD_ACCEPTANCE_TEXT_MAX = 80;
 export const LIFE_ROAD_ACCEPTANCE_MAX_DEPTH = 3;
 
+export const LIFE_ROAD_ACCEPTANCE_PRIORITIES = ['p0', 'p1', 'p2'] as const;
+export type LifeRoadAcceptancePriority = (typeof LIFE_ROAD_ACCEPTANCE_PRIORITIES)[number];
+
+export const LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS: Record<
+  LifeRoadAcceptancePriority,
+  string
+> = {
+  p0: 'P0',
+  p1: 'P1',
+  p2: 'P2',
+};
+
+/** 用户可见名词：年/季=目标，月=任务 */
+export type LifeRoadItemNoun = '目标' | '任务';
+
+export function lifeRoadItemNoun(kind: LifeRoadNodeKind): LifeRoadItemNoun {
+  return kind === 'month' ? '任务' : '目标';
+}
+
 export type LifeRoadAcceptanceItem = {
   id: string;
   text: string;
   done: boolean;
-  /** 年节点验收 → 连接的季 1–4 */
+  /** 顶层分层：p0 最高，缺省 p1（兼容旧数据） */
+  priority: LifeRoadAcceptancePriority;
+  /** 年节点目标 → 连接的季 1–4 */
   link_quarter?: 1 | 2 | 3 | 4 | null;
-  /** 季节点验收 → 连接的月 1–12 */
+  /** 季节点目标 → 连接的月 1–12 */
   link_month?: number | null;
-  /** 子验收（任务拆解，对齐项目子任务） */
+  /** 子任务（仅月节点嵌套，对齐项目子任务） */
   children?: LifeRoadAcceptanceItem[];
 };
 
@@ -59,6 +81,15 @@ function parseLinkMonth(raw: unknown): number | null {
   return n;
 }
 
+function parsePriority(raw: unknown): LifeRoadAcceptancePriority {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (s === 'p0' || s === '0') return 'p0';
+  if (s === 'p2' || s === '2') return 'p2';
+  return 'p1';
+}
+
 function normalizeItem(
   raw: unknown,
   depth: number,
@@ -82,6 +113,8 @@ function normalizeItem(
     id: id.slice(0, 36),
     text: text.slice(0, LIFE_ROAD_ACCEPTANCE_TEXT_MAX),
     done: Boolean(o.done),
+    // 子任务跟随父层展示，自身 priority 仍规范化以便序列化稳定
+    priority: depth === 1 ? parsePriority(o.priority) : 'p1',
     children,
   };
   if (link_quarter != null) item.link_quarter = link_quarter;
@@ -89,7 +122,7 @@ function normalizeItem(
   return item;
 }
 
-/** 从 extra_data 读取验收任务树；坏数据静默为空列表 */
+/** 从 extra_data 读取目标/任务树；坏数据静默为空列表 */
 export function parseAcceptanceCriteria(
   extraData: string | null | undefined,
 ): LifeRoadAcceptanceItem[] {
@@ -104,13 +137,32 @@ export function parseAcceptanceCriteria(
   return out;
 }
 
-export function createAcceptanceItem(text = ''): LifeRoadAcceptanceItem {
+export function createAcceptanceItem(
+  text = '',
+  priority: LifeRoadAcceptancePriority = 'p1',
+): LifeRoadAcceptanceItem {
   return {
     id: makeTimestampEntityId('lac_', 6),
     text,
     done: false,
+    priority,
     children: [],
   };
+}
+
+/** 顶层按 P0 → P1 → P2 分层（仅 depth=1；子项仍挂在父下） */
+export function groupAcceptanceByPriority(
+  items: LifeRoadAcceptanceItem[],
+): Record<LifeRoadAcceptancePriority, LifeRoadAcceptanceItem[]> {
+  const groups: Record<LifeRoadAcceptancePriority, LifeRoadAcceptanceItem[]> = {
+    p0: [],
+    p1: [],
+    p2: [],
+  };
+  for (const it of items) {
+    groups[it.priority ?? 'p1'].push(it);
+  }
+  return groups;
 }
 
 export function flattenAcceptanceItems(
@@ -131,7 +183,7 @@ export function isAcceptanceLeaf(item: LifeRoadAcceptanceItem): boolean {
   return !item.children || item.children.length === 0;
 }
 
-/** 在验收树中按 id 查找节点 */
+/** 在目标/任务树中按 id 查找节点 */
 export function findAcceptanceById(
   items: LifeRoadAcceptanceItem[],
   id: string,
@@ -144,7 +196,7 @@ export function findAcceptanceById(
   return null;
 }
 
-/** 可挂项目的验收叶子（无子项） */
+/** 可挂项目的任务叶子（无子项） */
 export function listAcceptanceLeaves(
   items: LifeRoadAcceptanceItem[],
 ): LifeRoadAcceptanceItem[] {
@@ -168,7 +220,10 @@ export function updateAcceptanceById(
   items: LifeRoadAcceptanceItem[],
   id: string,
   patch: Partial<
-    Pick<LifeRoadAcceptanceItem, 'text' | 'done' | 'link_quarter' | 'link_month'>
+    Pick<
+      LifeRoadAcceptanceItem,
+      'text' | 'done' | 'priority' | 'link_quarter' | 'link_month'
+    >
   >,
 ): LifeRoadAcceptanceItem[] {
   return items.map((n) => {
@@ -214,6 +269,7 @@ function serializeItem(it: LifeRoadAcceptanceItem): Record<string, unknown> {
     id: it.id,
     text: it.text,
     done: it.done,
+    priority: it.priority ?? 'p1',
   };
   if (it.link_quarter != null) row.link_quarter = it.link_quarter;
   if (it.link_month != null) row.link_month = it.link_month;
@@ -236,13 +292,13 @@ export function normalizeAcceptanceCriteriaInput(
   const flat = flattenAcceptanceItems(cleaned);
   if (flat.length > LIFE_ROAD_ACCEPTANCE_MAX_ITEMS) {
     throw new LifeRoadValidationError(
-      `验收最多 ${LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条（含子任务）`,
+      `最多 ${LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条（含子项）`,
     );
   }
   for (const node of flat) {
     if (unicodeLen(node.text) > LIFE_ROAD_ACCEPTANCE_TEXT_MAX) {
       throw new LifeRoadValidationError(
-        `验收单条最多 ${LIFE_ROAD_ACCEPTANCE_TEXT_MAX} 字`,
+        `单条最多 ${LIFE_ROAD_ACCEPTANCE_TEXT_MAX} 字`,
       );
     }
   }
@@ -250,7 +306,7 @@ export function normalizeAcceptanceCriteriaInput(
 }
 
 /**
- * 把验收写回 extra_data JSON 字符串。
+ * 把目标/任务写回 extra_data JSON 字符串。
  * 空列表时删除该键；若对象已空则返回 null。
  */
 export function writeAcceptanceCriteria(
@@ -280,10 +336,13 @@ export function acceptanceProgress(items: LifeRoadAcceptanceItem[]): {
   return { done, total };
 }
 
-export function acceptanceMetaLabel(items: LifeRoadAcceptanceItem[]): string | null {
+export function acceptanceMetaLabel(
+  items: LifeRoadAcceptanceItem[],
+  noun: LifeRoadItemNoun = '目标',
+): string | null {
   if (items.length === 0) return null;
   const { done, total } = acceptanceProgress(items);
-  return `验收 ${done}/${total}`;
+  return `${noun} ${done}/${total}`;
 }
 
 /** 导图 / 编辑侧展示：→ Q2 / → 3月 */

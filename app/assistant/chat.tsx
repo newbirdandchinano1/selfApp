@@ -53,8 +53,10 @@ import {
   toUserMessage,
 } from '@/lib/app-feedback';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
 import {
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -67,6 +69,45 @@ const DELTA_FLUSH_MS = 48;
 function firstParam(raw: string | string[] | undefined): string | undefined {
   if (Array.isArray(raw)) return raw[0];
   return raw;
+}
+
+/** 识图建菜：把本轮用户附图写入 commit_recipe 草稿，保存时才能上传成品图 */
+function attachTurnImageToRecipeCards(
+  cards: ActionCard[],
+  imageDataUri: string | null | undefined,
+): ActionCard[] {
+  const img = imageDataUri?.trim();
+  if (!img || !cards.length) return cards;
+  return cards.map(card => {
+    const action = (card.confirm_action || card.commit_action || '').trim();
+    if (action !== 'commit_recipe') return card;
+    if (card.intent === 'delete' || card.intent === 'update') return card;
+    const draft = { ...(card.draft ?? {}) };
+    if (
+      draftStringish(draft.finished_image_uri) ||
+      draftStringish(draft.image_uri) ||
+      draftStringish(draft.recipe_id) ||
+      draftStringish(draft.id)
+    ) {
+      return card;
+    }
+    // 移动分类草稿不挂图
+    if (
+      draftStringish(draft.from_category_name) ||
+      draftStringish(draft.from_category_id) ||
+      Array.isArray(draft.recipe_ids)
+    ) {
+      return card;
+    }
+    return {
+      ...card,
+      draft: { ...draft, finished_image_uri: img },
+    };
+  });
+}
+
+function draftStringish(v: unknown): string {
+  return typeof v === 'string' && v.trim() ? v.trim() : '';
 }
 
 export default function AssistantChatScreen() {
@@ -97,6 +138,8 @@ export default function AssistantChatScreen() {
   /** S5：待发送附图（启动载荷 / 本轮消费后清空） */
   const pendingImageRef = React.useRef<string | null>(null);
   const [pendingImageUri, setPendingImageUri] = React.useState<string | null>(null);
+  /** 本轮已发出的附图，供识图建菜草稿挂成品图 */
+  const lastTurnImageDataUriRef = React.useRef<string | null>(null);
 
   const setThinkingState = React.useCallback((next: AgentThinkingState | null) => {
     thinkingRef.current = next;
@@ -121,9 +164,8 @@ export default function AssistantChatScreen() {
     ) => {
       const imageDataUri =
         (opts?.imageDataUri ?? pendingImageRef.current)?.trim() || null;
-      const text =
-        rawText.trim() ||
-        (imageDataUri ? '请识别这张图，并按合适的业务草稿帮我处理' : '');
+      // 纯附图不塞「业务草稿」默认句：后端优先业务，非业务再闲聊
+      const text = rawText.trim();
       if ((!text && !imageDataUri) || busyRef.current) return;
 
       let current = sessionRef.current;
@@ -158,7 +200,8 @@ export default function AssistantChatScreen() {
       };
       await persist(nextSession);
       if (opts?.clearDraft !== false) setDraft('');
-      // 本轮附图消费掉，避免下一条误带
+      // 本轮附图消费掉，避免下一条误带；保留 lastTurn 供确认卡挂成品图
+      lastTurnImageDataUriRef.current = imageDataUri;
       pendingImageRef.current = null;
       setPendingImageUri(null);
       busyRef.current = true;
@@ -295,11 +338,20 @@ export default function AssistantChatScreen() {
                 });
               },
               onCard: card => {
-                if (!liveCards.some(c => c.id === card.id)) liveCards.push(card);
+                const enriched = attachTurnImageToRecipeCards(
+                  [card],
+                  lastTurnImageDataUriRef.current,
+                )[0];
+                if (!liveCards.some(c => c.id === enriched.id)) liveCards.push(enriched);
+                else {
+                  const idx = liveCards.findIndex(c => c.id === enriched.id);
+                  if (idx >= 0) liveCards[idx] = enriched;
+                }
                 if (!streamedText.trim() && sawToolCall) {
                   setThinkingState(createThinkingState('organizing'));
                 }
-                patchAssistant(streamedText, [...liveTraces], 'streaming', undefined, {
+                // 显式传入 liveCards，避免流式过程中确认卡未挂到气泡 parts
+                patchAssistant(streamedText, [...liveTraces], 'streaming', [...liveCards], {
                   immediate: true,
                 });
               },
@@ -359,7 +411,18 @@ export default function AssistantChatScreen() {
           result = { ...result, reply: streamErrorHint };
         }
 
-        const rawFinalCards = result.cards.length ? result.cards : liveCards;
+        // 合并 stream 累计卡与 done 卡，避免只信一侧导致确认卡丢失
+        const rawFinalCards = (() => {
+          const merged: ActionCard[] = [];
+          const push = (c: ActionCard) => {
+            const idx = merged.findIndex(x => x.id === c.id);
+            if (idx >= 0) merged[idx] = c;
+            else merged.push(c);
+          };
+          for (const c of liveCards) push(c);
+          for (const c of result.cards) push(c);
+          return merged;
+        })();
         // S9.6：同卡改稿合并进原 operation_id；「再记一笔」保留新卡。
         // 调和时去掉「本轮助手气泡」里已流式画出的卡，避免 open 扫描命中自己，
         // 导致 merge-only 后 finalParts 无卡、确认卡闪一下消失。
@@ -377,18 +440,16 @@ export default function AssistantChatScreen() {
         };
         const reconciled = reconcileIncomingCommitCards({
           session: baseForReconcile,
-          incoming: rawFinalCards,
+          incoming: attachTurnImageToRecipeCards(
+            rawFinalCards,
+            lastTurnImageDataUriRef.current,
+          ),
           userMessage: text,
         });
-        const finalCards = reconciled.cards;
-        // 非流式回退：一次性展示全文（禁止假打字机）
-        if (!usedStream) {
-          enterGenerating();
-          patchAssistant(result.reply, result.tool_traces, 'streaming', finalCards, {
-            immediate: true,
-          });
-        }
-
+        const finalCards = attachTurnImageToRecipeCards(
+          reconciled.cards,
+          lastTurnImageDataUriRef.current,
+        );
         // 以服务端 done.reply 为准（ReplyValidator 可能已改写/剔除 tool-call 泄漏）；
         // streamedText 仅在 done 未带回正文时兜底。
         // 再剥一层：模型把 tool 写成正文时，避免最终气泡残留 recipe.xxx + JSON。
@@ -396,15 +457,27 @@ export default function AssistantChatScreen() {
           ? result.reply
           : streamedText || result.reply;
         finalReply = stripAssistantToolCallLeak(finalReply);
+        const tracesForParts = result.tool_traces.length ? result.tool_traces : liveTraces;
+        const toolClaimedCard = tracesForParts.some(t =>
+          /确认卡/.test(String(t.summary || '')),
+        );
         if (!finalReply.trim() && finalCards.length) {
           finalReply = '已为你准备好操作卡，请点击确认。';
         } else if (!finalReply.trim() && isMostlyToolCallLeak(streamedText)) {
           finalReply =
             '刚才工具调用写成了文字。请再说一次你想做什么，我会重新出确认卡。';
+        } else if (toolClaimedCard && !finalCards.length) {
+          // 工具摘要说有确认卡但 parts 无卡：明确告知，避免假「点卡片」
+          finalReply = `${finalReply.trim() ? `${finalReply.trim()}\n\n` : ''}确认卡未能显示在当前气泡。请再发一次同样请求，或到对应页面手动操作。`;
         }
+        // 流式/非流式收尾都立刻把卡写进气泡，防止只更新文字丢卡
+        enterGenerating();
+        patchAssistant(finalReply, tracesForParts, 'streaming', finalCards, {
+          immediate: true,
+        });
         const finalParts = partsFromAgentResult({
           reply: finalReply,
-          toolTraces: result.tool_traces.length ? result.tool_traces : liveTraces,
+          toolTraces: tracesForParts,
           cards: finalCards,
         });
         // S10 P3：绑定 unofficial_advice / source_labels / answer_status
@@ -514,6 +587,75 @@ export default function AssistantChatScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const clearPendingImage = React.useCallback(() => {
+    pendingImageRef.current = null;
+    setPendingImageUri(null);
+  }, []);
+
+  const applyPickedImage = React.useCallback(
+    (asset: { uri?: string | null; base64?: string | null; mimeType?: string | null }) => {
+      const b64 = asset.base64?.trim();
+      if (!b64) {
+        toast.error('无法读取图片，请换一张重试');
+        return;
+      }
+      const mime = asset.mimeType?.trim() || 'image/jpeg';
+      const dataUri = `data:${mime};base64,${b64}`;
+      pendingImageRef.current = dataUri;
+      // 预览优先用本地 file URI，避免大图 data URI 卡顿
+      setPendingImageUri(asset.uri?.trim() || dataUri);
+    },
+    [],
+  );
+
+  const pickChatImage = React.useCallback(async (source: 'library' | 'camera') => {
+    if (busyRef.current) return;
+    try {
+      if (source === 'library') {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          toast.info('需要相册权限才能选图');
+          return;
+        }
+        const picked = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: false,
+          quality: 0.85,
+          base64: true,
+        });
+        const asset = picked.assets?.[0];
+        if (picked.canceled || !asset) return;
+        applyPickedImage(asset);
+        return;
+      }
+
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        toast.info('需要相机权限才能拍照');
+        return;
+      }
+      const shot = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.85,
+        base64: true,
+      });
+      const asset = shot.assets?.[0];
+      if (shot.canceled || !asset) return;
+      applyPickedImage(asset);
+    } catch (e) {
+      toast.error(toUserMessage(e, '选图失败'));
+    }
+  }, [applyPickedImage]);
+
+  const onPickImage = React.useCallback(() => {
+    if (busyRef.current) return;
+    Alert.alert('添加图片', undefined, [
+      { text: '从相册选择', onPress: () => void pickChatImage('library') },
+      { text: '拍照', onPress: () => void pickChatImage('camera') },
+      { text: '取消', style: 'cancel' },
+    ]);
+  }, [pickChatImage]);
+
   const onNewChat = React.useCallback(async () => {
     if (busyRef.current) return;
     abortRef.current?.abort();
@@ -521,10 +663,11 @@ export default function AssistantChatScreen() {
     sessionRef.current = next;
     setSession(next);
     setDraft('');
+    clearPendingImage();
     setHistoryOpen(false);
     autoSentRef.current = false;
     void refreshSummaries();
-  }, [refreshSummaries]);
+  }, [clearPendingImage, refreshSummaries]);
 
   const onSelectSession = React.useCallback(
     async (sessionId: string) => {
@@ -539,9 +682,10 @@ export default function AssistantChatScreen() {
       await saveChatSession(found);
       setHistoryOpen(false);
       setDraft('');
+      clearPendingImage();
       void refreshSummaries();
     },
-    [refreshSummaries],
+    [clearPendingImage, refreshSummaries],
   );
 
   const onDeleteSession = React.useCallback(
@@ -567,7 +711,10 @@ export default function AssistantChatScreen() {
       if (resolveCommitAction(card)) {
         const cur = sessionRef.current;
         if (!cur) return;
-        const outcome = await confirmChatCommit({ session: cur, card });
+        // 兜底：确认前再挂一次本轮附图，避免流式合并丢 finished_image_uri
+        const cardWithImage =
+          attachTurnImageToRecipeCards([card], lastTurnImageDataUriRef.current)[0] ?? card;
+        const outcome = await confirmChatCommit({ session: cur, card: cardWithImage });
         await persist(outcome.session);
         if (outcome.skipped) return;
         if (outcome.op?.status === 'succeeded') {
@@ -697,9 +844,12 @@ export default function AssistantChatScreen() {
           value={draft}
           onChangeText={setDraft}
           hasPendingImage={Boolean(pendingImageUri)}
+          pendingImageUri={pendingImageUri}
           placeholder={
             pendingImageUri ? '可补充说明，或直接发送识别图片…' : undefined
           }
+          onPickImage={onPickImage}
+          onClearPendingImage={clearPendingImage}
           onSend={() => void sendMessage(draft)}
           onCancel={() => abortRef.current?.abort()}
           busy={busy}

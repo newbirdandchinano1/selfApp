@@ -178,7 +178,8 @@ export async function runAgentChat(opts: {
   signal?: AbortSignal;
 }): Promise<AgentChatResult> {
   const message = opts.message.trim();
-  if (!message) {
+  const hasImage = Boolean(opts.imageDataUri?.trim());
+  if (!message && !hasImage) {
     throw new ApiRequestError('消息不能为空', 400, -1, { retryable: false });
   }
 
@@ -273,7 +274,8 @@ export async function runAgentChatStream(opts: {
   handlers?: AgentChatStreamHandlers;
 }): Promise<AgentChatResult> {
   const message = opts.message.trim();
-  if (!message) {
+  const hasImage = Boolean(opts.imageDataUri?.trim());
+  if (!message && !hasImage) {
     throw new ApiRequestError('消息不能为空', 400, -1, { retryable: false });
   }
 
@@ -341,11 +343,29 @@ export async function runAgentChatStream(opts: {
         summary: typeof ev.summary === 'string' ? ev.summary : String(ev.name || 'tool'),
       };
       tool_traces.push(trace);
+      // 兜底：部分环境可能丢独立 card 事件，但从 tool_result.data.card(s) 仍可出卡
+      const data = ev.data;
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        const d = data as Record<string, unknown>;
+        const fromTool: unknown[] = [];
+        if (d.card && typeof d.card === 'object') fromTool.push(d.card);
+        if (Array.isArray(d.cards)) fromTool.push(...d.cards);
+        for (const raw of fromTool) {
+          const parsed = parseActionCards([raw]);
+          const card = parsed[0];
+          if (!card?.id) continue;
+          if (cards.some(c => c.id === card.id)) continue;
+          cards.push(card);
+          opts.handlers?.onCard?.(card);
+        }
+      }
       opts.handlers?.onToolResult?.({ ...trace, data: ev.data });
     } else if (event === 'card') {
       const parsed = parseActionCards([ev.card]);
       if (parsed[0]) {
-        cards.push(parsed[0]);
+        if (!cards.some(c => c.id === parsed[0].id)) {
+          cards.push(parsed[0]);
+        }
         opts.handlers?.onCard?.(parsed[0]);
       }
     } else if (event === 'error' && typeof ev.message === 'string') {
@@ -357,8 +377,14 @@ export async function runAgentChatStream(opts: {
       if (Array.isArray(ev.tool_traces) && tool_traces.length === 0) {
         tool_traces.push(...parseToolTraces(ev.tool_traces));
       }
-      if (Array.isArray(ev.cards) && cards.length === 0) {
-        cards.push(...parseActionCards(ev.cards));
+      // 按 id 合并，避免「先到空壳/半卡」导致 done.cards 被跳过
+      if (Array.isArray(ev.cards)) {
+        for (const raw of parseActionCards(ev.cards)) {
+          if (!raw?.id) continue;
+          const idx = cards.findIndex(c => c.id === raw.id);
+          if (idx >= 0) cards[idx] = raw;
+          else cards.push(raw);
+        }
       }
       if (ev.usage && typeof ev.usage === 'object') {
         metadata = ev.usage as Record<string, unknown>;

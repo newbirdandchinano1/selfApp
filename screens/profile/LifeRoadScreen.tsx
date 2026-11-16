@@ -1,11 +1,7 @@
 /**
  * 道路导图子页：对齐 `我的道路-UI重构.html` route-road
- *（同步条、总方向 north-card、可折叠道路树、验收勾选）。
+ *（同步条、总方向 north-card、今年之上 / 今年目标树 / 下一年；主页仅展示目标/任务，勾选在编辑页）。
  */
-import { AiLifeRoadFromImageSheet } from '@/components/profile/ai-life-road-from-image-sheet';
-import { AiLifeRoadPeriodReviewSheet } from '@/components/profile/ai-life-road-period-review-sheet';
-import { AiLifeRoadPlanSheet } from '@/components/profile/ai-life-road-plan-sheet';
-import { AiLifeRoadSuggestLinksSheet } from '@/components/profile/ai-life-road-suggest-links-sheet';
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import {
   FoldRiseIn,
@@ -21,16 +17,18 @@ import {
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
 import {
+  LIFE_ROAD_ACCEPTANCE_PRIORITIES,
+  LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS,
   acceptanceLinkLabel,
   acceptanceMetaLabel,
-  findAcceptanceById,
-  isAcceptanceLeaf,
+  groupAcceptanceByPriority,
+  lifeRoadItemNoun,
   parseAcceptanceCriteria,
-  updateAcceptanceById,
-  writeAcceptanceCriteria,
   type LifeRoadAcceptanceItem,
+  type LifeRoadItemNoun,
 } from '@/lib/life-road/life-road-acceptance';
-import { parseLifeAcceptanceId } from '@/lib/life-road/project-road-link';
+import { parseLifeWeekKey } from '@/lib/life-road/project-road-link';
+import { listWeeksInMonth, parseWeekGoals } from '@/lib/life-road/life-road-weeks';
 import {
   LIFE_ROAD_NODE_KIND_LABELS,
   LIFE_ROAD_NODE_STATUS_LABELS,
@@ -41,20 +39,15 @@ import {
 } from '@/lib/life-road/life-road-node-model';
 import {
   buildRoadMindMap,
-  resolveYearFocusDetail,
   type RoadMindMapModel,
   type RoadProjectRef,
 } from '@/lib/life-road/life-road-tree';
 import { getDatabase } from '@/lib/database';
-import {
-  getLifeDirection,
-  updateLifeDirection,
-} from '@/lib/repositories/life-road/life-direction';
+import { getLifeDirection } from '@/lib/repositories/life-road/life-direction';
 import type { LifeDirectionRow } from '@/lib/repositories/life-road/life-direction.types';
 import {
   deleteLifeRoadNode,
   getLifeRoadNodes,
-  updateLifeRoadNode,
 } from '@/lib/repositories/life-road/life-road-node';
 import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
 import { fetchProfileLifeRoad } from '@/lib/profile-page-api';
@@ -99,30 +92,30 @@ function statusTone(
     case 'on_track':
       return {
         label,
-        color: '#41604F',
-        bg: 'rgba(220,231,223,0.72)',
-        border: 'rgba(140,173,156,0.24)',
+        color: lr.toneOnTrack,
+        bg: lr.toneOnTrackBg,
+        border: lr.toneOnTrackBorder,
       };
     case 'paused':
       return {
         label,
-        color: '#8C6A3C',
-        bg: 'rgba(243,227,199,0.72)',
-        border: 'rgba(211,154,85,0.24)',
+        color: lr.tonePaused,
+        bg: lr.tonePausedBg,
+        border: lr.tonePausedBorder,
       };
     case 'arrived':
       return {
         label,
-        color: '#1F4A3B',
-        bg: 'rgba(197,214,200,0.6)',
-        border: 'rgba(61,107,88,0.22)',
+        color: lr.toneArrived,
+        bg: lr.toneArrivedBg,
+        border: lr.toneArrivedBorder,
       };
     case 'dropped':
       return {
         label,
-        color: '#8C5541',
-        bg: 'rgba(241,220,210,0.72)',
-        border: 'rgba(191,111,82,0.2)',
+        color: lr.toneDropped,
+        bg: lr.toneDroppedBg,
+        border: lr.toneDroppedBorder,
       };
     default:
       return { label, color: lr.muted, bg: lr.sage2, border: lr.line };
@@ -180,33 +173,19 @@ function NorthCompass({ color }: { color: string }) {
   );
 }
 
-function AcceptanceInline({
+function AcceptanceInlineRows({
   items,
   lr,
-  onToggleItem,
-  onCreateProject,
-  projectsByAcceptanceId,
-  onOpenProject,
-  depth = 1,
+  depth,
 }: {
   items: LifeRoadAcceptanceItem[];
   lr: LifeRoadPalette;
-  onToggleItem: (itemId: string) => void;
-  /** 叶子验收后建项目（仅月） */
-  onCreateProject?: (leaf: LifeRoadAcceptanceItem) => void;
-  /** 按验收叶子挂载的项目（仅月） */
-  projectsByAcceptanceId?: Map<string, RoadProjectRef[]>;
-  onOpenProject?: (projectId: string) => void;
-  depth?: number;
+  depth: number;
 }) {
-  if (items.length === 0) return null;
   return (
-    <View style={depth === 1 ? styles.accInner : undefined}>
+    <>
       {items.map((item) => {
         const link = depth === 1 ? acceptanceLinkLabel(item) : null;
-        const leaf = isAcceptanceLeaf(item);
-        const linkedProjects =
-          leaf && projectsByAcceptanceId ? projectsByAcceptanceId.get(item.id) ?? [] : [];
         return (
           <View key={item.id}>
             <View
@@ -214,42 +193,26 @@ function AcceptanceInline({
                 styles.accItem,
                 depth > 1 ? { paddingLeft: 8 + (depth - 1) * 12 } : null,
               ]}>
-              <Pressable
-                onPress={() => onToggleItem(item.id)}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: item.done }}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-                <View
-                  style={[
-                    styles.accCheck,
-                    item.done
-                      ? { backgroundColor: lr.pine, borderColor: lr.pine }
-                      : {
-                          borderColor: lr.line2,
-                          backgroundColor: 'rgba(255,255,255,0.45)',
-                        },
-                  ]}>
-                  {item.done ? (
-                    <Svg width={9} height={9} viewBox="0 0 24 24" fill="none">
-                      <Path
-                        d="M5 12.5l4.5 4.5L19 7"
-                        stroke={lr.onRoad}
-                        strokeWidth={2.4}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </Svg>
-                  ) : null}
-                </View>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  flex: 1,
+                  minWidth: 0,
+                }}>
                 <Text
                   style={[
                     styles.accTxt,
-                    { color: item.done ? lr.muted : lr.ink3 },
+                    {
+                      color: item.done ? lr.muted : lr.ink3,
+                      textDecorationLine: item.done ? 'line-through' : 'none',
+                    },
                   ]}
                   numberOfLines={2}>
                   {item.text}
                 </Text>
-              </Pressable>
+              </View>
               {link ? (
                 <Text
                   style={{
@@ -261,49 +224,142 @@ function AcceptanceInline({
                   {link}
                 </Text>
               ) : null}
-              {leaf && onCreateProject ? (
-                <Pressable
-                  onPress={() => onCreateProject(item)}
-                  style={[
-                    styles.accCreateProj,
-                    {
-                      borderColor: 'rgba(61,107,88,0.35)',
-                      backgroundColor: 'rgba(220,231,223,0.35)',
-                    },
-                  ]}>
-                  <Text style={{ fontSize: 10, fontWeight: '700', color: lr.pine }}>
-                    建项目
-                  </Text>
-                </Pressable>
-              ) : null}
             </View>
-            {linkedProjects.length > 0 && onOpenProject
-              ? linkedProjects.map((p) => (
-                  <View
-                    key={p.id}
-                    style={{ paddingLeft: 8 + depth * 12, marginTop: 4 }}>
-                    <ProjectCard
-                      project={p}
-                      lr={lr}
-                      onPress={() => onOpenProject(p.id)}
-                    />
-                  </View>
-                ))
-              : null}
             {(item.children ?? []).length > 0 ? (
-              <AcceptanceInline
+              <AcceptanceInlineRows
                 items={item.children ?? []}
                 lr={lr}
-                onToggleItem={onToggleItem}
-                onCreateProject={onCreateProject}
-                projectsByAcceptanceId={projectsByAcceptanceId}
-                onOpenProject={onOpenProject}
                 depth={depth + 1}
               />
             ) : null}
           </View>
         );
       })}
+    </>
+  );
+}
+
+/** 主页只读展示：无勾选框；已完成删除线；顶层按 P0/P1/P2 分层 */
+function AcceptanceInline({
+  items,
+  lr,
+  noun = '目标',
+}: {
+  items: LifeRoadAcceptanceItem[];
+  lr: LifeRoadPalette;
+  noun?: LifeRoadItemNoun;
+}) {
+  if (items.length === 0) return null;
+  const groups = groupAcceptanceByPriority(items);
+  return (
+    <View style={styles.accInner}>
+      {LIFE_ROAD_ACCEPTANCE_PRIORITIES.map((p) => {
+        const layer = groups[p];
+        if (layer.length === 0) return null;
+        return (
+          <View key={p} style={{ marginBottom: 4 }}>
+            <Text
+              style={{
+                fontSize: 10,
+                fontWeight: '700',
+                letterSpacing: 0.7,
+                color: lr.muted2,
+                paddingHorizontal: 10,
+                paddingTop: 4,
+                paddingBottom: 2,
+              }}>
+              {LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS[p]} · {noun}
+            </Text>
+            <AcceptanceInlineRows items={layer} lr={lr} depth={1} />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function MonthWeekProjectsInline({
+  year,
+  month,
+  projects,
+  weekGoalsExtra,
+  lr,
+  onOpenProject,
+}: {
+  year: number;
+  month: number;
+  projects: RoadProjectRef[];
+  weekGoalsExtra: string | null | undefined;
+  lr: LifeRoadPalette;
+  onOpenProject: (projectId: string) => void;
+}) {
+  if (projects.length === 0) return null;
+  const weeks = listWeeksInMonth(year, month);
+  const goals = parseWeekGoals(weekGoalsExtra);
+  const byWeek = new Map<string, RoadProjectRef[]>();
+  const unassigned: RoadProjectRef[] = [];
+  for (const p of projects) {
+    const key = p.weekKey?.trim() || '';
+    if (!key) {
+      unassigned.push(p);
+      continue;
+    }
+    const list = byWeek.get(key) ?? [];
+    list.push(p);
+    byWeek.set(key, list);
+  }
+  return (
+    <View style={{ paddingHorizontal: 8, paddingBottom: 6, gap: 6 }}>
+      {weeks.map((w) => {
+        const list = byWeek.get(w.weekKey) ?? [];
+        const goalText = goals[w.weekKey]?.text?.trim();
+        if (list.length === 0 && !goalText) return null;
+        return (
+          <View key={w.weekKey}>
+            <Text
+              style={{
+                fontSize: 10,
+                fontWeight: '700',
+                color: lr.muted2,
+                paddingHorizontal: 4,
+                marginBottom: 2,
+              }}>
+              {w.label}
+              {goalText ? ` · ${goalText}` : ''}
+            </Text>
+            {list.map((p) => (
+              <ProjectCard
+                key={p.id}
+                project={p}
+                lr={lr}
+                onPress={() => onOpenProject(p.id)}
+              />
+            ))}
+          </View>
+        );
+      })}
+      {unassigned.length > 0 ? (
+        <View>
+          <Text
+            style={{
+              fontSize: 10,
+              fontWeight: '700',
+              color: lr.muted2,
+              paddingHorizontal: 4,
+              marginBottom: 2,
+            }}>
+            未分周
+          </Text>
+          {unassigned.map((p) => (
+            <ProjectCard
+              key={p.id}
+              project={p}
+              lr={lr}
+              onPress={() => onOpenProject(p.id)}
+            />
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -351,8 +407,8 @@ function NodeRow({
         styles.trow,
         current && {
           borderWidth: StyleSheet.hairlineWidth,
-          borderColor: 'rgba(61,107,88,0.3)',
-          backgroundColor: 'rgba(220,231,223,0.42)',
+          borderColor: lr.currentBorder,
+          backgroundColor: lr.currentWash,
         },
         empty && { opacity: 0.85 },
       ]}>
@@ -364,14 +420,18 @@ function NodeRow({
           style={[
             styles.tchev,
             {
-              backgroundColor: 'rgba(33,69,58,0.055)',
-              borderColor: 'rgba(33,69,58,0.045)',
+              backgroundColor: lr.pineGhost,
+              borderColor: lr.pineGhostBorder,
             },
           ]}>
           <ChevronIcon open={!!open} color={lr.muted} />
         </Pressable>
       ) : empty ? (
-        <View style={[styles.emptyPlus, { borderColor: lr.line2 }]}>
+        <View
+          style={[
+            styles.emptyPlus,
+            { borderColor: lr.line2, backgroundColor: lr.emptyPlusBg },
+          ]}>
           <Text style={{ color: lr.muted2, fontSize: 14 }}>+</Text>
         </View>
       ) : (
@@ -409,11 +469,11 @@ function NodeRow({
               style={[
                 styles.nowTag,
                 {
-                  backgroundColor: 'rgba(211,154,85,0.12)',
-                  borderColor: 'rgba(211,154,85,0.18)',
+                  backgroundColor: lr.nowBg,
+                  borderColor: lr.nowBorder,
                 },
               ]}>
-              <Text style={[lifeRoadType.monoTiny, { color: '#9A6A2D' }]}>NOW</Text>
+              <Text style={[lifeRoadType.monoTiny, { color: lr.nowInk }]}>NOW</Text>
             </View>
           ) : null}
         </View>
@@ -462,7 +522,7 @@ function ProjectCard({
           项目 · {project.status}
         </Text>
       </View>
-      <View style={[styles.projGo, { backgroundColor: 'rgba(33,69,58,0.06)' }]}>
+      <View style={[styles.projGo, { backgroundColor: lr.pineWash }]}>
         <AppIcon name="chevron-right" size={12} color={lr.muted} />
       </View>
     </Pressable>
@@ -489,52 +549,10 @@ export default function LifeRoadScreen() {
   const [syncing, setSyncing] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [revealEmptySeason, setRevealEmptySeason] = useState(false);
-  const [planAiOpen, setPlanAiOpen] = useState(false);
-  const [imageAiOpen, setImageAiOpen] = useState(false);
-  const [linksAiOpen, setLinksAiOpen] = useState(false);
-  const [periodReviewOpen, setPeriodReviewOpen] = useState(false);
-  const [existingNodeTitles, setExistingNodeTitles] = useState<string[]>([]);
   const seededExpand = useRef(false);
   const appliedFocusRef = useRef<string | null>(null);
   const yearNow = new Date().getFullYear();
   const monthNow = new Date().getMonth() + 1;
-  const dayNow = new Date().getDate();
-
-  const yearFocus = useMemo(
-    () => (model ? resolveYearFocusDetail(model) : null),
-    [model],
-  );
-
-  const periodReviewData = useMemo(() => {
-    const statusCounts: Record<string, number> = {};
-    const arrivedTitles: string[] = [];
-    const nodeSummaries: Array<Record<string, unknown>> = [];
-    if (model) {
-      const branch = model.years.find((y) => y.isCurrent) ?? model.years[0];
-      const collect = (node: LifeRoadNodeRow | null) => {
-        if (!node) return;
-        statusCounts[node.status] = (statusCounts[node.status] ?? 0) + 1;
-        if (node.status === 'arrived') arrivedTitles.push(node.title);
-        nodeSummaries.push({
-          title: node.title,
-          kind: node.kind,
-          status: node.status,
-        });
-      };
-      if (branch) {
-        collect(branch.node);
-        for (const q of branch.quarters) {
-          collect(q.node);
-          for (const m of q.months) collect(m.node);
-        }
-      }
-    }
-    return { statusCounts, arrivedTitles, nodeSummaries };
-  }, [model]);
-
-  const nearQuarterEnd = [3, 6, 9, 12].includes(monthNow) && dayNow >= 20;
-  const reviewPeriod = nearQuarterEnd ? 'quarter' : 'year';
-  const reviewQuarter = nearQuarterEnd ? Math.floor((monthNow - 1) / 3) + 1 : null;
 
   const rebuild = useCallback(async () => {
     const [dir, nodes] = await Promise.all([
@@ -566,19 +584,13 @@ export default function LifeRoadScreen() {
           id: String(p.id),
           name: String(p.name),
           status: String(p.status),
-          acceptanceId: parseLifeAcceptanceId(p.extra_data),
+          weekKey: parseLifeWeekKey(p.extra_data),
         });
         projectsByMonthId.set(mid, list);
       }
     }
     const next = buildRoadMindMap(nodes, projectsByMonthId);
     setModel(next);
-    setExistingNodeTitles(
-      nodes
-        .map((n) => n.title.trim())
-        .filter(Boolean)
-        .slice(0, 40),
-    );
     if (!seededExpand.current) {
       setExpanded(new Set(next.defaultExpandedKeys));
       seededExpand.current = true;
@@ -693,61 +705,6 @@ export default function LifeRoadScreen() {
     ]);
   };
 
-  const toggleAcceptanceItem = useCallback(
-    (node: LifeRoadNodeRow, itemId: string) => {
-      void (async () => {
-        try {
-          const items = parseAcceptanceCriteria(node.extra_data);
-          const target = items;
-          // 在树中翻转 done
-          const findDone = (list: LifeRoadAcceptanceItem[]): boolean | null => {
-            for (const it of list) {
-              if (it.id === itemId) return !it.done;
-              const nested = findDone(it.children ?? []);
-              if (nested != null) return nested;
-            }
-            return null;
-          };
-          const nextDone = findDone(target);
-          if (nextDone == null) return;
-          const next = updateAcceptanceById(items, itemId, { done: nextDone });
-          await updateLifeRoadNode(node.id, {
-            extra_data: writeAcceptanceCriteria(node.extra_data, next),
-          });
-          await rebuild();
-        } catch (e) {
-          toast.error(toUserMessage(e, '更新验收失败'));
-        }
-      })();
-    },
-    [rebuild],
-  );
-
-  /** 仅从月验收叶子建项目（道路归属挂验收，不直接挂月） */
-  const openProjectFromAcceptance = useCallback(
-    (opts: {
-      monthNode: LifeRoadNodeRow;
-      acceptanceId: string;
-      title?: string;
-    }) => {
-      const monthId = opts.monthNode.id;
-      const acceptanceId = opts.acceptanceId.trim();
-      if (!acceptanceId) {
-        toast.warn('请先写验收叶子再挂项目');
-        return;
-      }
-      router.push({
-        pathname: '/add-project',
-        params: {
-          life_month_goal_id: monthId,
-          life_acceptance_id: acceptanceId,
-          ...(opts.title?.trim() ? { title: opts.title.trim() } : {}),
-        },
-      });
-    },
-    [router],
-  );
-
   const aboveOpen = expanded.has('above');
   const keywords = useMemo(() => parseKeywords(direction?.extra_data), [direction?.extra_data]);
   const syncStamp = useMemo(() => {
@@ -769,7 +726,7 @@ export default function LifeRoadScreen() {
             styles.iconBtn,
             {
               borderColor: lr.line,
-              backgroundColor: 'rgba(252,249,241,0.66)',
+              backgroundColor: lr.iconBtn,
               opacity: pressed ? 0.88 : 1,
             },
           ]}>
@@ -811,8 +768,8 @@ export default function LifeRoadScreen() {
             style={[
               styles.syncBar,
               {
-                borderColor: 'rgba(33,69,58,0.08)',
-                backgroundColor: 'rgba(220,231,223,0.28)',
+                borderColor: lr.syncBorder,
+                backgroundColor: lr.syncWash,
               },
             ]}>
             <View
@@ -829,8 +786,8 @@ export default function LifeRoadScreen() {
               style={[
                 styles.refreshChip,
                 {
-                  borderColor: 'rgba(191,111,82,0.14)',
-                  backgroundColor: 'rgba(255,255,255,0.42)',
+                  borderColor: lr.clay2,
+                  backgroundColor: lr.chipSoft,
                 },
               ]}>
               <AppIcon name="refresh" size={11} color={lr.clay} />
@@ -845,13 +802,13 @@ export default function LifeRoadScreen() {
               styles.roadHint,
               {
                 borderColor: lr.line2,
-                backgroundColor: 'rgba(252,249,241,0.4)',
+                backgroundColor: lr.softPanel,
               },
             ]}>
             <AppIcon name="explore" size={12} color={lr.clay} />
-            <Text style={{ flex: 1, fontSize: 12, lineHeight: 18, color: lr.muted }}>
+              <Text style={{ flex: 1, fontSize: 12, lineHeight: 18, color: lr.muted }}>
               <Text style={{ fontWeight: '600', color: lr.ink3 }}>点标题编辑</Text>
-              {' · 验收即任务 · 叶子验收后可建项目'}
+              {' · 年/季目标 · 月任务 · 项目按周挂在月编辑页'}
             </Text>
           </View>
         </FoldRiseIn>
@@ -866,7 +823,10 @@ export default function LifeRoadScreen() {
                   styles.northCard,
                   { borderColor: lr.line, backgroundColor: lr.card2 },
                 ]}>
-                <View style={styles.northOrbit} pointerEvents="none" />
+                <View
+                  style={[styles.northOrbit, { borderColor: lr.northOrbit }]}
+                  pointerEvents="none"
+                />
                 <View style={styles.northHead}>
                   <View style={styles.kickerRow}>
                     <NorthCompass color={lr.clay} />
@@ -880,7 +840,7 @@ export default function LifeRoadScreen() {
                       styles.northEdit,
                       {
                         borderColor: lr.line,
-                        backgroundColor: 'rgba(255,255,255,0.45)',
+                        backgroundColor: lr.checkEmpty,
                       },
                     ]}>
                     <PencilIcon color={lr.ink3} />
@@ -909,153 +869,99 @@ export default function LifeRoadScreen() {
                     关键词 · {keywords.length ? keywords.join(' / ') : '未选择'}
                   </Text>
                 </View>
-                <View style={styles.aiPlanRow}>
-                  {direction?.body?.trim() ? (
-                    <Pressable
-                      onPress={() => setPlanAiOpen(true)}
-                      style={({ pressed }) => [
-                        styles.aiPlanBtn,
-                        {
-                          borderColor: lr.line,
-                          backgroundColor: 'rgba(255,255,255,0.55)',
-                          opacity: pressed ? 0.88 : 1,
-                        },
-                      ]}>
-                      <AppIcon name="auto-awesome" size={13} color={lr.pine} />
-                      <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
-                        AI 拆解方向
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                  <Pressable
-                    onPress={() => setImageAiOpen(true)}
-                    style={({ pressed }) => [
-                      styles.aiPlanBtn,
-                      {
-                        borderColor: lr.line,
-                        backgroundColor: 'rgba(255,255,255,0.55)',
-                        opacity: pressed ? 0.88 : 1,
-                      },
-                    ]}>
-                    <AppIcon name="photo-camera" size={13} color={lr.pine} />
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
-                      拍照导入
-                    </Text>
-                  </Pressable>
-                  {yearFocus?.node ? (
-                    <Pressable
-                      onPress={() => setLinksAiOpen(true)}
-                      style={({ pressed }) => [
-                        styles.aiPlanBtn,
-                        {
-                          borderColor: lr.line,
-                          backgroundColor: 'rgba(255,255,255,0.55)',
-                          opacity: pressed ? 0.88 : 1,
-                        },
-                      ]}>
-                      <AppIcon name="link" size={13} color={lr.pine} />
-                      <Text style={{ fontSize: 12, fontWeight: '800', color: lr.pine }}>
-                        关联执行
-                      </Text>
-                    </Pressable>
-                  ) : null}
-                  <Pressable
-                    onPress={() => setPeriodReviewOpen(true)}
-                    style={({ pressed }) => [
-                      styles.aiPlanBtn,
-                      {
-                        borderColor: lr.line,
-                        backgroundColor: 'rgba(255,255,255,0.55)',
-                        opacity: pressed ? 0.88 : 1,
-                      },
-                    ]}>
-                    <AppIcon name="auto-awesome" size={13} color={lr.clay} />
-                    <Text style={{ fontSize: 12, fontWeight: '800', color: lr.clay }}>
-                      季末回顾
-                    </Text>
-                  </Pressable>
-                </View>
               </View>
             </FoldRiseIn>
 
+            {/* 今年之上：独立于今年目标树，对齐「下一年目标」层级 */}
             <FoldRiseIn animate={motionOn} index={3} fromY={10}>
+              <View
+                style={[
+                  styles.sideCard,
+                  {
+                    borderColor: lr.line2,
+                    backgroundColor: lr.nextYearBg,
+                  },
+                ]}>
+                <NodeRow
+                  kindLabel="ABOVE · 今年之上"
+                  title="今年之上"
+                  meta={
+                    model && model.aboveYear.length > 0
+                      ? `3–10 年 · ${model.aboveYear.length} 个坐标`
+                      : '可写多年或更远方向'
+                  }
+                  empty={!model?.aboveYear.length}
+                  open={aboveOpen}
+                  onToggle={() => toggle('above')}
+                  onPress={() => toggle('above')}
+                  lr={lr}
+                />
+                {aboveOpen ? (
+                  <View style={styles.childrenPad}>
+                    {(model?.aboveYear ?? []).map((n) => {
+                      const criteria = parseAcceptanceCriteria(n.extra_data);
+                      const cKey = `accept:${n.id}`;
+                      const cOpen = expanded.has(cKey);
+                      return (
+                        <View key={n.id}>
+                          <NodeRow
+                            kindLabel={`${LIFE_ROAD_NODE_KIND_LABELS[n.kind]}`}
+                            title={n.title}
+                            meta={joinMeta(
+                              LIFE_ROAD_NODE_STATUS_LABELS[n.status],
+                              acceptanceMetaLabel(
+                                criteria,
+                                lifeRoadItemNoun(n.kind),
+                              ),
+                            )}
+                            open={criteria.length > 0 ? cOpen : undefined}
+                            onToggle={
+                              criteria.length > 0 ? () => toggle(cKey) : undefined
+                            }
+                            onPress={() => openNode({ mode: 'edit', node: n })}
+                            status={n.status}
+                            lr={lr}
+                          />
+                          {cOpen ? (
+                            <AcceptanceInline
+                              items={criteria}
+                              lr={lr}
+                              noun={lifeRoadItemNoun(n.kind)}
+                            />
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                    <Pressable
+                      onPress={() => openNode({ mode: 'create', kind: 'farther' })}
+                      style={[
+                        styles.addFar,
+                        { borderColor: lr.line2, backgroundColor: lr.chipGhost },
+                      ]}>
+                      <Text style={{ color: lr.clay, fontSize: 14 }}>+</Text>
+                      <Text style={{ fontSize: 12, color: lr.muted }}>更远</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            </FoldRiseIn>
+
+            <FoldRiseIn animate={motionOn} index={4} fromY={10}>
               <View
                 style={[
                   styles.treeCard,
                   {
                     borderColor: lr.line,
-                    backgroundColor: 'rgba(252,249,241,0.62)',
+                    backgroundColor: lr.treeCard,
                   },
                 ]}>
                 <View style={styles.treeHead}>
                   <Text style={[lifeRoadType.kickerTiny, { color: lr.muted }]}>
-                    TREE · 道路树
+                    YEAR · 今年目标树
                   </Text>
                   <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
                     {yearNow} · {monthNow} 月
                   </Text>
-                </View>
-
-                {/* 今年之上 */}
-                <View>
-                  <NodeRow
-                    kindLabel="ABOVE · 今年之上"
-                    title="今年之上"
-                    meta={
-                      model && model.aboveYear.length > 0
-                        ? `3–10 年 · ${model.aboveYear.length} 个坐标`
-                        : '可写多年或更远方向'
-                    }
-                    empty={!model?.aboveYear.length}
-                    open={aboveOpen}
-                    onToggle={() => toggle('above')}
-                    onPress={() => toggle('above')}
-                    lr={lr}
-                  />
-                  {aboveOpen ? (
-                    <View style={styles.childrenPad}>
-                      {(model?.aboveYear ?? []).map((n) => {
-                        const criteria = parseAcceptanceCriteria(n.extra_data);
-                        const cKey = `accept:${n.id}`;
-                        const cOpen = expanded.has(cKey);
-                        return (
-                          <View key={n.id}>
-                            <NodeRow
-                              kindLabel={`${LIFE_ROAD_NODE_KIND_LABELS[n.kind]}`}
-                              title={n.title}
-                              meta={joinMeta(
-                                LIFE_ROAD_NODE_STATUS_LABELS[n.status],
-                                acceptanceMetaLabel(criteria),
-                              )}
-                              open={criteria.length > 0 ? cOpen : undefined}
-                              onToggle={
-                                criteria.length > 0 ? () => toggle(cKey) : undefined
-                              }
-                              onPress={() => openNode({ mode: 'edit', node: n })}
-                              status={n.status}
-                              lr={lr}
-                            />
-                            {cOpen ? (
-                              <AcceptanceInline
-                                items={criteria}
-                                lr={lr}
-                                onToggleItem={(itemId) => toggleAcceptanceItem(n, itemId)}
-                              />
-                            ) : null}
-                          </View>
-                        );
-                      })}
-                      <Pressable
-                        onPress={() => openNode({ mode: 'create', kind: 'farther' })}
-                        style={[
-                          styles.addFar,
-                          { borderColor: lr.line2, backgroundColor: 'rgba(255,255,255,0.2)' },
-                        ]}>
-                        <Text style={{ color: lr.clay, fontSize: 14 }}>+</Text>
-                        <Text style={{ fontSize: 12, color: lr.muted }}>更远</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
                 </View>
 
                 {(model?.years ?? []).map((yearBranch) => {
@@ -1077,7 +983,9 @@ export default function LifeRoadScreen() {
                         showNow={yearBranch.isCurrent}
                         open={yOpen}
                         onToggle={() => toggle(yKey)}
-                        meta={acceptanceMetaLabel(yearCriteria) ?? undefined}
+                        meta={
+                          acceptanceMetaLabel(yearCriteria, '目标') ?? undefined
+                        }
                         onPress={() => {
                           if (yearBranch.node) {
                             openNode({ mode: 'edit', node: yearBranch.node });
@@ -1096,9 +1004,7 @@ export default function LifeRoadScreen() {
                         <AcceptanceInline
                           items={yearCriteria}
                           lr={lr}
-                          onToggleItem={(itemId) =>
-                            toggleAcceptanceItem(yearBranch.node!, itemId)
-                          }
+                          noun="目标"
                         />
                       ) : null}
                       {yOpen ? (
@@ -1138,7 +1044,8 @@ export default function LifeRoadScreen() {
                                   onToggle={() => toggle(qKey)}
                                   meta={
                                     q.node
-                                      ? acceptanceMetaLabel(qCriteria) ?? undefined
+                                      ? acceptanceMetaLabel(qCriteria, '目标') ??
+                                        undefined
                                       : '空白季 · 点此新建'
                                   }
                                   onPress={() => {
@@ -1159,9 +1066,7 @@ export default function LifeRoadScreen() {
                                   <AcceptanceInline
                                     items={qCriteria}
                                     lr={lr}
-                                    onToggleItem={(itemId) =>
-                                      toggleAcceptanceItem(q.node!, itemId)
-                                    }
+                                    noun="目标"
                                   />
                                 ) : null}
                                 {qOpen ? (
@@ -1207,7 +1112,7 @@ export default function LifeRoadScreen() {
                                             }}
                                             status={m.node?.status}
                                             meta={joinMeta(
-                                              acceptanceMetaLabel(mCriteria),
+                                              acceptanceMetaLabel(mCriteria, '任务'),
                                               m.projects.length > 0
                                                 ? `${m.projects.length} 个项目`
                                                 : null,
@@ -1221,17 +1126,17 @@ export default function LifeRoadScreen() {
                                                 style={[
                                                   styles.metaChip,
                                                   {
-                                                    borderColor: 'rgba(33,69,58,0.08)',
-                                                    backgroundColor:
-                                                      'rgba(255,255,255,0.38)',
+                                                    borderColor: lr.syncBorder,
+                                                    backgroundColor: lr.chipSoft,
                                                   },
                                                 ]}>
                                                 <Text style={{ fontSize: 11, color: lr.ink3 }}>
-                                                  验收{' '}
+                                                  任务{' '}
                                                   <Text style={{ fontWeight: '700' }}>
                                                     {acceptanceMetaLabel(
                                                       mCriteria,
-                                                    )?.replace('验收 ', '') ?? '0'}
+                                                      '任务',
+                                                    )?.replace('任务 ', '') ?? '0'}
                                                   </Text>
                                                 </Text>
                                                 <ChevronIcon open={aOpen} color={lr.muted} />
@@ -1241,9 +1146,8 @@ export default function LifeRoadScreen() {
                                                   style={[
                                                     styles.metaChip,
                                                     {
-                                                      borderColor: 'rgba(33,69,58,0.08)',
-                                                      backgroundColor:
-                                                        'rgba(255,255,255,0.38)',
+                                                      borderColor: lr.syncBorder,
+                                                      backgroundColor: lr.chipSoft,
                                                     },
                                                   ]}>
                                                   <Text style={{ fontSize: 11, color: lr.ink3 }}>
@@ -1256,9 +1160,8 @@ export default function LifeRoadScreen() {
                                                   style={[
                                                     styles.metaChip,
                                                     {
-                                                      borderColor: 'rgba(33,69,58,0.08)',
-                                                      backgroundColor:
-                                                        'rgba(255,255,255,0.38)',
+                                                      borderColor: lr.syncBorder,
+                                                      backgroundColor: lr.chipSoft,
                                                     },
                                                   ]}>
                                                   <Text style={{ fontSize: 11, color: lr.ink3 }}>
@@ -1273,28 +1176,16 @@ export default function LifeRoadScreen() {
                                             <AcceptanceInline
                                               items={mCriteria}
                                               lr={lr}
-                                              onToggleItem={(itemId) =>
-                                                toggleAcceptanceItem(m.node!, itemId)
-                                              }
-                                              onCreateProject={(leaf) =>
-                                                openProjectFromAcceptance({
-                                                  monthNode: m.node!,
-                                                  acceptanceId: leaf.id,
-                                                  title: leaf.text,
-                                                })
-                                              }
-                                              projectsByAcceptanceId={(() => {
-                                                const map = new Map<string, RoadProjectRef[]>();
-                                                for (const p of m.projects) {
-                                                  const aid = p.acceptanceId?.trim();
-                                                  if (!aid) continue;
-                                                  if (!findAcceptanceById(mCriteria, aid)) continue;
-                                                  const list = map.get(aid) ?? [];
-                                                  list.push(p);
-                                                  map.set(aid, list);
-                                                }
-                                                return map;
-                                              })()}
+                                              noun="任务"
+                                            />
+                                          ) : null}
+                                          {showKids && m.node ? (
+                                            <MonthWeekProjectsInline
+                                              year={yearBranch.year}
+                                              month={m.month}
+                                              projects={m.projects}
+                                              weekGoalsExtra={m.node.extra_data}
+                                              lr={lr}
                                               onOpenProject={(projectId) =>
                                                 router.push({
                                                   pathname: '/edit-project',
@@ -1303,28 +1194,9 @@ export default function LifeRoadScreen() {
                                               }
                                             />
                                           ) : null}
-                                          {showKids
-                                            ? m.projects
-                                                .filter((p) => {
-                                                  const aid = p.acceptanceId?.trim();
-                                                  if (!aid) return true;
-                                                  return !findAcceptanceById(mCriteria, aid);
-                                                })
-                                                .map((p) => (
-                                                  <ProjectCard
-                                                    key={p.id}
-                                                    project={p}
-                                                    lr={lr}
-                                                    onPress={() =>
-                                                      router.push({
-                                                        pathname: '/edit-project',
-                                                        params: { id: p.id },
-                                                      })
-                                                    }
-                                                  />
-                                                ))
-                                            : null}
-                                          {m.node && mCriteria.length === 0 ? (
+                                          {m.node &&
+                                          mCriteria.length === 0 &&
+                                          m.projects.length === 0 ? (
                                             <Text
                                               style={{
                                                 fontSize: 11,
@@ -1332,7 +1204,7 @@ export default function LifeRoadScreen() {
                                                 paddingHorizontal: 10,
                                                 paddingVertical: 6,
                                               }}>
-                                              先写月验收叶子，再从叶子「建项目」挂道路归属。
+                                              可写月任务；项目请在编辑页按周新建或引入。
                                             </Text>
                                           ) : null}
                                         </View>
@@ -1380,11 +1252,11 @@ export default function LifeRoadScreen() {
                 styles.nextYearBtn,
                 {
                   borderColor: lr.line2,
-                  backgroundColor: 'rgba(252,249,241,0.38)',
+                  backgroundColor: lr.nextYearBg,
                   opacity: pressed ? 0.9 : 1,
                 },
               ]}>
-              <View style={[styles.nextYearPlus, { backgroundColor: 'rgba(33,69,58,0.07)' }]}>
+              <View style={[styles.nextYearPlus, { backgroundColor: lr.pineWashStrong }]}>
                 <Text style={{ color: lr.pine, fontSize: 16 }}>+</Text>
               </View>
               <Text style={{ flex: 1, fontSize: 13, fontWeight: '600', color: lr.ink3 }}>
@@ -1419,77 +1291,6 @@ export default function LifeRoadScreen() {
           </>
         )}
       </ScrollView>
-
-      <AiLifeRoadPlanSheet
-        visible={planAiOpen}
-        onClose={() => setPlanAiOpen(false)}
-        directionId={direction?.id ?? null}
-        directionBody={direction?.body ?? ''}
-        yearTheme={direction?.year_theme}
-        calendarYear={yearNow}
-        existingNodeTitles={existingNodeTitles}
-        onCreated={() => {
-          void reload(true);
-        }}
-      />
-
-      <AiLifeRoadFromImageSheet
-        visible={imageAiOpen}
-        onClose={() => setImageAiOpen(false)}
-        calendarYear={yearNow}
-        directionId={direction?.id ?? null}
-        onCreated={() => {
-          void reload(true);
-        }}
-      />
-
-      <AiLifeRoadSuggestLinksSheet
-        visible={linksAiOpen}
-        onClose={() => setLinksAiOpen(false)}
-        focusNode={
-          yearFocus?.node
-            ? {
-                id: yearFocus.node.id,
-                title: yearFocus.node.title,
-                note: yearFocus.node.note,
-                kind: yearFocus.node.kind,
-                status: yearFocus.node.status,
-              }
-            : yearFocus
-              ? { title: yearFocus.title, kind: yearFocus.kind }
-              : null
-        }
-      />
-
-      <AiLifeRoadPeriodReviewSheet
-        visible={periodReviewOpen}
-        onClose={() => setPeriodReviewOpen(false)}
-        period={reviewPeriod}
-        calendarYear={yearNow}
-        quarter={reviewQuarter}
-        directionBody={direction?.body ?? null}
-        yearTheme={direction?.year_theme ?? null}
-        statusCounts={periodReviewData.statusCounts}
-        arrivedTitles={periodReviewData.arrivedTitles}
-        nodeSummaries={periodReviewData.nodeSummaries}
-        onApplyTheme={(theme) => {
-          const id = direction?.id;
-          if (!id) return;
-          void (async () => {
-            try {
-              await updateLifeDirection(id, { year_theme: theme });
-              await reload(false);
-            } catch (e) {
-              toast.error(toUserMessage(e, '写入年度主题失败'));
-            }
-          })();
-        }}
-        onOpenHint={(hint) => {
-          if (hint === 'tasks') router.push('/(tabs)/tasks');
-          else if (hint === 'review') router.push('/daily-review');
-          else if (hint === 'wish-board') router.push('/wish-board');
-        }}
-      />
     </SafeAreaView>
   );
 }
@@ -1577,7 +1378,6 @@ const styles = StyleSheet.create({
     height: 118,
     borderRadius: 59,
     borderWidth: 1,
-    borderColor: 'rgba(33,69,58,0.06)',
   },
   northHead: {
     flexDirection: 'row',
@@ -1600,22 +1400,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  aiPlanRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  aiPlanBtn: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
   northFoot: {
     marginTop: 9,
     flexDirection: 'row',
@@ -1628,6 +1412,15 @@ const styles = StyleSheet.create({
     width: 3,
     height: 3,
     borderRadius: 2,
+  },
+  sideCard: {
+    marginTop: 11,
+    paddingHorizontal: 5,
+    paddingTop: 4,
+    paddingBottom: 8,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
   },
   treeCard: {
     marginTop: 11,
@@ -1678,7 +1471,6 @@ const styles = StyleSheet.create({
     marginTop: 1,
     borderWidth: StyleSheet.hairlineWidth,
     borderStyle: 'dashed',
-    backgroundColor: 'rgba(255,255,255,0.22)',
   },
   tmain: {
     flex: 1,

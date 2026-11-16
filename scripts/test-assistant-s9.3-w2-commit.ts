@@ -16,7 +16,6 @@ import {
   commitLifeRoadNode,
   commitProfile,
   commitRecipe,
-  commitRecipePlan,
   commitReviewDimension,
   commitWardrobeItem,
   commitWish,
@@ -86,12 +85,6 @@ check('测试 executor 不自动灌真实 handler（保护 mock）', () => {
 async function main() {
   await checkAsync('缺标题时 commit_recipe 失败', async () => {
     const r = await commitRecipe({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('空 plan 时 commit_recipe_plan 失败', async () => {
-    const r = await commitRecipePlan({ plan: [] });
     assert.equal(r.ok, false);
     assert.equal(r.error?.code, 'incomplete_draft');
   });

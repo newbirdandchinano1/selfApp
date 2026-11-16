@@ -9,6 +9,10 @@ export type DraftFieldSpec = {
   editable?: boolean;
   /** draft 中等价键（按顺序取第一个有值的） */
   aliases?: string[];
+  /** 无值也展示（如新建菜谱必须选手动分类） */
+  forceShow?: boolean;
+  /** ConfirmCard 输入形态；select 由卡片侧拉现有选项 */
+  input?: 'text' | 'select';
 };
 
 /** 通用键 → 中文标签（无模板时的兜底） */
@@ -217,62 +221,49 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'body', label: '正文', editable: true, aliases: ['content', 'text'] },
   ],
   commit_recipe: [
-    { key: 'title', label: '菜名', editable: true, aliases: ['name', 'recipe_name'] },
+    { key: 'title', label: '菜名', editable: true, aliases: ['name', 'recipe_name'], forceShow: true },
+    {
+      key: 'recipe_title',
+      label: '菜谱',
+      editable: false,
+      aliases: ['recipe_name'],
+    },
+    {
+      key: 'from_category_name',
+      label: '原分类',
+      editable: false,
+      aliases: ['from_category'],
+    },
+    {
+      key: 'recipe_count',
+      label: '移动道数',
+      editable: false,
+      aliases: ['count'],
+    },
     { key: 'servings', label: '份量', editable: true },
-    { key: 'category_name', label: '分类', editable: true, aliases: ['category', 'category_hint'] },
+    {
+      key: 'category_name',
+      label: '目标分类',
+      editable: true,
+      aliases: ['category', 'category_hint'],
+      forceShow: true,
+      input: 'select',
+    },
+    {
+      key: 'ingredients_text',
+      label: '食材',
+      editable: true,
+      forceShow: true,
+      aliases: ['ingredients'],
+    },
+    {
+      key: 'steps_text',
+      label: '步骤',
+      editable: true,
+      forceShow: true,
+      aliases: ['steps'],
+    },
     { key: 'notes', label: '备注', editable: true, aliases: ['note', 'description'] },
-  ],
-  commit_recipe_plan: [
-    { key: 'action', label: '操作', editable: false },
-    {
-      key: 'recipe_title',
-      label: '菜谱',
-      editable: true,
-      aliases: ['recipe_name', 'name', 'title'],
-    },
-    { key: 'date', label: '日期', editable: true, aliases: ['ymd', 'day'] },
-    { key: 'slot', label: '餐次', editable: true, aliases: ['meal', 'meal_slot'] },
-    { key: 'entry_id', label: '计划条目', editable: false, aliases: ['plan_entry_id', 'id'] },
-  ],
-  commit_recipe_basket: [
-    { key: 'action', label: '操作', editable: false },
-    {
-      key: 'recipe_title',
-      label: '菜谱',
-      editable: true,
-      aliases: ['recipe_name', 'name', 'title'],
-    },
-    { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
-    { key: 'slot', label: '餐次', editable: true, aliases: ['meal', 'meal_slot'] },
-    { key: 'note', label: '备注', editable: true },
-  ],
-  commit_recipe_shop: [
-    { key: 'action', label: '操作', editable: false },
-    {
-      key: 'recipe_title',
-      label: '菜谱',
-      editable: true,
-      aliases: ['recipe_name', 'title'],
-    },
-    { key: 'keys', label: '食材', editable: true, aliases: ['key', 'item', 'name'] },
-    { key: 'status', label: '状态', editable: true, aliases: ['shop_status'] },
-    { key: 'note', label: '备注', editable: true },
-  ],
-  commit_recipe_cook_log: [
-    {
-      key: 'recipe_title',
-      label: '菜谱',
-      editable: true,
-      aliases: ['recipe_name', 'name', 'title'],
-    },
-    { key: 'rating', label: '评分', editable: true },
-    {
-      key: 'cooked_on',
-      label: '日期',
-      editable: true,
-      aliases: ['cooked_at', 'date', 'ymd'],
-    },
-    { key: 'note', label: '备注', editable: true },
   ],
   commit_recipe_category: [
     {
@@ -291,6 +282,12 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
   commit_recipe_category_delete: [
     { key: 'name', label: '分类名', editable: false, aliases: ['title', 'category_name'] },
     { key: 'category_id', label: '分类ID', editable: false, aliases: ['id'] },
+    {
+      key: 'recipe_count',
+      label: '其下菜谱数',
+      editable: false,
+      aliases: ['count', 'child_count'],
+    },
   ],
   commit_wardrobe_item: [
     { key: 'name', label: '单品', editable: true, aliases: ['title'] },
@@ -401,6 +398,37 @@ export function resolveFieldTemplate(
   return undefined;
 }
 
+function formatIngredientsText(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+  const lines: string[] = [];
+  for (const row of raw.slice(0, 80)) {
+    if (typeof row === 'string') {
+      const name = row.trim();
+      if (name) lines.push(name);
+      continue;
+    }
+    if (!row || typeof row !== 'object') continue;
+    const o = row as Record<string, unknown>;
+    const name = typeof o.name === 'string' ? o.name.trim() : '';
+    const amount = typeof o.amount === 'string' ? o.amount.trim() : '';
+    const remark = typeof o.remark === 'string' ? o.remark.trim() : '';
+    if (!name && !amount && !remark) continue;
+    if (remark) lines.push(`${name}｜${amount}｜${remark}`);
+    else if (amount) lines.push(`${name}｜${amount}`);
+    else lines.push(name);
+  }
+  return lines.join('\n');
+}
+
+function formatStepsText(raw: unknown): string {
+  if (!Array.isArray(raw)) return '';
+  return raw
+    .map(s => (typeof s === 'string' ? s.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 80)
+    .join('\n');
+}
+
 export function readDraftScalar(
   draft: Record<string, unknown>,
   key: string,
@@ -412,6 +440,16 @@ export function readDraftScalar(
     const v = draft[k];
     if (v == null || v === '') continue;
     if (Array.isArray(v)) {
+      if (key === 'ingredients_text' || k === 'ingredients') {
+        const text = formatIngredientsText(v);
+        if (!text) continue;
+        return { key, value: text };
+      }
+      if (key === 'steps_text' || k === 'steps') {
+        const text = formatStepsText(v);
+        if (!text) continue;
+        return { key, value: text };
+      }
       const parts = v
         .map(x => (typeof x === 'string' ? x.trim() : ''))
         .filter(Boolean);
@@ -426,7 +464,9 @@ export function readDraftScalar(
 
 /** 多行编辑字段（ConfirmCard TextInput） */
 export function isMultilineFieldKey(key: string): boolean {
-  return /^(body|content|text|note|persona|description|bio)$/i.test(key);
+  return /^(body|content|text|note|persona|description|bio|ingredients_text|steps_text|steps)$/i.test(
+    key,
+  );
 }
 
 /** 数字键盘字段 */
@@ -434,4 +474,16 @@ export function isNumericFieldKey(key: string): boolean {
   return /(amount|kcal|protein|carb|fat|hydration|weight|points|price|servings|balance|budget|deposit|target|rating|cm|ml|g$|_g$|_kg$|_ml$)/i.test(
     key,
   );
+}
+
+/** 需从现有列表点选的字段（菜谱分类等） */
+export function isSelectFieldKey(
+  key: string,
+  confirmAction?: string | null,
+): boolean {
+  const action = (confirmAction || '').trim();
+  if (action === 'commit_recipe' && /^(category_name|category|category_hint)$/i.test(key)) {
+    return true;
+  }
+  return false;
 }

@@ -1,19 +1,23 @@
 /**
- * 道路验收 = 任务树编辑。
- * 年可连季、季可连月；月可嵌套子任务（对齐项目）。
+ * 道路清单编辑：年/季=目标，月=任务；顶层按 P0/P1/P2 分层。
+ * 年可连季、季可连月；月可嵌套子任务。
  */
 import {
   LIFE_ROAD_ACCEPTANCE_MAX_DEPTH,
   LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
+  LIFE_ROAD_ACCEPTANCE_PRIORITIES,
+  LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS,
   LIFE_ROAD_ACCEPTANCE_TEXT_MAX,
   acceptanceLinkLabel,
   addChildAcceptance,
   createAcceptanceItem,
   flattenAcceptanceItems,
-  isAcceptanceLeaf,
+  groupAcceptanceByPriority,
   removeAcceptanceById,
   updateAcceptanceById,
   type LifeRoadAcceptanceItem,
+  type LifeRoadAcceptancePriority,
+  type LifeRoadItemNoun,
 } from '@/lib/life-road/life-road-acceptance';
 import { monthLabel, quarterLabel } from '@/lib/life-road/life-road-node-model';
 import React, { useState } from 'react';
@@ -31,15 +35,14 @@ export type AcceptanceLinkMode = 'quarter' | 'month' | null;
 export type AcceptanceChecklistEditorProps = {
   items: LifeRoadAcceptanceItem[];
   onChange: (next: LifeRoadAcceptanceItem[]) => void;
+  /** 年/季=目标，月=任务 */
+  itemNoun?: LifeRoadItemNoun;
   /** 年 → 连接季；季 → 连接月；其它不显示 */
   linkMode?: AcceptanceLinkMode;
   /** 季节点时，可选的月份列表 */
   linkMonthOptions?: number[];
   /** 是否允许嵌套子任务（月节点） */
   allowChildren?: boolean;
-  /** 叶子验收后快速建项目 */
-  onCreateProject?: (leaf: LifeRoadAcceptanceItem) => void;
-  canCreateProject?: boolean;
   ink2: string;
   ink3: string;
   muted: string;
@@ -69,11 +72,10 @@ function AcceptanceRow({
   depth,
   roots,
   onChange,
+  itemNoun,
   linkMode,
   linkMonthOptions,
   allowChildren,
-  onCreateProject,
-  canCreateProject,
   ink3,
   muted,
   muted2,
@@ -87,11 +89,10 @@ function AcceptanceRow({
   depth: number;
   roots: LifeRoadAcceptanceItem[];
   onChange: (next: LifeRoadAcceptanceItem[]) => void;
+  itemNoun: LifeRoadItemNoun;
   linkMode: AcceptanceLinkMode;
   linkMonthOptions: number[];
   allowChildren: boolean;
-  onCreateProject?: (leaf: LifeRoadAcceptanceItem) => void;
-  canCreateProject?: boolean;
   ink3: string;
   muted: string;
   muted2: string;
@@ -101,7 +102,6 @@ function AcceptanceRow({
   onRoad: string;
   clay2: string;
 }) {
-  const leaf = isAcceptanceLeaf(item);
   const canAddChild = allowChildren && depth < LIFE_ROAD_ACCEPTANCE_MAX_DEPTH;
   const linkLabel = acceptanceLinkLabel(item);
   const showLink = depth === 1 && (linkMode === 'quarter' || linkMode === 'month');
@@ -147,27 +147,16 @@ function AcceptanceRow({
             )
           }
           maxLength={LIFE_ROAD_ACCEPTANCE_TEXT_MAX}
-          placeholder={depth === 1 ? '验收 / 任务…' : '子任务…'}
+          placeholder={depth === 1 ? `写一条${itemNoun}…` : '子任务…'}
           placeholderTextColor={faint}
-          style={[styles.input, { color: item.done ? muted : ink3 }]}
+          style={[
+            styles.input,
+            {
+              color: item.done ? muted : ink3,
+              textDecorationLine: item.done ? 'line-through' : 'none',
+            },
+          ]}
         />
-        {leaf && onCreateProject ? (
-          <Pressable
-            onPress={() => {
-              if (!item.text.trim()) return;
-              onCreateProject(item);
-            }}
-            disabled={!canCreateProject || !item.text.trim()}
-            style={[
-              styles.miniBtn,
-              {
-                borderColor: pine,
-                opacity: !canCreateProject || !item.text.trim() ? 0.35 : 1,
-              },
-            ]}>
-            <Text style={{ fontSize: 10, fontWeight: '700', color: pine }}>建项目</Text>
-          </Pressable>
-        ) : null}
         {canAddChild ? (
           <Pressable
             onPress={() => {
@@ -193,6 +182,40 @@ function AcceptanceRow({
           <RemoveIcon color={muted2} />
         </Pressable>
       </View>
+
+      {depth === 1 ? (
+        <View style={[styles.priorityRow, { paddingLeft: 29 + (depth - 1) * 14 }]}>
+          <Text style={[styles.linkHint, { color: muted2 }]}>优先级</Text>
+          {LIFE_ROAD_ACCEPTANCE_PRIORITIES.map((p) => {
+            const on = (item.priority ?? 'p1') === p;
+            return (
+              <Pressable
+                key={p}
+                onPress={() =>
+                  onChange(updateAcceptanceById(roots, item.id, { priority: p }))
+                }
+                style={[
+                  styles.linkChip,
+                  {
+                    borderColor: on ? pine : line,
+                    backgroundColor: on
+                      ? 'rgba(33,69,58,0.1)'
+                      : 'rgba(255,255,255,0.35)',
+                  },
+                ]}>
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: on ? '700' : '500',
+                    color: on ? pine : muted,
+                  }}>
+                  {LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS[p]}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : null}
 
       {showLink && linkMode === 'quarter' ? (
         <View style={[styles.linkRow, { paddingLeft: 29 + (depth - 1) * 14 }]}>
@@ -281,11 +304,10 @@ function AcceptanceRow({
           depth={depth + 1}
           roots={roots}
           onChange={onChange}
+          itemNoun={itemNoun}
           linkMode={null}
           linkMonthOptions={[]}
           allowChildren={allowChildren}
-          onCreateProject={onCreateProject}
-          canCreateProject={canCreateProject}
           ink3={ink3}
           muted={muted}
           muted2={muted2}
@@ -303,11 +325,10 @@ function AcceptanceRow({
 export function AcceptanceChecklistEditor({
   items,
   onChange,
+  itemNoun = '目标',
   linkMode = null,
   linkMonthOptions = [],
   allowChildren = false,
-  onCreateProject,
-  canCreateProject = false,
   ink2,
   ink3,
   muted,
@@ -319,7 +340,10 @@ export function AcceptanceChecklistEditor({
   clay2,
 }: AcceptanceChecklistEditorProps) {
   const [draft, setDraft] = useState('');
+  const [draftPriority, setDraftPriority] =
+    useState<LifeRoadAcceptancePriority>('p1');
   const total = flattenAcceptanceItems(items).length;
+  const groups = groupAcceptanceByPriority(items);
 
   const addFromDraft = () => {
     if (total >= LIFE_ROAD_ACCEPTANCE_MAX_ITEMS) return;
@@ -327,70 +351,114 @@ export function AcceptanceChecklistEditor({
     if (!text) return;
     onChange([
       ...items,
-      createAcceptanceItem(text.slice(0, LIFE_ROAD_ACCEPTANCE_TEXT_MAX)),
+      createAcceptanceItem(
+        text.slice(0, LIFE_ROAD_ACCEPTANCE_TEXT_MAX),
+        draftPriority,
+      ),
     ]);
     setDraft('');
   };
 
   return (
     <View style={styles.wrap}>
-      {items.map((item) => (
-        <AcceptanceRow
-          key={item.id}
-          item={item}
-          depth={1}
-          roots={items}
-          onChange={onChange}
-          linkMode={linkMode}
-          linkMonthOptions={linkMonthOptions}
-          allowChildren={allowChildren}
-          onCreateProject={onCreateProject}
-          canCreateProject={canCreateProject}
-          ink3={ink3}
-          muted={muted}
-          muted2={muted2}
-          faint={faint}
-          line={line}
-          pine={pine}
-          onRoad={onRoad}
-          clay2={clay2}
-        />
-      ))}
+      {LIFE_ROAD_ACCEPTANCE_PRIORITIES.map((p) => {
+        const layer = groups[p];
+        if (layer.length === 0) return null;
+        return (
+          <View key={p} style={styles.layer}>
+            <Text style={[styles.layerLabel, { color: muted2 }]}>
+              {LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS[p]}
+            </Text>
+            {layer.map((item) => (
+              <AcceptanceRow
+                key={item.id}
+                item={item}
+                depth={1}
+                roots={items}
+                onChange={onChange}
+                itemNoun={itemNoun}
+                linkMode={linkMode}
+                linkMonthOptions={linkMonthOptions}
+                allowChildren={allowChildren}
+                ink3={ink3}
+                muted={muted}
+                muted2={muted2}
+                faint={faint}
+                line={line}
+                pine={pine}
+                onRoad={onRoad}
+                clay2={clay2}
+              />
+            ))}
+          </View>
+        );
+      })}
 
       {total < LIFE_ROAD_ACCEPTANCE_MAX_ITEMS ? (
-        <View style={styles.addRow}>
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            maxLength={LIFE_ROAD_ACCEPTANCE_TEXT_MAX}
-            placeholder={allowChildren ? '加一条验收任务' : '加一条可勾选的验收'}
-            placeholderTextColor={muted2}
-            onSubmitEditing={addFromDraft}
-            returnKeyType="done"
-            style={[
-              styles.addInput,
-              {
-                color: ink3,
-                borderColor: line,
-                backgroundColor: 'rgba(255,255,255,0.38)',
-              },
-            ]}
-          />
-          <Pressable
-            onPress={addFromDraft}
-            disabled={!draft.trim()}
-            accessibilityLabel="添加验收"
-            style={({ pressed }) => [
-              styles.addBtn,
-              {
-                backgroundColor: pine,
-                opacity: !draft.trim() ? 0.4 : pressed ? 0.9 : 1,
-              },
-            ]}>
-            <Text style={{ color: onRoad, fontSize: 18, lineHeight: 20, marginTop: -1 }}>
-              +
-            </Text>
-          </Pressable>
+        <View style={styles.addBlock}>
+          <View style={styles.priorityRow}>
+            <Text style={[styles.linkHint, { color: muted2 }]}>加到</Text>
+            {LIFE_ROAD_ACCEPTANCE_PRIORITIES.map((p) => {
+              const on = draftPriority === p;
+              return (
+                <Pressable
+                  key={p}
+                  onPress={() => setDraftPriority(p)}
+                  style={[
+                    styles.linkChip,
+                    {
+                      borderColor: on ? pine : line,
+                      backgroundColor: on
+                        ? 'rgba(33,69,58,0.1)'
+                        : 'rgba(255,255,255,0.35)',
+                    },
+                  ]}>
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      fontWeight: on ? '700' : '500',
+                      color: on ? pine : muted,
+                    }}>
+                    {LIFE_ROAD_ACCEPTANCE_PRIORITY_LABELS[p]}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.addRow}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              maxLength={LIFE_ROAD_ACCEPTANCE_TEXT_MAX}
+              placeholder={`加一条${itemNoun}`}
+              placeholderTextColor={muted2}
+              onSubmitEditing={addFromDraft}
+              returnKeyType="done"
+              style={[
+                styles.addInput,
+                {
+                  color: ink3,
+                  borderColor: line,
+                  backgroundColor: 'rgba(255,255,255,0.38)',
+                },
+              ]}
+            />
+            <Pressable
+              onPress={addFromDraft}
+              disabled={!draft.trim()}
+              accessibilityLabel={`添加${itemNoun}`}
+              style={({ pressed }) => [
+                styles.addBtn,
+                {
+                  backgroundColor: pine,
+                  opacity: !draft.trim() ? 0.4 : pressed ? 0.9 : 1,
+                },
+              ]}>
+              <Text style={{ color: onRoad, fontSize: 18, lineHeight: 20, marginTop: -1 }}>
+                +
+              </Text>
+            </Pressable>
+          </View>
         </View>
       ) : (
         <Text style={[styles.cap, { color: faint }]}>
@@ -401,12 +469,12 @@ export function AcceptanceChecklistEditor({
       {items.length === 0 ? (
         <Text style={[styles.empty, { color: ink2 }]}>
           {linkMode === 'quarter'
-            ? '验收即任务。可连到对应季；怎样算抵达就勾选。'
+            ? `按 P0 / P1 / P2 分层写${itemNoun}；可连到对应季，勾选表示已抵达。`
             : linkMode === 'month'
-              ? '验收即任务。可连到对应月；怎样算抵达就勾选。'
+              ? `按 P0 / P1 / P2 分层写${itemNoun}；可连到对应月，勾选表示已抵达。`
               : allowChildren
-                ? '验收即任务，可拆子任务。'
-                : '暂无。用来写清「怎样算抵达」，可随时增删勾选。'}
+                ? `按 P0 / P1 / P2 分层写${itemNoun}，可拆子任务。`
+                : `暂无。按 P0 / P1 / P2 分层写清${itemNoun}，可随时增删勾选。`}
         </Text>
       ) : null}
     </View>
@@ -414,7 +482,16 @@ export function AcceptanceChecklistEditor({
 }
 
 const styles = StyleSheet.create({
-  wrap: { gap: 4, marginTop: 1 },
+  wrap: { gap: 8, marginTop: 1 },
+  layer: { gap: 2 },
+  layerLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginTop: 2,
+    marginBottom: 2,
+    paddingLeft: 4,
+  },
   itemBlock: { gap: 2 },
   row: {
     flexDirection: 'row',
@@ -458,6 +535,13 @@ const styles = StyleSheet.create({
     opacity: 0.55,
     flexShrink: 0,
   },
+  priorityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 5,
+    paddingBottom: 2,
+  },
   linkRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -472,11 +556,11 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     borderWidth: StyleSheet.hairlineWidth,
   },
+  addBlock: { gap: 6, marginTop: 4 },
   addRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    marginTop: 5,
   },
   addInput: {
     flex: 1,

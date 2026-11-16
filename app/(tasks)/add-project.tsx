@@ -17,11 +17,7 @@ import {
   validateRequiredTitle,
 } from '@/components/entity-form';
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
-import {
-  findAcceptanceById,
-  parseAcceptanceCriteria,
-} from '@/lib/life-road/life-road-acceptance';
-import { mergeLifeAcceptanceIdIntoExtraData } from '@/lib/life-road/project-road-link';
+import { mergeLifeWeekKeyIntoExtraData } from '@/lib/life-road/project-road-link';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
 import { ProgressCountersField } from '@/components/progress/ProgressCountersField';
@@ -161,8 +157,10 @@ export default function AddProjectScreen() {
     categoryId?: string | string[];
     /** 复盘建议等入口预填项目名 */
     title?: string;
-    /** 从月目标验收叶子「建项目」预填归属 */
+    /** 从月编辑页「按周新建项目」预填归属 */
     life_month_goal_id?: string | string[];
+    life_week_key?: string | string[];
+    /** @deprecated 旧验收叶子预填，忽略 */
     life_acceptance_id?: string | string[];
   }>();
   const insets = useSafeAreaInsets();
@@ -199,31 +197,26 @@ export default function AddProjectScreen() {
     const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
     return (s ?? '').trim() || null;
   }, [params.life_month_goal_id]);
-  const routeAcceptanceId = React.useMemo(() => {
-    const raw = params.life_acceptance_id;
+  const routeWeekKey = React.useMemo(() => {
+    const raw = params.life_week_key;
     const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
     return (s ?? '').trim() || null;
-  }, [params.life_acceptance_id]);
+  }, [params.life_week_key]);
   const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(
     routeMonthGoalId,
   );
-  const [selectedAcceptanceId, setSelectedAcceptanceId] = React.useState<string | null>(
-    routeAcceptanceId,
-  );
+  const [selectedWeekKey, setSelectedWeekKey] = React.useState<string | null>(routeWeekKey);
   const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const monthGoalPrefillBanner = React.useMemo(() => {
-    if (!routeMonthGoalId || !routeAcceptanceId) return null;
+    if (!routeMonthGoalId) return null;
     const g = monthGoals.find((n) => n.id === routeMonthGoalId);
-    if (!g) return '已从道路验收创建，归属已预填';
-    const leaf = findAcceptanceById(
-      parseAcceptanceCriteria(g.extra_data),
-      routeAcceptanceId,
-    );
+    if (!g) return '已从道路创建，归属已预填';
     const m = g.month != null ? `${g.month} 月` : '月目标';
-    const leafText = leaf?.text?.trim() || '验收';
-    return `已从「${m} · ${leafText}」创建，归属已预填`;
-  }, [monthGoals, routeAcceptanceId, routeMonthGoalId]);
+    return routeWeekKey
+      ? `已从「${m} · 周 ${routeWeekKey}」创建，归属已预填`
+      : `已从「${m}」创建，归属已预填`;
+  }, [monthGoals, routeMonthGoalId, routeWeekKey]);
   const [rewardPointsText, setRewardPointsText] = React.useState('20');
   const [priority, setPriority] = React.useState<TaskPriorityKey>('urgent-not-important');
   const [initialTasks, setInitialTasks] = React.useState<InitialTaskDraft[]>([]);
@@ -384,10 +377,6 @@ export default function AddProjectScreen() {
       playTitleShake();
       return;
     }
-    if (selectedMonthGoalId && !selectedAcceptanceId) {
-      toast.warn('道路归属须挂到月目标的验收叶子上');
-      return;
-    }
     if (creating) return;
 
     const prereqValidation = validatePrerequisiteSelection(null, prerequisiteProjectIds, allProjects);
@@ -435,9 +424,9 @@ export default function AddProjectScreen() {
         normalizeRewardPoints(rewardPointsText),
       );
       const withIcon = mergeIconIntoExtraData(withReward, entityIcon, DEFAULT_PROJECT_ICON);
-      const withRoadAcceptance = mergeLifeAcceptanceIdIntoExtraData(
+      const withRoadAcceptance = mergeLifeWeekKeyIntoExtraData(
         withIcon,
-        selectedMonthGoalId ? selectedAcceptanceId : null,
+        selectedMonthGoalId ? selectedWeekKey : null,
       );
       let withAcceptance =
         mergeAcceptanceChecklistIntoExtraData(withRoadAcceptance, checklist) ??
@@ -533,7 +522,7 @@ export default function AddProjectScreen() {
     isLongTermProject,
     notes,
     noteImageUris,
-    selectedAcceptanceId,
+    selectedWeekKey,
     notifyAncestorsDataChanged,
     playTitleShake,
     prerequisiteProjectIds,
@@ -847,17 +836,17 @@ export default function AddProjectScreen() {
               ]}>
               <MonthGoalPickerField
                 selectedMonthGoalId={selectedMonthGoalId}
-                selectedAcceptanceId={selectedAcceptanceId}
+                selectedWeekKey={selectedWeekKey}
                 monthGoals={monthGoals}
                 loading={monthGoalsLoading}
                 onChange={(value) => {
                   setSelectedMonthGoalId(value?.monthGoalId ?? null);
-                  setSelectedAcceptanceId(value?.acceptanceId ?? null);
+                  setSelectedWeekKey(value?.weekKey ?? null);
                 }}
                 prefillBanner={monthGoalPrefillBanner}
               />
               <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
-                道路归属挂在月目标的验收叶子上，只影响导图位置，不改变任务、日历与积分。
+                道路归属挂在月目标下的某一周（也可只挂月），只影响导图位置，不改变任务、日历与积分。
               </Text>
             </View>
           </FoldRiseIn>

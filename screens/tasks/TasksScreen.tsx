@@ -232,14 +232,11 @@ import {
 } from '@/lib/repositories/projects/sync-workflow-status';
 import { isProjectPriorityBumpEligible } from '@/lib/repositories/workflow-status';
 import {
-  listAcceptanceLeaves,
-  parseAcceptanceCriteria,
-} from '@/lib/life-road/life-road-acceptance';
-import {
   formatProjectRoadCaption,
-  parseLifeAcceptanceId,
-  roadAcceptanceCaptionKey,
+  parseLifeWeekKey,
+  roadWeekCaptionKey,
 } from '@/lib/life-road/project-road-link';
+import { listWeeksInMonth } from '@/lib/life-road/life-road-weeks';
 import { getLifeRoadNodesLocal } from '@/lib/repositories/life-road/life-road-node';
 import {
   insertFrogCompletionEvent,
@@ -2197,7 +2194,7 @@ export default function TasksScreen() {
     [loadProjects, markPageDirty],
   );
 
-  /** 道路标题缓存：月目标 + 验收叶子（`${monthId}::${acceptanceId}`） */
+  /** 道路标题缓存：月目标 + 周（`${monthId}::${weekKey}`） */
   const refreshLifeRoadTitles = React.useCallback(async () => {
     try {
       const nodes = await getLifeRoadNodesLocal();
@@ -2208,14 +2205,15 @@ export default function TasksScreen() {
             ? formatProjectRoadCaption({ month: n.month, monthTitle: n.title })
             : n.title;
         map.set(n.id, monthCaption);
-        if (n.kind === 'month') {
-          for (const leaf of listAcceptanceLeaves(parseAcceptanceCriteria(n.extra_data))) {
+        if (n.kind === 'month' && n.calendar_year != null && n.month != null) {
+          for (const week of listWeeksInMonth(n.calendar_year, n.month)) {
             map.set(
-              roadAcceptanceCaptionKey(n.id, leaf.id),
+              roadWeekCaptionKey(n.id, week.weekKey),
               formatProjectRoadCaption({
                 month: n.month,
                 monthTitle: n.title,
-                acceptanceText: leaf.text,
+                weekKey: week.weekKey,
+                weekLabel: week.label,
               }),
             );
           }
@@ -7904,12 +7902,12 @@ export default function TasksScreen() {
                     project.life_month_goal_id?.trim() ||
                     project.life_bet_id?.trim() ||
                     '';
-                  const lifeAcceptanceId = parseLifeAcceptanceId(project.extra_data);
+                  const lifeWeekKey = parseLifeWeekKey(project.extra_data);
                   const lifeBetTitle = lifeRoadId
                     ? (
-                        (lifeAcceptanceId
+                        (lifeWeekKey
                           ? lifeRoadTitleById
-                              .get(roadAcceptanceCaptionKey(lifeRoadId, lifeAcceptanceId))
+                              .get(roadWeekCaptionKey(lifeRoadId, lifeWeekKey))
                               ?.trim()
                           : '') ||
                         lifeRoadTitleById.get(lifeRoadId)?.trim() ||

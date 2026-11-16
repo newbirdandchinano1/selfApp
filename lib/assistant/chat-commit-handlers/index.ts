@@ -39,7 +39,6 @@ export const W1_COMMIT_ACTIONS = [
 /** W2：其余已有 draft 域（对照表 A23–A34） */
 export const W2_COMMIT_ACTIONS = [
   'commit_recipe',
-  'commit_recipe_plan',
   'commit_wardrobe_item',
   'commit_wish',
   'commit_profile',
@@ -62,9 +61,6 @@ export const W3_COMMIT_ACTIONS = [
   'commit_habit_context',
   'commit_weight',
   'commit_intake_targets',
-  'commit_recipe_basket',
-  'commit_recipe_shop',
-  'commit_recipe_cook_log',
   'commit_recipe_category',
   'commit_recipe_delete',
   'commit_recipe_category_delete',
@@ -155,10 +151,6 @@ export { commitFoodIntake, commitWeight, commitIntakeTargets } from './food';
 export { commitMemo } from './memo';
 export {
   commitRecipe,
-  commitRecipePlan,
-  commitRecipeBasket,
-  commitRecipeShop,
-  commitRecipeCookLog,
   commitRecipeCategory,
   commitRecipeDelete,
   commitRecipeCategoryDelete,

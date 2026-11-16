@@ -1,8 +1,12 @@
 /**
  * 道路节点编辑：对齐 `我的道路-UI重构.html` route-node
- *（自定义顶栏、槽位面包屑、表单卡片、状态网格、底栏保存）。
+ *（自定义顶栏、槽位面包屑、表单卡片、底栏保存；月节点含周目标与项目）。
  */
 import { AcceptanceChecklistEditor } from '@/components/life-road/AcceptanceChecklistEditor';
+import {
+  MonthWeekProjectsEditor,
+  type MonthWeekProjectRef,
+} from '@/components/life-road/MonthWeekProjectsEditor';
 import { AiLifeRoadAcceptanceSheet } from '@/components/profile/ai-life-road-acceptance-sheet';
 import {
   AiLifeRoadNodeUpdateSheet,
@@ -21,17 +25,24 @@ import {
 } from '@/constants/life-road-theme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { usePageApiSync } from '@/hooks/use-page-api-sync';
+import { getDatabase } from '@/lib/database';
 import {
   LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
   flattenAcceptanceItems,
+  lifeRoadItemNoun,
   parseAcceptanceCriteria,
   writeAcceptanceCriteria,
   type LifeRoadAcceptanceItem,
 } from '@/lib/life-road/life-road-acceptance';
+import { parseLifeWeekKey } from '@/lib/life-road/project-road-link';
+import {
+  parseWeekGoals,
+  weekGoalFingerprint,
+  writeWeekGoals,
+  type LifeRoadWeekGoalEntry,
+} from '@/lib/life-road/life-road-weeks';
 import {
   LIFE_ROAD_NODE_KIND_LABELS,
-  LIFE_ROAD_NODE_STATUS_LABELS,
-  LIFE_ROAD_NODE_STATUS_VALUES,
   LIFE_ROAD_NOTE_MAX,
   LIFE_ROAD_TITLE_MAX,
   LifeRoadValidationError,
@@ -49,7 +60,7 @@ import {
   getLifeRoadNodeById,
   updateLifeRoadNode,
 } from '@/lib/repositories/life-road/life-road-node';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -66,16 +77,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Svg, { Path } from 'react-native-svg';
 
 const PAGE_KEY = 'edit-life-road-node';
-
-const STATUS_TONE: Record<
-  LifeRoadNodeStatus,
-  { color: string; bg: string }
-> = {
-  on_track: { color: '#5D846E', bg: 'rgba(93,132,110,0.09)' },
-  paused: { color: '#D39A55', bg: 'rgba(211,154,85,0.09)' },
-  arrived: { color: '#3D6B58', bg: 'rgba(61,107,88,0.09)' },
-  dropped: { color: '#BF6F52', bg: 'rgba(191,111,82,0.09)' },
-};
 
 function CheckIcon({ color }: { color: string }) {
   return (
@@ -172,6 +173,10 @@ export default function EditLifeRoadNodeScreen() {
   const [note, setNote] = useState('');
   const [status, setStatus] = useState<LifeRoadNodeStatus>('on_track');
   const [acceptance, setAcceptance] = useState<LifeRoadAcceptanceItem[]>([]);
+  const [weekGoals, setWeekGoals] = useState<Record<string, LifeRoadWeekGoalEntry>>(
+    {},
+  );
+  const [monthProjects, setMonthProjects] = useState<MonthWeekProjectRef[]>([]);
   const [extraDataBase, setExtraDataBase] = useState<string | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -182,10 +187,55 @@ export default function EditLifeRoadNodeScreen() {
   const [baseline, setBaseline] = useState<{
     title: string;
     note: string;
-    status: LifeRoadNodeStatus;
     acceptanceKey: string;
+    weekGoalsKey: string;
   } | null>(
-    isNew ? { title: '', note: '', status: 'on_track', acceptanceKey: '' } : null,
+    isNew
+      ? { title: '', note: '', acceptanceKey: '', weekGoalsKey: '' }
+      : null,
+  );
+
+  const reloadMonthProjects = useCallback(async (monthId: string | null) => {
+    if (!monthId) {
+      setMonthProjects([]);
+      return;
+    }
+    try {
+      const db = await getDatabase();
+      if (!db) {
+        setMonthProjects([]);
+        return;
+      }
+      const rows = await db.getAllAsync<{
+        id: string;
+        name: string;
+        status: string;
+        extra_data: string | null;
+      }>(
+        `SELECT id, name, status, extra_data FROM projects
+         WHERE life_month_goal_id = ?
+           AND sync_status != 'pending_delete'
+           AND status IN ('active', 'paused', 'completed')
+         ORDER BY updated_at DESC`,
+        [monthId],
+      );
+      setMonthProjects(
+        (rows ?? []).map((p) => ({
+          id: String(p.id),
+          name: String(p.name),
+          status: String(p.status),
+          weekKey: parseLifeWeekKey(p.extra_data),
+        })),
+      );
+    } catch {
+      setMonthProjects([]);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void reloadMonthProjects(nodeId);
+    }, [nodeId, reloadMonthProjects]),
   );
 
   useEffect(() => {
@@ -215,16 +265,19 @@ export default function EditLifeRoadNodeScreen() {
 
   const titleLen = [...title].length;
   const noteLen = [...note].length;
+  const itemNoun = lifeRoadItemNoun(kind);
+
   const acceptanceKey = useMemo(
     () =>
       flattenAcceptanceItems(acceptance)
         .map(
           (it) =>
-            `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
+            `${it.id}:${it.done ? 1 : 0}:${it.priority ?? 'p1'}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
         )
         .join('|'),
     [acceptance],
   );
+  const weekGoalsKey = useMemo(() => weekGoalFingerprint(weekGoals), [weekGoals]);
 
   const linkMode =
     kind === 'year' ? 'quarter' : kind === 'quarter' ? 'month' : null;
@@ -239,10 +292,10 @@ export default function EditLifeRoadNodeScreen() {
     return (
       title.trim() !== baseline.title.trim() ||
       note.trim() !== baseline.note.trim() ||
-      status !== baseline.status ||
-      acceptanceKey !== baseline.acceptanceKey
+      acceptanceKey !== baseline.acceptanceKey ||
+      weekGoalsKey !== baseline.weekGoalsKey
     );
-  }, [acceptanceKey, baseline, note, status, title]);
+  }, [acceptanceKey, baseline, note, title, weekGoalsKey]);
 
   const canSave =
     Boolean(title.trim()) && !saving && !loading && (isNew || dirty);
@@ -271,18 +324,21 @@ export default function EditLifeRoadNodeScreen() {
           setStatus(row.status);
           setExtraDataBase(row.extra_data ?? null);
           const items = parseAcceptanceCriteria(row.extra_data);
+          const weeks = parseWeekGoals(row.extra_data);
           setAcceptance(items);
+          setWeekGoals(weeks);
           setBaseline({
             title: row.title,
             note: row.note ?? '',
-            status: row.status,
             acceptanceKey: flattenAcceptanceItems(items)
               .map(
                 (it) =>
-                  `${it.id}:${it.done ? 1 : 0}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
+                  `${it.id}:${it.done ? 1 : 0}:${it.priority ?? 'p1'}:${it.text.trim()}:q${it.link_quarter ?? ''}:m${it.link_month ?? ''}`,
               )
               .join('|'),
+            weekGoalsKey: weekGoalFingerprint(weeks),
           });
+          await reloadMonthProjects(row.id);
         }, false);
       } catch (e) {
         toast.error(toUserMessage(e, '加载失败'));
@@ -293,7 +349,7 @@ export default function EditLifeRoadNodeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isNew, params.id, router, wrapLoad]);
+  }, [isNew, params.id, reloadMonthProjects, router, wrapLoad]);
 
   const onSave = useCallback(async () => {
     if (!title.trim()) {
@@ -302,7 +358,10 @@ export default function EditLifeRoadNodeScreen() {
     }
     setSaving(true);
     try {
-      const extra_data = writeAcceptanceCriteria(extraDataBase, acceptance);
+      let extra_data = writeAcceptanceCriteria(extraDataBase, acceptance);
+      if (kind === 'month') {
+        extra_data = writeWeekGoals(extra_data, weekGoals);
+      }
       if (isNew || !nodeId) {
         const created = await createLifeRoadNode({
           kind,
@@ -346,6 +405,7 @@ export default function EditLifeRoadNodeScreen() {
     note,
     status,
     acceptance,
+    weekGoals,
     extraDataBase,
     calendarYear,
     quarter,
@@ -393,7 +453,6 @@ export default function EditLifeRoadNodeScreen() {
       const n = patch.note?.trim() ?? '';
       setNote([...n].slice(0, LIFE_ROAD_NOTE_MAX).join(''));
     }
-    if (patch.status) setStatus(patch.status);
     if (patch.acceptanceItems?.length) {
       setAcceptance(prev => {
         const room = Math.max(0, LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - prev.length);
@@ -557,7 +616,7 @@ export default function EditLifeRoadNodeScreen() {
                       ]}>
                       <AppIcon name="auto-awesome" size={12} color={lr.pine} />
                       <Text style={{ fontSize: 11, fontWeight: '700', color: lr.pine }}>
-                        生成验收
+                        AI 拆解
                       </Text>
                     </Pressable>
                     <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
@@ -569,7 +628,7 @@ export default function EditLifeRoadNodeScreen() {
                   value={note}
                   onChangeText={(t) => setNote([...t].slice(0, LIFE_ROAD_NOTE_MAX).join(''))}
                   maxLength={LIFE_ROAD_NOTE_MAX}
-                  placeholder="写清背景与意图，可据此生成验收…"
+                  placeholder={`写清背景与意图，可据此 AI 拆解${itemNoun}…`}
                   placeholderTextColor={lr.muted2}
                   multiline
                   textAlignVertical="top"
@@ -577,7 +636,7 @@ export default function EditLifeRoadNodeScreen() {
                 />
                 <View style={styles.lineNote}>
                   <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
-                    梗概越具体，生成验收越准
+                    梗概越具体，拆解{itemNoun}越准（最多 {LIFE_ROAD_NOTE_MAX} 字）
                   </Text>
                 </View>
               </FormCard>
@@ -588,58 +647,8 @@ export default function EditLifeRoadNodeScreen() {
                 <View style={styles.fieldHead}>
                   <View style={styles.fieldLabel}>
                     <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>03</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>状态</Text>
-                  </View>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>4 种</Text>
-                </View>
-                <View style={styles.statusGrid}>
-                  {LIFE_ROAD_NODE_STATUS_VALUES.map((s) => {
-                    const on = status === s;
-                    const tone = STATUS_TONE[s];
-                    return (
-                      <Pressable
-                        key={s}
-                        onPress={() => setStatus(s)}
-                        style={[
-                          styles.statusOpt,
-                          {
-                            borderColor: on ? tone.color : lr.line,
-                            backgroundColor: on ? tone.bg : 'rgba(255,255,255,0.32)',
-                          },
-                        ]}>
-                        <View
-                          style={[styles.statusDot, { backgroundColor: tone.color }]}
-                        />
-                        <Text
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            fontSize: 12,
-                            fontWeight: on ? '700' : '500',
-                            color: on ? lr.ink : lr.ink3,
-                          }}
-                          numberOfLines={1}>
-                          {LIFE_ROAD_NODE_STATUS_LABELS[s]}
-                        </Text>
-                        {on ? (
-                          <Text style={{ fontSize: 11, fontWeight: '700', color: tone.color }}>
-                            ✓
-                          </Text>
-                        ) : null}
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </FormCard>
-            </FoldRiseIn>
-
-            <FoldRiseIn animate={motionOn} index={4} fromY={10}>
-              <FormCard lr={lr}>
-                <View style={styles.fieldHead}>
-                  <View style={styles.fieldLabel}>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>04</Text>
                     <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>
-                      验收
+                      {itemNoun}
                     </Text>
                   </View>
                   <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
@@ -650,6 +659,7 @@ export default function EditLifeRoadNodeScreen() {
                 <AcceptanceChecklistEditor
                   items={acceptance}
                   onChange={setAcceptance}
+                  itemNoun={itemNoun}
                   linkMode={linkMode}
                   linkMonthOptions={linkMonthOptions}
                   allowChildren={kind === 'month'}
@@ -666,16 +676,33 @@ export default function EditLifeRoadNodeScreen() {
                 <View style={styles.lineNote}>
                   <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
                     {linkMode === 'quarter'
-                      ? '验收即任务，可连接对应季'
+                      ? '按 P0 / P1 / P2 分层写目标，可连接对应季'
                       : linkMode === 'month'
-                        ? '验收即任务，可连接对应月'
+                        ? '按 P0 / P1 / P2 分层写目标，可连接对应月'
                         : kind === 'month'
-                          ? '验收即任务，可拆子任务'
-                          : '勾选表示怎样算抵达'}
+                          ? '按 P0 / P1 / P2 分层写任务，可拆子任务'
+                          : '勾选表示已抵达；优先级由你决定'}
                   </Text>
                 </View>
               </FormCard>
             </FoldRiseIn>
+
+            {kind === 'month' && calendarYear != null && month != null ? (
+              <FoldRiseIn animate={motionOn} index={4} fromY={10}>
+                <FormCard lr={lr}>
+                  <MonthWeekProjectsEditor
+                    calendarYear={calendarYear}
+                    month={month}
+                    monthNodeId={nodeId}
+                    weekGoals={weekGoals}
+                    onChangeWeekGoals={setWeekGoals}
+                    projects={monthProjects}
+                    onProjectsChanged={() => void reloadMonthProjects(nodeId)}
+                    lr={lr}
+                  />
+                </FormCard>
+              </FoldRiseIn>
+            ) : null}
 
             <FoldRiseIn animate={motionOn} index={5} fromY={10}>
               <Pressable
@@ -695,7 +722,7 @@ export default function EditLifeRoadNodeScreen() {
                     一句话更新
                   </Text>
                   <Text style={{ fontSize: 11, color: lr.muted, marginTop: 2 }}>
-                    自然语言改状态 / 梗概 / 验收草稿
+                    自然语言改梗概 / {itemNoun}草稿
                   </Text>
                 </View>
               </Pressable>
@@ -704,7 +731,7 @@ export default function EditLifeRoadNodeScreen() {
             <View style={styles.helperNote}>
               <AppIcon name="info-outline" size={12} color={lr.muted2} />
               <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: lr.muted }}>
-                验收就是任务：年连季、季连月；月可拆子。不进日历与积分。
+                年/季写目标、月写任务；月下按周挂项目。不进日历与积分。
               </Text>
             </View>
           </ScrollView>
@@ -907,7 +934,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   noteInput: {
-    minHeight: 72,
+    minHeight: 120,
+    maxHeight: 280,
     paddingHorizontal: 1,
     paddingVertical: 2,
     fontSize: 14,

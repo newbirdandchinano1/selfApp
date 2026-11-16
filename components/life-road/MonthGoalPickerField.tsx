@@ -1,6 +1,6 @@
 /**
- * 项目「道路归属」：挂到月目标下的验收叶子（非直接挂月）。
- * 年/季分段 → 选月目标 → 选验收叶子。
+ * 项目「道路归属」：挂到月目标，可选挂到某一周。
+ * 年/季分段 → 选月目标 → 可选周。
  */
 import {
   LIFE_ROAD_NODE_STATUS_LABELS,
@@ -9,13 +9,10 @@ import {
   type LifeRoadNodeStatus,
 } from '@/lib/life-road/life-road-node-model';
 import {
-  listAcceptanceLeaves,
-  parseAcceptanceCriteria,
-} from '@/lib/life-road/life-road-acceptance';
-import {
   formatProjectRoadCaption,
   type ProjectRoadLinkSelection,
 } from '@/lib/life-road/project-road-link';
+import { listWeeksInMonth } from '@/lib/life-road/life-road-weeks';
 import { currentCalendarYear } from '@/lib/life-road/life-road-limits';
 import type { LifeRoadNodeRow } from '@/lib/repositories/life-road/life-road-node.types';
 import {
@@ -38,16 +35,17 @@ import Svg, { Path } from 'react-native-svg';
 
 export type MonthGoalPickerFieldProps = {
   selectedMonthGoalId: string | null;
-  selectedAcceptanceId: string | null;
+  /** 周一 ymd；可空=仅挂月 */
+  selectedWeekKey?: string | null;
   monthGoals: LifeRoadNodeRow[];
   loading?: boolean;
   disabled?: boolean;
   onChange: (value: ProjectRoadLinkSelection | null) => void;
-  /** 从道路「建项目」预填时展示横幅 */
   prefillBanner?: string | null;
   /**
-   * @deprecated 兼容旧调用方色板
+   * @deprecated 兼容旧调用方；请改传 selectedWeekKey
    */
+  selectedAcceptanceId?: string | null;
   textColor?: string;
   outline?: string;
   placeholderColor?: string;
@@ -152,7 +150,7 @@ function goalBySlot(
 
 export function MonthGoalPickerField({
   selectedMonthGoalId,
-  selectedAcceptanceId,
+  selectedWeekKey = null,
   monthGoals,
   loading = false,
   disabled = false,
@@ -164,7 +162,7 @@ export function MonthGoalPickerField({
   const insets = useSafeAreaInsets();
   const [modalVisible, setModalVisible] = useState(false);
   const [draftMonthId, setDraftMonthId] = useState<string | null>(null);
-  const [draftAcceptanceId, setDraftAcceptanceId] = useState<string | null>(null);
+  const [draftWeekKey, setDraftWeekKey] = useState<string | null>(null);
   const [pickYear, setPickYear] = useState(currentCalendarYear());
   const [pickQuarter, setPickQuarter] = useState<1 | 2 | 3 | 4>(
     monthToQuarter(new Date().getMonth() + 1),
@@ -186,40 +184,42 @@ export function MonthGoalPickerField({
   const selectedMonth = selectedMonthGoalId
     ? byId.get(selectedMonthGoalId) ?? null
     : null;
-  const selectedLeaves = selectedMonth
-    ? listAcceptanceLeaves(parseAcceptanceCriteria(selectedMonth.extra_data))
-    : [];
-  const selectedLeaf =
-    selectedAcceptanceId != null
-      ? selectedLeaves.find((l) => l.id === selectedAcceptanceId) ?? null
+
+  const selectedWeeks =
+    selectedMonth?.calendar_year != null && selectedMonth.month != null
+      ? listWeeksInMonth(selectedMonth.calendar_year, selectedMonth.month)
+      : [];
+  const selectedWeek =
+    selectedWeekKey != null
+      ? selectedWeeks.find((w) => w.weekKey === selectedWeekKey) ?? null
       : null;
 
   const summaryTitle = selectedMonth
     ? formatProjectRoadCaption({
         month: selectedMonth.month,
         monthTitle: selectedMonth.title,
-        acceptanceText: selectedLeaf?.text ?? null,
+        weekKey: selectedWeekKey,
+        weekLabel: selectedWeek?.label ?? null,
       })
     : null;
   const summarySub = selectedMonth
-    ? selectedLeaf
-      ? `${selectedMonth.calendar_year} · Q${
-          selectedMonth.quarter ??
-          (selectedMonth.month != null ? monthToQuarter(selectedMonth.month) : '—')
-        } · ${selectedMonth.title}`
-      : '已选月目标，但缺少验收叶子'
-    : '点此选择年 · 季 · 月 · 验收';
+    ? `${selectedMonth.calendar_year} · Q${
+        selectedMonth.quarter ??
+        (selectedMonth.month != null ? monthToQuarter(selectedMonth.month) : '—')
+      } · ${selectedMonth.title}${selectedWeek ? ` · ${selectedWeek.label}` : ' · 未分周'}`
+    : '点此选择年 · 季 · 月 · 周';
 
   const draftMonth = draftMonthId ? byId.get(draftMonthId) ?? null : null;
-  const draftLeaves = draftMonth
-    ? listAcceptanceLeaves(parseAcceptanceCriteria(draftMonth.extra_data))
-    : [];
+  const draftWeeks =
+    draftMonth?.calendar_year != null && draftMonth.month != null
+      ? listWeeksInMonth(draftMonth.calendar_year, draftMonth.month)
+      : [];
 
   const open = () => {
     if (disabled || loading) return;
     const seed = selectedMonthGoalId ? byId.get(selectedMonthGoalId) : null;
     setDraftMonthId(selectedMonthGoalId);
-    setDraftAcceptanceId(selectedAcceptanceId);
+    setDraftWeekKey(selectedWeekKey);
     setPickYear(seed?.calendar_year ?? currentCalendarYear());
     setPickQuarter(
       (seed?.quarter as 1 | 2 | 3 | 4 | undefined) ??
@@ -231,16 +231,15 @@ export function MonthGoalPickerField({
   };
 
   const monthsInQuarter = QUARTER_MONTHS[pickQuarter];
-
-  const canConfirm = Boolean(draftMonthId && draftAcceptanceId);
+  const canConfirm = Boolean(draftMonthId);
   const confirmLabel = useMemo(() => {
     if (!draftMonthId) return '请选择月目标';
-    if (!draftAcceptanceId) return '请选择验收节点';
     const g = byId.get(draftMonthId);
-    const leaf = draftLeaves.find((l) => l.id === draftAcceptanceId);
-    if (!g?.month || !leaf) return '请选择验收节点';
-    return `确定挂到「${leaf.text}」`;
-  }, [byId, draftAcceptanceId, draftLeaves, draftMonthId]);
+    if (!g?.month) return '请选择月目标';
+    const week = draftWeeks.find((w) => w.weekKey === draftWeekKey);
+    if (week) return `确定挂到「${week.label}」`;
+    return `确定挂到「${g.month} 月」`;
+  }, [byId, draftMonthId, draftWeekKey, draftWeeks]);
 
   return (
     <View>
@@ -264,7 +263,7 @@ export function MonthGoalPickerField({
         <View style={styles.fieldLabel}>
           <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>03</Text>
           <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>
-            道路归属 · 验收节点
+            道路归属 · 月 / 周
           </Text>
         </View>
         <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>可选</Text>
@@ -274,12 +273,12 @@ export function MonthGoalPickerField({
         onPress={open}
         disabled={disabled || loading}
         accessibilityRole="button"
-        accessibilityLabel="选择道路归属验收节点"
+        accessibilityLabel="选择道路归属"
         style={({ pressed }) => [
           styles.pickerField,
           {
-            borderColor: selectedLeaf ? 'rgba(61,107,88,0.28)' : lr.line,
-            backgroundColor: selectedLeaf
+            borderColor: selectedMonth ? 'rgba(61,107,88,0.28)' : lr.line,
+            backgroundColor: selectedMonth
               ? 'rgba(240,245,240,0.85)'
               : 'rgba(255,253,247,0.86)',
             opacity: disabled ? 0.55 : pressed ? 0.92 : 1,
@@ -292,7 +291,7 @@ export function MonthGoalPickerField({
             <View
               style={[
                 styles.pickerIco,
-                selectedLeaf
+                selectedMonth
                   ? {
                       backgroundColor: lr.sage2,
                       borderColor: 'rgba(140,173,156,0.18)',
@@ -302,14 +301,14 @@ export function MonthGoalPickerField({
                       borderColor: 'transparent',
                     },
               ]}>
-              <TreeIcon color={selectedLeaf ? lr.pine : lr.muted} />
+              <TreeIcon color={selectedMonth ? lr.pine : lr.muted} />
             </View>
             <View style={styles.pickerCopy}>
               <Text
                 style={{
                   fontSize: 14,
                   fontWeight: '600',
-                  color: selectedLeaf ? lr.ink2 : lr.ink3,
+                  color: selectedMonth ? lr.ink2 : lr.ink3,
                 }}
                 numberOfLines={1}>
                 {summaryTitle ?? '未归属'}
@@ -320,7 +319,7 @@ export function MonthGoalPickerField({
                 {summarySub}
               </Text>
             </View>
-            {selectedMonthGoalId || selectedAcceptanceId ? (
+            {selectedMonthGoalId ? (
               <Pressable
                 onPress={(e) => {
                   e.stopPropagation?.();
@@ -343,13 +342,13 @@ export function MonthGoalPickerField({
         <InfoIcon color={lr.muted2} />
         <Text style={{ flex: 1, fontSize: 11, lineHeight: 17, color: lr.muted }}>
           <Text style={{ fontWeight: '600', color: lr.ink3 }}>
-            项目挂在月目标的验收叶子上，不直接挂月。
+            项目挂在月目标下的某一周，也可只挂月。
           </Text>{' '}
-          一条验收可挂多个项目。
+          一周可挂多个项目。
         </Text>
       </View>
 
-      {selectedMonth && selectedLeaf ? (
+      {selectedMonth ? (
         <View
           style={[
             styles.pickerPreview,
@@ -369,7 +368,8 @@ export function MonthGoalPickerField({
               · {selectedMonth.month} 月
             </Text>
             {'\n'}
-            月目标「{selectedMonth.title}」· 验收「{selectedLeaf.text}」·{' '}
+            月目标「{selectedMonth.title}」
+            {selectedWeek ? ` · ${selectedWeek.label}` : ' · 未分周'} ·{' '}
             {statusLabel(selectedMonth.status)}
           </Text>
         </View>
@@ -397,10 +397,10 @@ export function MonthGoalPickerField({
                   ATTACH · 道路归属
                 </Text>
                 <Text style={[lifeRoadType.serifEmpty, { color: lr.ink, marginTop: 4 }]}>
-                  挂到哪条验收？
+                  挂到哪一月 / 周？
                 </Text>
                 <Text style={{ fontSize: 12, color: lr.muted, marginTop: 4, lineHeight: 17 }}>
-                  先选月目标，再选该月下的验收叶子。
+                  先选月目标，再可选该月下的某一周。
                 </Text>
               </View>
               <Pressable
@@ -436,7 +436,7 @@ export function MonthGoalPickerField({
                         onPress={() => {
                           setPickYear(y);
                           setDraftMonthId(null);
-                          setDraftAcceptanceId(null);
+                          setDraftWeekKey(null);
                         }}
                         style={[
                           styles.segOpt,
@@ -483,7 +483,7 @@ export function MonthGoalPickerField({
                         onPress={() => {
                           setPickQuarter(q);
                           setDraftMonthId(null);
-                          setDraftAcceptanceId(null);
+                          setDraftWeekKey(null);
                         }}
                         style={[
                           styles.segOpt,
@@ -525,9 +525,10 @@ export function MonthGoalPickerField({
                           (selectedMonthGoalId != null && goal.id === selectedMonthGoalId)),
                     );
                     const selectedRow = draftMonthId != null && goal?.id === draftMonthId;
-                    const leafCount = goal
-                      ? listAcceptanceLeaves(parseAcceptanceCriteria(goal.extra_data)).length
-                      : 0;
+                    const weekCount =
+                      goal?.calendar_year != null && goal.month != null
+                        ? listWeeksInMonth(goal.calendar_year, goal.month).length
+                        : 0;
                     return (
                       <Pressable
                         key={month}
@@ -535,7 +536,7 @@ export function MonthGoalPickerField({
                         onPress={() => {
                           if (!goal) return;
                           setDraftMonthId(goal.id);
-                          setDraftAcceptanceId(null);
+                          setDraftWeekKey(null);
                         }}
                         style={[
                           styles.monthRow,
@@ -581,7 +582,7 @@ export function MonthGoalPickerField({
                             style={{ fontSize: 11, color: lr.muted, marginTop: 2 }}
                             numberOfLines={1}>
                             {goal
-                              ? `${pickYear} · Q${pickQuarter} · 验收叶子 ${leafCount}`
+                              ? `${pickYear} · Q${pickQuarter} · ${weekCount} 周`
                               : '该月还没有月目标，暂不可选'}
                           </Text>
                         </View>
@@ -603,71 +604,86 @@ export function MonthGoalPickerField({
               {draftMonth ? (
                 <View style={styles.pickerGroup}>
                   <View style={styles.groupLabel}>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>
-                      ACCEPTANCE
-                    </Text>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                      验收叶子
-                    </Text>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>WEEK</Text>
+                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>周</Text>
                   </View>
-                  {draftLeaves.length === 0 ? (
-                    <Text style={{ color: lr.muted, paddingVertical: 8, fontSize: 13 }}>
-                      该月还没有验收叶子。请先在「我的道路」为月目标写验收（叶子节点）。
-                    </Text>
-                  ) : (
-                    <View style={styles.monthList}>
-                      {draftLeaves.map((leaf) => {
-                        const on = draftAcceptanceId === leaf.id;
-                        return (
-                          <Pressable
-                            key={leaf.id}
-                            onPress={() => setDraftAcceptanceId(leaf.id)}
+                  <View style={styles.monthList}>
+                    <Pressable
+                      onPress={() => setDraftWeekKey(null)}
+                      style={[
+                        styles.monthRow,
+                        {
+                          borderColor:
+                            draftWeekKey == null
+                              ? 'rgba(61,107,88,0.38)'
+                              : lr.line,
+                          backgroundColor:
+                            draftWeekKey == null
+                              ? 'rgba(220,231,223,0.55)'
+                              : 'rgba(255,255,255,0.35)',
+                        },
+                      ]}>
+                      <View style={styles.monthCopy}>
+                        <Text
+                          style={{
+                            fontSize: 13,
+                            fontWeight: '600',
+                            color: lr.ink2,
+                          }}>
+                          仅挂月 · 不分周
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.monthCheck,
+                          draftWeekKey == null
+                            ? { backgroundColor: lr.pine, borderColor: lr.pine }
+                            : { borderColor: lr.line2 },
+                        ]}>
+                        {draftWeekKey == null ? <CheckIcon color={lr.onRoad} /> : null}
+                      </View>
+                    </Pressable>
+                    {draftWeeks.map((week) => {
+                      const on = draftWeekKey === week.weekKey;
+                      return (
+                        <Pressable
+                          key={week.weekKey}
+                          onPress={() => setDraftWeekKey(week.weekKey)}
+                          style={[
+                            styles.monthRow,
+                            {
+                              borderColor: on
+                                ? 'rgba(61,107,88,0.38)'
+                                : lr.line,
+                              backgroundColor: on
+                                ? 'rgba(220,231,223,0.55)'
+                                : 'rgba(255,255,255,0.35)',
+                            },
+                          ]}>
+                          <View style={styles.monthCopy}>
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                fontWeight: '600',
+                                color: lr.ink2,
+                              }}
+                              numberOfLines={1}>
+                              {week.label}
+                            </Text>
+                          </View>
+                          <View
                             style={[
-                              styles.monthRow,
-                              {
-                                borderColor: on
-                                  ? 'rgba(61,107,88,0.38)'
-                                  : lr.line,
-                                backgroundColor: on
-                                  ? 'rgba(220,231,223,0.55)'
-                                  : 'rgba(255,255,255,0.35)',
-                              },
+                              styles.monthCheck,
+                              on
+                                ? { backgroundColor: lr.pine, borderColor: lr.pine }
+                                : { borderColor: lr.line2 },
                             ]}>
-                            <View style={styles.monthCopy}>
-                              <Text
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: '600',
-                                  color: lr.ink2,
-                                }}
-                                numberOfLines={2}>
-                                {leaf.text}
-                              </Text>
-                              {leaf.done ? (
-                                <Text
-                                  style={{
-                                    fontSize: 11,
-                                    color: lr.muted,
-                                    marginTop: 2,
-                                  }}>
-                                  已勾选
-                                </Text>
-                              ) : null}
-                            </View>
-                            <View
-                              style={[
-                                styles.monthCheck,
-                                on
-                                  ? { backgroundColor: lr.pine, borderColor: lr.pine }
-                                  : { borderColor: lr.line2 },
-                              ]}>
-                              {on ? <CheckIcon color={lr.onRoad} /> : null}
-                            </View>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
+                            {on ? <CheckIcon color={lr.onRoad} /> : null}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
               ) : null}
 
@@ -680,7 +696,7 @@ export function MonthGoalPickerField({
                   },
                 ]}>
                 <Text style={{ fontSize: 11, lineHeight: 17, color: '#7C6342' }}>
-                  只能挂到已有月目标下的验收叶子。跨月请手改归属。
+                  只能挂到已有月目标。也可在月编辑页按周新建或引入项目。
                 </Text>
               </View>
             </ScrollView>
@@ -700,10 +716,10 @@ export function MonthGoalPickerField({
               <Pressable
                 disabled={!canConfirm}
                 onPress={() => {
-                  if (!draftMonthId || !draftAcceptanceId) return;
+                  if (!draftMonthId) return;
                   onChange({
                     monthGoalId: draftMonthId,
-                    acceptanceId: draftAcceptanceId,
+                    weekKey: draftWeekKey,
                   });
                   setModalVisible(false);
                 }}

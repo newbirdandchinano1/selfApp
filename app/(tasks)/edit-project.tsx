@@ -7,8 +7,8 @@ import {
 } from '@/lib/due-soon-priority-bump';
 import { MonthGoalPickerField } from '@/components/life-road/MonthGoalPickerField';
 import {
-  mergeLifeAcceptanceIdIntoExtraData,
-  parseLifeAcceptanceId,
+  mergeLifeWeekKeyIntoExtraData,
+  parseLifeWeekKey,
 } from '@/lib/life-road/project-road-link';
 import { PrerequisiteProjectPickerField } from '@/components/projects/PrerequisiteProjectPickerField';
 import { ProgressHabitBindingsField } from '@/components/projects/ProgressHabitBindingsField';
@@ -628,7 +628,7 @@ export default function EditProjectScreen() {
   const [overviewOpen, setOverviewOpen] = React.useState(false);
   const [isLongTermProject, setIsLongTermProject] = React.useState(false);
   const [selectedMonthGoalId, setSelectedMonthGoalId] = React.useState<string | null>(null);
-  const [selectedAcceptanceId, setSelectedAcceptanceId] = React.useState<string | null>(null);
+  const [selectedWeekKey, setSelectedWeekKey] = React.useState<string | null>(null);
   const [monthGoals, setMonthGoals] = React.useState<LifeRoadNodeRow[]>([]);
   const [monthGoalsLoading, setMonthGoalsLoading] = React.useState(true);
   const [rewardPointsText, setRewardPointsText] = React.useState('0');
@@ -818,7 +818,7 @@ export default function EditProjectScreen() {
             ? project.life_bet_id
             : null,
       );
-      setSelectedAcceptanceId(parseLifeAcceptanceId(project.extra_data));
+      setSelectedWeekKey(parseLifeWeekKey(project.extra_data));
       setRewardPointsText(String(parseRewardPointsFromExtraData(project.extra_data)));
       const projectTasks = await getTasksByProjectId(projectId);
       setTaskTree(projectTasks);
@@ -1144,10 +1144,6 @@ export default function EditProjectScreen() {
       Alert.alert('无法保存项目', '请输入项目名称后再保存。');
       return;
     }
-    if (selectedMonthGoalId && !selectedAcceptanceId) {
-      toast.warn('道路归属须挂到月目标的验收叶子上');
-      return;
-    }
     if (saving) return;
 
     const prereqValidation = validatePrerequisiteSelection(projectId, prerequisiteProjectIds, allProjects);
@@ -1227,9 +1223,9 @@ export default function EditProjectScreen() {
         isLongTermProject,
       );
       const checklist = isLongTermProject ? acceptanceItems : [];
-      const withRoadAcceptance = mergeLifeAcceptanceIdIntoExtraData(
+      const withRoadAcceptance = mergeLifeWeekKeyIntoExtraData(
         withLongTerm,
-        selectedMonthGoalId ? selectedAcceptanceId : null,
+        selectedMonthGoalId ? selectedWeekKey : null,
       );
       const withAcceptance =
         mergeAcceptanceChecklistIntoExtraData(withRoadAcceptance, checklist) ??
@@ -1437,7 +1433,7 @@ export default function EditProjectScreen() {
     saving,
     scheduleMeta,
     selectedMonthGoalId,
-    selectedAcceptanceId,
+    selectedWeekKey,
     subtasks,
     title,
   ]);
@@ -2050,17 +2046,17 @@ export default function EditProjectScreen() {
                   ]}>
                   <MonthGoalPickerField
                     selectedMonthGoalId={selectedMonthGoalId}
-                    selectedAcceptanceId={selectedAcceptanceId}
+                    selectedWeekKey={selectedWeekKey}
                     monthGoals={monthGoals}
                     loading={monthGoalsLoading || loading}
                     disabled={formBusy}
                     onChange={(value) => {
                       setSelectedMonthGoalId(value?.monthGoalId ?? null);
-                      setSelectedAcceptanceId(value?.acceptanceId ?? null);
+                      setSelectedWeekKey(value?.weekKey ?? null);
                     }}
                   />
                   <Text style={{ fontSize: 11, lineHeight: 16, color: tf.faint, marginTop: 10 }}>
-                    道路归属只影响导图位置，不改变任务、日历与积分。
+                    道路归属挂月 / 周，只影响导图位置，不改变任务、日历与积分。
                   </Text>
                 </View>
               </FoldRiseIn>

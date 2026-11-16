@@ -127,14 +127,13 @@ check('用例7：改稿同 operation_id 不双建', () => {
     incoming: [incoming],
     userMessage: '改成20',
   });
-  assert.equal(cards.length, 0, '改稿不应再追加新卡');
-  const parts = next.messages[0].parts;
-  assert.equal(parts.length, 1);
-  assert.equal(parts[0].type, 'action_card');
-  if (parts[0].type !== 'action_card') throw new Error('expected card');
-  assert.equal(resolveOperationId(parts[0].card), 'op_lunch');
-  assert.equal(parts[0].card.draft?.amount, 20);
-  assert.equal(parts[0].card.id, 'c_lunch');
+  // 改稿合并后迁到本轮 cards，历史气泡不再留卡 —— 避免「最新回复看不见确认卡」
+  assert.equal(cards.length, 1, '改稿卡必须出现在本轮 cards');
+  assert.equal(resolveOperationId(cards[0]), 'op_lunch');
+  assert.equal(cards[0].draft?.amount, 20);
+  assert.equal(cards[0].id, 'c_lunch');
+  const parts = next.messages[0].parts.filter(p => p.type === 'action_card');
+  assert.equal(parts.length, 0, '历史气泡应已迁走确认卡');
 });
 
 check('用例9：再记一笔开新 operation_id', () => {
@@ -183,6 +182,40 @@ check('流式已画同卡：收尾仍保留在 reconciled，避免闪消失', ()
   assert.equal(cards[0].id, 'c_recipe_cat');
   assert.equal(resolveOperationId(cards[0]), 'op_recipe_cat');
   assert.equal(cards[0].draft?.name, '北京菜');
+});
+
+check('不同 confirm_action 禁止串卡：删除卡不能吞掉移动分类卡', () => {
+  const delCard = card({
+    id: 'c_del',
+    domain: 'recipe',
+    confirm_action: 'commit_recipe_delete',
+    operation_id: 'op_del',
+    idempotency_key: 'op_del',
+    title: '删除菜谱',
+    draft: { recipe_title: '测试' },
+  })!;
+  const session = sessionWithCards([delCard]);
+  const move = card({
+    id: 'c_move',
+    domain: 'recipe',
+    confirm_action: 'commit_recipe',
+    operation_id: 'op_move',
+    idempotency_key: 'op_move',
+    title: '修改菜谱',
+    draft: { recipe_id: 'r1', category_name: '汤羹' },
+  })!;
+  const { session: next, cards } = reconcileIncomingCommitCards({
+    session,
+    incoming: [move],
+    userMessage: '把这道菜挪到汤羹',
+  });
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].confirm_action, 'commit_recipe');
+  const old = next.messages[0].parts.find(p => p.type === 'action_card');
+  assert.ok(old && old.type === 'action_card');
+  if (old && old.type === 'action_card') {
+    assert.equal(old.card.confirm_action, 'commit_recipe_delete');
+  }
 });
 
 check('pending_operations 收集未确认卡', () => {

@@ -191,10 +191,13 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     paddingHorizontal: 10,
     paddingVertical: 8,
+    maxWidth: '100%',
+    overflow: 'hidden',
   },
   codeBlockText: {
     fontFamily: 'monospace',
     fontSize: 13,
     lineHeight: 19,
+    flexShrink: 1,
   },
 });

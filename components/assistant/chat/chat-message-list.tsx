@@ -141,8 +141,8 @@ export function ChatMessageList({
         onScroll={onScroll}
         scrollEventThrottle={16}
         onContentSizeChange={onContentSizeChange}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
         // 流式时维持可视项，减少整表重绘
         maintainVisibleContentPosition={
@@ -150,7 +150,8 @@ export function ChatMessageList({
             ? undefined
             : { minIndexForVisible: 0, autoscrollToTopThreshold: 0 }
         }
-        removeClippedSubviews
+        // Android 上 true 会导致确认卡 TextInput 焦点/输入法异常
+        removeClippedSubviews={false}
         initialNumToRender={12}
         maxToRenderPerBatch={8}
         windowSize={9}

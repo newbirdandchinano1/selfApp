@@ -4961,7 +4961,7 @@ function normalizeLifeRoadPlanPayload(raw: unknown): aiApi.LifeRoadPlanFromDirec
     if (kind !== 'year' && kind !== 'quarter' && kind !== 'month') continue;
     const title = String(r.title ?? r.name ?? '').trim().slice(0, 40);
     if (!title) continue;
-    const noteRaw = r.note == null ? null : String(r.note).trim().slice(0, 200);
+    const noteRaw = r.note == null ? null : String(r.note).trim().slice(0, 2000);
     const note = noteRaw || null;
     const acceptance: aiApi.LifeRoadPlanAcceptanceItemJson[] = [];
     const rawAcc = r.acceptance_items ?? r.acceptance;
@@ -5127,7 +5127,7 @@ function normalizeLifeRoadNodeUpdatePayload(
   if ('note' in o) {
     if (o.note == null) out.note = null;
     else {
-      const note = String(o.note).trim().slice(0, 200);
+      const note = String(o.note).trim().slice(0, 2000);
       out.note = note || null;
     }
   }

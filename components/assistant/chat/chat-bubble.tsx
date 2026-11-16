@@ -1,7 +1,17 @@
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import { Image as ExpoImage } from 'expo-image';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Image,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ActionConfirmCard } from '@/components/assistant/chat/action-confirm-card';
 import { AgentThinkingIndicator } from '@/components/assistant/chat/agent-thinking-indicator';
@@ -82,10 +92,11 @@ function renderMetaParts(parts: ChatMessagePart[]) {
         return <MetaChip key={`kb-${idx}`} label={`知识库 · ${p.summary}`} />;
       }
       const failed = p.ok === false;
+      const nameHint = p.toolName?.trim() ? `${p.toolName} · ` : '';
       return (
         <MetaChip
           key={`tool-${idx}`}
-          label={`${failed ? '工具失败' : '已查询'} · ${p.summary}`}
+          label={`${failed ? '工具失败' : '已查询'} · ${nameHint}${p.summary}`}
           danger={failed}
           full={failed}
         />
@@ -184,7 +195,10 @@ function ChatBubbleImpl({
   const showFallbackTyping = !isUser && pending && !text.trim() && !showThinking;
   const canCopy = !isUser && !pending && Boolean(text.trim());
   const [copied, setCopied] = useState(false);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { width: winW, height: winH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     return () => {
@@ -208,7 +222,7 @@ function ChatBubbleImpl({
 
   return (
     <View style={[styles.row, isUser ? styles.rowUser : styles.rowAssistant]}>
-      <View style={styles.col}>
+      <View style={[styles.col, !isUser && styles.colAssistant]}>
         <View
           style={[
             styles.bubble,
@@ -231,7 +245,12 @@ function ChatBubbleImpl({
             </View>
           ) : null}
           {imagePart && imagePart.type === 'image' ? (
-            <Image source={{ uri: imagePart.uri }} style={styles.image} resizeMode="cover" />
+            <Pressable
+              onPress={() => setImagePreviewOpen(true)}
+              accessibilityRole="imagebutton"
+              accessibilityLabel="查看大图">
+              <Image source={{ uri: imagePart.uri }} style={styles.image} resizeMode="cover" />
+            </Pressable>
           ) : null}
           {showThinking && thinking ? <AgentThinkingIndicator state={thinking} /> : null}
           {showFallbackTyping ? (
@@ -313,6 +332,38 @@ function ChatBubbleImpl({
           </Pressable>
         ) : null}
       </View>
+
+      {imagePart && imagePart.type === 'image' ? (
+        <Modal
+          visible={imagePreviewOpen}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setImagePreviewOpen(false)}>
+          <View style={styles.lightboxRoot}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setImagePreviewOpen(false)}
+              accessibilityLabel="关闭大图"
+            />
+            <ExpoImage
+              source={{ uri: imagePart.uri }}
+              style={{ width: winW, height: winH * 0.82 }}
+              contentFit="contain"
+            />
+            <Pressable
+              onPress={() => setImagePreviewOpen(false)}
+              hitSlop={12}
+              accessibilityLabel="关闭"
+              style={({ pressed }) => [
+                styles.lightboxClose,
+                { top: Math.max(12, insets.top + 8), opacity: pressed ? 0.7 : 1 },
+              ]}>
+              <MaterialIcons name="close" size={22} color="#FFFFFF" />
+            </Pressable>
+          </View>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -375,11 +426,20 @@ const styles = StyleSheet.create({
   rowAssistant: { alignItems: 'flex-start' },
   col: {
     maxWidth: '86%',
+    minWidth: 0,
+    flexShrink: 1,
     alignItems: 'flex-start',
     gap: Spacing.sm,
   },
+  // 助手气泡拉满可用宽度（仍受 maxWidth 86% 约束），避免确认卡/长字段把气泡撑破
+  colAssistant: {
+    alignSelf: 'stretch',
+    alignItems: 'stretch',
+  },
   bubble: {
-    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    overflow: 'hidden',
     borderRadius: Radius.xl,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
@@ -410,6 +470,22 @@ const styles = StyleSheet.create({
     height: 140,
     borderRadius: Radius.sm,
     backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+  lightboxRoot: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  lightboxClose: {
+    position: 'absolute',
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   metaCol: {
     gap: 6,

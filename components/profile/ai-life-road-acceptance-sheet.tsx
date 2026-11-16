@@ -1,5 +1,5 @@
 /**
- * 道路节点「生成验收」：增量验收草稿 → 勾选合并进编辑态（不自动标 done）。
+ * 道路节点「AI 拆解」：基于标题与梗概生成目标/任务草稿 → 勾选合并进编辑态（不自动标 done）。
  */
 import { useLifeRoadTheme } from '@/constants/life-road-theme';
 import type { LifeRoadPlanAcceptanceItemJson } from '@/lib/ai-api-client';
@@ -7,8 +7,10 @@ import { toast, toUserMessage } from '@/lib/app-feedback';
 import {
   createAcceptanceItem,
   LIFE_ROAD_ACCEPTANCE_MAX_ITEMS,
+  lifeRoadItemNoun,
   type LifeRoadAcceptanceItem,
 } from '@/lib/life-road/life-road-acceptance';
+import type { LifeRoadNodeKind } from '@/lib/life-road/life-road-node-model';
 import { draftLifeRoadAcceptance } from '@/lib/zhipu-image-parse';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -30,7 +32,7 @@ export type AiLifeRoadAcceptanceSheetProps = {
   kind?: string;
   existingAcceptance: string[];
   directionBody?: string;
-  /** 将勾选的增量项合并进编辑态验收列表 */
+  /** 将勾选的增量项合并进编辑态列表 */
   onApply: (items: LifeRoadAcceptanceItem[]) => void;
   currentCount: number;
 };
@@ -49,6 +51,15 @@ export function AiLifeRoadAcceptanceSheet({
   const insets = useSafeAreaInsets();
   const { lr } = useLifeRoadTheme();
   const styles = useMemo(() => createStyles(lr.pine), [lr.pine]);
+  const noun = lifeRoadItemNoun(
+    (kind === 'month' ||
+    kind === 'year' ||
+    kind === 'quarter' ||
+    kind === 'multi' ||
+    kind === 'farther'
+      ? kind
+      : 'year') as LifeRoadNodeKind,
+  );
 
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<LifeRoadPlanAcceptanceItemJson[]>([]);
@@ -79,18 +90,18 @@ export function AiLifeRoadAcceptanceSheet({
         directionBody,
       });
       if (!r.ok) {
-        toast.error(r.error || '生成验收失败');
+        toast.error(r.error || `生成${noun}失败`);
         return;
       }
       setItems(r.data.acceptance_items);
       setSelected(new Set(r.data.acceptance_items.map((_, i) => i)));
       setFetched(true);
     } catch (e) {
-      toast.error(toUserMessage(e, '生成验收失败'));
+      toast.error(toUserMessage(e, `生成${noun}失败`));
     } finally {
       setLoading(false);
     }
-  }, [directionBody, existingAcceptance, kind, note, title]);
+  }, [directionBody, existingAcceptance, kind, note, noun, title]);
 
   useEffect(() => {
     if (visible && !fetched && !loading && title.trim()) {
@@ -110,7 +121,7 @@ export function AiLifeRoadAcceptanceSheet({
   const handleApply = () => {
     const room = Math.max(0, LIFE_ROAD_ACCEPTANCE_MAX_ITEMS - currentCount);
     if (room <= 0) {
-      toast.info(`验收已满 ${LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条`);
+      toast.info(`${noun}已满 ${LIFE_ROAD_ACCEPTANCE_MAX_ITEMS} 条`);
       return;
     }
     const chosen = items.filter((_, i) => selected.has(i)).slice(0, room);
@@ -130,12 +141,12 @@ export function AiLifeRoadAcceptanceSheet({
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={styles.handle} />
           <View style={styles.head}>
-            <Text style={styles.title}>生成验收</Text>
+            <Text style={styles.title}>AI 拆解</Text>
             <Pressable onPress={onClose} hitSlop={10}>
               <Text style={styles.close}>关闭</Text>
             </Pressable>
           </View>
-          <Text style={styles.sub}>基于标题与梗概 · 增量草稿 · 勾选合并</Text>
+          <Text style={styles.sub}>基于标题与梗概拆{noun} · 增量草稿 · 勾选合并</Text>
 
           <ScrollView
             style={styles.body}
@@ -144,7 +155,7 @@ export function AiLifeRoadAcceptanceSheet({
             {loading ? (
               <View style={styles.loadingBox}>
                 <ActivityIndicator color={lr.pine} />
-                <Text style={styles.loadingText}>正在生成…</Text>
+                <Text style={styles.loadingText}>正在拆解…</Text>
               </View>
             ) : null}
             {!loading &&
@@ -161,7 +172,7 @@ export function AiLifeRoadAcceptanceSheet({
                 );
               })}
             {!loading && fetched && items.length === 0 ? (
-              <Text style={styles.empty}>没有新的验收建议（可能已覆盖现有项）</Text>
+              <Text style={styles.empty}>没有新的{noun}建议（可能已覆盖现有项）</Text>
             ) : null}
           </ScrollView>
 
@@ -173,7 +184,7 @@ export function AiLifeRoadAcceptanceSheet({
               style={[styles.primaryBtn, (loading || !items.length) && styles.btnDisabled]}
               disabled={loading || !items.length}
               onPress={handleApply}>
-              <Text style={styles.primaryText}>合并进验收</Text>
+              <Text style={styles.primaryText}>合并进{noun}</Text>
             </Pressable>
           </View>
         </View>

@@ -31,6 +31,8 @@ export type DraftField = {
   label: string;
   value: string;
   editable?: boolean;
+  /** 点选现有选项（如菜谱分类），由 ConfirmCard 渲染 */
+  input?: 'text' | 'select';
 };
 
 export type WriteOperationResult = {
@@ -119,6 +121,7 @@ export function deriveDraftFields(
           : COMMON_FIELD_LABELS[f.key] || f.label || f.key,
       value: String(f.value ?? ''),
       editable: f.editable === true,
+      input: f.input === 'select' ? 'select' : undefined,
     }));
   }
   if (!draft) return [];
@@ -127,18 +130,31 @@ export function deriveDraftFields(
   if (template?.length) {
     const out: DraftField[] = [];
     const seen = new Set<string>();
+    // 移动分类草稿：勿强行展示空的菜名/食材/步骤
+    const moveLike =
+      opts.confirmAction === 'commit_recipe' &&
+      (Boolean(readDraftScalar(draft, 'from_category_name', ['from_category'])) ||
+        Boolean(readDraftScalar(draft, 'recipe_title')) ||
+        Array.isArray(draft.recipe_ids));
     for (const spec of template) {
       const hit = readDraftScalar(draft, spec.key, spec.aliases);
-      if (!hit) continue;
-      if (seen.has(spec.key) || seen.has(hit.key)) continue;
+      const allowForce =
+        spec.forceShow === true &&
+        !(
+          moveLike &&
+          /^(title|ingredients_text|steps_text|servings|notes)$/i.test(spec.key)
+        );
+      if (!hit && !allowForce) continue;
+      if (seen.has(spec.key) || (hit && seen.has(hit.key))) continue;
       out.push({
         key: spec.key,
         label: spec.label,
-        value: hit.value,
+        value: hit?.value ?? '',
         editable: spec.editable === true,
+        input: spec.input === 'select' ? 'select' : undefined,
       });
       seen.add(spec.key);
-      seen.add(hit.key);
+      if (hit) seen.add(hit.key);
     }
     // 模板未覆盖但 draft 有值的标量：只读追加，最多补到 8
     for (const [key, v] of Object.entries(draft)) {

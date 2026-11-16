@@ -82,10 +82,6 @@ export type AssistantCommitConfirmAction =
   | 'commit_intake_targets'
   | 'commit_memo'
   | 'commit_recipe'
-  | 'commit_recipe_plan'
-  | 'commit_recipe_basket'
-  | 'commit_recipe_shop'
-  | 'commit_recipe_cook_log'
   | 'commit_recipe_category'
   | 'commit_recipe_delete'
   | 'commit_recipe_category_delete'
@@ -505,16 +501,36 @@ function collectDraftIds(draft: Record<string, unknown> | undefined): string[] {
   return out;
 }
 
+/** brief 不含菜谱库 id；移动/删除确认卡必须保留，否则 commit 会落到「新建」空草稿 */
+const RECIPE_DRAFT_ID_KEYS_PRESERVE = new Set([
+  'recipe_id',
+  'recipeId',
+  'recipe_ids',
+]);
+
+function shouldPreserveRecipeDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'recipe') return true;
+  const action = card.confirm_action || '';
+  return (
+    action === 'commit_recipe' ||
+    action === 'commit_recipe_delete' ||
+    action === 'preview_recipe'
+  );
+}
+
 function stripUnknownDraftIds(
   draft: Record<string, unknown> | undefined,
   allowed: Set<string>,
+  opts?: { preserveRecipeIds?: boolean },
 ): { draft: Record<string, unknown> | undefined; dropped: string[] } {
   if (!draft) return { draft: undefined, dropped: [] };
   const next: Record<string, unknown> = { ...draft };
   const dropped: string[] = [];
+  const preserveRecipe = opts?.preserveRecipeIds === true;
 
   for (const key of ASSISTANT_DRAFT_ID_KEYS) {
     if (!(key in next)) continue;
+    if (preserveRecipe && RECIPE_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     const v = next[key];
     if (typeof v === 'string') {
       const id = v.trim();
@@ -538,6 +554,7 @@ function stripUnknownDraftIds(
 
   for (const key of ['quick_add_keys', 'recipe_ids', 'itemIds', 'item_ids', 'tag_ids', 'focus_task_ids']) {
     if (!(key in next) || !Array.isArray(next[key])) continue;
+    if (preserveRecipe && RECIPE_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     const kept: string[] = [];
     for (const item of next[key] as unknown[]) {
       if (typeof item !== 'string') continue;
@@ -606,7 +623,9 @@ export function sanitizeActionCardAgainstWhitelist(
     next.route_params = Object.keys(rp).length ? rp : undefined;
   }
 
-  const stripped = stripUnknownDraftIds(next.draft, allowed);
+  const stripped = stripUnknownDraftIds(next.draft, allowed, {
+    preserveRecipeIds: shouldPreserveRecipeDraftIds(next),
+  });
   next.draft = stripped.draft;
   dropped_ids.push(...stripped.dropped);
 
