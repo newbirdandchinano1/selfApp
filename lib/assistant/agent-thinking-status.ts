@@ -30,6 +30,10 @@ const TOOL_STATUS_LABELS: Record<string, string> = {
   'food.draft_intake': '正在准备饮食记录…',
   'memo.draft_memo': '正在准备备忘草稿…',
   'recipe.suggest_pantry': '正在根据食材推荐菜谱…',
+  'wardrobe.list_items': '正在查询衣橱单品…',
+  'wardrobe.get_item': '正在查询单品详情…',
+  'wardrobe.list_outfits': '正在查询搭配…',
+  'wardrobe.get_stats': '正在查询衣橱统计…',
   'app.open_module': '正在准备打开对应功能…',
 };
 
@@ -41,6 +45,7 @@ const PREFIX_LABELS: { prefix: string; label: string }[] = [
   { prefix: 'food.', label: '正在查询饮食数据…' },
   { prefix: 'memo.', label: '正在处理备忘…' },
   { prefix: 'recipe.', label: '正在查询菜谱数据…' },
+  { prefix: 'wardrobe.', label: '正在查询衣橱数据…' },
   { prefix: 'app.', label: '正在调用 APP 能力…' },
 ];
 

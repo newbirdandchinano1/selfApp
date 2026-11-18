@@ -110,92 +110,102 @@ export async function commitWardrobeItem(
   return ok(created.id, `已保存单品「${name.slice(0, 40)}」`);
 }
 
-export async function commitWardrobeOutfit(
-  draft: Record<string, unknown>,
-): Promise<ChatCommitHandlerResult> {
-  const existingId =
-    draftString(draft, 'outfit_id') || draftString(draft, 'id') || draftString(draft, 'outfitId');
-  const name = draftString(draft, 'name') || draftString(draft, 'title');
-  const itemIds = Array.isArray(draft.item_ids)
-    ? draft.item_ids.filter((x): x is string => typeof x === 'string' && !!x.trim()).map(s => s.trim())
-    : [];
-
-  if (!existingId) {
-    if (!name) return fail('incomplete_draft', '缺少搭配名称');
-    if (!itemIds.length) return fail('incomplete_draft', '请至少提供一件搭配单品');
+async function resolveMetaIdByName(
+  kind: string,
+  nameHint: string,
+): Promise<string | null> {
+  const needle = nameHint.trim().toLowerCase();
+  if (!needle) return null;
+  const writes = await import('@/lib/repositories/wardrobe/wardrobe-writes');
+  if (kind === 'occasion') {
+    const rows = await writes.listLocalOccasionMeta();
+    const hit =
+      rows.find(r => r.name.trim().toLowerCase() === needle) ||
+      rows.find(r => r.name.trim().toLowerCase().includes(needle));
+    return hit?.id || null;
   }
-
-  const { createWardrobeOutfit, updateWardrobeOutfit } = await import(
-    '@/lib/repositories/wardrobe/wardrobe-writes'
+  const { WARDROBE_DEFAULT_CLOSET_ID } = await import(
+    '@/lib/repositories/wardrobe/wardrobe'
   );
-
-  if (existingId) {
-    const updated = await updateWardrobeOutfit(existingId, {
-      ...(name ? { name: name.slice(0, 80) } : {}),
-      ...(itemIds.length ? { item_ids: itemIds } : {}),
-      note: draftString(draft, 'note') || undefined,
-      occasion_id: draftString(draft, 'occasion_id') || undefined,
-    });
-    if (!updated.ok) return fail('wardrobe_write_failed', updated.error || '更新搭配失败');
-    return ok(updated.id || existingId, `已更新搭配「${(name || existingId).slice(0, 40)}」`);
-  }
-
-  const created = await createWardrobeOutfit({
-    name: name.slice(0, 80),
-    item_ids: itemIds,
-    note: draftString(draft, 'note') || undefined,
-    occasion_id: draftString(draft, 'occasion_id') || undefined,
-  });
-  if (!created.ok || !created.id) {
-    return fail('wardrobe_write_failed', created.error || '创建搭配失败');
-  }
-  return ok(created.id, `已保存搭配「${name.slice(0, 40)}」`);
+  const meta = await writes.listLocalCategoryMeta(WARDROBE_DEFAULT_CLOSET_ID);
+  const hit =
+    meta.find(c => c.name.trim().toLowerCase() === needle) ||
+    meta.find(c => c.name.trim().toLowerCase().includes(needle));
+  return hit?.id || null;
 }
 
-export async function commitWardrobeWear(
+export async function commitWardrobeMeta(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const kind = (
-    draftString(draft, 'subject_kind') ||
-    draftString(draft, 'kind') ||
-    (draftString(draft, 'outfit_id') || draftString(draft, 'outfit_name') ? 'outfit' : 'item')
+  const action = (
+    draftString(draft, 'action') ||
+    draftString(draft, 'meta_action') ||
+    'create'
   ).toLowerCase();
-  const note = draftString(draft, 'note') || undefined;
+  const kind = (draftString(draft, 'kind') || draftString(draft, 'meta_kind') || 'category').toLowerCase();
+  const metaId = draftString(draft, 'meta_id') || draftString(draft, 'id');
+  const name = draftString(draft, 'name');
+  const newName = draftString(draft, 'new_name');
 
-  if (kind === 'outfit') {
-    let outfitId =
-      draftString(draft, 'outfit_id') || draftString(draft, 'id') || draftString(draft, 'outfitId');
-    const outfitName = draftString(draft, 'outfit_name') || draftString(draft, 'name');
-    if (!outfitId && !outfitName) {
-      return fail('incomplete_draft', '请指定搭配 id 或名称');
-    }
-    const { recordWardrobeOutfitWear, loadWardrobeScreenData } = await import(
-      '@/lib/repositories/wardrobe/wardrobe'
-    );
-    if (!outfitId && outfitName) {
-      const data = await loadWardrobeScreenData();
-      const needle = outfitName.toLowerCase();
-      const hit =
-        data.outfits.find(o => o.name.trim().toLowerCase() === needle) ||
-        data.outfits.find(o => o.name.trim().toLowerCase().includes(needle));
-      outfitId = hit?.id || '';
-    }
-    if (!outfitId) return fail('incomplete_draft', '请指定搭配 id 或名称');
-    const result = await recordWardrobeOutfitWear(outfitId, { note });
-    if (!result.ok) return fail('wardrobe_write_failed', result.error || '记录搭配穿着失败');
-    return ok(outfitId, '已记录搭配穿着');
+  if (kind === 'closet' || action === 'set_default') {
+    return fail('unsupported_action', '助手不支持新建/切换/删除衣橱，请在衣橱页操作');
   }
 
+  const writes = await import('@/lib/repositories/wardrobe/wardrobe-writes');
+
+  if (action === 'rename') {
+    if (!newName) return fail('incomplete_draft', '缺少新名称');
+    if (!metaId && !name) return fail('incomplete_draft', '缺少要重命名的目标');
+    let id = metaId;
+    if (!id && name) {
+      id = (await resolveMetaIdByName(kind, name)) || '';
+    }
+    if (!id) return fail('incomplete_draft', '缺少目标 id');
+    if (kind === 'occasion') {
+      const r = await writes.renameWardrobeOccasion(id, newName.slice(0, 40));
+      if (!r.ok) return fail('wardrobe_write_failed', r.error || '重命名场合失败');
+      return ok(id, `已将场合重命名为「${newName.slice(0, 40)}」`);
+    }
+    const r = await writes.renameWardrobeCategory(id, newName.slice(0, 40));
+    if (!r.ok) return fail('wardrobe_write_failed', r.error || '重命名分类失败');
+    return ok(id, `已将分类重命名为「${newName.slice(0, 40)}」`);
+  }
+
+  if (action === 'delete') {
+    let id = metaId;
+    if (!id && name) {
+      id = (await resolveMetaIdByName(kind, name)) || '';
+    }
+    if (!id) return fail('incomplete_draft', '缺少要删除的目标 id');
+    if (kind === 'occasion') {
+      const r = await writes.deleteWardrobeOccasion(id);
+      if (!r.ok) return fail('wardrobe_write_failed', r.error || '删除场合失败');
+      return ok(id, `已删除场合「${(name || id).slice(0, 40)}」`);
+    }
+    const r = await writes.deleteWardrobeCategory(id);
+    if (!r.ok) return fail('wardrobe_write_failed', r.error || '删除分类失败');
+    return ok(id, `已删除分类「${(name || id).slice(0, 40)}」`);
+  }
+
+  if (!name) return fail('incomplete_draft', '缺少名称');
+  if (kind === 'occasion') {
+    const r = await writes.createWardrobeOccasion(name.slice(0, 40));
+    if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建场合失败');
+    return ok(r.id, `已创建场合「${name.slice(0, 40)}」`);
+  }
+  const r = await writes.createWardrobeCategory({ name: name.slice(0, 40) });
+  if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建分类失败');
+  return ok(r.id, `已创建衣橱分类「${name.slice(0, 40)}」`);
+}
+
+export async function commitWardrobeItemDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
   let itemId =
     draftString(draft, 'item_id') || draftString(draft, 'id') || draftString(draft, 'itemId');
   const itemName = draftString(draft, 'item_name') || draftString(draft, 'name');
-  if (!itemId && !itemName) {
-    return fail('incomplete_draft', '请指定单品 id 或名称');
-  }
-  const { recordWardrobeItemWear, loadWardrobeScreenData } = await import(
-    '@/lib/repositories/wardrobe/wardrobe'
-  );
   if (!itemId && itemName) {
+    const { loadWardrobeScreenData } = await import('@/lib/repositories/wardrobe/wardrobe');
     const data = await loadWardrobeScreenData();
     const needle = itemName.toLowerCase();
     const hit =
@@ -203,37 +213,55 @@ export async function commitWardrobeWear(
       data.items.find(i => i.name.trim().toLowerCase().includes(needle));
     itemId = hit?.id || '';
   }
-  if (!itemId) return fail('incomplete_draft', '请指定单品 id 或名称');
-  const result = await recordWardrobeItemWear(itemId, { note });
-  if (!result.ok) return fail('wardrobe_write_failed', result.error || '记录单品穿着失败');
-  return ok(itemId, `已记录「${(result.item?.name || itemName || itemId).slice(0, 40)}」穿着`);
+  if (!itemId) return fail('incomplete_draft', '请指定要删除的单品');
+  const { deleteWardrobeItem } = await import('@/lib/repositories/wardrobe/wardrobe-writes');
+  const r = await deleteWardrobeItem(itemId);
+  if (!r.ok) return fail('wardrobe_write_failed', r.error || '删除单品失败');
+  return ok(itemId, `已删除单品「${(itemName || itemId).slice(0, 40)}」`);
 }
 
-export async function commitWardrobeMeta(
+export async function commitWardrobeOption(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const name = draftString(draft, 'name');
-  if (!name) return fail('incomplete_draft', '缺少名称');
-  const kind = (draftString(draft, 'kind') || draftString(draft, 'meta_kind') || 'category').toLowerCase();
+  const action = (draftString(draft, 'action') || 'create').toLowerCase();
   const {
-    createWardrobeCategory,
-    createWardrobeOccasion,
-    createWardrobeCloset,
+    createWardrobeOption,
+    deleteWardrobeOption,
   } = await import('@/lib/repositories/wardrobe/wardrobe-writes');
 
-  if (kind === 'occasion') {
-    const r = await createWardrobeOccasion(name.slice(0, 40));
-    if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建场合失败');
-    return ok(r.id, `已创建场合「${name.slice(0, 40)}」`);
+  if (action === 'delete') {
+    let optionId = draftString(draft, 'option_id') || draftString(draft, 'id');
+    const kind = draftString(draft, 'kind');
+    const value = draftString(draft, 'value');
+    if (!optionId && (kind || value)) {
+      const rows = await (await import('@/lib/repositories/wardrobe/wardrobe-writes')).listLocalOptions(
+        kind || undefined,
+      );
+      const hit = rows.find(o => {
+        if (kind && o.kind !== kind) return false;
+        if (value && o.value.trim().toLowerCase() !== value.toLowerCase()) return false;
+        return Boolean(kind || value);
+      });
+      optionId = hit?.id || '';
+    }
+    if (!optionId) return fail('incomplete_draft', '请指定选项 id 或 kind+value');
+    const r = await deleteWardrobeOption(optionId);
+    if (!r.ok) return fail('wardrobe_write_failed', r.error || '删除选项失败');
+    return ok(optionId, `已删除选项「${(value || optionId).slice(0, 40)}」`);
   }
-  if (kind === 'closet') {
-    const r = await createWardrobeCloset(name.slice(0, 40));
-    if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建衣柜失败');
-    return ok(r.id, `已创建衣柜「${name.slice(0, 40)}」`);
+
+  const kind = (draftString(draft, 'kind') || 'color').toLowerCase();
+  const value = draftString(draft, 'value') || draftString(draft, 'name');
+  if (!value) return fail('incomplete_draft', '缺少词条');
+  if (!['color', 'brand', 'season', 'fit'].includes(kind)) {
+    return fail('incomplete_draft', 'kind 须为 color/brand/season/fit');
   }
-  const r = await createWardrobeCategory({ name: name.slice(0, 40) });
-  if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建分类失败');
-  return ok(r.id, `已创建衣橱分类「${name.slice(0, 40)}」`);
+  const r = await createWardrobeOption({
+    kind: kind as 'color' | 'brand' | 'season' | 'fit',
+    value: value.slice(0, 40),
+  });
+  if (!r.ok || !r.id) return fail('wardrobe_write_failed', r.error || '创建选项失败');
+  return ok(r.id, `已添加${kind}词条「${value.slice(0, 40)}」`);
 }
 
 export async function commitWardrobeBody(
@@ -281,8 +309,8 @@ export async function commitWardrobeBody(
 
 export const wardrobeCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_wardrobe_item: async input => commitWardrobeItem(input.draft),
-  commit_wardrobe_outfit: async input => commitWardrobeOutfit(input.draft),
-  commit_wardrobe_wear: async input => commitWardrobeWear(input.draft),
   commit_wardrobe_meta: async input => commitWardrobeMeta(input.draft),
   commit_wardrobe_body: async input => commitWardrobeBody(input.draft),
+  commit_wardrobe_item_delete: async input => commitWardrobeItemDelete(input.draft),
+  commit_wardrobe_option: async input => commitWardrobeOption(input.draft),
 };

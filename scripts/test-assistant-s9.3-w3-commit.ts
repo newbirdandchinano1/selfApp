@@ -33,8 +33,6 @@ import {
   commitProjectCategory,
   commitWardrobeBody,
   commitWardrobeMeta,
-  commitWardrobeOutfit,
-  commitWardrobeWear,
   commitWeight,
   ensureChatCommitHandlersRegistered,
   registerChatCommitHandlers,
@@ -95,7 +93,7 @@ check('测试 executor 不自动灌真实 handler（保护 mock）', () => {
   assert.ok(ex.has('commit_habit_checkin'));
   assert.ok(ex.has('commit_weight'));
   assert.ok(ex.has('commit_recipe_category'));
-  assert.ok(ex.has('commit_wardrobe_outfit'));
+  assert.ok(ex.has('commit_wardrobe_meta'));
   assert.ok(ex.has('commit_review_journal'));
   assert.ok(ex.has('commit_life_bet'));
   assert.ok(ex.has('commit_tag'));
@@ -171,18 +169,6 @@ async function main() {
 
   await checkAsync('缺分类时 commit_recipe_category_delete 失败', async () => {
     const r = await commitRecipeCategoryDelete({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('缺名称时 commit_wardrobe_outfit 失败', async () => {
-    const r = await commitWardrobeOutfit({});
-    assert.equal(r.ok, false);
-    assert.equal(r.error?.code, 'incomplete_draft');
-  });
-
-  await checkAsync('缺单品时 commit_wardrobe_wear 失败', async () => {
-    const r = await commitWardrobeWear({});
     assert.equal(r.ok, false);
     assert.equal(r.error?.code, 'incomplete_draft');
   });

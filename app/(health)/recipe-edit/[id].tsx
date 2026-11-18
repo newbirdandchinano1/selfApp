@@ -51,6 +51,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const AI_TEXT_MAX = 4000;
+/** 相册识图最多选几张（多页菜谱截图合并识别） */
+const AI_ALBUM_IMAGE_MAX = 6;
 /** RN Modal 卸掉后再开系统相机/相册需要短暂空窗，否则触摸层易卡死（iOS/Android 均有） */
 const MODAL_SETTLE_MS = 320;
 
@@ -252,21 +254,29 @@ export default function RecipeEditScreen() {
     }
   }, [aiText, applyRecipeDraft, categoryHints]);
 
-  const runAiParseFromImageAsset = useCallback(
-    async (asset: ImagePicker.ImagePickerAsset) => {
-      const b64 = asset.base64;
-      if (!b64) {
+  const runAiParseFromImageAssets = useCallback(
+    async (assets: ImagePicker.ImagePickerAsset[]) => {
+      const images: { imageBase64: string; imageMimeType?: string }[] = [];
+      let finishedUri: string | null = null;
+      for (const asset of assets) {
+        const b64 = asset.base64?.trim();
+        if (!b64 || !asset.uri) continue;
+        if (!finishedUri) finishedUri = asset.uri;
+        images.push({
+          imageBase64: b64,
+          imageMimeType: asset.mimeType?.trim() || 'image/jpeg',
+        });
+        if (images.length >= AI_ALBUM_IMAGE_MAX) break;
+      }
+      if (images.length === 0) {
         toast.error('无法读取图片数据');
         return;
       }
-      const mime = asset.mimeType?.trim() || 'image/jpeg';
-      const uri = asset.uri;
       const gen = ++aiParseGenRef.current;
       setAiParsing(true);
       try {
         const r = await parseRecipeFromImage({
-          imageBase64: b64,
-          imageMimeType: mime,
+          images,
           categoryHints,
         });
         if (gen !== aiParseGenRef.current) return;
@@ -274,8 +284,12 @@ export default function RecipeEditScreen() {
           toast.error(r.error || 'AI 识图失败');
           return;
         }
-        applyRecipeDraft(r.data, { finishedImageUri: uri });
-        toast.success('已识图填入，请确认后保存');
+        applyRecipeDraft(r.data, { finishedImageUri: finishedUri });
+        toast.success(
+          images.length > 1
+            ? `已合并识别 ${images.length} 张图并填入，请确认后保存`
+            : '已识图填入，请确认后保存',
+        );
       } catch (e) {
         if (gen !== aiParseGenRef.current) return;
         toast.error(toUserMessage(e, 'AI 识图失败，请稍后重试'));
@@ -308,7 +322,7 @@ export default function RecipeEditScreen() {
               });
               const asset = shot.assets?.[0];
               if (shot.canceled || !asset?.uri) return;
-              await runAiParseFromImageAsset(asset);
+              await runAiParseFromImageAssets([asset]);
               return;
             }
             const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -321,17 +335,18 @@ export default function RecipeEditScreen() {
               allowsEditing: false,
               quality: 0.7,
               base64: true,
+              allowsMultipleSelection: true,
+              selectionLimit: AI_ALBUM_IMAGE_MAX,
             });
-            const asset = picked.assets?.[0];
-            if (picked.canceled || !asset?.uri) return;
-            await runAiParseFromImageAsset(asset);
+            if (picked.canceled || !picked.assets?.length) return;
+            await runAiParseFromImageAssets(picked.assets);
           } catch (e) {
             toast.error(toUserMessage(e, '打开相机/相册失败'));
           }
         })();
       });
     },
-    [runAiParseFromImageAsset],
+    [runAiParseFromImageAssets],
   );
 
   const openAiEntry = useCallback(() => {
@@ -786,7 +801,8 @@ export default function RecipeEditScreen() {
               <>
                 <Text style={[styles.modalTitle, { color: p.text }]}>AI 填入</Text>
                 <Text style={[styles.aiModalHint, { color: p.outlineMuted }]}>
-                  解析后写入表单草稿，确认后再保存
+                  解析后写入表单草稿，确认后再保存；相册可多选（最多 {AI_ALBUM_IMAGE_MAX}{' '}
+                  张）合并识别
                 </Text>
                 <Pressable
                   onPress={() => setAiSheetMode('text')}
@@ -828,7 +844,7 @@ export default function RecipeEditScreen() {
                   ]}
                 >
                   <MaterialIcons name="photo-library" size={18} color={p.primary} />
-                  <Text style={[styles.aiMenuBtnText, { color: p.text }]}>相册识图</Text>
+                  <Text style={[styles.aiMenuBtnText, { color: p.text }]}>相册识图（可多选）</Text>
                 </Pressable>
                 <Pressable
                   onPress={closeAiModal}
