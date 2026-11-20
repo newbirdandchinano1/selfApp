@@ -113,16 +113,23 @@ export function deriveDraftFields(
       : options;
 
   if (preferred?.length) {
-    return preferred.map(f => ({
-      key: f.key,
-      label:
-        f.label && f.label !== f.key
-          ? f.label
-          : COMMON_FIELD_LABELS[f.key] || f.label || f.key,
-      value: String(f.value ?? ''),
-      editable: f.editable === true,
-      input: f.input === 'select' ? 'select' : undefined,
-    }));
+    const seen = new Map<string, number>();
+    return preferred.map(f => {
+      const base = f.key || 'field';
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      const key = n === 0 ? base : `${base}__${n}`;
+      return {
+        key,
+        label:
+          f.label && f.label !== f.key
+            ? f.label
+            : COMMON_FIELD_LABELS[f.key] || f.label || f.key,
+        value: String(f.value ?? ''),
+        editable: f.editable === true,
+        input: f.input === 'select' ? 'select' : undefined,
+      };
+    });
   }
   if (!draft) return [];
 

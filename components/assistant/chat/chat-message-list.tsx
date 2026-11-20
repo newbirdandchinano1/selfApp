@@ -2,6 +2,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import React from 'react';
 import {
   FlatList,
+  Keyboard,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -10,7 +12,6 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-
 import { ChatBubble } from '@/components/assistant/chat/chat-bubble';
 import { Spacing, Typography } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -60,8 +61,12 @@ export function ChatMessageList({
 }: Props) {
   const { colors } = useAppTheme();
   const nearBottomRef = React.useRef(true);
+  const fieldFocusRef = React.useRef(false);
   const [showJump, setShowJump] = React.useState(false);
+  /** 编辑确认卡字段时垫高列表，scrollToEnd 后输入框能停在键盘上方 */
+  const [focusPad, setFocusPad] = React.useState(0);
   const scrollRafRef = React.useRef<number | null>(null);
+  const scrollTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scrollToEnd = React.useCallback((animated: boolean) => {
     if (scrollRafRef.current != null) {
@@ -73,9 +78,28 @@ export function ChatMessageList({
     });
   }, [listRef]);
 
+  const scrollToEndSoon = React.useCallback(
+    (delayMs: number) => {
+      if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+      scrollTimerRef.current = setTimeout(() => {
+        scrollTimerRef.current = null;
+        nearBottomRef.current = true;
+        setShowJump(false);
+        scrollToEnd(true);
+        // 键盘动画后再贴一次底，避免首帧高度未结算
+        scrollTimerRef.current = setTimeout(() => {
+          scrollTimerRef.current = null;
+          scrollToEnd(true);
+        }, 80);
+      }, delayMs);
+    },
+    [scrollToEnd],
+  );
+
   React.useEffect(() => {
     return () => {
       if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+      if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     };
   }, []);
 
@@ -87,6 +111,34 @@ export function ChatMessageList({
     scrollToEnd(true);
   }, [scrollToEnd, stickToBottomToken]);
 
+  React.useEffect(() => {
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const onShow = () => {
+      if (nearBottomRef.current || fieldFocusRef.current) {
+        scrollToEndSoon(Platform.OS === 'ios' ? 16 : 48);
+      }
+    };
+    const onHide = () => {
+      fieldFocusRef.current = false;
+      setFocusPad(0);
+    };
+    const showSub = Keyboard.addListener(showEvt, onShow);
+    const hideSub = Keyboard.addListener(hideEvt, onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [scrollToEndSoon]);
+
+  const onDraftFieldFocus = React.useCallback(() => {
+    fieldFocusRef.current = true;
+    nearBottomRef.current = true;
+    setShowJump(false);
+    setFocusPad(140);
+    scrollToEndSoon(Platform.OS === 'ios' ? 60 : 100);
+  }, [scrollToEndSoon]);
+
   const onScroll = React.useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const dist = contentSize.height - layoutMeasurement.height - contentOffset.y;
@@ -96,7 +148,7 @@ export function ChatMessageList({
   }, []);
 
   const onContentSizeChange = React.useCallback(() => {
-    if (!nearBottomRef.current) return;
+    if (!nearBottomRef.current && !fieldFocusRef.current) return;
     scrollToEnd(false);
   }, [scrollToEnd]);
 
@@ -110,6 +162,7 @@ export function ChatMessageList({
           onCancelCard={onCancelCard}
           onDraftFieldChange={onDraftFieldChange}
           onClarifyChoice={onClarifyChoice}
+          onDraftFieldFocus={onDraftFieldFocus}
           thinking={item.id === streamingMessageId ? thinking : null}
         />
       );
@@ -120,6 +173,7 @@ export function ChatMessageList({
       onCancelCard,
       onDraftFieldChange,
       onClarifyChoice,
+      onDraftFieldFocus,
       streamingMessageId,
       thinking,
     ],
@@ -132,9 +186,12 @@ export function ChatMessageList({
         data={messages}
         keyExtractor={item => item.id}
         renderItem={renderItem}
+        // parts（含确认卡）变更时强制刷新气泡，避免只更文字不挂卡
+        extraData={`${messages.length}:${streamingMessageId ?? ''}:${confirmingCardId ?? ''}:${thinking?.phase ?? ''}:${messages.map(m => m.parts.length).join(',')}`}
         style={[styles.list, { backgroundColor: colors.background }]}
         contentContainerStyle={[
           styles.content,
+          focusPad > 0 ? { paddingBottom: Spacing['6xl'] + focusPad } : null,
           messages.length === 0 ? styles.contentEmpty : null,
         ]}
         ListEmptyComponent={<EmptyState />}

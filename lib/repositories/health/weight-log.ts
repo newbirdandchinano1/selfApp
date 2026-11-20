@@ -1,3 +1,4 @@
+import { markCloudSqliteTableDirty } from '@/lib/cloud-sql-dirty-track';
 import { getDatabase } from '@/lib/database';
 
 export type WeightLogRow = {
@@ -6,6 +7,7 @@ export type WeightLogRow = {
   weight_kg: number;
   created_at: string;
   updated_at: string;
+  sync_status?: string;
 };
 
 function pad2(n: number) {
@@ -25,7 +27,7 @@ function clampWeightKg(raw: number): number {
   return Math.round(raw * 10) / 10;
 }
 
-/** 本地表，不同步云端 */
+/** 本地表；参与云同步（sync_status） */
 export async function ensureWeightLogsTable(): Promise<void> {
   const db = await getDatabase();
   if (!db) return;
@@ -35,10 +37,31 @@ export async function ensureWeightLogsTable(): Promise<void> {
       recorded_ymd TEXT NOT NULL UNIQUE,
       weight_kg REAL NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_weight_logs_ymd ON weight_logs(recorded_ymd);
   `);
+  // 旧本地表补列
+  const cols = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(weight_logs)`);
+  const names = new Set((cols ?? []).map((c) => c.name));
+  if (!names.has('sync_status')) {
+    await db.runAsync(
+      `ALTER TABLE weight_logs ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'`,
+    );
+  }
+  if (!names.has('server_rev')) {
+    await db.runAsync(`ALTER TABLE weight_logs ADD COLUMN server_rev INTEGER NOT NULL DEFAULT 1`);
+  }
+  if (!names.has('mutation_id')) {
+    await db.runAsync(`ALTER TABLE weight_logs ADD COLUMN mutation_id TEXT`);
+  }
+  if (!names.has('last_pushed_mutation_id')) {
+    await db.runAsync(`ALTER TABLE weight_logs ADD COLUMN last_pushed_mutation_id TEXT`);
+  }
 }
 
 export async function upsertWeightLog(recordedYmd: string, weightKg: number): Promise<void> {
@@ -51,22 +74,31 @@ export async function upsertWeightLog(recordedYmd: string, weightKg: number): Pr
   const db = await getDatabase();
   if (!db) return;
   const id = weightLogId(ymd);
-  const existing = await db.getFirstAsync<{ id: string }>(
-    `SELECT id FROM weight_logs WHERE recorded_ymd = ? LIMIT 1`,
+  const existing = await db.getFirstAsync<{ id: string; sync_status: string }>(
+    `SELECT id, sync_status FROM weight_logs WHERE recorded_ymd = ? LIMIT 1`,
     [ymd],
   );
   if (existing) {
     await db.runAsync(
-      `UPDATE weight_logs SET weight_kg = ?, updated_at = datetime('now') WHERE recorded_ymd = ?`,
+      `UPDATE weight_logs
+       SET weight_kg = ?,
+           updated_at = datetime('now'),
+           sync_status = CASE
+             WHEN sync_status = 'pending_create' THEN 'pending_create'
+             WHEN sync_status = 'synced' THEN 'pending_update'
+             ELSE sync_status
+           END
+       WHERE recorded_ymd = ?`,
       [kg, ymd],
     );
-    return;
+  } else {
+    await db.runAsync(
+      `INSERT INTO weight_logs (id, recorded_ymd, weight_kg, created_at, updated_at, sync_status)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'), 'pending_create')`,
+      [id, ymd, kg],
+    );
   }
-  await db.runAsync(
-    `INSERT INTO weight_logs (id, recorded_ymd, weight_kg, created_at, updated_at)
-     VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
-    [id, ymd, kg],
-  );
+  markCloudSqliteTableDirty('weight_logs');
 }
 
 export async function listWeightLogsBetween(
@@ -77,9 +109,10 @@ export async function listWeightLogsBetween(
   const db = await getDatabase();
   if (!db) return [];
   const rows = await db.getAllAsync<WeightLogRow>(
-    `SELECT id, recorded_ymd, weight_kg, created_at, updated_at
+    `SELECT id, recorded_ymd, weight_kg, created_at, updated_at, sync_status
      FROM weight_logs
      WHERE recorded_ymd >= ? AND recorded_ymd <= ?
+       AND IFNULL(sync_status, '') != 'pending_delete'
      ORDER BY recorded_ymd ASC`,
     [startYmd, endYmd],
   );
@@ -104,8 +137,9 @@ export async function getLatestWeightLog(): Promise<WeightLogRow | null> {
   const db = await getDatabase();
   if (!db) return null;
   return db.getFirstAsync<WeightLogRow>(
-    `SELECT id, recorded_ymd, weight_kg, created_at, updated_at
+    `SELECT id, recorded_ymd, weight_kg, created_at, updated_at, sync_status
      FROM weight_logs
+     WHERE IFNULL(sync_status, '') != 'pending_delete'
      ORDER BY recorded_ymd DESC
      LIMIT 1`,
   );

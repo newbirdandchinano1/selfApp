@@ -25,6 +25,7 @@ import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
 import {
   createStandaloneTodoFromMemo,
   createStandaloneTodosFromMemo,
+  seedConvertDraftFromMemo,
 } from '@/lib/memo-to-task';
 import {
   getMemo,
@@ -241,7 +242,8 @@ export default function MemoViewScreen() {
         setConvertError(r.error);
         return;
       }
-      setConvertDraft(r.data);
+      // 标题←备忘标题，备注←备忘正文（不沿用 AI 把正文塞进标题）
+      setConvertDraft(seedConvertDraftFromMemo(item, r.data));
     } finally {
       setConvertLoading(false);
     }

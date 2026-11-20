@@ -20,6 +20,8 @@ import {
   commitHabitContext,
   commitIntakeTargets,
   commitLifeBet,
+  commitMemoDelete,
+  commitWishDelete,
   commitRecipeCategory,
   commitRecipeCategoryDelete,
   commitRecipeDelete,
@@ -97,6 +99,7 @@ check('测试 executor 不自动灌真实 handler（保护 mock）', () => {
   assert.ok(ex.has('commit_review_journal'));
   assert.ok(ex.has('commit_life_bet'));
   assert.ok(ex.has('commit_tag'));
+  assert.ok(ex.has('commit_tag_delete'));
   assert.ok(ex.has('commit_schedule_placement'));
 });
 
@@ -161,6 +164,18 @@ async function main() {
     assert.equal(r.error?.code, 'incomplete_draft');
   });
 
+  await checkAsync('缺备忘时 commit_memo_delete 失败', async () => {
+    const r = await commitMemoDelete({});
+    assert.equal(r.ok, false);
+    assert.equal(r.error?.code, 'incomplete_draft');
+  });
+
+  await checkAsync('缺心愿时 commit_wish_delete 失败', async () => {
+    const r = await commitWishDelete({});
+    assert.equal(r.ok, false);
+    assert.equal(r.error?.code, 'incomplete_draft');
+  });
+
   await checkAsync('缺菜谱时 commit_recipe_delete 失败', async () => {
     const r = await commitRecipeDelete({});
     assert.equal(r.ok, false);
@@ -219,6 +234,15 @@ async function main() {
     const r = await commitTag({});
     assert.equal(r.ok, false);
     assert.equal(r.error?.code, 'incomplete_draft');
+  });
+
+  await checkAsync('缺定位时 commit_tag_delete 失败', async () => {
+    const { commitTagDelete } = await import(
+      '../lib/assistant/chat-commit-handlers/tag'
+    );
+    const r = await commitTagDelete({});
+    assert.equal(r.ok, false);
+    assert.equal(r.error?.code, 'tag_missing');
   });
 
   await checkAsync('缺主体时 commit_schedule_placement 失败', async () => {

@@ -13,6 +13,9 @@ export type ChatToolTrace = {
   ok: boolean;
   summary: string;
   arguments?: Record<string, unknown>;
+  /** 服务端瘦卡兜底：done.cards 丢失时仍可从 trace 恢复确认卡 */
+  card?: ActionCard;
+  cards?: ActionCard[];
 };
 
 export type ChatSourceLabel = {

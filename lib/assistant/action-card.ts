@@ -19,6 +19,7 @@ export type AssistantDomain =
   | 'task'
   | 'habit'
   | 'memo'
+  | 'tag'
   | 'wardrobe'
   | 'recipe'
   | 'wish'
@@ -67,6 +68,7 @@ export type AssistantCommitConfirmAction =
   | 'commit_finance_scheduled'
   | 'commit_finance_cash_flow'
   | 'commit_finance_budget'
+  | 'commit_finance_savings_goal'
   | 'commit_finance_account'
   | 'commit_finance_flow_category'
   | 'commit_finance_account_type'
@@ -81,6 +83,7 @@ export type AssistantCommitConfirmAction =
   | 'commit_weight'
   | 'commit_intake_targets'
   | 'commit_memo'
+  | 'commit_memo_delete'
   | 'commit_recipe'
   | 'commit_recipe_category'
   | 'commit_recipe_delete'
@@ -91,6 +94,8 @@ export type AssistantCommitConfirmAction =
   | 'commit_wardrobe_meta'
   | 'commit_wardrobe_body'
   | 'commit_wish'
+  | 'commit_wish_delete'
+  | 'commit_points_ledger_delete'
   | 'commit_review_journal'
   | 'commit_review_dimension'
   | 'commit_review_column'
@@ -99,9 +104,12 @@ export type AssistantCommitConfirmAction =
   | 'commit_life_direction'
   | 'commit_life_bet'
   | 'commit_tag'
+  | 'commit_tag_delete'
   | 'commit_task_category'
   | 'commit_project_category'
   | 'commit_schedule_placement'
+  | 'commit_promote_todo_to_project'
+  | 'commit_day_boundary'
   | 'commit_catalog_write'
   | (string & { readonly __commitBrand?: unique symbol });
 
@@ -189,6 +197,7 @@ const DOMAINS = new Set<string>([
   'task',
   'habit',
   'memo',
+  'tag',
   'wardrobe',
   'recipe',
   'wish',
@@ -257,6 +266,8 @@ export const ASSISTANT_DRAFT_ID_KEYS = [
   'recipeId',
   'wish_id',
   'wishId',
+  'ledger_id',
+  'footprint_id',
   'project_id',
   'projectId',
   'account_id',
@@ -335,7 +346,11 @@ function parseDraftFields(raw: unknown): DraftField[] | undefined {
         : o.value == null
           ? ''
           : String(o.value);
-    out.push({ key, label, value, editable: o.editable === true });
+    const field: DraftField = { key, label, value, editable: o.editable === true };
+    if (asTrimmedString(o.input) === 'select') {
+      field.input = 'select';
+    }
+    out.push(field);
     if (out.length >= 24) break;
   }
   return out.length ? out : undefined;
@@ -508,6 +523,22 @@ const RECIPE_DRAFT_ID_KEYS_PRESERVE = new Set([
   'recipe_ids',
 ]);
 
+/** brief 可能不含备忘 id；更新/删除确认卡必须保留 memo_id，否则会落到新建或找不到本地行 */
+const MEMO_DRAFT_ID_KEYS_PRESERVE = new Set(['memo_id', 'memoId', 'id']);
+
+/** brief 通常不含标签库 id；改名/删除确认卡必须保留 tag_id，否则会落到新建或找不到标签 */
+const TAG_DRAFT_ID_KEYS_PRESERVE = new Set(['tag_id', 'tagId', 'id']);
+
+/** brief 不含心愿 / 足迹 id；更新/删除确认卡必须保留，否则 commit 只能靠标题回退 */
+const WISH_DRAFT_ID_KEYS_PRESERVE = new Set([
+  'wish_id',
+  'wishId',
+  'id',
+  'item_id',
+  'ledger_id',
+  'footprint_id',
+]);
+
 function shouldPreserveRecipeDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
   if (card.domain === 'recipe') return true;
   const action = card.confirm_action || '';
@@ -518,19 +549,57 @@ function shouldPreserveRecipeDraftIds(card: Pick<ActionCard, 'domain' | 'confirm
   );
 }
 
+function shouldPreserveMemoDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'memo') return true;
+  const action = card.confirm_action || '';
+  return (
+    action === 'commit_memo' ||
+    action === 'commit_memo_delete' ||
+    action === 'preview_memo'
+  );
+}
+
+function shouldPreserveTagDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'tag') return true;
+  const action = card.confirm_action || '';
+  return action === 'commit_tag' || action === 'commit_tag_delete';
+}
+
+function shouldPreserveWishDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'wish') return true;
+  const action = card.confirm_action || '';
+  return (
+    action === 'commit_wish' ||
+    action === 'commit_wish_delete' ||
+    action === 'commit_points_ledger_delete' ||
+    action === 'preview_wish'
+  );
+}
+
 function stripUnknownDraftIds(
   draft: Record<string, unknown> | undefined,
   allowed: Set<string>,
-  opts?: { preserveRecipeIds?: boolean },
+  opts?: {
+    preserveRecipeIds?: boolean;
+    preserveMemoIds?: boolean;
+    preserveTagIds?: boolean;
+    preserveWishIds?: boolean;
+  },
 ): { draft: Record<string, unknown> | undefined; dropped: string[] } {
   if (!draft) return { draft: undefined, dropped: [] };
   const next: Record<string, unknown> = { ...draft };
   const dropped: string[] = [];
   const preserveRecipe = opts?.preserveRecipeIds === true;
+  const preserveMemo = opts?.preserveMemoIds === true;
+  const preserveTag = opts?.preserveTagIds === true;
+  const preserveWish = opts?.preserveWishIds === true;
 
   for (const key of ASSISTANT_DRAFT_ID_KEYS) {
     if (!(key in next)) continue;
     if (preserveRecipe && RECIPE_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
+    if (preserveMemo && MEMO_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
+    if (preserveTag && TAG_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
+    if (preserveWish && WISH_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     const v = next[key];
     if (typeof v === 'string') {
       const id = v.trim();
@@ -625,6 +694,11 @@ export function sanitizeActionCardAgainstWhitelist(
 
   const stripped = stripUnknownDraftIds(next.draft, allowed, {
     preserveRecipeIds: shouldPreserveRecipeDraftIds(next),
+    // 备忘标签改名卡 domain 可能是 memo（服务端）或 tag；仅按 confirm_action 保留 tag_id
+    preserveMemoIds:
+      shouldPreserveMemoDraftIds(next) && !shouldPreserveTagDraftIds(next),
+    preserveTagIds: shouldPreserveTagDraftIds(next),
+    preserveWishIds: shouldPreserveWishDraftIds(next),
   });
   next.draft = stripped.draft;
   dropped_ids.push(...stripped.dropped);

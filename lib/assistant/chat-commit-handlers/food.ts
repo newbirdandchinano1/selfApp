@@ -72,12 +72,29 @@ export async function commitWeight(
 
   const { formatYmd } = await import('@/lib/date');
   const { upsertWeightLog } = await import('@/lib/repositories/health/weight-log');
+  const { getDefaultUser, updateDefaultUser } = await import('@/lib/repositories/users/user');
+  const { requestPushPending } = await import('./shared');
   const ymd =
     draftString(draft, 'ymd') ||
     draftString(draft, 'record_date') ||
     draftString(draft, 'recorded_ymd') ||
     formatYmd(new Date());
   await upsertWeightLog(ymd, kg);
+  const user = await getDefaultUser();
+  if (user) {
+    await updateDefaultUser({
+      name: user.name,
+      persona_portrait: user.persona_portrait,
+      gender: user.gender,
+      lifestyle: user.lifestyle,
+      goal: user.goal,
+      workout_days: user.workout_days ?? '[]',
+      birthday: user.birthday,
+      height: user.height,
+      weight: kg,
+    });
+  }
+  await requestPushPending();
   return ok(`${ymd}:${kg}`, `已记录体重 ${kg} kg（${ymd}）`);
 }
 
@@ -107,6 +124,7 @@ export async function commitIntakeTargets(
     setGlobalProteinTargetG,
     setGlobalCarbohydrateTargetG,
     setGlobalCaloriesTargetKcal,
+    getResolvedGlobalIntakeTargets,
   } = await import('@/lib/global-intake-targets');
 
   const parts: string[] = [];
@@ -125,6 +143,33 @@ export async function commitIntakeTargets(
   if (calories != null && calories >= 0) {
     setGlobalCaloriesTargetKcal(calories);
     parts.push(`热量 ${calories}kcal`);
+  }
+
+  // 同步云端：全局键 + 今日 health_daily_targets，供 Agent snapshot / metrics 对齐
+  try {
+    const { apiRequest } = await import('@/lib/api/http');
+    const { APP_API_PREFIX } = await import('@/lib/api-app-domain');
+    const { formatYmd } = await import('@/lib/date');
+    const resolved = getResolvedGlobalIntakeTargets();
+    const dayYmd =
+      draftString(draft, 'date') ||
+      draftString(draft, 'day_ymd') ||
+      draftString(draft, 'record_date') ||
+      formatYmd(new Date());
+    await apiRequest(`${APP_API_PREFIX}/health/targets`, {
+      method: 'PUT',
+      body: {
+        date: dayYmd,
+        hydration_ml: resolved.hydrationMl,
+        protein_g: resolved.proteinG,
+        carbohydrate_g: resolved.carbohydrateG,
+        calories_kcal: resolved.caloriesKcal,
+        source: 'manual',
+      },
+      skipGlobalLoading: true,
+    });
+  } catch {
+    // 离线时仅本地全局目标生效；联网后可由设置同步补齐
   }
 
   return ok('intake_targets', `已更新摄入目标：${parts.join(' · ')}`);

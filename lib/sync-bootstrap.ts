@@ -69,7 +69,7 @@ const SNAPSHOT_TABLES = [
   'wardrobe_closets', 'wardrobe_categories', 'wardrobe_occasions',
   'wardrobe_items', 'wardrobe_outfits', 'wardrobe_outfit_items',
   'wardrobe_wear_logs', 'wardrobe_option_values', 'wardrobe_body_profile',
-  'health_records', 'health_daily_targets',
+  'health_records', 'health_daily_targets', 'weight_logs',
   'daily_review_journal', 'weekly_review_journal', 'monthly_review_journal',
   'review_dimensions', 'review_columns',
 ];

@@ -23,6 +23,7 @@ export const API_ALLOWED_TABLES = new Set([
   'habit_contexts',
   'habits',
   'health_records',
+  'weight_logs',
   'memos',
   'project_categories',
   'projects',
@@ -81,6 +82,7 @@ export const API_GENERIC_WRITE_FORBIDDEN_TABLES = new Set([
   'wish_board_items',
   'memos',
   'health_records',
+  'weight_logs',
   'recipe_categories',
   'recipe_items',
   /** 课表：仅 frog-schedule 专用接口可写 */

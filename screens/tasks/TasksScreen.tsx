@@ -7199,6 +7199,8 @@ export default function TasksScreen() {
                           }}
                           overshootRight={false}
                           friction={2}
+                          /** 多钮操作条很宽；默认半宽阈值 + friction=2 几乎要滑半屏才吸开 */
+                          rightThreshold={40}
                           /** 与窗格同色实底盖住侧滑钮；elevation 0 避免行阴影 */
                           childrenContainerStyle={[
                             styles.standaloneTodoSwipeChild,
@@ -7998,6 +8000,7 @@ export default function TasksScreen() {
                         enabled={canSwipeWorkflowActions || canSwipeDeleteFromInbox}
                         overshootRight={false}
                         friction={2}
+                        rightThreshold={40}
                         childrenContainerStyle={{ backgroundColor: bg }}
                         renderRightActions={() => (
                           <View style={styles.projectSwipeActions}>

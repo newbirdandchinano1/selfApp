@@ -1,3 +1,4 @@
+import type { MemoConvertDraftJson } from '@/lib/ai-types';
 import { makeTimestampEntityId } from '@/lib/entity-id';
 import { plainTextFromBody } from '@/lib/memo-richdoc';
 import { deleteMemo, memoListPreviewTitle, type MemoItem } from '@/lib/memos';
@@ -5,6 +6,8 @@ import { createTask } from '@/lib/repositories/tasks/task';
 
 /** 与 `add-standalone-todo` 标题上限一致 */
 export const MEMO_TODO_TITLE_MAX = 50;
+/** 与 `add-project` / memo-to-project 名称上限一致 */
+const MEMO_PROJECT_NAME_MAX = 80;
 
 export type MemoToStandaloneTodoResult = {
   taskId: string;
@@ -46,6 +49,50 @@ export function buildTodoNoteFromMemo(row: MemoItem): string | null {
 
   const joined = chunks.join('\n\n').trim();
   return joined || null;
+}
+
+/**
+ * 智能转换草稿预填：备忘标题 → 待办标题/项目名，备忘正文 → 备注。
+ * 保留 AI 的 mode / rationale / due_hint；不覆盖 split 各条标题。
+ */
+export function seedConvertDraftFromMemo(
+  row: MemoItem,
+  draft: MemoConvertDraftJson,
+): MemoConvertDraftJson {
+  const mappedTitle = buildTodoTitleFromMemo(row);
+  const mappedNote = buildTodoNoteFromMemo(row) ?? '';
+  const nameRaw = memoListPreviewTitle(row).trim() || '来自备忘的项目';
+  const mappedName =
+    nameRaw.length <= MEMO_PROJECT_NAME_MAX
+      ? nameRaw
+      : `${nameRaw.slice(0, MEMO_PROJECT_NAME_MAX - 1)}…`;
+
+  const next: MemoConvertDraftJson = {
+    mode: draft.mode,
+    rationale: draft.rationale,
+  };
+
+  if (draft.mode === 'todo' || draft.todo) {
+    next.todo = {
+      title: mappedTitle,
+      note: mappedNote,
+      priority: draft.todo?.priority ?? 0,
+      ...(draft.todo?.due_hint ? { due_hint: draft.todo.due_hint } : {}),
+    };
+  }
+  if (draft.mode === 'project' || draft.project) {
+    next.project = {
+      name: mappedName,
+      note: mappedNote,
+    };
+  }
+  if (draft.mode === 'split_todos' && Array.isArray(draft.split_todos)) {
+    next.split_todos = draft.split_todos.map(t => ({
+      ...t,
+      note: t.note?.trim() ? t.note : mappedNote,
+    }));
+  }
+  return next;
 }
 
 export type MemoTodoDraftOverride = {

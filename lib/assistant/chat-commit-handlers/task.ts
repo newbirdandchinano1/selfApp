@@ -195,9 +195,73 @@ export async function commitProjectCategory(
   return ok(id, `已创建项目分类「${name.slice(0, 40)}」`);
 }
 
+/** 独立待办升为项目（结构变更，须确认卡） */
+export async function commitPromoteTodoToProject(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const taskId =
+    draftString(draft, 'task_id') ||
+    draftString(draft, 'id') ||
+    draftString(draft, 'taskId');
+  if (!taskId) {
+    const title = draftString(draft, 'task_title') || draftString(draft, 'title');
+    if (!title) return fail('incomplete_draft', '请指定要升级的待办 id 或标题');
+    const { getTasks } = await import('@/lib/repositories/tasks/task');
+    const tasks = await getTasks();
+    const needle = title.toLowerCase();
+    const hit =
+      tasks.find(t => !t.project_id && !t.parent_task_id && t.title.trim().toLowerCase() === needle) ||
+      tasks.find(
+        t => !t.project_id && !t.parent_task_id && t.title.trim().toLowerCase().includes(needle),
+      );
+    if (!hit) return fail('incomplete_draft', `找不到独立待办「${title}」`);
+    const { upgradeStandaloneTodoToProject } = await import('@/lib/standalone-todo-to-project');
+    const result = await upgradeStandaloneTodoToProject(hit.id);
+    if (!result.ok) return fail(result.code, result.message);
+    await requestPushPending();
+    return ok(result.projectId, `已将「${result.projectName}」升为项目`);
+  }
+
+  const { upgradeStandaloneTodoToProject } = await import('@/lib/standalone-todo-to-project');
+  const result = await upgradeStandaloneTodoToProject(taskId);
+  if (!result.ok) return fail(result.code, result.message);
+  await requestPushPending();
+  return ok(result.projectId, `已将「${result.projectName}」升为项目`);
+}
+
+/** 设置逻辑日界（影响全模块「今天」） */
+export async function commitDayBoundary(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const hourRaw = draft.hour ?? draft.day_boundary_hour;
+  const minuteRaw = draft.minute ?? draft.day_boundary_minute ?? 0;
+  const hour = typeof hourRaw === 'number' ? hourRaw : Number(hourRaw);
+  if (!Number.isFinite(hour)) {
+    return fail('incomplete_draft', '请提供日界小时（0–23）');
+  }
+  const minute = typeof minuteRaw === 'number' ? minuteRaw : Number(minuteRaw);
+  const { saveConfiguredDayBoundary, saveDayBoundaryPages, normalizeDayBoundaryPages } =
+    await import('@/lib/tasks-logical-day');
+  await saveConfiguredDayBoundary({
+    hour: Math.min(23, Math.max(0, Math.round(hour))),
+    minute: Math.min(59, Math.max(0, Math.round(Number.isFinite(minute) ? minute : 0))),
+  });
+  if (Array.isArray(draft.pages)) {
+    await saveDayBoundaryPages(normalizeDayBoundaryPages(draft.pages));
+  }
+  await requestPushPending();
+  const hh = String(Math.min(23, Math.max(0, Math.round(hour)))).padStart(2, '0');
+  const mm = String(
+    Math.min(59, Math.max(0, Math.round(Number.isFinite(minute) ? minute : 0))),
+  ).padStart(2, '0');
+  return ok('day_boundary', `日界已改为 ${hh}:${mm}`);
+}
+
 export const taskCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_task: async input => commitTask(input.draft),
   commit_project: async input => commitProject(input.draft),
   commit_task_category: async input => commitTaskCategory(input.draft),
   commit_project_category: async input => commitProjectCategory(input.draft),
+  commit_promote_todo_to_project: async input => commitPromoteTodoToProject(input.draft),
+  commit_day_boundary: async input => commitDayBoundary(input.draft),
 };

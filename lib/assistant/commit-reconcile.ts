@@ -22,6 +22,10 @@ const OPEN_STATUSES = new Set([
 export function looksLikeDraftAmendment(text: string): boolean {
   const t = (text || '').trim();
   if (!t) return false;
+  // 「把标签A改成B / 重命名…」是新的写意图，不是对未确认草稿的改稿
+  if (/(重命名|改名).{0,12}(标签|分类|场景)/.test(t) || /(标签|分类|场景).{0,12}(重命名|改名|改成|改为)/.test(t)) {
+    return false;
+  }
   return /(改成|改为|更新为|改一下|金额改成|改成\s*[¥￥]?\s*\d|(把|将).{0,12}(改成|改为))/.test(
     t,
   );
@@ -167,8 +171,14 @@ export function reconcileIncomingCommitCards(opts: {
         needs_confirm: true,
         result: undefined,
         error: undefined,
-        title: raw.title || matched.title,
-        summary: raw.summary || matched.summary,
+        title:
+          (typeof raw.title === 'string' && raw.title.trim()
+            ? raw.title.trim()
+            : matched.title) || '助手建议',
+        summary:
+          typeof raw.summary === 'string' && raw.summary.trim()
+            ? raw.summary.trim()
+            : matched.summary,
         confirm_action: raw.confirm_action || matched.confirm_action,
         commit_action: raw.commit_action || matched.commit_action,
       };

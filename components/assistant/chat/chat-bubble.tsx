@@ -43,6 +43,35 @@ const SOURCE_CHIP_LABEL: Record<string, string> = {
   system: '系统',
 };
 
+/** 确认卡渲染异常时不拖垮整条气泡（否则只剩正文/工具条，像「卡消失了」） */
+class ConfirmCardErrorBoundary extends React.Component<
+  { cardTitle?: string; children: React.ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.warn('[assistant] ActionConfirmCard render failed', error);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <View style={styles.cardErrorBox}>
+          <Text style={styles.cardErrorText}>
+            确认卡「{this.props.cardTitle || '操作'}」显示异常。请再发一次同样请求，或到对应页面手动操作。
+          </Text>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function MetaChip({
   label,
   danger,
@@ -152,6 +181,7 @@ function ChatBubbleImpl({
   onCancelCard,
   onDraftFieldChange,
   onClarifyChoice,
+  onDraftFieldFocus,
   thinking,
 }: {
   message: ChatMessage;
@@ -160,6 +190,7 @@ function ChatBubbleImpl({
   onCancelCard?: (card: ActionCard) => void;
   onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
   onClarifyChoice?: (card: ActionCard, choice: string) => void;
+  onDraftFieldFocus?: () => void;
   thinking?: AgentThinkingState | null;
 }) {
   const { colors } = useAppTheme();
@@ -167,7 +198,8 @@ function ChatBubbleImpl({
   const text = textFromParts(message.parts);
   const imagePart = message.parts.find(p => p.type === 'image');
   const actionCards = message.parts.filter(
-    (p): p is Extract<ChatMessagePart, { type: 'action_card' }> => p.type === 'action_card',
+    (p): p is Extract<ChatMessagePart, { type: 'action_card' }> =>
+      p.type === 'action_card' && Boolean(p.card && typeof p.card === 'object'),
   );
   const pending = message.status === 'sending' || message.status === 'streaming';
   const errored = message.status === 'error';
@@ -285,21 +317,25 @@ function ChatBubbleImpl({
             )
           ) : null}
           {unofficial ? <UnofficialAdviceBlock text={unofficial} /> : null}
-          {!isUser && actionCards.length
+          {!isUser && actionCards.length > 0
             ? actionCards.map(({ card }) => (
-                <ActionConfirmCard
+                <ConfirmCardErrorBoundary
                   key={card.operation_id || card.id}
-                  card={card}
-                  busy={
-                    confirmingCardId === card.id ||
-                    confirmingCardId === card.operation_id ||
-                    card.write_status === 'committing'
-                  }
-                  onConfirm={onConfirmCard}
-                  onCancel={onCancelCard}
-                  onDraftFieldChange={onDraftFieldChange}
-                  onClarifyChoice={onClarifyChoice}
-                />
+                  cardTitle={typeof card.title === 'string' ? card.title : undefined}>
+                  <ActionConfirmCard
+                    card={card}
+                    busy={
+                      confirmingCardId === card.id ||
+                      confirmingCardId === card.operation_id ||
+                      card.write_status === 'committing'
+                    }
+                    onConfirm={onConfirmCard}
+                    onCancel={onCancelCard}
+                    onDraftFieldChange={onDraftFieldChange}
+                    onClarifyChoice={onClarifyChoice}
+                    onDraftFieldFocus={onDraftFieldFocus}
+                  />
+                </ConfirmCardErrorBoundary>
               ))
             : null}
         </View>
@@ -376,6 +412,7 @@ function bubblePropsEqual(
     onCancelCard?: (card: ActionCard) => void;
     onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
     onClarifyChoice?: (card: ActionCard, choice: string) => void;
+    onDraftFieldFocus?: () => void;
     thinking?: AgentThinkingState | null;
   }>,
   next: Readonly<{
@@ -385,6 +422,7 @@ function bubblePropsEqual(
     onCancelCard?: (card: ActionCard) => void;
     onDraftFieldChange?: (card: ActionCard, key: string, value: string) => void;
     onClarifyChoice?: (card: ActionCard, choice: string) => void;
+    onDraftFieldFocus?: () => void;
     thinking?: AgentThinkingState | null;
   }>,
 ): boolean {
@@ -403,6 +441,7 @@ function bubblePropsEqual(
   if (prev.onCancelCard !== next.onCancelCard) return false;
   if (prev.onClarifyChoice !== next.onClarifyChoice) return false;
   if (prev.onDraftFieldChange !== next.onDraftFieldChange) return false;
+  if (prev.onDraftFieldFocus !== next.onDraftFieldFocus) return false;
   if (prev.thinking !== next.thinking) {
     if (
       prev.thinking?.phase !== next.thinking?.phase ||
@@ -490,6 +529,20 @@ const styles = StyleSheet.create({
   metaCol: {
     gap: 6,
     marginBottom: 2,
+  },
+  cardErrorBox: {
+    marginTop: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(180,40,40,0.35)',
+    backgroundColor: 'rgba(180,40,40,0.08)',
+  },
+  cardErrorText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#8a3030',
   },
   chip: {
     alignSelf: 'flex-start',

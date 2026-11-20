@@ -20,6 +20,7 @@ export const APP_DOMAIN_CRUD_TABLES = new Set([
   'recipe_items',
   'memos',
   'health_records',
+  'weight_logs',
   'wish_board_items',
   'finance_transactions',
   'wardrobe_closets',
@@ -109,6 +110,21 @@ function prepareHealthIntakeBody(row: Record<string, unknown>): Record<string, u
   delete out.target_carbohydrate;
   delete out.target_calories;
   return out;
+}
+
+function prepareWeightLogBody(row: Record<string, unknown>): Record<string, unknown> {
+  const out = stripSyncFields(row);
+  if (out.recorded_ymd == null && out.ymd != null) out.recorded_ymd = out.ymd;
+  if (out.weight_kg == null && out.weight != null) out.weight_kg = out.weight;
+  delete out.ymd;
+  delete out.weight;
+  return out;
+}
+
+function extractWeightLogItems(data: unknown): Record<string, unknown>[] {
+  if (Array.isArray(data)) return asRecordList(data);
+  const rec = asRecord(data);
+  return asRecordList(rec.items ?? rec.list ?? rec.points);
 }
 
 function prepareWishBoardItemBody(row: Record<string, unknown>): Record<string, unknown> {
@@ -204,6 +220,12 @@ export async function appDomainCreateRecord<T = unknown>(
       return apiRequest<T>(`${APP_API_PREFIX}/health/intakes`, {
         method: 'POST',
         body: prepareHealthIntakeBody(row),
+        signal,
+      });
+    case 'weight_logs':
+      return apiRequest<T>(`${APP_API_PREFIX}/health/weight-logs`, {
+        method: 'POST',
+        body: prepareWeightLogBody(row),
         signal,
       });
     case 'wish_board_items':
@@ -348,6 +370,13 @@ export async function appDomainUpdateRecord<T = unknown>(
       return apiRequest<T>(`${APP_API_PREFIX}/health/intakes/${enc}`, {
         method: opts?.method === 'PATCH' ? 'PATCH' : 'PUT',
         body: prepareHealthIntakeBody(row),
+        signal,
+      });
+    case 'weight_logs':
+      // 同日 upsert：专用接口仅 POST
+      return apiRequest<T>(`${APP_API_PREFIX}/health/weight-logs`, {
+        method: 'POST',
+        body: prepareWeightLogBody(row),
         signal,
       });
     case 'finance_transactions': {
@@ -612,6 +641,13 @@ export async function appDomainListRecords<T extends Record<string, unknown>>(
         }
         throw e;
       }
+    }
+    case 'weight_logs': {
+      const data = await apiRequest<unknown>(`${APP_API_PREFIX}/health/weight-logs?days=366`, {
+        method: 'GET',
+        signal,
+      });
+      return wrapList(extractWeightLogItems(data) as T[]);
     }
     case 'wish_board_items': {
       const data = await apiRequest<{ items?: unknown[] }>(`${APP_API_PREFIX}/wish-board/items`, {

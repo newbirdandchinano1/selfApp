@@ -7,8 +7,11 @@ import assert from 'node:assert/strict';
 import {
   CONFIRM_CARD_FIELD_TEMPLATES,
   COMMON_FIELD_LABELS,
+  formatWishTypeLabel,
   isMultilineFieldKey,
   isNumericFieldKey,
+  isSelectFieldKey,
+  isWishTypeSelectFieldKey,
   resolveFieldTemplate,
 } from '../lib/assistant/confirm-card-fields';
 import { S93_COMMIT_ACTIONS } from '../lib/assistant/chat-commit-handlers/index';
@@ -36,12 +39,14 @@ check('核心 commit_* 均有字段模板', () => {
     'commit_finance_txn',
     'commit_finance_transfer',
     'commit_memo',
+    'commit_memo_delete',
     'commit_task',
     'commit_food_intake',
     'commit_habit',
     'commit_recipe',
     'commit_wardrobe_item',
     'commit_wish',
+    'commit_wish_delete',
     'commit_profile',
     'commit_life_road_node',
     'commit_review_journal',
@@ -152,6 +157,22 @@ check('键盘辅助：金额数字 / 正文多行', () => {
   assert.equal(isMultilineFieldKey('body'), true);
   assert.equal(isMultilineFieldKey('persona'), true);
   assert.equal(isMultilineFieldKey('name'), false);
+});
+
+check('心愿类型：确认卡点选 once/repeat，禁止手输', () => {
+  const fields = deriveDraftFields(
+    { title: '周末电影', cost_points: 500 },
+    undefined,
+    { confirmAction: 'commit_wish', domain: 'wish' },
+  );
+  const wishType = fields.find(f => f.key === 'wish_type');
+  assert.ok(wishType, 'forceShow 应展示类型');
+  assert.equal(wishType?.input, 'select');
+  assert.equal(wishType?.editable, true);
+  assert.equal(isWishTypeSelectFieldKey('wish_type', 'commit_wish'), true);
+  assert.equal(isSelectFieldKey('wish_type', 'commit_wish'), true);
+  assert.equal(formatWishTypeLabel('once'), '一次性');
+  assert.equal(formatWishTypeLabel('repeat'), '可重复');
 });
 
 check('COMMON_FIELD_LABELS 覆盖主路径键', () => {

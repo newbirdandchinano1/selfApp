@@ -74,7 +74,8 @@ function parseToolTraces(raw: unknown): ChatToolTrace[] {
     const id = typeof o.id === 'string' ? o.id : '';
     const name = typeof o.name === 'string' ? o.name : '';
     if (!name) continue;
-    out.push({
+    const embeddedCards = collectCardsFromUnknown(o);
+    const trace: ChatToolTrace = {
       id: id || name,
       name,
       ok: o.ok !== false,
@@ -83,9 +84,49 @@ function parseToolTraces(raw: unknown): ChatToolTrace[] {
         o.arguments && typeof o.arguments === 'object' && !Array.isArray(o.arguments)
           ? (o.arguments as Record<string, unknown>)
           : undefined,
-    });
+    };
+    if (embeddedCards.length === 1) trace.card = embeddedCards[0];
+    else if (embeddedCards.length > 1) trace.cards = embeddedCards;
+    out.push(trace);
   }
   return out;
+}
+
+/** 从 tool_result / trace 对象里尽量掏出确认卡（顶层或 data 内） */
+function collectCardsFromUnknown(raw: Record<string, unknown>): ActionCard[] {
+  const bag: unknown[] = [];
+  if (raw.card && typeof raw.card === 'object') bag.push(raw.card);
+  if (Array.isArray(raw.cards)) bag.push(...raw.cards);
+  const data = raw.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const d = data as Record<string, unknown>;
+    if (d.card && typeof d.card === 'object') bag.push(d.card);
+    if (Array.isArray(d.cards)) bag.push(...d.cards);
+  }
+  const out: ActionCard[] = [];
+  const seen = new Set<string>();
+  for (const item of parseActionCards(bag)) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+function mergeCardIntoList(cards: ActionCard[], card: ActionCard): void {
+  const idx = cards.findIndex(c => c.id === card.id);
+  if (idx >= 0) {
+    const prev = cards[idx];
+    cards[idx] = {
+      ...prev,
+      ...card,
+      draft: { ...(prev.draft ?? {}), ...(card.draft ?? {}) },
+      draft_fields: card.draft_fields?.length ? card.draft_fields : prev.draft_fields,
+      confirm_action: card.confirm_action || prev.confirm_action,
+    };
+  } else {
+    cards.push(card);
+  }
 }
 
 async function loadBrief(opts: {
@@ -336,37 +377,37 @@ export async function runAgentChatStream(opts: {
             : undefined,
       });
     } else if (event === 'tool_result') {
+      const fromTool = collectCardsFromUnknown(ev);
       const trace: ChatToolTrace = {
         id: typeof ev.id === 'string' ? ev.id : '',
         name: typeof ev.name === 'string' ? ev.name : '',
         ok: ev.ok !== false,
         summary: typeof ev.summary === 'string' ? ev.summary : String(ev.name || 'tool'),
       };
+      if (fromTool.length === 1) trace.card = fromTool[0];
+      else if (fromTool.length > 1) trace.cards = fromTool;
       tool_traces.push(trace);
-      // 兜底：部分环境可能丢独立 card 事件，但从 tool_result.data.card(s) 仍可出卡
-      const data = ev.data;
-      if (data && typeof data === 'object' && !Array.isArray(data)) {
-        const d = data as Record<string, unknown>;
-        const fromTool: unknown[] = [];
-        if (d.card && typeof d.card === 'object') fromTool.push(d.card);
-        if (Array.isArray(d.cards)) fromTool.push(...d.cards);
-        for (const raw of fromTool) {
-          const parsed = parseActionCards([raw]);
-          const card = parsed[0];
-          if (!card?.id) continue;
-          if (cards.some(c => c.id === card.id)) continue;
-          cards.push(card);
-          opts.handlers?.onCard?.(card);
-        }
+      // 出卡冗余：顶层 card/cards + data.card(s)；已存在同 id 也要合并并通知 UI
+      for (const card of fromTool) {
+        mergeCardIntoList(cards, card);
+        opts.handlers?.onCard?.(cards[cards.findIndex(c => c.id === card.id)] ?? card);
       }
       opts.handlers?.onToolResult?.({ ...trace, data: ev.data });
     } else if (event === 'card') {
       const parsed = parseActionCards([ev.card]);
       if (parsed[0]) {
-        if (!cards.some(c => c.id === parsed[0].id)) {
-          cards.push(parsed[0]);
+        const next = parsed[0];
+        mergeCardIntoList(cards, next);
+        opts.handlers?.onCard?.(cards[cards.findIndex(c => c.id === next.id)] ?? next);
+      }
+    } else if (event === 'cards') {
+      // done 之前的独立出卡包：即使后续 done 解析失败也能保住确认卡
+      if (Array.isArray(ev.cards)) {
+        for (const raw of parseActionCards(ev.cards)) {
+          if (!raw?.id) continue;
+          mergeCardIntoList(cards, raw);
+          opts.handlers?.onCard?.(cards[cards.findIndex(c => c.id === raw.id)] ?? raw);
         }
-        opts.handlers?.onCard?.(parsed[0]);
       }
     } else if (event === 'error' && typeof ev.message === 'string') {
       opts.handlers?.onError?.(ev.message);
@@ -374,16 +415,32 @@ export async function runAgentChatStream(opts: {
       sawDone = true;
       if (typeof ev.reply === 'string' && ev.reply) reply = ev.reply;
       if (typeof ev.session_id === 'string') sessionId = ev.session_id;
-      if (Array.isArray(ev.tool_traces) && tool_traces.length === 0) {
-        tool_traces.push(...parseToolTraces(ev.tool_traces));
+      if (Array.isArray(ev.tool_traces)) {
+        const parsedTraces = parseToolTraces(ev.tool_traces);
+        if (tool_traces.length === 0) {
+          tool_traces.push(...parsedTraces);
+        } else {
+          // 流式已有 traces 时，仍合并其瘦卡（done.cards 丢失时的兜底）
+          for (const t of parsedTraces) {
+            const idx = tool_traces.findIndex(x => x.id === t.id && x.name === t.name);
+            if (idx >= 0) {
+              if (t.card && !tool_traces[idx].card) tool_traces[idx].card = t.card;
+              if (t.cards?.length && !tool_traces[idx].cards?.length) {
+                tool_traces[idx].cards = t.cards;
+              }
+            }
+          }
+        }
+        for (const t of tool_traces) {
+          if (t.card) mergeCardIntoList(cards, t.card);
+          for (const c of t.cards ?? []) mergeCardIntoList(cards, c);
+        }
       }
       // 按 id 合并，避免「先到空壳/半卡」导致 done.cards 被跳过
       if (Array.isArray(ev.cards)) {
         for (const raw of parseActionCards(ev.cards)) {
           if (!raw?.id) continue;
-          const idx = cards.findIndex(c => c.id === raw.id);
-          if (idx >= 0) cards[idx] = raw;
-          else cards.push(raw);
+          mergeCardIntoList(cards, raw);
         }
       }
       if (ev.usage && typeof ev.usage === 'object') {

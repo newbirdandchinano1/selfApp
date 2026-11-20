@@ -29,6 +29,7 @@ export const W1_COMMIT_ACTIONS = [
   'commit_finance_scheduled',
   'commit_finance_cash_flow',
   'commit_finance_budget',
+  'commit_finance_savings_goal',
   'commit_task',
   'commit_project',
   'commit_habit',
@@ -62,8 +63,11 @@ export const W3_COMMIT_ACTIONS = [
   'commit_weight',
   'commit_intake_targets',
   'commit_recipe_category',
+  'commit_memo_delete',
   'commit_recipe_delete',
   'commit_recipe_category_delete',
+  'commit_wish_delete',
+  'commit_points_ledger_delete',
   'commit_wardrobe_outfit',
   'commit_wardrobe_wear',
   'commit_wardrobe_meta',
@@ -74,7 +78,10 @@ export const W3_COMMIT_ACTIONS = [
   'commit_task_category',
   'commit_project_category',
   'commit_tag',
+  'commit_tag_delete',
   'commit_schedule_placement',
+  'commit_promote_todo_to_project',
+  'commit_day_boundary',
 ] as const;
 
 export const S93_COMMIT_ACTIONS = [
@@ -134,6 +141,7 @@ export {
   commitFinanceScheduled,
   commitFinanceCashFlow,
   commitFinanceBudget,
+  commitFinanceSavingsGoal,
   commitFinanceAccount,
   commitFinanceFlowCategory,
   commitFinanceAccountType,
@@ -148,7 +156,7 @@ export {
 } from './task';
 export { commitHabit, commitHabitCheckin, commitHabitContext } from './habit';
 export { commitFoodIntake, commitWeight, commitIntakeTargets } from './food';
-export { commitMemo } from './memo';
+export { commitMemo, commitMemoDelete } from './memo';
 export {
   commitRecipe,
   commitRecipeCategory,
@@ -162,7 +170,7 @@ export {
   commitWardrobeMeta,
   commitWardrobeBody,
 } from './wardrobe';
-export { commitWish } from './wish';
+export { commitWish, commitWishDelete, commitPointsLedgerDelete } from './wish';
 export { commitProfile } from './profile';
 export { commitLifeRoadNode, commitLifeDirection, commitLifeBet } from './life-road';
 export {
@@ -170,6 +178,6 @@ export {
   commitReviewJournal,
   commitReviewColumn,
 } from './review';
-export { commitTag } from './tag';
+export { commitTag, commitTagDelete } from './tag';
 export { commitSchedulePlacement } from './schedule';
 export { commitCatalogWrite } from './catalog';

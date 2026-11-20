@@ -71,6 +71,7 @@ check('resolveModuleHref：S1 横切模块（衣橱/心愿/复盘/道路）', ()
   }
   assert.equal(resolveModuleHref('wish.home'), '/wish-board');
   assert.equal(resolveModuleHref('wish.add'), '/add-wish-board-item');
+  assert.equal(resolveModuleHref('wish.footprints'), '/wish-board-footprints');
   assert.equal(resolveModuleHref('life_road.home'), '/life-road');
   assert.equal(resolveModuleHref('profile.home'), '/(tabs)/profile');
   const daily = resolveModuleHref('review.daily');

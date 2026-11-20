@@ -380,10 +380,9 @@ export async function fetchApiRecordByPk<T extends Record<string, unknown>>(
   try {
     const row = await apiGetRecord<T>(table, pkValue, opts);
     await syncApiReadResultToLocal(table, row as Record<string, unknown>);
-    if (true) {
-      return readLocalRecordVisible<T>(table, pkValue);
-    }
-    return row;
+    const local = await readLocalRecordVisible<T>(table, pkValue);
+    // 优先本地可见行；落库失败时仍返回 API 行，供 ensureLocalRowForWrite 再 seed
+    return local ?? row;
   } catch (e) {
     if (e instanceof Error && /404|不存在|not found/i.test(e.message)) {
       await applyApiRecordMissingToLocal(table, pkValue);

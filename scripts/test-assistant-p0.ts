@@ -151,6 +151,27 @@ check('parseActionCard 接受 intent=update 的改名确认卡', () => {
   assert.equal(card.write_status, 'awaiting_confirmation');
 });
 
+check('parseActionCard 接受备忘标签改名卡并保留 tag_id', () => {
+  const card = parseActionCard({
+    id: 'tg1',
+    domain: 'memo',
+    intent: 'update',
+    title: '重命名备忘标签',
+    summary: '测试 → 职场',
+    confidence: 0.86,
+    needs_confirm: true,
+    confirm_action: 'commit_tag',
+    draft: { tag_id: 'tag_abc12345', name: '职场', old_name: '测试', domain: 'memo', action: 'update' },
+  });
+  assert.equal(card.domain, 'memo');
+  assert.equal(card.intent, 'update');
+  assert.equal(card.confirm_action, 'commit_tag');
+  assert.equal(card.needs_confirm, true);
+  const sanitized = sanitizeActionCardAgainstWhitelist(card, []);
+  assert.equal(sanitized.card.draft?.tag_id, 'tag_abc12345');
+  assert.equal(sanitized.degraded_to_clarify, false);
+});
+
 check('parseActionCard 未知 intent 但有 commit_* 时不降成 clarify', () => {
   const card = parseActionCard({
     id: 'rc2',
@@ -226,6 +247,28 @@ check('sanitize：菜谱移动保留 recipe_id / recipe_ids（brief 无菜谱白
   assert.deepEqual(r.card.draft?.recipe_ids, ['rcp_a', 'rcp_b']);
   assert.equal(r.card.draft?.recipe_id, 'rcp_solo');
   assert.equal(r.card.draft?.category_name, '凉菜');
+});
+
+check('sanitize：更新备忘保留 memo_id（brief 无备忘白名单）', () => {
+  const card: ActionCard = {
+    id: 'm_upd',
+    domain: 'memo',
+    intent: 'update',
+    title: '更新备忘',
+    confidence: 0.9,
+    needs_confirm: true,
+    confirm_action: 'commit_memo',
+    draft: {
+      memo_id: 'memo_test_1',
+      title: '测试',
+      body_plain: '旧正文',
+      tag_names: '',
+    },
+  };
+  const r = sanitizeActionCardAgainstWhitelist(card, ['tsk_aaa']);
+  assert.equal(r.degraded_to_clarify, false);
+  assert.equal(r.card.draft?.memo_id, 'memo_test_1');
+  assert.equal(r.card.draft?.title, '测试');
 });
 
 check('mapConfirm：finance / task / open_route / frog_assign', () => {

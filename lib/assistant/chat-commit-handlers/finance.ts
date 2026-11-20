@@ -268,22 +268,141 @@ export async function commitFinanceCashFlow(
 export async function commitFinanceBudget(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const amount = draftNumber(draft, 'suggested_base_amount') ?? draftNumber(draft, 'base_amount');
-  if (amount == null || amount <= 0) {
-    return fail('incomplete_draft', '缺少有效预算基数');
+  const {
+    clampBudgetRefreshDay,
+    getBudgetMonthKeyForDate,
+    loadBudgetRefreshDay,
+    loadMonthBudgetSettings,
+    persistBudgetRefreshDay,
+    persistMonthBudgetSettings,
+  } = await import('@/lib/finance-monthly-budget');
+
+  const clearMonth =
+    draft.clear === true ||
+    draft.clear_month === true ||
+    draft.action === 'clear' ||
+    draftString(draft, 'action') === 'clear';
+
+  const refreshDayRaw =
+    draftNumber(draft, 'refresh_day') ?? draftNumber(draft, 'budget_refresh_day');
+  if (refreshDayRaw != null && !clearMonth) {
+    const onlyRefresh =
+      draftNumber(draft, 'suggested_base_amount') == null &&
+      draftNumber(draft, 'base_amount') == null &&
+      draftNumber(draft, 'budget_amount') == null &&
+      draft.include_last_balance == null &&
+      draft.includeLastBalance == null &&
+      draft.period_surplus_override == null &&
+      draft.periodSurplusOverride == null;
+    if (onlyRefresh || draft.action === 'set_refresh_day') {
+      const day = clampBudgetRefreshDay(refreshDayRaw);
+      await persistBudgetRefreshDay(day);
+      return ok(String(day), `已将预算刷新日设为每月 ${day} 日`);
+    }
   }
-  const { getMonthKey, loadMonthBudgetSettings, persistMonthBudgetSettings } = await import(
-    '@/lib/finance-monthly-budget'
-  );
-  const monthKey = draftString(draft, 'month_key') || getMonthKey(new Date());
+
+  const refreshDay = await loadBudgetRefreshDay();
+  const monthKey =
+    draftString(draft, 'month_key') ||
+    draftString(draft, 'month') ||
+    getBudgetMonthKeyForDate(new Date(), refreshDay);
+
+  if (clearMonth) {
+    const map = await loadMonthBudgetSettings();
+    if (!(monthKey in map)) {
+      return ok(monthKey, `${monthKey} 无预算配置`);
+    }
+    delete map[monthKey];
+    await persistMonthBudgetSettings(map);
+    return ok(monthKey, `已清除 ${monthKey} 预算设置`);
+  }
+
+  const amount =
+    draftNumber(draft, 'suggested_base_amount') ??
+    draftNumber(draft, 'base_amount') ??
+    draftNumber(draft, 'budget_amount');
+  const includeRaw = draft.include_last_balance ?? draft.includeLastBalance;
+  const hasInclude = typeof includeRaw === 'boolean';
+  const surplusRaw = draft.period_surplus_override ?? draft.periodSurplusOverride;
+  const clearSurplus =
+    draft.clear_surplus_override === true ||
+    surplusRaw === null ||
+    draftString(draft, 'clear_surplus_override') === '1';
+
+  if (amount == null && !hasInclude && surplusRaw === undefined && !clearSurplus && refreshDayRaw == null) {
+    return fail('incomplete_draft', '缺少预算基数、结余开关或刷新日等可写字段');
+  }
+
   const map = await loadMonthBudgetSettings();
   const prev = map[monthKey] ?? { baseAmount: 0, includeLastBalance: false };
-  map[monthKey] = {
-    ...prev,
-    baseAmount: Math.abs(amount),
-  };
+  const next = { ...prev };
+  if (amount != null && amount >= 0) {
+    next.baseAmount = Math.abs(amount);
+  }
+  if (hasInclude) {
+    next.includeLastBalance = includeRaw as boolean;
+  }
+  if (clearSurplus) {
+    delete next.periodSurplusOverride;
+  } else if (typeof surplusRaw === 'number' && Number.isFinite(surplusRaw)) {
+    next.periodSurplusOverride = surplusRaw;
+  }
+  map[monthKey] = next;
   await persistMonthBudgetSettings(map);
-  return ok(monthKey, `已将 ${monthKey} 预算基数设为 ¥${Math.abs(amount)}`);
+
+  if (refreshDayRaw != null) {
+    await persistBudgetRefreshDay(clampBudgetRefreshDay(refreshDayRaw));
+  }
+
+  const parts: string[] = [];
+  if (amount != null) parts.push(`基数 ¥${Math.abs(amount)}`);
+  if (hasInclude) parts.push(includeRaw ? '含上周期结余' : '不含上周期结余');
+  if (clearSurplus) parts.push('已清除结余校正');
+  else if (typeof surplusRaw === 'number') parts.push(`结余校正 ¥${surplusRaw}`);
+  if (refreshDayRaw != null) parts.push(`刷新日 ${clampBudgetRefreshDay(refreshDayRaw)} 日`);
+  return ok(monthKey, `已更新 ${monthKey} 预算：${parts.join(' · ') || '已保存'}`);
+}
+
+export async function commitFinanceSavingsGoal(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const {
+    clearFinanceSavingsGoal,
+    persistFinanceSavingsGoal,
+    FINANCE_SAVINGS_GOAL_MAX_AMOUNT,
+  } = await import('@/lib/finance-savings-goal');
+
+  const clear =
+    draft.clear === true ||
+    draft.action === 'clear' ||
+    draftString(draft, 'action') === 'clear';
+  if (clear) {
+    await clearFinanceSavingsGoal();
+    return ok('savings_goal', '已清除储蓄目标');
+  }
+
+  const amount =
+    draftNumber(draft, 'target_amount') ?? draftNumber(draft, 'amount');
+  const targetDate =
+    draftString(draft, 'target_date') || draftString(draft, 'date');
+  if (amount == null || amount <= 0) {
+    return fail('incomplete_draft', '缺少有效目标金额');
+  }
+  if (!targetDate || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    return fail('incomplete_draft', '缺少有效目标日期（YYYY-MM-DD）');
+  }
+  if (amount > FINANCE_SAVINGS_GOAL_MAX_AMOUNT) {
+    return fail('incomplete_draft', `目标金额不得超过 ${FINANCE_SAVINGS_GOAL_MAX_AMOUNT}`);
+  }
+
+  await persistFinanceSavingsGoal({
+    targetAmount: Math.round(amount * 100) / 100,
+    targetDate,
+  });
+  return ok(
+    'savings_goal',
+    `已设置储蓄目标 ¥${Math.round(amount * 100) / 100}（截止 ${targetDate}）`,
+  );
 }
 
 function ymdPlusDays(ymd: string, days: number): string {
@@ -523,6 +642,7 @@ export const financeCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_finance_scheduled: async input => commitFinanceScheduled(input.draft),
   commit_finance_cash_flow: async input => commitFinanceCashFlow(input.draft),
   commit_finance_budget: async input => commitFinanceBudget(input.draft),
+  commit_finance_savings_goal: async input => commitFinanceSavingsGoal(input.draft),
   commit_finance_account: async input => commitFinanceAccount(input.draft),
   commit_finance_flow_category: async input => commitFinanceFlowCategory(input.draft),
   commit_finance_account_type: async input => commitFinanceAccountType(input.draft),

@@ -240,7 +240,8 @@ export default function AssistantChatScreen() {
                     parts: partsFromAgentResult({
                       reply: partialText,
                       toolTraces: traces,
-                      cards: cards ?? liveCards ?? [],
+                      // undefined → 用 liveCards；显式 [] 才表示本轮无卡（收尾清空）
+                      cards: cards !== undefined ? cards : (liveCards ?? []),
                     }),
                     status,
                   }
@@ -329,11 +330,27 @@ export default function AssistantChatScreen() {
                   name: ev.name,
                   ok: ev.ok,
                   summary: ev.summary,
+                  card: ev.card,
+                  cards: ev.cards,
                 });
+                // tool_result 自带瘦卡时立即挂到气泡（不依赖单独 card 事件）
+                for (const c of [
+                  ...(ev.card ? [ev.card] : []),
+                  ...(ev.cards ?? []),
+                ]) {
+                  if (!c?.id) continue;
+                  const enriched = attachTurnImageToRecipeCards(
+                    [c],
+                    lastTurnImageDataUriRef.current,
+                  )[0];
+                  const idx = liveCards.findIndex(x => x.id === enriched.id);
+                  if (idx >= 0) liveCards[idx] = enriched;
+                  else liveCards.push(enriched);
+                }
                 if (!streamedText.trim()) {
                   setThinkingState(createThinkingState('organizing'));
                 }
-                patchAssistant(streamedText, [...liveTraces], 'streaming', undefined, {
+                patchAssistant(streamedText, [...liveTraces], 'streaming', [...liveCards], {
                   immediate: true,
                 });
               },
@@ -359,7 +376,8 @@ export default function AssistantChatScreen() {
                 usedStream = true;
                 streamedText += chunk;
                 enterGenerating();
-                patchAssistant(streamedText, [...liveTraces], 'streaming');
+                // 显式带上 liveCards，避免仅靠 applyPatchNow 兜底时被空数组/竞态清掉
+                patchAssistant(streamedText, [...liveTraces], 'streaming', [...liveCards]);
               },
               onError: msg => {
                 streamErrorHint = msg;
@@ -416,11 +434,30 @@ export default function AssistantChatScreen() {
           const merged: ActionCard[] = [];
           const push = (c: ActionCard) => {
             const idx = merged.findIndex(x => x.id === c.id);
-            if (idx >= 0) merged[idx] = c;
-            else merged.push(c);
+            // 优先保留字段更完整的一侧（draft / confirm_action）
+            if (idx >= 0) {
+              const prev = merged[idx];
+              const nextHasDraft = Boolean(c.draft && Object.keys(c.draft).length);
+              const prevHasDraft = Boolean(prev.draft && Object.keys(prev.draft).length);
+              merged[idx] =
+                nextHasDraft || c.confirm_action || c.draft_fields?.length
+                  ? { ...prev, ...c, draft: { ...(prev.draft ?? {}), ...(c.draft ?? {}) } }
+                  : prevHasDraft
+                    ? prev
+                    : c;
+            } else merged.push(c);
           };
           for (const c of liveCards) push(c);
           for (const c of result.cards) push(c);
+          // 流式过程中已画到气泡、但 live/result 竞态丢空时，从当前会话回收
+          if (!merged.length) {
+            const streamed = (sessionRef.current ?? nextSession).messages.find(
+              m => m.id === assistantId,
+            );
+            for (const p of streamed?.parts ?? []) {
+              if (p.type === 'action_card' && p.card) push(p.card);
+            }
+          }
           return merged;
         })();
         // S9.6：同卡改稿合并进原 operation_id；「再记一笔」保留新卡。
@@ -446,7 +483,7 @@ export default function AssistantChatScreen() {
           ),
           userMessage: text,
         });
-        const finalCards = attachTurnImageToRecipeCards(
+        let finalCards = attachTurnImageToRecipeCards(
           reconciled.cards,
           lastTurnImageDataUriRef.current,
         );
@@ -461,6 +498,26 @@ export default function AssistantChatScreen() {
         const toolClaimedCard = tracesForParts.some(t =>
           /确认卡/.test(String(t.summary || '')),
         );
+        // 摘要声称有卡但调和后为空：再兜一次 liveCards / traces 瘦卡
+        if (toolClaimedCard && !finalCards.length) {
+          const recovered: ActionCard[] = [];
+          const pushRecovered = (c?: ActionCard) => {
+            if (!c?.id) return;
+            if (recovered.some(x => x.id === c.id)) return;
+            recovered.push(c);
+          };
+          for (const c of liveCards) pushRecovered(c);
+          for (const t of tracesForParts) {
+            pushRecovered(t.card);
+            for (const c of t.cards ?? []) pushRecovered(c);
+          }
+          if (recovered.length) {
+            finalCards = attachTurnImageToRecipeCards(
+              recovered,
+              lastTurnImageDataUriRef.current,
+            );
+          }
+        }
         if (!finalReply.trim() && finalCards.length) {
           finalReply = '已为你准备好操作卡，请点击确认。';
         } else if (!finalReply.trim() && isMostlyToolCallLeak(streamedText)) {

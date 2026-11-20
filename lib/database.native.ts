@@ -3,7 +3,7 @@ import * as SQLite from 'expo-sqlite';
 import { INBOX_PROJECT_CATEGORY_ID, INBOX_PROJECT_CATEGORY_NAME } from './repositories/projects/constants';
 
 export const DB_NAME = 'self_manage_sys.db';
-export const DB_VERSION = 61;
+export const DB_VERSION = 62;
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -730,7 +730,7 @@ async function migrateRestorePersonaPortraitColumn(db: SQLite.SQLiteDatabase): P
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
 }
 
-/** 本地体重日志（不同步云端） */
+/** 体重日志表（初建；云同步列见 weight_logs_cloud_sync_v62） */
 async function migrateEnsureWeightLogsLocal(db: SQLite.SQLiteDatabase): Promise<void> {
   const done = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
@@ -744,12 +744,50 @@ async function migrateEnsureWeightLogsLocal(db: SQLite.SQLiteDatabase): Promise<
       recorded_ymd TEXT NOT NULL UNIQUE,
       weight_kg REAL NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_weight_logs_ymd ON weight_logs(recorded_ymd);
   `);
   await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
     'weight_logs_local_v51',
+    '1',
+  ]);
+  await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
+}
+
+/** 体重日志参与云同步：补 sync_status / server_rev / mutation_id */
+async function migrateWeightLogsCloudSync(db: SQLite.SQLiteDatabase): Promise<void> {
+  const done = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_meta WHERE key = ?',
+    ['weight_logs_cloud_sync_v62'],
+  );
+  if (done) return;
+
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS weight_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      recorded_ymd TEXT NOT NULL UNIQUE,
+      weight_kg REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'pending_create',
+      server_rev INTEGER NOT NULL DEFAULT 1,
+      mutation_id TEXT,
+      last_pushed_mutation_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_weight_logs_ymd ON weight_logs(recorded_ymd);
+  `);
+  await ensureColumn(db, 'weight_logs', 'sync_status', `TEXT NOT NULL DEFAULT 'synced'`);
+  await ensureColumn(db, 'weight_logs', 'server_rev', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn(db, 'weight_logs', 'mutation_id', 'TEXT');
+  await ensureColumn(db, 'weight_logs', 'last_pushed_mutation_id', 'TEXT');
+
+  await db.runAsync('INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)', [
+    'weight_logs_cloud_sync_v62',
     '1',
   ]);
   await db.runAsync('UPDATE app_meta SET value = ? WHERE key = ?', [String(DB_VERSION), 'schema_version']);
@@ -2648,6 +2686,7 @@ export async function initDatabase() {
   await migrateDropRemovedProfileFeatures(db);
   await migrateRestorePersonaPortraitColumn(db);
   await migrateEnsureWeightLogsLocal(db);
+  await migrateWeightLogsCloudSync(db);
   await migrateHabitCheckInsAllowZeroCount(db);
   await migrateRestoreWishBoardItems(db);
   await migratePointsAllowDecimalAndSignedBalance(db);

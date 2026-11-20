@@ -28,13 +28,17 @@ const OUT_MS = 160;
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-const SheetCloseContext = React.createContext<() => boolean>(() => false);
+/** 开始关闭；可选 afterClose 在 Modal 真正卸掉后再跑（避免 Alert/导航叠在 Modal 上卡死）。 */
+export type MemoCenterSheetCloseFn = (afterClose?: () => void) => boolean;
+
+const SheetCloseContext = React.createContext<MemoCenterSheetCloseFn>(() => false);
 
 /**
  * 第一次返回 true，并开始关闭。
  * 关闭过程中再次调用返回 false，调用方不要再改排序或重复关闭。
+ * 需要 Alert / 开下一层 / 导航时把逻辑放进 afterClose。
  */
-export function useMemoCenterSheetClose(): () => boolean {
+export function useMemoCenterSheetClose(): MemoCenterSheetCloseFn {
   return useContext(SheetCloseContext);
 }
 
@@ -57,6 +61,8 @@ export function MemoCenterSheet({ visible, onClose, children, style }: Props) {
   const aliveRef = useRef(true);
   const exitAnim = useRef<Animated.CompositeAnimation | null>(null);
   const exitRafRef = useRef(0);
+  const afterCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const afterCloseRef = useRef<(() => void) | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -71,15 +77,38 @@ export function MemoCenterSheet({ visible, onClose, children, style }: Props) {
     panel.stopAnimation();
   }, [overlay, panel]);
 
+  const clearAfterCloseTimer = useCallback(() => {
+    if (afterCloseTimerRef.current) {
+      clearTimeout(afterCloseTimerRef.current);
+      afterCloseTimerRef.current = null;
+    }
+  }, []);
+
+  /** 先卸 Modal，再延后一拍跑 afterClose，避免 Alert 叠在 RN Modal 上卡死。 */
+  const finishClose = useCallback(() => {
+    const next = afterCloseRef.current;
+    afterCloseRef.current = null;
+    onCloseRef.current();
+    if (!next) return;
+    clearAfterCloseTimer();
+    afterCloseTimerRef.current = setTimeout(() => {
+      afterCloseTimerRef.current = null;
+      if (!aliveRef.current) return;
+      next();
+    }, 0);
+  }, [clearAfterCloseTimer]);
+
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      clearAfterCloseTimer();
+      afterCloseRef.current = null;
       stopAnims();
       overlay.setValue(0);
       panel.setValue(0);
     };
-  }, [overlay, panel, stopAnims]);
+  }, [clearAfterCloseTimer, overlay, panel, stopAnims]);
 
   useEffect(() => {
     if (!visible) {
@@ -121,52 +150,56 @@ export function MemoCenterSheet({ visible, onClose, children, style }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [motionOff, overlay, panel, stopAnims, visible]);
 
-  const requestClose = useCallback(() => {
-    if (closingRef.current) return false;
-    closingRef.current = true;
-    setClosing(true);
-    if (motionOff || !focused) {
-      stopAnims();
-      overlay.setValue(0);
-      panel.setValue(0);
-      onCloseRef.current();
-      return true;
-    }
-    // 下一帧再播退出，调用方可以在本次点击里先写入排序。
-    exitRafRef.current = requestAnimationFrame(() => {
-      exitRafRef.current = 0;
-      if (!aliveRef.current || !closingRef.current) return;
+  const requestClose = useCallback<MemoCenterSheetCloseFn>(
+    afterClose => {
+      if (closingRef.current) return false;
+      closingRef.current = true;
+      afterCloseRef.current = afterClose ?? null;
+      setClosing(true);
       if (motionOff || !focused) {
         stopAnims();
         overlay.setValue(0);
         panel.setValue(0);
-        onCloseRef.current();
-        return;
+        finishClose();
+        return true;
       }
-      stopAnims();
-      const anim = Animated.parallel([
-        Animated.timing(overlay, {
-          toValue: 0,
-          duration: OUT_MS,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(panel, {
-          toValue: 0,
-          duration: OUT_MS,
-          easing: Easing.in(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]);
-      exitAnim.current = anim;
-      anim.start(({ finished }) => {
-        if (!finished || !aliveRef.current) return;
-        exitAnim.current = null;
-        onCloseRef.current();
+      // 下一帧再播退出；业务逻辑请放 afterClose，不要与 Modal 同帧抢焦点。
+      exitRafRef.current = requestAnimationFrame(() => {
+        exitRafRef.current = 0;
+        if (!aliveRef.current || !closingRef.current) return;
+        if (motionOff || !focused) {
+          stopAnims();
+          overlay.setValue(0);
+          panel.setValue(0);
+          finishClose();
+          return;
+        }
+        stopAnims();
+        const anim = Animated.parallel([
+          Animated.timing(overlay, {
+            toValue: 0,
+            duration: OUT_MS,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          Animated.timing(panel, {
+            toValue: 0,
+            duration: OUT_MS,
+            easing: Easing.in(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]);
+        exitAnim.current = anim;
+        anim.start(({ finished }) => {
+          if (!finished || !aliveRef.current) return;
+          exitAnim.current = null;
+          finishClose();
+        });
       });
-    });
-    return true;
-  }, [focused, motionOff, overlay, panel, stopAnims]);
+      return true;
+    },
+    [finishClose, focused, motionOff, overlay, panel, stopAnims],
+  );
 
   useEffect(() => {
     if (focused || !visible) return;
@@ -175,6 +208,7 @@ export function MemoCenterSheet({ visible, onClose, children, style }: Props) {
     panel.setValue(0);
     closingRef.current = false;
     setClosing(false);
+    afterCloseRef.current = null;
     onCloseRef.current();
   }, [focused, overlay, panel, stopAnims, visible]);
 

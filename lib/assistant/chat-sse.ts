@@ -1,5 +1,8 @@
 /**
  * Agent Chat SSE 读取：优先 fetch ReadableStream；RN 不支持时回退 XHR onprogress。
+ *
+ * 出卡铁律：card / cards / tool_result 事件必须能在 CRLF、多 data 行、半包下可靠解析；
+ * 静默丢包会导致「工具摘要说有确认卡，气泡却没有卡」。
  */
 import { ApiRequestError } from '@/lib/api/http';
 
@@ -12,29 +15,54 @@ function isAbortError(e: unknown): boolean {
   );
 }
 
-function parseSseChunk(rawEvent: string, onEvent: SseJsonHandler): void {
-  const lines = rawEvent.split('\n');
-  let dataLine = '';
+/** 代理/网关常把 LF 转成 CRLF；统一成 \n 才能按 \n\n 分帧 */
+export function normalizeSseNewlines(raw: string): string {
+  return raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * 解析单个 SSE 事件块（已按空行切分）。
+ * - 标准：多行 data: 用 \n 拼接成一个 JSON
+ * - 容错：若拼接失败且有多行 data，尝试逐行当独立 JSON（分帧错乱时的自救）
+ */
+export function parseSseChunk(rawEvent: string, onEvent: SseJsonHandler): void {
+  const normalized = normalizeSseNewlines(rawEvent);
+  const lines = normalized.split('\n');
+  const dataLines: string[] = [];
   for (const line of lines) {
-    if (line.startsWith('data:')) {
-      dataLine += line.slice(5).trim();
-    }
+    if (!line.startsWith('data:')) continue;
+    // SSE：data: 后可选一个前导空格
+    dataLines.push(line.slice(5).replace(/^\s/, ''));
   }
-  if (!dataLine) return;
+  if (!dataLines.length) return;
+
+  const joined = dataLines.join('\n');
   try {
-    const ev = JSON.parse(dataLine) as Record<string, unknown>;
+    const ev = JSON.parse(joined) as Record<string, unknown>;
     if (ev && typeof ev === 'object') onEvent(ev);
+    return;
   } catch {
-    // 半包或非 JSON，忽略
+    // 分帧失败时可能把多个事件揉进一块：逐 data 行自救
+    if (dataLines.length <= 1) return;
+    for (const line of dataLines) {
+      const t = line.trim();
+      if (!t.startsWith('{') && !t.startsWith('[')) continue;
+      try {
+        const ev = JSON.parse(t) as Record<string, unknown>;
+        if (ev && typeof ev === 'object') onEvent(ev);
+      } catch {
+        // 单行仍坏则跳过
+      }
+    }
   }
 }
 
-function feedSseBuffer(
+export function feedSseBuffer(
   buffer: string,
   chunk: string,
   onEvent: SseJsonHandler,
 ): string {
-  const next = buffer + chunk;
+  const next = normalizeSseNewlines(buffer + chunk);
   const parts = next.split('\n\n');
   const rest = parts.pop() ?? '';
   for (const part of parts) {

@@ -29,7 +29,10 @@ export const COMMON_FIELD_LABELS: Record<string, string> = {
   transaction_type: '类型',
   note: '备注',
   body: '正文',
+  body_plain: '正文',
   content: '正文',
+  tag_names: '标签',
+  tags: '标签',
   food_summary: '食物',
   food_name: '食物',
   calories_kcal: '热量(kcal)',
@@ -134,9 +137,48 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'note', label: '备注', editable: true },
   ],
   commit_finance_budget: [
-    { key: 'month', label: '月份', editable: true },
-    { key: 'budget_amount', label: '预算金额', editable: true, aliases: ['amount', 'total'] },
+    { key: 'month_key', label: '预算月', editable: true, aliases: ['month'] },
+    {
+      key: 'base_amount',
+      label: '预算基数',
+      editable: true,
+      aliases: ['suggested_base_amount', 'budget_amount', 'amount', 'total'],
+    },
+    {
+      key: 'include_last_balance',
+      label: '含上周期结余',
+      editable: true,
+      aliases: ['includeLastBalance'],
+    },
+    {
+      key: 'period_surplus_override',
+      label: '结余校正',
+      editable: true,
+      aliases: ['periodSurplusOverride'],
+    },
+    {
+      key: 'refresh_day',
+      label: '预算刷新日',
+      editable: true,
+      aliases: ['budget_refresh_day'],
+    },
+    { key: 'action', label: '动作', editable: true },
     { key: 'note', label: '备注', editable: true },
+  ],
+  commit_finance_savings_goal: [
+    {
+      key: 'target_amount',
+      label: '目标金额',
+      editable: true,
+      aliases: ['amount'],
+    },
+    {
+      key: 'target_date',
+      label: '目标日期',
+      editable: true,
+      aliases: ['date'],
+    },
+    { key: 'action', label: '动作', editable: true },
   ],
   commit_finance_account: [
     { key: 'name', label: '账户名', editable: true },
@@ -217,8 +259,27 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'hydration_ml', label: '饮水目标', editable: true },
   ],
   commit_memo: [
-    { key: 'title', label: '标题', editable: true, aliases: ['name'] },
-    { key: 'body', label: '正文', editable: true, aliases: ['content', 'text'] },
+    { key: 'title', label: '标题', editable: true, aliases: ['name'], forceShow: true },
+    {
+      key: 'body_plain',
+      label: '正文',
+      editable: true,
+      aliases: ['body', 'content', 'text'],
+      forceShow: true,
+    },
+    {
+      key: 'tag_names',
+      label: '标签',
+      editable: true,
+      aliases: ['tags', 'tag_name', 'new_tag_names'],
+      forceShow: true,
+      /** 确认卡从现有 memo 标签多选，禁止自由输入新建 */
+      input: 'select',
+    },
+  ],
+  commit_memo_delete: [
+    { key: 'title', label: '备忘', editable: false, aliases: ['name'] },
+    { key: 'memo_id', label: '备忘ID', editable: false, aliases: ['id', 'memoId'] },
   ],
   commit_recipe: [
     { key: 'title', label: '菜名', editable: true, aliases: ['name', 'recipe_name'], forceShow: true },
@@ -318,12 +379,51 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
   commit_wish: [
     { key: 'title', label: '心愿', editable: true, aliases: ['name'] },
     { key: 'cost_points', label: '积分', editable: true, aliases: ['points', 'price'] },
-    { key: 'wish_type', label: '类型', editable: true, aliases: ['type'] },
+    {
+      key: 'wish_type',
+      label: '类型',
+      editable: true,
+      aliases: ['type'],
+      forceShow: true,
+      /** 确认卡从 once/repeat 点选，禁止自由输入 */
+      input: 'select',
+    },
     { key: 'note', label: '备注', editable: true, aliases: ['body'] },
+  ],
+  commit_wish_delete: [
+    { key: 'title', label: '心愿', editable: false, aliases: ['name', 'wish_title'] },
+    { key: 'cost_points', label: '积分', editable: false, aliases: ['points', 'price'] },
+    { key: 'wish_id', label: '心愿ID', editable: false, aliases: ['id', 'wishId', 'item_id'] },
+  ],
+  commit_points_ledger_delete: [
+    { key: 'title', label: '足迹', editable: false, aliases: ['reason', 'name'] },
+    { key: 'delta', label: '变动', editable: false, aliases: ['points', 'cost_points'] },
+    {
+      key: 'ledger_id',
+      label: '流水ID',
+      editable: false,
+      aliases: ['id', 'footprint_id'],
+    },
   ],
   commit_profile: [
     { key: 'display_name', label: '昵称', editable: true, aliases: ['name', 'nickname'] },
-    { key: 'persona', label: '画像', editable: true, aliases: ['bio', 'profile_text'] },
+    { key: 'persona', label: '画像', editable: true, aliases: ['bio', 'profile_text', 'persona_portrait'] },
+    { key: 'gender', label: '性别', editable: true },
+    { key: 'lifestyle', label: '生活习惯', editable: true },
+    { key: 'goal', label: '目标', editable: true },
+    { key: 'birthday', label: '生日', editable: true },
+    { key: 'height', label: '身高(cm)', editable: true },
+    { key: 'weight', label: '体重(kg)', editable: true },
+    {
+      key: 'workout_days',
+      label: '健身日',
+      editable: true,
+      aliases: ['workoutDays', 'fitness_days', 'days'],
+    },
+    { key: 'tags', label: '饮食标签', editable: true },
+    { key: 'allergies', label: '过敏', editable: true },
+    { key: 'avoidFoods', label: '忌口', editable: true, aliases: ['avoid_foods'] },
+    { key: 'notes', label: '饮食备注', editable: true },
   ],
   commit_life_road_node: [
     { key: 'title', label: '节点', editable: true, aliases: ['name'] },
@@ -354,13 +454,38 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
   ],
   commit_tag: [
-    { key: 'tag_name', label: '标签', editable: true, aliases: ['name', 'title'] },
+    { key: 'name', label: '新名称', editable: true, aliases: ['title'] },
+    { key: 'old_name', label: '原名称', editable: false, aliases: ['tag_name'] },
+    { key: 'color', label: '颜色', editable: true },
+    { key: 'weight', label: '权重', editable: true },
+    { key: 'note', label: '简介', editable: true, aliases: ['description'] },
+    { key: 'tag_id', label: '标签ID', editable: false },
+  ],
+  commit_tag_delete: [
+    { key: 'name', label: '标签', editable: false, aliases: ['tag_name', 'title', 'old_name'] },
+    { key: 'tag_id', label: '标签ID', editable: false, aliases: ['id'] },
+    {
+      key: 'link_count',
+      label: '关联备忘数',
+      editable: false,
+      aliases: ['count', 'memo_count'],
+    },
   ],
   commit_schedule_placement: [
     { key: 'title', label: '事项', editable: true, aliases: ['name'] },
     { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
     { key: 'start_time', label: '开始', editable: true, aliases: ['start'] },
     { key: 'end_time', label: '结束', editable: true, aliases: ['end'] },
+  ],
+  commit_promote_todo_to_project: [
+    { key: 'task_title', label: '待办', editable: false, aliases: ['title', 'name'] },
+    { key: 'task_id', label: '待办ID', editable: false, aliases: ['id'] },
+    { key: 'project_name', label: '项目名', editable: true, aliases: ['name'] },
+  ],
+  commit_day_boundary: [
+    { key: 'hour', label: '时', editable: true, aliases: ['day_boundary_hour'] },
+    { key: 'minute', label: '分', editable: true, aliases: ['day_boundary_minute'] },
+    { key: 'pages', label: '生效页面', editable: true },
   ],
 };
 
@@ -464,7 +589,7 @@ export function readDraftScalar(
 
 /** 多行编辑字段（ConfirmCard TextInput） */
 export function isMultilineFieldKey(key: string): boolean {
-  return /^(body|content|text|note|persona|description|bio|ingredients_text|steps_text|steps)$/i.test(
+  return /^(body|body_plain|content|text|note|persona|description|bio|ingredients_text|steps_text|steps)$/i.test(
     key,
   );
 }
@@ -476,13 +601,55 @@ export function isNumericFieldKey(key: string): boolean {
   );
 }
 
-/** 需从现有列表点选的字段（菜谱分类等） */
+/** 备忘确认卡：标签须从现有 memo 域标签多选 */
+export function isMemoTagSelectFieldKey(
+  key: string,
+  confirmAction?: string | null,
+): boolean {
+  const action = (confirmAction || '').trim();
+  return (
+    action === 'commit_memo' && /^(tag_names|tags|tag_name|new_tag_names)$/i.test(key)
+  );
+}
+
+/** 心愿确认卡：类型仅 once / repeat 二选一 */
+export const WISH_TYPE_SELECT_OPTIONS = [
+  { id: 'once', name: '一次性', hint: '兑换后即结束' },
+  { id: 'repeat', name: '可重复', hint: '可多次兑换' },
+] as const;
+
+export function isWishTypeSelectFieldKey(
+  key: string,
+  confirmAction?: string | null,
+): boolean {
+  const action = (confirmAction || '').trim();
+  return action === 'commit_wish' && /^(wish_type|type)$/i.test(key);
+}
+
+/** 展示用：once/repeat → 中文；已是中文则原样 */
+export function formatWishTypeLabel(raw: unknown): string {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (!s) return '';
+  if (s === 'repeat' || s === '重复' || s === '可重复' || s === 'repeated') return '可重复';
+  if (s === 'once' || s === '一次性' || s === '单次') return '一次性';
+  return String(raw ?? '').trim();
+}
+
+/** 需从现有列表点选的字段（菜谱分类 / 备忘标签 / 心愿类型等） */
 export function isSelectFieldKey(
   key: string,
   confirmAction?: string | null,
 ): boolean {
   const action = (confirmAction || '').trim();
   if (action === 'commit_recipe' && /^(category_name|category|category_hint)$/i.test(key)) {
+    return true;
+  }
+  if (isMemoTagSelectFieldKey(key, confirmAction)) {
+    return true;
+  }
+  if (isWishTypeSelectFieldKey(key, confirmAction)) {
     return true;
   }
   return false;

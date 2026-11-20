@@ -19,6 +19,7 @@ export type AssistantModuleId =
   | 'tasks.project'
   | 'memo.home'
   | 'memo.add'
+  | 'memo.tags'
   | 'recipe.home'
   | 'recipe.add'
   | 'recipe.plan'
@@ -28,6 +29,7 @@ export type AssistantModuleId =
   | 'wardrobe.outfit'
   | 'wish.home'
   | 'wish.add'
+  | 'wish.footprints'
   | 'review.home'
   | 'review.daily'
   | 'review.weekly'
@@ -55,6 +57,7 @@ const MODULE_ROUTES: Record<AssistantModuleId, ModuleRoute> = {
   'tasks.project': { pathname: '/tasks-overview' },
   'memo.home': { pathname: '/memo-list' },
   'memo.add': { pathname: '/memo-edit/[id]', defaultParams: { id: 'new' } },
+  'memo.tags': { pathname: '/project-tags', defaultParams: { domain: 'memo' } },
   'recipe.home': { pathname: '/my-recipes' },
   'recipe.add': { pathname: '/recipe-edit/[id]', defaultParams: { id: 'new' } },
   'recipe.plan': { pathname: '/my-recipes/plan' },
@@ -64,6 +67,7 @@ const MODULE_ROUTES: Record<AssistantModuleId, ModuleRoute> = {
   'wardrobe.outfit': { pathname: '/my-wardrobe', defaultParams: { tab: 'outfits' } },
   'wish.home': { pathname: '/wish-board' },
   'wish.add': { pathname: '/add-wish-board-item' },
+  'wish.footprints': { pathname: '/wish-board-footprints' },
   'review.home': { pathname: '/(tabs)/review' },
   'review.daily': { pathname: '/(tabs)/review', defaultParams: { focus: 'daily' } },
   'review.weekly': { pathname: '/(tabs)/review', defaultParams: { focus: 'weekly' } },

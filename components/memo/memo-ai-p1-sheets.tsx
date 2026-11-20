@@ -206,8 +206,7 @@ export function MemoAiDedupeBody({
           <MotionPressable
             key={s.memo_id}
             onPress={() => {
-              if (!requestClose()) return;
-              onOpenMemo(s.memo_id);
+              if (!requestClose(() => onOpenMemo(s.memo_id))) return;
             }}
             style={styles.row}>
             <Text style={[styles.body, { color: ink }]}>
@@ -294,8 +293,7 @@ export function MemoAiInsightsBody({
             <MotionPressable
               key={id}
               onPress={() => {
-                if (!requestClose()) return;
-                onOpenMemo(id);
+                if (!requestClose(() => onOpenMemo(id))) return;
               }}
               style={styles.row}>
               <Text style={[styles.body, { color: primary }]}>{titleById.get(id) || id}</Text>

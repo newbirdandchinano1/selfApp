@@ -41,6 +41,7 @@ import {
 import { createProjectFromMemoInInbox } from '@/lib/memo-to-project';
 import {
   createStandaloneTodoFromMemo,
+  seedConvertDraftFromMemo,
   createStandaloneTodosFromMemo,
 } from '@/lib/memo-to-task';
 import {
@@ -734,7 +735,8 @@ export default function MemoListScreen() {
         setConvertError(r.error);
         return;
       }
-      setConvertDraft(r.data);
+      // 标题←备忘标题，备注←备忘正文（不沿用 AI 把正文塞进标题）
+      setConvertDraft(seedConvertDraftFromMemo(row, r.data));
     } finally {
       setConvertLoading(false);
     }
@@ -1379,8 +1381,8 @@ function RowActionSheet({
 }) {
   const requestClose = useMemoCenterSheetClose();
   const run = (action: () => void) => {
-    if (!requestClose()) return;
-    action();
+    // 等 Modal 卸完再 Alert/导航，避免 Android 上 Modal+Alert 卡死
+    if (!requestClose(action)) return;
   };
   const options: { key: string; label: string; color?: string; action: () => void }[] = [
     { key: 'pin', label: row.is_pinned ? '取消置顶' : '置顶', action: onPin },
@@ -1434,8 +1436,7 @@ function SortSheetBody({
           <MotionPressable
             key={opt.id}
             onPress={() => {
-              if (!requestClose()) return;
-              onPick(opt.id);
+              if (!requestClose(() => onPick(opt.id))) return;
             }}
             style={styles.sortOption}>
             <Text style={[styles.sortOptionText, { color: active ? primary : ink }]}>{opt.label}</Text>

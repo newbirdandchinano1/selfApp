@@ -118,16 +118,37 @@ export async function commitSchedulePlacement(
     spanSlots = Math.max(1, Math.ceil((endMinutes - startMinutes) / 120));
   }
 
-  const { insertPlacement } = await import('@/lib/repositories/schedule/schedule-store');
-  const row = await insertPlacement({
-    weekStartYmd: mondayOfYmd(ymd),
-    weekday: weekdayOfYmd(ymd),
+  const logicalToday = formatYmd(new Date());
+  const weekStartYmd = mondayOfYmd(ymd);
+  const weekday = weekdayOfYmd(ymd);
+  const span = Math.max(1, Math.round(spanSlots));
+
+  // 与 App 入格一致：写占用 + 指派青蛙（alsoAssignFrog）
+  if (startMinutes != null && endMinutes != null && endMinutes > startMinutes) {
+    const { placeFrogOnScheduleAt } = await import('@/lib/schedule-service');
+    const row = await placeFrogOnScheduleAt({
+      weekStartYmd,
+      weekday,
+      startMinutes,
+      endMinutes,
+      subjectKind,
+      subjectId,
+      logicalTodayYmd: logicalToday,
+      allDay: false,
+    });
+    await requestPushPending();
+    return ok(row.id, `已将日程放到 ${ymd}`);
+  }
+
+  const { placeFrogOnSchedule } = await import('@/lib/schedule-service');
+  const row = await placeFrogOnSchedule({
+    weekStartYmd,
+    weekday,
     startSlotIndex,
-    spanSlots: Math.max(1, Math.round(spanSlots)),
+    spanSlots: span,
     subjectKind,
     subjectId,
-    startMinutes: startMinutes ?? undefined,
-    endMinutes: endMinutes ?? undefined,
+    logicalTodayYmd: logicalToday,
   });
   await requestPushPending();
   return ok(row.id, `已将日程放到 ${ymd}`);
