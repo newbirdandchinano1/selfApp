@@ -10,9 +10,199 @@ function asTxnType(raw: unknown): 'expense' | 'income' {
   return raw === 'income' ? 'income' : 'expense';
 }
 
+function hasOwn(draft: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.some(k => Object.prototype.hasOwnProperty.call(draft, k));
+}
+
+function asBudgetExclude(draft: Record<string, unknown>): boolean | undefined {
+  if (hasOwn(draft, 'exclude_from_budget')) {
+    const v = draft.exclude_from_budget;
+    if (typeof v === 'boolean') return v;
+    if (v === 1 || v === '1' || v === 'true') return true;
+    if (v === 0 || v === '0' || v === 'false') return false;
+  }
+  if (hasOwn(draft, 'include_in_budget')) {
+    const v = draft.include_in_budget;
+    if (typeof v === 'boolean') return !v;
+    if (v === 1 || v === '1' || v === 'true') return false;
+    if (v === 0 || v === '0' || v === 'false') return true;
+  }
+  return undefined;
+}
+
+async function resolveFinanceTxnRef(
+  draft: Record<string, unknown>,
+): Promise<{ id: string; name: string } | { error: string }> {
+  let txnId =
+    draftString(draft, 'transaction_id') ||
+    draftString(draft, 'id') ||
+    draftString(draft, 'txn_id');
+  const nameHint =
+    draftString(draft, 'locate_name') ||
+    draftString(draft, 'original_name') ||
+    draftString(draft, 'name');
+
+  if (!txnId && nameHint) {
+    const { getFinanceTransactions } = await import('@/lib/repositories/finance/finance');
+    const rows = await getFinanceTransactions({ cacheOnly: true });
+    const needle = nameHint.toLowerCase();
+    const exact = rows.filter(r => r.name.trim().toLowerCase() === needle);
+    const partial =
+      exact.length > 0
+        ? exact
+        : rows.filter(r => r.name.trim().toLowerCase().includes(needle));
+    if (partial.length === 1) {
+      return { id: partial[0]!.id, name: partial[0]!.name || nameHint };
+    }
+    if (partial.length > 1) {
+      return { error: `找到多笔「${nameHint}」相关流水，请先选定一笔` };
+    }
+    return { error: `找不到流水「${nameHint}」` };
+  }
+
+  if (!txnId) return { error: '请指定要操作的流水' };
+
+  const { getFinanceTransactionById } = await import('@/lib/repositories/finance/finance');
+  const row = await getFinanceTransactionById(txnId);
+  if (!row) return { error: nameHint ? `找不到流水「${nameHint}」` : '找不到该流水' };
+  return { id: row.id, name: row.name || nameHint || txnId };
+}
+
+async function resolveFinanceAccountRef(
+  draft: Record<string, unknown>,
+): Promise<{ id: string; name: string } | { error: string }> {
+  let accountId =
+    draftString(draft, 'account_id') ||
+    draftString(draft, 'id');
+  const nameHint =
+    draftString(draft, 'account_name') ||
+    draftString(draft, 'name') ||
+    draftString(draft, 'locate_name');
+
+  const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
+  const accounts = await getFinanceAccountsWithBalance();
+
+  if (!accountId && nameHint) {
+    const needle = nameHint.toLowerCase();
+    const exact = accounts.filter(a => a.name.trim().toLowerCase() === needle);
+    const partial =
+      exact.length > 0
+        ? exact
+        : accounts.filter(a => a.name.trim().toLowerCase().includes(needle));
+    if (partial.length === 1) {
+      return { id: partial[0]!.id, name: partial[0]!.name || nameHint };
+    }
+    if (partial.length > 1) {
+      return { error: `找到多个「${nameHint}」相关账户，请先选定一个` };
+    }
+    return { error: `找不到账户「${nameHint}」` };
+  }
+
+  if (!accountId) return { error: '请指定要操作的账户' };
+  const hit = accounts.find(a => a.id === accountId);
+  if (!hit) return { error: nameHint ? `找不到账户「${nameHint}」` : '找不到该账户' };
+  return { id: hit.id, name: hit.name || nameHint || accountId };
+}
+
 export async function commitFinanceTxn(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
+  const existingId =
+    draftString(draft, 'transaction_id') ||
+    (draftString(draft, 'id')?.startsWith('ft_') ? draftString(draft, 'id') : '');
+
+  if (existingId || draftString(draft, 'locate_name') || draftString(draft, 'original_name')) {
+    const ref = await resolveFinanceTxnRef(draft);
+    if ('error' in ref) return fail('incomplete_draft', ref.error);
+
+    const {
+      financeSignedAmountForSave,
+      getFinanceAccountsWithBalance,
+      getFinanceTransactionById,
+      updateFinanceTransaction,
+    } = await import('@/lib/repositories/finance/finance');
+    const { budgetExtraPatchForTransaction } = await import(
+      '@/lib/repositories/finance/finance-transaction-extra'
+    );
+
+    const current = await getFinanceTransactionById(ref.id);
+    if (!current) return fail('incomplete_draft', '找不到该流水');
+
+    const accounts = await getFinanceAccountsWithBalance();
+    const transactionType = hasOwn(draft, 'transaction_type')
+      ? asTxnType(draft.transaction_type)
+      : asTxnType(current.transaction_type);
+
+    let nextAccountId = current.account_id;
+    const accountHint =
+      draftString(draft, 'account_name') || draftString(draft, 'payment_account_label');
+    if (accountHint) {
+      const { resolveFinanceAccountForAutoLedgerWithDefaults } = await import(
+        '@/lib/finance-account-match'
+      );
+      const candidates = accounts.map(a => ({ id: a.id, name: a.name, account_no: a.account_no }));
+      const matched = resolveFinanceAccountForAutoLedgerWithDefaults(candidates, {
+        transactionType,
+        accountName: accountHint,
+        paymentAccountLabel: accountHint,
+        lastUsedAccountId: current.account_id,
+      });
+      if (matched) nextAccountId = matched.id;
+    }
+    const account = accounts.find(a => a.id === nextAccountId);
+    if (!account) return fail('no_account', '找不到目标账户');
+
+    const amountAbs =
+      draftNumber(draft, 'amount') ??
+      (Number.isFinite(Number(current.amount)) ? Math.abs(Number(current.amount)) : null);
+    if (amountAbs == null || amountAbs <= 0) {
+      return fail('incomplete_draft', '缺少有效金额');
+    }
+
+    const signedAmount = financeSignedAmountForSave(
+      account.sign_rule,
+      account.account_type,
+      Math.abs(amountAbs),
+    );
+
+    let nextExtra = current.extra_data;
+    const excl = asBudgetExclude(draft);
+    if (excl !== undefined) {
+      let extraObj: Record<string, unknown> = {};
+      try {
+        const raw = current.extra_data ? JSON.parse(current.extra_data) : {};
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          extraObj = { ...(raw as Record<string, unknown>) };
+        }
+      } catch {
+        extraObj = {};
+      }
+      Object.assign(extraObj, budgetExtraPatchForTransaction(transactionType, !excl));
+      nextExtra = JSON.stringify(extraObj);
+    }
+
+    const nextName =
+      (hasOwn(draft, 'name') ? draftString(draft, 'name') : '') ||
+      current.name ||
+      '未命名';
+
+    try {
+      await updateFinanceTransaction(ref.id, {
+        name: nextName.slice(0, 80),
+        account_id: nextAccountId,
+        transaction_type: transactionType,
+        amount: signedAmount,
+        note: hasOwn(draft, 'note') ? draftString(draft, 'note') || null : undefined,
+        extra_data: nextExtra,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '更新流水失败';
+      return fail('txn_update_failed', msg);
+    }
+    await requestPushPending();
+    return ok(ref.id, `已更新流水「${nextName.slice(0, 40)}」¥${Math.abs(amountAbs)}`);
+  }
+
   const amountAbs = draftNumber(draft, 'amount');
   const name = draftString(draft, 'name') || '未命名';
   if (amountAbs == null || amountAbs <= 0) {
@@ -77,11 +267,28 @@ export async function commitFinanceTxn(
     account.account_type,
     Math.abs(amountAbs),
   );
+  const excl = asBudgetExclude(draft);
+  const extraObj: Record<string, unknown> = {
+    manual: true,
+    sentence: true,
+    parse_source: 'assistant_chat_commit',
+    category_key: cat.key,
+    category_label: cat.label,
+    matched_account_name: account.name,
+  };
+  if (excl !== undefined) {
+    const { budgetExtraPatchForTransaction } = await import(
+      '@/lib/repositories/finance/finance-transaction-extra'
+    );
+    Object.assign(extraObj, budgetExtraPatchForTransaction(transactionType, !excl));
+  }
+  const extraData = JSON.stringify(extraObj);
+
   const boundsErr = await validateFinanceTransactionBeforeSave({
     accountId: account.id,
     transactionType,
     amount: signedAmount,
-    extraData: null,
+    extraData,
     accountName: account.name,
     uiLedgerBalance: account.balance,
   });
@@ -98,14 +305,7 @@ export async function commitFinanceTxn(
     transaction_type: transactionType,
     amount: signedAmount,
     note: draftString(draft, 'note') || null,
-    extra_data: JSON.stringify({
-      manual: true,
-      sentence: true,
-      parse_source: 'assistant_chat_commit',
-      category_key: cat.key,
-      category_label: cat.label,
-      matched_account_name: account.name,
-    }),
+    extra_data: extraData,
   });
 
   const typeLabel = transactionType === 'income' ? '收入' : '支出';
@@ -182,11 +382,11 @@ export async function commitFinanceTransfer(
 export async function commitFinanceScheduled(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const amountAbs = draftNumber(draft, 'amount');
-  const name = draftString(draft, 'name');
-  if (amountAbs == null || amountAbs <= 0 || !name) {
-    return fail('incomplete_draft', '定时支出需要名称与金额');
-  }
+  const existingId =
+    draftString(draft, 'scheduled_id') ||
+    (draftString(draft, 'id')?.startsWith('fse_') || draftString(draft, 'id')?.startsWith('sfe_')
+      ? draftString(draft, 'id')
+      : '');
 
   const { resolveFinanceAccountForAutoLedgerWithDefaults } = await import(
     '@/lib/finance-account-match'
@@ -194,9 +394,33 @@ export async function commitFinanceScheduled(
   const { loadFinanceLastUsedAccountId, sanitizeFinanceLastUsedAccountId } = await import(
     '@/lib/finance-last-used-account'
   );
-  const { upsertScheduledFinanceExpense } = await import('@/lib/finance-scheduled-expense');
+  const {
+    getScheduledFinanceExpenseById,
+    loadScheduledFinanceExpenses,
+    upsertScheduledFinanceExpense,
+  } = await import('@/lib/finance-scheduled-expense');
   const { getFinanceAccountsWithBalance } = await import('@/lib/repositories/finance/finance');
   const { normalizeScheduledExpenseRepeatStorage } = await import('@/lib/schedule/repeat');
+
+  let current = existingId ? await getScheduledFinanceExpenseById(existingId) : null;
+  if (!current) {
+    const locate =
+      draftString(draft, 'locate_name') ||
+      (existingId ? '' : draftString(draft, 'name'));
+    if (locate) {
+      const rows = await loadScheduledFinanceExpenses();
+      const needle = locate.toLowerCase();
+      const exact = rows.filter(r => r.name.trim().toLowerCase() === needle);
+      const partial =
+        exact.length > 0
+          ? exact
+          : rows.filter(r => r.name.trim().toLowerCase().includes(needle));
+      if (partial.length === 1) current = partial[0]!;
+      else if (partial.length > 1) {
+        return fail('incomplete_draft', `找到多条「${locate}」相关定时支出，请先选定一条`);
+      }
+    }
+  }
 
   const accounts = await getFinanceAccountsWithBalance();
   if (!accounts.length) {
@@ -211,41 +435,86 @@ export async function commitFinanceScheduled(
     transactionType: 'expense',
     accountName: draftString(draft, 'account_name') || null,
     paymentAccountLabel: draftString(draft, 'payment_account_label') || null,
-    lastUsedAccountId,
+    lastUsedAccountId: current?.accountId || lastUsedAccountId,
   });
   const account = matched
     ? accounts.find(a => a.id === matched.id) ?? accounts[0]
-    : accounts[0];
+    : accounts.find(a => a.id === current?.accountId) ?? accounts[0];
   if (!account) {
     return fail('no_account', '请先添加至少一个账户');
   }
 
+  const name =
+    draftString(draft, 'name') || current?.name || '';
+  const amountAbs =
+    draftNumber(draft, 'amount') ??
+    (current ? Math.abs(current.amount) : null);
+  if (!current && (amountAbs == null || amountAbs <= 0 || !name)) {
+    return fail('incomplete_draft', '定时支出需要名称与金额');
+  }
+  if (current && !name) {
+    return fail('incomplete_draft', '定时支出缺少名称');
+  }
+
   const repeat = normalizeScheduledExpenseRepeatStorage(
-    draftString(draft, 'repeat_hint') || draft.repeat_option || 'monthly',
+    draftString(draft, 'repeat_hint') ||
+      draft.repeat_option ||
+      current?.repeatOption ||
+      'monthly',
   );
   const daysRaw = draft.days;
   const days: number[] = Array.isArray(daysRaw)
     ? daysRaw.map(d => Number(d)).filter(n => Number.isFinite(n) && n >= 1 && n <= 31)
-    : [];
-  const hour = draftNumber(draft, 'hour') ?? 9;
-  const minute = draftNumber(draft, 'minute') ?? 0;
+    : current
+      ? repeat === 'weekly'
+        ? [...current.weeklyDays]
+        : [...current.monthlyDays]
+      : [];
+  const dayOfMonth = draftNumber(draft, 'day_of_month');
+  if (dayOfMonth != null && dayOfMonth >= 1 && dayOfMonth <= 31 && days.length === 0) {
+    days.push(Math.floor(dayOfMonth));
+  }
+  const hour = draftNumber(draft, 'hour') ?? current?.hour ?? 9;
+  const minute = draftNumber(draft, 'minute') ?? current?.minute ?? 0;
+  const enabled =
+    typeof draft.enabled === 'boolean'
+      ? draft.enabled
+      : draft.enabled === 0 || draft.enabled === '0' || draft.enabled === 'false'
+        ? false
+        : draft.enabled === 1 || draft.enabled === '1' || draft.enabled === 'true'
+          ? true
+          : (current?.enabled ?? true);
+  const includeInBudget =
+    typeof draft.include_in_budget === 'boolean'
+      ? draft.include_in_budget
+      : (current?.includeInBudget ?? true);
 
   const saved = await upsertScheduledFinanceExpense({
-    name,
-    amount: Math.abs(amountAbs),
+    id: current?.id,
+    name: name.slice(0, 40),
+    amount: Math.abs(amountAbs ?? current?.amount ?? 0),
     accountId: account.id,
     repeatOption: repeat,
-    weeklyDays: repeat === 'weekly' ? (days.length ? days : [1]) : [],
-    monthlyDays: repeat === 'monthly' ? (days.length ? days : [1]) : [],
+    weeklyDays: repeat === 'weekly' ? (days.length ? days : current?.weeklyDays?.length ? current.weeklyDays : [1]) : [],
+    monthlyDays: repeat === 'monthly' ? (days.length ? days : current?.monthlyDays?.length ? current.monthlyDays : [1]) : [],
     hour: Math.min(23, Math.max(0, Math.floor(hour))),
     minute: Math.min(59, Math.max(0, Math.floor(minute))),
-    timesPerDay: 1,
-    categoryLabel: draftString(draft, 'category_label') || null,
-    includeInBudget: true,
-    enabled: true,
+    timesPerDay: current?.timesPerDay ?? 1,
+    categoryLabel:
+      draftString(draft, 'category_label') || current?.categoryLabel || null,
+    includeInBudget,
+    enabled,
+    createdAt: current?.createdAt,
   });
 
-  return ok(saved.id, `已保存定时支出「${name}」¥${Math.abs(amountAbs)}`);
+  const actionLabel = current
+    ? enabled !== current.enabled
+      ? enabled
+        ? '已启用'
+        : '已暂停'
+      : '已更新'
+    : '已保存';
+  return ok(saved.id, `${actionLabel}定时支出「${name.slice(0, 40)}」¥${Math.abs(saved.amount)}`);
 }
 
 export async function commitFinanceCashFlow(
@@ -419,16 +688,45 @@ function ymdPlusDays(ymd: string, days: number): string {
 export async function commitFinanceAccount(
   draft: Record<string, unknown>,
 ): Promise<ChatCommitHandlerResult> {
-  const name = draftString(draft, 'name');
+  const { makeTimestampEntityId } = await import('@/lib/entity-id');
+  const {
+    createFinanceAccount,
+    getFinanceAccountsWithBalance,
+    updateFinanceAccount,
+  } = await import('@/lib/repositories/finance/finance');
+  const {
+    mergeFinanceAccountExcludeFromTotalAssets,
+    mergeFinanceAccountHideFromHome,
+  } = await import('@/lib/repositories/finance/finance-account-extra');
+
+  let existingId =
+    draftString(draft, 'account_id') ||
+    (draftString(draft, 'id')?.startsWith('fa_') ? draftString(draft, 'id') : '');
+  const nameHint = draftString(draft, 'name');
+  let currentExtra: string | null = null;
+  let currentName = nameHint;
+
+  if (!existingId && nameHint) {
+    const accounts = await getFinanceAccountsWithBalance();
+    const needle = nameHint.toLowerCase();
+    const hit =
+      accounts.find(a => a.name.trim().toLowerCase() === needle) ||
+      accounts.find(a => a.name.trim().toLowerCase().includes(needle));
+    if (hit) {
+      existingId = hit.id;
+      currentExtra = hit.extra_data;
+      currentName = hit.name;
+    }
+  } else if (existingId) {
+    const accounts = await getFinanceAccountsWithBalance();
+    const hit = accounts.find(a => a.id === existingId);
+    currentExtra = hit?.extra_data ?? null;
+    currentName = hit?.name || nameHint;
+  }
+
+  const name = draftString(draft, 'name') || currentName;
   if (!name) return fail('incomplete_draft', '缺少账户名称');
 
-  const { makeTimestampEntityId } = await import('@/lib/entity-id');
-  const { createFinanceAccount, updateFinanceAccount } = await import(
-    '@/lib/repositories/finance/finance'
-  );
-
-  const existingId =
-    draftString(draft, 'account_id') || draftString(draft, 'id');
   const accountTypeRaw = draftString(draft, 'account_type') || 'asset';
   const isLiability =
     accountTypeRaw === 'liability' ||
@@ -436,30 +734,90 @@ export async function commitFinanceAccount(
     draft.sign_rule === -1;
   const account_type = isLiability ? 'liability' : accountTypeRaw || 'asset';
   const sign_rule: -1 | 1 = isLiability ? -1 : 1;
-  const account_no = draftString(draft, 'account_no') || null;
-  const note = draftString(draft, 'note') || null;
+  const account_no = hasOwn(draft, 'account_no')
+    ? draftString(draft, 'account_no') || null
+    : undefined;
+  const note = hasOwn(draft, 'note') ? draftString(draft, 'note') || null : undefined;
+
+  let extra_data: string | undefined;
+  const hasExclude = hasOwn(draft, 'exclude_from_total_assets');
+  const hasHide = hasOwn(draft, 'hide_from_home');
+  if (hasExclude || hasHide) {
+    let next = currentExtra;
+    if (hasExclude) {
+      const excluded =
+        draft.exclude_from_total_assets === true ||
+        draft.exclude_from_total_assets === 1 ||
+        draft.exclude_from_total_assets === '1' ||
+        draft.exclude_from_total_assets === 'true';
+      next = mergeFinanceAccountExcludeFromTotalAssets(next, excluded);
+    }
+    if (hasHide) {
+      const hidden =
+        draft.hide_from_home === true ||
+        draft.hide_from_home === 1 ||
+        draft.hide_from_home === '1' ||
+        draft.hide_from_home === 'true';
+      next = mergeFinanceAccountHideFromHome(next, hidden);
+    }
+    extra_data = next ?? undefined;
+  }
 
   if (existingId) {
     await updateFinanceAccount(existingId, {
       name: name.slice(0, 40),
-      account_no,
-      account_type,
-      sign_rule,
-      note,
+      ...(account_no !== undefined ? { account_no } : {}),
+      ...(draftString(draft, 'account_type') || draft.sign_rule != null
+        ? { account_type, sign_rule }
+        : {}),
+      ...(note !== undefined ? { note } : {}),
+      ...(extra_data !== undefined ? { extra_data } : {}),
     });
     await requestPushPending();
-    return ok(existingId, `已更新账户「${name.slice(0, 40)}」`);
+    const bits: string[] = [];
+    if (hasExclude) {
+      bits.push(
+        draft.exclude_from_total_assets === true ||
+          draft.exclude_from_total_assets === 1 ||
+          draft.exclude_from_total_assets === 'true'
+          ? '不计入总资产'
+          : '计入总资产',
+      );
+    }
+    if (hasHide) {
+      bits.push(
+        draft.hide_from_home === true ||
+          draft.hide_from_home === 1 ||
+          draft.hide_from_home === 'true'
+          ? '首页隐藏'
+          : '首页显示',
+      );
+    }
+    return ok(
+      existingId,
+      `已更新账户「${name.slice(0, 40)}」${bits.length ? `（${bits.join(' · ')}）` : ''}`,
+    );
   }
 
   const id = makeTimestampEntityId('fa_', 8);
+  const createExtra = extra_data
+    ? (() => {
+        try {
+          const o = JSON.parse(extra_data) as Record<string, unknown>;
+          return JSON.stringify({ ...o, source: 'assistant_chat_commit' });
+        } catch {
+          return JSON.stringify({ source: 'assistant_chat_commit' });
+        }
+      })()
+    : JSON.stringify({ source: 'assistant_chat_commit' });
   await createFinanceAccount({
     id,
     name: name.slice(0, 40),
-    account_no,
+    account_no: account_no ?? null,
     account_type,
     sign_rule,
-    note,
-    extra_data: JSON.stringify({ source: 'assistant_chat_commit' }),
+    note: note ?? null,
+    extra_data: createExtra,
   });
   await requestPushPending();
   return ok(id, `已创建账户「${name.slice(0, 40)}」`);
@@ -636,16 +994,203 @@ export async function commitSavingsDeposit(
   return ok(id, `已存入 ¥${Math.abs(amount)}`);
 }
 
+export async function commitFinanceTxnDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const ref = await resolveFinanceTxnRef(draft);
+  if ('error' in ref) return fail('incomplete_draft', ref.error);
+  const { deleteFinanceTransaction } = await import('@/lib/repositories/finance/finance');
+  try {
+    await deleteFinanceTransaction(ref.id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '删除流水失败';
+    return fail('txn_delete_failed', msg);
+  }
+  await requestPushPending();
+  return ok(ref.id, `已删除流水「${ref.name.slice(0, 40)}」`);
+}
+
+export async function commitFinanceAccountDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const ref = await resolveFinanceAccountRef(draft);
+  if ('error' in ref) return fail('incomplete_draft', ref.error);
+  const { deleteFinanceAccount } = await import('@/lib/repositories/finance/finance');
+  try {
+    await deleteFinanceAccount(ref.id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '删除账户失败';
+    return fail('account_delete_failed', msg);
+  }
+  await requestPushPending();
+  return ok(ref.id, `已删除账户「${ref.name.slice(0, 40)}」及其下流水`);
+}
+
+export async function commitFinanceScheduledDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  let sid =
+    draftString(draft, 'scheduled_id') ||
+    draftString(draft, 'id');
+  const nameHint =
+    draftString(draft, 'name') || draftString(draft, 'locate_name');
+  const {
+    deleteScheduledFinanceExpense,
+    getScheduledFinanceExpenseById,
+    loadScheduledFinanceExpenses,
+  } = await import('@/lib/finance-scheduled-expense');
+
+  let label = nameHint;
+  if (!sid && nameHint) {
+    const rows = await loadScheduledFinanceExpenses();
+    const needle = nameHint.toLowerCase();
+    const exact = rows.filter(r => r.name.trim().toLowerCase() === needle);
+    const partial =
+      exact.length > 0
+        ? exact
+        : rows.filter(r => r.name.trim().toLowerCase().includes(needle));
+    if (partial.length === 1) {
+      sid = partial[0]!.id;
+      label = partial[0]!.name;
+    } else if (partial.length > 1) {
+      return fail('incomplete_draft', `找到多条「${nameHint}」相关定时支出，请先选定一条`);
+    } else {
+      return fail('incomplete_draft', `找不到定时支出「${nameHint}」`);
+    }
+  }
+  if (!sid) return fail('incomplete_draft', '请指定要删除的定时支出');
+  const row = await getScheduledFinanceExpenseById(sid);
+  if (!row) return fail('incomplete_draft', label ? `找不到定时支出「${label}」` : '找不到该定时支出');
+  label = row.name || label || sid;
+
+  try {
+    await deleteScheduledFinanceExpense(sid);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '删除定时支出失败';
+    return fail('scheduled_delete_failed', msg);
+  }
+  await requestPushPending();
+  return ok(sid, `已删除定时支出「${String(label).slice(0, 40)}」（已记账流水保留）`);
+}
+
+export async function commitFinanceFlowCategoryDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  let cid =
+    draftString(draft, 'category_id') ||
+    draftString(draft, 'id');
+  const nameHint = draftString(draft, 'name');
+  const {
+    deleteFinanceFlowCategory,
+    getFinanceFlowCategories,
+  } = await import('@/lib/repositories/finance/finance');
+
+  let label = nameHint;
+  if (!cid && nameHint) {
+    const rows = await getFinanceFlowCategories({ cacheOnly: true });
+    const needle = nameHint.toLowerCase();
+    const exact = rows.filter(r => r.name.trim().toLowerCase() === needle);
+    const partial =
+      exact.length > 0
+        ? exact
+        : rows.filter(r => r.name.trim().toLowerCase().includes(needle));
+    if (partial.length === 1) {
+      cid = partial[0]!.id;
+      label = partial[0]!.name;
+    } else if (partial.length > 1) {
+      return fail('incomplete_draft', `找到多个「${nameHint}」相关分类，请先选定一个`);
+    } else {
+      return fail('incomplete_draft', `找不到分类「${nameHint}」`);
+    }
+  }
+  if (!cid) return fail('incomplete_draft', '请指定要删除的流水分类');
+
+  try {
+    await deleteFinanceFlowCategory(cid);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '删除分类失败';
+    return fail('category_delete_failed', msg);
+  }
+  await requestPushPending();
+  return ok(cid, `已删除流水分类「${String(label || cid).slice(0, 40)}」`);
+}
+
+export async function commitFinanceAccountTypeDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const name = draftString(draft, 'name');
+  if (!name) return fail('incomplete_draft', '缺少账户类型名称');
+  const { deleteFinanceAccountTypeByName } = await import(
+    '@/lib/repositories/finance/finance'
+  );
+  try {
+    await deleteFinanceAccountTypeByName(name);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '删除账户类型失败';
+    return fail('account_type_delete_failed', msg);
+  }
+  await requestPushPending();
+  return ok(name, `已删除账户类型「${name.slice(0, 40)}」`);
+}
+
+export async function commitFinanceBalanceCorrection(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  const target =
+    draftNumber(draft, 'target_balance') ??
+    draftNumber(draft, 'targetLedgerBalance') ??
+    draftNumber(draft, 'balance');
+  if (target == null || !Number.isFinite(target)) {
+    return fail('incomplete_draft', '缺少有效目标余额');
+  }
+
+  const ref = await resolveFinanceAccountRef(draft);
+  if ('error' in ref) return fail('incomplete_draft', ref.error);
+
+  const {
+    applyFinanceAccountBalanceCorrection,
+    getFinanceAccountsWithBalance,
+  } = await import('@/lib/repositories/finance/finance');
+  const accounts = await getFinanceAccountsWithBalance();
+  const account = accounts.find(a => a.id === ref.id);
+  if (!account) return fail('no_account', `找不到账户「${ref.name}」`);
+
+  try {
+    await applyFinanceAccountBalanceCorrection({
+      accountId: account.id,
+      targetLedgerBalance: target,
+      note: draftString(draft, 'note') || '余额校正',
+      signRule: account.sign_rule,
+      accountType: account.account_type,
+      currentLedgerBalance: account.balance,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '余额校正失败';
+    return fail('balance_correction_failed', msg);
+  }
+  await requestPushPending();
+  return ok(account.id, `已将「${account.name}」余额校正为 ¥${Math.abs(target)}`);
+}
+
 export const financeCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_finance_txn: async input => commitFinanceTxn(input.draft),
+  commit_finance_txn_delete: async input => commitFinanceTxnDelete(input.draft),
   commit_finance_transfer: async input => commitFinanceTransfer(input.draft),
   commit_finance_scheduled: async input => commitFinanceScheduled(input.draft),
+  commit_finance_scheduled_delete: async input => commitFinanceScheduledDelete(input.draft),
   commit_finance_cash_flow: async input => commitFinanceCashFlow(input.draft),
   commit_finance_budget: async input => commitFinanceBudget(input.draft),
   commit_finance_savings_goal: async input => commitFinanceSavingsGoal(input.draft),
   commit_finance_account: async input => commitFinanceAccount(input.draft),
+  commit_finance_account_delete: async input => commitFinanceAccountDelete(input.draft),
   commit_finance_flow_category: async input => commitFinanceFlowCategory(input.draft),
+  commit_finance_flow_category_delete: async input =>
+    commitFinanceFlowCategoryDelete(input.draft),
   commit_finance_account_type: async input => commitFinanceAccountType(input.draft),
+  commit_finance_account_type_delete: async input =>
+    commitFinanceAccountTypeDelete(input.draft),
+  commit_finance_balance_correction: async input =>
+    commitFinanceBalanceCorrection(input.draft),
   commit_savings_plan: async input => commitSavingsPlan(input.draft),
   commit_savings_deposit: async input => commitSavingsDeposit(input.draft),
 };

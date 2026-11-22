@@ -4,8 +4,14 @@ import { Motion } from '@/constants/design-tokens';
 import { useFoldTheme, type FoldSemanticPalette } from '@/constants/review-fold-theme';
 import { useDayBoundary } from '@/contexts/day-boundary-context';
 import { useThemePreference } from '@/contexts/theme-preference-context';
+import { useWeatherAtmosphereWebpBgSetting } from '@/hooks/use-weather-atmosphere-webp';
 import { resetLocalDatabaseForDebug } from '@/lib/api-local-clear';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
+import {
+  WEATHER_ATMOSPHERE_WEBP_IDS,
+  WEATHER_ATMOSPHERE_WEBP_LABELS,
+  type WeatherAtmosphereWebpPick,
+} from '@/lib/weather-atmosphere-webp-assets';
 import {
   DEFAULT_CLOUD_AUTH_TOKEN,
   DEFAULT_CLOUD_SQL_API_URL,
@@ -267,6 +273,12 @@ export function GlobalSettingsPanel({
   const { preference, colorScheme, setPreference } = useThemePreference();
   const { palette, fold, isDark } = useFoldTheme();
   const isNight = colorScheme === 'dark';
+  const {
+    enabled: weatherWebpBgEnabled,
+    pick: weatherWebpPick,
+    setEnabled: setWeatherWebpBgEnabled,
+    setPick: setWeatherWebpPick,
+  } = useWeatherAtmosphereWebpBgSetting();
 
   const scrollRef = useRef<ScrollHandle | null>(null);
   const sectionOffsets = useRef<Partial<Record<SettingsSection, number>>>({});
@@ -585,6 +597,24 @@ export function GlobalSettingsPanel({
     [setPreference],
   );
 
+  const onWeatherWebpBgSwitch = useCallback(
+    (enabled: boolean) => {
+      void setWeatherWebpBgEnabled(enabled).catch(e => {
+        toast.error(toUserMessage(e, '未能保存天气背景设置'));
+      });
+    },
+    [setWeatherWebpBgEnabled],
+  );
+
+  const onWeatherWebpPick = useCallback(
+    (pick: WeatherAtmosphereWebpPick) => {
+      void setWeatherWebpPick(pick).catch(e => {
+        toast.error(toUserMessage(e, '未能保存背景选图'));
+      });
+    },
+    [setWeatherWebpPick],
+  );
+
   const setThemeMode = useCallback(
     (pref: ThemePreference) => {
       void setPreference(pref);
@@ -682,6 +712,15 @@ export function GlobalSettingsPanel({
             <SectionTitle title="系统管理" color={palette.inkSoft} />
             <GroupCard palette={palette}>
               <NavRow
+                icon="place"
+                tone="sage"
+                title="天气位置"
+                hint="自动定位，或手填城市名与经纬度"
+                onPress={() => go('/weather-location')}
+                palette={palette}
+                showDivider
+              />
+              <NavRow
                 icon="dashboard"
                 tone="pine"
                 title="桌面与状态栏"
@@ -763,6 +802,74 @@ export function GlobalSettingsPanel({
                   );
                 })}
               </View>
+
+              <View
+                style={[
+                  styles.switchRow,
+                  {
+                    marginTop: 14,
+                    paddingTop: 14,
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                    borderTopColor: palette.line,
+                  },
+                ]}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={[styles.rowTitle, { color: palette.ink }]}>天气氛围背景</Text>
+                  <Text style={[styles.rowHint, { color: palette.muted }]}>
+                    开启后主页透出 Skia 氛围层；可跟随天气，或手动点选下方场景预览。
+                  </Text>
+                </View>
+                <Switch
+                  value={weatherWebpBgEnabled}
+                  onValueChange={onWeatherWebpBgSwitch}
+                  trackColor={{ false: fold.line2, true: fold.pineButton }}
+                  thumbColor="#ffffff"
+                  ios_backgroundColor={fold.line2}
+                />
+              </View>
+
+              {weatherWebpBgEnabled ? (
+                <View style={styles.webpPickWrap}>
+                  <Text style={[styles.rowHint, { color: palette.muted, marginBottom: 8 }]}>
+                    氛围场景 · 默认跟随天气
+                  </Text>
+                  <View style={styles.webpPickChips}>
+                    {(
+                      [
+                        { id: 'auto' as const, label: '跟随天气' },
+                        ...WEATHER_ATMOSPHERE_WEBP_IDS.map(id => ({
+                          id,
+                          label: WEATHER_ATMOSPHERE_WEBP_LABELS[id],
+                        })),
+                      ] as const
+                    ).map(opt => {
+                      const selected = weatherWebpPick === opt.id;
+                      return (
+                        <MotionPressable
+                          key={opt.id}
+                          onPress={() => onWeatherWebpPick(opt.id)}
+                          pressScale={0.97}
+                          pressOpacity={1}
+                          style={[
+                            styles.webpPickChip,
+                            {
+                              borderColor: selected ? palette.pine : palette.lineStrong,
+                              backgroundColor: selected ? palette.sageSoft : fold.cardSoft,
+                            },
+                          ]}>
+                          <Text
+                            style={[
+                              styles.chipText,
+                              { color: selected ? palette.pine : palette.inkSoft },
+                            ]}>
+                            {opt.label}
+                          </Text>
+                        </MotionPressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
             </View>
           </View>
 
@@ -1105,6 +1212,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   chipText: { fontSize: 12, fontWeight: '700' },
+  webpPickWrap: { marginTop: 12 },
+  webpPickChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  webpPickChip: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
   inlineAction: {
     flexDirection: 'row',
     alignItems: 'center',

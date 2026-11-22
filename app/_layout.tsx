@@ -490,7 +490,10 @@ function RootLayoutInner() {
             <AppErrorBoundary>
             <ApiLoadingShell>
             <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="(tabs)" />
+            <Stack.Screen
+              name="(tabs)"
+              options={{ contentStyle: { backgroundColor: 'transparent' } }}
+            />
             <Stack.Screen name="add-task" />
             <Stack.Screen name="add-standalone-todo" />
             <Stack.Screen
@@ -579,6 +582,8 @@ function RootLayoutInner() {
             <Stack.Screen name="vision-cutout-test" />
             <Stack.Screen name="widgets-center" />
             <Stack.Screen name="widgets-center/[id]" />
+            <Stack.Screen name="weather-location" options={{ headerShown: false }} />
+            <Stack.Screen name="horoscope-detail" options={{ headerShown: false }} />
             <Stack.Screen name="category-sort" />
             <Stack.Screen name="project-tags" />
             <Stack.Screen name="screenshot" />

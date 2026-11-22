@@ -1563,7 +1563,8 @@ function AiSheetBody({
 
 const styles = StyleSheet.create({
   wallHeader: {
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(244,240,231,0.82)',
+    borderBottomColor: 'rgba(33,69,58,0.12)',
     borderBottomWidth: 0,
   },
   list: { flex: 1, backgroundColor: 'transparent' },
@@ -1573,7 +1574,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.lg,
+    paddingTop: Spacing.md,
     gap: Spacing.md,
   },
   column: {
@@ -1604,3 +1605,4 @@ const styles = StyleSheet.create({
   aiBody: { ...MemoText.aiBody, marginTop: 4 },
   regenBtn: { marginTop: 18 },
 });
+

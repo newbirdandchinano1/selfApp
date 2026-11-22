@@ -1,3 +1,6 @@
 import FinanceScreen from '@/screens/finance/FinanceScreen';
+import React from 'react';
 
-export default FinanceScreen;
+export default function FinanceTabScreen() {
+  return <FinanceScreen />;
+}

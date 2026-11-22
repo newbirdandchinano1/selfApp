@@ -716,13 +716,14 @@ export default function MemoViewScreen() {
 
 const styles = StyleSheet.create({
   wallHeader: {
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(244,240,231,0.82)',
+    borderBottomColor: 'rgba(33,69,58,0.12)',
     borderBottomWidth: 0,
   },
   headerActions: { flexDirection: 'row', alignItems: 'center' },
   scrollInner: {
     flexGrow: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingTop: 8,
   },
   title: { ...MemoText.detailTitle, color: MEMO_INK },
@@ -778,3 +779,4 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
   },
 });
+

@@ -3,7 +3,7 @@ import { ActivityIndicator, Animated, Easing, StyleSheet, Text, View, type Layou
 
 import { MotionPressable } from '@/components/ui';
 import { Layout, Motion, Spacing } from '@/constants/design-tokens';
-import { MemoRadius, MemoText, memoTagStyle } from '@/constants/memo-ui';
+import { MemoText, memoTagStyle } from '@/constants/memo-ui';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { memoListPreviewTitle, type MemoItem } from '@/lib/memos';
 import { plainTextFromBody } from '@/lib/memo-richdoc/plain-text';
@@ -13,12 +13,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import {
   MEMO_INK,
   MEMO_INK_SOFT,
-  MEMO_RULE,
   MEMO_WASH,
-  MemoTape,
-  PaperCurl,
   Thumbtack,
-  memoPaperColor,
   shiftPaper,
 } from './memo-paper';
 import { hasMemoExpanded, markMemoExpanded } from './use-memo-list-motion';
@@ -48,14 +44,6 @@ type Props = {
   onAiPress: (item: MemoItem) => void;
 };
 
-function stickyIndex(id: string): number {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1) {
-    hash = (hash * 33 + id.charCodeAt(i)) >>> 0;
-  }
-  return hash;
-}
-
 function stickyPreview(item: MemoItem, wide: boolean): string {
   const text = plainTextFromBody(item.body).replace(/\n{2,}/g, '\n').trim();
   if (!text) return '（无正文）';
@@ -82,10 +70,12 @@ export function MemoListRow({
   onAiPress,
 }: Props) {
   const pinned = Boolean(item.is_pinned);
-  const [paper] = useState(() => memoPaperColor(item.id));
-  const edge = shiftPaper(paper, -28);
-  const tilt = ((stickyIndex(`${item.id}:tilt`) % 5) - 2) * (wide ? 0.35 : 1.1);
-  const curlSize = wide ? 52 : 34;
+  const paper = '#FBF8F1';
+  const edge = shiftPaper(paper, -14);
+  // The memo surface now follows the shared paper/card language used by the
+  // other profile modules. Keep the stable paper color for detail continuity,
+  // but remove the per-card rotation so text remains calm and scannable.
+  const tilt = 0;
   const { enabled: reduceMotion, ready: motionReady } = useReducedMotionState();
   const playExpand = expandToken > 0 && !hasMemoExpanded(expandToken, item.id);
   const [contentHeight, setContentHeight] = useState(0);
@@ -182,7 +172,6 @@ export function MemoListRow({
       <View style={styles.unrollBody} onLayout={onBodyLayout}>
       <View style={{ transform: [{ rotate: `${tilt}deg` }] }}>
         <View pointerEvents="none" style={styles.castShadow} />
-        {pinned ? null : <MemoTape wide={wide} />}
         <MotionPressable
           disabled={converting}
           onPress={() => onPress(item)}
@@ -252,7 +241,6 @@ export function MemoListRow({
               {timeLabel}
             </Text>
           )}
-          <PaperCurl size={curlSize} paper={paper} />
         </MotionPressable>
         {pinned ? <Thumbtack large={wide} /> : null}
       </View>
@@ -273,17 +261,18 @@ export function MemoListRow({
 const styles = StyleSheet.create({
   noteOuter: {
     width: '100%',
-    marginBottom: Spacing.xl,
-    paddingRight: 4,
-    paddingBottom: 6,
+    marginBottom: Spacing.md,
+    paddingRight: 0,
+    paddingBottom: 0,
   },
   unrollClip: {
     overflow: 'hidden',
   },
   unrollBody: {
-    paddingTop: 10,
+    paddingTop: 0,
   },
   rollBar: {
+    display: 'none',
     position: 'absolute',
     left: 10,
     right: 14,
@@ -315,47 +304,49 @@ const styles = StyleSheet.create({
     right: 6,
     top: 14,
     bottom: 0,
-    borderRadius: 3,
-    backgroundColor: 'rgba(42, 50, 44, 0.18)',
-    transform: [{ translateX: 3 }, { translateY: 8 }],
+    borderRadius: 18,
+    backgroundColor: 'rgba(31,48,39,0.08)',
+    transform: [{ translateX: 0 }, { translateY: 5 }],
   },
   note: {
-    borderRadius: 2,
-    borderBottomWidth: 3,
-    paddingTop: 18,
-    paddingHorizontal: 12,
-    paddingBottom: 36,
-    minHeight: 132,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(33,69,58,0.14)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingTop: 14,
+    paddingHorizontal: 15,
+    paddingBottom: 14,
+    minHeight: 124,
     overflow: 'hidden',
-    shadowColor: '#2A322C',
-    shadowOffset: { width: 2, height: 7 },
-    shadowOpacity: 0.28,
-    shadowRadius: 7,
-    elevation: 6,
+    shadowColor: '#1F3027',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 2,
   },
   noteWide: {
-    minHeight: 196,
-    paddingTop: 22,
-    paddingHorizontal: 18,
-    paddingBottom: 48,
+    minHeight: 150,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
   },
   sheen: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    height: 10,
-    backgroundColor: 'rgba(255,255,255,0.28)',
+    height: 5,
+    backgroundColor: 'rgba(255,255,255,0.18)',
   },
   rules: {
-    ...StyleSheet.absoluteFillObject,
+    display: 'none',
   },
   rule: {
     position: 'absolute',
     left: 12,
     right: 18,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: MEMO_RULE,
+    backgroundColor: 'transparent',
   },
   highlightWash: {
     ...StyleSheet.absoluteFillObject,
@@ -365,21 +356,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  time: { ...MemoText.time, color: INK_SOFT, marginTop: 10, paddingRight: 28 },
+  time: { ...MemoText.time, color: INK_SOFT, marginTop: 10, paddingRight: 8 },
   timeWide: { fontSize: 13 },
-  title: { ...MemoText.listTitle, color: INK, marginBottom: 6 },
+  title: { ...MemoText.listTitle, color: INK, marginBottom: 6, fontWeight: '600' },
   titleWide: { fontSize: 20, lineHeight: 26 },
   body: { ...MemoText.preview, color: INK, lineHeight: 22 },
   bodyWide: { fontSize: 16, lineHeight: 24 },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 10 },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 10 },
   miniTag: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     minHeight: 20,
-    borderRadius: MemoRadius.tag,
+    borderRadius: 5,
     paddingHorizontal: 6,
     paddingVertical: 2,
     maxWidth: 120,
@@ -401,3 +392,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 });
+
+

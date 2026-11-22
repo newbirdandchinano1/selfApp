@@ -54,14 +54,21 @@ export const CATALOG_COMMIT_ACTIONS = ['commit_catalog_write'] as const;
 /** W3：§5.6-B 补洞（对照表 B01–B34） */
 export const W3_COMMIT_ACTIONS = [
   'commit_finance_account',
+  'commit_finance_account_delete',
   'commit_finance_flow_category',
+  'commit_finance_flow_category_delete',
   'commit_finance_account_type',
+  'commit_finance_account_type_delete',
+  'commit_finance_txn_delete',
+  'commit_finance_scheduled_delete',
+  'commit_finance_balance_correction',
   'commit_savings_plan',
   'commit_savings_deposit',
   'commit_habit_checkin',
   'commit_habit_context',
   'commit_weight',
   'commit_intake_targets',
+  'commit_food_intake_delete',
   'commit_recipe_category',
   'commit_memo_delete',
   'commit_recipe_delete',
@@ -74,6 +81,10 @@ export const W3_COMMIT_ACTIONS = [
   'commit_wardrobe_body',
   'commit_review_journal',
   'commit_review_column',
+  'commit_review_fill_empty',
+  'commit_review_settings',
+  'commit_review_dimension_delete',
+  'commit_review_column_delete',
   'commit_life_bet',
   'commit_task_category',
   'commit_project_category',
@@ -177,6 +188,10 @@ export {
   commitReviewDimension,
   commitReviewJournal,
   commitReviewColumn,
+  commitReviewFillEmpty,
+  commitReviewSettings,
+  commitReviewDimensionDelete,
+  commitReviewColumnDelete,
 } from './review';
 export { commitTag, commitTagDelete } from './tag';
 export { commitSchedulePlacement } from './schedule';

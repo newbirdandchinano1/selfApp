@@ -520,7 +520,8 @@ export default function MemoEditScreen() {
 
 const styles = StyleSheet.create({
   wallHeader: {
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(244,240,231,0.82)',
+    borderBottomColor: 'rgba(33,69,58,0.12)',
     borderBottomWidth: 0,
   },
   headerActions: { flexDirection: 'row', alignItems: 'center' },
@@ -569,3 +570,4 @@ const styles = StyleSheet.create({
     minHeight: 120,
   },
 });
+

@@ -253,6 +253,10 @@ type ApiRequestOptions = {
    * Agent `/api/v1/ai/*` 与备忘 `ai-review` 默认视为耗时长的非阻塞请求，也会跳过蒙层。
    */
   skipGlobalLoading?: boolean;
+  /**
+   * 绕过全局 API 并发队列（天气 / 星座等附属通道），避免占满槽位拖慢页面主数据请求。
+   */
+  skipQueue?: boolean;
 };
 
 /** App API 正式前缀。遗留 `/api/*`（非 `/api/admin`）在请求前改写到此前缀。 */
@@ -410,5 +414,6 @@ export async function apiRequest<T = unknown>(
     return runAuth();
   };
 
+  if (options.skipQueue) return execute();
   return enqueueApiRequest(execute, { kind: queueKind });
 }

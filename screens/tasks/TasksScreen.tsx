@@ -49,10 +49,8 @@ import {
   getTaskPriorityTone,
   getTaskUiColors,
 } from '@/constants/design-tokens';
-import {
-  TaskFoldMotion,
-  useTaskFoldTheme,
-} from '@/constants/task-fold-theme';
+import { TaskFoldMotion } from '@/constants/task-fold-theme';
+import { useWeatherAwareTaskFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import {
   FOLD_MOTION_EASE,
   FOLD_MOTION_SPRING,
@@ -1755,7 +1753,7 @@ export default function TasksScreen() {
 
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
-  const { tf, fonts: foldFonts } = useTaskFoldTheme();
+  const { tf, fonts: foldFonts, pageBackground } = useWeatherAwareTaskFoldTheme();
   const taskStatusTones = useTaskStatusToneColors();
   const taskUi = getTaskUiColors(isDark);
   const habitBreakSuccess = taskUi.habitBreakSuccess;
@@ -5708,7 +5706,9 @@ export default function TasksScreen() {
     setCategoryModalVisible(false);
   };
 
-  const bg = tf.paper;
+  const bg = pageBackground;
+  /** 左滑行必须用不透明纸色，避免半透明透出删除条 */
+  const swipeBg = tf.paper;
   const card = isDark ? tf.paper2 : tf.card;
   const modalCardBg = isDark ? colors.accentCard : card;
   const soft = colors.input;
@@ -8001,7 +8001,7 @@ export default function TasksScreen() {
                         overshootRight={false}
                         friction={2}
                         rightThreshold={40}
-                        childrenContainerStyle={{ backgroundColor: bg }}
+                        childrenContainerStyle={{ backgroundColor: swipeBg }}
                         renderRightActions={() => (
                           <View style={styles.projectSwipeActions}>
                             {canSwipeDeleteFromInbox ? (

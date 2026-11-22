@@ -1,3 +1,6 @@
 import ProfileScreen from '@/screens/profile/ProfileScreen';
+import React from 'react';
 
-export default ProfileScreen;
+export default function ProfileTabScreen() {
+  return <ProfileScreen />;
+}

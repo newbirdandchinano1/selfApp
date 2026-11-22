@@ -64,14 +64,20 @@ export type AssistantPreviewConfirmAction =
  */
 export type AssistantCommitConfirmAction =
   | 'commit_finance_txn'
+  | 'commit_finance_txn_delete'
   | 'commit_finance_transfer'
   | 'commit_finance_scheduled'
+  | 'commit_finance_scheduled_delete'
   | 'commit_finance_cash_flow'
   | 'commit_finance_budget'
   | 'commit_finance_savings_goal'
   | 'commit_finance_account'
+  | 'commit_finance_account_delete'
   | 'commit_finance_flow_category'
+  | 'commit_finance_flow_category_delete'
   | 'commit_finance_account_type'
+  | 'commit_finance_account_type_delete'
+  | 'commit_finance_balance_correction'
   | 'commit_savings_plan'
   | 'commit_savings_deposit'
   | 'commit_task'
@@ -80,6 +86,7 @@ export type AssistantCommitConfirmAction =
   | 'commit_habit_checkin'
   | 'commit_habit_context'
   | 'commit_food_intake'
+  | 'commit_food_intake_delete'
   | 'commit_weight'
   | 'commit_intake_targets'
   | 'commit_memo'
@@ -99,6 +106,10 @@ export type AssistantCommitConfirmAction =
   | 'commit_review_journal'
   | 'commit_review_dimension'
   | 'commit_review_column'
+  | 'commit_review_fill_empty'
+  | 'commit_review_settings'
+  | 'commit_review_dimension_delete'
+  | 'commit_review_column_delete'
   | 'commit_profile'
   | 'commit_life_road_node'
   | 'commit_life_direction'
@@ -272,8 +283,16 @@ export const ASSISTANT_DRAFT_ID_KEYS = [
   'projectId',
   'account_id',
   'accountId',
+  'transaction_id',
+  'txn_id',
+  'scheduled_id',
+  'category_id',
+  'account_type_id',
   'tag_id',
   'tagId',
+  'intake_id',
+  'intakeId',
+  'health_record_id',
   'id',
 ] as const;
 
@@ -539,6 +558,26 @@ const WISH_DRAFT_ID_KEYS_PRESERVE = new Set([
   'footprint_id',
 ]);
 
+/** brief 可能不含完整财务实体 id；更新/删除/余额校正确认卡必须保留 */
+const FINANCE_DRAFT_ID_KEYS_PRESERVE = new Set([
+  'account_id',
+  'accountId',
+  'transaction_id',
+  'txn_id',
+  'scheduled_id',
+  'category_id',
+  'account_type_id',
+  'id',
+]);
+
+/** brief 可能不含摄入 id；更新/删除确认卡必须保留，否则会落到新建或找不到行 */
+const FOOD_DRAFT_ID_KEYS_PRESERVE = new Set([
+  'intake_id',
+  'intakeId',
+  'health_record_id',
+  'id',
+]);
+
 function shouldPreserveRecipeDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
   if (card.domain === 'recipe') return true;
   const action = card.confirm_action || '';
@@ -559,6 +598,16 @@ function shouldPreserveMemoDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_a
   );
 }
 
+function shouldPreserveFoodDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'food' || card.domain === 'health') return true;
+  const action = card.confirm_action || '';
+  return (
+    action === 'commit_food_intake' ||
+    action === 'commit_food_intake_delete' ||
+    action === 'preview_food_intake'
+  );
+}
+
 function shouldPreserveTagDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
   if (card.domain === 'tag') return true;
   const action = card.confirm_action || '';
@@ -576,6 +625,17 @@ function shouldPreserveWishDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_a
   );
 }
 
+function shouldPreserveFinanceDraftIds(card: Pick<ActionCard, 'domain' | 'confirm_action'>): boolean {
+  if (card.domain === 'finance') return true;
+  const action = card.confirm_action || '';
+  return (
+    action.startsWith('commit_finance_') ||
+    action.startsWith('preview_finance_') ||
+    action === 'commit_savings_plan' ||
+    action === 'commit_savings_deposit'
+  );
+}
+
 function stripUnknownDraftIds(
   draft: Record<string, unknown> | undefined,
   allowed: Set<string>,
@@ -584,6 +644,8 @@ function stripUnknownDraftIds(
     preserveMemoIds?: boolean;
     preserveTagIds?: boolean;
     preserveWishIds?: boolean;
+    preserveFinanceIds?: boolean;
+    preserveFoodIds?: boolean;
   },
 ): { draft: Record<string, unknown> | undefined; dropped: string[] } {
   if (!draft) return { draft: undefined, dropped: [] };
@@ -593,6 +655,8 @@ function stripUnknownDraftIds(
   const preserveMemo = opts?.preserveMemoIds === true;
   const preserveTag = opts?.preserveTagIds === true;
   const preserveWish = opts?.preserveWishIds === true;
+  const preserveFinance = opts?.preserveFinanceIds === true;
+  const preserveFood = opts?.preserveFoodIds === true;
 
   for (const key of ASSISTANT_DRAFT_ID_KEYS) {
     if (!(key in next)) continue;
@@ -600,6 +664,8 @@ function stripUnknownDraftIds(
     if (preserveMemo && MEMO_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     if (preserveTag && TAG_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     if (preserveWish && WISH_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
+    if (preserveFinance && FINANCE_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
+    if (preserveFood && FOOD_DRAFT_ID_KEYS_PRESERVE.has(key)) continue;
     const v = next[key];
     if (typeof v === 'string') {
       const id = v.trim();
@@ -699,6 +765,8 @@ export function sanitizeActionCardAgainstWhitelist(
       shouldPreserveMemoDraftIds(next) && !shouldPreserveTagDraftIds(next),
     preserveTagIds: shouldPreserveTagDraftIds(next),
     preserveWishIds: shouldPreserveWishDraftIds(next),
+    preserveFinanceIds: shouldPreserveFinanceDraftIds(next),
+    preserveFoodIds: shouldPreserveFoodDraftIds(next),
   });
   next.draft = stripped.draft;
   dropped_ids.push(...stripped.dropped);

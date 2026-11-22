@@ -83,6 +83,12 @@ export const AppSettingKey = {
   schedulePlacementMinutesBackfillV1: '@selfapp/schedule_placement_minutes_backfill_v1',
   /** 阶段 I：日程提醒按分钟重注册版本号（值为迁移版本字符串，如 "1"） */
   scheduleSlotReminderMinutesResyncV1: '@selfapp/schedule_slot_reminder_minutes_resync_v1',
+  /** 天气位置：auto 定位 / manual 手填经纬度与城市名 */
+  weatherLocation: '@selfapp/weather_location_v1',
+  /** 天气氛围 WebP 动图作为 App 背景（默认关） */
+  weatherAtmosphereWebpBg: '@selfapp/weather_atmosphere_webp_bg_v1',
+  /** 天气氛围 WebP：auto 跟随天气 / 具体 webp id 手动预览 */
+  weatherAtmosphereWebpPick: '@selfapp/weather_atmosphere_webp_pick_v1',
 } as const;
 
 const MIGRATION_ASYNC_KEYS: string[] = Object.values(AppSettingKey);

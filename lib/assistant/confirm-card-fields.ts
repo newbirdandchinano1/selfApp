@@ -99,6 +99,12 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
       aliases: ['payment_account_label'],
     },
     { key: 'occurred_at', label: '日期', editable: true, aliases: ['date', 'txn_date'] },
+    {
+      key: 'exclude_from_budget',
+      label: '不计入预算',
+      editable: true,
+      aliases: ['include_in_budget'],
+    },
     { key: 'note', label: '备注', editable: true },
   ],
   commit_finance_transfer: [
@@ -128,6 +134,7 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
       aliases: ['payment_account_label'],
     },
     { key: 'category_label', label: '分类', editable: true },
+    { key: 'enabled', label: '启用', editable: true },
     { key: 'note', label: '备注', editable: true },
   ],
   commit_finance_cash_flow: [
@@ -184,14 +191,51 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'name', label: '账户名', editable: true },
     { key: 'account_type', label: '类型', editable: true, aliases: ['type'] },
     { key: 'opening_balance', label: '初始余额', editable: true, aliases: ['balance'] },
+    {
+      key: 'exclude_from_total_assets',
+      label: '不计入总资产',
+      editable: true,
+    },
+    { key: 'hide_from_home', label: '首页隐藏', editable: true },
     { key: 'note', label: '备注', editable: true },
+  ],
+  commit_finance_account_delete: [
+    { key: 'name', label: '账户名', editable: false },
+  ],
+  commit_finance_txn_delete: [
+    { key: 'name', label: '流水', editable: false },
+    { key: 'amount', label: '金额', editable: false },
+  ],
+  commit_finance_scheduled_delete: [
+    { key: 'name', label: '定时支出', editable: false },
   ],
   commit_finance_flow_category: [
     { key: 'name', label: '分类名', editable: true },
     { key: 'kind', label: '流向', editable: true, aliases: ['flow_kind'] },
   ],
+  commit_finance_flow_category_delete: [
+    { key: 'name', label: '分类名', editable: false },
+  ],
   commit_finance_account_type: [
     { key: 'name', label: '类型名', editable: true },
+  ],
+  commit_finance_account_type_delete: [
+    { key: 'name', label: '类型名', editable: false },
+  ],
+  commit_finance_balance_correction: [
+    {
+      key: 'account_name',
+      label: '账户',
+      editable: true,
+      aliases: ['name'],
+    },
+    {
+      key: 'target_balance',
+      label: '目标余额',
+      editable: true,
+      aliases: ['balance', 'targetLedgerBalance'],
+    },
+    { key: 'note', label: '备注', editable: true },
   ],
   commit_savings_plan: [
     { key: 'name', label: '计划名', editable: true, aliases: ['plan_name', 'title'] },
@@ -207,11 +251,16 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'title', label: '标题', editable: true, aliases: ['name'] },
     { key: 'due_ymd', label: '截止日期', editable: true, aliases: ['due_date', 'date'] },
     { key: 'priority', label: '优先级', editable: true },
+    { key: 'status', label: '状态', editable: true },
     { key: 'note', label: '备注', editable: true, aliases: ['body', 'content'] },
+    { key: 'acceptance', label: '验收标准', editable: true },
   ],
   commit_project: [
     { key: 'title', label: '项目名', editable: true, aliases: ['name'] },
     { key: 'note', label: '说明', editable: true, aliases: ['body', 'description'] },
+    { key: 'priority', label: '优先级', editable: true },
+    { key: 'status', label: '状态', editable: true },
+    { key: 'category_id', label: '分类', editable: true, aliases: ['category_name'] },
   ],
   commit_task_category: [
     { key: 'name', label: '分类名', editable: true, aliases: ['title'] },
@@ -246,6 +295,14 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
     { key: 'fat_g', label: '脂肪(g)', editable: true },
     { key: 'hydration_ml', label: '饮水(ml)', editable: true },
     { key: 'note', label: '备注', editable: true },
+  ],
+  commit_food_intake_delete: [
+    {
+      key: 'food_summary',
+      label: '将删除',
+      editable: false,
+      aliases: ['title', 'food_name', 'name'],
+    },
   ],
   commit_weight: [
     { key: 'weight_kg', label: '体重(kg)', editable: true, aliases: ['weight', 'kg'] },
@@ -445,13 +502,37 @@ export const CONFIRM_CARD_FIELD_TEMPLATES: Record<string, DraftFieldSpec[]> = {
   ],
   commit_review_journal: [
     { key: 'scope', label: '范围', editable: true },
-    { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
+    { key: 'date', label: '日期', editable: true, aliases: ['ymd', 'period_ymd'] },
     { key: 'body', label: '正文', editable: true, aliases: ['text', 'content'] },
+    { key: 'column_title', label: '栏目', editable: true },
+    { key: 'execution_score', label: '执行分', editable: true },
   ],
   commit_review_column: [
-    { key: 'column_key', label: '栏位', editable: true, aliases: ['key', 'column'] },
-    { key: 'text', label: '内容', editable: true, aliases: ['body', 'content'] },
+    { key: 'column_key', label: '栏位', editable: true, aliases: ['key', 'column', 'column_title', 'title'] },
+    { key: 'text', label: '内容', editable: true, aliases: ['body', 'content', 'placeholder'] },
     { key: 'date', label: '日期', editable: true, aliases: ['ymd'] },
+  ],
+  commit_review_fill_empty: [
+    { key: 'scope', label: '范围', editable: true },
+    { key: 'date', label: '日期', editable: true, aliases: ['ymd', 'period_ymd'] },
+    { key: 'replace', label: '覆盖非空', editable: true },
+  ],
+  commit_review_settings: [
+    { key: 'weekly_review_weekday', label: '周复盘日', editable: true, aliases: ['weekday'] },
+    { key: 'daily_reminder_enabled', label: '日提醒', editable: true },
+    { key: 'daily_reminder_hour', label: '日提醒时', editable: true },
+    { key: 'weekly_reminder_enabled', label: '周提醒', editable: true },
+    { key: 'points_enabled', label: '积分开关', editable: true },
+    { key: 'daily_reward_points', label: '日奖励', editable: true },
+    { key: 'streak7_bonus_points', label: '七天奖励', editable: true },
+  ],
+  commit_review_dimension_delete: [
+    { key: 'dimension_title', label: '维度', editable: false, aliases: ['title', 'name'] },
+    { key: 'dimension_id', label: '维度ID', editable: false, aliases: ['id'] },
+  ],
+  commit_review_column_delete: [
+    { key: 'column_title', label: '栏目', editable: false, aliases: ['title', 'name'] },
+    { key: 'column_id', label: '栏目ID', editable: false, aliases: ['id'] },
   ],
   commit_tag: [
     { key: 'name', label: '新名称', editable: true, aliases: ['title'] },

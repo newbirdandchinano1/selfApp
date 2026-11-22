@@ -1,3 +1,6 @@
 import HomeScreen from '@/screens/home/HomeScreen';
+import React from 'react';
 
-export default HomeScreen;
+export default function HealthTabScreen() {
+  return <HomeScreen />;
+}

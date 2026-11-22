@@ -23,7 +23,7 @@ import { FinanceSavingsGoalBlock } from '@/components/finance/finance-savings-go
 import { FoldCountUpText, FoldRiseIn, useFoldMotionGate } from '@/components/review/fold-motion';
 import { InboxSourceDot } from '@/components/ui/inbox-source-dot';
 import { Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
-import { useFinanceFoldTheme } from '@/constants/finance-fold-theme';
+import { useWeatherAwareFinanceFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
@@ -552,11 +552,13 @@ export default function FinanceScreen() {
     skeletonOpacity: financeSkeletonOpacity,
     contentOpacity: financeContentOpacity,
   } = useHomeSkeletonReveal(initialFinanceLoadPending);
-  const { ff, isDark, fonts: ffFonts } = useFinanceFoldTheme();
+  const { ff, isDark, fonts: ffFonts, pageBackground } = useWeatherAwareFinanceFoldTheme();
   const { animate: foldAnimate } = useFoldMotionGate();
   const sourceBadges = useNotificationSourceBadges();
 
-  const bg = ff.paper;
+  const bg = pageBackground;
+  /** 滑动行 / 账本条前景用不透明纸色，避免氛围半透明底透出操作条 */
+  const swipeBg = ff.paper;
   const surface = isDark ? ff.paper2 : ff.card;
   const surfaceSubtle = isDark ? ff.cardSoft : ff.paper2;
   const surfaceMuted = isDark ? 'rgba(255,255,255,0.06)' : '#F5F0E5';
@@ -4518,7 +4520,7 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
-                      childrenContainerStyle={{ backgroundColor: bg }}
+                      childrenContainerStyle={{ backgroundColor: swipeBg }}
                       renderRightActions={() => (
                         <View style={[styles.swipeDeleteTrack, { backgroundColor: ff.clay2 }]}>
                           <Pressable
@@ -4560,7 +4562,7 @@ export default function FinanceScreen() {
                       friction={2}
                       overshootRight={false}
                       rightThreshold={40}
-                      childrenContainerStyle={{ backgroundColor: bg }}
+                      childrenContainerStyle={{ backgroundColor: swipeBg }}
                       renderRightActions={() => (
                         <View style={[styles.swipeDeleteTrack, { backgroundColor: ff.clay2 }]}>
                           <Pressable
@@ -4576,7 +4578,7 @@ export default function FinanceScreen() {
                           </Pressable>
                         </View>
                       )}>
-                      <Animated.View style={[styles.txnSwipeForeground, { backgroundColor: bg }]}>
+                      <Animated.View style={[styles.txnSwipeForeground, { backgroundColor: swipeBg }]}>
                         <TxnItem
                           themeText={text}
                           themeSubtle={subtle}

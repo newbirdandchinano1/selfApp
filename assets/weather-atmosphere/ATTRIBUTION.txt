@@ -1,0 +1,21 @@
+Weather atmosphere looping video clips
+======================================
+
+Primary runtime format: MP4 (*.mp4) via expo-video
+Legacy animated WebP (*.webp) may remain on disk but are not referenced by the app.
+
+Clips:
+  sunny.mp4
+  cloudy.mp4
+  overcast.mp4
+  fog.mp4
+  rain-light.mp4
+  rain.mp4
+  snow.mp4
+  thunderstorm.mp4
+
+Replace any *.mp4 with the same filename to swap visuals.
+
+Keep clips short, muted, and loop-friendly (seamless loop preferred).
+Recommended encode (example):
+  ffmpeg -y -i SRC.mp4 -an -vf "fps=24,scale=720:-2" -c:v libx264 -pix_fmt yuv420p -movflags +faststart NAME.mp4

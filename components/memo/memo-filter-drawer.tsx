@@ -6,7 +6,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 
 import { MotionPressable } from '@/components/ui';
 import { Layout, Spacing } from '@/constants/design-tokens';
-import { MemoRadius, MemoText } from '@/constants/memo-ui';
+import { MemoText } from '@/constants/memo-ui';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import type { TagRow } from '@/lib/repositories/tags/tag.types';
 
@@ -367,7 +367,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: MemoRadius.field,
+    borderRadius: 999,
     paddingHorizontal: 12,
     minHeight: 42,
   },
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
   sortBtn: {
     width: Layout.minTouchTarget,
     height: Layout.minTouchTarget,
-    borderRadius: MemoRadius.field,
+    borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
     justifyContent: 'center',
@@ -421,3 +421,4 @@ const styles = StyleSheet.create({
   refreshSlot: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   refreshingRow: { alignItems: 'center', paddingVertical: 6 },
 });
+

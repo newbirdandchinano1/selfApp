@@ -26,8 +26,8 @@ import { HomeSkeletonShell } from '@/components/home-skeleton-shell';
 import { AppIconButton } from '@/components/ui/app-icon-button';
 import { InboxSourceDot } from '@/components/ui/inbox-source-dot';
 import { HealthNutrientAccents, Layout, Radius, Shadows, Spacing } from '@/constants/design-tokens';
-import { useHealthHomeTheme } from '@/constants/health-home-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useWeatherAwareHealthHomeTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { useHomeSkeletonReveal } from '@/hooks/use-home-skeleton-reveal';
 import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
@@ -865,7 +865,7 @@ function StatusTrackWithThreshold({
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { hh, fonts: hhFonts } = useHealthHomeTheme();
+  const { hh, fonts: hhFonts, pageBackground } = useWeatherAwareHealthHomeTheme();
   const sourceBadges = useNotificationSourceBadges();
   const {
     logicalTodayYmd: calendarTodayYmd,
@@ -2867,12 +2867,12 @@ export default function HealthScreen() {
 
   return (
     <View ref={screenRootRef} style={styles.safeArea} collapsable={false}>
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: hh.paper }]} edges={['left', 'right']}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: pageBackground }]} edges={['left', 'right']}>
       <View
         style={[
           styles.header,
           {
-            backgroundColor: hh.paper,
+            backgroundColor: pageBackground,
             borderBottomColor: hh.line,
             paddingTop: insets.top,
           },

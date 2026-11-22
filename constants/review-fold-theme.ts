@@ -7,6 +7,7 @@
  */
 import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useMemo } from 'react';
 
 /** 折页 · FOLD 设计令牌（复盘页面专用，不影响全局蓝色主题） */
 export const FOLD_LIGHT = {
@@ -180,5 +181,6 @@ export function useFoldTheme(): {
 } {
   const { isDark } = useAppTheme();
   const fold = isDark ? FOLD_DARK : FOLD_LIGHT;
-  return { fold, palette: adaptFoldPalette(fold, isDark), isDark, fonts: foldFonts };
+  const palette = useMemo(() => adaptFoldPalette(fold, isDark), [fold, isDark]);
+  return { fold, palette, isDark, fonts: foldFonts };
 }

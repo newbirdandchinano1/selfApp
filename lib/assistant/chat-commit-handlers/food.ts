@@ -1,9 +1,19 @@
 /**
- * S9.3 W1+W3：commit_food_intake / commit_weight / commit_intake_targets（动态 import）。
+ * S9.3 W1+W3：commit_food_intake（新建/按 id 更新）/ commit_food_intake_delete /
+ * commit_weight / commit_intake_targets（动态 import）。
  */
 
 import type { ChatCommitHandler, ChatCommitHandlerResult } from '@/lib/assistant/chat-commit';
-import { draftNumber, draftString, fail, ok } from './shared';
+import { draftNumber, draftString, fail, ok, requestPushPending } from './shared';
+
+function draftIntakeId(draft: Record<string, unknown>): string {
+  return (
+    draftString(draft, 'intake_id') ||
+    draftString(draft, 'intakeId') ||
+    draftString(draft, 'health_record_id') ||
+    draftString(draft, 'id')
+  );
+}
 
 export async function commitFoodIntake(
   draft: Record<string, unknown>,
@@ -23,10 +33,13 @@ export async function commitFoodIntake(
     return fail('incomplete_draft', '请至少填写一项摄入量（水分/蛋白/碳水/热量）');
   }
 
-  const { makeTimestampEntityId } = await import('@/lib/entity-id');
   const { getResolvedGlobalIntakeTargets } = await import('@/lib/global-intake-targets');
   const { formatYmd } = await import('@/lib/date');
-  const { createHealthRecord } = await import('@/lib/repositories/health/health');
+  const {
+    createHealthRecord,
+    getHealthRecordById,
+    updateHealthRecord,
+  } = await import('@/lib/repositories/health/health');
   const { getDefaultUser } = await import('@/lib/repositories/users/user');
 
   const user = await getDefaultUser();
@@ -36,6 +49,34 @@ export async function commitFoodIntake(
 
   const targets = getResolvedGlobalIntakeTargets();
   const recordDate = draftString(draft, 'record_date') || formatYmd(new Date());
+  const existingId = draftIntakeId(draft);
+  const aiComment =
+    draftString(draft, 'ai_evaluation') || draftString(draft, 'ai_comment') || null;
+
+  if (existingId) {
+    const current = await getHealthRecordById(existingId);
+    if (!current) {
+      return fail('intake_missing', '找不到要更新的摄入记录，请改为新建或打开健康页');
+    }
+    await updateHealthRecord(existingId, {
+      hydration,
+      target_hydration: targets.hydrationMl,
+      protein,
+      target_protein: targets.proteinG,
+      carbohydrate,
+      target_carbohydrate: targets.carbohydrateG,
+      calories,
+      target_calories: targets.caloriesKcal,
+      record_date: recordDate || current.record_date,
+      intake_display_title: foodSummary.slice(0, 80),
+      intake_ai_comment: aiComment,
+      source_image_uri:
+        draftString(draft, 'source_image_uri') || current.source_image_uri || null,
+    });
+    return ok(existingId, `已更新饮食「${foodSummary.slice(0, 40)}」`);
+  }
+
+  const { makeTimestampEntityId } = await import('@/lib/entity-id');
   const recordId = makeTimestampEntityId('hr_', 8);
 
   await createHealthRecord({
@@ -51,12 +92,75 @@ export async function commitFoodIntake(
     target_calories: targets.caloriesKcal,
     record_date: recordDate,
     intake_display_title: foodSummary.slice(0, 80),
-    intake_ai_comment:
-      draftString(draft, 'ai_evaluation') || draftString(draft, 'ai_comment') || null,
+    intake_ai_comment: aiComment,
     source_image_uri: draftString(draft, 'source_image_uri') || null,
   });
 
   return ok(recordId, `已记录饮食「${foodSummary.slice(0, 40)}」`);
+}
+
+export async function commitFoodIntakeDelete(
+  draft: Record<string, unknown>,
+): Promise<ChatCommitHandlerResult> {
+  let id = draftIntakeId(draft);
+  const titleHint =
+    draftString(draft, 'title') ||
+    draftString(draft, 'food_summary') ||
+    draftString(draft, 'food_name');
+
+  const { getDefaultUser } = await import('@/lib/repositories/users/user');
+  const {
+    deleteHealthRecord,
+    getHealthRecordById,
+    getHealthRecordsByUserId,
+    getHealthRecordsForUserOnDate,
+  } = await import('@/lib/repositories/health/health');
+  const { formatYmd } = await import('@/lib/date');
+
+  const user = await getDefaultUser();
+  if (!user?.id) {
+    return fail('no_user', '无法确定当前用户，请稍后重试');
+  }
+
+  let label = titleHint || '摄入记录';
+  if (id) {
+    const row = await getHealthRecordById(id);
+    if (row) label = row.intake_display_title?.trim() || label;
+    else id = '';
+  }
+
+  if (!id && titleHint) {
+    const day =
+      draftString(draft, 'record_date') ||
+      draftString(draft, 'day_ymd') ||
+      formatYmd(new Date());
+    const dayRows = await getHealthRecordsForUserOnDate(user.id, day.slice(0, 10));
+    const needle = titleHint.toLowerCase();
+    const hit =
+      dayRows.find(r => (r.intake_display_title || '').trim().toLowerCase() === needle) ||
+      dayRows.find(r => (r.intake_display_title || '').toLowerCase().includes(needle));
+    if (hit) {
+      id = hit.id;
+      label = hit.intake_display_title?.trim() || label;
+    } else {
+      const all = await getHealthRecordsByUserId(user.id);
+      const soft =
+        all.find(r => (r.intake_display_title || '').trim().toLowerCase() === needle) ||
+        all.find(r => (r.intake_display_title || '').toLowerCase().includes(needle));
+      if (soft) {
+        id = soft.id;
+        label = soft.intake_display_title?.trim() || label;
+      }
+    }
+  }
+
+  if (!id) {
+    return fail('incomplete_draft', '请指定要删除的摄入（id 或标题）');
+  }
+
+  await deleteHealthRecord(id);
+  await requestPushPending();
+  return ok(id, `已删除饮食「${label.slice(0, 40)}」`);
 }
 
 export async function commitWeight(
@@ -177,6 +281,7 @@ export async function commitIntakeTargets(
 
 export const foodCommitHandlers: Record<string, ChatCommitHandler> = {
   commit_food_intake: async input => commitFoodIntake(input.draft),
+  commit_food_intake_delete: async input => commitFoodIntakeDelete(input.draft),
   commit_weight: async input => commitWeight(input.draft),
   commit_intake_targets: async input => commitIntakeTargets(input.draft),
 };

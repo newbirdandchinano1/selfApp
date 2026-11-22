@@ -1,6 +1,7 @@
+import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 import { Tabs } from 'expo-router';
-import React from 'react';
-import { Dimensions } from 'react-native';
+import React, { useMemo } from 'react';
+import { Dimensions, StyleSheet, View } from 'react-native';
 
 import {
   GlassTabBar,
@@ -11,6 +12,8 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
+import { WeatherAtmosphereSkiaBackground } from '@/components/weather/WeatherAtmosphereSkiaBackground';
+import { useWeatherAtmosphereWebpBgEnabled } from '@/hooks/use-weather-atmosphere-webp';
 import { useNotificationInboxBadges } from '@/hooks/use-notification-inbox-badges';
 import { formatInboxBadgeDot } from '@/lib/notification-inbox-badge';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -52,64 +55,88 @@ const MAIN_TAB_META: Record<string, GlassTabMeta> = {
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const weatherAtmosphereBg = useWeatherAtmosphereWebpBgEnabled();
   const insets = useSafeAreaInsets();
   const badges = useNotificationInboxBadges();
 
   // 悬浮底栏总高度：供抽屉左缘手势区避让；底栏本身不占内容布局
   const tabBarHeight = glassTabBarFloatHeight(insets.bottom);
 
+  const tabsTheme = useMemo(() => {
+    const base = isDark ? DarkTheme : DefaultTheme;
+    if (!weatherAtmosphereBg) return base;
+    return {
+      ...base,
+      colors: {
+        ...base.colors,
+        background: 'transparent',
+        card: 'transparent',
+      },
+    };
+  }, [isDark, weatherAtmosphereBg]);
+
   return (
-    <SettingsDrawerProvider>
-      <SettingsDrawerHost drawerWidth={DRAWER_WIDTH} tabBarHeight={tabBarHeight}>
-        <Tabs
-          tabBar={props => (
-            <GlassTabBar
-              {...(props as unknown as RecipeGlassTabBarProps)}
-              meta={MAIN_TAB_META}
-              isDark={isDark}
-              autoHide
-            />
-          )}
-          screenOptions={{
-            headerShown: false,
-          }}>
-          <Tabs.Screen
-            name="index"
-            options={{
-              title: '健康',
-              tabBarBadge: formatInboxBadgeDot(badges.index),
-            }}
-          />
-          <Tabs.Screen
-            name="tasks"
-            options={{
-              title: '任务',
-              tabBarBadge: formatInboxBadgeDot(badges.tasks),
-            }}
-          />
-          <Tabs.Screen
-            name="finance"
-            options={{
-              title: '财务',
-              tabBarBadge: formatInboxBadgeDot(badges.finance),
-            }}
-          />
-          <Tabs.Screen
-            name="review"
-            options={{
-              title: '复盘',
-              tabBarBadge: formatInboxBadgeDot(badges.review),
-            }}
-          />
-          <Tabs.Screen
-            name="profile"
-            options={{
-              title: '我的',
-              // 锁定：我的 Tab 永不设角标；未读只走铃铛
-            }}
-          />
-        </Tabs>
-      </SettingsDrawerHost>
-    </SettingsDrawerProvider>
+    <View style={styles.root}>
+      <WeatherAtmosphereSkiaBackground />
+      <ThemeProvider value={tabsTheme}>
+        <SettingsDrawerProvider>
+          <SettingsDrawerHost drawerWidth={DRAWER_WIDTH} tabBarHeight={tabBarHeight}>
+            <Tabs
+              tabBar={props => (
+                <GlassTabBar
+                  {...(props as unknown as RecipeGlassTabBarProps)}
+                  meta={MAIN_TAB_META}
+                  isDark={isDark}
+                  autoHide
+                />
+              )}
+              screenOptions={{
+                headerShown: false,
+                sceneStyle: weatherAtmosphereBg ? { backgroundColor: 'transparent' } : undefined,
+              }}>
+              <Tabs.Screen
+                name="index"
+                options={{
+                  title: '健康',
+                  tabBarBadge: formatInboxBadgeDot(badges.index),
+                }}
+              />
+              <Tabs.Screen
+                name="tasks"
+                options={{
+                  title: '任务',
+                  tabBarBadge: formatInboxBadgeDot(badges.tasks),
+                }}
+              />
+              <Tabs.Screen
+                name="finance"
+                options={{
+                  title: '财务',
+                  tabBarBadge: formatInboxBadgeDot(badges.finance),
+                }}
+              />
+              <Tabs.Screen
+                name="review"
+                options={{
+                  title: '复盘',
+                  tabBarBadge: formatInboxBadgeDot(badges.review),
+                }}
+              />
+              <Tabs.Screen
+                name="profile"
+                options={{
+                  title: '我的',
+                  // 锁定：我的 Tab 永不设角标；未读只走铃铛
+                }}
+              />
+            </Tabs>
+          </SettingsDrawerHost>
+        </SettingsDrawerProvider>
+      </ThemeProvider>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+});

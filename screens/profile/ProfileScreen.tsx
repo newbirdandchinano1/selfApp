@@ -1,8 +1,10 @@
 import { AiProfileWeightCommentSheet } from '@/components/profile/ai-profile-weight-comment-sheet';
 import { AiWeekRhythmInsightsSheet } from '@/components/profile/ai-week-rhythm-insights-sheet';
+import { ProfileHoroscopeCard } from '@/components/profile/ProfileHoroscopeCard';
 import { ProfileMoreSheet, type ProfileMoreMenuItem } from '@/components/profile/ProfileMoreSheet';
 import { ProfileRoadBelow } from '@/components/profile/ProfileRoadBelow';
 import { ProfileRoadCard } from '@/components/profile/ProfileRoadCard';
+import { ProfileWeatherCard } from '@/components/profile/ProfileWeatherCard';
 import {
   FoldCountUpText,
   FoldRiseIn,
@@ -16,7 +18,8 @@ import {
   Layout,
   Spacing,
 } from '@/constants/design-tokens';
-import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
+import { foldFonts } from '@/constants/review-fold-theme';
+import { useWeatherAwareFoldTheme as useFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import {
   formatInboxBadgeCount,
   useNotificationInboxBadges,
@@ -228,7 +231,7 @@ export default function ProfileScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const reloadPageRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
-  const { fold } = useFoldTheme();
+  const { fold, pageBackground } = useFoldTheme();
   const { animate: motionOn } = useFoldMotionGate();
   const inboxBadges = useNotificationInboxBadges();
   const bellBadgeLabel = formatInboxBadgeCount(inboxBadges.total);
@@ -241,6 +244,8 @@ export default function ProfileScreen() {
   const [weightCommentOpen, setWeightCommentOpen] = useState(false);
   const [completenessNudge, setCompletenessNudge] =
     useState<ProfileCompletenessNudgeJson | null>(null);
+  /** 下拉刷新时递增，驱动天气 / 运势卡重拉 */
+  const [externalRefreshToken, setExternalRefreshToken] = useState(0);
   const nudgeFetchedKey = useRef<string>('');
   const bellShake = useRef(new Animated.Value(0)).current;
   const prevBadgeRef = useRef(0);
@@ -307,6 +312,7 @@ export default function ProfileScreen() {
         if (currentUser) setUser(currentUser);
         setPointsBalance(balance);
         await loadHub(currentUser, balance);
+        if (forceRefresh) setExternalRefreshToken((n) => n + 1);
       } catch {
         // ignore
       }
@@ -568,7 +574,7 @@ export default function ProfileScreen() {
       : '未设置';
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: fold.paper }]} edges={['left', 'right']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: pageBackground }]} edges={['left', 'right']}>
       <ScrollView
         refreshControl={refreshControl}
         showsVerticalScrollIndicator={false}
@@ -1047,6 +1053,19 @@ export default function ProfileScreen() {
             </View>
           </Pressable>
         </FoldRiseIn>
+
+        {/* 天气 / 星座：页底附属卡，独立通道异步拉取，不挡主数据 */}
+        <FoldRiseIn animate={motionOn} index={9} staggerMs={45} fromY={12}>
+          <ProfileWeatherCard refreshToken={externalRefreshToken} />
+        </FoldRiseIn>
+        {hub?.zodiacLabel ? (
+          <FoldRiseIn animate={motionOn} index={10} staggerMs={45} fromY={12}>
+            <ProfileHoroscopeCard
+              zodiacLabel={hub.zodiacLabel}
+              refreshToken={externalRefreshToken}
+            />
+          </FoldRiseIn>
+        ) : null}
       </ScrollView>
 
       <ProfileMoreSheet

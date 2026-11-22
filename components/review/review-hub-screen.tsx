@@ -14,7 +14,7 @@ import {
 } from '@/components/review/review-utils';
 import { ReviewListSkeleton } from '@/components/skeletons/review';
 import { Typography } from '@/constants/design-tokens';
-import { useFoldTheme } from '@/constants/review-fold-theme';
+import { useWeatherAwareFoldTheme as useFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { usePageDayBoundary } from '@/contexts/day-boundary-context';
 import { useNotificationSourceBadges } from '@/hooks/use-notification-source-badges';
 import { usePageApiSync, usePagePullRefresh } from '@/hooks/use-page-api-sync';
@@ -215,7 +215,7 @@ function MoreMenu({
 export function ReviewHubScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { palette } = useFoldTheme();
+  const { palette, pageBackground } = useFoldTheme();
   const { width } = useWindowDimensions();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
@@ -463,7 +463,7 @@ export function ReviewHubScreen() {
 
   return (
     <SafeAreaView
-      style={[styles.safe, { backgroundColor: palette.paper }]}
+      style={[styles.safe, { backgroundColor: pageBackground }]}
       edges={['left', 'right']}>
       <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
         <View style={[styles.headerInner, contentMaxWidth != null ? { maxWidth: contentMaxWidth } : null]}>
