@@ -107,21 +107,9 @@ jobs:
             ${{ runner.os }}-cocoapods-
 
       # ============================================================
-      # 5. Cache Xcode DerivedData
+      # 5. (removed) 不再缓存全局 DerivedData
       # ============================================================
-      #
-      # 这是最关键的构建缓存。
-      #
-      # 不再执行 xcodebuild clean，
-      # 从而让 Xcode 使用恢复出来的 DerivedData。
-      #
-      - name: 5. Cache Xcode DerivedData
-        uses: actions/cache@v6
-        with:
-          path: ~/Library/Developer/Xcode/DerivedData
-          key: ${{ runner.os }}-xcode-${{ hashFiles('.xcode-version-ci', 'package-lock.json', 'app.json', 'app.config.js', 'app.config.ts') }}
-          restore-keys: |
-            ${{ runner.os }}-xcode-
+      # 构建改用仓库内 deriveddata/（见 step 9），避免 find 误捡旧 .app。
 
       # ============================================================
       # 6. Install JavaScript Dependencies
@@ -135,6 +123,18 @@ jobs:
       - name: 6. Install Dependencies
         run: |
           npm ci --prefer-offline --no-audit --no-fund
+
+      # ============================================================
+      # 6b. Strip widgets for unsigned / 企业签 IPA
+      # ============================================================
+      #
+      # 未签名 IPA 经企业签/超级签重签时，PlugIns/*.appex 与
+      # App Group 经常签坏 → 真机一点图标系统直接杀进程（闪退）。
+      # 默认去掉 expo-widgets；若已有完整签名链路可设
+      # CI_KEEP_WIDGETS=1（仓库 Variables / Secrets 均可）。
+      #
+      - name: 6b. Prepare unsigned iOS (strip widgets)
+        run: node scripts/ci-prepare-unsigned-ios.mjs
 
       # ============================================================
       # 7. Expo Prebuild
@@ -171,15 +171,8 @@ jobs:
       # 9. Build Xcode Project
       # ============================================================
       #
-      # 关键优化：
-      #
-      # 原来：
-      #   clean build
-      #
-      # 现在：
-      #   build
-      #
-      # 不再主动删除 DerivedData。
+      # 固定 -derivedDataPath，避免从全局 DerivedData 缓存里
+      # find | head -n1 误捡旧/错的 .app。
       #
       - name: 9. Build Xcode Project
         working-directory: ios
@@ -220,9 +213,14 @@ jobs:
           fi
 
           SCHEME=$(basename "$XCODEPROJ" .xcodeproj)
+          DERIVED_DATA="${GITHUB_WORKSPACE}/deriveddata"
 
           echo "Project: $XCODEPROJ"
           echo "Scheme: $SCHEME"
+          echo "DerivedData: $DERIVED_DATA"
+
+          rm -rf "$DERIVED_DATA"
+          mkdir -p "$DERIVED_DATA"
 
           echo "========================================"
           echo "Xcode Build Start"
@@ -236,6 +234,7 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -255,7 +254,7 @@ jobs:
           echo "Build time: $((BUILD_TIME / 60))m $((BUILD_TIME % 60))s"
 
       # ============================================================
-      # 10. Locate APP
+      # 10. Locate APP + verify JS bundle
       # ============================================================
       - name: 10. Locate APP
         id: locate_app
@@ -263,22 +262,64 @@ jobs:
         run: |
           set -e
 
-          echo "Searching for Release APP..."
+          DERIVED_DATA="${GITHUB_WORKSPACE}/deriveddata"
+          PRODUCTS="${DERIVED_DATA}/Build/Products/Release-iphoneos"
 
-          APP_PATH=$(find \
-            ~/Library/Developer/Xcode/DerivedData \
+          echo "Searching under: $PRODUCTS"
+          ls -la "$PRODUCTS" || true
+
+          APP_PATH=$(find "$PRODUCTS" \
+            -maxdepth 1 \
             -type d \
             -name "*.app" \
-            -path "*/Build/Products/Release-iphoneos/*.app" \
+            ! -name "*.appex" \
+            -print \
             | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: Release .app not found"
+            echo "ERROR: Release .app not found under $PRODUCTS"
             exit 1
           fi
 
-          echo "Found APP:"
-          echo "$APP_PATH"
+          echo "Found APP: $APP_PATH"
+
+          echo "========================================"
+          echo "Verify embedded JS bundle (Release 闪退常见缺包)"
+          echo "========================================"
+
+          BUNDLE=""
+          for candidate in \
+            "$APP_PATH/main.jsbundle" \
+            "$APP_PATH/main.jsbundle.hbc" \
+            "$APP_PATH/hermes.bundle" \
+            ; do
+            if [ -f "$candidate" ]; then
+              BUNDLE="$candidate"
+              break
+            fi
+          done
+
+          # Expo / RN 有时把 bundle 放在更深层或带 hash 名
+          if [ -z "$BUNDLE" ]; then
+            BUNDLE=$(find "$APP_PATH" -maxdepth 2 \( -name "*.jsbundle" -o -name "*.hbc" \) -type f | head -n 1 || true)
+          fi
+
+          if [ -z "$BUNDLE" ]; then
+            echo "ERROR: no JS bundle inside .app — Release 真机必闪退"
+            echo "APP contents (top):"
+            ls -la "$APP_PATH" | head -n 80
+            exit 1
+          fi
+
+          echo "JS bundle OK: $BUNDLE ($(wc -c < "$BUNDLE") bytes)"
+
+          if [ -d "$APP_PATH/PlugIns" ]; then
+            echo "PlugIns present (企业签风险):"
+            find "$APP_PATH/PlugIns" -maxdepth 2 -print
+            echo "WARN: unsigned IPA with appex often 闪退 after 重签; prefer strip widgets (default)."
+          else
+            echo "No PlugIns/ — good for 企业签 unsigned IPA"
+          fi
 
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
@@ -299,6 +340,14 @@ jobs:
           echo "$APP_PATH"
 
           cp -R "$APP_PATH" Payload/
+
+          # 兜底：即使误带了 appex，打包前再剥掉，避免重签后系统杀进程
+          for app in Payload/*.app; do
+            if [ -d "$app/PlugIns" ]; then
+              echo "Stripping PlugIns from $app ..."
+              rm -rf "$app/PlugIns"
+            fi
+          done
 
           echo "Creating IPA..."
 
