@@ -125,18 +125,6 @@ jobs:
           npm ci --prefer-offline --no-audit --no-fund
 
       # ============================================================
-      # 6b. Strip widgets for unsigned / 企业签 IPA
-      # ============================================================
-      #
-      # 未签名 IPA 经企业签/超级签重签时，PlugIns/*.appex 与
-      # App Group 经常签坏 → 真机一点图标系统直接杀进程（闪退）。
-      # 默认去掉 expo-widgets；若已有完整签名链路可设
-      # CI_KEEP_WIDGETS=1（仓库 Variables / Secrets 均可）。
-      #
-      - name: 6b. Prepare unsigned iOS (strip widgets)
-        run: node scripts/ci-prepare-unsigned-ios.mjs
-
-      # ============================================================
       # 7. Expo Prebuild
       # ============================================================
       #
@@ -146,6 +134,9 @@ jobs:
       # --no-install：
       # npm ci 已经完成依赖安装，
       # 不让 Expo 再重复执行 npm install。
+      #
+      # 保留 expo-widgets：此前带组件的包可正常安装；
+      # 近期闪退更可能来自 DerivedData 误捡旧包 / 新原生库（Skia 等）。
       #
       - name: 7. Expo Prebuild
         run: |
@@ -313,12 +304,20 @@ jobs:
 
           echo "JS bundle OK: $BUNDLE ($(wc -c < "$BUNDLE") bytes)"
 
+          echo "========================================"
+          echo "Native payload inventory (重签须覆盖这些)"
+          echo "========================================"
           if [ -d "$APP_PATH/PlugIns" ]; then
-            echo "PlugIns present (企业签风险):"
+            echo "PlugIns:"
             find "$APP_PATH/PlugIns" -maxdepth 2 -print
-            echo "WARN: unsigned IPA with appex often 闪退 after 重签; prefer strip widgets (default)."
           else
-            echo "No PlugIns/ — good for 企业签 unsigned IPA"
+            echo "PlugIns: (none)"
+          fi
+          if [ -d "$APP_PATH/Frameworks" ]; then
+            echo "Frameworks:"
+            ls -la "$APP_PATH/Frameworks"
+          else
+            echo "Frameworks: (none / likely static)"
           fi
 
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
@@ -340,14 +339,6 @@ jobs:
           echo "$APP_PATH"
 
           cp -R "$APP_PATH" Payload/
-
-          # 兜底：即使误带了 appex，打包前再剥掉，避免重签后系统杀进程
-          for app in Payload/*.app; do
-            if [ -d "$app/PlugIns" ]; then
-              echo "Stripping PlugIns from $app ..."
-              rm -rf "$app/PlugIns"
-            fi
-          done
 
           echo "Creating IPA..."
 

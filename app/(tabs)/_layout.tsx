@@ -1,6 +1,6 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 import { Tabs } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { Suspense, lazy, useMemo } from 'react';
 import { Dimensions, StyleSheet, View } from 'react-native';
 
 import {
@@ -12,12 +12,21 @@ import {
 import { AppIcon } from '@/components/ui/app-icon';
 import { DRAWER_WIDTH_FALLBACK, SettingsDrawerHost } from '@/components/settings-drawer/settings-drawer';
 import { SettingsDrawerProvider } from '@/components/settings-drawer/settings-drawer-context';
-import { WeatherAtmosphereSkiaBackground } from '@/components/weather/WeatherAtmosphereSkiaBackground';
 import { useWeatherAtmosphereWebpBgEnabled } from '@/hooks/use-weather-atmosphere-webp';
 import { useNotificationInboxBadges } from '@/hooks/use-notification-inbox-badges';
 import { formatInboxBadgeDot } from '@/lib/notification-inbox-badge';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/**
+ * Skia 天气背景按需加载：默认关时不把 @shopify/react-native-skia 打进首屏模块图，
+ * 避免 Release 包在 Tab 冷启动就硬依赖 Skia（缺链/重签 Framework 失败时会秒退）。
+ */
+const WeatherAtmosphereSkiaBackground = lazy(() =>
+  import('@/components/weather/WeatherAtmosphereSkiaBackground').then((m) => ({
+    default: m.WeatherAtmosphereSkiaBackground,
+  })),
+);
 
 const DRAWER_WIDTH = Math.min(340, Math.round(Dimensions.get('window').width * 0.88)) || DRAWER_WIDTH_FALLBACK;
 
@@ -77,7 +86,11 @@ export default function TabLayout() {
 
   return (
     <View style={styles.root}>
-      <WeatherAtmosphereSkiaBackground />
+      {weatherAtmosphereBg ? (
+        <Suspense fallback={null}>
+          <WeatherAtmosphereSkiaBackground />
+        </Suspense>
+      ) : null}
       <ThemeProvider value={tabsTheme}>
         <SettingsDrawerProvider>
           <SettingsDrawerHost drawerWidth={DRAWER_WIDTH} tabBarHeight={tabBarHeight}>
