@@ -6,6 +6,7 @@
 import { isFrogAssignedOn } from '@/lib/frog-assignment';
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
 import { getNotificationCenterSettings } from '@/lib/notification-center-settings';
+import { buildTaskDeadlineCopy } from '@/lib/notification-copy-templates';
 import {
   cancelScheduledByIdentifier,
   cancelScheduledByPrefixes,
@@ -124,14 +125,13 @@ function buildDeadlineItem(params: {
   const opt = (schedule?.reminderOption ?? '').trim() || kind;
   const fingerprint = `${task.id}|${title}|${dueYmd}|${fireAt.toISOString().slice(0, 16)}|${opt}|${kind}|${intensity}`;
 
-  const notifTitle =
-    kind === 'overdue_sticky'
-      ? strong
-        ? '今日滞留 · 重点'
-        : '今日滞留'
-      : strong
-        ? '该做 · 重点待办'
-        : '该做';
+  const copy = buildTaskDeadlineCopy({
+    taskTitle: title,
+    kind,
+    intensity,
+    dueYmd,
+    seed: fingerprint,
+  });
 
   return {
     category: 'task-deadline-reminder',
@@ -145,10 +145,7 @@ function buildDeadlineItem(params: {
       intensity,
       kind,
     },
-    fallback: {
-      title: notifTitle,
-      body: title,
-    },
+    fallback: copy,
     fingerprint,
     strong,
     contextBlock: [

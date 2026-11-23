@@ -1,30 +1,33 @@
 /**
- * 健康摄入本地提醒（缺口 + 时机）：
- * - 餐次窗口催最大缺口，并可带傍晚收口
- * - 仅傍晚收口 / 水分轻间隔（从最近一次记录起算）
+ * 健康摄入本地提醒（四时段进度阈值）：
+ * - 早 / 午 / 下午 / 晚 检查点对比期望进度线，未跟上才催
  * - 关注项过滤、免打扰延后、稍后再说、今日不催
- * - 每日最多 2 条未来预约；达标后取消
+ * - 每日最多 2 条未来预约；跟上进度后取消
  */
 
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
 import {
   getNotificationCenterSettings,
   healthFocusKeyLabel,
+  healthIntakePeriodLabel,
   patchNotificationCenterSettings,
   type HealthIntakeFocusKey,
   type HealthIntakeReminderPrefs,
 } from '@/lib/notification-center-settings';
+import { buildHealthIntakeCopy } from '@/lib/notification-copy-templates';
 import {
   buildHealthIntakeReminderCopy,
   computeHealthIntakeFireAts,
   deferOutOfQuietHours,
   isInQuietHours,
-  listHealthIntakeDeficits,
+  listHealthIntakePeriodDeficits,
   parseHealthIntakeTimestamp,
+  resolveExpectedRatioAt,
   MAX_HEALTH_INTAKE_REMINDERS_PER_DAY,
   HEALTH_INTAKE_SNOOZE_MINUTES,
   type HealthIntakeDeficit,
   type HealthIntakeFireSlot,
+  type HealthIntakePeriodId,
 } from '@/lib/health-intake-reminder-logic';
 import {
   cancelScheduledByCategory,
@@ -42,12 +45,13 @@ export {
   computeHealthIntakeFireAts,
   deferOutOfQuietHours,
   isInQuietHours,
-  listHealthIntakeDeficits,
+  listHealthIntakePeriodDeficits,
   parseHealthIntakeTimestamp,
+  resolveExpectedRatioAt,
   MAX_HEALTH_INTAKE_REMINDERS_PER_DAY,
   HEALTH_INTAKE_SNOOZE_MINUTES,
 };
-export type { HealthIntakeDeficit, HealthIntakeFireSlot };
+export type { HealthIntakeDeficit, HealthIntakeFireSlot, HealthIntakePeriodId };
 
 const ANDROID_CHANNEL = {
   id: 'health-intake-reminders',
@@ -114,8 +118,8 @@ export async function ensureHealthIntakeReminderCategory(
 }
 
 /**
- * 按当前摄入与偏好重新登记健康提醒。
- * 达标 / 关注项均静音后取消当天后续。
+ * 按当前摄入与时段偏好重新登记健康提醒。
+ * 已跟上各未来时段期望线 / 关注项均静音后取消当天后续。
  */
 export async function syncHealthIntakeReminderNotifications(): Promise<void> {
   if (isLocalNotificationSchedulingUnavailable()) return;
@@ -148,35 +152,60 @@ export async function syncHealthIntakeReminderNotifications(): Promise<void> {
     carbohydrate: 0,
     calories: 0,
   };
-  const targets = resolveTargets(metrics?.latest ?? null);
-  const deficits = listHealthIntakeDeficits(totals, targets, prefs, logicalYmd);
-  if (deficits.length === 0) return;
+  const dayTargets = resolveTargets(metrics?.latest ?? null);
 
-  const effectiveDeficits =
-    prefs.mode === 'hydration_interval'
-      ? deficits.filter(d => d.key === 'hydration')
-      : deficits;
-  if (effectiveDeficits.length === 0) return;
-
-  const lastIntakeAt = parseHealthIntakeTimestamp(metrics?.latest?.created_at);
   const fireSlots = computeHealthIntakeFireAts({
     prefs,
     logicalYmd,
     now,
-    lastIntakeAt,
+    totals,
+    dayTargets,
   });
   if (fireSlots.length === 0) return;
 
-  const copy = buildHealthIntakeReminderCopy(effectiveDeficits);
-  const fingerprint = `${logicalYmd}|${prefs.mode}|${copy.deficitSummary}|${copy.primaryKey ?? ''}`;
-
   await ensureHealthIntakeReminderCategory();
+
+  const unitByKey: Record<HealthIntakeFocusKey, string> = {
+    hydration: 'ml',
+    protein: 'g',
+    carbohydrate: 'g',
+    calories: 'kcal',
+  };
+  const hintByKey: Record<HealthIntakeFocusKey, string> = {
+    hydration: '喝一口就补上',
+    protein: '记一餐就补上',
+    carbohydrate: '记一餐就补上',
+    calories: '看一眼今日摄入',
+  };
 
   for (let i = 0; i < fireSlots.length; i++) {
     const slot = fireSlots[i]!;
+    const deficits = listHealthIntakePeriodDeficits({
+      totals,
+      dayTargets,
+      expectedRatio: slot.expectedRatio,
+      prefs,
+      logicalYmd,
+    });
+    if (deficits.length === 0) continue;
+
+    const base = buildHealthIntakeReminderCopy(deficits);
+    const periodLabel = healthIntakePeriodLabel(slot.periodId);
+    const baseFingerprint = `${logicalYmd}|period|${slot.periodId}|${base.deficitSummary}|${base.primaryKey ?? ''}`;
     const id = healthIntakeReminderIdentifier(logicalYmd, i);
-    const roleHint =
-      slot.role === 'wrap' ? '收口' : slot.role === 'meal' ? '餐次' : '间隔';
+    const primary = deficits[0];
+    const varied = primary
+      ? buildHealthIntakeCopy({
+          primaryLabel: primary.label,
+          remainText: `${Math.round(primary.remain)}${unitByKey[primary.key]}`,
+          progress: `${Math.round(primary.current)}/${Math.round(primary.target)}${unitByKey[primary.key]}`,
+          hint: hintByKey[primary.key],
+          otherLabels: deficits.slice(1).map(d => d.label),
+          role: slot.periodId,
+          seed: `${baseFingerprint}|${slot.periodId}|${i}`,
+        })
+      : { title: base.title, body: base.body };
+
     await scheduleDateReminder({
       category: 'health-intake-reminder',
       identifier: id,
@@ -186,34 +215,37 @@ export async function syncHealthIntakeReminderNotifications(): Promise<void> {
       data: {
         type: 'health-intake-reminder',
         logicalYmd,
-        primaryKey: copy.primaryKey,
-        role: slot.role,
+        primaryKey: base.primaryKey,
+        role: slot.periodId,
+        periodId: slot.periodId,
+        expectedRatio: slot.expectedRatio,
       },
       fallback: {
-        title: copy.title,
-        body: copy.body,
+        title: varied.title,
+        body: varied.body,
       },
-      fingerprint: `${fingerprint}|${roleHint}|${i}`,
+      fingerprint: `${baseFingerprint}|${periodLabel}|${i}`,
       contextBlock: [
         '【频道】健康摄入提醒',
         `【逻辑日】${logicalYmd}`,
-        `【模式】${prefs.mode}`,
-        `【角色】${roleHint}`,
-        `【未达标】${copy.deficitSummary}`,
+        `【时段】${periodLabel}`,
+        `【期望进度】${Math.round(slot.expectedRatio * 100)}%`,
+        `【未跟上】${base.deficitSummary}`,
       ].join('\n'),
       strong: false,
     });
   }
 }
 
-/** 前台送达前：若已达标 / 无有效缺口则抑制展示 */
+/** 前台送达前：若已跟上此刻期望进度 / 无有效缺口则抑制展示 */
 export async function shouldSuppressHealthIntakeReminderNotification(): Promise<boolean> {
   try {
     const user = await getDefaultUser();
     if (!user?.id) return true;
     const settings = await getNotificationCenterSettings();
     const boundary = await resolveDayBoundaryForPage('health');
-    const logicalYmd = getLogicalLocalYmd(new Date(), boundary);
+    const now = new Date();
+    const logicalYmd = getLogicalLocalYmd(now, boundary);
     const metrics = await getHealthDayMetricsForUser(user.id, logicalYmd, { cacheOnly: true });
     const totals = metrics?.totals ?? {
       hydration: 0,
@@ -221,11 +253,15 @@ export async function shouldSuppressHealthIntakeReminderNotification(): Promise<
       carbohydrate: 0,
       calories: 0,
     };
-    const targets = resolveTargets(metrics?.latest ?? null);
-    const deficits = listHealthIntakeDeficits(totals, targets, settings.health, logicalYmd);
-    if (settings.health.mode === 'hydration_interval') {
-      return deficits.every(d => d.key !== 'hydration');
-    }
+    const dayTargets = resolveTargets(metrics?.latest ?? null);
+    const ratio = resolveExpectedRatioAt(now, settings.health.periods);
+    const deficits = listHealthIntakePeriodDeficits({
+      totals,
+      dayTargets,
+      expectedRatio: ratio,
+      prefs: settings.health,
+      logicalYmd,
+    });
     return deficits.length === 0;
   } catch (e) {
     console.warn('判断健康提醒抑制失败', e);
@@ -267,7 +303,7 @@ export type HealthIntakeReminderStatusSummary = {
   primaryLabel: string | null;
 };
 
-/** 健康页状态行：下次提醒 / 已达标 / 已推迟 */
+/** 健康页状态行：下次提醒 / 已跟上 / 已推迟 */
 export async function getHealthIntakeReminderStatusSummary(
   now: Date = new Date(),
 ): Promise<HealthIntakeReminderStatusSummary> {
@@ -304,44 +340,56 @@ export async function getHealthIntakeReminderStatusSummary(
       carbohydrate: 0,
       calories: 0,
     };
-    const targets = resolveTargets(metrics?.latest ?? null);
-    const deficits = listHealthIntakeDeficits(totals, targets, prefs, logicalYmd);
-    const effective =
-      prefs.mode === 'hydration_interval'
-        ? deficits.filter(d => d.key === 'hydration')
-        : deficits;
+    const dayTargets = resolveTargets(metrics?.latest ?? null);
 
-    if (effective.length === 0) {
-      return {
-        kind: 'met',
-        line: '今日关注项已达标，提醒已停',
-        nextFireAt: null,
-        primaryLabel: null,
-      };
-    }
-
-    const lastIntakeAt = parseHealthIntakeTimestamp(metrics?.latest?.created_at);
     const slots = computeHealthIntakeFireAts({
       prefs,
       logicalYmd,
       now,
-      lastIntakeAt,
+      totals,
+      dayTargets,
     });
-    const next = slots[0]?.fireAt ?? null;
-    const primary = effective[0]!;
+    const next = slots[0] ?? null;
     if (!next) {
+      const nowDeficits = listHealthIntakePeriodDeficits({
+        totals,
+        dayTargets,
+        expectedRatio: resolveExpectedRatioAt(now, prefs.periods),
+        prefs,
+        logicalYmd,
+      });
+      if (nowDeficits.length === 0) {
+        return {
+          kind: 'met',
+          line: '此时进度已跟上，提醒已停',
+          nextFireAt: null,
+          primaryLabel: null,
+        };
+      }
       return {
         kind: 'none',
-        line: `主盯${primary.label} · 今日暂无后续提醒`,
+        line: `主盯${nowDeficits[0]!.label} · 今日暂无后续提醒`,
         nextFireAt: null,
-        primaryLabel: primary.label,
+        primaryLabel: nowDeficits[0]!.label,
       };
     }
+
+    const nextDeficits = listHealthIntakePeriodDeficits({
+      totals,
+      dayTargets,
+      expectedRatio: next.expectedRatio,
+      prefs,
+      logicalYmd,
+    });
+    const primary = nextDeficits[0];
+    const periodLabel = healthIntakePeriodLabel(next.periodId);
     return {
       kind: 'scheduled',
-      line: `下次提醒 · ${pad2(next.getHours())}:${pad2(next.getMinutes())} · 主盯${primary.label}`,
-      nextFireAt: next,
-      primaryLabel: primary.label,
+      line: `下次 · ${periodLabel} ${pad2(next.fireAt.getHours())}:${pad2(next.fireAt.getMinutes())}${
+        primary ? ` · 主盯${primary.label}` : ''
+      }`,
+      nextFireAt: next.fireAt,
+      primaryLabel: primary?.label ?? null,
     };
   } catch (e) {
     console.warn('读取健康提醒状态失败', e);

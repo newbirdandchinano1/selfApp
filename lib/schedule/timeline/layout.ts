@@ -45,7 +45,7 @@ function toAssignSortable(e: TimelineEvent): AssignSortableItem {
   };
 }
 
-/** 定时：起点升序；同起点按项目→任务→待办→小习惯 + 类别内部规则 */
+/** 定时：起点升序；同起点按优先级（小习惯垫后）+ 类别内部规则 */
 function compareByStart(a: TimelineEvent, b: TimelineEvent): number {
   return compareTimelineTimedEvents(
     { ...toAssignSortable(a), startMinutes: a.startMinutes, endMinutes: a.endMinutes },
@@ -53,12 +53,12 @@ function compareByStart(a: TimelineEvent, b: TimelineEvent): number {
   );
 }
 
-/** 全天区：类型优先，再同类别内部规则（不跟轴上时刻抢序） */
+/** 全天区：任务/项目/待办按优先级，小习惯垫后；同类别内部规则（不跟轴上时刻抢序） */
 function compareAllDay(a: TimelineEvent, b: TimelineEvent): number {
   return compareAssignedScheduleItems(toAssignSortable(a), toAssignSortable(b));
 }
 
-/** 簇内装栏：类型优先靠左，再类别内部规则 */
+/** 簇内装栏：高优先级靠左（小习惯靠右），再类别内部规则 */
 function packClusterColumns(events: TimelineEvent[]): { event: TimelineEvent; column: number }[] {
 
   const ordered = [...events].sort((a, b) => {

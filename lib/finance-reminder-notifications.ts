@@ -8,14 +8,12 @@
 import { parseStoredDatetime, ymdFromDatetime } from '@/lib/api-mysql-datetime';
 import { formatYmd } from '@/lib/date';
 import {
-  budgetThresholdCopy,
   computeBudgetUsagePercent,
   findNextLedgerWrapFireAt,
   findNextWeekdayFireAt,
   formatClockLabel,
   formatYuan,
   markBudgetThresholdNotified,
-  pad2,
   pickNextScheduledExpenseReminder,
   resolveBudgetThresholdToNotify,
   type FinanceBudgetThresholdKind,
@@ -64,7 +62,17 @@ import { isFinanceTransactionExcludedFromBudget } from '@/lib/repositories/finan
 import type { FinanceTransactionRow } from '@/lib/repositories/finance/finance.types';
 import { getLogicalLocalYmd, resolveDayBoundaryForPage } from '@/lib/tasks-logical-day';
 import { Platform } from 'react-native';
-import { canScheduleAppNotification } from '@/lib/notification-center-settings';
+import {
+  buildBudgetThresholdCopy,
+  buildFinanceLedgerWrapCopy,
+  buildFinanceSavingsCopy,
+  buildFinanceScheduledCopy,
+} from '@/lib/notification-copy-templates';
+import { trySoftPresentLocalNotification } from '@/lib/notification-foreground-delivery';
+import {
+  canScheduleAppNotification,
+  isGlobalQuietHoursNow,
+} from '@/lib/notification-center-settings';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import { upsertInboxFromNotification } from '@/lib/repositories/notifications/notification-inbox';
 
@@ -239,12 +247,14 @@ export async function syncFinanceScheduledExpenseReminders(
         item.minute,
       ),
     );
-    const title =
-      candidate.kind === 'evening_wrap' ? `定时支出未入账 · ${item.name}` : `定时支出提醒 · ${item.name}`;
-    const body =
-      candidate.kind === 'evening_wrap'
-        ? `今日 ${amountLabel} 尚未入账，记得确认。`
-        : `应记 ${candidate.dueYmd} ${timeLabel} · ${amountLabel}`;
+    const copy = buildFinanceScheduledCopy({
+      name: item.name,
+      amountLabel,
+      kind: candidate.kind,
+      dueYmd: candidate.dueYmd,
+      timeLabel,
+      seed: `fse|${item.id}|${candidate.kind}|${candidate.dueYmd}`,
+    });
 
     await scheduleDateReminder({
       category: 'finance-scheduled-expense-reminder',
@@ -258,7 +268,7 @@ export async function syncFinanceScheduledExpenseReminders(
         dueYmd: candidate.dueYmd,
         slotKind: candidate.kind,
       },
-      fallback: { title, body },
+      fallback: copy,
       fingerprint: `fse|${item.id}|${candidate.kind}|${candidate.fireAt.toISOString().slice(0, 16)}`,
       contextBlock: `定时支出「${item.name}」${candidate.kind === 'evening_wrap' ? '傍晚收口' : '应记前提醒'}`,
     });
@@ -283,34 +293,20 @@ async function presentImmediateFinanceNotification(params: {
   if (!(await canScheduleAppNotification({ category: params.category, identifier: params.identifier }))) {
     return false;
   }
-  try {
-    const Notifications = await import('expo-notifications');
-    const perm = await Notifications.getPermissionsAsync();
-    let granted = perm.status === 'granted';
-    if (!granted && perm.canAskAgain) {
-      const req = await Notifications.requestPermissionsAsync();
-      granted = req.status === 'granted';
-    }
-    if (!granted) return false;
-
-    if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync(params.channel.id, {
-        name: params.channel.name,
-        importance: Notifications.AndroidImportance.DEFAULT,
-        vibrationPattern: params.channel.vibrationPattern,
-      });
-    }
-
-    await Notifications.scheduleNotificationAsync({
+  if (
+    await trySoftPresentLocalNotification({
+      category: params.category,
       identifier: params.identifier,
-      content: {
-        title: params.title,
-        body: params.body,
-        data: params.data,
-        ...(Platform.OS === 'android' ? { channelId: params.channel.id } : {}),
-      },
-      trigger: null,
-    });
+      title: params.title,
+      body: params.body,
+      data: params.data,
+      strong: false,
+    })
+  ) {
+    return true;
+  }
+  // 全局免打扰：不弹系统通知，只写收件箱
+  if (await isGlobalQuietHoursNow()) {
     try {
       await upsertInboxFromNotification({
         dedupeKey: params.identifier,
@@ -321,8 +317,42 @@ async function presentImmediateFinanceNotification(params: {
         source: 'local',
       });
     } catch (e) {
-      console.warn('[finance-reminder] inbox upsert failed', e);
+      console.warn('[finance-reminder] quiet inbox upsert failed', e);
     }
+    return true;
+  }
+  try {
+    await upsertInboxFromNotification({
+      dedupeKey: params.identifier,
+      category: params.category,
+      title: params.title,
+      body: params.body,
+      data: {
+        ...params.data,
+        channelId: params.channel.id,
+        channelName: params.channel.name,
+      },
+      source: 'local',
+    });
+    const { enqueueReminderJobsUpsert, flushReminderJobsQueue } = await import(
+      '@/lib/reminder-jobs-client'
+    );
+    enqueueReminderJobsUpsert([
+      {
+        dedupeKey: params.identifier,
+        category: params.category,
+        fireAt: new Date().toISOString(),
+        title: params.title,
+        body: params.body,
+        payload: {
+          ...params.data,
+          channelId: params.channel.id,
+          channelName: params.channel.name,
+        },
+        strong: false,
+      },
+    ]);
+    await flushReminderJobsQueue();
     return true;
   } catch (e) {
     console.warn('[finance-reminder] present failed', e);
@@ -383,7 +413,13 @@ export async function syncFinanceBudgetThresholdReminders(
   });
   if (!kind) return;
 
-  const fallback = budgetThresholdCopy(kind, usage.percent, usage.usedExpense, usage.totalBudget);
+  const fallback = buildBudgetThresholdCopy({
+    kind,
+    percent: usage.percent,
+    usedLabel: formatYuan(usage.usedExpense),
+    totalLabel: formatYuan(usage.totalBudget),
+    seed: `fbt|${periodKey}|${kind}`,
+  });
   const identifier = financeBudgetThresholdIdentifier(periodKey, kind);
   const fingerprint = `fbt|${periodKey}|${kind}|${Math.round(usage.percent)}`;
   const copy = await prefetchFinanceNotificationWrapupCopy({
@@ -465,10 +501,11 @@ export async function syncFinanceSavingsNudgeReminders(
     channel: SAVINGS_CHANNEL,
     strong: false,
     data: { type: 'finance-savings-nudge-reminder' },
-    fallback: {
-      title: '储蓄目标轻催',
-      body: `距目标还差 ${gap} · 建议每日存 ${daily}`,
-    },
+    fallback: buildFinanceSavingsCopy({
+      gapLabel: gap,
+      dailyLabel: daily,
+      seed: `fsn|${goal.targetDate}`,
+    }),
     fingerprint: `fsn|${goal.targetDate}|${fireAt.toISOString().slice(0, 16)}`,
     contextBlock: `储蓄目标缺口 ${gap}`,
   });
@@ -510,10 +547,9 @@ export async function syncFinanceLedgerWrapReminders(
   if (!fireAt) return;
 
   const fingerprint = `flw|${fireAt.toISOString().slice(0, 16)}`;
-  const fallback = {
-    title: '今天还没记账',
-    body: '花半分钟记一笔，预算与复盘会更准。',
-  };
+  const fallback = buildFinanceLedgerWrapCopy({
+    seed: `flw|${fireAt.toISOString().slice(0, 10)}`,
+  });
   const fireYmd = getLogicalLocalYmd(fireAt, boundary);
   // 排期前低频预取 AI 收口文案；失败仍走规则兜底（schedule 只读缓存）
   await prefetchFinanceNotificationWrapupCopy({
@@ -587,9 +623,9 @@ export type FinanceReminderStatusSummary = {
   nextFireAt: Date | null;
 };
 
-/** 财务页状态行：优先展示最近一条预约提醒。 */
+/** 财务页状态行：开关态（下次 fireAt 在服务端 jobs，本机不再枚举 DATE 预约）。 */
 export async function getFinanceReminderStatusSummary(
-  now: Date = new Date(),
+  _now: Date = new Date(),
 ): Promise<FinanceReminderStatusSummary> {
   try {
     const settings = await getNotificationCenterSettings();
@@ -610,45 +646,11 @@ export async function getFinanceReminderStatusSummary(
       return { kind: 'none', line: '本端暂不支持预约提醒', nextFireAt: null };
     }
 
-    const Notifications = await import('expo-notifications');
-    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-    const financePrefixes = [
-      'selfapp-finance-scheduled-expense:',
-      'selfapp-finance-savings-nudge',
-      'selfapp-finance-ledger-wrap',
-    ];
-    let next: { at: Date; title: string } | null = null;
-    for (const item of scheduled) {
-      const id = String(item.identifier ?? '');
-      if (!financePrefixes.some((p) => id === p || id.startsWith(p))) continue;
-      const trigger = item.trigger as { type?: string; date?: Date | number; value?: number } | null;
-      let atMs = 0;
-      if (trigger && typeof trigger === 'object') {
-        if (trigger.date instanceof Date) atMs = trigger.date.getTime();
-        else if (typeof trigger.date === 'number') atMs = trigger.date;
-        else if (typeof trigger.value === 'number') atMs = trigger.value;
-      }
-      if (!Number.isFinite(atMs) || atMs <= now.getTime()) continue;
-      const title = String(item.content?.title ?? '财务提醒');
-      if (!next || atMs < next.at.getTime()) {
-        next = { at: new Date(atMs), title };
-      }
+    const budgetOn = settings.categories['finance-budget-threshold-reminder'] !== false;
+    if (budgetOn) {
+      return { kind: 'none', line: '预算阈值待命 · 点此设置', nextFireAt: null };
     }
-
-    if (!next) {
-      const budgetOn = settings.categories['finance-budget-threshold-reminder'] !== false;
-      if (budgetOn) {
-        return { kind: 'none', line: '预算阈值待命 · 点此设置', nextFireAt: null };
-      }
-      return { kind: 'none', line: '暂无财务预约提醒', nextFireAt: null };
-    }
-
-    const shortTitle = next.title.replace(/^定时支出提醒 · /, '').replace(/^定时支出未入账 · /, '');
-    return {
-      kind: 'scheduled',
-      line: `下次提醒 · ${pad2(next.at.getHours())}:${pad2(next.at.getMinutes())} · ${shortTitle}`,
-      nextFireAt: next.at,
-    };
+    return { kind: 'none', line: '财务提醒已开启（到点推送）', nextFireAt: null };
   } catch (e) {
     console.warn('读取财务提醒状态失败', e);
     return { kind: 'none', line: '财务提醒状态暂不可用', nextFireAt: null };

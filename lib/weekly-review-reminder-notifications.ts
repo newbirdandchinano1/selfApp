@@ -5,6 +5,7 @@
 import type { WeeklyReviewReminderSettings } from '@/lib/weekly-review-reminder-settings';
 import { getWeeklyReviewReminderSettings } from '@/lib/weekly-review-reminder-settings';
 import { getNotificationCategoryMeta } from '@/lib/notification-catalog';
+import { buildWeeklyReviewCopy } from '@/lib/notification-copy-templates';
 import {
   cancelScheduledByIdentifier,
   isLocalNotificationSchedulingUnavailable,
@@ -160,6 +161,10 @@ export async function syncWeeklyReviewReminderNotification(
   const { fireAt, weekStartYmd } = next;
   const fingerprint = `weekly-review|${hour}:${minute}|${fireAt.toISOString().slice(0, 16)}`;
   const progressHint = await buildWeeklyProgressBodyHint(new Date());
+  const copy = buildWeeklyReviewCopy({
+    bodyHint: progressHint,
+    seed: fingerprint,
+  });
 
   return scheduleDateReminder({
     category: 'weekly-review-reminder',
@@ -172,15 +177,12 @@ export async function syncWeeklyReviewReminderNotification(
       weekStartYmd,
       focus: 'weekly',
     },
-    fallback: {
-      title: '本周复盘',
-      body: progressHint,
-    },
+    fallback: copy,
     fingerprint,
     contextBlock: [
       '【频道】周复盘提醒',
       '【语境】提醒用户填写本周周复盘',
-      `【进度提示】${progressHint}`,
+      `【进度提示】${copy.body}`,
       `【周期起点】${weekStartYmd}`,
     ].join('\n'),
   });

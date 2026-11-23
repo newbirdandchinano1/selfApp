@@ -103,8 +103,8 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     title: '健康摄入提醒',
     sourceLabel: '健康',
     description:
-      '按餐次窗口 / 傍晚收口 / 水分间隔催关注项缺口（每日最多 2 条）；可稍后再说或今日不催。',
-    customizeLabel: '设置模式、关注项与免打扰',
+      '按早 / 午 / 下午 / 晚四个时段对照期望进度催关注项（每日最多 2 条）；跟上进度则不提醒。可稍后再说或今日不催。',
+    customizeLabel: '设置时段、关注项与免打扰',
     customizeHref: '/notification-channel/health',
     identifierPrefix: 'selfapp-health-intake-reminder:',
   },
@@ -114,7 +114,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     title: '日程表提醒',
     sourceLabel: '日程表',
     description:
-      '已入格占用在开始前按类型默认提前量提醒（待办 / 项目 / 习惯可分别设置）。未入格任务不走本通道。iOS 默认为强提醒。',
+      '已入格占用在开始前按类型默认提前量提醒（待办 / 项目 / 习惯可分别设置）。未入格任务不走本通道。默认普通提醒（不自动升级）。',
     customizeLabel: '设置分类型提前量',
     customizeHref: '/notification-channel/tasks',
     identifierPrefix: 'selfapp-schedule-reminder:',
@@ -157,7 +157,7 @@ export const NOTIFICATION_CATEGORIES: readonly NotificationCategoryMeta[] = [
     pageId: 'review',
     title: '每日复盘提醒',
     sourceLabel: '复盘',
-    description: '每日固定时刻提醒填写日复盘（已填写或周复盘日会跳过）。iOS 为强提醒：Time Sensitive、未确认会再次提醒。',
+    description: '每日固定时刻提醒填写日复盘（已填写或周复盘日会跳过）。默认真通提醒；可与其它收口错峰。',
     customizeLabel: '设置日复盘提醒',
     customizeHref: '/notification-channel/review',
     identifierPrefix: 'selfapp-daily-review-reminder',

@@ -1,25 +1,35 @@
 /**
- * 本地通知统一排期层：权限、Android 通道、按前缀取消、DATE 登记 + 文案解析。
- * 业务侧只声明「何时 / 给谁 / 哪一类」，不复制样板。
- *
- * 批量模式（P1）：一次扫表 cancel、skipCancel、门禁复用、有限并发登记。
+ * 提醒统一排期层：门禁 + 送达策略 + 上报服务端 reminder_jobs。
+ * 不再登记本地 DATE 通知（避免杀进程后 Inbox 漏写 / 与推送双弹）。
+ * 业务侧只声明「何时 / 给谁 / 哪一类」。
  */
 
 import type { NotificationCategoryId } from '@/lib/notification-catalog';
 import { getNotificationCategoryMeta } from '@/lib/notification-catalog';
 import { resolveNotificationAiCopy } from '@/lib/notification-ai-copy';
-import { canScheduleAppNotification } from '@/lib/notification-center-settings';
+import {
+  canScheduleAppNotification,
+  getNotificationCenterSettings,
+} from '@/lib/notification-center-settings';
+import {
+  categoryDeliveryPriority,
+  isWrapNotificationData,
+  planNotificationFireAts,
+  resolveDeliveryStrong,
+  type DeliveryPolicyPrefs,
+  type FirePlanCandidate,
+} from '@/lib/notification-delivery-policy';
 import { isExpoSandboxNotificationDisabled } from '@/lib/notification-policy';
 import {
-  computeEscalationFireAts,
-  ensureStrongReminderNotificationCategory,
-  escalationIdentifier,
-  isStrongReminderCategory,
+  isStrongEligibleCategory,
   maxStrongEscalationWave,
-  STRONG_REMINDER_CATEGORY_ID,
-  STRONG_REMINDER_SOUND,
   stripReminderAccessorySuffix,
 } from '@/lib/notification-strong-reminder';
+import {
+  enqueueReminderJobsCancel,
+  enqueueReminderJobsUpsert,
+  flushReminderJobsQueue,
+} from '@/lib/reminder-jobs-client';
 import { Platform } from 'react-native';
 
 export type AndroidChannelConfig = {
@@ -41,13 +51,12 @@ export type ScheduleDateReminderParams = {
   contextBlock: string;
   sound?: boolean;
   /**
-   * 强提醒：iOS Time Sensitive + 自定义铃声 + 完成/贪睡 Action + 未确认升级。
-   * 默认：习惯 / 日程格 / 每日复盘为 true。
+   * 强提醒：服务端高优先级推送 + 派发时挂升级 follow-up job。
+   * P0：默认 false；仅业务显式传 true（如习惯 intensity=strong）。
    */
   strong?: boolean;
   /**
-   * 非强提醒时可选挂自定义 Action 类别（如健康「稍后再说 / 今日不催」）。
-   * 强提醒开启时忽略，仍用强提醒类别。
+   * 非强提醒时可选挂自定义 Action 类别（推送端可能忽略）。
    */
   categoryIdentifier?: string;
 };
@@ -57,33 +66,66 @@ export type ScheduleDateReminderResult = {
   permissionDenied: boolean;
 };
 
-/** 本轮登记上下文：复用 Notifications 模块、权限结果与已确保的通道。 */
+/** 本轮登记上下文（兼容旧调用；服务端路径下可为空壳）。 */
 export type NotificationScheduleSession = {
-  Notifications: NonNullable<Awaited<ReturnType<typeof loadExpoNotifications>>>;
+  Notifications: NonNullable<Awaited<ReturnType<typeof loadExpoNotifications>>> | null;
   permissionGranted: boolean;
   ensuredChannelIds: Set<string>;
   strongCategoryReady: boolean;
 };
 
 export type ScheduleDateReminderOptions = {
-  /** 外层已按前缀/identifier 清过时跳过内部 cancel，避免再扫全表 */
+  /** 外层已按前缀/identifier 清过时跳过内部 cancel */
   skipCancel?: boolean;
-  /** 复用本轮门禁（权限 / 通道 / 强提醒 category） */
   session?: NotificationScheduleSession | null;
+  /** 外层已跑过 planNotificationFireAts 时跳过，避免双重错峰 */
+  skipDeliveryPolicy?: boolean;
 };
 
 export type ScheduleDateRemindersBulkOptions = {
   skipCancel?: boolean;
-  /** 并发度，默认 6，钳制在 4～8 */
   concurrency?: number;
 };
+
+export { isGlobalQuietHoursNow } from '@/lib/notification-center-settings';
+
+function resolveStrongForItem(
+  item: Pick<ScheduleDateReminderParams, 'category' | 'strong'>,
+  prefs: DeliveryPolicyPrefs,
+): boolean {
+  return resolveDeliveryStrong({
+    intensity: prefs.intensity,
+    explicit: item.strong,
+    categoryEligible: isStrongEligibleCategory(item.category),
+  });
+}
+
+function toFirePlanCandidate(
+  item: ScheduleDateReminderParams,
+  prefs: DeliveryPolicyPrefs,
+): FirePlanCandidate {
+  const strong = resolveStrongForItem(item, prefs);
+  return {
+    id: item.identifier,
+    category: item.category,
+    fireAtMs: item.fireAt.getTime(),
+    priority: categoryDeliveryPriority(item.category) + (strong ? -5 : 0),
+    isWrap: isWrapNotificationData(item.data),
+    strong,
+  };
+}
+
+async function resolveDeliveryPrefs(): Promise<DeliveryPolicyPrefs> {
+  const settings = await getNotificationCenterSettings();
+  return settings.delivery;
+}
 
 const PAST_SLACK_MS = 2000;
 const DEFAULT_BULK_CONCURRENCY = 6;
 const MIN_BULK_CONCURRENCY = 4;
 const MAX_BULK_CONCURRENCY = 8;
 
-/** Web / Expo Go 沙箱：不登记本地通知。 */
+/** Web / Expo Go：不挂本地系统通知模块（推送 token / 本地 schedule）。 */
 export function isLocalNotificationSchedulingUnavailable(): boolean {
   return Platform.OS === 'web' || isExpoSandboxNotificationDisabled();
 }
@@ -140,14 +182,11 @@ export async function ensureAndroidNotificationChannel(
   });
 }
 
-/**
- * 打开本轮排期会话：单次加载模块并问权限。
- * 通道 / 强提醒 category 在首次用到时写入 session。
- */
 export async function createNotificationScheduleSession(): Promise<NotificationScheduleSession | null> {
   const Notifications = await loadExpoNotifications();
-  if (!Notifications) return null;
-  const permissionGranted = await ensureNotificationPermission(Notifications);
+  const permissionGranted = Notifications
+    ? await ensureNotificationPermission(Notifications)
+    : true; // 无本地模块时仍允许上报服务端 jobs
   return {
     Notifications,
     permissionGranted,
@@ -156,32 +195,26 @@ export async function createNotificationScheduleSession(): Promise<NotificationS
   };
 }
 
-async function ensureChannelOnSession(
-  session: NotificationScheduleSession,
-  channel: AndroidChannelConfig,
-): Promise<void> {
-  if (Platform.OS !== 'android') return;
-  if (session.ensuredChannelIds.has(channel.id)) return;
-  await ensureAndroidNotificationChannel(channel, session.Notifications);
-  session.ensuredChannelIds.add(channel.id);
-}
-
-async function ensureStrongCategoryOnSession(
-  session: NotificationScheduleSession,
-): Promise<void> {
-  if (session.strongCategoryReady) return;
-  await ensureStrongReminderNotificationCategory(session.Notifications);
-  session.strongCategoryReady = true;
-}
-
 /**
- * 取消主 identifier，并清掉其升级链（`id:esc:N`）。
+ * 启动时一次性清掉本机全部 DATE 预约（旧版本地 schedule 残留），避免与 Expo Push 双弹。
+ * 新路径只上报服务端 jobs，不再登记本地。
  */
-export async function cancelScheduledByIdentifier(identifier: string): Promise<void> {
+export async function clearAllLegacyLocalScheduledNotifications(): Promise<void> {
   if (isLocalNotificationSchedulingUnavailable()) return;
-  const raw = identifier.trim();
-  if (!raw) return;
-  const id = stripReminderAccessorySuffix(raw);
+  try {
+    const Notifications = await loadExpoNotifications();
+    if (!Notifications) return;
+    await Notifications.cancelAllScheduledNotificationsAsync();
+  } catch (e) {
+    console.warn('清理遗留本地预约通知失败', e);
+  }
+}
+
+/** 清掉本机残留的旧 DATE 预约，避免与推送双弹。 */
+async function clearLegacyLocalByIdentifier(identifier: string): Promise<void> {
+  if (isLocalNotificationSchedulingUnavailable()) return;
+  const id = stripReminderAccessorySuffix(identifier.trim());
+  if (!id) return;
   try {
     const Notifications = await loadExpoNotifications();
     if (!Notifications) return;
@@ -199,12 +232,11 @@ export async function cancelScheduledByIdentifier(identifier: string): Promise<v
       ),
     );
   } catch {
-    /* 无已登记通知时忽略 */
+    /* ignore */
   }
 }
 
-/** 一次扫表，按多个前缀批量取消（任一前缀命中即取消）。 */
-export async function cancelScheduledByPrefixes(prefixes: string[]): Promise<void> {
+async function clearLegacyLocalByPrefixes(prefixes: string[]): Promise<void> {
   if (isLocalNotificationSchedulingUnavailable()) return;
   const cleaned = [
     ...new Set(prefixes.map(p => p.trim()).filter((p): p is string => p.length > 0)),
@@ -227,8 +259,29 @@ export async function cancelScheduledByPrefixes(prefixes: string[]): Promise<voi
       ),
     );
   } catch (e) {
-    console.warn('按前缀批量取消通知失败', cleaned, e);
+    console.warn('按前缀清理遗留本地通知失败', cleaned, e);
   }
+}
+
+/**
+ * 取消主 identifier（服务端 jobs + 遗留本地）。
+ */
+export async function cancelScheduledByIdentifier(identifier: string): Promise<void> {
+  const raw = identifier.trim();
+  if (!raw) return;
+  const id = stripReminderAccessorySuffix(raw);
+  enqueueReminderJobsCancel({ dedupeKeys: [id] });
+  await clearLegacyLocalByIdentifier(id);
+}
+
+/** 按多个前缀批量取消。 */
+export async function cancelScheduledByPrefixes(prefixes: string[]): Promise<void> {
+  const cleaned = [
+    ...new Set(prefixes.map(p => p.trim()).filter((p): p is string => p.length > 0)),
+  ];
+  if (cleaned.length === 0) return;
+  enqueueReminderJobsCancel({ prefixes: cleaned });
+  await clearLegacyLocalByPrefixes(cleaned);
 }
 
 export async function cancelScheduledByPrefix(prefix: string): Promise<void> {
@@ -240,8 +293,11 @@ export async function cancelScheduledByCategory(
   category: NotificationCategoryId,
 ): Promise<void> {
   const prefix = getNotificationCategoryMeta(category).identifierPrefix;
-  if (!prefix) return;
-  await cancelScheduledByPrefix(prefix);
+  if (prefix) {
+    await cancelScheduledByPrefixes([prefix]);
+  }
+  enqueueReminderJobsCancel({ replaceCategories: [category] });
+  await flushReminderJobsQueue();
 }
 
 function clampBulkConcurrency(n: number | undefined): number {
@@ -274,19 +330,29 @@ export async function mapWithConcurrency<T, R>(
 }
 
 /**
- * 登记一条 DATE 本地通知：门禁 → 权限 → 通道 → 文案 → schedule。
- * `fireAt` 已过（含 2s 余量）则跳过。
- * 强提醒时额外登记 +5 / +15 分钟升级，并挂上完成/贪睡 Action。
+ * 登记一条提醒：门禁 → 送达策略 → 文案 → 上报服务端 jobs。
+ * 强提醒升级波由服务端派发主波时插入 follow-up。
  */
 export async function scheduleDateReminder(
   params: ScheduleDateReminderParams,
   options?: ScheduleDateReminderOptions,
 ): Promise<ScheduleDateReminderResult> {
-  if (isLocalNotificationSchedulingUnavailable()) {
-    return { scheduled: false, permissionDenied: false };
+  const deliveryPrefs = await resolveDeliveryPrefs();
+  let fireAt = params.fireAt;
+  if (!options?.skipDeliveryPolicy) {
+    const planned = planNotificationFireAts(
+      [toFirePlanCandidate(params, deliveryPrefs)],
+      deliveryPrefs,
+      [],
+    );
+    const plan = planned[0];
+    if (!plan || plan.mode === 'drop') {
+      return { scheduled: false, permissionDenied: false };
+    }
+    fireAt = new Date(plan.fireAtMs);
   }
 
-  if (params.fireAt.getTime() <= Date.now() + PAST_SLACK_MS) {
+  if (fireAt.getTime() <= Date.now() + PAST_SLACK_MS) {
     return { scheduled: false, permissionDenied: false };
   }
 
@@ -299,40 +365,13 @@ export async function scheduleDateReminder(
     return { scheduled: false, permissionDenied: false };
   }
 
-  const session = options?.session ?? null;
-  const Notifications = session?.Notifications ?? (await loadExpoNotifications());
-  if (!Notifications) {
-    return { scheduled: false, permissionDenied: false };
-  }
+  const useStrong = resolveStrongForItem(params, deliveryPrefs);
+  const baseId = stripReminderAccessorySuffix(params.identifier);
 
-  if (session) {
-    if (!session.permissionGranted) {
-      return { scheduled: false, permissionDenied: true };
-    }
-  } else if (!(await ensureNotificationPermission(Notifications))) {
-    return { scheduled: false, permissionDenied: true };
-  }
-
-  if (session) {
-    await ensureChannelOnSession(session, params.channel);
-  } else {
-    await ensureAndroidNotificationChannel(params.channel, Notifications);
-  }
-
-  const useStrong =
-    params.strong ?? isStrongReminderCategory(params.category);
-
-  if (useStrong) {
-    if (session) {
-      await ensureStrongCategoryOnSession(session);
-    } else {
-      await ensureStrongReminderNotificationCategory(Notifications);
-    }
-  }
-
-  // 重登记前清掉旧升级链，避免残留（bulk 路径外层已清前缀时可 skip）
   if (!options?.skipCancel) {
-    await cancelScheduledByIdentifier(params.identifier);
+    await cancelScheduledByIdentifier(baseId);
+  } else {
+    await clearLegacyLocalByIdentifier(baseId);
   }
 
   const copy = await resolveNotificationAiCopy({
@@ -349,7 +388,7 @@ export async function scheduleDateReminder(
     strong: useStrong,
     escalationWave: 0,
     maxEscalationWave: maxWave,
-    baseIdentifier: params.identifier,
+    baseIdentifier: baseId,
     disposeTitle: copy.title,
     disposeBody: copy.body,
     channelId: params.channel.id,
@@ -360,74 +399,23 @@ export async function scheduleDateReminder(
     contextBlock: params.contextBlock,
   };
 
-  const softCategoryId =
-    !useStrong && typeof params.categoryIdentifier === 'string' && params.categoryIdentifier.trim()
-      ? params.categoryIdentifier.trim()
-      : null;
+  enqueueReminderJobsUpsert([
+    {
+      dedupeKey: baseId,
+      category: params.category,
+      fireAt: fireAt.toISOString(),
+      title: copy.title,
+      body: copy.body,
+      payload: baseData,
+      strong: useStrong,
+    },
+  ]);
 
-  const iosStrong = useStrong && Platform.OS === 'ios';
-  const contentBase = {
-    title: copy.title,
-    body: copy.body,
-    sound: iosStrong
-      ? STRONG_REMINDER_SOUND
-      : params.sound !== false,
-    ...(useStrong
-      ? { categoryIdentifier: STRONG_REMINDER_CATEGORY_ID }
-      : softCategoryId
-        ? { categoryIdentifier: softCategoryId }
-        : {}),
-    ...(iosStrong ? { interruptionLevel: 'timeSensitive' as const } : {}),
-  };
-
-  try {
-    await Notifications.scheduleNotificationAsync({
-      identifier: params.identifier,
-      content: {
-        ...contentBase,
-        data: baseData,
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DATE,
-        date: params.fireAt,
-        channelId: Platform.OS === 'android' ? params.channel.id : undefined,
-      },
-    });
-
-    if (useStrong) {
-      const escalations = computeEscalationFireAts(params.fireAt, Date.now(), PAST_SLACK_MS);
-      await Promise.all(
-        escalations.map(({ wave, fireAt }) =>
-          Notifications.scheduleNotificationAsync({
-            identifier: escalationIdentifier(params.identifier, wave),
-            content: {
-              ...contentBase,
-              body: `再次提醒：${copy.body}`,
-              data: {
-                ...baseData,
-                escalationWave: wave,
-                disposeBody: `再次提醒：${copy.body}`,
-              },
-            },
-            trigger: {
-              type: Notifications.SchedulableTriggerInputTypes.DATE,
-              date: fireAt,
-              channelId: Platform.OS === 'android' ? params.channel.id : undefined,
-            },
-          }),
-        ),
-      );
-    }
-
-    return { scheduled: true, permissionDenied: false };
-  } catch (e) {
-    console.warn('登记本地通知失败', params.identifier, e);
-    return { scheduled: false, permissionDenied: false };
-  }
+  return { scheduled: true, permissionDenied: false };
 }
 
 /**
- * 批量登记 DATE 提醒：单次门禁会话 + 有限并发。
+ * 批量登记提醒：送达策略规划 + 有限并发上报服务端。
  * 外层若已 `cancelScheduledByPrefixes`，请传 `skipCancel: true`。
  */
 export async function scheduleDateRemindersBulk(
@@ -438,24 +426,28 @@ export async function scheduleDateRemindersBulk(
     return { permissionDenied: false, scheduledCount: 0 };
   }
 
-  const session = await createNotificationScheduleSession();
-  if (!session) {
-    return { permissionDenied: false, scheduledCount: 0 };
-  }
-  if (!session.permissionGranted) {
-    return { permissionDenied: true, scheduledCount: 0 };
-  }
+  const prefs = await resolveDeliveryPrefs();
+  const planned = planNotificationFireAts(
+    items.map(i => toFirePlanCandidate(i, prefs)),
+    prefs,
+    [],
+  );
+  const planById = new Map(planned.map(p => [p.id, p]));
 
   const concurrency = clampBulkConcurrency(options?.concurrency ?? DEFAULT_BULK_CONCURRENCY);
   const skipCancel = options?.skipCancel === true;
-  let permissionDenied = false;
   let scheduledCount = 0;
 
   await mapWithConcurrency(items, concurrency, async item => {
-    const result = await scheduleDateReminder(item, { skipCancel, session });
-    if (result.permissionDenied) permissionDenied = true;
+    const plan = planById.get(item.identifier);
+    if (!plan || plan.mode === 'drop') return;
+    const result = await scheduleDateReminder(
+      { ...item, fireAt: new Date(plan.fireAtMs) },
+      { skipCancel, skipDeliveryPolicy: true },
+    );
     if (result.scheduled) scheduledCount += 1;
   });
 
-  return { permissionDenied, scheduledCount };
+  await flushReminderJobsQueue();
+  return { permissionDenied: false, scheduledCount };
 }

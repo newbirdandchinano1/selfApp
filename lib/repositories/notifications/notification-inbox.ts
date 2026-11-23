@@ -187,7 +187,10 @@ export async function upsertInboxFromNotification(
   return row ? mapRow(row) : null;
 }
 
-export async function markReadByDedupeKey(dedupeKey: string): Promise<boolean> {
+export async function markReadByDedupeKey(
+  dedupeKey: string,
+  opts?: { skipServerMirror?: boolean },
+): Promise<boolean> {
   const key = stripReminderAccessorySuffix(String(dedupeKey ?? '').trim());
   if (!key) return false;
   await ensureNotificationInboxTable();
@@ -201,7 +204,14 @@ export async function markReadByDedupeKey(dedupeKey: string): Promise<boolean> {
     [now, key],
   );
   const changed = (result?.changes ?? 0) > 0;
-  if (changed) emitNotificationInboxChanged();
+  if (changed) {
+    emitNotificationInboxChanged();
+    if (!opts?.skipServerMirror) {
+      void import('@/lib/api/reminder-inbox-sync')
+        .then(m => m.mirrorReminderInboxReadToServer({ dedupeKey: key }))
+        .catch(() => undefined);
+    }
+  }
   return changed;
 }
 
@@ -219,7 +229,19 @@ export async function markReadById(id: string): Promise<boolean> {
     [now, rowId],
   );
   const changed = (result?.changes ?? 0) > 0;
-  if (changed) emitNotificationInboxChanged();
+  if (changed) {
+    emitNotificationInboxChanged();
+    const row = await db.getFirstAsync<{ dedupe_key: string }>(
+      `SELECT dedupe_key FROM notification_inbox WHERE id = ? LIMIT 1`,
+      [rowId],
+    );
+    const key = String(row?.dedupe_key ?? '').trim();
+    if (key) {
+      void import('@/lib/api/reminder-inbox-sync')
+        .then(m => m.mirrorReminderInboxReadToServer({ dedupeKey: key }))
+        .catch(() => undefined);
+    }
+  }
   return changed;
 }
 
@@ -242,7 +264,14 @@ export async function markAllRead(opts?: {
     [now, source],
   );
   const n = result?.changes ?? 0;
-  if (n > 0) emitNotificationInboxChanged();
+  if (n > 0) {
+    emitNotificationInboxChanged();
+    if (source === 'local') {
+      void import('@/lib/api/reminder-inbox-sync')
+        .then(m => m.mirrorReminderInboxMarkAllReadToServer())
+        .catch(() => undefined);
+    }
+  }
   return n;
 }
 

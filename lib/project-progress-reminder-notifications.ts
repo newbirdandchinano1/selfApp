@@ -5,6 +5,7 @@
 
 import { buildNotificationIdentifier } from '@/lib/notification-catalog';
 import { getNotificationCenterSettings } from '@/lib/notification-center-settings';
+import { buildProjectProgressCopy } from '@/lib/notification-copy-templates';
 import {
   cancelScheduledByIdentifier,
   cancelScheduledByPrefixes,
@@ -111,10 +112,14 @@ function buildItem(params: {
   if (!fireAt) return null;
 
   const title = project.name?.trim() || '项目';
-  const body =
-    kind === 'due_soon' ? `${title} · 临近截止，安排推进` : `${title} · 多日未入格，推进一下`;
   const id = projectProgressReminderIdentifier(project.id);
   const fingerprint = `${project.id}|${title}|${kind}|${fireAt.toISOString().slice(0, 16)}|${params.lastPlacementYmd ?? 'none'}`;
+  const copy = buildProjectProgressCopy({
+    projectName: title,
+    kind,
+    lastPlacementYmd: params.lastPlacementYmd,
+    seed: fingerprint,
+  });
 
   return {
     category: 'project-progress-reminder',
@@ -126,10 +131,7 @@ function buildItem(params: {
       projectId: project.id,
       kind,
     },
-    fallback: {
-      title: '推进项目',
-      body,
-    },
+    fallback: copy,
     fingerprint,
     strong: false,
     contextBlock: [

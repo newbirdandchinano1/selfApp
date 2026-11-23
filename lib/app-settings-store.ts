@@ -53,6 +53,10 @@ export const AppSettingKey = {
   notificationsCenter: '@selfapp/notifications_center_v1',
   /** 通知 AI 文案缓存（identifier + fingerprint） */
   notificationAiCopyCache: '@selfapp/notification_ai_copy_cache_v1',
+  /** 今日系统通知已推计数（ymd + deliveredCount） */
+  notificationDailyBudget: '@selfapp/notification_daily_budget_v1',
+  /** 服务端提醒收件箱增量同步游标（updatedAt ISO） */
+  reminderInboxUpdatedSince: '@selfapp/reminder_inbox_updated_since_v1',
   /** 饮食偏好与禁忌（过敏、忌口、预设标签） */
   dietaryPrefs: '@selfapp/dietary_prefs_v1',
   /** 菜谱用餐计划（按日+餐次） */

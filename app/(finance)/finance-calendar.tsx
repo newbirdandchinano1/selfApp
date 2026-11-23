@@ -1168,7 +1168,7 @@ export default function FinanceCalendarScreen() {
                 ]}>
                 <MaterialIcons name="auto-awesome" size={14} color={ff.amberInk} style={{ marginTop: 1 }} />
                 <Text style={[styles.aiInsightText, { color: isDark ? ff.ink2 : '#6D6658' }]}>
-                  <Text style={{ fontWeight: '750', color: isDark ? text : '#514B40' }}>AI 洞察：</Text>
+                  <Text style={{ fontWeight: '700', color: isDark ? text : '#514B40' }}>AI 洞察：</Text>
                   {dayAiText}
                 </Text>
               </View>
@@ -1396,7 +1396,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   calRipple: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     margin: -4,
     borderRadius: 13,
     borderWidth: 1,
@@ -1498,7 +1498,7 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 4,
   },
-  sheetTitle: { fontSize: 18, fontWeight: '650' },
+  sheetTitle: { fontSize: 18, fontWeight: '600' },
   sheetSub: { fontSize: 12, marginTop: 2 },
   sheetClose: {
     width: 28,
@@ -1518,7 +1518,7 @@ const styles = StyleSheet.create({
   },
   dayTotalLeft: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
   dayTotalLab: { fontSize: 12 },
-  dayTotalVal: { fontSize: 22, fontWeight: '750' },
+  dayTotalVal: { fontSize: 22, fontWeight: '700' },
   tagGreen: {
     height: 22,
     paddingHorizontal: 8,

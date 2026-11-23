@@ -28,6 +28,10 @@ import {
   habitReminderNeedsEveningWrap,
   type HabitReminderIntensity,
 } from '@/lib/habit-reminder-logic';
+import {
+  buildHabitEveningWrapCopy,
+  buildHabitPrimaryCopy,
+} from '@/lib/notification-copy-templates';
 import { parseHabitReminder } from '@/lib/repositories/habits/habit-reminder-meta';
 import { getLogicalLocalYmd, loadTasksDayBoundary } from '@/lib/tasks-logical-day';
 
@@ -228,6 +232,27 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
   const id = habitReminderIdentifier(habitId);
   const fingerprint = `${habitId}|${habitName}|${h}:${m}|${intensity}|${fireAt.toISOString().slice(0, 16)}`;
 
+  const boundary = await loadTasksDayBoundary();
+  const fireYmd = getLogicalLocalYmd(fireAt, boundary);
+  const dayCount = checkIns[fireYmd] ?? 0;
+  const progressLabel =
+    kind !== 'break' && dailyGoal != null && dailyGoal > 0
+      ? `${dayCount}/${dailyGoal}`
+      : null;
+  const primaryCopy = buildHabitPrimaryCopy({
+    habitName,
+    intensity,
+    kind,
+    progressLabel,
+    hour: h,
+    seed: fingerprint,
+  });
+  const wrapCopy = buildHabitEveningWrapCopy({
+    habitName,
+    progressLabel,
+    seed: `${fingerprint}|wrap`,
+  });
+
   const items: ScheduleDateReminderParams[] = [
     {
       category: 'habit-reminder',
@@ -235,10 +260,7 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
       fireAt,
       channel: ANDROID_CHANNEL,
       data: { type: 'habit-reminder', habitId, intensity, wave: 'primary' },
-      fallback: {
-        title: intensity === 'strong' ? '习惯 · 重点提醒' : '习惯打卡提醒',
-        body: `${habitName}，该打卡啦`,
-      },
+      fallback: primaryCopy,
       fingerprint,
       strong,
       contextBlock: [
@@ -246,7 +268,10 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
         `【习惯名】${habitName}`,
         `【强度】${intensity}`,
         `【类型】${kind}`,
-      ].join('\n'),
+        progressLabel ? `【进度】${progressLabel}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     },
   ];
 
@@ -263,10 +288,7 @@ export async function syncHabitReminderNotification(params: SyncHabitReminderPar
         fireAt: wrapAt,
         channel: ANDROID_CHANNEL,
         data: { type: 'habit-reminder', habitId, intensity, wave: 'evening_wrap' },
-        fallback: {
-          title: '习惯收口',
-          body: `${habitName}，今天还没完成哦`,
-        },
+        fallback: wrapCopy,
         fingerprint: `${fingerprint}|wrap|${wrapAt.toISOString().slice(0, 16)}`,
         strong: false,
         contextBlock: [

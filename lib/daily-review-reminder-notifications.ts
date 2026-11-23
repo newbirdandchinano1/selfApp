@@ -5,6 +5,7 @@
 import type { DailyReviewReminderSettings } from '@/lib/daily-review-reminder-settings';
 import { getDailyReviewReminderSettings } from '@/lib/daily-review-reminder-settings';
 import { getNotificationCategoryMeta } from '@/lib/notification-catalog';
+import { buildDailyReviewCopy } from '@/lib/notification-copy-templates';
 import {
   cancelScheduledByIdentifier,
   isLocalNotificationSchedulingUnavailable,
@@ -213,7 +214,12 @@ export async function syncDailyReviewReminderNotification(
   const fingerprint = `daily-review|${hour}:${minute}|${fireAt.toISOString().slice(0, 16)}`;
   const boundary = await resolveDayBoundaryForPage('review');
   const logicalYmd = getLogicalLocalYmd(fireAt, boundary);
-  const body = await buildDailyReviewReminderBody(fireAt);
+  const bodyHint = await buildDailyReviewReminderBody(fireAt);
+  const copy = buildDailyReviewCopy({
+    bodyHint,
+    hour,
+    seed: fingerprint,
+  });
 
   return scheduleDateReminder({
     category: 'daily-review-reminder',
@@ -226,16 +232,13 @@ export async function syncDailyReviewReminderNotification(
       ymd: logicalYmd,
       focusEmpty: '1',
     },
-    fallback: {
-      title: '今日复盘',
-      body,
-    },
+    fallback: copy,
     fingerprint,
     contextBlock: [
       '【频道】每日复盘提醒',
       '【语境】提醒用户填写今日日复盘',
       `【逻辑日】${logicalYmd}`,
-      `【正文】${body}`,
+      `【正文】${copy.body}`,
     ].join('\n'),
   });
 }

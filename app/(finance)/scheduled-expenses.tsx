@@ -533,7 +533,7 @@ export default function ScheduledExpensesScreen() {
                   <Text style={[styles.tipMathText, { color: subtle }]}>可用预算</Text>
                   <Text style={[styles.tipMathText, { color: subtle, fontFamily: ffFonts.mono }]}>¥12,000</Text>
                   <Text style={[styles.tipMathText, { color: subtle }]}>− 预扣 ¥3,000</Text>
-                  <Text style={[styles.tipMathText, { color: pine, fontWeight: '750', fontFamily: ffFonts.mono }]}>
+                  <Text style={[styles.tipMathText, { color: pine, fontWeight: '700', fontFamily: ffFonts.mono }]}>
                     = ¥9,000
                   </Text>
                 </View>

@@ -144,7 +144,7 @@ type TodayCompactItem = {
   subjectId: string;
 };
 
-/** 最简态 / 全天：类型优先（项目→任务→待办→小习惯），再同类别内部规则 */
+/** 最简态 / 全天：任务/项目/待办按优先级，小习惯垫后；同类别内部规则不变 */
 function compareTodayCompactByWeight(a: TodayCompactItem, b: TodayCompactItem): number {
   return compareAssignedScheduleItems(
     {
@@ -1682,7 +1682,7 @@ export function WeeklyFrogSchedule({
 
     const isAllDayItem = (x: TodayCompactItem) => x.timeLabel === '全天';
 
-    /** 全天块：沿用原 compareTodayCompactByWeight（类型优先 + 同类别内部规则） */
+    /** 全天块：沿用原 compareTodayCompactByWeight（优先级 + 小习惯垫后 + 同类别内部规则） */
     const allDaySorted = todayCompactItems
       .filter(isAllDayItem)
       .sort(compareTodayCompactByWeight);

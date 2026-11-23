@@ -1,7 +1,7 @@
 /**
  * 时间线 / 最简列表指派拉通排序：
- * 类型优先：项目 → 任务 → 待办 → 小习惯；
- * 同类型再对齐各类列表内部规则。
+ * 小习惯整体垫后；任务 / 项目 / 待办跨类型按 priority↓；
+ * 同类型再对齐各类列表内部规则（完成沉底、过期置顶、sort_order 等不变）。
  */
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import { parseRewardPointsFromExtraData } from '@/lib/reward-points';
@@ -145,19 +145,26 @@ function compareWithinKind(a: AssignSortableItem, b: AssignSortableItem): number
 }
 
 /**
- * 最简列表 / 全天区 / 同刻并排：类型优先，再同类别内部规则。
+ * 最简列表 / 全天区 / 同刻并排：
+ * 小习惯默认在任务/项目/待办之后；后者跨类型按优先级；同类型走内部规则。
  */
 export function compareAssignedScheduleItems(
   a: AssignSortableItem,
   b: AssignSortableItem,
 ): number {
-  const byKind = compareAssignDisplayKind(a.kind, b.kind);
-  if (byKind !== 0) return byKind;
-  return compareWithinKind(a, b);
+  const aHabit = a.kind === 'habit';
+  const bHabit = b.kind === 'habit';
+  if (aHabit !== bHabit) return aHabit ? 1 : -1;
+
+  if (a.kind === b.kind) return compareWithinKind(a, b);
+
+  // 不同类的任务 / 项目 / 待办：优先级优先，同优先级再按项目→任务→待办
+  if (a.priority !== b.priority) return b.priority - a.priority;
+  return compareAssignDisplayKind(a.kind, b.kind);
 }
 
 /**
- * 时间线定时块：纵轴仍按开始时刻；同起点再走类型 + 内部规则。
+ * 时间线定时块：纵轴仍按开始时刻；同起点再走优先级 + 内部规则。
  */
 export function compareTimelineTimedEvents(
   a: AssignSortableItem & { startMinutes: number; endMinutes: number },

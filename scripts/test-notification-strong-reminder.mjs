@@ -25,11 +25,12 @@ function test(name, fn) {
   console.log(`ok - ${name}`);
 }
 
-test('strong categories', () => {
-  assert.equal(isStrongReminderCategory('habit-reminder'), true);
-  assert.equal(isStrongReminderCategory('schedule-slot-reminder'), true);
-  assert.equal(isStrongReminderCategory('daily-review-reminder'), true);
-  assert.equal(isStrongReminderCategory('weekly-review-reminder'), true);
+test('strong categories default off (P0)', () => {
+  // 不再按频道默认强提醒；仅业务显式 strong:true
+  assert.equal(isStrongReminderCategory('habit-reminder'), false);
+  assert.equal(isStrongReminderCategory('schedule-slot-reminder'), false);
+  assert.equal(isStrongReminderCategory('daily-review-reminder'), false);
+  assert.equal(isStrongReminderCategory('weekly-review-reminder'), false);
   assert.equal(isStrongReminderCategory('health-intake-reminder'), false);
   assert.equal(isStrongReminderCategory('auto-ledger'), false);
 });

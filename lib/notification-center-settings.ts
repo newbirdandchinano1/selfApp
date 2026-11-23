@@ -1,41 +1,48 @@
 import { AppSettingKey, getAppSetting, setAppSetting } from '@/lib/app-settings-store';
 import type { NotificationCategoryId } from '@/lib/notification-catalog';
 import { NOTIFICATION_CATEGORIES } from '@/lib/notification-catalog';
+import {
+  DEFAULT_DELIVERY_POLICY_PREFS,
+  isInQuietHours,
+  normalizeDeliveryPolicyPrefs,
+  type DeliveryPolicyPrefs,
+} from '@/lib/notification-delivery-policy';
+import type {
+  HealthIntakePeriodId,
+  HealthIntakePeriodPref,
+} from '@/lib/health-intake-reminder-logic';
+import {
+  DEFAULT_HEALTH_INTAKE_PERIODS,
+  HEALTH_INTAKE_PERIOD_IDS,
+  healthIntakePeriodLabel,
+} from '@/lib/health-intake-reminder-logic';
 
 export type NotificationCategoryPrefs = Record<NotificationCategoryId, boolean>;
 
 /** 健康提醒关注的摄入项 */
 export type HealthIntakeFocusKey = 'hydration' | 'protein' | 'carbohydrate' | 'calories';
 
+export type { HealthIntakePeriodId, HealthIntakePeriodPref };
+
 /**
- * 健康提醒模式：
- * - meal_windows：餐次窗口催最大缺口，并带傍晚收口
- * - evening_wrap：仅傍晚收口一条
- * - hydration_interval：水分轻间隔（从最近一次记录起算）
+ * @deprecated 旧三种模式已由四时段进度提醒替换；仅读兼容残留字段。
  */
 export type HealthIntakeReminderMode = 'meal_windows' | 'evening_wrap' | 'hydration_interval';
 
+/** @deprecated */
 export type HealthIntakeIntervalMinutes = 30 | 60 | 120;
 
+/** @deprecated */
 export type HealthIntakeMealWindow = {
   hour: number;
   minute: number;
 };
 
 export type HealthIntakeReminderPrefs = {
-  mode: HealthIntakeReminderMode;
+  /** 早 / 午 / 下午 / 晚 四个监测点（可单独开关与改时刻） */
+  periods: HealthIntakePeriodPref[];
   /** 关注项；空数组视为全开 */
   focusKeys: HealthIntakeFocusKey[];
-  /** 餐次窗口（默认午 / 晚） */
-  mealWindows: HealthIntakeMealWindow[];
-  /** 傍晚收口（兼容旧 fixedHour / fixedMinute） */
-  wrapHour: number;
-  wrapMinute: number;
-  /** @deprecated 读兼容；写入时同步 wrap* */
-  fixedHour: number;
-  fixedMinute: number;
-  /** 水分轻间隔分钟数 */
-  intervalMinutes: HealthIntakeIntervalMinutes;
   /** 免打扰起止，默认 23:00–07:00（可跨午夜） */
   quietStartHour: number;
   quietStartMinute: number;
@@ -115,6 +122,11 @@ export type NotificationCenterSettings = {
    * 同步登记时跳过，直到用户在中心重新开启或清空静音。
    */
   mutedIdentifiers: string[];
+  /**
+   * 跨频道送达策略：全局免打扰、日预算、最小间隔、傍晚收口错峰。
+   * 未配置时从健康免打扰种子 quiet，再落默认。
+   */
+  delivery: DeliveryPolicyPrefs;
   health: HealthIntakeReminderPrefs;
   schedule: ScheduleSlotReminderPrefs;
   finance: FinanceReminderPrefs;
@@ -142,20 +154,11 @@ export const HEALTH_INTAKE_FOCUS_KEYS: readonly HealthIntakeFocusKey[] = [
   'calories',
 ] as const;
 
-export const DEFAULT_HEALTH_MEAL_WINDOWS: HealthIntakeMealWindow[] = [
-  { hour: 12, minute: 0 },
-  { hour: 18, minute: 30 },
-];
+export { DEFAULT_HEALTH_INTAKE_PERIODS, HEALTH_INTAKE_PERIOD_IDS, healthIntakePeriodLabel };
 
 export const DEFAULT_HEALTH_INTAKE_REMINDER_PREFS: HealthIntakeReminderPrefs = {
-  mode: 'meal_windows',
+  periods: DEFAULT_HEALTH_INTAKE_PERIODS.map(p => ({ ...p })),
   focusKeys: [...HEALTH_INTAKE_FOCUS_KEYS],
-  mealWindows: DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w })),
-  wrapHour: 20,
-  wrapMinute: 0,
-  fixedHour: 20,
-  fixedMinute: 0,
-  intervalMinutes: 60,
   quietStartHour: 23,
   quietStartMinute: 0,
   quietEndHour: 7,
@@ -196,18 +199,44 @@ export const DEFAULT_FINANCE_REMINDER_PREFS: FinanceReminderPrefs = {
   ledgerWrapMuteYmd: null,
 };
 
+export type { DeliveryPolicyPrefs };
+
 export const DEFAULT_NOTIFICATION_CENTER_SETTINGS: NotificationCenterSettings = {
   masterEnabled: true,
   aiNaturalCopyEnabled: false,
   categories: { ...DEFAULT_CATEGORIES },
   mutedIdentifiers: [],
-  health: { ...DEFAULT_HEALTH_INTAKE_REMINDER_PREFS, mealWindows: DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w })), focusKeys: [...HEALTH_INTAKE_FOCUS_KEYS] },
+  delivery: {
+    ...DEFAULT_DELIVERY_POLICY_PREFS,
+    eveningWrap: { ...DEFAULT_DELIVERY_POLICY_PREFS.eveningWrap },
+  },
+  health: {
+    ...DEFAULT_HEALTH_INTAKE_REMINDER_PREFS,
+    periods: DEFAULT_HEALTH_INTAKE_PERIODS.map(p => ({ ...p })),
+    focusKeys: [...HEALTH_INTAKE_FOCUS_KEYS],
+  },
   schedule: {
     ...DEFAULT_SCHEDULE_SLOT_REMINDER_PREFS,
     advanceByKind: { ...DEFAULT_SCHEDULE_SLOT_ADVANCE_BY_KIND },
   },
   finance: { ...DEFAULT_FINANCE_REMINDER_PREFS, budgetNotifiedByPeriod: {} },
 };
+
+/** 从健康免打扰种子全局 delivery.quiet（仅当 raw.delivery 缺省时） */
+function normalizeDeliveryFromSettings(
+  rawDelivery: unknown,
+  health: HealthIntakeReminderPrefs,
+): DeliveryPolicyPrefs {
+  if (rawDelivery != null) return normalizeDeliveryPolicyPrefs(rawDelivery);
+  return normalizeDeliveryPolicyPrefs({
+    ...DEFAULT_DELIVERY_POLICY_PREFS,
+    quietStartHour: health.quietStartHour,
+    quietStartMinute: health.quietStartMinute,
+    quietEndHour: health.quietEndHour,
+    quietEndMinute: health.quietEndMinute,
+    eveningWrap: { ...DEFAULT_DELIVERY_POLICY_PREFS.eveningWrap },
+  });
+}
 
 function clampHour(n: number): number {
   return Math.max(0, Math.min(23, Math.floor(n)));
@@ -229,21 +258,6 @@ function clampWeekday(n: number): number {
   return ((Math.floor(n) % 7) + 7) % 7;
 }
 
-function normalizeIntervalMinutes(raw: unknown): HealthIntakeIntervalMinutes {
-  if (raw === 30 || raw === 60 || raw === 120) return raw;
-  const n = typeof raw === 'number' ? raw : Number(raw);
-  if (n === 30 || n === 60 || n === 120) return n;
-  return DEFAULT_HEALTH_INTAKE_REMINDER_PREFS.intervalMinutes;
-}
-
-function normalizeMode(raw: unknown): HealthIntakeReminderMode {
-  if (raw === 'meal_windows' || raw === 'evening_wrap' || raw === 'hydration_interval') return raw;
-  // 旧版 fixed / interval
-  if (raw === 'fixed') return 'evening_wrap';
-  if (raw === 'interval') return 'hydration_interval';
-  return DEFAULT_HEALTH_INTAKE_REMINDER_PREFS.mode;
-}
-
 function normalizeFocusKeys(raw: unknown): HealthIntakeFocusKey[] {
   if (!Array.isArray(raw)) return [...HEALTH_INTAKE_FOCUS_KEYS];
   const out: HealthIntakeFocusKey[] = [];
@@ -261,22 +275,6 @@ function normalizeFocusKeys(raw: unknown): HealthIntakeFocusKey[] {
     }
   }
   return out.length > 0 ? out : [...HEALTH_INTAKE_FOCUS_KEYS];
-}
-
-function normalizeMealWindows(raw: unknown): HealthIntakeMealWindow[] {
-  if (!Array.isArray(raw) || raw.length === 0) {
-    return DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w }));
-  }
-  const out: HealthIntakeMealWindow[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-    const o = item as Record<string, unknown>;
-    if (typeof o.hour !== 'number' || !Number.isFinite(o.hour)) continue;
-    if (typeof o.minute !== 'number' || !Number.isFinite(o.minute)) continue;
-    out.push({ hour: clampHour(o.hour), minute: clampMinute(o.minute) });
-    if (out.length >= 4) break;
-  }
-  return out.length > 0 ? out : DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w }));
 }
 
 function normalizeMuteKeys(raw: unknown): HealthIntakeFocusKey[] {
@@ -298,37 +296,128 @@ function normalizeMuteKeys(raw: unknown): HealthIntakeFocusKey[] {
   return out;
 }
 
+function clampExpectedRatio(n: number): number {
+  if (!Number.isFinite(n)) return 0.25;
+  return Math.max(0.05, Math.min(1, Math.round(n * 100) / 100));
+}
+
+function isPeriodId(raw: unknown): raw is HealthIntakePeriodId {
+  return (
+    raw === 'morning' || raw === 'noon' || raw === 'afternoon' || raw === 'evening'
+  );
+}
+
+/** 读兼容：有 periods 用新结构；否则从旧 meal/wrap 映射到默认四时段 */
+function normalizePeriods(raw: unknown, legacy: Record<string, unknown>): HealthIntakePeriodPref[] {
+  const defaults = DEFAULT_HEALTH_INTAKE_PERIODS.map(p => ({ ...p }));
+  if (Array.isArray(raw) && raw.length > 0) {
+    const byId = new Map<HealthIntakePeriodId, HealthIntakePeriodPref>();
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const o = item as Record<string, unknown>;
+      if (!isPeriodId(o.id)) continue;
+      const def = defaults.find(d => d.id === o.id) ?? defaults[0]!;
+      byId.set(o.id, {
+        id: o.id,
+        enabled: o.enabled !== false,
+        hour:
+          typeof o.hour === 'number' && Number.isFinite(o.hour)
+            ? clampHour(o.hour)
+            : def.hour,
+        minute:
+          typeof o.minute === 'number' && Number.isFinite(o.minute)
+            ? clampMinute(o.minute)
+            : def.minute,
+        expectedRatio:
+          typeof o.expectedRatio === 'number' && Number.isFinite(o.expectedRatio)
+            ? clampExpectedRatio(o.expectedRatio)
+            : def.expectedRatio,
+      });
+    }
+    return HEALTH_INTAKE_PERIOD_IDS.map(
+      id => byId.get(id) ?? defaults.find(d => d.id === id)!,
+    );
+  }
+
+  // 旧 meal_windows / evening_wrap / hydration_interval → 默认四时段
+  const mode = legacy.mode;
+  if (mode === 'evening_wrap') {
+    const wrapH =
+      typeof legacy.wrapHour === 'number' && Number.isFinite(legacy.wrapHour)
+        ? clampHour(legacy.wrapHour)
+        : typeof legacy.fixedHour === 'number' && Number.isFinite(legacy.fixedHour)
+          ? clampHour(legacy.fixedHour)
+          : 20;
+    const wrapM =
+      typeof legacy.wrapMinute === 'number' && Number.isFinite(legacy.wrapMinute)
+        ? clampMinute(legacy.wrapMinute)
+        : typeof legacy.fixedMinute === 'number' && Number.isFinite(legacy.fixedMinute)
+          ? clampMinute(legacy.fixedMinute)
+          : 0;
+    return defaults.map(p =>
+      p.id === 'evening'
+        ? { ...p, enabled: true, hour: wrapH, minute: wrapM }
+        : { ...p, enabled: false },
+    );
+  }
+
+  if (mode === 'meal_windows' && Array.isArray(legacy.mealWindows)) {
+    const windows = legacy.mealWindows.filter(
+      (w): w is { hour: number; minute: number } =>
+        !!w &&
+        typeof w === 'object' &&
+        typeof (w as { hour?: unknown }).hour === 'number' &&
+        typeof (w as { minute?: unknown }).minute === 'number',
+    );
+    const noon = windows[0];
+    const afternoonOrEvening = windows[1];
+    const wrapH =
+      typeof legacy.wrapHour === 'number' && Number.isFinite(legacy.wrapHour)
+        ? clampHour(legacy.wrapHour)
+        : 20;
+    const wrapM =
+      typeof legacy.wrapMinute === 'number' && Number.isFinite(legacy.wrapMinute)
+        ? clampMinute(legacy.wrapMinute)
+        : 0;
+    return defaults.map(p => {
+      if (p.id === 'noon' && noon) {
+        return {
+          ...p,
+          enabled: true,
+          hour: clampHour(noon.hour),
+          minute: clampMinute(noon.minute),
+        };
+      }
+      if (p.id === 'afternoon' && afternoonOrEvening) {
+        return {
+          ...p,
+          enabled: true,
+          hour: clampHour(afternoonOrEvening.hour),
+          minute: clampMinute(afternoonOrEvening.minute),
+        };
+      }
+      if (p.id === 'evening') {
+        return { ...p, enabled: true, hour: wrapH, minute: wrapM };
+      }
+      return p;
+    });
+  }
+
+  return defaults;
+}
+
 function normalizeHealth(raw: unknown): HealthIntakeReminderPrefs {
   const base: HealthIntakeReminderPrefs = {
     ...DEFAULT_HEALTH_INTAKE_REMINDER_PREFS,
+    periods: DEFAULT_HEALTH_INTAKE_PERIODS.map(p => ({ ...p })),
     focusKeys: [...HEALTH_INTAKE_FOCUS_KEYS],
-    mealWindows: DEFAULT_HEALTH_MEAL_WINDOWS.map(w => ({ ...w })),
     dayMuteKeys: [],
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
   const o = raw as Record<string, unknown>;
-  base.mode = normalizeMode(o.mode);
+  base.periods = normalizePeriods(o.periods, o);
   base.focusKeys = normalizeFocusKeys(o.focusKeys);
-  base.mealWindows = normalizeMealWindows(o.mealWindows);
 
-  const wrapH =
-    typeof o.wrapHour === 'number' && Number.isFinite(o.wrapHour)
-      ? o.wrapHour
-      : typeof o.fixedHour === 'number' && Number.isFinite(o.fixedHour)
-        ? o.fixedHour
-        : base.wrapHour;
-  const wrapM =
-    typeof o.wrapMinute === 'number' && Number.isFinite(o.wrapMinute)
-      ? o.wrapMinute
-      : typeof o.fixedMinute === 'number' && Number.isFinite(o.fixedMinute)
-        ? o.fixedMinute
-        : base.wrapMinute;
-  base.wrapHour = clampHour(wrapH);
-  base.wrapMinute = clampMinute(wrapM);
-  base.fixedHour = base.wrapHour;
-  base.fixedMinute = base.wrapMinute;
-
-  base.intervalMinutes = normalizeIntervalMinutes(o.intervalMinutes);
   if (typeof o.quietStartHour === 'number' && Number.isFinite(o.quietStartHour)) {
     base.quietStartHour = clampHour(o.quietStartHour);
   }
@@ -551,21 +640,25 @@ function normalizeMuted(raw: unknown): string[] {
 
 function normalizeSettings(raw: unknown): NotificationCenterSettings {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const health = normalizeHealth(null);
     return {
       ...DEFAULT_NOTIFICATION_CENTER_SETTINGS,
       categories: { ...DEFAULT_CATEGORIES },
-      health: normalizeHealth(null),
+      delivery: normalizeDeliveryFromSettings(null, health),
+      health,
       schedule: normalizeSchedule(null),
       finance: normalizeFinance(null),
     };
   }
   const o = raw as Record<string, unknown>;
+  const health = normalizeHealth(o.health);
   return {
     masterEnabled: o.masterEnabled === false ? false : true,
     aiNaturalCopyEnabled: o.aiNaturalCopyEnabled === true,
     categories: normalizeCategories(o.categories),
     mutedIdentifiers: normalizeMuted(o.mutedIdentifiers),
-    health: normalizeHealth(o.health),
+    delivery: normalizeDeliveryFromSettings(o.delivery, health),
+    health,
     schedule: normalizeSchedule(o.schedule),
     finance: normalizeFinance(o.finance),
   };
@@ -589,6 +682,9 @@ export async function patchNotificationCenterSettings(patch: {
   aiNaturalCopyEnabled?: boolean;
   categories?: Partial<NotificationCategoryPrefs>;
   mutedIdentifiers?: string[];
+  delivery?: Partial<DeliveryPolicyPrefs> & {
+    eveningWrap?: Partial<DeliveryPolicyPrefs['eveningWrap']>;
+  };
   health?: Partial<HealthIntakeReminderPrefs>;
   schedule?: Partial<ScheduleSlotReminderPrefs> & {
     advanceByKind?: Partial<ScheduleSlotAdvanceByKind>;
@@ -633,6 +729,19 @@ export async function patchNotificationCenterSettings(patch: {
           patch.finance.budgetNotifiedByPeriod ?? current.finance.budgetNotifiedByPeriod,
       })
     : current.finance;
+  const nextHealth = patch.health
+    ? normalizeHealth({ ...current.health, ...patch.health })
+    : current.health;
+  const nextDelivery = patch.delivery
+    ? normalizeDeliveryPolicyPrefs({
+        ...current.delivery,
+        ...patch.delivery,
+        eveningWrap: {
+          ...current.delivery.eveningWrap,
+          ...(patch.delivery.eveningWrap ?? {}),
+        },
+      })
+    : current.delivery;
   const next: NotificationCenterSettings = {
     masterEnabled:
       typeof patch.masterEnabled === 'boolean' ? patch.masterEnabled : current.masterEnabled,
@@ -646,11 +755,24 @@ export async function patchNotificationCenterSettings(patch: {
     mutedIdentifiers: Array.isArray(patch.mutedIdentifiers)
       ? normalizeMuted(patch.mutedIdentifiers)
       : current.mutedIdentifiers,
-    health: patch.health ? normalizeHealth({ ...current.health, ...patch.health }) : current.health,
+    delivery: nextDelivery,
+    health: nextHealth,
     schedule: nextSchedule,
     finance: nextFinance,
   };
   return setNotificationCenterSettings(next);
+}
+
+/** 当前是否处于全局免打扰（即时通知应改 Inbox / 软送达）。 */
+export async function isGlobalQuietHoursNow(now: Date = new Date()): Promise<boolean> {
+  const settings = await getNotificationCenterSettings();
+  return isInQuietHours(now, settings.delivery);
+}
+
+/** 安静模式：只 Inbox，不弹系统横幅/声音。 */
+export async function isNotificationInboxOnlyMode(): Promise<boolean> {
+  const settings = await getNotificationCenterSettings();
+  return settings.delivery.inboxOnly === true;
 }
 
 /** 是否允许登记/展示某一类通知（含总开关与频道开关）。 */
@@ -713,6 +835,7 @@ export function healthFocusKeyLabel(key: HealthIntakeFocusKey): string {
   }
 }
 
+/** @deprecated 旧模式标签；四时段进度提醒不再使用 */
 export function healthReminderModeLabel(mode: HealthIntakeReminderMode): string {
   switch (mode) {
     case 'meal_windows':
@@ -722,4 +845,16 @@ export function healthReminderModeLabel(mode: HealthIntakeReminderMode): string 
     case 'hydration_interval':
       return '水分间隔';
   }
+}
+
+export function healthPeriodsSummaryLine(periods: HealthIntakePeriodPref[]): string {
+  const on = periods.filter(p => p.enabled);
+  if (on.length === 0) return '四时段均已关闭';
+  const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
+  if (on.length <= 2) {
+    return on
+      .map(p => `${healthIntakePeriodLabel(p.id)} ${pad2(p.hour)}:${pad2(p.minute)}`)
+      .join(' · ');
+  }
+  return `四时段监测 · 已开 ${on.length} 段`;
 }

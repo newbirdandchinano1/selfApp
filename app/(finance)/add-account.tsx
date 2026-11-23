@@ -665,7 +665,7 @@ export default function AddAccountScreen() {
           styles.typeChipLabel,
           {
             color: active ? ff.onPine : opts?.liabilityTint ? clay : subtle,
-            fontWeight: active ? '750' : '600',
+            fontWeight: active ? '700' : '600',
           },
         ]}>
         {label}
@@ -893,7 +893,7 @@ export default function AddAccountScreen() {
                       {
                         color: isSelectedLiability ? clay : ff.income,
                         fontFamily: ffFonts.mono,
-                        fontWeight: '650',
+                        fontWeight: '600',
                       },
                     ]}
                   />
@@ -1017,7 +1017,7 @@ export default function AddAccountScreen() {
             ]}
             accessibilityRole="button"
             accessibilityLabel="保存账户">
-            <Text style={{ color: ff.onPine, fontWeight: '750', fontSize: 14 }}>
+            <Text style={{ color: ff.onPine, fontWeight: '700', fontSize: 14 }}>
               {saving ? '保存中…' : '保存账户'}
             </Text>
           </Pressable>

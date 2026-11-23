@@ -76,6 +76,11 @@ export function navigateByNotificationType(router: AppRouter, data: unknown): vo
 
   switch (record.type) {
     case 'schedule-slot-reminder': {
+      // 同分钟合并：进任务页看整表，避免只跳第一条
+      if (record.clustered === true || record.clustered === 1 || record.clustered === 'true') {
+        router.push('/(tabs)/tasks' as never);
+        return;
+      }
       const subjectId = typeof record.subjectId === 'string' ? record.subjectId.trim() : '';
       if (!subjectId) return;
       if (record.subjectKind === 'habit') {

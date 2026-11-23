@@ -1,6 +1,7 @@
 /**
  * 财务提醒纯规则（不触达通知 API）。
  * 供定时支出 / 预算阈值 / 储蓄轻催 / 未记账收口共用。
+ * 文案变体 L0/L1 在 finance-reminder-notifications 层套用。
  */
 
 export type FinanceBudgetThresholdKind = 't50' | 't80' | 'over';

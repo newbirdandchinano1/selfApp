@@ -9,6 +9,11 @@ import {
   resolveScheduleAdvanceMinutes,
   type ScheduleSlotSubjectKind,
 } from '@/lib/notification-center-settings';
+import { buildScheduleSlotCopy } from '@/lib/notification-copy-templates';
+import {
+  buildScheduleClusterCopy,
+  partitionByFireAtMinute,
+} from '@/lib/notification-delivery-policy';
 import { parseScheduleMetaFromExtra } from '@/lib/schedule/meta';
 import { clampAdvanceMinutesOverride } from '@/lib/task-reminder-schedule';
 import {
@@ -34,7 +39,6 @@ import {
 import type { ScheduleAxisSettings, SchedulePlacementRow } from '@/lib/schedule/types';
 import { getWeekStartMondayYmd } from '@/lib/schedule/week';
 import {
-  formatLocalYmdFromDate,
   getLogicalLocalYmd,
   loadTasksDayBoundary,
 } from '@/lib/tasks-logical-day';
@@ -87,17 +91,10 @@ export async function cancelScheduleSlotRemindersForHabit(habitId: string): Prom
   }
 }
 
-function slotReminderCopy(kind: ScheduleSlotSubjectKind, title: string): {
-  notifTitle: string;
-  typeLabel: string;
-} {
-  if (kind === 'project') {
-    return { notifTitle: '推进项目', typeLabel: '项目' };
-  }
-  if (kind === 'habit') {
-    return { notifTitle: '习惯时段', typeLabel: '习惯' };
-  }
-  return { notifTitle: '该做', typeLabel: '待办' };
+function slotTypeLabel(kind: ScheduleSlotSubjectKind): string {
+  if (kind === 'project') return '项目';
+  if (kind === 'habit') return '习惯';
+  return '待办';
 }
 
 async function resolveAxisForWeek(weekStartYmd: string): Promise<{
@@ -213,7 +210,12 @@ async function collectPlacementReminderParams(params: {
 
     const id = scheduleSlotReminderIdentifier(placement.id);
     const startHm = formatMinutesAsHm(startMins);
-    const copy = slotReminderCopy(kind, subject.title);
+    const copy = buildScheduleSlotCopy({
+      subjectTitle: subject.title,
+      kind,
+      startHm,
+      seed: `${placement.id}|${dayYmd}|${startHm}`,
+    });
     const fingerprint = `${placement.id}|${subject.title}|${dayYmd}|${startHm}|${advanceMinutes}|${kind}`;
 
     items.push({
@@ -226,15 +228,16 @@ async function collectPlacementReminderParams(params: {
         placementId: placement.id,
         subjectKind: placement.subjectKind,
         subjectId: placement.subjectId,
+        subjectTitle: subject.title,
       },
       fallback: {
-        title: copy.notifTitle,
-        body: subject.title,
+        title: copy.title,
+        body: copy.body,
       },
       fingerprint,
       contextBlock: [
         '【频道】日程表提醒',
-        `【类型】${copy.typeLabel}`,
+        `【类型】${slotTypeLabel(kind)}`,
         `【标题】${subject.title}`,
         `【开始】${dayYmd} ${startHm}`,
         `【提前】${advanceMinutes} 分钟`,
@@ -242,7 +245,64 @@ async function collectPlacementReminderParams(params: {
     });
   }
 
-  return items;
+  return clusterScheduleSlotReminderParams(items);
+}
+
+/**
+ * 同一触发分钟多格合并为一条，避免「该做」连环弹。
+ * identifier 使用 cluster 前缀，仍落在 schedule 前缀下便于整批取消。
+ */
+export function clusterScheduleSlotReminderParams(
+  items: ScheduleDateReminderParams[],
+): ScheduleDateReminderParams[] {
+  if (items.length <= 1) return items;
+  const partitions = partitionByFireAtMinute(items, item => item.fireAt.getTime());
+  const out: ScheduleDateReminderParams[] = [];
+  for (const { minuteKey, items: group } of partitions) {
+    if (group.length === 1) {
+      out.push(group[0]!);
+      continue;
+    }
+    const sorted = [...group].sort((a, b) => a.identifier.localeCompare(b.identifier));
+    const titles = sorted.map(g => {
+      const t = g.data?.subjectTitle;
+      if (typeof t === 'string' && t.trim()) return t.trim();
+      return String(g.fallback.body ?? g.fallback.title ?? '').trim();
+    }).filter(Boolean);
+    const copy = buildScheduleClusterCopy(titles);
+    const fireAt = sorted[0]!.fireAt;
+    const placementIds = sorted
+      .map(g => (typeof g.data?.placementId === 'string' ? g.data.placementId : ''))
+      .filter(Boolean);
+    const first = sorted[0]!;
+    const clusterId =
+      buildNotificationIdentifier('schedule-slot-reminder', `cluster:${minuteKey}`) ??
+      `selfapp-schedule-reminder:cluster:${minuteKey}`;
+    out.push({
+      category: 'schedule-slot-reminder',
+      identifier: clusterId,
+      fireAt,
+      channel: first.channel,
+      data: {
+        type: 'schedule-slot-reminder',
+        clustered: true,
+        placementIds,
+        subjectKind: first.data.subjectKind,
+        subjectId: first.data.subjectId,
+        subjectTitle: titles[0] ?? '',
+      },
+      fallback: copy,
+      fingerprint: `cluster|${minuteKey}|${placementIds.join(',')}|${titles.join('|')}`,
+      strong: false,
+      contextBlock: [
+        '【频道】日程表提醒',
+        '【合并】同分钟多格',
+        `【件数】${titles.length}`,
+        `【标题】${titles.join('、')}`,
+      ].join('\n'),
+    });
+  }
+  return out;
 }
 
 /**
@@ -376,11 +436,16 @@ export async function listScheduleSlotReminderBusinessItems(): Promise<
     const fireAt = new Date(startAt.getTime() - advanceMs);
     if (fireAt.getTime() <= now) continue;
     const startHm = formatMinutesAsHm(startMins);
-    const copy = slotReminderCopy(kind, subject.title);
+    const copy = buildScheduleSlotCopy({
+      subjectTitle: subject.title,
+      kind,
+      startHm,
+      seed: `${placement.id}|list|${startHm}`,
+    });
     items.push({
       identifier: scheduleSlotReminderIdentifier(placement.id),
-      title: copy.notifTitle,
-      body: `${subject.title} · ${formatLocalYmdFromDate(startAt)} ${startHm}`,
+      title: copy.title,
+      body: copy.body,
       subjectKind: placement.subjectKind,
       subjectId: placement.subjectId,
       placementId: placement.id,

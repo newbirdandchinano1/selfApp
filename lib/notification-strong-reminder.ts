@@ -1,12 +1,9 @@
 /**
- * iOS 强提醒：Time Sensitive、自定义铃声、未确认升级、完成/贪睡 Action。
+ * iOS 强提醒：Time Sensitive、系统默认铃声、未确认升级、完成/贪睡 Action。
  * 纯规则与副作用入口集中在此，供 scheduler / router / 处置页共用。
  */
 
 import type { NotificationCategoryId } from './notification-catalog';
-
-/** 与 app.json expo-notifications.sounds 文件名一致（不含路径） */
-export const STRONG_REMINDER_SOUND = 'strong_reminder.wav';
 
 export const STRONG_REMINDER_CATEGORY_ID = 'strong-reminder';
 
@@ -18,17 +15,31 @@ export const STRONG_ESCALATION_OFFSET_MINUTES = [5, 15] as const;
 
 export const STRONG_SNOOZE_MINUTES = 10;
 
-const STRONG_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set([
+/**
+ * P0：不再按频道默认强提醒（日程/复盘默认普通）。
+ * 仅业务显式传 `strong: true`（如习惯 intensity=strong）才走升级链。
+ * 保留空集合便于测试/兼容「是否属于可强提醒频道」查询。
+ */
+const STRONG_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set();
+
+/** 仍允许用户显式开启强提醒的频道（UI / 文档用） */
+export const STRONG_ELIGIBLE_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set([
   'habit-reminder',
   'schedule-slot-reminder',
+  'task-deadline-reminder',
   'daily-review-reminder',
   'weekly-review-reminder',
 ]);
 
 const ACCESSORY_SUFFIX_RE = /:(?:esc:\d+|snooze)$/i;
 
+/** @deprecated P0 起恒为 false；请用 params.strong 显式开启 */
 export function isStrongReminderCategory(category: NotificationCategoryId): boolean {
   return STRONG_CATEGORIES.has(category);
+}
+
+export function isStrongEligibleCategory(category: NotificationCategoryId): boolean {
+  return STRONG_ELIGIBLE_CATEGORIES.has(category);
 }
 
 /** 去掉升级/贪睡后缀，得到业务主 identifier */

@@ -731,7 +731,7 @@ export default function AddScheduledExpenseScreen() {
                       <Text
                         style={[
                           styles.ruleLabel,
-                          { color: active ? pine : subtle, fontWeight: active ? '750' : '600' },
+                          { color: active ? pine : subtle, fontWeight: active ? '700' : '600' },
                         ]}>
                         {tab.label}
                       </Text>

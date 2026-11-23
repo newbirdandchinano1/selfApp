@@ -15,6 +15,7 @@ import {
   ingestNotificationIntoInbox,
   resolveInboxDedupeKey,
 } from '@/lib/notification-inbox-ingest';
+import { softDeliverScheduledNotificationReceived } from '@/lib/notification-foreground-delivery';
 import { resyncReminderAfterAcknowledge } from '@/lib/notification-navigate';
 import {
   acknowledgeStrongReminder,
@@ -195,6 +196,17 @@ export function NotificationRouter() {
     const receivedSub = Notifications.addNotificationReceivedListener(notification => {
       rescheduleAfterDelivery(notification.request.content.data);
       void ingestNotificationIntoInbox(notification);
+      // 根治路径：推送送达后再拉服务端收件箱（不依赖是否点击）
+      void import('@/lib/api/reminder-inbox-sync').then(m =>
+        m.syncReminderInboxFromServer(),
+      );
+      const content = notification.request.content;
+      const data = notificationDataRecord(content.data);
+      void softDeliverScheduledNotificationReceived({
+        title: (typeof content.title === 'string' && content.title) || '提醒',
+        body: typeof content.body === 'string' ? content.body : '',
+        strong: isStrongPayload(data),
+      });
     });
 
     void Notifications.getLastNotificationResponseAsync().then(last => {

@@ -60,7 +60,11 @@ import {
   clearExpoSandboxNotifications,
   isExpoSandboxNotificationDisabled,
 } from '@/lib/notification-policy';
-import { isNotificationCategoryAllowed } from '@/lib/notification-center-settings';
+import {
+  getNotificationCenterSettings,
+  isNotificationCategoryAllowed,
+} from '@/lib/notification-center-settings';
+import { recordNotificationSystemDelivered } from '@/lib/notification-daily-budget';
 import { ApiDebugOverlay } from '@/components/api-debug-overlay';
 import { loadApiDebugEnabled } from '@/lib/api-debug';
 import {
@@ -71,6 +75,7 @@ import {
   acknowledgeStrongReminder,
   stripReminderAccessorySuffix,
 } from '@/lib/notification-strong-reminder';
+import { isSoftForegroundDeliveryPreferred } from '@/lib/notification-foreground-delivery';
 import { hideNativeSplashWithRetry } from '@/lib/splash-hide';
 
 /** 本地初始化超过此时长则强制进入主界面，避免启动页无限等待 */
@@ -143,6 +148,40 @@ if (Platform.OS !== 'web') {
           shouldSetBadge: false,
         };
       }
+      const record =
+        data && typeof data === 'object' && !Array.isArray(data)
+          ? (data as Record<string, unknown>)
+          : null;
+      const strong =
+        record?.strong === true || record?.strong === 1 || record?.strong === 'true';
+
+      // 安静模式：仍触发 received → Inbox，但不弹系统 UI
+      let inboxOnly = false;
+      try {
+        const settings = await getNotificationCenterSettings();
+        inboxOnly = settings.delivery.inboxOnly === true;
+      } catch {
+        inboxOnly = false;
+      }
+      if (inboxOnly) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+
+      // 前台非强提醒：不弹系统横幅/声音，改由 NotificationRouter 软送达 Toast + Inbox
+      if (isSoftForegroundDeliveryPreferred({ strong: Boolean(strong) })) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+      void recordNotificationSystemDelivered();
       return {
         shouldShowBanner: true,
         shouldShowList: true,
@@ -193,7 +232,17 @@ function RootLayoutInner() {
             if (isExpoSandboxNotificationDisabled()) {
               await clearExpoSandboxNotifications();
             } else {
+              // 先清旧版本地 DATE 预约，再重登记到服务端（避免本地+推送双弹）
+              await import('@/lib/notification-scheduler')
+                .then(m => m.clearAllLegacyLocalScheduledNotifications())
+                .catch(() => undefined);
               void resyncAppNotificationsAfterPreferenceChange();
+              void import('@/lib/reminder-push-token').then(m =>
+                m.registerReminderPushToken(),
+              );
+              void import('@/lib/api/reminder-inbox-sync').then(m =>
+                m.syncReminderInboxFromServer(),
+              );
             }
             if (Platform.OS === 'ios') {
               const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
@@ -421,6 +470,10 @@ function RootLayoutInner() {
       // 通知与桌面组件解耦：Expo Go 沙盒可跳过通知，但仍应刷新小组件（真机 development 包）
       if (!isExpoSandboxNotificationDisabled()) {
         void resyncAppNotificationsAfterPreferenceChange();
+        void import('@/lib/reminder-push-token').then(m => m.registerReminderPushToken());
+        void import('@/lib/api/reminder-inbox-sync').then(m =>
+          m.syncReminderInboxFromServer(),
+        );
       }
       if (Platform.OS === 'ios') {
         void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>

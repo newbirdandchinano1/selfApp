@@ -1,5 +1,5 @@
 /**
- * 指派类型排序：项目 → 任务 → 待办 → 小习惯；同类别内部规则。
+ * 指派排序：任务/项目/待办按优先级，小习惯垫后；同类别内部规则不变。
  * 运行：npx --yes tsx scripts/test-assign-kind-sort.mjs
  */
 import assert from 'node:assert/strict';
@@ -24,13 +24,13 @@ const base = (partial) => ({
   ...partial,
 });
 
-// 类型优先：项目 < 任务 < 待办 < 小习惯
+// 小习惯默认排在任务/项目/待办后面
 {
   const items = [
-    base({ kind: 'habit', title: '习惯' }),
-    base({ kind: 'todo', title: '待办' }),
-    base({ kind: 'frog', title: '任务' }),
-    base({ kind: 'proj', title: '项目' }),
+    base({ kind: 'habit', title: '习惯', priority: 4 }),
+    base({ kind: 'todo', title: '待办', priority: 1 }),
+    base({ kind: 'frog', title: '任务', priority: 1 }),
+    base({ kind: 'proj', title: '项目', priority: 1 }),
   ].sort(compareAssignedScheduleItems);
   assert.deepEqual(
     items.map((x) => x.kind),
@@ -38,11 +38,31 @@ const base = (partial) => ({
   );
 }
 
-// 已完成项目仍排在未完成任务之前（类型优先）
+// 跨类型按优先级：高优任务排在低优项目之前
 {
-  const a = base({ kind: 'proj', title: '已完成项目', done: true });
-  const b = base({ kind: 'frog', title: '未完成任务', done: false });
-  assert.ok(compareAssignedScheduleItems(a, b) < 0);
+  const a = base({ kind: 'proj', title: '低优项目', priority: 1 });
+  const b = base({ kind: 'frog', title: '高优任务', priority: 4 });
+  assert.ok(compareAssignedScheduleItems(b, a) < 0);
+}
+
+// 同优先级跨类型：仍按项目 → 任务 → 待办
+{
+  const items = [
+    base({ kind: 'todo', title: '待办', priority: 2 }),
+    base({ kind: 'frog', title: '任务', priority: 2 }),
+    base({ kind: 'proj', title: '项目', priority: 2 }),
+  ].sort(compareAssignedScheduleItems);
+  assert.deepEqual(
+    items.map((x) => x.kind),
+    ['proj', 'frog', 'todo'],
+  );
+}
+
+// 同类别内部不变：已完成项目沉底（相对未完成项目）
+{
+  const a = base({ kind: 'proj', title: '已完成', done: true, priority: 4 });
+  const b = base({ kind: 'proj', title: '未完成', done: false, priority: 1 });
+  assert.ok(compareAssignedScheduleItems(b, a) < 0);
 }
 
 // 同类别：任务按 sort_order
@@ -73,11 +93,13 @@ const base = (partial) => ({
   assert.ok(compareTimelineTimedEvents(b, a) < 0);
 }
 
-// 定时：同起点按类型
+// 定时：同起点高优任务先于低优项目；习惯仍最后
 {
-  const a = { ...base({ kind: 'habit', title: '习惯' }), startMinutes: 540, endMinutes: 600 };
-  const b = { ...base({ kind: 'proj', title: '项目' }), startMinutes: 540, endMinutes: 600 };
-  assert.ok(compareTimelineTimedEvents(b, a) < 0);
+  const habit = { ...base({ kind: 'habit', title: '习惯', priority: 4 }), startMinutes: 540, endMinutes: 600 };
+  const lowProj = { ...base({ kind: 'proj', title: '低优', priority: 1 }), startMinutes: 540, endMinutes: 600 };
+  const highFrog = { ...base({ kind: 'frog', title: '高优', priority: 4 }), startMinutes: 540, endMinutes: 600 };
+  assert.ok(compareTimelineTimedEvents(highFrog, lowProj) < 0);
+  assert.ok(compareTimelineTimedEvents(lowProj, habit) < 0);
 }
 
 // 标签文案

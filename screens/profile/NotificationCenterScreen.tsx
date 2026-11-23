@@ -36,6 +36,11 @@ import {
   type NotificationCategoryPrefs,
   type NotificationCenterSettings,
 } from '@/lib/notification-center-settings';
+import {
+  getNotificationBudgetSnapshot,
+  type NotificationBudgetSnapshot,
+} from '@/lib/notification-daily-budget';
+import type { DeliveryIntensity } from '@/lib/notification-delivery-policy';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import {
   formatHabitReminderClock,
@@ -158,19 +163,22 @@ export function NotificationCenterScreen({
   const [scheduledCount, setScheduledCount] = useState(0);
   const [nextFireLabel, setNextFireLabel] = useState<string | null>(null);
   const [aiPrefetching, setAiPrefetching] = useState(false);
+  const [budget, setBudget] = useState<NotificationBudgetSnapshot | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextSettings, nextPerm, habitRows, review, scheduled] = await Promise.all([
+      const [nextSettings, nextPerm, habitRows, review, scheduled, nextBudget] = await Promise.all([
         getNotificationCenterSettings(),
         getNotificationPermissionSnapshot(),
         getHabits().catch(() => []),
         getDailyReviewReminderSettings(),
         listScheduledAppNotifications().catch(() => []),
+        getNotificationBudgetSnapshot().catch(() => null),
       ]);
       setSettings(nextSettings);
       setPermission(nextPerm);
+      setBudget(nextBudget);
 
       const enabledHabits = habitRows
         .map((h) => {
@@ -296,6 +304,41 @@ export function NotificationCenterScreen({
     }
   }, []);
 
+  const onInboxOnlyToggle = useCallback(
+    async (enabled: boolean) => {
+      setBusy(true);
+      try {
+        const next = await patchNotificationCenterSettings({ delivery: { inboxOnly: enabled } });
+        setSettings(next);
+        setBudget(prev =>
+          prev
+            ? { ...prev, inboxOnly: enabled }
+            : prev,
+        );
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  const onIntensityChange = useCallback(
+    async (intensity: DeliveryIntensity) => {
+      if (!settings || settings.delivery.intensity === intensity) return;
+      setBusy(true);
+      try {
+        const next = await patchNotificationCenterSettings({ delivery: { intensity } });
+        await applySettings(next);
+      } catch (e) {
+        toast.error(toUserMessage(e, '保存失败，请稍后再试'));
+        setBusy(false);
+      }
+    },
+    [applySettings, settings],
+  );
+
   const buildAiCopySamples = useCallback(() => {
     if (!settings) return [];
     return NOTIFICATION_CATEGORIES.filter((cat) => settings.categories[cat.id] !== false)
@@ -336,11 +379,16 @@ export function NotificationCenterScreen({
 
   const pageHints = useMemo(() => {
     const healthHint = health
-      ? health.mode === 'meal_windows'
-        ? `餐次 ${health.mealWindows.length} 窗 · 收口 ${pad2(health.wrapHour)}:${pad2(health.wrapMinute)}`
-        : health.mode === 'evening_wrap'
-          ? `收口 ${pad2(health.wrapHour)}:${pad2(health.wrapMinute)}`
-          : `水分间隔 ${health.intervalMinutes} 分`
+      ? (() => {
+          const on = health.periods.filter(p => p.enabled);
+          if (on.length === 0) return '四时段均已关闭';
+          if (on.length <= 2) {
+            return on
+              .map(p => `${pad2(p.hour)}:${pad2(p.minute)}`)
+              .join(' · ');
+          }
+          return `四时段监测 · 已开 ${on.length} 段`;
+        })()
       : '摄入提醒';
     return {
       health: healthHint,
@@ -501,6 +549,75 @@ export function NotificationCenterScreen({
             <View
               style={[
                 styles.card,
+                { backgroundColor: fold.card, borderColor: fold.line, paddingVertical: 8 },
+              ]}>
+              <View style={styles.sectionHead}>
+                <Text style={styles.sectionTitle}>送达</Text>
+                <Text style={styles.sectionHint}>
+                  {budget
+                    ? `今日已推 ${budget.deliveredCount} · 剩余 ${budget.remaining}/${budget.maxSystemPerDay}`
+                    : `日上限 ${settings.delivery.maxSystemPerDay} 条`}
+                </Text>
+              </View>
+              <View style={styles.toggleRow}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={styles.rowTitle}>安静模式</Text>
+                  <Text style={styles.rowHint}>只记 Inbox，不弹系统横幅与声音</Text>
+                </View>
+                <Switch
+                  value={settings.delivery.inboxOnly === true}
+                  disabled={busy}
+                  onValueChange={(v) => void onInboxOnlyToggle(v)}
+                  trackColor={switchTrack}
+                  thumbColor="#ffffff"
+                />
+              </View>
+              <View style={{ marginTop: 6 }}>
+                <Text style={styles.rowTitle}>提醒强度</Text>
+                <Text style={[styles.rowHint, { marginBottom: 6 }]}>
+                  轻=不升级 · 标准=仅显式强提醒 · 强=可强频道默认升级
+                </Text>
+                <View style={styles.intensityRow}>
+                  {(
+                    [
+                      { id: 'soft' as const, label: '轻' },
+                      { id: 'normal' as const, label: '标准' },
+                      { id: 'strong' as const, label: '强' },
+                    ] as const
+                  ).map((opt) => {
+                    const active = settings.delivery.intensity === opt.id;
+                    return (
+                      <Pressable
+                        key={opt.id}
+                        disabled={busy}
+                        onPress={() => void onIntensityChange(opt.id)}
+                        style={({ pressed }) => [
+                          styles.intensityChip,
+                          {
+                            borderColor: active ? fold.pine : fold.line2,
+                            backgroundColor: active ? '#E8F1EA' : 'rgba(255,252,245,0.66)',
+                            opacity: pressed || busy ? 0.85 : 1,
+                          },
+                        ]}>
+                        <Text
+                          style={[
+                            styles.intensityLabel,
+                            { color: active ? fold.pine : fold.ink2 },
+                          ]}>
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            </View>
+          </FoldRiseIn>
+
+          <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
+            <View
+              style={[
+                styles.card,
                 {
                   backgroundColor: fold.card,
                   borderColor: fold.line,
@@ -550,7 +667,7 @@ export function NotificationCenterScreen({
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
+          <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={12}>
             <Pressable
               onPress={() => router.push('/notification-center-scheduled' as never)}
               style={({ pressed }) => [
@@ -576,7 +693,7 @@ export function NotificationCenterScreen({
             </Pressable>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={12}>
+          <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
             <Pressable
               onPress={() => router.push('/widgets-center' as never)}
               style={({ pressed }) => [
@@ -715,6 +832,16 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 11, fontWeight: '700', color: '#4F5C53' },
   sectionHint: { fontSize: 9, color: '#A0A69D' },
+  intensityRow: { flexDirection: 'row', gap: 6 },
+  intensityChip: {
+    flex: 1,
+    height: 30,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  intensityLabel: { fontSize: 12, fontWeight: '700' },
   schedEntry: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   footNote: {
     flexDirection: 'row',
