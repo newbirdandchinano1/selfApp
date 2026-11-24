@@ -12,7 +12,7 @@ import { withApiTableSyncLock } from '@/lib/api-read';
 
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 
-import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 
 import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 
@@ -124,6 +124,19 @@ export type TasksPageData = {
 
   taskCategories: TaskCategoryRow[];
 
+};
+
+/** 阶段 D2 第一批：catalog + standaloneTodos（不含 matrixWeek） */
+export type TasksPageCoreData = {
+  logicalToday: string;
+  weekStart: string;
+  weekEnd: string;
+  standaloneTodos: TaskRow[];
+  standaloneServerFiltered: boolean;
+  filtersVersion: string | null;
+  projects: ProjectRow[];
+  projectCategories: ProjectCategoryRow[];
+  taskCategories: TaskCategoryRow[];
 };
 
 
@@ -832,7 +845,7 @@ async function pullTasksView(opts: {
 
     } catch (e) {
 
-      if (!opts?.serverFallback) throw e;
+      if (isAbortError(e) || !opts?.serverFallback) throw e;
 
       console.warn(`[tasks-page-api] ${opts.taskView} 接口失败，回退本地 SQLite`, e);
 
@@ -1173,6 +1186,95 @@ async function readTasksPageFromLocal(
 
 
 /**
+ * 阶段 D2 第一批：sync + catalog + standaloneTodos。
+ * matrixWeek 须在拿到项目 id 后由调用方第二批拉取。
+ */
+export async function fetchTasksPageCoreData(opts?: {
+  boundary?: TasksDayBoundary;
+  serverFallback?: boolean;
+  forceLocal?: boolean;
+  forceRefresh?: boolean;
+  signal?: AbortSignal;
+}): Promise<TasksPageCoreData> {
+  const { boundary, logicalToday, weekStart, weekEnd } = await resolveTasksPageDateContext(
+    opts?.boundary,
+  );
+  const pageCtx = { logicalToday, weekStart, weekEnd };
+
+  if (
+    !shouldSkipPageNetwork({
+      forceLocal: opts?.forceLocal,
+      forceRefresh: opts?.forceRefresh,
+    })
+  ) {
+    try {
+      throwIfAborted(opts?.signal);
+      try {
+        await syncTasksTableFromApi({
+          forceRefresh: opts?.forceRefresh,
+          signal: opts?.signal,
+        });
+      } catch (e) {
+        console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉 core', e);
+      }
+
+      const catalogPromise = fetchTasksCatalog({
+        forceRefresh: opts?.forceRefresh,
+        signal: opts?.signal,
+        serverFallback: false,
+      });
+      const standalonePromise = pullTasksViewFromApi({
+        taskView: 'standaloneTodos',
+        boundary,
+        logicalToday,
+        weekStart,
+        weekEnd,
+        signal: opts?.signal,
+      });
+      const [catalog, standaloneResult] = await Promise.all([catalogPromise, standalonePromise]);
+      const standalone = await finalizeTasksViewFromApi(
+        pageCtx,
+        'standaloneTodos',
+        standaloneResult,
+        {
+          taskView: 'standaloneTodos',
+          boundary,
+          logicalToday,
+          weekStart,
+          weekEnd,
+        },
+        true,
+      );
+      return {
+        ...pageCtx,
+        standaloneTodos: standalone.tasks,
+        standaloneServerFiltered: standalone.serverFiltered,
+        filtersVersion: standalone.filtersVersion,
+        projects: catalog.projects,
+        projectCategories: catalog.projectCategories,
+        taskCategories: catalog.taskCategories,
+      };
+    } catch (e) {
+      if (isAbortError(e) || !opts?.serverFallback) throw e;
+      console.warn('[tasks-page-api] core 接口失败，回退本地 SQLite', e);
+    }
+  }
+
+  const local = await readTasksPageFromLocal(boundary);
+  return {
+    logicalToday: local.logicalToday,
+    weekStart: local.weekStart,
+    weekEnd: local.weekEnd,
+    standaloneTodos: local.standaloneTodos,
+    standaloneServerFiltered: local.standaloneServerFiltered,
+    filtersVersion: local.filtersVersion,
+    projects: local.projects,
+    projectCategories: local.projectCategories,
+    taskCategories: local.taskCategories,
+  };
+}
+
+/**
 
  * 任务页读数：catalog + standaloneTodos + matrixWeek 并行拉取，失败且允许时回退 SQLite。
 
@@ -1255,7 +1357,7 @@ export async function fetchTasksPageData(opts?: {
 
     } catch (e) {
 
-      if (!opts?.serverFallback) throw e;
+      if (isAbortError(e) || !opts?.serverFallback) throw e;
 
       console.warn('[tasks-page-api] 任务页接口失败，回退本地 SQLite', e);
 

@@ -38,7 +38,7 @@ let tasksTableSyncInflightKey: string | null = null;
  * 筛选视图（standaloneTodos / 隐藏已完成的项目树）不会带回「他端已完成」行；
  * 必须走本函数，才能把本地旧 status=todo 按 LWW 更新为云端 done。
  */
-export async function syncTasksTableFromApi(opts?: {
+  export async function syncTasksTableFromApi(opts?: {
   forceRefresh?: boolean;
   signal?: AbortSignal;
 }): Promise<number> {
@@ -46,8 +46,11 @@ export async function syncTasksTableFromApi(opts?: {
 
   const forceRefresh = Boolean(opts?.forceRefresh);
   const key = forceRefresh ? 'force' : 'incr';
-  if (tasksTableSyncInflight && tasksTableSyncInflightKey === key && !opts?.signal) {
-    return tasksTableSyncInflight;
+  // 阶段 D2：带 AbortSignal 时也合并同参 in-flight，避免 pageData + projects-list 双份全量 sync
+  if (tasksTableSyncInflight && tasksTableSyncInflightKey === key) {
+    const n = await tasksTableSyncInflight;
+    throwIfAborted(opts?.signal);
+    return n;
   }
 
   const run = (async (): Promise<number> => {
@@ -107,18 +110,16 @@ export async function syncTasksTableFromApi(opts?: {
     return all.length;
   })();
 
-  if (!opts?.signal) {
-    tasksTableSyncInflight = run;
-    tasksTableSyncInflightKey = key;
-    try {
-      return await run;
-    } finally {
-      if (tasksTableSyncInflight === run) {
-        tasksTableSyncInflight = null;
-        tasksTableSyncInflightKey = null;
-      }
+  tasksTableSyncInflight = run;
+  tasksTableSyncInflightKey = key;
+  try {
+    const n = await run;
+    throwIfAborted(opts?.signal);
+    return n;
+  } finally {
+    if (tasksTableSyncInflight === run) {
+      tasksTableSyncInflight = null;
+      tasksTableSyncInflightKey = null;
     }
   }
-
-  return run;
 }

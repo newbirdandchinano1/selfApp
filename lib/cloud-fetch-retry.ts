@@ -7,7 +7,11 @@ import { logHttpFetchDebug } from '@/lib/api-debug';
 const DEFAULT_MAX_ATTEMPTS = 4;
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_MAX_DELAY_MS = 12_000;
-const DEFAULT_PER_ATTEMPT_TIMEOUT_MS = 90_000;
+/**
+ * 阶段 A 与后端限流同灰度：默认单次超时从 ~90s 收到 15s。
+ * 页面核心/habits/heatmap/同步等在各自 endpoint 覆盖为方案值。
+ */
+const DEFAULT_PER_ATTEMPT_TIMEOUT_MS = 15_000;
 
 export function isAbortError(e: unknown): boolean {
   if (typeof DOMException !== 'undefined' && e instanceof DOMException && e.name === 'AbortError') return true;

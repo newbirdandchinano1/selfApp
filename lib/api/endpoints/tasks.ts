@@ -4,6 +4,7 @@
 import { apiRequest } from '@/lib/api/http';
 import { buildQuery, type ApiListPagination } from '@/lib/api/query';
 import { logPageListApiResponse } from '@/lib/api-debug';
+import { PAGE_API_TIMEOUTS_MS } from '@/lib/page-api-timeouts';
 import type {
   TasksCalendarDayResponse,
   TasksCalendarGridResponse,
@@ -112,6 +113,8 @@ export async function apiGetTasksCatalog(params?: {
   return apiRequest<TasksCatalogPayload>(`/api/app/pages/tasks/catalog${qs}`, {
     method: 'GET',
     signal: params?.signal,
+    /** 阶段 A/D3：core 5s */
+    perAttemptTimeoutMs: PAGE_API_TIMEOUTS_MS.core,
   });
 }
 
@@ -302,11 +305,13 @@ export async function apiGetTasksBootstrap(
     page: params?.page,
     limit: params?.limit,
   });
-  // 带 taskView 的筛选视图只返回 tasks，超时按普通 page API；无 taskView 的 10 表 bootstrap 才用长超时
+  // 阶段 A/D3：core/taskView 5s；无 taskView 大包服务端 B1 默认 410，客户端勿再依赖
   return apiRequest<TasksBootstrapPayload>(`/api/app/pages/tasks${qs}`, {
     method: 'GET',
     signal: params?.signal,
-    perAttemptTimeoutMs: params?.taskView ? 20_000 : 180_000,
+    perAttemptTimeoutMs: params?.taskView
+      ? PAGE_API_TIMEOUTS_MS.core
+      : PAGE_API_TIMEOUTS_MS.backgroundSync,
   });
 }
 
@@ -362,6 +367,8 @@ export async function apiGetTasksHabitsGrid(params?: {
   return apiRequest<HabitsGridPayload>(`/api/app/pages/tasks/habits-grid${qs}`, {
     method: 'GET',
     signal: params?.signal,
+    /** 阶段 A/D3：habits 3s */
+    perAttemptTimeoutMs: PAGE_API_TIMEOUTS_MS.habits,
   });
 }
 
@@ -424,6 +431,8 @@ export async function apiGetTasksCompletionHeatmap(params?: {
   return apiRequest<CompletionHeatmapPayload>(`/api/app/pages/tasks/completion-heatmap${qs}`, {
     method: 'GET',
     signal: params?.signal,
+    /** 阶段 A/D3：heatmap 8s */
+    perAttemptTimeoutMs: PAGE_API_TIMEOUTS_MS.heatmap,
   });
 }
 
@@ -594,6 +603,8 @@ export async function apiGetProjectsList(
   const data = await apiRequest<PageListResponse<ApiProjectListItem>>(`/api/app/pages/projects${qs}`, {
     method: 'GET',
     signal: params?.signal,
+    /** 阶段 A/D3：projects 5s */
+    perAttemptTimeoutMs: PAGE_API_TIMEOUTS_MS.projects,
   });
   const result = {
     list: Array.isArray(data?.list) ? data.list : [],

@@ -8,7 +8,7 @@ import {
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { applyApiRecordMissingToLocal, syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
 import { ensureLocalRowPresent } from '@/lib/api-local-row';
-import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { shouldSkipPageNetwork } from '@/lib/page-api-fetch';
 import { compareDatetimeDesc } from '@/lib/api-read-helpers';
 import {
@@ -581,7 +581,7 @@ export async function fetchProjectsListForTab(
       projects,
     };
   } catch (e) {
-    if (opts?.serverFallback === false) throw e;
+    if (isAbortError(e) || opts?.serverFallback === false) throw e;
     console.warn('[projects-list-api] 接口失败，回退本地', e);
     const localProjects = filterProjectsForTab(projectTab, await getProjects());
     const projectTaskTreeMap = await getProjectTaskTreeMap(localProjects.map((p) => p.id));

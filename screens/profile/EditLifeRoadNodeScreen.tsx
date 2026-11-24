@@ -215,7 +215,10 @@ export default function EditLifeRoadNodeScreen() {
         `SELECT id, name, status, extra_data FROM projects
          WHERE life_month_goal_id = ?
            AND sync_status != 'pending_delete'
-           AND status IN ('active', 'paused', 'completed')
+           AND status IN (
+             'todo', 'doing', 'blocked', 'shelved', 'done',
+             'active', 'paused', 'completed'
+           )
          ORDER BY updated_at DESC`,
         [monthId],
       );

@@ -2,7 +2,7 @@ import { apiGetTasksHabitsGrid, type HabitsGridPayload, type HabitsGridSection }
 import { formatTaskAuditDatetimeLocal } from '@/lib/api-mysql-datetime';
 import { withApiTableSyncLock } from '@/lib/api-read';
 import { syncApiReadResultToLocal } from '@/lib/api-read-local-sync';
-import { throwIfAborted } from '@/lib/cloud-fetch-retry';
+import { isAbortError, throwIfAborted } from '@/lib/cloud-fetch-retry';
 import { sortHabitGridSections } from '@/lib/habit-grid-sort';
 import { getHabitById, getHabits } from '@/lib/repositories/habits/habit';
 import { isBuildHabitSucceeded } from '@/lib/repositories/habits/habit-build-success';
@@ -421,7 +421,7 @@ export async function fetchTasksHabitsGrid(opts?: {
     try {
       return await pullHabitsGridFromApi({ boundary, logicalToday, signal: opts?.signal });
     } catch (e) {
-      if (!opts?.serverFallback) throw e;
+      if (isAbortError(e) || !opts?.serverFallback) throw e;
       console.warn('[tasks-habits-grid-api] 接口失败，回退本地 SQLite', e);
     }
   }

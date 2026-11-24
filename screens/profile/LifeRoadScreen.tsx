@@ -575,7 +575,10 @@ export default function LifeRoadScreen() {
          WHERE life_month_goal_id IS NOT NULL
            AND life_month_goal_id != ''
            AND sync_status != 'pending_delete'
-           AND status IN ('active', 'paused', 'completed')`,
+           AND status IN (
+             'todo', 'doing', 'blocked', 'shelved', 'done',
+             'active', 'paused', 'completed'
+           )`,
       );
       for (const p of linked ?? []) {
         const mid = String(p.life_month_goal_id);

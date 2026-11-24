@@ -359,12 +359,18 @@ export async function apiRequest<T = unknown>(
     }
 
     if (!isApiResponseSuccess(res.status, envelope.code)) {
-      const retryable = res.status === 500 || res.status === 502 || res.status === 503;
+      const retryable =
+        res.status === 429 ||
+        res.status === 500 ||
+        res.status === 502 ||
+        res.status === 503;
       let retryAfterSec: number | undefined;
-      if (res.status === 503) {
+      if (res.status === 429 || res.status === 503) {
         const ra = res.headers.get('Retry-After');
         if (ra != null && /^\d+$/.test(ra.trim())) {
           retryAfterSec = parseInt(ra.trim(), 10);
+        } else if (res.status === 503) {
+          retryAfterSec = 1;
         }
       }
       throw new ApiRequestError(

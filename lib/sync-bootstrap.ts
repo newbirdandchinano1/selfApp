@@ -83,7 +83,7 @@ async function runFullSnapshot(cursor0: number): Promise<boolean> {
       let page: SnapshotPage;
       try {
         page = await apiRequest<SnapshotPage>(`/api/app/sync/snapshot?${qs}`, {
-          method: 'GET', skipGlobalLoading: true, perAttemptTimeoutMs: 30_000,
+          method: 'GET', skipGlobalLoading: true, perAttemptTimeoutMs: 20_000,
         });
       } catch {
         return false;
@@ -218,40 +218,13 @@ export async function runBootstrapGate(opts?: { signal?: AbortSignal }): Promise
       const ok = await runFullSnapshot(Math.floor(cursor0 as number));
       if (ok) return alignCursorThenPull(Math.floor(cursor0 as number));
     }
-    // 回退：任务域 bootstrap（旧服务端无 snapshot 接口时）
-    let payload: BootstrapPayload;
-    try {
-      payload = await apiRequest<BootstrapPayload>('/api/app/pages/tasks', {
-        method: 'GET', skipGlobalLoading: true, perAttemptTimeoutMs: 30_000, signal: opts?.signal as never,
-      });
-    } catch (e) {
-      await setPhase('failed');
-      console.warn('[sync-bootstrap] snapshot 拉取失败', e);
-      return false;
-    }
-    const fallbackCursor0 = Number(payload?.meta?.syncCursor ?? NaN);
-    const complete = payload?.meta?.snapshotComplete === true;
-    if (!allowAlignCursor(complete) || !Number.isFinite(fallbackCursor0) || fallbackCursor0 < 0) {
-      await setPhase('failed');
-      console.warn('[sync-bootstrap] snapshot 未完成，拒绝写 cursor/done');
-      return false;
-    }
-    const tables: Array<[string, unknown[]]> = [
-      ['projects', payload.projects ?? []], ['project_categories', payload.projectCategories ?? []],
-      ['tasks', payload.tasks ?? []], ['task_categories', payload.taskCategories ?? []],
-      ['task_items', payload.taskItems ?? []], ['habits', payload.habits ?? []],
-      ['habit_contexts', payload.habitContexts ?? []], ['habit_check_ins', payload.habitCheckIns ?? []],
-    ];
-    try {
-      for (const [t, rows] of tables) {
-        await applySnapshotTable(t, rows as Record<string, unknown>[]);
-      }
-    } catch (e) {
-      await setPhase('failed');
-      console.warn('[sync-bootstrap] snapshot apply 失败', e);
-      return false;
-    }
-    return alignCursorThenPull(Math.floor(fallbackCursor0));
+    // B1：不再回退到裸 GET /pages/tasks 危险大包（服务端默认 410）。
+    // 无 snapshot-meta 时失败，需升级后端以提供 /sync/snapshot-*。
+    await setPhase('failed');
+    console.warn(
+      '[sync-bootstrap] 缺少 snapshot-meta，已取消危险 tasks bootstrap 回退；请升级后端',
+    );
+    return false;
   })();
   try {
     return await bootstrapInFlight;

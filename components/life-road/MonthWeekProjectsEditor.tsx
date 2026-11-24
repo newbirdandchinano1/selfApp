@@ -62,7 +62,7 @@ function ProjectRowView({
     <View
       style={[
         styles.projRow,
-        { borderColor: lr.line, backgroundColor: 'rgba(255,255,255,0.42)' },
+        { borderColor: lr.line, backgroundColor: lr.chip },
       ]}>
       <Pressable onPress={onPress} style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }} numberOfLines={1}>
@@ -237,7 +237,7 @@ export function MonthWeekProjectsEditor({
             key={week.weekKey}
             style={[
               styles.weekCard,
-              { borderColor: lr.line, backgroundColor: 'rgba(255,255,255,0.38)' },
+              { borderColor: lr.line, backgroundColor: lr.chipSoft },
             ]}>
             <Text style={[styles.weekTitle, { color: lr.pine }]}>{week.label}</Text>
             <TextInput
@@ -250,7 +250,7 @@ export function MonthWeekProjectsEditor({
                 {
                   color: lr.ink3,
                   borderColor: lr.line,
-                  backgroundColor: 'rgba(252,249,241,0.55)',
+                  backgroundColor: lr.softPanel,
                 },
               ]}
             />
@@ -300,7 +300,7 @@ export function MonthWeekProjectsEditor({
         <View
           style={[
             styles.weekCard,
-            { borderColor: lr.line2, backgroundColor: 'rgba(252,249,241,0.35)' },
+            { borderColor: lr.line2, backgroundColor: lr.nextYearBg },
           ]}>
           <Text style={[styles.weekTitle, { color: lr.muted }]}>未分周 · 仅挂月</Text>
           {projectsByWeek.unassigned.map((p) => (
@@ -370,7 +370,7 @@ export function MonthWeekProjectsEditor({
                         styles.importRow,
                         {
                           borderColor: lr.line,
-                          backgroundColor: 'rgba(255,255,255,0.45)',
+                          backgroundColor: lr.chip,
                           opacity: busy ? 0.55 : 1,
                         },
                       ]}>

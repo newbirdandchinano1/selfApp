@@ -4,6 +4,7 @@ import {
   isDuplicateRecordApiError,
 } from '@/lib/api-client';
 import { isServerBusyError } from '@/lib/app-feedback/to-user-message';
+import { isPageApiAbortError, shouldReportPageApiError } from '@/lib/page-api-error-kind';
 
 type ApiLoadingListener = () => void;
 
@@ -49,10 +50,10 @@ export function clearApiLoadingError(): void {
 }
 
 export function reportApiLoadingError(err: unknown): void {
-  // 503「服务器繁忙」已在 fetch 层静默重试；再弹全局失败卡会连环提示（Agent 快照占槽时尤甚）
-  if (isServerBusyError(err)) {
+  // 阶段 D3：Abort 不报错；429/503 已在 fetch 层短退避，勿当业务失败刷屏
+  if (isPageApiAbortError(err) || !shouldReportPageApiError(err) || isServerBusyError(err)) {
     if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      console.warn('[api-loading] suppressed server-busy:', formatApiErrorMessage(err));
+      console.warn('[api-loading] suppressed:', formatApiErrorMessage(err));
     }
     return;
   }

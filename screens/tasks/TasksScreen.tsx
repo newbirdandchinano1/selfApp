@@ -339,9 +339,22 @@ import {
   logicalYmdToLocalDate,
   type TasksDayBoundary,
 } from '@/lib/tasks-logical-day';
+import { isAbortError } from '@/lib/cloud-fetch-retry';
+import { createConcurrencyGate } from '@/lib/tasks-page-load-scheduler';
 import {
+  IDLE_TASKS_LOAD_STATE,
+  isTasksModuleLoadingEnabled,
+  markModuleLoading,
+  markModuleResult,
+  shouldShowTasksFullPageSkeleton,
+  type TasksLoadState,
+} from '@/lib/tasks-page-module-loading';
+import {
+  fetchMatrixWeekTasks,
   fetchStandaloneTodos,
+  fetchTasksPageCoreData,
   fetchTasksPageData,
+  resolveMatrixProjectIds,
   sortStandaloneTodosLocally,
 } from '@/lib/tasks-page-api';
 import {
@@ -1650,15 +1663,26 @@ export default function TasksScreen() {
   const isWideTwoPane = Platform.OS === 'web' && windowWidth >= 1100;
   /** 用户在本页做过写操作后调用，下次聚焦时再从后端全量拉取 */
   const markPageDirty = resetSync;
-  /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动 */
+  /** 首次数据未就绪前展示骨架屏，避免显示空列表闪动（旧路径 / 无本地快照时） */
   const [initialTasksLoadPending, setInitialTasksLoadPending] = React.useState(true);
+  /** 阶段 D1：模块级 LoadState；整页骨架只绑 core + 无本地快照 */
+  const [tasksLoadState, setTasksLoadState] = React.useState<TasksLoadState>(IDLE_TASKS_LOAD_STATE);
+  const [hasLocalTasksSnapshot, setHasLocalTasksSnapshot] = React.useState(false);
+  const reloadAbortRef = React.useRef<AbortController | null>(null);
+  const tasksModuleLoadingEnabled = isTasksModuleLoadingEnabled();
+  const tasksFullPageSkeletonPending = shouldShowTasksFullPageSkeleton({
+    enabled: tasksModuleLoadingEnabled,
+    hasLocalSnapshot: hasLocalTasksSnapshot,
+    core: tasksLoadState.core,
+    legacyPending: initialTasksLoadPending,
+  });
   const tasksContentRevealDoneRef = React.useRef(false);
   const {
     showSkeleton: showTasksSkeleton,
     skeletonMounted: tasksSkeletonMounted,
     skeletonOpacity: tasksSkeletonOpacity,
     contentOpacity: tasksContentOpacity,
-  } = useHomeSkeletonReveal(initialTasksLoadPending);
+  } = useHomeSkeletonReveal(tasksFullPageSkeletonPending);
   /** Measured width of the habit grid row — avoids guessing padding (tabs / safe area / web max-width). */
   const [habitItemsRowWidth, setHabitItemsRowWidth] = React.useState(0);
   const habitGridItemWidth = React.useMemo(() => {
@@ -2349,21 +2373,25 @@ export default function TasksScreen() {
     }
   }, [dayBoundary]);
 
-  const loadHabits = React.useCallback(async () => {
+  const loadHabits = React.useCallback(async (opts?: { signal?: AbortSignal }): Promise<boolean> => {
     const generation = ++habitLoadGenerationRef.current;
     try {
-      const data = await fetchTasksHabitsGrid({ boundary: dayBoundary, serverFallback: true });
+      const data = await fetchTasksHabitsGrid({
+        boundary: dayBoundary,
+        serverFallback: true,
+        signal: opts?.signal,
+      });
       // 节流 + 延后：避免回前台 reload 时与积分发奖抢主线程/SQLite
       scheduleSyncBreakHabitCompletions();
       scheduleSyncBuildHabitCompletions();
-      if (generation !== habitLoadGenerationRef.current) return;
+      if (generation !== habitLoadGenerationRef.current) return false;
       // 本地打卡表覆盖服务端 todayCount，避免刚撤销后重拉把完成态盖回来
       const [recordFlags, todayCounts, checkInPage] = await Promise.all([
         getHabitDayRecordFlagsForYmd(logicalTodayYmd),
         getTodayHabitCountsMap(logicalTodayYmd),
         loadHabitCheckInPageData(),
       ]);
-      if (generation !== habitLoadGenerationRef.current) return;
+      if (generation !== habitLoadGenerationRef.current) return false;
       const baseSections = (data.sections as HabitSection[]).map((section) => ({
         ...section,
         items: section.items.map((it) => ({
@@ -2384,7 +2412,7 @@ export default function TasksScreen() {
         todayCounts,
         checkInsMaps: checkInPage.checkInsMaps,
       });
-      if (generation !== habitLoadGenerationRef.current) return;
+      if (generation !== habitLoadGenerationRef.current) return false;
       setHabitLookupById(
         new Map(
           sections.flatMap((s) => s.items).map((it) => [it.id, { name: it.name, icon: it.icon }]),
@@ -2403,11 +2431,14 @@ export default function TasksScreen() {
         }
         return next;
       });
+      return true;
     } catch (err) {
-      if (generation !== habitLoadGenerationRef.current) return;
+      if (isAbortError(err)) throw err;
+      if (generation !== habitLoadGenerationRef.current) return false;
       console.warn('加载习惯失败', err);
       setHabitSections([]);
       setHabitLookupById(new Map());
+      return false;
     }
   }, [dayBoundary, logicalTodayYmd]);
 
@@ -2613,7 +2644,7 @@ export default function TasksScreen() {
   loadProjectsListFromApiRef.current = loadProjectsListFromApi;
 
   React.useEffect(() => {
-    if (initialTasksLoadPending) return;
+    if (tasksFullPageSkeletonPending) return;
 
     const snapPage = () => {
       pageFadeAnim.stopAnimation();
@@ -2632,7 +2663,7 @@ export default function TasksScreen() {
 
     snapPage();
   }, [
-    initialTasksLoadPending,
+    tasksFullPageSkeletonPending,
     motionReady,
     pageFadeAnim,
     pageTranslateAnim,
@@ -2646,7 +2677,7 @@ export default function TasksScreen() {
    * 面板不可见时不在后台播放，等切回项目面板再播一次。
    */
   React.useEffect(() => {
-    if (initialTasksLoadPending) return;
+    if (tasksFullPageSkeletonPending) return;
 
     if (!motionReady) {
       projectAnim.stopAnimation();
@@ -2699,7 +2730,7 @@ export default function TasksScreen() {
       }
       projectAnim.stopAnimation();
     };
-  }, [initialTasksLoadPending, motionReady, projectAnim, projectTab, reduceMotion, secondaryPane]);
+  }, [tasksFullPageSkeletonPending, motionReady, projectAnim, projectTab, reduceMotion, secondaryPane]);
 
   React.useEffect(() => {
     if (!projectTabApiReadyRef.current) return;
@@ -2783,14 +2814,22 @@ export default function TasksScreen() {
 
   const reload = React.useCallback(async (forceRefresh = false) => {
     // forceRefresh：多端 dirty / 下拉刷新时必须打网；清库后才全量 forceRefresh（避免写后回首页全表翻页卡死）
+    // 阶段 D2：Abort 取消旧 reload；模块分批 + 并发上限 3
+    reloadAbortRef.current?.abort();
+    const ac = new AbortController();
+    reloadAbortRef.current = ac;
+    const signal = ac.signal;
+
     const generation = ++reloadGenerationRef.current;
-    const isStale = () => generation !== reloadGenerationRef.current;
+    const isStale = () => generation !== reloadGenerationRef.current || signal.aborted;
     const forceFullRefresh = consumeForceFullApiRefreshAfterLocalClear();
     const localTaskOpts = { forceLocal: true as const };
     const projectTaskOpts = (extra?: { forceRefresh?: boolean; preloadedTasks?: TaskRow[] }) => ({
       ...extra,
       generation,
     });
+    const forceNet = forceRefresh || forceFullRefresh || undefined;
+    const moduleLoading = isTasksModuleLoadingEnabled();
 
     const logicalToday = logicalTodayYmd;
     const [storedExpanded, storedHideCompleted, storedMainListView] = await Promise.all([
@@ -2801,31 +2840,186 @@ export default function TasksScreen() {
     if (isStale()) return;
 
     const effectiveHideCompleted = storedHideCompleted ?? hideCompletedProjectTasks;
-    const habitsPromise = loadHabits();
-    const pointsPromise = getPointsBalance({ serverFallback: true })
-      .then((balance) => {
-        if (!isStale()) setPointsBalance(balance);
-      })
-      .catch((err) => {
-        if (__DEV__) console.warn('加载积分余额失败', err);
-      });
 
-    const [pageData, projectsListResult] = await Promise.all([
-      fetchTasksPageData({
-        boundary: dayBoundary,
-        serverFallback: true,
-        // 显式透传：不单靠 wrapLoad 的 activePageReadStack（SSE 早发 dirty 时更稳）
-        forceRefresh: forceRefresh || forceFullRefresh || undefined,
-      }),
-      fetchProjectsListForTab(projectTab, {
-        hideCompletedProjectTasks: effectiveHideCompleted,
-        forceRefresh: forceRefresh || forceFullRefresh || undefined,
-        serverFallback: true,
-      }).catch((err) => {
-        console.warn('加载项目列表 API 失败，回退本地组树', err);
-        return null;
-      }),
-    ]);
+    let pageData: Awaited<ReturnType<typeof fetchTasksPageData>>;
+    let projectsListResult: Awaited<ReturnType<typeof fetchProjectsListForTab>> | null = null;
+    let habitsPromise: Promise<void> = Promise.resolve();
+    let pointsPromise: Promise<void> = Promise.resolve();
+
+    if (moduleLoading) {
+      setTasksLoadState((prev) =>
+        markModuleLoading(prev, ['core', 'projects', 'matrix', 'habits', 'heatmap', 'points']),
+      );
+
+      // 第 0 步：本地快照 paint，有数据即可关整页骨架
+      try {
+        const local = await fetchTasksPageData({ boundary: dayBoundary, forceLocal: true });
+        if (isStale()) return;
+        setProjects(local.projects);
+        setProjectCategories(local.projectCategories);
+        setStandaloneTodos(local.standaloneTodos);
+        setMatrixWeekTasks(local.matrixWeekTasks);
+        const hasLocal =
+          local.projects.length > 0 ||
+          local.standaloneTodos.length > 0 ||
+          local.matrixWeekTasks.length > 0;
+        if (hasLocal) {
+          setHasLocalTasksSnapshot(true);
+          setInitialTasksLoadPending(false);
+        }
+      } catch (e) {
+        if (!isAbortError(e)) console.warn('[tasks] 本地快照 paint 失败', e);
+      }
+
+      const gate = createConcurrencyGate(3);
+
+      // 第一批：catalog + standaloneTodos + projects-list（sync 已在两侧去重）
+      const [coreData, projectsList] = await Promise.all([
+        gate.run(async () => {
+          try {
+            return await fetchTasksPageCoreData({
+              boundary: dayBoundary,
+              serverFallback: true,
+              forceRefresh: forceNet,
+              signal,
+            });
+          } catch (e) {
+            if (!isAbortError(e)) console.warn('[tasks] core 加载失败', e);
+            return null;
+          }
+        }),
+        gate.run(async () => {
+          try {
+            return await fetchProjectsListForTab(projectTab, {
+              hideCompletedProjectTasks: effectiveHideCompleted,
+              forceRefresh: forceNet,
+              serverFallback: true,
+              signal,
+            });
+          } catch (err) {
+            if (!isAbortError(err)) console.warn('加载项目列表 API 失败，回退本地组树', err);
+            return null;
+          }
+        }),
+      ]);
+      if (isStale()) return;
+
+      setTasksLoadState((prev) =>
+        markModuleResult(
+          markModuleResult(prev, 'core', coreData != null),
+          'projects',
+          projectsList != null,
+        ),
+      );
+      projectsListResult = projectsList;
+
+      if (coreData) {
+        pageData = {
+          logicalToday: coreData.logicalToday,
+          weekStart: coreData.weekStart,
+          weekEnd: coreData.weekEnd,
+          standaloneTodos: coreData.standaloneTodos,
+          matrixWeekTasks: [],
+          standaloneServerFiltered: coreData.standaloneServerFiltered,
+          matrixServerFiltered: false,
+          filtersVersion: coreData.filtersVersion,
+          projects: coreData.projects,
+          projectCategories: coreData.projectCategories,
+          taskCategories: coreData.taskCategories,
+        };
+        setHasLocalTasksSnapshot(true);
+        setInitialTasksLoadPending(false);
+      } else {
+        pageData = await fetchTasksPageData({ boundary: dayBoundary, forceLocal: true });
+        if (isStale()) return;
+      }
+
+      const earlyProjects = projectsListResult
+        ? reconcileProjectRowsForTab(pageData.projects, projectsListResult.projects, projectTab)
+        : pageData.projects;
+
+      // 第二批：matrixWeek（依赖项目 id）+ habits-grid
+      habitsPromise = gate
+        .run(async () => loadHabits({ signal }))
+        .then((ok) => {
+          if (!isStale()) setTasksLoadState((p) => markModuleResult(p, 'habits', ok !== false));
+        })
+        .catch((err) => {
+          if (isAbortError(err) || isStale()) return;
+          console.warn('加载习惯失败', err);
+          setTasksLoadState((p) => markModuleResult(p, 'habits', false));
+        });
+
+      try {
+        const matrix = await gate.run(() =>
+          fetchMatrixWeekTasks({
+            boundary: dayBoundary,
+            projectIds: resolveMatrixProjectIds(earlyProjects),
+            projects: earlyProjects,
+            serverFallback: true,
+            forceRefresh: forceNet,
+            signal,
+          }),
+        );
+        if (isStale()) return;
+        pageData = {
+          ...pageData,
+          matrixWeekTasks: matrix.tasks,
+          matrixServerFiltered: matrix.serverFiltered,
+          filtersVersion: pageData.filtersVersion ?? matrix.filtersVersion,
+        };
+        setTasksLoadState((p) => markModuleResult(p, 'matrix', true));
+      } catch (e) {
+        if (isAbortError(e) || isStale()) return;
+        console.warn('[tasks] matrixWeek 加载失败', e);
+        setTasksLoadState((p) => markModuleResult(p, 'matrix', false));
+      }
+
+      // 第三批：points；heatmap 由 reloadPage 的 token 触发（组件自治）
+      pointsPromise = gate
+        .run(async () => getPointsBalance({ serverFallback: true }))
+        .then((balance) => {
+          if (isStale()) return;
+          setPointsBalance(balance);
+          setTasksLoadState((p) => markModuleResult(p, 'points', true));
+        })
+        .catch((err) => {
+          if (isAbortError(err) || isStale()) return;
+          if (__DEV__) console.warn('加载积分余额失败', err);
+          setTasksLoadState((p) => markModuleResult(p, 'points', false));
+        });
+    } else {
+      habitsPromise = loadHabits();
+      pointsPromise = getPointsBalance({ serverFallback: true })
+        .then((balance) => {
+          if (!isStale()) setPointsBalance(balance);
+        })
+        .catch((err) => {
+          if (__DEV__) console.warn('加载积分余额失败', err);
+        });
+
+      const [legacyPage, legacyProjects] = await Promise.all([
+        fetchTasksPageData({
+          boundary: dayBoundary,
+          serverFallback: true,
+          forceRefresh: forceNet,
+          signal,
+        }),
+        fetchProjectsListForTab(projectTab, {
+          hideCompletedProjectTasks: effectiveHideCompleted,
+          forceRefresh: forceNet,
+          serverFallback: true,
+          signal,
+        }).catch((err) => {
+          console.warn('加载项目列表 API 失败，回退本地组树', err);
+          return null;
+        }),
+      ]);
+      if (isStale()) return;
+      pageData = legacyPage;
+      projectsListResult = legacyProjects;
+    }
+
     if (isStale()) return;
 
     const catalogProjects = pageData.projects;
@@ -2979,6 +3173,9 @@ export default function TasksScreen() {
       if (isStale()) return;
     }
     await Promise.all([habitsPromise, pointsPromise]);
+    if (moduleLoading && !isStale()) {
+      setTasksLoadState((p) => markModuleResult(p, 'heatmap', true));
+    }
   }, [
     hideCompletedProjectTasks,
     loadExpandedProjectState,
@@ -3000,11 +3197,23 @@ export default function TasksScreen() {
         await reload(forceRefresh);
       }, forceRefresh);
       setInitialTasksLoadPending(false);
+      setHasLocalTasksSnapshot(true);
       setCompletionHeatmapReloadToken((n) => n + 1);
-    } catch {
-      setInitialTasksLoadPending(false);
+      if (isTasksModuleLoadingEnabled()) {
+        setTasksLoadState((p) => markModuleResult(p, 'heatmap', true));
+      }
+    } catch (e) {
+      if (!isAbortError(e)) {
+        setInitialTasksLoadPending(false);
+      }
     }
   }, [reload, wrapLoad]);
+
+  React.useEffect(() => {
+    return () => {
+      reloadAbortRef.current?.abort();
+    };
+  }, []);
 
   const { refreshControl } = usePagePullRefresh(PAGE_API_KEY, reloadPage);
 
@@ -6422,7 +6631,7 @@ export default function TasksScreen() {
       </View>
 
       <View style={[styles.scroll, styles.tasksBodyStack]}>
-        {!initialTasksLoadPending ? (
+        {!tasksFullPageSkeletonPending ? (
           <Animated.View style={{ flex: 1, opacity: tasksContentOpacity }}>
             <Animated.View
               style={{
@@ -8911,7 +9120,7 @@ export default function TasksScreen() {
 
           {showTasksSkeleton ? (
             <HomeSkeletonShell
-              pending={initialTasksLoadPending}
+              pending={tasksFullPageSkeletonPending}
               mounted={tasksSkeletonMounted}
               opacity={tasksSkeletonOpacity}
               backgroundColor={bg}

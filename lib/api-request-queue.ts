@@ -19,8 +19,11 @@ export class ApiRequestQueueFullError extends Error {
   }
 }
 
-/** 同时进行的 HTTP 上限（低于后端 apiMax≈50，留余量给其它客户端） */
-const MAX_IN_FLIGHT = 6;
+/**
+ * 同时进行的 HTTP 上限。
+ * 阶段 A 与后端 API_CONCURRENCY_MAX/分池同灰度：首屏并发收到 2～3（旧 6）。
+ */
+const MAX_IN_FLIGHT = 3;
 /**
  * 有读在排队或飞行中时，至少留这么多槽给读。
  * 例：6 槽、保留 2 → 写最多占 4，读不会被推送流饿死。
