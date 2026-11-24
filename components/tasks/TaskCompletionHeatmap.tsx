@@ -112,6 +112,7 @@ export function TaskCompletionHeatmap({
   reloadToken,
   projects,
   onOpenDetail,
+  onLoadState,
 }: {
   logicalTodayYmd: string;
   dayBoundary: TasksDayBoundary;
@@ -126,6 +127,8 @@ export function TaskCompletionHeatmap({
   projects: Array<{ id: string; name: string }>;
   /** 点「日明细」跳转完整热力页（可选） */
   onOpenDetail?: () => void;
+  /** 向任务页报告模块 loading，驱动分区骨架 */
+  onLoadState?: (state: 'loading' | 'ready' | 'error') => void;
 }) {
   const router = useRouter();
   const taskUi = getTaskUiColors(isDark);
@@ -177,6 +180,7 @@ export function TaskCompletionHeatmap({
   }, [logicalTodayYmd]);
 
   const loadCompletionHeatmap = React.useCallback(async () => {
+    onLoadState?.('loading');
     try {
       const data = await fetchCompletionHeatmap({
         boundary: dayBoundary,
@@ -189,20 +193,23 @@ export function TaskCompletionHeatmap({
         bloomPlayedRef.current = true;
         setBloomKey((k) => k + 1);
       }
+      onLoadState?.('ready');
     } catch (e) {
       console.warn('加载完成热力图失败', e);
       setFrogCountByYmd(new Map());
       setTodoCountByYmd(new Map());
+      onLoadState?.('error');
     }
-  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd]);
+  }, [dayBoundary, heatmapRange.endYmd, heatmapRange.startYmd, onLoadState]);
 
   React.useEffect(() => {
     if (reloadToken <= 0) return;
+    onLoadState?.('loading');
     const idleId = requestIdleCallback(() => {
       void loadCompletionHeatmap();
     });
     return () => cancelIdleCallback(idleId);
-  }, [loadCompletionHeatmap, reloadToken]);
+  }, [loadCompletionHeatmap, onLoadState, reloadToken]);
 
   const weekColumns = React.useMemo(() => {
     const todayCal = startOfLocalDay(new Date());

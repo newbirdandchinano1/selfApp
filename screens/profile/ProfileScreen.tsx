@@ -412,6 +412,8 @@ export default function ProfileScreen() {
   };
   const openWishBoard = () => router.push('/wish-board');
   const openLifeRoad = () => router.push('/life-road');
+  const openLifeRoadPanorama = () =>
+    router.push({ pathname: '/life-road', params: { mode: 'panorama' } });
   const openEditDirection = () => router.push('/edit-life-direction');
   const retryHub = () => {
     void reloadPage(true);
@@ -840,7 +842,11 @@ export default function ProfileScreen() {
           />
         </FoldRiseIn>
         <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={10}>
-          <ProfileRoadBelow road={hub?.road} animate={motionOn} />
+          <ProfileRoadBelow
+            road={hub?.road}
+            animate={motionOn}
+            onOpen={openLifeRoadPanorama}
+          />
         </FoldRiseIn>
 
         {/* 本周节奏 */}

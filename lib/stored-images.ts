@@ -5,6 +5,10 @@ import { File } from 'expo-file-system';
 /** 统一图片库对外路径前缀，与后端 `IMAGES_PUBLIC_PREFIX` 一致。 */
 export const STORED_IMAGE_URI_PREFIX = '/uploads/images/';
 
+/** 支持旧平铺 `/uploads/images/{uuid}.ext` 与模块目录 `/uploads/images/{module}/{uuid}.ext`。 */
+const STORED_IMAGE_URI_RE =
+  /^\/uploads\/images\/(?:([a-z0-9_-]+)\/)?([0-9a-f-]{36})\.[a-z0-9]+$/i;
+
 export type StoredImageRecord = {
   id: string;
   uri: string;
@@ -27,12 +31,11 @@ export type UploadStoredImageInput = {
 };
 
 export function isStoredImageUri(uri: unknown): uri is string {
-  return typeof uri === 'string' && uri.trim().startsWith(STORED_IMAGE_URI_PREFIX);
+  return typeof uri === 'string' && STORED_IMAGE_URI_RE.test(uri.trim());
 }
 
 export function storedImageIdFromUri(uri: string): string | null {
-  const match = uri.trim().match(/^\/uploads\/images\/([0-9a-f-]{36})\.[a-z0-9]+$/i);
-  return match?.[1] ?? null;
+  return uri.trim().match(STORED_IMAGE_URI_RE)?.[2] ?? null;
 }
 
 /** 展示用：`/uploads/...` 拼后端 origin；本地 file/content URI 原样返回。 */

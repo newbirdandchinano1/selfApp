@@ -48,6 +48,8 @@ export type ScheduleSubjectInfo = {
   extraData: string | null;
   status: string;
   done: boolean;
+  /** 放弃今日（与实体完成区分） */
+  abandoned?: boolean;
   deletedSnapshot: boolean;
 };
 
@@ -83,6 +85,10 @@ type Props = {
   editable: boolean;
   /** 确认完成后调用（Sheet 内已二次确认） */
   onToggleDone: () => void;
+  /** 放弃今日（保留课表记录） */
+  onAbandonToday?: () => void;
+  /** 撤销放弃今日 */
+  onUnabandonToday?: () => void;
   onRemoveSegment?: () => void;
   onCancelAssign?: () => void;
   onEdit?: () => void;
@@ -196,6 +202,8 @@ export function SchedulePlacementDetailSheet({
   subject,
   editable,
   onToggleDone,
+  onAbandonToday,
+  onUnabandonToday,
   onRemoveSegment,
   onCancelAssign,
   onEdit,
@@ -212,7 +220,7 @@ export function SchedulePlacementDetailSheet({
    * 禁止在本 Sheet（RN Modal）上再叠 AppDialogHost（也是 Modal），否则 Android 触摸层卡死。
    */
   const [confirmKind, setConfirmKind] = React.useState<
-    'complete' | 'undo' | 'cancelAssign' | 'removeSegment'
+    'complete' | 'undo' | 'cancelAssign' | 'removeSegment' | 'abandon' | 'unabandon'
   >('complete');
   const [nowMins, setNowMins] = React.useState(() => {
     const d = new Date();
@@ -364,9 +372,16 @@ export function SchedulePlacementDetailSheet({
       ? 0
       : Math.max(0, Math.min(1, elapsedMins / spanMins));
 
+  const abandoned = !!subject?.abandoned;
   const dateLine = assignYmd
     ? `${formatYmdCN(assignYmd).replace(/^\d+年/, '')} ${WEEKDAY_CN[weekdayIdx]} · ${timeRange}${
-        subject?.done ? ' · 已完成' : startMins != null ? ` · ${formatElapsed(elapsedMins)}` : ''
+        abandoned
+          ? ' · 已放弃'
+          : subject?.done
+            ? ' · 已完成'
+            : startMins != null
+              ? ` · ${formatElapsed(elapsedMins)}`
+              : ''
       }`
     : timeRange;
 
@@ -385,69 +400,95 @@ export function SchedulePlacementDetailSheet({
       ? '取消该日指派？'
       : confirmKind === 'removeSegment'
         ? '移除本格段？'
-        : confirmKind === 'undo'
+        : confirmKind === 'abandon'
           ? surface === 'habit'
-            ? '撤销这项打卡？'
-            : surface === 'todo'
-              ? '撤销待办完成？'
-              : '取消青蛙完成？'
-          : surface === 'habit'
-            ? '完成这项习惯？'
-            : surface === 'todo'
-              ? '完成这项待办？'
-              : '完成这只青蛙？';
+            ? '放弃今日这项习惯？'
+            : '放弃今日完成？'
+          : confirmKind === 'unabandon'
+            ? '撤销放弃今日？'
+            : confirmKind === 'undo'
+              ? surface === 'habit'
+                ? '撤销这项打卡？'
+                : surface === 'todo'
+                  ? '撤销待办完成？'
+                  : '取消青蛙完成？'
+              : surface === 'habit'
+                ? '完成这项习惯？'
+                : surface === 'todo'
+                  ? '完成这项待办？'
+                  : '完成这只青蛙？';
   const confirmStatPrimary =
     confirmKind === 'cancelAssign'
       ? '取消指派'
       : confirmKind === 'removeSegment'
         ? '移除本格'
-        : confirmKind === 'undo'
-          ? surface === 'habit'
-            ? '撤销打卡'
-            : surface === 'todo'
-              ? '待办撤销'
-              : '青蛙撤销'
-          : surface === 'habit'
-            ? '习惯打卡'
-            : surface === 'todo'
-              ? '待办 +1'
-              : '青蛙 +1';
+        : confirmKind === 'abandon'
+          ? '放弃今日'
+          : confirmKind === 'unabandon'
+            ? '撤销放弃'
+            : confirmKind === 'undo'
+              ? surface === 'habit'
+                ? '撤销打卡'
+                : surface === 'todo'
+                  ? '待办撤销'
+                  : '青蛙撤销'
+              : surface === 'habit'
+                ? '习惯打卡'
+                : surface === 'todo'
+                  ? '待办 +1'
+                  : '青蛙 +1';
   const confirmBodyLead =
     confirmKind === 'cancelAssign'
       ? '将去掉该日全部占用并取消该日青蛙指派，其它日保留'
       : confirmKind === 'removeSegment'
         ? '仅删除这一段占用；若该日已无其它占用将取消当日指派'
-        : confirmKind === 'undo'
+        : confirmKind === 'abandon'
           ? surface === 'habit'
-            ? '撤销后恢复未打卡状态，热力会按规则回退'
-            : '撤销完成后恢复原积分与热力'
-          : surface === 'habit'
-            ? '打卡后计入今日习惯与完成热力'
-            : '完成后计入今日完成热力';
+            ? '记为今日跳过：不打卡、不计积分；课表保留并标「已放弃」，连续为中性日'
+            : '取消该日活跃指派（释放配额），课表占用保留并标「已放弃」；不计积分与热力完成'
+          : confirmKind === 'unabandon'
+            ? surface === 'habit'
+              ? '清除跳过标记，恢复为今日待打卡'
+              : '清除放弃标记并重新指派该日，课表占用保留'
+            : confirmKind === 'undo'
+              ? surface === 'habit'
+                ? '撤销后恢复未打卡状态，热力会按规则回退'
+                : '撤销完成后恢复原积分与热力'
+              : surface === 'habit'
+                ? '打卡后计入今日习惯与完成热力'
+                : '完成后计入今日完成热力';
   const confirmPrimaryLabel =
     confirmKind === 'cancelAssign'
       ? '取消指派'
       : confirmKind === 'removeSegment'
         ? '移除'
-        : confirmKind === 'undo'
-          ? surface === 'habit'
-            ? '撤销打卡'
-            : '撤销完成'
-          : surface === 'habit'
-            ? '打卡'
-            : '完成';
+        : confirmKind === 'abandon'
+          ? '放弃今日'
+          : confirmKind === 'unabandon'
+            ? '撤销放弃'
+            : confirmKind === 'undo'
+              ? surface === 'habit'
+                ? '撤销打卡'
+                : '撤销完成'
+              : surface === 'habit'
+                ? '打卡'
+                : '完成';
   const showCompleteStats =
     confirmKind === 'complete' || confirmKind === 'undo';
   const detailBtnLabel = surface === 'habit' ? '习惯详情' : surface === 'todo' ? '待办详情' : '任务详情';
-  const noteText = subject?.done
+  const noteText = abandoned
     ? surface === 'habit'
-      ? '撤销后恢复未打卡状态，热力会按规则回退。'
-      : '撤销完成后恢复原积分与热力。'
-    : surface === 'habit'
-      ? `打卡会计入今日习惯与热力，并延迟 ${TaskFoldMotion.heatRefreshDebounce}ms 刷新；若误点可撤销。`
-      : rewardPts !== 0
-        ? `完成会结算 ${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)} 积分，并延迟 ${TaskFoldMotion.heatRefreshDebounce}ms 刷新热力；撤销完成后恢复原积分与热力。`
-        : `完成会计入今日热力，并延迟 ${TaskFoldMotion.heatRefreshDebounce}ms 刷新；若误点可在热力日明细中撤销。`;
+      ? '已跳过今日。可撤销放弃恢复待打卡，或改为打卡完成。'
+      : '已放弃今日。课表仍保留记录；可撤销放弃以重新指派该日。取消指派会清掉占用。'
+    : subject?.done
+      ? surface === 'habit'
+        ? '撤销后恢复未打卡状态，热力会按规则回退。'
+        : '撤销完成后恢复原积分与热力。'
+      : surface === 'habit'
+        ? `打卡会计入今日习惯与热力，并延迟 ${TaskFoldMotion.heatRefreshDebounce}ms 刷新；也可「放弃今日」记为跳过。`
+        : rewardPts !== 0
+          ? `完成会结算 ${rewardPts > 0 ? '+' : ''}${formatPoints(rewardPts)} 积分；「放弃今日」不计积分且保留课表记录。`
+          : `完成会计入今日热力；「放弃今日」不计完成、保留课表并标放弃。`;
 
   const translateY = sheetY.interpolate({
     inputRange: [0, 1],
@@ -456,7 +497,19 @@ export function SchedulePlacementDetailSheet({
 
   const openCompleteConfirm = () => {
     if (readOnly || !subject) return;
+    if (abandoned) {
+      if (!onUnabandonToday) return;
+      setConfirmKind('unabandon');
+      setConfirmOpen(true);
+      return;
+    }
     setConfirmKind(subject.done ? 'undo' : 'complete');
+    setConfirmOpen(true);
+  };
+
+  const openAbandonConfirm = () => {
+    if (readOnly || !onAbandonToday || abandoned || subject?.done) return;
+    setConfirmKind('abandon');
     setConfirmOpen(true);
   };
 
@@ -485,8 +538,37 @@ export function SchedulePlacementDetailSheet({
       onRemoveSegment?.();
       return;
     }
+    if (kind === 'abandon') {
+      onAbandonToday?.();
+      return;
+    }
+    if (kind === 'unabandon') {
+      onUnabandonToday?.();
+      return;
+    }
     onToggleDone();
   };
+
+  const mainActionLabel = abandoned
+    ? '撤销放弃'
+    : subject?.done
+      ? surface === 'habit'
+        ? '撤销打卡'
+        : '撤销完成'
+      : surface === 'habit'
+        ? '打卡'
+        : '完成';
+  const mainActionIcon: React.ComponentProps<typeof MaterialIcons>['name'] = abandoned
+    ? 'replay'
+    : subject?.done
+      ? 'undo'
+      : 'check';
+  const canAbandon =
+    !readOnly &&
+    !deleted &&
+    !abandoned &&
+    !subject?.done &&
+    !!onAbandonToday;
 
   const sheetBg = isDark ? tf.paper2 : '#FFFCF5';
   const heroIconName: React.ComponentProps<typeof MaterialIcons>['name'] =
@@ -591,6 +673,11 @@ export function SchedulePlacementDetailSheet({
                 <Text style={[styles.fchipText, { color: tf.rose }]}>未入格</Text>
               </View>
             ) : null}
+            {abandoned ? (
+              <View style={[styles.fchip, { backgroundColor: tf.rose2 }]}>
+                <Text style={[styles.fchipText, { color: tf.rose }]}>已放弃</Text>
+              </View>
+            ) : null}
             {deleted ? (
               <View style={[styles.fchip, { backgroundColor: tf.rose2 }]}>
                 <Text style={[styles.fchipText, { color: tf.rose }]}>已删除快照</Text>
@@ -598,11 +685,11 @@ export function SchedulePlacementDetailSheet({
             ) : null}
           </View>
 
-          {/* pd-actions：青蛙 完成/改派/取消指派/详情；虚拟块仅完成（+ 可选详情） */}
+          {/* pd-actions：完成/放弃/改派/取消指派/详情 */}
           <View style={styles.pdActions}>
             {!deleted ? (
               <Pressable
-                disabled={readOnly}
+                disabled={readOnly || (abandoned && !onUnabandonToday)}
                 onPress={openCompleteConfirm}
                 style={({ pressed }) => [
                   styles.pdAct,
@@ -614,29 +701,27 @@ export function SchedulePlacementDetailSheet({
                   },
                 ]}
                 accessibilityRole="button"
-                accessibilityLabel={
-                  subject?.done
-                    ? surface === 'habit'
-                      ? '撤销打卡'
-                      : '取消完成'
-                    : surface === 'habit'
-                      ? '打卡'
-                      : '完成'
-                }>
-                <MaterialIcons
-                  name={subject?.done ? 'undo' : 'check'}
-                  size={16}
-                  color={tf.onPond}
-                />
-                <Text style={[styles.pdActLabel, { color: tf.onPond }]}>
-                  {subject?.done
-                    ? surface === 'habit'
-                      ? '撤销打卡'
-                      : '撤销完成'
-                    : surface === 'habit'
-                      ? '打卡'
-                      : '完成'}
-                </Text>
+                accessibilityLabel={mainActionLabel}>
+                <MaterialIcons name={mainActionIcon} size={16} color={tf.onPond} />
+                <Text style={[styles.pdActLabel, { color: tf.onPond }]}>{mainActionLabel}</Text>
+              </Pressable>
+            ) : null}
+
+            {canAbandon ? (
+              <Pressable
+                onPress={openAbandonConfirm}
+                style={({ pressed }) => [
+                  styles.pdAct,
+                  {
+                    backgroundColor: isDark ? tf.paper3 : 'rgba(255,252,245,0.7)',
+                    borderColor: isDark ? tf.line : 'rgba(216,205,187,0.7)',
+                    opacity: pressed ? 0.88 : 1,
+                  },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="放弃今日">
+                <MaterialIcons name="block" size={16} color={tf.clay} />
+                <Text style={[styles.pdActLabel, { color: '#A56547' }]}>放弃今日</Text>
               </Pressable>
             ) : null}
 
@@ -738,7 +823,7 @@ export function SchedulePlacementDetailSheet({
             </Pressable>
             {!deleted ? (
               <Pressable
-                disabled={readOnly}
+                disabled={readOnly || (abandoned && !onUnabandonToday)}
                 onPress={openCompleteConfirm}
                 style={({ pressed }) => [
                   styles.primaryBtn,
@@ -748,19 +833,17 @@ export function SchedulePlacementDetailSheet({
                     shadowColor: tf.shadow,
                   },
                 ]}>
-                <MaterialIcons
-                  name={subject?.done ? 'undo' : 'check'}
-                  size={16}
-                  color={tf.onPond}
-                />
+                <MaterialIcons name={mainActionIcon} size={16} color={tf.onPond} />
                 <Text style={[styles.primaryBtnText, { color: tf.onPond }]}>
-                  {subject?.done
-                    ? surface === 'habit'
-                      ? '撤销打卡'
-                      : '撤销完成'
-                    : surface === 'habit'
-                      ? '确认打卡'
-                      : '标记完成'}
+                  {abandoned
+                    ? '撤销放弃'
+                    : subject?.done
+                      ? surface === 'habit'
+                        ? '撤销打卡'
+                        : '撤销完成'
+                      : surface === 'habit'
+                        ? '确认打卡'
+                        : '标记完成'}
                 </Text>
               </Pressable>
             ) : null}
@@ -853,7 +936,9 @@ export function SchedulePlacementDetailSheet({
                     styles.dbtn,
                     {
                       backgroundColor:
-                        confirmKind === 'cancelAssign' || confirmKind === 'removeSegment'
+                        confirmKind === 'cancelAssign' ||
+                        confirmKind === 'removeSegment' ||
+                        confirmKind === 'abandon'
                           ? tf.clay
                           : tf.pond,
                       opacity: pressed ? 0.92 : 1,

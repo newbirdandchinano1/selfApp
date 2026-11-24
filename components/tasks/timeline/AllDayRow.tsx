@@ -36,21 +36,31 @@ export function AllDayRow({ events, onPress }: Props) {
             });
             const kindLabel = assignDisplayKindLabel(event.kind);
             /** 类型放标题右侧副标，避免前置徽章挤掉标题 */
-            const trailing = event.done ? null : kindLabel;
+            const trailing = event.abandoned
+              ? '已放弃'
+              : event.done
+                ? null
+                : kindLabel;
             return (
               <Pressable
                 key={event.id}
                 onPress={() => onPress(event)}
                 accessibilityRole="button"
                 accessibilityLabel={`全天 ${kindLabel} ${event.title}${
-                  event.done ? '，已完成' : event.kind === 'habit' ? '，待打卡' : ''
+                  event.abandoned
+                    ? '，已放弃'
+                    : event.done
+                      ? '，已完成'
+                      : event.kind === 'habit'
+                        ? '，待打卡'
+                        : ''
                 }`}
                 style={({ pressed }) => [
                   styles.chip,
                   {
                     backgroundColor: tone.cardBg,
                     borderColor: tone.cardBorder,
-                    opacity: pressed ? 0.85 : 1,
+                    opacity: pressed ? 0.85 : event.abandoned ? 0.78 : 1,
                   },
                 ]}>
                 <View style={[styles.dot, { backgroundColor: tone.dotColor }]} />
@@ -61,13 +71,16 @@ export function AllDayRow({ events, onPress }: Props) {
                     styles.chipTitle,
                     {
                       color: tone.titleColor,
-                      textDecorationLine: event.done ? 'line-through' : 'none',
-                      opacity: event.done ? 0.72 : 1,
+                      textDecorationLine:
+                        event.done || event.abandoned ? 'line-through' : 'none',
+                      opacity: event.done || event.abandoned ? 0.72 : 1,
                     },
                   ]}>
                   {event.title}
                 </Text>
-                {event.done ? (
+                {event.abandoned ? (
+                  <MaterialIcons name="block" size={11} color={tone.barColor} />
+                ) : event.done ? (
                   <MaterialIcons name="check" size={11} color={tone.barColor} />
                 ) : trailing ? (
                   <Text style={[styles.chipMeta, { color: tone.metaColor }]}>{trailing}</Text>

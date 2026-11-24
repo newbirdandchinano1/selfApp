@@ -176,7 +176,7 @@ export type YearFocusDetail = {
   kind: YearFocusKind;
   /** 节点标题（摘要卡主句） */
   title: string;
-  /** 「今年焦点」旁的短标签，如「11 月」 */
+  /** 「今年焦点」旁短标签，如「11月航标」 */
   focusTag: string;
   /** 卡片右上角 glance，如「11 月 · 月目标」 */
   glance: string;
@@ -203,7 +203,8 @@ export function resolveYearFocusDetail(model: RoadMindMapModel): YearFocusDetail
     return {
       kind: 'month',
       title: monthTitle,
-      focusTag: `${cm} 月`,
+      /** 对齐奶油松墨原型：`11月航标` */
+      focusTag: `${cm}月航标`,
       glance: `${cm} 月 · 月目标`,
       node: monthSlot?.node ?? null,
     };
@@ -214,7 +215,7 @@ export function resolveYearFocusDetail(model: RoadMindMapModel): YearFocusDetail
     return {
       kind: 'quarter',
       title: qTitle,
-      focusTag: `Q${cq}`,
+      focusTag: `Q${cq} 航标`,
       glance: `Q${cq} · 季目标`,
       node: qSlot?.node ?? null,
     };
@@ -224,7 +225,7 @@ export function resolveYearFocusDetail(model: RoadMindMapModel): YearFocusDetail
     return {
       kind: 'year',
       title: yearTitle,
-      focusTag: String(year.year),
+      focusTag: `${year.year} 年度`,
       glance: `${year.year} · 年目标`,
       node: year.node,
     };

@@ -12,12 +12,18 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+
+import { AgentActivityLog } from '@/components/assistant/chat/agent-activity-log';
+import { AgentHero } from '@/components/assistant/chat/agent-hero';
+import { AgentSkillStrip } from '@/components/assistant/chat/agent-skill-strip';
+import { AgentSkillsGrid } from '@/components/assistant/chat/agent-skills-grid';
 import { ChatBubble } from '@/components/assistant/chat/chat-bubble';
-import { Spacing, Typography } from '@/constants/design-tokens';
+import { Spacing } from '@/constants/design-tokens';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import type { ActionCard } from '@/lib/assistant/action-card';
 import type { AgentThinkingState } from '@/lib/assistant/agent-thinking-status';
-import type { ChatMessage } from '@/lib/assistant/chat-types';
+import type { AgentSkillPrompt } from '@/lib/assistant/agent-space-prompts';
+import type { ChatMessage, ChatSessionSummary } from '@/lib/assistant/chat-types';
 
 const NEAR_BOTTOM_PX = 96;
 
@@ -33,16 +39,40 @@ type Props = {
   thinking?: AgentThinkingState | null;
   /** 外部可强制滚到底（发送后） */
   stickToBottomToken?: number;
+  onSelectSkill?: (skill: AgentSkillPrompt) => void;
+  skillsDisabled?: boolean;
+  /** 空态「最近的行动」= 历史对话 */
+  recentSessions?: ChatSessionSummary[];
+  activeSessionId?: string | null;
+  onSelectRecentSession?: (sessionId: string) => void;
 };
 
-function EmptyState() {
-  const { colors } = useAppTheme();
+function EmptyState({
+  onSelectSkill,
+  skillsDisabled,
+  recentSessions,
+  activeSessionId,
+  onSelectRecentSession,
+}: {
+  onSelectSkill?: (skill: AgentSkillPrompt) => void;
+  skillsDisabled?: boolean;
+  recentSessions?: ChatSessionSummary[];
+  activeSessionId?: string | null;
+  onSelectRecentSession?: (sessionId: string) => void;
+}) {
   return (
     <View style={styles.empty}>
-      <Text style={[styles.emptyTitle, { color: colors.text }]}>有什么想聊的？</Text>
-      <Text style={[styles.emptyBody, { color: colors.textSecondary }]}>
-        可以随便问技术、生活或点子；涉及本 App 的记账、待办、饮食时，我也会尽量帮你。
-      </Text>
+      <AgentHero />
+      {onSelectSkill ? (
+        <AgentSkillsGrid onSelect={onSelectSkill} disabled={skillsDisabled} />
+      ) : null}
+      {onSelectRecentSession ? (
+        <AgentActivityLog
+          sessions={recentSessions ?? []}
+          activeSessionId={activeSessionId}
+          onSelectSession={onSelectRecentSession}
+        />
+      ) : null}
     </View>
   );
 }
@@ -58,6 +88,11 @@ export function ChatMessageList({
   streamingMessageId,
   thinking,
   stickToBottomToken = 0,
+  onSelectSkill,
+  skillsDisabled = false,
+  recentSessions,
+  activeSessionId,
+  onSelectRecentSession,
 }: Props) {
   const { colors } = useAppTheme();
   const nearBottomRef = React.useRef(true);
@@ -179,6 +214,13 @@ export function ChatMessageList({
     ],
   );
 
+  const listHeader =
+    messages.length > 0 && onSelectSkill ? (
+      <View style={styles.headerStrip}>
+        <AgentSkillStrip onSelect={onSelectSkill} disabled={skillsDisabled} />
+      </View>
+    ) : null;
+
   return (
     <View style={styles.wrap}>
       <FlatList
@@ -188,13 +230,22 @@ export function ChatMessageList({
         renderItem={renderItem}
         // parts（含确认卡）变更时强制刷新气泡，避免只更文字不挂卡
         extraData={`${messages.length}:${streamingMessageId ?? ''}:${confirmingCardId ?? ''}:${thinking?.phase ?? ''}:${messages.map(m => m.parts.length).join(',')}`}
-        style={[styles.list, { backgroundColor: colors.background }]}
+        style={[styles.list, { backgroundColor: 'transparent' }]}
         contentContainerStyle={[
           styles.content,
           focusPad > 0 ? { paddingBottom: Spacing['6xl'] + focusPad } : null,
           messages.length === 0 ? styles.contentEmpty : null,
         ]}
-        ListEmptyComponent={<EmptyState />}
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={
+          <EmptyState
+            onSelectSkill={onSelectSkill}
+            skillsDisabled={skillsDisabled}
+            recentSessions={recentSessions}
+            activeSessionId={activeSessionId}
+            onSelectRecentSession={onSelectRecentSession}
+          />
+        }
         onScroll={onScroll}
         scrollEventThrottle={16}
         onContentSizeChange={onContentSizeChange}
@@ -242,28 +293,19 @@ const styles = StyleSheet.create({
   wrap: { flex: 1 },
   list: { flex: 1 },
   content: {
-    paddingTop: Spacing['3xl'],
+    paddingTop: Spacing.md,
     paddingBottom: Spacing['6xl'],
   },
   contentEmpty: {
     flexGrow: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: Spacing.sm,
   },
   empty: {
-    paddingHorizontal: Spacing['6xl'],
-    alignItems: 'center',
-    gap: Spacing.lg,
+    paddingBottom: Spacing['3xl'],
   },
-  emptyTitle: {
-    ...Typography.h3,
-    textAlign: 'center',
-  },
-  emptyBody: {
-    ...Typography.body,
-    fontSize: 14,
-    lineHeight: 21,
-    textAlign: 'center',
-    maxWidth: 320,
+  headerStrip: {
+    marginBottom: Spacing.sm,
   },
   jumpBtn: {
     position: 'absolute',

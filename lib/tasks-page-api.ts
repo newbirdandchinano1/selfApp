@@ -578,7 +578,7 @@ type ReadTasksViewFromLocalOpts = {
 
 
 /** 待办栏列表：信任 API 的他端完成口径，再按本地日程窗过滤（含过期未完成滞留） */
-async function resolveStandaloneTodosList(
+export async function resolveStandaloneTodosList(
 
   apiTasks: TaskRow[],
 
@@ -975,14 +975,14 @@ async function pullTasksPageFromApi(opts: {
 
 
 
-  // 先把 tasks 表增量落到本地，避免筛选视图漏掉「他端已完成」导致旧 todo 残留
-  try {
-    await syncTasksTableFromApi({ forceRefresh, signal });
-  } catch (e) {
-    console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉筛选视图', e);
+  // 全表 sync 不再阻塞首屏；仅下拉/强制刷新时先 sync，其余由页面后台调度
+  if (forceRefresh) {
+    try {
+      await syncTasksTableFromApi({ forceRefresh: true, signal });
+    } catch (e) {
+      console.warn('[tasks-page-api] tasks 表强制同步失败，继续拉筛选视图', e);
+    }
   }
-
-
 
   const catalogPromise = fetchTasksCatalog({ forceRefresh, signal, serverFallback: false });
 
@@ -1209,13 +1209,16 @@ export async function fetchTasksPageCoreData(opts?: {
   ) {
     try {
       throwIfAborted(opts?.signal);
-      try {
-        await syncTasksTableFromApi({
-          forceRefresh: opts?.forceRefresh,
-          signal: opts?.signal,
-        });
-      } catch (e) {
-        console.warn('[tasks-page-api] tasks 表增量同步失败，继续拉 core', e);
+      // 全表 sync 不阻塞 core；强制刷新时才前置 sync
+      if (opts?.forceRefresh) {
+        try {
+          await syncTasksTableFromApi({
+            forceRefresh: true,
+            signal: opts?.signal,
+          });
+        } catch (e) {
+          console.warn('[tasks-page-api] tasks 表强制同步失败，继续拉 core', e);
+        }
       }
 
       const catalogPromise = fetchTasksCatalog({

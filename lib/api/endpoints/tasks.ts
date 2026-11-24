@@ -569,6 +569,71 @@ export type ApiProjectListItem = Record<string, unknown> & {
   taskCount?: number;
 };
 
+/** 阶段 C：轻量核心快照（standalone + 当前页项目树 + 分类），不含 heatmap/habits/事件 */
+export type TasksBootstrapV2Payload = {
+  standaloneTodos?: Record<string, unknown>[];
+  projects?: ApiProjectListItem[];
+  projectCategories?: Record<string, unknown>[];
+  taskCategories?: Record<string, unknown>[];
+  meta?: {
+    apiVersion?: string;
+    serverTime?: string;
+    snapshotAt?: string;
+    logicalToday?: string;
+    dayBoundary?: { hour?: number; minute?: number };
+    tablesVersion?: Record<string, TasksCatalogTableVersion>;
+    projectsPagination?: ApiListPagination;
+    standaloneTodos?: {
+      total?: number;
+      page?: number;
+      limit?: number;
+      totalPages?: number;
+    };
+    cache?: string;
+    excluded?: string[];
+  };
+};
+
+export type TasksBootstrapV2Params = {
+  dayBoundaryHour?: number;
+  dayBoundaryMinute?: number;
+  logicalToday?: string;
+  categoryId?: string;
+  categoryIds?: string;
+  uncategorized?: boolean;
+  projectId?: string;
+  includeCompleted?: boolean;
+  includeCancelled?: boolean;
+  includeShelved?: boolean;
+  page?: number;
+  limit?: number;
+  signal?: AbortSignal;
+};
+
+export async function apiGetTasksBootstrapV2(
+  params?: TasksBootstrapV2Params,
+): Promise<TasksBootstrapV2Payload> {
+  const qs = buildQuery({
+    dayBoundaryHour: params?.dayBoundaryHour ?? 0,
+    dayBoundaryMinute: params?.dayBoundaryMinute ?? 0,
+    logicalToday: params?.logicalToday,
+    categoryId: params?.categoryId,
+    categoryIds: params?.categoryIds,
+    uncategorized: params?.uncategorized === true ? true : undefined,
+    projectId: params?.projectId,
+    includeCompleted: params?.includeCompleted === false ? false : undefined,
+    includeCancelled: params?.includeCancelled === false ? false : undefined,
+    includeShelved: params?.includeShelved === false ? false : undefined,
+    page: params?.page,
+    limit: params?.limit,
+  });
+  return apiRequest<TasksBootstrapV2Payload>(`/api/app/pages/tasks/bootstrap-v2${qs}`, {
+    method: 'GET',
+    signal: params?.signal,
+    perAttemptTimeoutMs: PAGE_API_TIMEOUTS_MS.core,
+  });
+}
+
 export type ProjectsListQueryParams = {
   categoryId?: string;
   categoryIds?: string;

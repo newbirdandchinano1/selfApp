@@ -1,7 +1,7 @@
 /**
  * 项目道路归属：挂在「月目标下的某一周」上。
  * - projects.life_month_goal_id → 所属月目标节点
- * - projects.extra_data.life_week_key → 该周周一 YYYY-MM-DD（可空=仅挂月）
+ * - projects.extra_data.life_week_key → 该周 weekKey（本月内起始日 YYYY-MM-DD；可空=仅挂月）
  * 旧字段 life_acceptance_id 读写时清除，不再作为挂载依据。
  */
 import { parseProjectExtraData } from '@/lib/repositories/projects/project-extra-data';
@@ -13,7 +13,7 @@ export const LIFE_ACCEPTANCE_ID_KEY = 'life_acceptance_id';
 
 export type ProjectRoadLinkSelection = {
   monthGoalId: string;
-  /** 周一 ymd；空表示只挂月、未分周 */
+  /** 周栏 weekKey（本月内起始日 ymd）；空表示只挂月、未分周 */
   weekKey?: string | null;
 };
 

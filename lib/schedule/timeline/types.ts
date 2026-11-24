@@ -40,6 +40,8 @@ export type TimelineEvent = {
   /** 任务 / 项目 / 习惯自带图标（emoji）；缺省 null */
   icon: string | null;
   done: boolean;
+  /** 放弃今日：课表保留记录并显示标识 */
+  abandoned?: boolean;
   overdue: boolean;
   allDay: boolean;
   startMinutes: number;

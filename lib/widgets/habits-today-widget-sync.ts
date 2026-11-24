@@ -14,6 +14,7 @@ import {
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
+import { isHabitSkippedOn } from '@/lib/repositories/habits/habit-skip';
 import { getHabits } from '@/lib/repositories/habits/habit';
 import {
   getTaskHabitTasksViewState,
@@ -102,27 +103,31 @@ export async function buildTodayHabitsGlance(now = new Date()) {
               logicalTodayYmd: todayYmd,
             })
           : periodDone;
+      const skipped = isHabitSkippedOn(h.extra_data, todayYmd);
       items.push({
         id: h.id,
         name: h.name?.trim() || '习惯',
         kind: 'task',
-        done: periodDone || dayDone,
+        done: skipped || periodDone || dayDone,
       });
       continue;
     }
 
+    const skipped = isHabitSkippedOn(h.extra_data, todayYmd);
     items.push({
       id: h.id,
       name: h.name?.trim() || '习惯',
       kind,
-      done: isHabitDayDisplayCompleted({
-        kind,
-        todayCount,
-        dailyGoal,
-        hasDayRecord,
-        ymd: todayYmd,
-        logicalTodayYmd: todayYmd,
-      }),
+      done:
+        skipped ||
+        isHabitDayDisplayCompleted({
+          kind,
+          todayCount,
+          dailyGoal,
+          hasDayRecord,
+          ymd: todayYmd,
+          logicalTodayYmd: todayYmd,
+        }),
     });
   }
 

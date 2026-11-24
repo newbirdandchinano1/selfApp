@@ -24,6 +24,7 @@ import type {
 export type PlacementDisplay = {
   title: string;
   done: boolean;
+  abandoned?: boolean;
   priority: number;
   blockKind: TimelineEventKind;
   icon: string | null;
@@ -102,6 +103,7 @@ export function buildTimelineEventsForDay(params: {
       title: display.title.trim() || '青蛙',
       icon: display.icon,
       done: display.done,
+      abandoned: !!display.abandoned,
       overdue: display.overdue,
       allDay,
       startMinutes: iv.startMinutes,
@@ -141,6 +143,7 @@ export function buildTimelineEventsForDay(params: {
       title: (h.name ?? '').trim() || '习惯',
       icon: h.icon && h.icon !== 'check' ? h.icon : null,
       done: !!h.done,
+      abandoned: !!h.abandoned,
       overdue: false,
       allDay,
       startMinutes,
@@ -190,6 +193,7 @@ export function buildTimelineEventsForDay(params: {
       title: (t.title ?? '').trim() || display?.title || '待办',
       icon: display?.icon ?? null,
       done: display?.done ?? !!t.done,
+      abandoned: !!(display?.abandoned ?? t.abandoned),
       overdue: !!t.overdue || !!t.carrySubjectKind || !!display?.overdue,
       allDay: !!t.allDay,
       startMinutes,

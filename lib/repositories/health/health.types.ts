@@ -17,7 +17,7 @@ export type HealthRecordRow = {
   intake_display_title?: string | null;
   /** 智谱返回的口语化点评，展示在详情 */
   intake_ai_comment?: string | null;
-  /** 拍照/相册识别摄入时的来源图：统一库路径 `/uploads/images/...`（历史可能为本地 file://） */
+  /** 拍照/相册识别摄入时的来源图：统一库路径 `/uploads/images/health-intake/...`（历史可能为本地 file:// 或旧平铺路径） */
   source_image_uri?: string | null;
   created_at: string;
   updated_at: string;

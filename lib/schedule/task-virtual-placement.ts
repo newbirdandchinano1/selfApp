@@ -25,7 +25,11 @@ import { isAllDayByWorkCoverage } from '@/lib/schedule/timeline/from-placement';
 import type { SchedulePlacementRow } from '@/lib/schedule/types';
 import { ymdForWeekday } from '@/lib/schedule/week';
 import { getFrogAssignedDates, isFrogAssignedOn } from '@/lib/frog-assignment';
-import { isFrogDoneForToday } from '@/lib/long-term-task';
+import {
+  getFrogSessionAbandonedOn,
+  isFrogAbandonedOn,
+  isFrogDoneForToday,
+} from '@/lib/long-term-task';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import { isStandaloneTodoTask } from '@/lib/standalone-todo-task';
 import { isTaskOverdueForList } from '@/lib/standalone-todo-visibility';
@@ -55,6 +59,8 @@ export type VirtualTaskPlacement = {
   startMinutes?: number;
   endMinutes?: number;
   done: boolean;
+  /** 放弃今日（课表保留记录） */
+  abandoned?: boolean;
   priority: number;
   extraData: string | null;
   allDay: boolean;
@@ -459,6 +465,7 @@ export function buildAssignedFrogVirtualPlacementsForDays(params: {
     const key = `${kind}:${id}:${ymd}`;
     if (seen.has(key) || placedKeys.has(key)) return;
     seen.add(key);
+    const abandoned = isFrogAbandonedOn(extraData, ymd);
     out.push({
       taskId: id,
       title: title.trim() || (kind === 'project' ? '项目' : '青蛙'),
@@ -468,6 +475,7 @@ export function buildAssignedFrogVirtualPlacementsForDays(params: {
       hour: axisStartH,
       minute: axisStartM,
       done: isFrogDoneForToday(extraData, status, ymd),
+      abandoned,
       priority,
       extraData,
       allDay: true,
@@ -492,6 +500,80 @@ export function buildAssignedFrogVirtualPlacementsForDays(params: {
             ? p.status
             : 'todo';
       pushAssigned('project', p.id, p.name, p.priority ?? 0, p.extra_data, status, ymd);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * 已放弃今日且无真实占用时的全天虚块，保证课表仍有「已放弃」记录。
+ * （放弃会 unassign，assigned 虚块不会再建；靠本函数补回。）
+ */
+export function buildAbandonedFrogVirtualPlacementsForDays(params: {
+  tasks: TaskRow[];
+  projects: ProjectRow[];
+  dayYmds: string[];
+  logicalTodayYmd: string;
+  axis: AxisLike;
+  placements?: SchedulePlacementRow[];
+}): VirtualTaskPlacement[] {
+  const { tasks, projects, dayYmds, logicalTodayYmd, axis, placements } = params;
+  const placedKeys = buildPlacedSubjectDayKeys(placements);
+  const allDay = allDaySpanForAxis(axis);
+  const axisStartH = Math.floor(axis.startMinutes / 60);
+  const axisStartM = axis.startMinutes % 60;
+  const out: VirtualTaskPlacement[] = [];
+  const seen = new Set<string>();
+
+  const pushAbandoned = (
+    kind: 'task' | 'project',
+    id: string,
+    title: string,
+    priority: number,
+    extraData: string | null,
+    status: string,
+    ymd: string,
+  ) => {
+    if (ymd < logicalTodayYmd) return;
+    if (!isFrogAbandonedOn(extraData, ymd)) return;
+    if (isTaskTerminalStatus(status) || isTaskShelvedStatus(status)) return;
+    const key = `${kind}:${id}:${ymd}`;
+    if (seen.has(key) || placedKeys.has(key)) return;
+    seen.add(key);
+    out.push({
+      taskId: id,
+      title: title.trim() || (kind === 'project' ? '项目' : '青蛙'),
+      assignYmd: ymd,
+      startSlotIndex: allDay.startSlotIndex,
+      spanSlots: allDay.spanSlots,
+      hour: axisStartH,
+      minute: axisStartM,
+      done: true,
+      abandoned: true,
+      priority,
+      extraData,
+      allDay: true,
+      overdue: false,
+      carrySubjectKind: kind,
+    });
+  };
+
+  for (const ymd of dayYmds) {
+    for (const t of tasks) {
+      pushAbandoned('task', t.id, t.title, t.priority ?? 0, t.extra_data, t.status, ymd);
+    }
+    for (const p of projects) {
+      const status =
+        p.status === 'done' ||
+        p.status === 'cancelled' ||
+        p.status === 'completed' ||
+        p.status === 'archived'
+          ? 'done'
+          : p.status === 'doing' || p.status === 'blocked' || p.status === 'shelved'
+            ? p.status
+            : 'todo';
+      pushAbandoned('project', p.id, p.name, p.priority ?? 0, p.extra_data, status, ymd);
     }
   }
 
@@ -543,8 +625,11 @@ export function buildOverdueFrogCarryPlacementsForToday(params: {
     const past = dates.filter((d) => d < logicalTodayYmd);
     if (past.length === 0) return;
     const lastAssignYmd = past[past.length - 1]!;
-    // 上次指派日已完成会话：不滞留（长期青蛙须重新入格）
+    // 上次指派日已完成会话或已放弃：不滞留
     if (isFrogDoneForToday(extraData, status, lastAssignYmd)) return;
+    // 放弃标记落在更近一日（已从指派列表移除）也不滞留
+    const abandonedOn = getFrogSessionAbandonedOn(extraData);
+    if (abandonedOn && abandonedOn >= lastAssignYmd && abandonedOn < logicalTodayYmd) return;
     seen.add(key);
     out.push({
       taskId: id,

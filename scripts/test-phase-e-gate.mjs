@@ -70,10 +70,23 @@ check('endpoints 使用契约超时（源码门禁）', () => {
   assert.match(src, /PAGE_API_TIMEOUTS_MS\.habits/);
   assert.match(src, /PAGE_API_TIMEOUTS_MS\.heatmap/);
   assert.match(src, /PAGE_API_TIMEOUTS_MS\.projects/);
+  assert.match(src, /apiGetTasksBootstrapV2/);
+  assert.match(src, /\/pages\/tasks\/bootstrap-v2/);
 });
 
 check('模块加载灰度默认开', () => {
   assert.equal(isTasksModuleLoadingEnabled(), true);
+});
+
+check('首屏不再阻塞 await syncTasksTableFromApi（源码门禁）', () => {
+  const coreSrc = readFileSync(join(root, 'lib/tasks-page-api.ts'), 'utf8');
+  const projectsSrc = readFileSync(join(root, 'lib/projects-list-api.ts'), 'utf8');
+  const screenSrc = readFileSync(join(root, 'screens/tasks/TasksScreen.tsx'), 'utf8');
+  // core / projects-list：仅 forceRefresh 路径可前置 sync；默认 skip
+  assert.match(projectsSrc, /skipTasksTableSync/);
+  assert.match(coreSrc, /全表 sync 不阻塞 core/);
+  assert.match(screenSrc, /fetchTasksBootstrapV2Bundle/);
+  assert.match(screenSrc, /后台 tasks sync/);
 });
 
 check('错误分类：timeout vs abort / 429 / 503', () => {

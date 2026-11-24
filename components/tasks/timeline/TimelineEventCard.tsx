@@ -30,23 +30,26 @@ export function TimelineEventCard({ event, height, onPress }: Props) {
   });
 
   const kindLabel = assignDisplayKindLabel(event.kind);
-  const kindLine =
-    event.overdue && !event.done ? `${kindLabel} · 过期` : kindLabel;
+  const kindLine = event.abandoned
+    ? `${kindLabel} · 已放弃`
+    : event.overdue && !event.done
+      ? `${kindLabel} · 过期`
+      : kindLabel;
 
   return (
     <Pressable
       onPress={() => onPress(event)}
       accessibilityRole="button"
-      accessibilityLabel={`${kindLabel} ${event.title}${event.done ? '，已完成' : ''}${
-        event.overdue && !event.done ? '，过期' : ''
-      }`}
+      accessibilityLabel={`${kindLabel} ${event.title}${
+        event.abandoned ? '，已放弃' : event.done ? '，已完成' : ''
+      }${event.overdue && !event.done && !event.abandoned ? '，过期' : ''}`}
       style={({ pressed }) => [
         styles.card,
         {
           height,
           backgroundColor: tone.cardBg,
           borderColor: tone.cardBorder,
-          opacity: pressed ? 0.86 : 1,
+          opacity: pressed ? 0.86 : event.abandoned ? 0.78 : 1,
         },
       ]}>
       <View style={[styles.bar, { backgroundColor: tone.barColor }]} />
@@ -64,8 +67,8 @@ export function TimelineEventCard({ event, height, onPress }: Props) {
               color: tone.titleColor,
               fontSize: compact ? 11 : 12,
               lineHeight: compact ? 14 : 15,
-              textDecorationLine: event.done ? 'line-through' : 'none',
-              opacity: event.done ? 0.72 : 1,
+              textDecorationLine: event.done || event.abandoned ? 'line-through' : 'none',
+              opacity: event.done || event.abandoned ? 0.72 : 1,
             },
           ]}>
           {event.title}
@@ -83,7 +86,9 @@ export function TimelineEventCard({ event, height, onPress }: Props) {
           {kindLine}
         </Text>
       </View>
-      {event.done ? (
+      {event.abandoned ? (
+        <MaterialIcons name="block" size={compact ? 12 : 14} color={tone.barColor} style={styles.ck} />
+      ) : event.done ? (
         <MaterialIcons name="check-circle" size={compact ? 12 : 14} color={tone.barColor} style={styles.ck} />
       ) : null}
     </Pressable>

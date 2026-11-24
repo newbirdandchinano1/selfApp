@@ -43,6 +43,8 @@ import {
 } from '@/lib/life-road/life-road-weeks';
 import {
   LIFE_ROAD_NODE_KIND_LABELS,
+  LIFE_ROAD_NODE_STATUS_LABELS,
+  LIFE_ROAD_NODE_STATUS_VALUES,
   LIFE_ROAD_NOTE_MAX,
   LIFE_ROAD_TITLE_MAX,
   LifeRoadValidationError,
@@ -74,27 +76,9 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 const PAGE_KEY = 'edit-life-road-node';
-
-function CheckIcon({ color }: { color: string }) {
-  return (
-    <Svg width={13} height={13} viewBox="0 0 24 24" fill="none">
-      <Path
-        d="M5 12.5l4.5 4.5L19 7"
-        stroke={color}
-        strokeWidth={1.8}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
-
-function CrumbDot({ color }: { color: string }) {
-  return <View style={[styles.crumbDot, { backgroundColor: color }]} />;
-}
 
 function buildSlotLabel(
   kind: LifeRoadNodeKind,
@@ -111,25 +95,6 @@ function buildSlotLabel(
     return `${calendarYear ?? ''} ${monthLabel(month ?? 1)}`.trim();
   }
   return LIFE_ROAD_NODE_KIND_LABELS[kind];
-}
-
-function buildCrumbParts(
-  kind: LifeRoadNodeKind,
-  calendarYear: number | null,
-  quarter: number | null | undefined,
-  month: number | null | undefined,
-): string[] {
-  if (kind === 'multi') return ['多年', '3–10 年坐标'];
-  if (kind === 'farther') return ['更远', '更远方向'];
-  if (kind === 'year') return [String(calendarYear ?? ''), '年目标'];
-  if (kind === 'quarter') {
-    return [String(calendarYear ?? ''), quarterLabel(quarter ?? 1), '季目标'];
-  }
-  return [
-    String(calendarYear ?? ''),
-    quarter != null ? quarterLabel(quarter) : '',
-    monthLabel(month ?? 1),
-  ].filter(Boolean);
 }
 
 export default function EditLifeRoadNodeScreen() {
@@ -184,14 +149,16 @@ export default function EditLifeRoadNodeScreen() {
   const [directionBody, setDirectionBody] = useState('');
   const [acceptAiOpen, setAcceptAiOpen] = useState(false);
   const [updateAiOpen, setUpdateAiOpen] = useState(false);
+  const [legacyAcceptOpen, setLegacyAcceptOpen] = useState(false);
   const [baseline, setBaseline] = useState<{
     title: string;
     note: string;
+    status: LifeRoadNodeStatus;
     acceptanceKey: string;
     weekGoalsKey: string;
   } | null>(
     isNew
-      ? { title: '', note: '', acceptanceKey: '', weekGoalsKey: '' }
+      ? { title: '', note: '', status: 'on_track', acceptanceKey: '', weekGoalsKey: '' }
       : null,
   );
 
@@ -261,11 +228,6 @@ export default function EditLifeRoadNodeScreen() {
     [kind, calendarYear, quarter, month],
   );
 
-  const crumbParts = useMemo(
-    () => buildCrumbParts(kind, calendarYear, quarter, month),
-    [kind, calendarYear, quarter, month],
-  );
-
   const titleLen = [...title].length;
   const noteLen = [...note].length;
   const itemNoun = lifeRoadItemNoun(kind);
@@ -295,10 +257,11 @@ export default function EditLifeRoadNodeScreen() {
     return (
       title.trim() !== baseline.title.trim() ||
       note.trim() !== baseline.note.trim() ||
+      status !== baseline.status ||
       acceptanceKey !== baseline.acceptanceKey ||
       weekGoalsKey !== baseline.weekGoalsKey
     );
-  }, [acceptanceKey, baseline, note, title, weekGoalsKey]);
+  }, [acceptanceKey, baseline, note, status, title, weekGoalsKey]);
 
   const canSave =
     Boolean(title.trim()) && !saving && !loading && (isNew || dirty);
@@ -333,6 +296,7 @@ export default function EditLifeRoadNodeScreen() {
           setBaseline({
             title: row.title,
             note: row.note ?? '',
+            status: row.status,
             acceptanceKey: flattenAcceptanceItems(items)
               .map(
                 (it) =>
@@ -473,58 +437,47 @@ export default function EditLifeRoadNodeScreen() {
     <SafeAreaView style={[styles.safe, { backgroundColor: lr.paper }]} edges={['left', 'right']}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <View style={[styles.appBar, { paddingTop: insets.top + 4 }]}>
-        <View style={styles.appBarSide}>
-          <Pressable
-            onPress={() => router.back()}
-            accessibilityRole="button"
-            accessibilityLabel="返回"
-            hitSlop={10}
-            style={({ pressed }) => [
-              styles.iconBtn,
-              {
-                borderColor: lr.line,
-                backgroundColor: 'rgba(252,249,241,0.66)',
-                opacity: pressed ? 0.88 : 1,
-              },
-            ]}>
-            <AppIcon name="arrow-back" size={18} color={lr.ink2} />
-          </Pressable>
-        </View>
+      <View
+        style={[
+          styles.appBar,
+          {
+            paddingTop: insets.top + 6,
+            borderBottomColor: lr.line,
+            backgroundColor: lr.paper,
+          },
+        ]}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityRole="button"
+          accessibilityLabel="返回"
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.backTextBtn,
+            { opacity: pressed ? 0.7 : 1 },
+          ]}>
+          <AppIcon name="chevron-left" size={16} color={lr.sage} />
+          <Text style={{ fontSize: 12, fontWeight: '500', color: lr.sage }}>返回</Text>
+        </Pressable>
         <View style={styles.appBarTitleWrap}>
-          <Text style={[styles.appTitle, { color: lr.pine }]} numberOfLines={1}>
-            {isNew ? `新建 · ${slotLabel}` : `编辑 · ${slotLabel}`}
+          <Text style={[lifeRoadType.appTitle, { color: lr.ink, fontSize: 13 }]} numberOfLines={1}>
+            {isNew ? '新建节点' : '编辑节点'}
           </Text>
-          <Text style={[lifeRoadType.appSub, { color: lr.muted }]}>
-            ROAD NODE · {kind.toUpperCase()}
+          <Text style={{ fontSize: 10, fontWeight: '500', color: lr.amber, marginTop: 2 }}>
+            {slotLabel}
           </Text>
         </View>
-        <View style={[styles.appBarSide, styles.appBarSideEnd]}>
-          {!isNew ? (
-            <Pressable
-              onPress={onDelete}
-              accessibilityRole="button"
-              accessibilityLabel="删除"
-              style={({ pressed }) => [
-                styles.deleteTop,
-                {
-                  borderColor: 'rgba(191,111,82,0.18)',
-                  backgroundColor: 'rgba(241,220,210,0.28)',
-                  opacity: pressed ? 0.88 : 1,
-                },
-              ]}>
-              <Text
-                style={{
-                  fontSize: 12,
-                  fontWeight: '600',
-                  letterSpacing: 0.4,
-                  color: lr.clay,
-                }}>
-                删除
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
+        {!isNew ? (
+          <Pressable
+            onPress={onDelete}
+            accessibilityRole="button"
+            accessibilityLabel="删除"
+            hitSlop={8}
+            style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+            <Text style={{ fontSize: 12, fontWeight: '500', color: '#F43F5E' }}>删除</Text>
+          </Pressable>
+        ) : (
+          <View style={{ width: 28 }} />
+        )}
       </View>
 
       {loading ? (
@@ -543,42 +496,11 @@ export default function EditLifeRoadNodeScreen() {
             ]}
             showsVerticalScrollIndicator={false}>
             <FoldRiseIn animate={motionOn} index={0} fromY={10}>
-              <View
-                style={[
-                  styles.slotCrumb,
-                  {
-                    borderColor: lr.line3,
-                    backgroundColor: 'rgba(252,249,241,0.45)',
-                  },
-                ]}>
-                {crumbParts.map((part, i) => (
-                  <React.Fragment key={`${part}-${i}`}>
-                    {i > 0 ? <CrumbDot color={lr.line2} /> : null}
-                    <Text
-                      style={[
-                        lifeRoadType.monoTiny,
-                        {
-                          color: i === crumbParts.length - 1 ? lr.ink3 : lr.muted,
-                          fontWeight: i === crumbParts.length - 1 ? '600' : '400',
-                        },
-                      ]}>
-                      {part}
-                    </Text>
-                  </React.Fragment>
-                ))}
-              </View>
-            </FoldRiseIn>
-
-            <FoldRiseIn animate={motionOn} index={1} fromY={10}>
               <FormCard lr={lr}>
                 <View style={styles.fieldHead}>
-                  <View style={styles.fieldLabel}>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>01</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>标题</Text>
-                    <Text style={{ fontSize: 10, color: lr.clay }}>必填</Text>
-                  </View>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                    {titleLen} / {LIFE_ROAD_TITLE_MAX}
+                  <Text style={{ fontSize: 11, fontWeight: '500', color: lr.sage }}>标题 *</Text>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.sage }]}>
+                    {titleLen}/{LIFE_ROAD_TITLE_MAX}
                   </Text>
                 </View>
                 <TextInput
@@ -589,110 +511,117 @@ export default function EditLifeRoadNodeScreen() {
                   style={[
                     styles.titleInput,
                     lifeRoadType.serifNorth,
-                    { color: lr.ink, borderBottomColor: lr.line },
+                    { color: lr.ink, borderBottomColor: lr.line, fontSize: 16, fontWeight: '700' },
                   ]}
                 />
-                <View style={styles.lineNote}>
-                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>标题非空才可保存</Text>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>简短、可被记住</Text>
-                </View>
-              </FormCard>
-            </FoldRiseIn>
 
-            <FoldRiseIn animate={motionOn} index={2} fromY={10}>
-              <FormCard lr={lr}>
-                <View style={styles.fieldHead}>
-                  <View style={styles.fieldLabel}>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>02</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>梗概</Text>
-                  </View>
-                  <View style={styles.aiHeadActions}>
-                    <Pressable
-                      onPress={() => setAcceptAiOpen(true)}
-                      disabled={!title.trim()}
-                      style={({ pressed }) => [
-                        styles.aiMiniBtn,
-                        {
-                          borderColor: lr.line,
-                          opacity: !title.trim() ? 0.4 : pressed ? 0.88 : 1,
-                        },
-                      ]}>
-                      <AppIcon name="auto-awesome" size={12} color={lr.pine} />
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: lr.pine }}>
-                        AI 拆解
-                      </Text>
-                    </Pressable>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                      {noteLen} / {LIFE_ROAD_NOTE_MAX}
-                    </Text>
-                  </View>
+                <View style={[styles.fieldHead, { marginTop: 16 }]}>
+                  <Text style={{ fontSize: 11, fontWeight: '500', color: lr.sage }}>说明</Text>
+                  <Text style={[lifeRoadType.monoTiny, { color: lr.sage }]}>
+                    {noteLen}/{LIFE_ROAD_NOTE_MAX}
+                  </Text>
                 </View>
                 <TextInput
                   value={note}
                   onChangeText={(t) => setNote([...t].slice(0, LIFE_ROAD_NOTE_MAX).join(''))}
                   maxLength={LIFE_ROAD_NOTE_MAX}
-                  placeholder={`写清背景与意图，可据此 AI 拆解${itemNoun}…`}
+                  placeholder="可选：补充背景与意图"
                   placeholderTextColor={lr.muted2}
                   multiline
                   textAlignVertical="top"
-                  style={[styles.noteInput, { color: lr.ink3 }]}
+                  style={[styles.noteInput, { color: lr.ink, fontSize: 12, lineHeight: 20 }]}
                 />
-                <View style={styles.lineNote}>
-                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
-                    梗概越具体，拆解{itemNoun}越准（最多 {LIFE_ROAD_NOTE_MAX} 字）
-                  </Text>
+
+                <View style={[styles.statusGrid, { borderTopColor: lr.line, marginTop: 14, paddingTop: 14 }]}>
+                  {LIFE_ROAD_NODE_STATUS_VALUES.map((s) => {
+                    const selected = status === s;
+                    return (
+                      <Pressable
+                        key={s}
+                        onPress={() => setStatus(s)}
+                        style={[
+                          styles.statusOpt,
+                          selected
+                            ? { backgroundColor: lr.ink }
+                            : { backgroundColor: lr.paper2 },
+                        ]}>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            fontWeight: '500',
+                            color: selected ? lr.onRoad : lr.sage,
+                          }}>
+                          {LIFE_ROAD_NODE_STATUS_LABELS[s]}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
                 </View>
               </FormCard>
             </FoldRiseIn>
 
-            <FoldRiseIn animate={motionOn} index={3} fromY={10}>
-              <FormCard lr={lr}>
-                <View style={styles.fieldHead}>
-                  <View style={styles.fieldLabel}>
-                    <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>03</Text>
-                    <Text style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}>
-                      {itemNoun}
-                    </Text>
-                  </View>
-                  <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>
-                    {flattenAcceptanceItems(acceptance).length} /{' '}
-                    {LIFE_ROAD_ACCEPTANCE_MAX_ITEMS}
+            <FoldRiseIn animate={motionOn} index={1} fromY={10}>
+              <Pressable
+                onPress={() => setUpdateAiOpen(true)}
+                disabled={!title.trim()}
+                style={({ pressed }) => [
+                  styles.aiHeroBtn,
+                  { opacity: !title.trim() ? 0.45 : pressed ? 0.92 : 1 },
+                ]}>
+                <Svg style={StyleSheet.absoluteFill} width="100%" height="100%" preserveAspectRatio="none">
+                  <Defs>
+                    <LinearGradient id="aiHeroGrad" x1="0" y1="0" x2="1" y2="1">
+                      <Stop offset="0" stopColor={lr.roadDeep} />
+                      <Stop offset="1" stopColor={lr.roadDeepMid} />
+                    </LinearGradient>
+                  </Defs>
+                  <Rect x="0" y="0" width="100%" height="100%" fill="url(#aiHeroGrad)" />
+                </Svg>
+                <View style={{ flex: 1, minWidth: 0, zIndex: 1 }}>
+                  <Text style={{ fontSize: 12, fontWeight: '600', color: '#F5F3E8' }}>
+                    一句话更新节点
+                  </Text>
+                  <Text style={{ fontSize: 10, color: '#A9C7B9', marginTop: 2 }}>
+                    自然语言解析状态与进度
                   </Text>
                 </View>
-                <AcceptanceChecklistEditor
-                  items={acceptance}
-                  onChange={setAcceptance}
-                  itemNoun={itemNoun}
-                  linkMode={linkMode}
-                  linkMonthOptions={linkMonthOptions}
-                  allowChildren={kind === 'month'}
-                  ink2={lr.ink2}
-                  ink3={lr.ink3}
-                  muted={lr.muted}
-                  muted2={lr.muted2}
-                  faint={lr.muted2}
-                  line={lr.line}
-                  pine={lr.pine}
-                  onRoad={lr.onRoad}
-                  clay2={lr.clay2}
-                />
-                <View style={styles.lineNote}>
-                  <Text style={{ fontSize: 11, color: lr.muted, flex: 1 }}>
-                    {linkMode === 'quarter'
-                      ? '按 P0 / P1 / P2 分层写目标，可连接对应季'
-                      : linkMode === 'month'
-                        ? '按 P0 / P1 / P2 分层写目标，可连接对应月'
-                        : kind === 'month'
-                          ? '按 P0 / P1 / P2 分层写任务，可拆子任务'
-                          : '勾选表示已抵达；优先级由你决定'}
-                  </Text>
-                </View>
-              </FormCard>
+                <Text style={{ fontSize: 12, color: '#E0B072', zIndex: 1 }}>打开 →</Text>
+              </Pressable>
             </FoldRiseIn>
+
+            {kind === 'quarter' && calendarYear != null && quarter != null ? (
+              <FoldRiseIn animate={motionOn} index={2} fromY={10}>
+                <Pressable
+                  onPress={() =>
+                    router.push({
+                      pathname: '/life-road',
+                      params: { mode: 'panorama' },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.navLink,
+                    {
+                      borderColor: lr.line,
+                      backgroundColor: lr.card,
+                      opacity: pressed ? 0.9 : 1,
+                    },
+                  ]}>
+                  <Text style={{ flex: 1, fontSize: 12, fontWeight: '500', color: lr.ink }}>
+                    查看本季度月份
+                  </Text>
+                  <Text style={{ fontSize: 12, color: lr.amber }}>道路全景 →</Text>
+                </Pressable>
+              </FoldRiseIn>
+            ) : null}
 
             {kind === 'month' && calendarYear != null && month != null ? (
-              <FoldRiseIn animate={motionOn} index={4} fromY={10}>
+              <FoldRiseIn animate={motionOn} index={2} fromY={10}>
                 <FormCard lr={lr}>
+                  <View style={styles.fieldHead}>
+                    <Text style={{ fontSize: 12, fontWeight: '600', color: lr.ink }}>
+                      本月执行 · 周次与项目
+                    </Text>
+                  </View>
                   <MonthWeekProjectsEditor
                     calendarYear={calendarYear}
                     month={month}
@@ -707,36 +636,79 @@ export default function EditLifeRoadNodeScreen() {
               </FoldRiseIn>
             ) : null}
 
-            <FoldRiseIn animate={motionOn} index={5} fromY={10}>
-              <Pressable
-                onPress={() => setUpdateAiOpen(true)}
-                disabled={!title.trim()}
-                style={({ pressed }) => [
-                  styles.aiUpdateBtn,
-                  {
-                    borderColor: lr.line,
-                    backgroundColor: 'rgba(255,255,255,0.55)',
-                    opacity: !title.trim() ? 0.45 : pressed ? 0.9 : 1,
-                  },
+            <FoldRiseIn animate={motionOn} index={3} fromY={10}>
+              <View
+                style={[
+                  styles.legacyWrap,
+                  { borderColor: lr.line, backgroundColor: lr.card },
                 ]}>
-                <AppIcon name="auto-awesome" size={14} color={lr.pine} />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: lr.pine }}>
-                    一句话更新
+                <Pressable
+                  onPress={() => setLegacyAcceptOpen((v) => !v)}
+                  style={styles.legacyHead}
+                  accessibilityRole="button">
+                  <Text style={{ flex: 1, fontSize: 12, fontWeight: '500', color: lr.sage }}>
+                    历史验收（兼容 · {flattenAcceptanceItems(acceptance).length} 条）
                   </Text>
-                  <Text style={{ fontSize: 11, color: lr.muted, marginTop: 2 }}>
-                    自然语言改梗概 / {itemNoun}草稿
-                  </Text>
-                </View>
-              </Pressable>
+                  <AppIcon
+                    name={legacyAcceptOpen ? 'expand-less' : 'expand-more'}
+                    size={16}
+                    color={lr.sage}
+                  />
+                </Pressable>
+                {legacyAcceptOpen ? (
+                  <View
+                    style={{
+                      paddingHorizontal: 14,
+                      paddingBottom: 14,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      borderTopColor: lr.line,
+                    }}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        marginTop: 10,
+                        marginBottom: 8,
+                      }}>
+                      <Text style={{ fontSize: 10, color: lr.muted }}>兼容保留字段</Text>
+                      <Pressable
+                        onPress={() => setAcceptAiOpen(true)}
+                        disabled={!title.trim()}
+                        hitSlop={6}
+                        style={{ opacity: !title.trim() ? 0.4 : 1 }}>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            fontWeight: '500',
+                            color: lr.ink,
+                            textDecorationLine: 'underline',
+                          }}>
+                          AI 拆解
+                        </Text>
+                      </Pressable>
+                    </View>
+                    <AcceptanceChecklistEditor
+                      items={acceptance}
+                      onChange={setAcceptance}
+                      itemNoun={itemNoun}
+                      linkMode={linkMode}
+                      linkMonthOptions={linkMonthOptions}
+                      allowChildren={kind === 'month'}
+                      ink2={lr.ink2}
+                      ink3={lr.ink3}
+                      muted={lr.muted}
+                      muted2={lr.muted2}
+                      faint={lr.muted2}
+                      line={lr.line}
+                      pine={lr.pine}
+                      onRoad={lr.onRoad}
+                      clay2={lr.clay2}
+                    />
+                  </View>
+                ) : null}
+              </View>
             </FoldRiseIn>
-
-            <View style={styles.helperNote}>
-              <AppIcon name="info-outline" size={12} color={lr.muted2} />
-              <Text style={{ flex: 1, fontSize: 11, lineHeight: 16, color: lr.muted }}>
-                年/季写目标、月写任务；月下按周挂项目。不进日历与积分。
-              </Text>
-            </View>
           </ScrollView>
 
           <View
@@ -744,25 +716,32 @@ export default function EditLifeRoadNodeScreen() {
               styles.formFooter,
               {
                 paddingBottom: Math.max(insets.bottom, 16),
-                backgroundColor: lr.paper,
+                backgroundColor: lr.card,
+                borderTopColor: lr.line,
               },
             ]}>
+            <Text style={[styles.footerHint, { color: lr.sage }]} numberOfLines={2}>
+              {footerHint}
+            </Text>
             <Pressable
               onPress={() => void onSave()}
               disabled={!canSave}
               style={({ pressed }) => [
                 styles.btnSave,
                 {
-                  backgroundColor: lr.pine,
-                  opacity: !canSave ? 0.38 : pressed ? 0.92 : 1,
+                  backgroundColor: canSave ? lr.ink : lr.paper2,
+                  opacity: pressed && canSave ? 0.92 : 1,
                 },
               ]}>
-              <CheckIcon color={lr.onRoad} />
-              <Text style={[lifeRoadType.cta, { color: lr.onRoad, letterSpacing: 0.8 }]}>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: '600',
+                  color: canSave ? lr.onRoad : lr.muted,
+                }}>
                 {saving ? '保存中…' : isNew ? '创建节点' : '保存节点'}
               </Text>
             </Pressable>
-            <Text style={styles.footerHint}>{footerHint}</Text>
           </View>
         </KeyboardAvoidingView>
       )}
@@ -834,61 +813,27 @@ const styles = StyleSheet.create({
   appBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingBottom: 8,
-    gap: 9,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  appBarSide: {
-    width: 56,
+  backTextBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    gap: 2,
+    minWidth: 56,
   },
-  appBarSideEnd: { justifyContent: 'flex-end' },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  appBarTitleWrap: { flex: 1, minWidth: 0, alignItems: 'center', paddingHorizontal: 4 },
-  appTitle: {
-    ...lifeRoadType.appTitle,
-    fontSize: 17,
-    lineHeight: 20,
-  },
-  deleteTop: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
+  appBarTitleWrap: { flex: 1, minWidth: 0, alignItems: 'center', paddingHorizontal: 8 },
   loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scroll: { paddingHorizontal: 18, paddingTop: 4 },
-  slotCrumb: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 5,
-    marginTop: 2,
-    paddingHorizontal: 9,
-    paddingVertical: 8,
-    borderRadius: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  crumbDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 2,
-  },
+  scroll: { paddingHorizontal: 20, paddingTop: 16 },
   formCard: {
-    marginTop: 12,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 13,
-    borderRadius: 21,
+    marginTop: 0,
+    marginBottom: 16,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
   },
   fieldHead: {
@@ -896,106 +841,89 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  fieldLabel: {
+  aiHeroBtn: {
+    marginBottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    flexShrink: 1,
-  },
-  aiHeadActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  aiMiniBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.55)',
-  },
-  aiUpdateBtn: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 20,
+    overflow: 'hidden',
   },
   titleInput: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 1,
-    paddingTop: 3,
-    paddingBottom: 7,
-    fontSize: 15,
+    paddingHorizontal: 0,
+    paddingTop: 2,
+    paddingBottom: 8,
   },
   noteInput: {
-    minHeight: 120,
-    maxHeight: 280,
-    paddingHorizontal: 1,
+    minHeight: 72,
+    maxHeight: 200,
+    paddingHorizontal: 0,
     paddingVertical: 2,
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  lineNote: {
-    marginTop: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
   },
   statusGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 6,
+    gap: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   statusOpt: {
-    width: '48.5%',
-    flexDirection: 'row',
+    flex: 1,
     alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 10,
+    justifyContent: 'center',
     paddingVertical: 10,
     borderRadius: 12,
+  },
+  navLink: {
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    flexShrink: 0,
+  legacyWrap: {
+    marginBottom: 8,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
-  helperNote: {
-    marginTop: 12,
-    marginHorizontal: 2,
+  legacyHead: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 5,
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minHeight: 48,
   },
   formFooter: {
     paddingHorizontal: 18,
-    paddingTop: 9,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(30,57,50,0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   btnSave: {
-    height: 43,
-    borderRadius: 15,
+    height: 40,
+    paddingHorizontal: 20,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
+    gap: 6,
   },
   footerHint: {
-    textAlign: 'center',
-    marginTop: 7,
-    fontSize: 11,
-    color: '#A6AEA5',
+    flex: 1,
+    fontSize: 10,
+    color: '#8B9D91',
     letterSpacing: 0.2,
   },
 });

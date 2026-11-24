@@ -3,12 +3,18 @@
  * FAB / 深链 / openGlobalAssistant → 本页；主路径 /api/v1/agent/chat（优先 stream）。
  * preview_* → confirmAssistantCard（Sheet / 路由）；commit_* → ChatCommitExecutor。
  */
+import { AgentSpaceBackdrop } from '@/components/assistant/chat/agent-space-backdrop';
+import { AgentSuggestionChips } from '@/components/assistant/chat/agent-suggestion-chips';
 import { ChatComposer } from '@/components/assistant/chat/chat-composer';
 import { ChatMessageList } from '@/components/assistant/chat/chat-message-list';
 import { ChatSessionHeader } from '@/components/assistant/chat/chat-session-header';
 import { ChatSessionListModal } from '@/components/assistant/chat/chat-session-list-modal';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import type { ActionCard } from '@/lib/assistant/action-card';
+import type {
+  AgentSkillPrompt,
+  AgentSuggestionChip,
+} from '@/lib/assistant/agent-space-prompts';
 import {
   createThinkingState,
   type AgentThinkingState,
@@ -866,8 +872,21 @@ export default function AssistantChatScreen() {
       ? session.title
       : '助手';
 
+  const onSelectSkill = React.useCallback((skill: AgentSkillPrompt) => {
+    if (busyRef.current) return;
+    setDraft(skill.prompt);
+  }, []);
+
+  const onSelectSuggestion = React.useCallback((chip: AgentSuggestionChip) => {
+    if (busyRef.current) return;
+    setDraft(chip.prompt);
+  }, []);
+
+  const showSuggestions = !busy;
+
   return (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
+      <AgentSpaceBackdrop />
       <ChatSessionHeader
         title={title}
         onBack={() => {
@@ -896,7 +915,15 @@ export default function AssistantChatScreen() {
           streamingMessageId={streamingMessageId}
           thinking={thinking}
           stickToBottomToken={stickToBottomToken}
+          onSelectSkill={onSelectSkill}
+          skillsDisabled={busy}
+          recentSessions={summaries}
+          activeSessionId={session?.id ?? null}
+          onSelectRecentSession={id => void onSelectSession(id)}
         />
+        {showSuggestions ? (
+          <AgentSuggestionChips onSelect={onSelectSuggestion} disabled={busy} />
+        ) : null}
         <ChatComposer
           value={draft}
           onChangeText={setDraft}
@@ -927,6 +954,6 @@ export default function AssistantChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  body: { flex: 1 },
+  root: { flex: 1, overflow: 'hidden' },
+  body: { flex: 1, zIndex: 1 },
 });

@@ -1,6 +1,6 @@
 import { isStoredImageUri } from '@/lib/stored-images';
 
-/** 与备忘编辑模型一致的图片行：`![img](/uploads/images/....)` */
+/** 与备忘编辑模型一致的图片行：`![img](/uploads/images/wish-board/....)` */
 const IMAGE_LINE_RE = /^!\[img\]\((.+)\)$/i;
 
 export const WISH_DESCRIPTION_TEXT_MAX = 500;

@@ -2,6 +2,10 @@
  * 月编辑页 · 周目标栏 + 本周项目列表（新建 / 引入现有）。
  */
 import {
+  RoadProjectTaskTreeList,
+  type RoadProjectTreeItem,
+} from '@/components/life-road/RoadProjectTaskTreeList';
+import {
   lifeRoadType,
   type LifeRoadPalette,
 } from '@/constants/life-road-theme';
@@ -12,8 +16,13 @@ import {
   type LifeRoadWeekSlot,
 } from '@/lib/life-road/life-road-weeks';
 import { mergeLifeWeekKeyIntoExtraData } from '@/lib/life-road/project-road-link';
-import { getProjects, updateProject } from '@/lib/repositories/projects/project';
-import type { ProjectRow } from '@/lib/repositories/projects/project.types';
+import { isProjectInInboxCategory } from '@/lib/repositories/projects/constants';
+import { getProjectCategories, getProjects, updateProject } from '@/lib/repositories/projects/project';
+import type { ProjectCategoryRow, ProjectRow } from '@/lib/repositories/projects/project.types';
+import {
+  getProjectTaskTreeMap,
+  type TaskTreeNode,
+} from '@/lib/repositories/tasks/task';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -96,6 +105,8 @@ export function MonthWeekProjectsEditor({
 
   const [importWeek, setImportWeek] = useState<LifeRoadWeekSlot | null>(null);
   const [importCandidates, setImportCandidates] = useState<ProjectRow[]>([]);
+  const [importCategories, setImportCategories] = useState<ProjectCategoryRow[]>([]);
+  const [importTreeMap, setImportTreeMap] = useState<Record<string, TaskTreeNode[]>>({});
   const [importLoading, setImportLoading] = useState(false);
   const [importBusyId, setImportBusyId] = useState<string | null>(null);
 
@@ -139,7 +150,7 @@ export function MonthWeekProjectsEditor({
     setImportWeek(week);
     setImportLoading(true);
     try {
-      const all = await getProjects();
+      const [all, categories] = await Promise.all([getProjects(), getProjectCategories()]);
       const linkedIds = new Set(
         projects.filter((p) => p.weekKey === week.weekKey).map((p) => p.id),
       );
@@ -147,9 +158,12 @@ export function MonthWeekProjectsEditor({
         (p) =>
           !linkedIds.has(p.id) &&
           p.status !== 'cancelled' &&
-          p.status !== 'archived',
+          !isProjectInInboxCategory(p.category_id),
       );
+      const treeMap = await getProjectTaskTreeMap(candidates.map((p) => p.id));
       setImportCandidates(candidates);
+      setImportCategories(categories ?? []);
+      setImportTreeMap(treeMap);
     } catch (e) {
       toast.error(toUserMessage(e, '加载项目失败'));
       setImportWeek(null);
@@ -157,6 +171,17 @@ export function MonthWeekProjectsEditor({
       setImportLoading(false);
     }
   };
+
+  const importTreeItems = useMemo((): RoadProjectTreeItem[] => {
+    return importCandidates.map((p) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      category_id: p.category_id,
+      life_month_goal_id: p.life_month_goal_id,
+      hint: p.life_month_goal_id ? '已有道路归属' : null,
+    }));
+  }, [importCandidates]);
 
   const attachProject = async (project: ProjectRow) => {
     if (!importWeek || !monthNodeId) return;
@@ -208,6 +233,8 @@ export function MonthWeekProjectsEditor({
   useEffect(() => {
     if (!importWeek) {
       setImportCandidates([]);
+      setImportCategories([]);
+      setImportTreeMap({});
       setImportBusyId(null);
     }
   }, [importWeek]);
@@ -226,7 +253,7 @@ export function MonthWeekProjectsEditor({
         </Text>
       </View>
       <Text style={{ fontSize: 11, color: lr.muted, marginBottom: 8, lineHeight: 16 }}>
-        按周一至周日切周。栏下可新建或引入任务页项目。
+        统一规则：周一至周日、不跨月，月初/月末残段各自成栏。栏下可新建或引入任务页项目。
       </Text>
 
       {weeks.map((week) => {
@@ -342,7 +369,7 @@ export function MonthWeekProjectsEditor({
                   {importWeek?.label ?? '本周'}
                 </Text>
                 <Text style={{ fontSize: 12, color: lr.muted, marginTop: 4 }}>
-                  从任务页现有项目直接挂到本周
+                  按分类与任务树浏览，再引入到本周
                 </Text>
               </View>
               <Pressable onPress={() => setImportWeek(null)} hitSlop={10}>
@@ -351,46 +378,26 @@ export function MonthWeekProjectsEditor({
             </View>
             <ScrollView
               style={{ maxHeight: 420 }}
-              contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 12, gap: 6 }}>
+              contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 12 }}>
               {importLoading ? (
                 <ActivityIndicator color={lr.pine} style={{ marginVertical: 24 }} />
-              ) : importCandidates.length === 0 ? (
-                <Text style={{ color: lr.muted, fontSize: 13, paddingVertical: 16 }}>
-                  没有可引入的项目
-                </Text>
               ) : (
-                importCandidates.map((p) => {
-                  const busy = importBusyId === p.id;
-                  return (
-                    <Pressable
-                      key={p.id}
-                      disabled={busy}
-                      onPress={() => void attachProject(p)}
-                      style={[
-                        styles.importRow,
-                        {
-                          borderColor: lr.line,
-                          backgroundColor: lr.chip,
-                          opacity: busy ? 0.55 : 1,
-                        },
-                      ]}>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text
-                          style={{ fontSize: 13, fontWeight: '600', color: lr.ink2 }}
-                          numberOfLines={1}>
-                          {p.name}
-                        </Text>
-                        <Text style={{ fontSize: 10, color: lr.muted, marginTop: 2 }}>
-                          {p.status}
-                          {p.life_month_goal_id ? ' · 已有道路归属' : ''}
-                        </Text>
-                      </View>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: lr.pine }}>
-                        {busy ? '…' : '引入'}
-                      </Text>
-                    </Pressable>
-                  );
-                })
+                <RoadProjectTaskTreeList
+                  projects={importTreeItems}
+                  categories={importCategories}
+                  treeMap={importTreeMap}
+                  lr={lr}
+                  emptyText="没有可引入的项目"
+                  actionLabel="引入"
+                  actionBusyId={importBusyId}
+                  onAction={(item) => {
+                    const full = importCandidates.find((p) => p.id === item.id);
+                    if (full) void attachProject(full);
+                  }}
+                  onPressProject={(item) =>
+                    router.push({ pathname: '/edit-project', params: { id: item.id } })
+                  }
+                />
               )}
             </ScrollView>
           </View>
@@ -479,14 +486,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 10,
-  },
-  importRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
   },
 });

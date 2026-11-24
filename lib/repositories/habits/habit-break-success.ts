@@ -14,6 +14,7 @@ import {
   parseHabitDailyGoal,
 } from './habit-goal';
 import { parseHabitKind } from './habit-kind';
+import { isHabitSkippedOn } from './habit-skip';
 
 /** 防止任务页加载 / 日界切换 / 详情页并发调用时重复写完成态 */
 let syncBreakHabitCompletionsInflight: Promise<void> | null = null;
@@ -120,7 +121,8 @@ export function computeActiveBreakStreak(
   dailyGoal: number | null,
   cycle: BreakHabitCycleMeta,
   habitCreatedAt?: string | null,
-  boundary?: TasksDayBoundary
+  boundary?: TasksDayBoundary,
+  extraData?: string | null,
 ): number {
   return computeConsecutiveGoalMetDays({
     checkIns,
@@ -129,6 +131,9 @@ export function computeActiveBreakStreak(
     dailyGoal,
     minYmd: resolveBreakCycleStartYmd(cycle, habitCreatedAt, boundary),
     logicalTodayYmd: endYmd,
+    isSkippedDay: extraData
+      ? (ymd) => isHabitSkippedOn(extraData, ymd)
+      : undefined,
   });
 }
 
@@ -158,7 +163,15 @@ async function repairBreakHabitCycleIfNeeded(
     const dailyGoal = parseHabitDailyGoal(extra, 'break');
     const repairedCycle = parseBreakHabitCycle(extra);
     const map = await getCheckInsMapByHabitId(habit.id);
-    const streak = computeActiveBreakStreak(map, todayYmd, dailyGoal, repairedCycle, habit.created_at, boundary);
+    const streak = computeActiveBreakStreak(
+      map,
+      todayYmd,
+      dailyGoal,
+      repairedCycle,
+      habit.created_at,
+      boundary,
+      extra,
+    );
     if (target == null || streak < target) {
       extra = mergeBreakHabitCycleExtra(extra, { completedAt: null, completedStreak: null });
       next = { ...habit, extra_data: extra };
@@ -191,7 +204,8 @@ export async function tryMarkBreakHabitCompleted(
     dailyGoal,
     cycle,
     habit.created_at,
-    resolvedBoundary
+    resolvedBoundary,
+    habit.extra_data,
   );
 
   if (streak < target) return false;

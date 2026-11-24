@@ -5,6 +5,7 @@ import {
   Image,
   Pressable,
   StyleSheet,
+  Text,
   TextInput,
   View,
 } from 'react-native';
@@ -28,6 +29,8 @@ type Props = {
   onPickImage?: () => void;
   /** 清除待发送附图 */
   onClearPendingImage?: () => void;
+  /** 是否显示底部 footnote */
+  showFootnote?: boolean;
 };
 
 export function ChatComposer({
@@ -41,6 +44,7 @@ export function ChatComposer({
   pendingImageUri = null,
   onPickImage,
   onClearPendingImage,
+  showFootnote = true,
 }: Props) {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -53,9 +57,8 @@ export function ChatComposer({
       style={[
         styles.wrap,
         {
-          paddingBottom: Math.max(insets.bottom, 12),
+          paddingBottom: Math.max(insets.bottom, 10),
           backgroundColor: colors.headerScrim,
-          borderTopColor: colors.outline,
         },
       ]}>
       {pendingImageUri ? (
@@ -90,7 +93,8 @@ export function ChatComposer({
           styles.row,
           {
             backgroundColor: colors.surface,
-            borderColor: colors.outlineStrong,
+            borderColor: colors.outline,
+            shadowColor: colors.primary,
           },
         ]}>
         {onPickImage ? (
@@ -101,9 +105,12 @@ export function ChatComposer({
             onPress={onPickImage}
             style={({ pressed }) => [
               styles.attach,
-              { opacity: !canPick ? 0.4 : pressed ? 0.72 : 1 },
+              {
+                backgroundColor: colors.primaryMuted,
+                opacity: !canPick ? 0.4 : pressed ? 0.72 : 1,
+              },
             ]}>
-            <MaterialIcons name="image" size={22} color={colors.textMuted} />
+            <MaterialIcons name="image" size={20} color={colors.primary} />
           </Pressable>
         ) : null}
         <TextInput
@@ -137,28 +144,39 @@ export function ChatComposer({
                   ? colors.primary
                   : colors.surfaceMuted,
               opacity: pressed && (canSend || canCancel) ? 0.88 : 1,
+              transform: [{ scale: pressed && (canSend || canCancel) ? 1.05 : 1 }],
             },
           ]}>
           {busy && !canCancel ? (
             <ActivityIndicator color={colors.onPrimary} size="small" />
+          ) : canCancel ? (
+            <MaterialIcons name="stop" size={18} color={colors.onPrimary} />
           ) : (
-            <MaterialIcons
-              name={canCancel ? 'stop' : 'arrow-upward'}
-              size={20}
-              color={canSend || canCancel ? colors.onPrimary : colors.textMuted}
-            />
+            <Text
+              style={[
+                styles.sendGlyph,
+                { color: canSend ? colors.onPrimary : colors.textMuted },
+              ]}>
+              ↗
+            </Text>
           )}
         </Pressable>
       </View>
+      {showFootnote ? (
+        <View style={styles.footnote}>
+          <Text style={[styles.footnoteText, { color: colors.textMuted }]}>
+            支持文字 · 图片 · 操作确认
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: Spacing['3xl'],
-    paddingTop: Spacing.lg,
+    paddingHorizontal: Spacing['5xl'],
+    paddingTop: Spacing.sm,
   },
   previewRow: {
     marginBottom: Spacing.md,
@@ -187,36 +205,53 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: Spacing.md,
+    gap: Spacing.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: Radius.composer,
-    paddingLeft: Spacing.md,
-    paddingRight: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    minHeight: 48,
+    borderRadius: 18,
+    paddingLeft: 9,
+    paddingRight: 6,
+    paddingVertical: 5,
+    minHeight: 51,
+    shadowOpacity: 0.07,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
   },
   attach: {
-    width: 36,
-    height: 36,
+    width: 35,
+    height: 35,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
+    marginBottom: 1,
   },
   input: {
     flex: 1,
     ...Typography.body,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 13,
+    lineHeight: 19,
     maxHeight: 120,
-    paddingTop: 10,
-    paddingBottom: 10,
+    paddingTop: 9,
+    paddingBottom: 9,
   },
   send: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 37,
+    height: 37,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
+    marginBottom: 1,
+  },
+  sendGlyph: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: -1,
+  },
+  footnote: {
+    marginTop: 8,
+    marginHorizontal: 4,
+  },
+  footnoteText: {
+    fontSize: 9,
   },
 });

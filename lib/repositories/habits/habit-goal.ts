@@ -107,6 +107,7 @@ export function computeBuildExpectedGoalProgress(params: {
       endYmd = Object.keys(checkIns).sort().at(-1) ?? '';
     }
     if (!endYmd) return 0;
+    // 跳过日中性：由调用方若持有 extra 可另传；此处保持原口径
     return computeConsecutiveGoalMetDays({
       checkIns,
       endYmd,
@@ -349,12 +350,27 @@ export function computeConsecutiveGoalMetDays(params: {
   minYmd?: string | null;
   /** 戒除：用于区分今日待确认与历史未确认（未确认不计入连续） */
   logicalTodayYmd?: string;
+  /** 显式跳过日：中性，不打断连续也不计入达标天 */
+  isSkippedDay?: (ymd: string) => boolean;
 }): number {
-  const { checkIns, endYmd, kind, dailyGoal, maxLookback = 999, minYmd, logicalTodayYmd } = params;
+  const {
+    checkIns,
+    endYmd,
+    kind,
+    dailyGoal,
+    maxLookback = 999,
+    minYmd,
+    logicalTodayYmd,
+    isSkippedDay,
+  } = params;
   let streak = 0;
   let cursor = endYmd;
   for (let i = 0; i < maxLookback; i++) {
     if (minYmd && cursor < minYmd) break;
+    if (isSkippedDay?.(cursor)) {
+      cursor = addDaysToYmd(cursor, -1);
+      continue;
+    }
     const hasDayRecord = Object.prototype.hasOwnProperty.call(checkIns, cursor);
     const cnt = checkIns[cursor] ?? 0;
     if (

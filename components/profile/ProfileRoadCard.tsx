@@ -1,5 +1,5 @@
 /**
- * 我的页「我的道路」摘要卡：对齐 `我的道路-UI重构.html` 深色 content / 浅色 empty·error。
+ * 我的页「我的道路」摘要卡：对齐奶油松墨高定版 `renderProfile` filled / empty。
  */
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import { MotionPressable } from '@/components/ui/motion-pressable';
@@ -9,15 +9,17 @@ import {
   useLifeRoadTheme,
 } from '@/constants/life-road-theme';
 import type { ProfileRoadHub } from '@/lib/profile-hub-stats';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
+  LayoutChangeEvent,
   Platform,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 
 const MIN_TOUCH = getMinTouchTarget(Platform.OS);
 
@@ -29,34 +31,6 @@ export type ProfileRoadCardProps = {
   onRetry?: () => void;
   onWriteDirection?: () => void;
 };
-
-function TreeIcon({ color }: { color: string }) {
-  return (
-    <Svg width={11} height={11} viewBox="0 0 24 24" fill="none">
-      <Path
-        d="M12 3v18M12 7c-2.8 0-5 1.7-5 4.2 0 2.3 2 4 5 4s5-1.7 5-4C17 8.7 14.8 7 12 7zM12 15c-2.1 0-3.8 1.3-3.8 3.2 0 1.8 1.6 2.8 3.8 2.8s3.8-1 3.8-2.8C15.8 16.3 14.1 15 12 15z"
-        stroke={color}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
-
-function ArrowIcon({ color }: { color: string }) {
-  return (
-    <Svg width={11} height={11} viewBox="0 0 24 24" fill="none">
-      <Path
-        d="M5 12h14M14 7l5 5-5 5"
-        stroke={color}
-        strokeWidth={1.8}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  );
-}
 
 function RefreshIcon({ color }: { color: string }) {
   return (
@@ -79,80 +53,119 @@ function RefreshIcon({ color }: { color: string }) {
   );
 }
 
-function EmptyPathVisual({ line, amber }: { line: string; amber: string }) {
-  return (
-    <View style={styles.emptyVisual} pointerEvents="none">
-      <Svg width="100%" height={52} viewBox="0 0 180 52">
-        <Path
-          d="M4 38C34 38 36 14 66 14S106 40 132 40 160 22 178 22"
-          fill="none"
-          stroke={line}
-          strokeWidth={1.2}
-          strokeDasharray="4 5"
-          strokeLinecap="round"
-        />
-        <Circle cx={66} cy={14} r={2.6} fill={amber} />
-      </Svg>
-    </View>
-  );
-}
-
-function RoadPathDecor({ stroke }: { stroke: string }) {
-  return (
-    <View style={styles.pathDecor} pointerEvents="none">
-      <Svg width={180} height={112} viewBox="0 0 180 112">
-        <Path
-          d="M4 104C48 100 34 62 72 54S118 44 138 16 162 4 176 4"
-          fill="none"
-          stroke={stroke}
-          strokeWidth={1}
-          strokeDasharray="3 6"
-          strokeLinecap="round"
-        />
-      </Svg>
-    </View>
-  );
-}
-
-function ProgressBar({
-  ratio,
-  track,
-  fillFrom,
-  fillTo,
+function HorizonDecor({
+  beaconAnim,
+  width,
+  height,
 }: {
-  ratio: number;
-  track: string;
-  fillFrom: string;
-  fillTo: string;
+  beaconAnim: Animated.Value;
+  width: number;
+  height: number;
 }) {
-  const widthAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(widthAnim, {
-      toValue: Math.max(0, Math.min(1, ratio)),
-      duration: 900,
-      useNativeDriver: false,
-    }).start();
-  }, [ratio, widthAnim]);
-
-  const w = widthAnim.interpolate({
+  const scale = beaconAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
+    outputRange: [1, 1.18],
+  });
+  const opacity = beaconAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.85, 1],
   });
 
+  // 对齐原型 viewBox 400×220 中 beacon (340, 52)
+  const beaconLeft = Math.max(0, width * (340 / 400) - 7);
+  const beaconTop = Math.max(0, height * (52 / 220) - 7);
+
   return (
-    <View style={[styles.progressTrack, { backgroundColor: track }]}>
+    <View style={styles.horizonWrap} pointerEvents="none">
+      {width > 0 && height > 0 ? (
+        <Svg width={width} height={height} viewBox="0 0 400 220" preserveAspectRatio="none">
+          <Path
+            d="M-10 195 C 110 135, 210 165, 410 35"
+            fill="none"
+            stroke="#A9C7B9"
+            strokeWidth={1.2}
+            opacity={0.55}
+          />
+        </Svg>
+      ) : null}
       <Animated.View
         style={[
-          styles.progressFill,
+          styles.beacon,
           {
-            width: w,
-            backgroundColor: fillTo,
-            // 近似 sage→amber：用琥珀主色，左侧叠一点 sage 感靠 track 衬托
-            borderColor: fillFrom,
+            left: beaconLeft,
+            top: beaconTop,
+            opacity,
+            transform: [{ scale }],
           },
-        ]}
-      />
+        ]}>
+        <View style={styles.beaconDot} />
+      </Animated.View>
     </View>
+  );
+}
+
+function HeroGradientBg({
+  width,
+  height,
+  from,
+  to,
+}: {
+  width: number;
+  height: number;
+  from: string;
+  to: string;
+}) {
+  if (width <= 0 || height <= 0) return null;
+  return (
+    <Svg
+      style={StyleSheet.absoluteFill}
+      width={width}
+      height={height}
+      preserveAspectRatio="none">
+      <Defs>
+        <LinearGradient id="roadHero" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0" stopColor={from} />
+          <Stop offset="1" stopColor={to} />
+        </LinearGradient>
+      </Defs>
+      <Rect x="0" y="0" width={width} height={height} fill="url(#roadHero)" />
+    </Svg>
+  );
+}
+
+function useBeaconBreath() {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: 2100,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 2100,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [anim]);
+  return anim;
+}
+
+/** 对齐 HTML：有总方向或任一道路节点即视为「有数据」 */
+function roadHasContent(road: ProfileRoadHub): boolean {
+  return (
+    Boolean(road.direction?.trim()) ||
+    Boolean(road.yearFocus?.trim()) ||
+    (road.yearNodeCount ?? 0) > 0 ||
+    (road.aboveYearCount ?? 0) > 0 ||
+    (road.monthsWithContent?.length ?? 0) > 0
   );
 }
 
@@ -165,31 +178,34 @@ export function ProfileRoadCard({
 }: ProfileRoadCardProps) {
   useWardrobeFonts();
   const { lr } = useLifeRoadTheme();
+  const beaconAnim = useBeaconBreath();
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  const onLayout = (e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width !== size.w || height !== size.h) {
+      setSize({ w: width, h: height });
+    }
+  };
 
   if (loading || road == null) {
     return (
       <View
         style={[
           styles.lightCard,
-          { backgroundColor: lr.card2, borderColor: lr.line },
+          { backgroundColor: lr.card, borderColor: lr.line },
         ]}
         accessibilityState={{ busy: true }}>
         <View style={styles.rcTop}>
-          <Text style={[lifeRoadType.kickerTiny, { color: lr.muted }]}>
+          <Text style={[lifeRoadType.kickerTiny, { color: lr.sage }]}>
             MY ROAD · 我的道路
           </Text>
-          <View
-            style={[
-              styles.glance,
-              { borderColor: lr.line, backgroundColor: 'rgba(255,255,255,0.4)' },
-            ]}>
-            <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>正在同步</Text>
-          </View>
+          <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>正在同步</Text>
         </View>
         <View style={styles.skeleton}>
-          <View style={[styles.skTall, { backgroundColor: lr.line3 }]} />
-          <View style={[styles.skMid, { backgroundColor: lr.line3 }]} />
-          <View style={[styles.skShort, { backgroundColor: lr.line3 }]} />
+          <View style={[styles.skTall, { backgroundColor: lr.paper2 }]} />
+          <View style={[styles.skMid, { backgroundColor: lr.paper2 }]} />
+          <View style={[styles.skShort, { backgroundColor: lr.paper2 }]} />
         </View>
       </View>
     );
@@ -200,19 +216,13 @@ export function ProfileRoadCard({
       <View
         style={[
           styles.lightCard,
-          { backgroundColor: lr.card2, borderColor: lr.line },
+          { backgroundColor: lr.card, borderColor: lr.line },
         ]}>
         <View style={styles.rcTop}>
-          <Text style={[lifeRoadType.kickerTiny, { color: lr.muted }]}>
+          <Text style={[lifeRoadType.kickerTiny, { color: lr.sage }]}>
             MY ROAD · 我的道路
           </Text>
-          <View
-            style={[
-              styles.glance,
-              { borderColor: lr.line, backgroundColor: 'rgba(255,255,255,0.4)' },
-            ]}>
-            <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>本地缓存</Text>
-          </View>
+          <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>本地缓存</Text>
         </View>
         <View
           style={[
@@ -238,8 +248,8 @@ export function ProfileRoadCard({
               style={[
                 styles.retryBtn,
                 {
-                  borderColor: 'rgba(33,69,58,0.18)',
-                  backgroundColor: 'rgba(255,255,255,0.55)',
+                  borderColor: lr.line2,
+                  backgroundColor: lr.paper2,
                   minHeight: MIN_TOUCH,
                 },
               ]}>
@@ -247,39 +257,35 @@ export function ProfileRoadCard({
               <Text style={[lifeRoadType.cta, { color: lr.pine }]}>重试</Text>
             </MotionPressable>
           ) : null}
-          <Text style={[lifeRoadType.monoTiny, { color: lr.muted2 }]}>ERROR · E_RETRY</Text>
         </View>
       </View>
     );
   }
 
-  const isEmpty = !road.direction && !road.yearFocus;
-
-  if (isEmpty) {
+  if (!roadHasContent(road)) {
     return (
       <View
         style={[
           styles.lightCard,
-          { backgroundColor: lr.card2, borderColor: lr.line },
+          { backgroundColor: lr.card, borderColor: lr.line },
         ]}>
         <View style={styles.rcTop}>
-          <Text style={[lifeRoadType.kickerTiny, { color: lr.muted }]}>
-            MY ROAD · 我的道路
-          </Text>
-          <View
-            style={[
-              styles.glance,
-              { borderColor: lr.line, backgroundColor: 'rgba(255,255,255,0.4)' },
-            ]}>
-            <Text style={[lifeRoadType.monoTiny, { color: lr.muted }]}>尚未写下</Text>
-          </View>
+          <Text style={[lifeRoadType.kickerTiny, { color: lr.sage }]}>MY ROAD</Text>
+          <MotionPressable
+            onPress={onOpen}
+            accessibilityRole="button"
+            accessibilityLabel="进入道路工作台"
+            pressScale={Motion.pressScaleButton}
+            pressOpacity={Motion.pressOpacityButton}
+            hitSlop={8}>
+            <Text style={[lifeRoadType.monoTiny, { color: lr.sage }]}>进入 →</Text>
+          </MotionPressable>
         </View>
-        <EmptyPathVisual line={lr.line2} amber={lr.amber} />
-        <Text style={[lifeRoadType.serifEmpty, { color: lr.ink, marginTop: 2 }]}>
-          先写下你想去的方向
+        <Text style={[lifeRoadType.serifEmpty, { color: lr.ink, marginTop: 10 }]}>
+          写下你的长期北极星
         </Text>
-        <Text style={[styles.lightCopy, { color: lr.muted }]}>
-          总方向是一句长期主义；年、季、月会把它拆成可走的步子。全空时，这里会安静地等你。
+        <Text style={[styles.lightCopy, { color: lr.sage }]}>
+          不急于拆分任务，先确立年、季、月的时间坐标。
         </Text>
         <MotionPressable
           onPress={onWriteDirection ?? onOpen}
@@ -288,123 +294,65 @@ export function ProfileRoadCard({
           pressScale={Motion.pressScaleButton}
           pressOpacity={Motion.pressOpacityButton}
           style={[
-            styles.cta,
-            { backgroundColor: lr.pine, minHeight: MIN_TOUCH },
+            styles.ctaFull,
+            { backgroundColor: lr.ink, minHeight: MIN_TOUCH },
           ]}>
           <Text style={[lifeRoadType.cta, { color: lr.onRoad }]}>写下总方向</Text>
-          <ArrowIcon color={lr.onRoad} />
         </MotionPressable>
       </View>
     );
   }
 
-  const percent =
-    road.focusTotal > 0
-      ? Math.round((road.focusDone / Math.max(1, road.focusTotal)) * 100)
-      : 0;
-
   return (
     <MotionPressable
       onPress={onOpen}
+      onLayout={onLayout}
       accessibilityRole="button"
-      accessibilityLabel="我的道路，打开导图"
+      accessibilityLabel="我的道路，打开工作台"
       pressScale={Motion.pressScaleCard}
       pressOpacity={1}
       style={[styles.contentCard, { backgroundColor: lr.roadDeep }]}>
-      <View style={styles.orbit} pointerEvents="none" />
-      <RoadPathDecor stroke="rgba(230,184,120,0.32)" />
+      <HeroGradientBg
+        width={size.w}
+        height={size.h}
+        from={lr.roadDeep}
+        to={lr.roadDeepMid}
+      />
+      <HorizonDecor beaconAnim={beaconAnim} width={size.w} height={size.h} />
 
       <View style={styles.rcTop}>
-        <View style={styles.kickerRow}>
-          <TreeIcon color={lr.onRoadSoft} />
-          <Text style={[lifeRoadType.kickerTiny, { color: lr.onRoadSoft }]}>
-            MY ROAD · 我的道路
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.glance,
-            {
-              borderColor: 'rgba(245,240,227,0.12)',
-              backgroundColor: 'rgba(245,240,227,0.06)',
-            },
-          ]}>
-          <Text style={[lifeRoadType.monoTiny, { color: lr.onRoadSoft }]}>
-            {road.glance ?? '打开导图'}
-          </Text>
-        </View>
+        <Text style={[lifeRoadType.kickerTiny, { color: '#E0B072' }]}>
+          MY ROAD · 我的道路
+        </Text>
+        <Text style={{ fontSize: 11, color: '#A9C7B9' }}>工作台 →</Text>
       </View>
 
-      {road.direction ? (
-        <Text style={[lifeRoadType.serifDir, styles.rcDir, { color: lr.onRoadDir }]} numberOfLines={2}>
-          {road.direction}
-        </Text>
-      ) : (
-        <Text style={[lifeRoadType.serifDir, styles.rcDir, { color: lr.onRoadSoft }]} numberOfLines={2}>
-          总方向未写
-        </Text>
-      )}
+      <Text
+        style={[lifeRoadType.serifDir, styles.rcDir, { color: lr.onRoadDir }]}
+        numberOfLines={3}>
+        {road.direction?.trim() || '暂未写下总方向，点击开启本月工作台。'}
+      </Text>
 
-      <View
-        style={[
-          styles.focusBox,
-          {
-            borderColor: 'rgba(245,240,227,0.09)',
-            backgroundColor: 'rgba(245,240,227,0.065)',
-          },
-        ]}>
-        <View style={styles.focusHead}>
-          <Text style={[lifeRoadType.monoTiny, { color: 'rgba(245,240,227,0.42)' }]}>
-            今年焦点{' '}
-            <Text style={{ color: lr.amber3, fontWeight: '700' }}>
-              {road.focusTag ?? '—'}
-            </Text>
+      {road.focusTag || road.yearFocus ? (
+        <View style={[styles.rcFoot, { borderTopColor: 'rgba(255,255,255,0.1)' }]}>
+          <Text
+            style={[lifeRoadType.kickerTiny, { color: '#E0B072', flexShrink: 0 }]}
+            numberOfLines={1}>
+            {road.focusTag ?? 'FOCUS'}
           </Text>
-          <View
-            style={[
-              styles.focusPill,
-              {
-                borderColor: 'rgba(230,184,120,0.18)',
-                backgroundColor: 'rgba(230,184,120,0.07)',
-              },
-            ]}>
-            <Text style={{ fontSize: 9, color: 'rgba(230,184,120,0.8)', letterSpacing: 0.3 }}>
-              月 → 季 → 年
-            </Text>
-          </View>
-        </View>
-        <Text
-          style={[styles.focusTitle, { color: lr.onRoadFocus }]}
-          numberOfLines={1}>
-          {road.yearFocus ?? '今年还没有拆到月'}
-        </Text>
-        {road.focusTotal > 0 ? (
-          <ProgressBar
-            ratio={percent / 100}
-            track="rgba(245,240,227,0.1)"
-            fillFrom={lr.sage3}
-            fillTo={lr.amber3}
-          />
-        ) : (
-          <View style={[styles.progressTrack, { backgroundColor: 'rgba(245,240,227,0.1)' }]}>
-            <View style={[styles.progressFill, { width: '28%', backgroundColor: lr.amber3 }]} />
-          </View>
-        )}
-      </View>
-
-      <View style={[styles.rcFoot, { borderTopColor: 'rgba(245,240,227,0.1)' }]}>
-        <Text style={{ fontSize: 11, color: lr.onRoadMute }}>
-          {road.aboveYearCount > 0
-            ? `更远层 · ${road.aboveYearCount} 条`
-            : '更远层 · 暂无'}
-        </Text>
-        <View style={styles.openRow}>
-          <Text style={{ fontSize: 11, color: lr.openAccent, letterSpacing: 0.3 }}>
-            打开导图
+          <Text
+            style={{
+              flex: 1,
+              fontSize: 12,
+              fontWeight: '500',
+              color: 'rgba(255,255,255,0.9)',
+              textAlign: 'right',
+            }}
+            numberOfLines={1}>
+            {road.yearFocus ?? ''}
           </Text>
-          <ArrowIcon color={lr.openAccent} />
         </View>
-      </View>
+      ) : null}
     </MotionPressable>
   );
 }
@@ -412,38 +360,38 @@ export function ProfileRoadCard({
 const styles = StyleSheet.create({
   lightCard: {
     marginTop: 2,
-    borderRadius: 26,
+    borderRadius: 24,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 16,
-    paddingTop: 17,
-    paddingBottom: 15,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 18,
     overflow: 'hidden',
   },
   contentCard: {
     marginTop: 2,
-    borderRadius: 26,
-    paddingHorizontal: 17,
-    paddingTop: 16,
-    paddingBottom: 14,
+    borderRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 22,
+    paddingBottom: 20,
     overflow: 'hidden',
+    minHeight: 148,
   },
-  orbit: {
-    position: 'absolute',
-    width: 210,
-    height: 210,
-    borderRadius: 105,
-    right: -70,
-    top: -98,
-    borderWidth: 1,
-    borderColor: 'rgba(245,240,227,0.09)',
+  horizonWrap: {
+    ...StyleSheet.absoluteFill,
+    opacity: 0.35,
   },
-  pathDecor: {
+  beacon: {
     position: 'absolute',
-    right: -16,
-    bottom: -4,
-    width: 180,
-    height: 112,
-    opacity: 0.5,
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  beaconDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#E0B072',
   },
   rcTop: {
     flexDirection: 'row',
@@ -452,95 +400,32 @@ const styles = StyleSheet.create({
     gap: 8,
     zIndex: 2,
   },
-  kickerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    flexShrink: 1,
-  },
-  glance: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
   rcDir: {
-    marginTop: 12,
-    maxWidth: 285,
+    marginTop: 14,
     zIndex: 2,
-  },
-  focusBox: {
-    marginTop: 13,
-    paddingHorizontal: 11,
-    paddingTop: 10,
-    paddingBottom: 9,
-    borderRadius: 15,
-    borderWidth: StyleSheet.hairlineWidth,
-    zIndex: 2,
-  },
-  focusHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  focusPill: {
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  focusTitle: {
-    marginTop: 5,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
-  progressTrack: {
-    marginTop: 7,
-    height: 2,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 2,
   },
   rcFoot: {
-    marginTop: 11,
-    paddingTop: 10,
+    marginTop: 16,
+    paddingTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 12,
     zIndex: 2,
-  },
-  openRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  emptyVisual: {
-    height: 52,
-    marginTop: 7,
-    marginBottom: 4,
   },
   lightCopy: {
     fontSize: 12,
     lineHeight: 20,
-    marginTop: 5,
-    marginBottom: 13,
-    maxWidth: 280,
+    marginTop: 6,
+    marginBottom: 14,
+    maxWidth: 300,
   },
-  cta: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
+  ctaFull: {
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 999,
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
   },
   errIco: {
     width: 38,

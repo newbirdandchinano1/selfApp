@@ -46,6 +46,11 @@ export type ProjectsListFetchOpts = Omit<ProjectsListQueryParams, 'page' | 'limi
   serverFallback?: boolean;
   /** 与任务页「隐藏已完成任务」开关联动；优先于 includeCompleted / includeCancelled */
   hideCompletedProjectTasks?: boolean;
+  /**
+   * 跳过首屏阻塞的 tasks 全表/增量 sync。
+   * bootstrap-v2 / 视图接口已写入当前页任务时，sync 改到后台跑。
+   */
+  skipTasksTableSync?: boolean;
 };
 
 /** 项目是否属于当前分类 Tab（与列表展示过滤一致） */
@@ -496,19 +501,44 @@ async function hydrateTreesFromLocal(
   }
 }
 
+/**
+ * 将 projects-list / bootstrap-v2 返回的项目+任务树写入本地并补全。
+ * 供列表拉取与 bootstrap-v2 共用，避免双份同步逻辑。
+ */
+export async function ingestProjectsListApiItems(
+  list: ApiProjectListItem[],
+  opts?: {
+    meta?: PageListMeta;
+    omitTerminalFromApi?: boolean;
+  },
+): Promise<ProjectsListData> {
+  const projects = list.map(normalizeProjectRow);
+  const apiTreeMap = buildProjectTaskTreeMap(list);
+  const taskRows = Object.values(apiTreeMap).flatMap((nodes) => flattenTaskTree(nodes));
+
+  await syncProjectsListRows(projects, taskRows);
+  const projectTaskTreeMap = await hydrateTreesFromLocal(projects, apiTreeMap, {
+    omitTerminalFromApi: opts?.omitTerminalFromApi === true,
+  });
+
+  return { projects, projectTaskTreeMap, meta: opts?.meta };
+}
+
 async function pullProjectsListFromApi(
   queries: ProjectsListQueryParams[],
-  opts?: { forceRefresh?: boolean },
+  opts?: { forceRefresh?: boolean; skipTasksTableSync?: boolean },
 ): Promise<ProjectsListData> {
   const mergedById = new Map<string, ApiProjectListItem>();
   let meta: PageListMeta | undefined;
 
-  // 隐藏已完成时接口不带回 done 行；先增量同步 tasks 表，避免本地旧 todo 被 hydrate 拼回
+  // 默认不再阻塞首屏：全表 sync 改由调用方后台调度；forceRefresh 时仍先 sync
   const signal = queries.find((q) => q.signal)?.signal;
-  try {
-    await syncTasksTableFromApi({ forceRefresh: opts?.forceRefresh, signal });
-  } catch (e) {
-    console.warn('[projects-list-api] tasks 表增量同步失败，继续拉项目列表', e);
+  if (opts?.forceRefresh && !opts?.skipTasksTableSync) {
+    try {
+      await syncTasksTableFromApi({ forceRefresh: true, signal });
+    } catch (e) {
+      console.warn('[projects-list-api] tasks 表强制同步失败，继续拉项目列表', e);
+    }
   }
 
   for (const query of queries) {
@@ -523,18 +553,11 @@ async function pullProjectsListFromApi(
     }
   }
 
-  const list = [...mergedById.values()];
-  const projects = list.map(normalizeProjectRow);
-  const apiTreeMap = buildProjectTaskTreeMap(list);
-  const taskRows = Object.values(apiTreeMap).flatMap((nodes) => flattenTaskTree(nodes));
-
-  await syncProjectsListRows(projects, taskRows);
   const omitTerminalFromApi = queries.some((q) => q.includeCompleted === false);
-  const projectTaskTreeMap = await hydrateTreesFromLocal(projects, apiTreeMap, {
+  return ingestProjectsListApiItems([...mergedById.values()], {
+    meta,
     omitTerminalFromApi,
   });
-
-  return { projects, projectTaskTreeMap, meta };
 }
 
 function resolveTerminalFilters(opts?: ProjectsListFetchOpts): Pick<
@@ -573,7 +596,10 @@ export async function fetchProjectsListForTab(
   };
   const queries = resolveProjectsListQueries(projectTab).map((q) => ({ ...baseQuery, ...q }));
   try {
-    const data = await pullProjectsListFromApi(queries, { forceRefresh: opts?.forceRefresh });
+    const data = await pullProjectsListFromApi(queries, {
+      forceRefresh: opts?.forceRefresh,
+      skipTasksTableSync: opts?.skipTasksTableSync ?? true,
+    });
     const projects = filterProjectsForTab(projectTab, data.projects);
     await purgeSyncedProjectsAbsentFromTab(projectTab, projects);
     return {
@@ -610,7 +636,10 @@ export async function fetchProjectsListForProject(
         signal: opts?.signal,
       },
     ],
-    { forceRefresh: opts?.forceRefresh },
+    {
+      forceRefresh: opts?.forceRefresh,
+      skipTasksTableSync: opts?.skipTasksTableSync ?? true,
+    },
   );
   const project = data.projects.find((p) => String(p.id) === id);
   let tree = data.projectTaskTreeMap[id] ?? [];

@@ -59,7 +59,8 @@ export function getFrogSessionCompletedOn(extraData: string | null): string {
 
 export function setFrogSessionCompletedOn(extraData: string | null, ymd: string): string {
   const parsed = parseExtraRecord(extraData);
-  return JSON.stringify({ ...parsed, frogSessionCompletedOn: ymd });
+  const { frogSessionAbandonedOn: _abandoned, ...rest } = parsed;
+  return JSON.stringify({ ...rest, frogSessionCompletedOn: ymd });
 }
 
 export function clearFrogSessionCompletedOn(extraData: string | null): string | null {
@@ -69,13 +70,43 @@ export function clearFrogSessionCompletedOn(extraData: string | null): string | 
   return Object.keys(rest).length === 0 ? null : JSON.stringify(rest);
 }
 
-/** 指定指派日是否应显示为已完成（含会话完成） */
+/** 当日青蛙已放弃（保留课表占用；通常已 unassign 该日） */
+export function getFrogSessionAbandonedOn(extraData: string | null): string {
+  const parsed = parseExtraRecord(extraData);
+  return typeof parsed.frogSessionAbandonedOn === 'string'
+    ? parsed.frogSessionAbandonedOn.trim()
+    : '';
+}
+
+export function isFrogAbandonedOn(extraData: string | null, ymd: string): boolean {
+  return getFrogSessionAbandonedOn(extraData) === ymd;
+}
+
+/** 写入放弃日；与会话完成互斥 */
+export function setFrogSessionAbandonedOn(extraData: string | null, ymd: string): string {
+  const parsed = parseExtraRecord(extraData);
+  const { frogSessionCompletedOn: _completed, ...rest } = parsed;
+  return JSON.stringify({ ...rest, frogSessionAbandonedOn: ymd });
+}
+
+export function clearFrogSessionAbandonedOn(extraData: string | null): string | null {
+  const parsed = parseExtraRecord(extraData);
+  if (!('frogSessionAbandonedOn' in parsed)) return extraData;
+  const { frogSessionAbandonedOn: _removed, ...rest } = parsed;
+  return Object.keys(rest).length === 0 ? null : JSON.stringify(rest);
+}
+
+/**
+ * 指定日是否已处理完（实体完结 / 会话完成 / 放弃今日）。
+ * 放弃后通常已去掉该日指派，故 abandoned 不依赖 isFrogAssignedOn。
+ */
 export function isFrogDoneForToday(
   extraData: string | null,
   status: TaskStatus | string,
   todayYmd: string,
 ): boolean {
   if (isTaskTerminalStatus(status)) return true;
+  if (isFrogAbandonedOn(extraData, todayYmd)) return true;
   if (!isFrogAssignedOn(extraData, todayYmd)) return false;
   return getFrogSessionCompletedOn(extraData) === todayYmd;
 }

@@ -17,6 +17,7 @@ import {
   parseHabitDailyGoal,
 } from '@/lib/repositories/habits/habit-goal';
 import { parseHabitKind } from '@/lib/repositories/habits/habit-kind';
+import { isHabitSkippedOn } from '@/lib/repositories/habits/habit-skip';
 import {
   areAllSubHabitsCompletedForYmd,
   countSubHabitsCompletedForYmd,
@@ -69,6 +70,8 @@ export type VirtualHabitPlacement = {
   todayCount: number;
   dailyGoal: number | null;
   done: boolean;
+  /** 显式跳过/放弃今日 */
+  abandoned?: boolean;
   extraData: string | null;
   /** 习惯虚拟入格仅时间段；恒为 false（轴外夹紧后仍按时段） */
   allDay: boolean;
@@ -330,6 +333,7 @@ export function buildVirtualHabitPlacementsForDays(params: {
       }
       const parentCount = checkIns[ymd] ?? 0;
       const hasDayRecord = Object.prototype.hasOwnProperty.call(checkIns, ymd);
+      const skipped = isHabitSkippedOn(habit.extra_data, ymd);
       let todayCount = parentCount;
       let dailyGoal = parsedDailyGoal;
       // 与任务页小习惯「今日完成」同口径（戒除有记录即已处理；养成/任务看达标）
@@ -359,6 +363,7 @@ export function buildVirtualHabitPlacementsForDays(params: {
         });
         if (taskView?.showPeriodCheckOnViewDay) done = true;
       }
+      if (skipped) done = true;
       out.push({
         habitId: habit.id,
         name: habit.name?.trim() || '习惯',
@@ -373,6 +378,7 @@ export function buildVirtualHabitPlacementsForDays(params: {
         todayCount,
         dailyGoal,
         done,
+        abandoned: skipped,
         extraData: habit.extra_data,
         allDay: timed.allDay,
       });

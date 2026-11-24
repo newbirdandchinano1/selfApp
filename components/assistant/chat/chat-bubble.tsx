@@ -17,6 +17,7 @@ import { ActionConfirmCard } from '@/components/assistant/chat/action-confirm-ca
 import { AgentThinkingIndicator } from '@/components/assistant/chat/agent-thinking-indicator';
 import { StreamingCursor } from '@/components/assistant/chat/streaming-cursor';
 import { Radius, Spacing, Typography } from '@/constants/design-tokens';
+import { appFonts } from '@/constants/app-fonts';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { toast } from '@/lib/app-feedback';
 import type { ActionCard } from '@/lib/assistant/action-card';
@@ -30,6 +31,13 @@ import {
   type ChatMessagePart,
   type ChatSourceLabel,
 } from '@/lib/assistant/chat-types';
+
+function formatBubbleClock(ts: number): string {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
 
 const SOURCE_CHIP_LABEL: Record<string, string> = {
   backend: '业务数据',
@@ -252,6 +260,8 @@ function ChatBubbleImpl({
     }
   }, [text, unofficial]);
 
+  const roleMeta = `${isUser ? 'YOU' : 'AGENT'} · ${formatBubbleClock(message.createdAt)}`;
+
   return (
     <View style={[styles.row, isUser ? styles.rowUser : styles.rowAssistant]}>
       <View style={[styles.col, !isUser && styles.colAssistant]}>
@@ -259,14 +269,34 @@ function ChatBubbleImpl({
           style={[
             styles.bubble,
             isUser
-              ? { backgroundColor: colors.primary, borderBottomRightRadius: 6 }
+              ? {
+                  backgroundColor: colors.primary,
+                  borderBottomRightRadius: 5,
+                  shadowColor: colors.primary,
+                  shadowOpacity: 0.12,
+                  shadowRadius: 10,
+                  shadowOffset: { width: 0, height: 4 },
+                  elevation: 2,
+                }
               : {
                   backgroundColor: colors.surface,
                   borderColor: colors.outline,
                   borderWidth: StyleSheet.hairlineWidth,
-                  borderBottomLeftRadius: 6,
+                  borderBottomLeftRadius: 5,
+                  shadowColor: colors.primary,
+                  shadowOpacity: 0.04,
+                  shadowRadius: 10,
+                  shadowOffset: { width: 0, height: 4 },
+                  elevation: 1,
                 },
           ]}>
+          <Text
+            style={[
+              styles.roleMeta,
+              { color: isUser ? 'rgba(255,255,255,0.62)' : colors.textMuted },
+            ]}>
+            {roleMeta}
+          </Text>
           {hasTopMeta ? (
             <View style={styles.metaCol}>
               {showStatusHint ? (
@@ -479,10 +509,16 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     minWidth: 0,
     overflow: 'hidden',
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     gap: Spacing.sm,
+  },
+  roleMeta: {
+    fontFamily: appFonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.4,
+    marginBottom: 2,
   },
   copyBtn: {
     flexDirection: 'row',
@@ -501,7 +537,7 @@ const styles = StyleSheet.create({
 
   text: {
     ...Typography.body,
-    fontSize: 15,
+    fontSize: 13,
     lineHeight: 22,
   },
   image: {

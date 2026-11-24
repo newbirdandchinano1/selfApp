@@ -8,7 +8,8 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { mergeFrogAssignedOn, removeFrogAssignedOn } from '@/lib/frog-assignment';
-import { isFrogDoneForToday } from '@/lib/long-term-task';
+import { isFrogAbandonedOn, isFrogDoneForToday } from '@/lib/long-term-task';
+import { isHabitSkippedOn } from '@/lib/repositories/habits/habit-skip';
 import { isFrogSubjectDeleted } from '@/lib/repositories/tasks/frog-completion-events';
 import type { ProjectRow } from '@/lib/repositories/projects/project.types';
 import type { TaskRow } from '@/lib/repositories/tasks/task.types';
@@ -28,6 +29,7 @@ import {
   type VirtualHabitPlacement,
 } from '@/lib/schedule/habit-virtual-placement';
 import {
+  buildAbandonedFrogVirtualPlacementsForDays,
   buildAssignedFrogVirtualPlacementsForDays,
   buildOverdueFrogCarryPlacementsForToday,
   buildVirtualTaskPlacementsForDays,
@@ -125,6 +127,8 @@ type TodayCompactItem = {
   virtualTask: VirtualTaskPlacement | null;
   title: string;
   done: boolean;
+  /** 放弃今日（与实体完成区分） */
+  abandoned?: boolean;
   /** 截止/日程窗/漏做已过且未完成 → 置顶 */
   overdue: boolean;
   timeLabel: string;
@@ -240,6 +244,22 @@ type Props = {
     id: string;
     assignYmd: string;
   }) => void;
+  /** 放弃今日（青蛙/待办/项目）；不删占用 */
+  onAbandonToday?: (info: {
+    kind: 'task' | 'project';
+    id: string;
+    assignYmd: string;
+  }) => void;
+  /** 撤销放弃今日并重新指派该日 */
+  onUnabandonToday?: (info: {
+    kind: 'task' | 'project';
+    id: string;
+    assignYmd: string;
+  }) => void;
+  /** 习惯：显式跳过今日 */
+  onHabitAbandonToday?: (habitId: string, assignYmd: string) => void;
+  /** 习惯：撤销跳过 */
+  onHabitUnabandonToday?: (habitId: string, assignYmd: string) => void;
   /** 点日程表习惯块：等同小习惯打卡（仅今日） */
   onHabitCheckIn?: (habitId: string) => void;
   /** 点已达标的日程习惯块：撤销当日打卡（仅今日） */
@@ -277,6 +297,7 @@ function resolveSubject(
         extraData: JSON.stringify({ frogSubjectDeleted: true }),
         status: 'done',
         done: true,
+        abandoned: false,
         deletedSnapshot: true,
       };
     }
@@ -303,6 +324,7 @@ function resolveSubject(
       extraData,
       status: statusForDone,
       done: isFrogDoneForToday(extraData, statusForDone, assignYmd),
+      abandoned: isFrogAbandonedOn(extraData, assignYmd),
       deletedSnapshot: isFrogSubjectDeleted(extraData),
     };
   }
@@ -319,6 +341,7 @@ function resolveSubject(
       extraData: JSON.stringify({ frogSubjectDeleted: true }),
       status: 'done',
       done: true,
+      abandoned: false,
       deletedSnapshot: true,
     };
   }
@@ -337,6 +360,7 @@ function resolveSubject(
     extraData: t.extra_data,
     status: t.status,
     done: isFrogDoneForToday(t.extra_data, t.status, assignYmd),
+    abandoned: isFrogAbandonedOn(t.extra_data, assignYmd),
     deletedSnapshot: isFrogSubjectDeleted(t.extra_data),
   };
 }
@@ -507,6 +531,10 @@ export function WeeklyFrogSchedule({
   onOpenSubject,
   onOpenHabit,
   onToggleDone,
+  onAbandonToday,
+  onUnabandonToday,
+  onHabitAbandonToday,
+  onHabitUnabandonToday,
   onHabitCheckIn,
   onHabitUndo,
   habitDoneTodayById,
@@ -547,11 +575,15 @@ export function WeeklyFrogSchedule({
       if (kind === 'project') {
         const due = info.dueDate?.slice(0, 10) ?? '';
         const overdue =
-          !info.done && /^\d{4}-\d{2}-\d{2}$/.test(due) && due < logicalTodayYmd;
+          !info.done &&
+          !info.abandoned &&
+          /^\d{4}-\d{2}-\d{2}$/.test(due) &&
+          due < logicalTodayYmd;
         const project = subjects.projects.find((p) => p.id === id);
         return {
           title: info.title,
           done: info.done,
+          abandoned: !!info.abandoned,
           priority: info.priority,
           blockKind: 'proj' as const,
           icon: resolveProjectDisplayIcon(info.title, info.extraData),
@@ -569,10 +601,13 @@ export function WeeklyFrogSchedule({
       const task = subjects.tasks.find((t) => t.id === id);
       const blockKind = task && isStandaloneTodoTask(task) ? 'todo' : 'frog';
       const overdue =
-        !info.done && task ? isTaskOverdueForList(task, logicalTodayYmd) : false;
+        !info.done && !info.abandoned && task
+          ? isTaskOverdueForList(task, logicalTodayYmd)
+          : false;
       return {
         title: info.title,
         done: info.done,
+        abandoned: !!info.abandoned,
         priority: info.priority,
         blockKind,
         icon: resolveTaskDisplayIcon(info.extraData),
@@ -909,6 +944,14 @@ export function WeeklyFrogSchedule({
           axis: data.axis,
           placements: data.placements,
         });
+        const abandonedFrogs = buildAbandonedFrogVirtualPlacementsForDays({
+          tasks: lookup.tasks,
+          projects: lookup.projects,
+          dayYmds: days,
+          logicalTodayYmd,
+          axis: data.axis,
+          placements: data.placements,
+        });
         const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
           tasks: lookup.tasks,
           projects: lookup.projects,
@@ -916,7 +959,12 @@ export function WeeklyFrogSchedule({
           axis: data.axis,
           placements: data.placements,
         });
-        setVirtualTasks([...virtualTodos, ...assignedFrogs, ...overdueFrogs]);
+        setVirtualTasks([
+          ...virtualTodos,
+          ...assignedFrogs,
+          ...abandonedFrogs,
+          ...overdueFrogs,
+        ]);
       } catch (err) {
         if (generation !== reloadGenerationRef.current) return;
         console.warn('[WeeklyFrogSchedule] load failed', err);
@@ -959,6 +1007,14 @@ export function WeeklyFrogSchedule({
         axis: view.axis,
         placements: view.placements,
       });
+      const abandonedFrogs = buildAbandonedFrogVirtualPlacementsForDays({
+        tasks: subjects.tasks,
+        projects: subjects.projects,
+        dayYmds: loadDayYmdsRef.current,
+        logicalTodayYmd,
+        axis: view.axis,
+        placements: view.placements,
+      });
       const overdueFrogs = buildOverdueFrogCarryPlacementsForToday({
         tasks: subjects.tasks,
         projects: subjects.projects,
@@ -966,7 +1022,12 @@ export function WeeklyFrogSchedule({
         axis: view.axis,
         placements: view.placements,
       });
-      setVirtualTasks([...virtualTodos, ...assignedFrogs, ...overdueFrogs]);
+      setVirtualTasks([
+        ...virtualTodos,
+        ...assignedFrogs,
+        ...abandonedFrogs,
+        ...overdueFrogs,
+      ]);
     });
     return () => {
       cancelled = true;
@@ -1371,6 +1432,8 @@ export function WeeklyFrogSchedule({
   };
 
   const openVirtualHabitDetail = React.useCallback((habit: VirtualHabitPlacement) => {
+    const abandoned =
+      !!habit.abandoned || isHabitSkippedOn(habit.extraData, habit.assignYmd);
     setOrphanListOpen(false);
     setDetail({
       surface: 'habit',
@@ -1385,8 +1448,9 @@ export function WeeklyFrogSchedule({
         acceptanceCriteria: '',
         projectName: null,
         extraData: habit.extraData,
-        status: habit.done ? 'done' : 'todo',
-        done: habit.done,
+        status: habit.done || abandoned ? 'done' : 'todo',
+        done: habit.done || abandoned,
+        abandoned,
         deletedSnapshot: false,
       },
       virtualSlot: {
@@ -1404,6 +1468,7 @@ export function WeeklyFrogSchedule({
       const kind = task.carrySubjectKind ?? 'task';
       const subject = resolveSubject(kind, task.taskId, subjects, task.assignYmd);
       if (!subject) return;
+      const abandoned = !!task.abandoned || !!subject.abandoned;
       setOrphanListOpen(false);
       setDetail({
         surface: task.carrySubjectKind ? 'frog' : 'todo',
@@ -1411,8 +1476,9 @@ export function WeeklyFrogSchedule({
         subject: {
           ...subject,
           // 虚拟块完成态以当日实例为准
-          done: task.done,
-          status: task.done ? 'done' : subject.status,
+          done: task.done || abandoned,
+          abandoned,
+          status: task.done || abandoned ? 'done' : subject.status,
           extraData: task.extraData ?? subject.extraData,
         },
         virtualSlot: {
@@ -1504,9 +1570,10 @@ export function WeeklyFrogSchedule({
         (hasMins &&
           startMins <= view.axis.startMinutes &&
           endMins >= view.axis.endMinutes);
+      const abandoned = !!sub?.abandoned;
       const done = !!sub?.done;
       let overdue = false;
-      if (!done) {
+      if (!done && !abandoned) {
         if (p.subjectKind === 'task') {
           const row = subjects.tasks.find((t) => t.id === p.subjectId);
           overdue = row ? isTaskOverdueForList(row, logicalTodayYmd) : false;
@@ -1536,6 +1603,7 @@ export function WeeklyFrogSchedule({
         virtualTask: null,
         title: sub?.title?.trim() || '青蛙',
         done,
+        abandoned,
         overdue,
         // 过期全天仍标「全天」，否则最简混排末尾漏掉
         timeLabel: allDay ? '全天' : overdue ? '过期' : formatMinutesAsHm(startMins),
@@ -1578,12 +1646,15 @@ export function WeeklyFrogSchedule({
         ? h.endMinutes!
         : placementEndMinutes(view.axis, h.startSlotIndex, span);
       const allDay = h.allDay || (!hasMins && h.startSlotIndex === 0 && span >= daySlotCount);
+      const habitAbandoned =
+        !!h.abandoned || isHabitSkippedOn(h.extraData, h.assignYmd);
       items.push({
         placement: null,
         habit: h,
         virtualTask: null,
         title: h.name,
-        done: h.done,
+        done: h.done || habitAbandoned,
+        abandoned: habitAbandoned,
         overdue: false,
         timeLabel: allDay ? '全天' : formatMinutesAsHm(startMins),
         endLabel: allDay ? '' : formatMinutesAsHm(endMins),
@@ -1614,7 +1685,8 @@ export function WeeklyFrogSchedule({
         ? t.endMinutes!
         : placementEndMinutes(view.axis, t.startSlotIndex, span);
       const allDay = t.allDay || (!hasMins && t.startSlotIndex === 0 && span >= daySlotCount);
-      const overdue = !t.done && (!!t.overdue || !!t.carrySubjectKind);
+      const abandoned = !!t.abandoned;
+      const overdue = !t.done && !abandoned && (!!t.overdue || !!t.carrySubjectKind);
       const assignKind: AssignDisplayKind =
         t.carrySubjectKind === 'project'
           ? 'proj'
@@ -1631,7 +1703,8 @@ export function WeeklyFrogSchedule({
         habit: null,
         virtualTask: t,
         title: t.title,
-        done: t.done,
+        done: t.done || abandoned,
+        abandoned,
         overdue,
         timeLabel: allDay ? '全天' : overdue ? '过期' : formatMinutesAsHm(startMins),
         endLabel: allDay || overdue ? '' : formatMinutesAsHm(endMins),
@@ -1960,11 +2033,14 @@ export function WeeklyFrogSchedule({
   ) => {
     const kind: ScheduleBlockKind = item.assignKind;
     const kindLabel = assignDisplayKindLabel(kind);
+    const abandoned = !!item.abandoned;
+    const settled = item.done || abandoned;
     const fill = scheduleBlockStyle(kind, {
       isPast: false,
-      allDone: item.done,
+      allDone: settled,
       isDark,
     });
+    const kindLine = abandoned ? `${kindLabel} · 已放弃` : kindLabel;
     return (
       <Pressable
         key={
@@ -1985,11 +2061,13 @@ export function WeeklyFrogSchedule({
           if (item.placement) openDetail(item.placement);
         }}
         accessibilityRole="button"
-        accessibilityLabel={`${kindLabel} ${item.timeLabel} ${item.title}${item.done ? '，已完成' : ''}`}
+        accessibilityLabel={`${kindLabel} ${item.timeLabel} ${item.title}${
+          abandoned ? '，已放弃' : item.done ? '，已完成' : ''
+        }`}
         style={({ pressed }) => [
           styles.dlRow,
           index < list.length - 1 && { marginBottom: 2 },
-          { opacity: pressed ? 0.88 : item.done ? 0.72 : 1 },
+          { opacity: pressed ? 0.88 : abandoned ? 0.78 : item.done ? 0.72 : 1 },
         ]}>
         <View style={styles.dlTime}>
           <Text style={[styles.dlTimeStart, { color: outline }]}>{item.timeLabel}</Text>
@@ -2010,7 +2088,7 @@ export function WeeklyFrogSchedule({
                 styles.dlBlockTitle,
                 {
                   color: fill.titleColor,
-                  textDecorationLine: item.done ? 'line-through' : 'none',
+                  textDecorationLine: settled ? 'line-through' : 'none',
                 },
               ]}
               numberOfLines={1}>
@@ -2023,35 +2101,37 @@ export function WeeklyFrogSchedule({
                 { color: fill.titleColor },
               ]}
               numberOfLines={1}>
-              {kindLabel}
+              {kindLine}
             </Text>
           </View>
           <View
             style={[
               styles.dlBlockCk,
               {
-                borderColor: item.done
+                borderColor: settled
                   ? fill.doneOnLight
                     ? 'rgba(255,255,255,0.92)'
                     : fill.titleColor
                   : fill.titleColor,
-                backgroundColor: item.done
+                backgroundColor: settled
                   ? fill.doneOnLight
                     ? 'rgba(255,255,255,0.92)'
                     : kind === 'frog'
                       ? '#DDE9CB'
                       : fill.titleColor
                   : 'transparent',
-                opacity: item.done ? 1 : 0.5,
+                opacity: settled ? 1 : 0.5,
               },
             ]}>
-            {item.done ? (
+            {settled ? (
               <MaterialIcons
-                name="check"
+                name={abandoned ? 'block' : 'check'}
                 size={8}
                 color={
                   fill.doneOnLight
-                    ? primary
+                    ? abandoned
+                      ? tf.rose
+                      : primary
                     : kind === 'frog'
                       ? '#35604A'
                       : '#fff'
@@ -2751,11 +2831,13 @@ export function WeeklyFrogSchedule({
           setDetail(null);
           runAfterUiSettles(() => {
             if (snapshot.surface === 'habit' && snapshot.habitId) {
+              if (snapshot.subject.abandoned) return;
               if (snapshot.subject.done) onHabitUndo?.(snapshot.habitId);
               else onHabitCheckIn?.(snapshot.habitId);
               return;
             }
             if (!onToggleDone) return;
+            if (snapshot.subject.abandoned) return;
             const assignYmd =
               snapshot.virtualSlot?.assignYmd ??
               (snapshot.placement
@@ -2768,6 +2850,62 @@ export function WeeklyFrogSchedule({
             });
           });
         }}
+        onAbandonToday={
+          onAbandonToday || onHabitAbandonToday
+            ? () => {
+                if (!detail) return;
+                const snapshot = detail;
+                setDetail(null);
+                runAfterUiSettles(() => {
+                  const assignYmd =
+                    snapshot.virtualSlot?.assignYmd ??
+                    (snapshot.placement
+                      ? ymdForWeekday(
+                          snapshot.placement.weekStartYmd,
+                          snapshot.placement.weekday,
+                        )
+                      : logicalTodayYmd);
+                  if (snapshot.surface === 'habit' && snapshot.habitId) {
+                    onHabitAbandonToday?.(snapshot.habitId, assignYmd);
+                    return;
+                  }
+                  onAbandonToday?.({
+                    kind: snapshot.placement?.subjectKind ?? snapshot.subject.kind,
+                    id: snapshot.placement?.subjectId ?? snapshot.subject.id,
+                    assignYmd,
+                  });
+                });
+              }
+            : undefined
+        }
+        onUnabandonToday={
+          onUnabandonToday || onHabitUnabandonToday
+            ? () => {
+                if (!detail) return;
+                const snapshot = detail;
+                setDetail(null);
+                runAfterUiSettles(() => {
+                  const assignYmd =
+                    snapshot.virtualSlot?.assignYmd ??
+                    (snapshot.placement
+                      ? ymdForWeekday(
+                          snapshot.placement.weekStartYmd,
+                          snapshot.placement.weekday,
+                        )
+                      : logicalTodayYmd);
+                  if (snapshot.surface === 'habit' && snapshot.habitId) {
+                    onHabitUnabandonToday?.(snapshot.habitId, assignYmd);
+                    return;
+                  }
+                  onUnabandonToday?.({
+                    kind: snapshot.placement?.subjectKind ?? snapshot.subject.kind,
+                    id: snapshot.placement?.subjectId ?? snapshot.subject.id,
+                    assignYmd,
+                  });
+                });
+              }
+            : undefined
+        }
         onRemoveSegment={
           detail?.placement
             ? () => {

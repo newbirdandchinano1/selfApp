@@ -1,5 +1,8 @@
 /**
- * 月节点「周目标」：按周一至周日切周（从该月第一个周一开始编号）。
+ * 月节点「周目标」切周规则（任意年、任意月同一套，无特例）：
+ * 1. 周界：周一～周日
+ * 2. 范围：只落在本月 [1 … 月末]，禁止跨月
+ * 3. 覆盖：从 1 号扫到月末；被月初/月末截断的残段各自成一周
  * 存于 life_road_nodes.extra_data.week_goals。
  */
 export const LIFE_ROAD_WEEK_GOALS_KEY = 'week_goals';
@@ -8,11 +11,11 @@ export const LIFE_ROAD_WEEK_GOAL_TEXT_MAX = 120;
 export type LifeRoadWeekSlot = {
   /** 1-based，对应「第 N 周」 */
   index: number;
-  /** 该周周一 YYYY-MM-DD，作稳定 key */
+  /** 该周在本月内起始日 YYYY-MM-DD，作稳定 key */
   weekKey: string;
   startYmd: string;
   endYmd: string;
-  /** 如：第一周（11.2-11.8） */
+  /** 如：第一周（11.1-11.1） / 第二周（11.2-11.8） */
   label: string;
 };
 
@@ -48,27 +51,27 @@ export function formatShortMd(ymd: string): string {
   return `${p.m}.${p.d}`;
 }
 
-function firstMondayDayOfMonth(year: number, month: number): number {
-  const dow = new Date(year, month - 1, 1).getDay(); // 0=Sun … 6=Sat
-  if (dow === 1) return 1;
-  if (dow === 0) return 2;
-  return 1 + (8 - dow);
+/** 距本周日（含当天）还剩几天：Mon→6 … Sat→1，Sun→0 */
+function daysUntilSunday(dow: number): number {
+  return dow === 0 ? 0 : 7 - dow;
 }
 
-/** 列出该月所有「周栏」（周一落在本月内；周末可跨月） */
+/**
+ * 列出该月全部周栏。规则与年份无关：传入任意 calendar year/month 结果一致适用。
+ */
 export function listWeeksInMonth(year: number, month: number): LifeRoadWeekSlot[] {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     return [];
   }
   const lastDay = new Date(year, month, 0).getDate();
-  let day = firstMondayDayOfMonth(year, month);
   const out: LifeRoadWeekSlot[] = [];
-  let index = 1;
+  let day = 1;
   while (day <= lastDay) {
-    const start = new Date(year, month - 1, day);
-    const end = new Date(year, month - 1, day + 6);
-    const startYmd = toYmd(start.getFullYear(), start.getMonth() + 1, start.getDate());
-    const endYmd = toYmd(end.getFullYear(), end.getMonth() + 1, end.getDate());
+    const dow = new Date(year, month - 1, day).getDay(); // 0=Sun … 6=Sat
+    const endDay = Math.min(day + daysUntilSunday(dow), lastDay);
+    const index = out.length + 1;
+    const startYmd = toYmd(year, month, day);
+    const endYmd = toYmd(year, month, endDay);
     const ordinal = WEEK_ORDINALS[index - 1] ?? String(index);
     out.push({
       index,
@@ -77,8 +80,7 @@ export function listWeeksInMonth(year: number, month: number): LifeRoadWeekSlot[
       endYmd,
       label: `第${ordinal}周（${formatShortMd(startYmd)}-${formatShortMd(endYmd)}）`,
     });
-    day += 7;
-    index += 1;
+    day = endDay + 1;
   }
   return out;
 }

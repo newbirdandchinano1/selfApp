@@ -81,3 +81,12 @@ export function markModuleResult(
 ): TasksLoadState {
   return { ...prev, [key]: ok ? 'ready' : 'error' };
 }
+
+/** 分区骨架：模块仍在 loading，且本地该区尚无内容可展示 */
+export function shouldShowTasksSectionSkeleton(
+  state: LoadState,
+  hasLocalContent: boolean,
+): boolean {
+  if (hasLocalContent) return false;
+  return state === 'loading' || state === 'idle';
+}

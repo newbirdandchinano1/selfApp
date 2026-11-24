@@ -19,6 +19,7 @@ import { listDailyReviewsBetween } from '@/lib/repositories/insights/daily-revie
 import { getWeeklyReviewJournalByWeek } from '@/lib/repositories/insights/weekly-review-journal';
 import { getCurrentWeekRange } from '@/lib/repositories/insights/weekly-review';
 import { listWeightLogsLastNDays } from '@/lib/repositories/health/weight-log';
+import type { LifeRoadNodeStatus } from '@/lib/life-road/life-road-node-model';
 import { getLifeDirectionLocal } from '@/lib/repositories/life-road/life-direction';
 import { getLifeRoadNodesLocal } from '@/lib/repositories/life-road/life-road-node';
 import { listWishBoardItems } from '@/lib/repositories/wish-board/wish-board';
@@ -97,7 +98,7 @@ export type ProfileRoadHub = {
   yearFocus: string | null;
   /** 焦点层级（有 yearFocus 时有值） */
   focusKind: YearFocusKind | null;
-  /** 「今年焦点」旁短标签，如「11 月」 */
+  /** 「今年焦点」旁短标签，如「11月航标」 */
   focusTag: string | null;
   /** 卡片右上角 glance，如「11 月 · 月目标」 */
   glance: string | null;
@@ -112,6 +113,8 @@ export type ProfileRoadHub = {
   arrivedCount: number;
   /** 有内容的月（1–12），供节奏轨点亮 */
   monthsWithContent: number[];
+  /** 当年各月节点状态（有节点才有 key），供节律条按状态着色 */
+  monthStatuses: Partial<Record<number, LifeRoadNodeStatus>>;
   /** 读缓存失败时非空；UI 显示错误+重试，不编造清单 */
   error: string | null;
 };
@@ -151,6 +154,7 @@ const EMPTY_ROAD: ProfileRoadHub = {
   yearNodeCount: 0,
   arrivedCount: 0,
   monthsWithContent: [],
+  monthStatuses: {},
   error: null,
 };
 
@@ -196,10 +200,14 @@ async function loadRoadHub(): Promise<ProfileRoadHub> {
         n.status !== 'dropped',
     );
     const currentYearBranch = model.years.find((y) => y.isCurrent) ?? model.years[0];
-    const monthsWithContent = (currentYearBranch?.quarters ?? [])
-      .flatMap((q) => q.months)
+    const yearMonths = (currentYearBranch?.quarters ?? []).flatMap((q) => q.months);
+    const monthsWithContent = yearMonths
       .filter((m) => Boolean(m.node?.title?.trim()) || m.projects.length > 0)
       .map((m) => m.month);
+    const monthStatuses: Partial<Record<number, LifeRoadNodeStatus>> = {};
+    for (const m of yearMonths) {
+      if (m.node?.status) monthStatuses[m.month] = m.node.status;
+    }
     return {
       direction: direction?.body?.trim() || null,
       yearFocus: focus?.title ?? resolveYearFocusLine(model),
@@ -212,6 +220,7 @@ async function loadRoadHub(): Promise<ProfileRoadHub> {
       yearNodeCount: yearScoped.length,
       arrivedCount: yearScoped.filter((n) => n.status === 'arrived').length,
       monthsWithContent,
+      monthStatuses,
       error: null,
     };
   } catch (e) {

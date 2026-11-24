@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>我的道路 · 奶油松墨高定版 — 小郑的自我修养</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ========================================================================
+       DESIGN TOKENS: 奶油纸 / 松墨绿 / Sage (浅色) & 松林夜 (深色)
+       ======================================================================== */
+    :root {
+      --bg-app: #F5F3E8;         /* 奶油纸 */
+      --bg-surface: #FAF8F0;     /* 温润纸面卡片 */
+      --bg-surface-2: #ECE9DA;   /* 压凹纸底 */
+      --text-primary: #1E3932;   /* 松墨绿 */
+      --text-secondary: #5F8A6E; /* Sage */
+      --text-muted: #8B9D91;
+      --accent: #E0B35A;         /* 琥珀金 */
+      --border-hair: rgba(30, 57, 50, 0.08);
+      --shadow-card: 0 4px 20px -6px rgba(30, 57, 50, 0.07), 0 1px 3px rgba(30, 57, 50, 0.03);
+      --hero-bg-from: #15211C;
+      --hero-bg-to: #1E3932;
+      --hero-accent: #E0B072;
+      --hero-sage: #A9C7B9;
+      --outer-bg: #E7E3D2;
+    }
+
+    .theme-dark {
+      --bg-app: #121A16;         /* 深色背景 */
+      --bg-surface: #17211C;     /* 深色哑光卡片 */
+      --bg-surface-2: #1E2C25;
+      --text-primary: #A9C7B9;   /* 偏亮的 sage 绿 */
+      --text-secondary: #769988;
+      --text-muted: #526E60;
+      --accent: #E0B072;         /* 深色点缀 */
+      --border-hair: rgba(169, 199, 185, 0.10);
+      --shadow-card: 0 8px 28px -8px rgba(0, 0, 0, 0.45);
+      --hero-bg-from: #0D1410;
+      --hero-bg-to: #17261F;
+      --hero-accent: #E0B072;
+      --hero-sage: #A9C7B9;
+      --outer-bg: #0B100D;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--outer-bg);
+      color: var(--text-primary);
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      font-feature-settings: "tnum" 1;
+      transition: background 0.45s ease, color 0.35s ease;
+    }
+
+    .font-serif-editorial { font-family: 'Noto Serif SC', Georgia, serif; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    .bg-app { background-color: var(--bg-app); transition: background-color 0.4s ease; }
+    .bg-surface { background-color: var(--bg-surface); box-shadow: var(--shadow-card); transition: background-color 0.4s ease, box-shadow 0.4s ease; }
+    .bg-surface-2 { background-color: var(--bg-surface-2); transition: background-color 0.4s ease; }
+    .text-main { color: var(--text-primary); }
+    .text-sage { color: var(--text-secondary); }
+    .text-muted-sage { color: var(--text-muted); }
+    .border-hair { border-color: var(--border-hair); }
+    .bg-hero { background: linear-gradient(155deg, var(--hero-bg-from) 0%, var(--hero-bg-to) 100%); }
+
+    /* Subtle Paper Grain Overlay */
+    .paper-grain {
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+    }
+
+    /* Device Frame */
+    @media (min-width: 768px) {
+      .studio-wrapper {
+        padding: 24px 16px;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 32px;
+      }
+      .device-frame {
+        width: 402px;
+        height: 844px;
+        border-radius: 48px;
+        box-shadow:
+          0 35px 80px -18px rgba(18, 26, 22, 0.38),
+          0 0 0 9px #121A16,
+          0 0 0 11px rgba(169, 199, 185, 0.18);
+        overflow: hidden;
+        position: relative;
+        background: var(--bg-app);
+        transition: background-color 0.4s ease, width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .device-frame.wide-mode {
+        width: 100%;
+        max-width: 960px;
+        height: calc(100vh - 48px);
+        border-radius: 28px;
+      }
+    }
+    @media (max-width: 767px) {
+      .device-frame { width: 100%; min-height: 100vh; background: var(--bg-app); position: relative; }
+    }
+
+    /* ========================================================================
+       RESTRAINED, BREATHING MOTION
+       ======================================================================== */
+    @keyframes springUp {
+      0% { opacity: 0; transform: translateY(14px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+    .spring-up { opacity: 0; animation: springUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    .stagger-1 { animation-delay: 0.04s; }
+    .stagger-2 { animation-delay: 0.10s; }
+    .stagger-3 { animation-delay: 0.16s; }
+    .stagger-4 { animation-delay: 0.22s; }
+
+    /* Serene Beacon Breathe */
+    @keyframes beaconBreathe {
+      0%, 100% { transform: scale(1); opacity: 0.85; }
+      50% { transform: scale(1.18); opacity: 1; }
+    }
+    .beacon-breathe { transform-origin: center; animation: beaconBreathe 4.2s ease-in-out infinite; }
+
+    /* Subtle Horizon Path */
+    @keyframes horizonDraw {
+      from { stroke-dashoffset: 480; }
+      to { stroke-dashoffset: 0; }
+    }
+    .horizon-draw {
+      stroke-dasharray: 480;
+      animation: horizonDraw 1.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+
+    /* Task Check Float Badge */
+    @keyframes floatBadgeUp {
+      0% { opacity: 0; transform: translateY(4px) scale(0.9); }
+      25% { opacity: 1; transform: translateY(-4px) scale(1); }
+      100% { opacity: 0; transform: translateY(-18px) scale(0.95); }
+    }
+    .float-plus-one { animation: floatBadgeUp 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+
+    /* Sonar Focus Pulse */
+    @keyframes sonarPulse {
+      0% { box-shadow: 0 0 0 0 rgba(224, 179, 90, 0.65); }
+      70% { box-shadow: 0 0 0 16px rgba(224, 179, 90, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(224, 179, 90, 0); }
+    }
+    .sonar-focus { animation: sonarPulse 2.2s ease-out; }
+
+    /* Accordion Grid */
+    .drawer-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.36s cubic-bezier(0.22, 1, 0.36, 1); }
+    .drawer-grid.open { grid-template-rows: 1fr; }
+    .drawer-inner { overflow: hidden; }
+
+    /* Sheet Enter */
+    @keyframes sheetPop {
+      from { transform: translateY(100%); opacity: 0.7; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .sheet-pop { animation: sheetPop 0.34s cubic-bezier(0.32, 0.72, 0, 1) forwards; }
+
+    /* Shake */
+    @keyframes shakeX {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-5px); }
+      50% { transform: translateX(5px); }
+      75% { transform: translateX(-3px); }
+    }
+    .shake-x { animation: shakeX 0.35s ease; }
+
+    /* Tactile Press */
+    .pressable { transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease; }
+    .pressable:active { transform: scale(0.975); }
+
+    /* Checkmark Pop */
+    @keyframes checkPop {
+      0% { transform: scale(0.6); }
+      60% { transform: scale(1.15); }
+      100% { transform: scale(1); }
+    }
+    .check-pop { animation: checkPop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  </style>
+</head>
+<body>
+
+<div class="studio-wrapper">
+  <!-- Main App Shell -->
+  <div id="deviceFrame" class="device-frame flex flex-col paper-grain">
+    <!-- iOS Dynamic Island Bar -->
+    <div id="iosBar" class="hidden md:flex items-center justify-between px-7 pt-3.5 pb-1.5 text-[11px] font-medium select-none z-30 shrink-0 text-main opacity-80">
+      <span>02:02</span>
+      <div class="w-24 h-5 bg-[#0D1410] rounded-full mx-auto absolute left-1/2 -translate-x-1/2 top-2.5 flex items-center justify-end px-2 border border-white/10">
+        <span class="w-1.5 h-1.5 rounded-full bg-[#E0B35A]/80"></span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <i data-lucide="signal" class="w-3.5 h-3.5"></i>
+        <i data-lucide="wifi" class="w-3.5 h-3.5"></i>
+        <i data-lucide="battery-full" class="w-4 h-4"></i>
+      </div>
+    </div>
+
+    <!-- Scrollable Viewport -->
+    <div id="viewport" class="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar relative"></div>
+
+    <!-- Toast Layer -->
+    <div id="toastLayer" class="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-50 w-[88%] max-w-[340px] flex flex-col items-center gap-2"></div>
+
+    <!-- Modal / Sheet Layer -->
+    <div id="sheetLayer" class="hidden absolute inset-0 z-40"></div>
+  </div>
+
+  <!-- Desktop Redesign Lab Panel -->
+  <aside class="hidden lg:flex flex-col w-[330px] bg-surface rounded-3xl border border-hair p-5 gap-4 max-h-[844px] overflow-y-auto no-scrollbar">
+    <div class="flex items-center justify-between">
+      <div>
+        <span class="text-[10px] font-semibold tracking-[0.18em] uppercase text-sage">Editorial Edition</span>
+        <h2 class="font-serif-editorial text-base font-bold text-main mt-1">奶油松墨 · 去模板精修版</h2>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <button id="themeToggleBtn" class="pressable p-2 rounded-xl bg-surface-2 text-main" title="切换浅色奶油纸 / 深色松林夜">
+          <i data-lucide="moon" class="w-4 h-4"></i>
+        </button>
+        <button id="wideToggleBtn" class="pressable p-2 rounded-xl bg-surface-2 text-main" title="切换宽屏/手机模式">
+          <i data-lucide="maximize-2" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+
+    <p class="text-[11px] text-sage leading-relaxed">
+      去掉「盒子套盒子」与通用彩色小图标，拉大衬线主标题尺度，加入奶油纸微噪点肌理，并用极简几何符号与克制的呼吸动效重塑阅读质感。
+    </p>
+
+    <div class="border-t border-hair pt-3">
+      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-sage mb-2">边界场景测试 (§8)</div>
+      <div id="labScenarios" class="grid grid-cols-1 gap-1.5"></div>
+    </div>
+
+    <div class="border-t border-hair pt-3">
+      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-sage mb-2">视图直达</div>
+      <div class="grid grid-cols-2 gap-1.5 text-xs">
+        <button data-goto="profile" class="lab-nav pressable px-3 py-2 rounded-xl bg-surface-2 text-main font-medium text-left">我的入口</button>
+        <button data-goto="hub" class="lab-nav pressable px-3 py-2 rounded-xl bg-surface-2 text-main font-medium text-left">本月工作台</button>
+        <button data-goto="panorama" class="lab-nav pressable px-3 py-2 rounded-xl bg-surface-2 text-main font-medium text-left">星轨全景</button>
+        <button data-goto="edit-direction" class="lab-nav pressable px-3 py-2 rounded-xl bg-surface-2 text-main font-medium text-left">北极星工坊</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+// ============================================================================
+// DOMAIN DATA & CONSTANTS
+// ============================================================================
+const KEYWORDS_POOL = ['长期主义', '作品感', '节奏', '身体', '自由', '关系', '深度', '探索'];
+const SAMPLE_BODIES = [
+  '用三年时间打磨出真正有生命力的个人作品，保持身体轻盈与财务从容，不急不躁地走自己的节奏。',
+  '把注意力从别人的评价收回到手头正在做的事情上，每天留两小时给深度创造，与重要的人保持真诚连接。',
+  '在不确定性里建立稳固的日常秩序：写作、运动、做减法，让三十岁后的每一步都算数。'
+];
+
+const STATUS_CFG = {
+  on_track: { label: '在路上', color: '#5F8A6E' },
+  paused:   { label: '暂搁',   color: '#E0B35A' },
+  arrived:  { label: '已抵达', color: '#A9C7B9' },
+  dropped:  { label: '已放弃', color: '#8B9D91' }
+};
+
+// Bespoke minimalist geometric SVG marks instead of generic colorful icon badges
+const GLYPHS = [
+  `<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.25"/><circle cx="10" cy="10" r="2" fill="#E0B35A"/></svg>`,
+  `<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none"><path d="M10 3L17 10L10 17L3 10L10 3Z" stroke="currentColor" stroke-width="1.25"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/></svg>`,
+  `<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none"><path d="M3 13C6 7 14 7 17 13" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/><circle cx="10" cy="7" r="2" fill="#E0B35A"/></svg>`,
+  `<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none"><path d="M4 6H16M4 10H12M4 14H9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>`
+];
+
+const CURRENT_YEAR = 2026;
+const CURRENT_QUARTER = 4;
+const CURRENT_MONTH = 11;
+const WEEK_RANGE_LABEL = '11/23–11/29';
+const MONTH_WEEKS = [
+  { key: '2026-11-W1', label: 'W1 · 11/01–11/08' },
+  { key: '2026-11-W2', label: 'W2 · 11/09–11/15' },
+  { key: '2026-11-W3', label: 'W3 · 11/16–11/22' },
+  { key: '2026-11-W4', label: '本周 · 11/23–11/29', isCurrent: true },
+  { key: '2026-11-W5', label: 'W5 · 11/30' }
+];
+
+function seedData() {
+  return {
+    direction: {
+      body: '用三年时间打磨出真正有生命力的个人作品，保持身体轻盈与财务从容，不急不躁地走自己的节奏。',
+      year_theme: '破局与扎根之年',
+      keywords: ['长期主义', '作品感', '节奏']
+    },
+    nodes: [
+      { id: 'n_farther', kind: 'farther', title: '建立可复利的独立创作与生活系统', note: '不依赖单一平台或短期风口，拥有稳定输出与自由支配的时间。', status: 'on_track', parent_id: null, extra_data: { acceptance_criteria: [] } },
+      { id: 'n_multi', kind: 'multi', title: '2026–2028：完成「自我修养」产品矩阵', note: '从工具型产品成长为陪伴用户长期自我建设的安静空间。', status: 'on_track', parent_id: null, extra_data: { acceptance_criteria: [{ id: 'ac1', text: '核心留存稳定在 45% 以上', priority: 'P0', done: true }] } },
+      { id: 'n_y_2026', kind: 'year', calendar_year: 2026, title: '把核心产品体验打磨到让自己骄傲的程度', note: '少做新功能堆砌，把「我的道路」与日常节奏串联起来。', status: 'on_track', parent_id: 'n_multi', extra_data: { acceptance_criteria: [{ id: 'ac2', text: '完成道路工作台重构', priority: 'P0', done: false }] } },
+      { id: 'n_q_1', kind: 'quarter', calendar_year: 2026, quarter: 1, title: '夯实底层数据模型与本地缓存', note: '确保离线可用与快速同步。', status: 'arrived', parent_id: 'n_y_2026', extra_data: { acceptance_criteria: [] } },
+      { id: 'n_q_4', kind: 'quarter', calendar_year: 2026, quarter: 4, title: 'Q4 收官：上线新版「我的道路」并完成年度复盘', note: '将方向骨架与项目执行彻底解耦。', status: 'on_track', parent_id: 'n_y_2026', extra_data: { acceptance_criteria: [{ id: 'ac3', text: 'Hub 与全景模式灰度上线', priority: 'P0', done: true }] } },
+      { id: 'n_m_10', kind: 'month', calendar_year: 2026, quarter: 4, month: 10, title: '完成道路信息架构审计与原型验证', note: '梳理 12 条验收边界。', status: 'arrived', parent_id: 'n_q_4', extra_data: { week_goals: {}, acceptance_criteria: [] } },
+      { id: 'n_m_11', kind: 'month', calendar_year: 2026, quarter: 4, month: 11, title: '落地「我的道路」高保真重构与核心交互动效', note: '打磨本月工作台的呼吸感与月度周次项目挂载的清晰度。', status: 'on_track', parent_id: 'n_q_4', extra_data: { week_goals: { '2026-11-W3': '完成全景时间轴与焦点脉冲', '2026-11-W4': '打磨工作台动效与 AI 一句话更新' }, acceptance_criteria: [{ id: 'ac4', text: '本周推进严格聚合当前月项目任务', priority: 'P0', done: true }] } },
+      { id: 'n_m_12', kind: 'month', calendar_year: 2026, quarter: 4, month: 12, title: '全量发布与 2026 年度道路回顾', note: '为跨年节点做准备。', status: 'on_track', parent_id: 'n_q_4', extra_data: { week_goals: {}, acceptance_criteria: [] } }
+    ],
+    projects: [
+      { id: 'p1', title: 'LifeRoadScreen 界面重构与动效', status: 'active', life_month_goal_id: 'n_m_11', life_week_key: '2026-11-W4', tag: '核心研发' },
+      { id: 'p2', title: '北极星总方向工坊交互升级', status: 'active', life_month_goal_id: 'n_m_11', life_week_key: '2026-11-W4', tag: '体验打磨' },
+      { id: 'p3', title: 'AI 一句话更新与拆解联调', status: 'active', life_month_goal_id: 'n_m_11', life_week_key: '2026-11-W3', tag: 'AI 能力' },
+      { id: 'p4', title: '体能训练与晚间深度阅读', status: 'active', life_month_goal_id: 'n_m_11', life_week_key: null, tag: '生活节奏' },
+      { id: 'p5', title: 'Q4 设计系统 Token 归档', status: 'done', life_month_goal_id: 'n_m_10', life_week_key: '2026-10-W4', tag: '设计规范' },
+      { id: 'p_unplanned', title: '整理书房电子设备与 NAS 备份', status: 'active', life_month_goal_id: null, life_week_key: null, tag: '未规划' }
+    ],
+    tasks: [
+      { id: 't1', title: '完成工作台地平线 Hero 与去边框排版', project_id: 'p1', is_this_week: true, done: false },
+      { id: 't2', title: '验证空季自动收起与焦点脉冲定位', project_id: 'p1', is_this_week: true, done: true },
+      { id: 't3', title: '实现星图关键词连线与 200 字弧形环', project_id: 'p2', is_this_week: true, done: false },
+      { id: 't4', title: '联调 AI 终态二次确认弹窗逻辑', project_id: 'p3', is_this_week: true, done: false },
+      { id: 't5', title: '周三、周五晚间 5 公里慢跑', project_id: 'p4', is_this_week: true, done: false }
+    ]
+  };
+}
+
+let state = {
+  data: seedData(),
+  screen: 'hub',
+  prevScreen: 'profile',
+  editingNodeId: null,
+  newNodeParams: null,
+  syncStatus: 'synced',
+  lastSync: '02:02',
+  selectedQuarterTab: CURRENT_QUARTER,
+  revealEmptySeason: false,
+  hubContextDrawerOpen: false,
+  focusMonthId: null,
+  scenario: 'default',
+  wideMode: false,
+  darkMode: false
+};
+
+// ============================================================================
+// SELECTORS & HELPERS
+// ============================================================================
+const getMonthNode = (y = CURRENT_YEAR, m = CURRENT_MONTH) => state.data.nodes.find(n => n.kind === 'month' && n.calendar_year === y && n.month === m) || null;
+const getQuarterNode = (y = CURRENT_YEAR, q = CURRENT_QUARTER) => state.data.nodes.find(n => n.kind === 'quarter' && n.calendar_year === y && n.quarter === q) || null;
+const getYearNode = (y = CURRENT_YEAR) => state.data.nodes.find(n => n.kind === 'year' && n.calendar_year === y) || null;
+const getMonthProjects = (mId) => mId ? state.data.projects.filter(p => p.life_month_goal_id === mId) : [];
+const getUnplanned = () => state.data.projects.filter(p => !p.life_month_goal_id);
+
+function getWeekTasks() {
+  const m = getMonthNode();
+  if (!m) return { reason: 'no_month_goal', tasks: [] };
+  const projs = getMonthProjects(m.id);
+  if (!projs.length) return { reason: 'no_projects', tasks: [] };
+  const map = new Map(projs.map(p => [p.id, p]));
+  const tasks = state.data.tasks.filter(t => t.is_this_week && map.has(t.project_id)).map(t => ({ ...t, projectTitle: map.get(t.project_id).title }));
+  return { reason: tasks.length ? 'ok' : 'no_tasks', tasks };
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function editorialStatus(status, onDark = false) {
+  const c = STATUS_CFG[status] || STATUS_CFG.on_track;
+  return `<span class="inline-flex items-center gap-1.5 text-[10px] font-medium tracking-wide" style="color:${onDark ? '#A9C7B9' : 'var(--text-secondary)'};">
+    <span class="w-1.5 h-1.5 rounded-full" style="background:${c.color};"></span>${c.label}
+  </span>`;
+}
+
+function toast(msg, type = 'info') {
+  const layer = document.getElementById('toastLayer');
+  const el = document.createElement('div');
+  const dot = type === 'success' ? '#A9C7B9' : type === 'error' ? '#FDA4AF' : '#E0B072';
+  el.className = `pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-full text-xs font-medium shadow-2xl border backdrop-blur-md transition-all duration-300 opacity-0 -translate-y-2`;
+  el.style.cssText = 'background:#121A16; color:#F5F3E8; border-color:rgba(169,199,185,0.2);';
+  el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${dot};"></span><span>${esc(msg)}</span>`;
+  layer.appendChild(el);
+  requestAnimationFrame(() => el.classList.remove('opacity-0', '-translate-y-2'));
+  setTimeout(() => {
+    el.classList.add('opacity-0', '-translate-y-2');
+    setTimeout(() => el.remove(), 260);
+  }, 2400);
+}
+
+function toggleTheme() {
+  state.darkMode = !state.darkMode;
+  document.body.classList.toggle('theme-dark', state.darkMode);
+  const icon = document.querySelector('#themeToggleBtn i');
+  if (icon) icon.setAttribute('data-lucide', state.darkMode ? 'sun' : 'moon');
+  render();
+}
+
+function nav(screen, opts = {}) {
+  if (screen !== state.screen) state.prevScreen = state.screen;
+  state.screen = screen;
+  if (opts.editingNodeId !== undefined) state.editingNodeId = opts.editingNodeId;
+  if (opts.newNodeParams !== undefined) state.newNodeParams = opts.newNodeParams;
+  if (opts.focusMonthId !== undefined) {
+    state.focusMonthId = opts.focusMonthId;
+    const m = state.data.nodes.find(n => n.id === opts.focusMonthId);
+    if (m) state.selectedQuarterTab = m.quarter;
+  }
+  render();
+  const vp = document.getElementById('viewport');
+  if (state.focusMonthId && screen === 'panorama') {
+    setTimeout(() => {
+      const target = document.getElementById(`station-${state.focusMonthId}`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('sonar-focus');
+        setTimeout(() => { target.classList.remove('sonar-focus'); state.focusMonthId = null; }, 2300);
+      }
+    }, 120);
+  } else {
+    vp.scrollTop = 0;
+  }
+}
+
+function syncRoad(fail = false) {
+  state.syncStatus = 'syncing';
+  render();
+  setTimeout(() => {
+    if (fail) {
+      state.syncStatus = 'error';
+      render();
+      toast('道路加载失败，点击重试', 'error');
+    } else {
+      state.syncStatus = 'synced';
+      const d = new Date();
+      state.lastSync = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      render();
+      toast('已同步最新道路记录', 'success');
+    }
+  }, 600);
+}
+
+// ============================================================================
+// VIEW 1: 「我的」TAB
+// ============================================================================
+function renderProfile() {
+  const dir = state.data.direction;
+  const hasData = !!(dir.body || state.data.nodes.length);
+  const mNode = getMonthNode();
+  const qNode = getQuarterNode();
+  const yNode = getYearNode();
+  const focus = mNode ? { tag: `${CURRENT_MONTH}月航标`, title: mNode.title } : qNode ? { tag: `Q${CURRENT_QUARTER} 航标`, title: qNode.title } : yNode ? { tag: `${CURRENT_YEAR} 年度`, title: yNode.title } : null;
+  const monthNodes = state.data.nodes.filter(n => n.kind === 'month' && n.calendar_year === CURRENT_YEAR);
+  const monthMap = new Map(monthNodes.map(n => [n.month, n]));
+
+  return `
+    <div class="px-5 pt-3 pb-24 space-y-6 spring-up">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-11 h-11 rounded-2xl flex items-center justify-center font-serif-editorial text-base font-bold" style="background:#1E3932; color:#E0B35A;">郑</div>
+          <div>
+            <h1 class="font-serif-editorial text-base font-bold text-main">小郑的自我修养</h1>
+            <p class="text-[11px] text-sage tracking-wide">长期主义 · 第 412 天</p>
+          </div>
+        </div>
+        <button onclick="toggleTheme()" class="pressable w-8 h-8 rounded-full bg-surface border border-hair flex items-center justify-center text-sage">
+          <i data-lucide="${state.darkMode ? 'sun' : 'moon'}" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      ${hasData ? `
+        <div onclick="nav('hub')" class="pressable cursor-pointer relative overflow-hidden rounded-[24px] bg-hero text-[#F5F3E8] p-6 shadow-xl spring-up stagger-1">
+          <svg class="absolute inset-0 w-full h-full opacity-30 pointer-events-none" viewBox="0 0 400 220" preserveAspectRatio="none" fill="none">
+            <path d="M-10 195 C 110 135, 210 165, 410 35" stroke="#A9C7B9" stroke-width="1.2" class="horizon-draw"/>
+            <circle cx="340" cy="52" r="3.5" fill="#E0B072" class="beacon-breathe"/>
+          </svg>
+
+          <div class="relative z-10 space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-semibold tracking-[0.22em] uppercase" style="color:#E0B072;">MY ROAD · 我的道路</span>
+              <span class="text-[11px]" style="color:#A9C7B9;">工作台 →</span>
+            </div>
+
+            <p class="font-serif-editorial text-[17px] leading-[1.65] text-[#F5F3E8] line-clamp-3">
+              ${dir.body ? esc(dir.body) : '暂未写下总方向，点击开启本月工作台。'}
+            </p>
+
+            ${focus ? `
+              <div class="pt-3.5 border-t border-white/10 flex items-baseline justify-between gap-3">
+                <span class="text-[10px] tracking-[0.14em] uppercase shrink-0" style="color:#E0B072;">${esc(focus.tag)}</span>
+                <span class="text-xs font-medium text-white/90 truncate">${esc(focus.title)}</span>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      ` : `
+        <div class="rounded-[24px] bg-surface border border-hair p-6 spring-up stagger-1 space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-semibold tracking-[0.2em] text-sage uppercase">MY ROAD</span>
+            <button onclick="nav('hub')" class="text-xs text-sage">进入 →</button>
+          </div>
+          <h3 class="font-serif-editorial text-lg font-bold text-main">写下你的长期北极星</h3>
+          <p class="text-xs text-sage leading-relaxed">不急于拆分任务，先确立年、季、月的时间坐标。</p>
+          <button onclick="nav('edit-direction')" class="pressable w-full py-3 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">
+            写下总方向
+          </button>
+        </div>
+      `}
+
+      <!-- 12-Month Rhythm Strip (Minimalist) -->
+      <div onclick="nav('panorama')" class="pressable cursor-pointer rounded-[22px] bg-surface border border-hair p-5 spring-up stagger-2 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-semibold tracking-[0.14em] uppercase text-sage">${CURRENT_YEAR} · 月轨节律</span>
+          <span class="text-[11px] text-main font-medium">全景 →</span>
+        </div>
+        <div class="flex items-center justify-between gap-1.5 pt-1">
+          ${Array.from({length: 12}, (_, i) => i + 1).map(m => {
+            const node = monthMap.get(m);
+            const isCurr = m === CURRENT_MONTH;
+            let bar = 'background:var(--bg-surface-2); color:var(--text-muted);';
+            if (node?.status === 'arrived') bar = 'background:#1E3932; color:#A9C7B9;';
+            else if (node?.status === 'on_track') bar = isCurr ? 'background:#E0B35A; color:#121A16; font-weight:700;' : 'background:#5F8A6E; color:#FAF8F0;';
+            else if (node?.status === 'paused') bar = 'background:rgba(224,179,90,0.35); color:var(--text-primary);';
+            return `<div class="flex-1 h-7 rounded-lg flex items-center justify-center text-[10px]" style="${bar}">${m}</div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// VIEW 2: HUB · 本月工作台 (Editorial De-Boxified Layout)
+// ============================================================================
+function renderHub() {
+  const mNode = getMonthNode();
+  const qNode = getQuarterNode();
+  const yNode = getYearNode();
+  const dir = state.data.direction;
+  const weekRes = getWeekTasks();
+  const mProjects = mNode ? getMonthProjects(mNode.id) : [];
+  const unplannedCount = getUnplanned().length;
+
+  const doneTasks = weekRes.tasks.filter(t => t.done).length;
+  const totalTasks = weekRes.tasks.length;
+  const progressPct = totalTasks ? Math.round((doneTasks / totalTasks) * 100) : 0;
+
+  return `
+    <div class="pb-24 space-y-5">
+      <!-- Quiet Editorial Header -->
+      <header class="sticky top-0 z-20 backdrop-blur-xl px-5 pt-3 pb-3 flex items-center justify-between" style="background: color-mix(in srgb, var(--bg-app) 88%, transparent);">
+        <button onclick="nav('profile')" class="pressable flex items-center gap-1 text-xs font-medium text-sage hover:text-main">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i> 我的
+        </button>
+
+        <div class="text-center">
+          <div class="font-serif-editorial text-sm font-bold text-main tracking-wide">我的道路</div>
+          <div class="mt-0.5 flex items-center justify-center gap-1.5">
+            ${state.syncStatus === 'syncing'
+              ? `<span class="w-1.5 h-1.5 rounded-full animate-ping" style="background:var(--accent);"></span><span class="text-[10px] text-sage">正在同步…</span>`
+              : state.syncStatus === 'error'
+              ? `<button onclick="syncRoad(false)" class="text-[10px] text-rose-500 font-medium">同步失败 · 重试</button>`
+              : `<button onclick="syncRoad(false)" class="text-[10px] text-muted-sage hover:text-sage flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full" style="background:#5F8A6E;"></span>工作台 · ${CURRENT_MONTH}月</button>`
+            }
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button onclick="toggleTheme()" class="pressable w-7 h-7 rounded-full flex items-center justify-center text-sage hover:bg-surface-2">
+            <i data-lucide="${state.darkMode ? 'sun' : 'moon'}" class="w-3.5 h-3.5"></i>
+          </button>
+          <button onclick="nav('panorama')" class="pressable px-3 py-1 rounded-full text-[11px] font-semibold" style="background:var(--text-primary); color:var(--bg-app);">
+            全景
+          </button>
+        </div>
+      </header>
+
+      <div class="px-5 space-y-6">
+        <!-- A. HERO (Serene Horizon Anchor, Large Serif Typography) -->
+        ${mNode ? `
+          <section class="spring-up stagger-1 relative overflow-hidden rounded-[26px] bg-hero text-[#F5F3E8] p-6 shadow-xl">
+            <svg class="absolute inset-0 w-full h-full opacity-35 pointer-events-none" viewBox="0 0 400 200" preserveAspectRatio="none" fill="none">
+              <path d="M-10 175 Q 130 125, 230 140 T 410 38" stroke="#A9C7B9" stroke-width="1.2" class="horizon-draw"/>
+              <circle cx="348" cy="48" r="4" fill="#E0B072" class="beacon-breathe"/>
+            </svg>
+
+            <div class="relative z-10 space-y-3.5">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <span class="text-[10px] font-semibold tracking-[0.2em] uppercase" style="color:#E0B072;">NOV · ${CURRENT_MONTH}月焦点</span>
+                  ${editorialStatus(mNode.status, true)}
+                </div>
+                <button onclick="openNode('${mNode.id}')" class="pressable text-[11px] font-medium px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/15 text-[#E9F2ED]">
+                  编辑
+                </button>
+              </div>
+
+              <h2 onclick="openNode('${mNode.id}')" class="cursor-pointer font-serif-editorial text-[20px] font-bold leading-[1.5] text-white tracking-tight">
+                ${esc(mNode.title)}
+              </h2>
+
+              ${mNode.note ? `<p class="text-xs leading-[1.7] line-clamp-3" style="color:#A9C7B9;">${esc(mNode.note)}</p>` : ''}
+
+              <div class="pt-2 flex items-center gap-4 border-t border-white/10 text-[11px]">
+                <button onclick="state.hubContextDrawerOpen = !state.hubContextDrawerOpen; render()" class="pressable flex items-center gap-1.5 text-[#E9F2ED] opacity-85 hover:opacity-100">
+                  <span>${qNode ? `Q${CURRENT_QUARTER} · ${esc(qNode.title.slice(0,11))}…` : `Q${CURRENT_QUARTER} 尚未落子`}</span>
+                  <i data-lucide="chevron-down" class="w-3 h-3 transition-transform duration-300 ${state.hubContextDrawerOpen ? 'rotate-180' : ''}"></i>
+                </button>
+                <span class="text-white/20">|</span>
+                <button onclick="nav('edit-direction')" class="pressable text-[#E0B072] opacity-90 hover:opacity-100">
+                  总方向
+                </button>
+              </div>
+            </div>
+          </section>
+        ` : `
+          <section class="spring-up stagger-1 rounded-[26px] bg-surface border border-hair p-6 text-center space-y-3">
+            <span class="text-[10px] font-semibold tracking-[0.2em] text-sage uppercase">NOV · ${CURRENT_MONTH}月</span>
+            <h2 class="font-serif-editorial text-lg font-bold text-main">写下这个月要推进的方向</h2>
+            <p class="text-xs text-sage">确立本月目标后，即可挂载执行项目。</p>
+            <button onclick="openNewNode({ kind: 'month', calendar_year: ${CURRENT_YEAR}, quarter: ${CURRENT_QUARTER}, month: ${CURRENT_MONTH}, parent_id: ${qNode ? `'${qNode.id}'` : 'null'} })" class="pressable px-5 py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">
+              创建本月目标
+            </button>
+          </section>
+        `}
+
+        <!-- Expandable Quarter & True North Context (D + E) -->
+        <div class="drawer-grid ${state.hubContextDrawerOpen ? 'open' : ''}">
+          <div class="drawer-inner">
+            <div class="rounded-[22px] bg-surface border border-hair divide-y divide-hair overflow-hidden mb-1">
+              <div onclick="${qNode ? `openNode('${qNode.id}')` : `openNewNode({ kind: 'quarter', calendar_year: ${CURRENT_YEAR}, quarter: ${CURRENT_QUARTER}, parent_id: ${yNode ? `'${yNode.id}'` : 'null'} })`}" class="pressable cursor-pointer px-4 py-3.5 flex items-center justify-between">
+                <div class="min-w-0">
+                  <div class="text-[10px] font-semibold tracking-[0.14em] uppercase text-sage">当前季度 · Q${CURRENT_QUARTER}</div>
+                  <div class="text-xs font-medium text-main truncate mt-0.5">${qNode ? esc(qNode.title) : '尚未落子 · 点击创建'}</div>
+                </div>
+                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-muted-sage shrink-0"></i>
+              </div>
+              <div onclick="${yNode ? `openNode('${yNode.id}')` : `openNewNode({ kind: 'year', calendar_year: ${CURRENT_YEAR} })`}" class="pressable cursor-pointer px-4 py-3.5 flex items-center justify-between">
+                <div class="min-w-0">
+                  <div class="text-[10px] font-semibold tracking-[0.14em] uppercase text-sage">${CURRENT_YEAR} 年度目标</div>
+                  <div class="text-xs font-medium text-main truncate mt-0.5">${yNode ? esc(yNode.title) : '尚未写下年目标'}</div>
+                </div>
+                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-muted-sage shrink-0"></i>
+              </div>
+              <div onclick="nav('edit-direction')" class="pressable cursor-pointer px-4 py-3.5 flex items-center justify-between">
+                <div class="min-w-0">
+                  <div class="text-[10px] font-semibold tracking-[0.14em] uppercase" style="color:var(--accent);">北极星总方向</div>
+                  <div class="font-serif-editorial text-xs text-main truncate mt-0.5">${dir.body ? esc(dir.body) : '点击写下总方向'}</div>
+                </div>
+                <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-muted-sage shrink-0"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- B. 本周推进 (De-boxified: Clean Editorial List with Hairline Dividers) -->
+        <section class="spring-up stagger-2 rounded-[24px] bg-surface border border-hair px-5 py-4">
+          <div class="flex items-baseline justify-between mb-2">
+            <div>
+              <span class="text-[10px] font-semibold tracking-[0.16em] uppercase text-sage">本周推进 · ${WEEK_RANGE_LABEL}</span>
+              ${totalTasks > 0 ? `<span class="ml-2 text-[11px] text-muted-sage">${doneTasks}/${totalTasks}</span>` : ''}
+            </div>
+            ${weekRes.reason === 'ok' ? `
+              <button onclick="openProjectSheet('${weekRes.tasks[0].project_id}')" class="text-[11px] font-medium text-sage hover:text-main">查看全部</button>
+            ` : ''}
+          </div>
+
+          ${totalTasks > 0 ? `
+            <div class="w-full h-[2px] rounded-full bg-surface-2 overflow-hidden mb-3">
+              <div class="h-full transition-all duration-500 ease-out" style="width:${progressPct}%; background: linear-gradient(90deg, #5F8A6E, #E0B35A);"></div>
+            </div>
+          ` : ''}
+
+          ${weekRes.reason === 'ok' ? `
+            <div class="divide-y divide-hair">
+              ${weekRes.tasks.map(t => `
+                <div id="task-row-${t.id}" onclick="openTaskSheet('${t.id}')" class="pressable relative cursor-pointer py-3 flex items-start justify-between gap-3">
+                  <div class="flex items-start gap-3 min-w-0">
+                    <button onclick="event.stopPropagation(); toggleTask('${t.id}', this)" class="mt-0.5 w-[18px] h-[18px] rounded-full border-[1.5px] flex items-center justify-center shrink-0 transition-all ${t.done ? 'check-pop' : ''}" style="${t.done ? 'background:#5F8A6E; border-color:#5F8A6E; color:#FAF8F0;' : 'border-color:var(--text-secondary);'}">
+                      ${t.done ? '<i data-lucide="check" class="w-2.5 h-2.5"></i>' : ''}
+                    </button>
+                    <div class="min-w-0">
+                      <div class="text-[13px] font-medium leading-snug text-main ${t.done ? 'line-through opacity-45' : ''}">${esc(t.title)}</div>
+                      <div class="text-[11px] text-muted-sage mt-0.5 truncate">${esc(t.projectTitle)}</div>
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          ` : `
+            <div class="py-6 text-center text-xs text-muted-sage">
+              ${weekRes.reason === 'no_month_goal' ? '先创建本月目标，再关联项目任务' : weekRes.reason === 'no_projects' ? '本月还没有项目，新建后可在此看到本周任务' : '本周暂无相关项目任务'}
+            </div>
+          `}
+        </section>
+
+        <!-- C. 本月项目 (Refined 2-Col Editorial Tiles with Bespoke Glyphs) -->
+        <section class="spring-up stagger-3 space-y-3">
+          <div class="flex items-baseline justify-between px-1">
+            <span class="text-[10px] font-semibold tracking-[0.16em] uppercase text-sage">本月项目 · ${mProjects.length}</span>
+            ${mNode ? `
+              <div class="flex items-center gap-3 text-[11px]">
+                <button onclick="openNewProjSheet('${mNode.id}')" class="text-sage hover:text-main font-medium">+ 新建</button>
+                ${mProjects.length > 0 ? `<button onclick="openNode('${mNode.id}')" class="font-medium" style="color:var(--accent);">周次排期</button>` : ''}
+              </div>
+            ` : ''}
+          </div>
+
+          ${!mNode ? `
+            <div class="rounded-2xl bg-surface border border-hair p-5 text-center text-xs text-muted-sage">创建本月目标后，即可挂载项目</div>
+          ` : mProjects.length === 0 ? `
+            <div class="rounded-2xl bg-surface border border-hair p-5 text-center space-y-3">
+              <p class="text-xs text-sage">本月尚未挂载项目</p>
+              <button onclick="openNewProjSheet('${mNode.id}')" class="pressable px-4 py-2 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">+ 新建项目</button>
+            </div>
+          ` : `
+            <div class="grid grid-cols-2 gap-3">
+              ${mProjects.slice(0, 4).map((p, idx) => `
+                <div onclick="openProjectSheet('${p.id}')" class="pressable cursor-pointer rounded-[20px] bg-surface border border-hair p-4 flex flex-col justify-between min-h-[112px]">
+                  <div class="flex items-center justify-between text-sage">
+                    ${GLYPHS[idx % GLYPHS.length]}
+                    <span class="text-[10px] text-muted-sage">${p.life_week_key ? p.life_week_key.slice(-2) : '本月'}</span>
+                  </div>
+                  <div class="text-[13px] font-semibold text-main line-clamp-2 mt-3 leading-snug">${esc(p.title)}</div>
+                  <div class="text-[10px] text-muted-sage mt-2">${esc(p.tag)}</div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        </section>
+
+        <!-- F. 未归入道路提醒 -->
+        ${unplannedCount > 0 ? `
+          <div onclick="nav('panorama')" class="pressable cursor-pointer spring-up stagger-4 rounded-2xl bg-surface border border-hair px-4 py-3 flex items-center justify-between">
+            <span class="text-xs text-main">有 <strong class="font-semibold">${unplannedCount}</strong> 个项目未归入道路</span>
+            <span class="text-[11px] font-medium" style="color:var(--accent);">在全景中管理 →</span>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// VIEW 3: PANORAMA · 星轨全景
+// ============================================================================
+function renderPanorama() {
+  const dir = state.data.direction;
+  const aboveNodes = state.data.nodes.filter(n => n.kind === 'multi' || n.kind === 'farther');
+  const years = Array.from(new Set([CURRENT_YEAR, ...state.data.nodes.filter(n => n.calendar_year).map(n => n.calendar_year)])).sort((a,b) => a - b);
+  const unplanned = getUnplanned();
+
+  return `
+    <div class="pb-24 space-y-5">
+      <header class="sticky top-0 z-20 backdrop-blur-xl px-5 pt-3 pb-3 border-b border-hair flex items-center justify-between" style="background: color-mix(in srgb, var(--bg-app) 90%, transparent);">
+        <button onclick="nav('hub')" class="pressable text-xs font-medium text-sage flex items-center gap-1">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i> 工作台
+        </button>
+        <div class="font-serif-editorial text-sm font-bold text-main">道路全景</div>
+        <button onclick="openNewNode({ kind: 'year', calendar_year: ${CURRENT_YEAR + 1} })" class="pressable text-[11px] font-semibold" style="color:var(--accent);">
+          + ${CURRENT_YEAR + 1}年
+        </button>
+      </header>
+
+      <div class="px-5 space-y-6">
+        <!-- TRUE NORTH -->
+        <section onclick="nav('edit-direction')" class="pressable cursor-pointer spring-up stagger-1 relative overflow-hidden rounded-[24px] bg-hero text-[#F5F3E8] p-5 shadow-lg">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[10px] font-semibold tracking-[0.2em] uppercase" style="color:#E0B072;">TRUE NORTH · 总方向</span>
+            <span class="text-[11px]" style="color:#A9C7B9;">编辑</span>
+          </div>
+          <p class="font-serif-editorial text-[15px] leading-[1.65] text-[#F5F3E8]">${dir.body ? esc(dir.body) : '点击写下你的总方向'}</p>
+          ${dir.keywords?.length ? `<div class="flex flex-wrap gap-2 pt-3 text-[11px]" style="color:#A9C7B9;">${dir.keywords.map(k => `<span># ${esc(k)}</span>`).join('')}</div>` : ''}
+        </section>
+
+        <!-- ABOVE · 今年之上 -->
+        <section class="spring-up stagger-2 space-y-2.5">
+          <div class="flex items-baseline justify-between">
+            <span class="text-[10px] font-semibold tracking-[0.16em] uppercase text-sage">ABOVE · 今年之上</span>
+            <div class="flex gap-3 text-[11px] text-sage">
+              <button onclick="openNewNode({ kind: 'farther' })" class="hover:text-main">+ 更远</button>
+              <button onclick="openNewNode({ kind: 'multi' })" class="hover:text-main">+ 多年</button>
+            </div>
+          </div>
+          <div class="flex gap-3 overflow-x-auto no-scrollbar pb-1">
+            ${aboveNodes.length ? aboveNodes.map(n => `
+              <div onclick="openNode('${n.id}')" class="pressable cursor-pointer shrink-0 w-[230px] rounded-[20px] bg-surface border border-hair p-4 space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="text-[10px] font-semibold tracking-wider text-sage">${n.kind === 'farther' ? '更远' : '多年'}</span>
+                  ${editorialStatus(n.status)}
+                </div>
+                <div class="font-serif-editorial text-xs font-bold text-main line-clamp-2 leading-relaxed">${esc(n.title)}</div>
+              </div>
+            `).join('') : `<div class="w-full p-4 rounded-2xl bg-surface border border-hair text-center text-xs text-muted-sage">可添加 3–10 年或更远坐标</div>`}
+          </div>
+        </section>
+
+        <!-- YEAR · Metro Timeline -->
+        ${years.map(yr => renderYearMetro(yr)).join('')}
+
+        <!-- Unplanned Projects -->
+        ${unplanned.length ? `
+          <section class="rounded-[22px] bg-surface border border-hair p-4 space-y-2.5">
+            <div class="text-[10px] font-semibold tracking-[0.14em] uppercase" style="color:var(--accent);">未归入道路的项目 · ${unplanned.length}</div>
+            <div class="divide-y divide-hair">
+              ${unplanned.map(p => `
+                <div onclick="openProjectSheet('${p.id}')" class="pressable cursor-pointer py-2.5 flex items-center justify-between">
+                  <span class="text-xs font-medium text-main truncate">${esc(p.title)}</span>
+                  <span class="text-[11px] shrink-0 ml-2" style="color:var(--accent);">去挂载 →</span>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderYearMetro(year) {
+  const yNode = getYearNode(year);
+  const isNow = year === CURRENT_YEAR;
+  const activeQ = isNow ? state.selectedQuarterTab : 1;
+  const qNode = getQuarterNode(year, activeQ);
+  const months = [(activeQ - 1) * 3 + 1, (activeQ - 1) * 3 + 2, (activeQ - 1) * 3 + 3];
+
+  const emptyQuarters = [1,2,3,4].filter(q => {
+    const qn = getQuarterNode(year, q);
+    const hasM = [1,2,3].some(o => getMonthNode(year, (q - 1) * 3 + o));
+    return !qn && !hasM && !(isNow && q === CURRENT_QUARTER);
+  });
+
+  return `
+    <section class="spring-up stagger-3 rounded-[24px] bg-surface border border-hair p-5 space-y-4">
+      <div onclick="${yNode ? `openNode('${yNode.id}')` : `openNewNode({ kind: 'year', calendar_year: ${year} })`}" class="pressable cursor-pointer flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-serif-editorial text-base font-bold text-main">${year}</span>
+            ${isNow ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider" style="background:var(--accent); color:#121A16;">NOW</span>` : ''}
+            ${yNode ? editorialStatus(yNode.status) : ''}
+          </div>
+          <div class="text-xs mt-1 truncate ${yNode ? 'font-medium text-main' : 'text-muted-sage italic'}">${yNode ? esc(yNode.title) : `点击写下 ${year} 年度目标`}</div>
+        </div>
+        <i data-lucide="chevron-right" class="w-4 h-4 text-muted-sage shrink-0"></i>
+      </div>
+
+      <!-- Quarter Lens -->
+      <div class="space-y-1.5">
+        <div class="grid grid-cols-4 gap-1 bg-surface-2 p-1 rounded-xl">
+          ${[1,2,3,4].map(q => {
+            const isEmpty = emptyQuarters.includes(q);
+            if (isNow && isEmpty && !state.revealEmptySeason) {
+              return `<div class="py-1.5 text-center text-[10px] text-muted-sage">Q${q}</div>`;
+            }
+            const sel = activeQ === q;
+            return `
+              <button onclick="state.selectedQuarterTab = ${q}; render()" class="pressable py-1.5 rounded-lg text-xs font-semibold transition-all ${sel ? 'bg-surface text-main shadow-xs' : 'text-sage'}">
+                Q${q}${isNow && q === CURRENT_QUARTER ? ' ·' : ''}
+              </button>
+            `;
+          }).join('')}
+        </div>
+        ${isNow && emptyQuarters.length ? `
+          <button onclick="state.revealEmptySeason = !state.revealEmptySeason; render()" class="w-full text-[10px] text-muted-sage hover:text-sage text-center">
+            ${state.revealEmptySeason ? '收起空白季' : '空白季已自动收起 · 显示'}
+          </button>
+        ` : ''}
+      </div>
+
+      <!-- Quarter Header -->
+      <div onclick="${qNode ? `openNode('${qNode.id}')` : `openNewNode({ kind: 'quarter', calendar_year: ${year}, quarter: ${activeQ}, parent_id: ${yNode ? `'${yNode.id}'` : 'null'} })`}" class="pressable cursor-pointer py-2 border-b border-hair flex items-center justify-between">
+        <div class="min-w-0">
+          <div class="text-[10px] font-semibold tracking-wider text-sage uppercase">Q${activeQ} 季度目标</div>
+          <div class="text-xs font-medium truncate mt-0.5 ${qNode ? 'text-main' : 'text-muted-sage italic'}">${qNode ? esc(qNode.title) : '空白季 · 点此新建'}</div>
+        </div>
+        <span class="text-[11px] text-muted-sage">编辑</span>
+      </div>
+
+      <!-- Months Timeline (Clean Hairline Track) -->
+      <div class="relative pl-5 space-y-4">
+        <div class="absolute left-1.5 top-2 bottom-2 w-[1px]" style="background:var(--border-hair);"></div>
+        ${months.map(m => {
+          const mNode = getMonthNode(year, m);
+          const projs = mNode ? getMonthProjects(mNode.id) : [];
+          const isCurr = isNow && m === CURRENT_MONTH;
+          return `
+            <div id="${mNode ? `station-${mNode.id}` : ''}" class="relative transition-all rounded-xl p-1 -m-1">
+              <span class="absolute -left-[18px] top-2.5 w-2.5 h-2.5 rounded-full border-2" style="border-color:var(--bg-surface); background:${isCurr ? 'var(--accent)' : mNode ? '#5F8A6E' : 'var(--text-muted)'};"></span>
+
+              <div onclick="${mNode ? `openNode('${mNode.id}')` : `openNewNode({ kind: 'month', calendar_year: ${year}, quarter: ${activeQ}, month: ${m}, parent_id: ${qNode ? `'${qNode.id}'` : 'null'} })`}" class="cursor-pointer flex items-baseline justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold ${isCurr ? '' : 'text-main'}" style="${isCurr ? 'color:var(--accent);' : ''}">${m} 月</span>
+                    ${mNode ? editorialStatus(mNode.status) : ''}
+                  </div>
+                  <div class="text-xs mt-0.5 ${mNode ? 'font-medium text-main' : 'text-muted-sage italic'}">${mNode ? esc(mNode.title) : '尚未落子'}</div>
+                </div>
+              </div>
+
+              ${projs.length ? `
+                <div class="mt-2 flex flex-wrap gap-1.5">
+                  ${projs.map(p => `
+                    <button onclick="openProjectSheet('${p.id}')" class="pressable px-2.5 py-1 rounded-lg bg-surface-2 text-[10px] font-medium text-main">
+                      ${esc(p.title)}
+                    </button>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+}
+
+// ============================================================================
+// VIEW 4: 编辑总方向 · 北极星工坊
+// ============================================================================
+let dirDraft = null;
+
+function renderEditDirection() {
+  if (!dirDraft) dirDraft = { body: state.data.direction.body || '', year_theme: state.data.direction.year_theme || '', keywords: [...(state.data.direction.keywords || [])] };
+  const dirty = dirDraft.body !== (state.data.direction.body || '') || dirDraft.year_theme !== (state.data.direction.year_theme || '') || JSON.stringify(dirDraft.keywords) !== JSON.stringify(state.data.direction.keywords || []);
+  const canSave = dirty && dirDraft.body.trim().length > 0;
+  const pct = Math.min(1, dirDraft.body.length / 200);
+  const c = 2 * Math.PI * 11;
+
+  return `
+    <div class="min-h-full bg-hero text-[#F5F3E8] flex flex-col pb-24">
+      <header class="px-5 py-3.5 flex items-center justify-between border-b border-white/10">
+        <button onclick="dirDraft = null; nav(state.prevScreen === 'profile' ? 'profile' : 'hub')" class="pressable text-xs font-medium flex items-center gap-1" style="color:#A9C7B9;">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i> 返回
+        </button>
+        <span class="text-[11px] font-semibold tracking-[0.2em] uppercase" style="color:#E0B072;">总方向</span>
+        <button onclick="saveDir()" ${canSave ? '' : 'disabled'} class="pressable px-3.5 py-1 rounded-full text-xs font-semibold" style="${canSave ? 'background:#E0B072; color:#121A16;' : 'background:rgba(255,255,255,0.08); color:rgba(255,255,255,0.3);'}">保存</button>
+      </header>
+
+      <div class="p-5 space-y-6">
+        <div class="relative rounded-2xl bg-white/5 border border-white/10 p-5 overflow-hidden">
+          <svg class="absolute right-3 top-3 w-20 h-20 opacity-45" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="34" stroke="#A9C7B9" stroke-opacity="0.25" stroke-dasharray="2 4"/>
+            <circle cx="50" cy="50" r="4" fill="#E0B072" class="beacon-breathe"/>
+            ${dirDraft.keywords.map((_, i) => {
+              const ang = (i * 120) * Math.PI / 180;
+              const x = 50 + 34 * Math.cos(ang);
+              const y = 50 + 34 * Math.sin(ang);
+              return `<line x1="50" y1="50" x2="${x}" y2="${y}" stroke="#E0B072" stroke-opacity="0.4" stroke-width="1"/><circle cx="${x}" cy="${y}" r="3" fill="#A9C7B9"/>`;
+            }).join('')}
+          </svg>
+          <span class="text-[10px] font-semibold tracking-[0.18em] uppercase" style="color:#A9C7B9;">实时预览</span>
+          <p class="font-serif-editorial text-[16px] leading-[1.65] text-[#F5F3E8] mt-2 relative z-10">${dirDraft.body.trim() ? esc(dirDraft.body) : '你的总方向会在这里出现。'}</p>
+        </div>
+
+        <div class="space-y-3 border-b border-white/10 pb-5">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-medium text-[#A9C7B9]">长文正文 *</label>
+            <div class="flex items-center gap-1.5">
+              <svg class="w-5 h-5 -rotate-90" viewBox="0 0 28 28">
+                <circle cx="14" cy="14" r="11" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+                <circle id="dirRing" cx="14" cy="14" r="11" fill="none" stroke="#E0B072" stroke-width="2" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct)}" stroke-linecap="round"/>
+              </svg>
+              <span id="dirCount" class="text-[11px] font-mono" style="color:#A9C7B9;">${dirDraft.body.length}/200</span>
+            </div>
+          </div>
+          <textarea id="dirBodyEl" maxlength="200" rows="4" placeholder="写下一句指引长期方向的话…" class="w-full bg-transparent font-serif-editorial text-[15px] text-white placeholder-white/25 outline-none resize-none leading-relaxed">${esc(dirDraft.body)}</textarea>
+          <div class="flex gap-2 pt-1">
+            ${SAMPLE_BODIES.map((_, i) => `<button onclick="dirDraft.body = SAMPLE_BODIES[${i}]; render()" class="pressable px-2.5 py-1 rounded-full bg-white/10 text-[11px]" style="color:#A9C7B9;">示例 ${i + 1}</button>`).join('')}
+          </div>
+        </div>
+
+        <div class="space-y-1.5 border-b border-white/10 pb-4">
+          <label class="text-xs font-medium text-[#A9C7B9]">年度主题（≤40）</label>
+          <input id="dirThemeEl" type="text" maxlength="40" value="${esc(dirDraft.year_theme)}" placeholder="给这一年一个短名字…" class="w-full bg-transparent text-sm text-white placeholder-white/25 outline-none" />
+        </div>
+
+        <div id="kwWrap" class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-medium text-[#A9C7B9]">关键词坐标</label>
+            <span class="text-[11px]" style="color:#E0B072;">${dirDraft.keywords.length}/3</span>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            ${KEYWORDS_POOL.map(k => {
+              const on = dirDraft.keywords.includes(k);
+              return `<button onclick="toggleKw('${k}')" class="pressable px-3 py-1.5 rounded-full text-xs font-medium border transition-all" style="${on ? 'background:#A9C7B9; color:#121A16; border-color:#A9C7B9;' : 'background:transparent; color:#E9F2ED; border-color:rgba(255,255,255,0.16);'}">${k}</button>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// VIEW 5: 编辑节点
+// ============================================================================
+let nodeDraft = null;
+let acOpen = false;
+
+function initNode() {
+  if (state.editingNodeId) {
+    const f = state.data.nodes.find(n => n.id === state.editingNodeId);
+    if (f) { nodeDraft = JSON.parse(JSON.stringify(f)); return; }
+  }
+  const p = state.newNodeParams || { kind: 'month', calendar_year: CURRENT_YEAR, quarter: CURRENT_QUARTER, month: CURRENT_MONTH };
+  nodeDraft = { id: null, kind: p.kind, calendar_year: p.calendar_year || null, quarter: p.quarter || null, month: p.month || null, parent_id: p.parent_id || null, title: '', note: '', status: 'on_track', extra_data: { week_goals: {}, acceptance_criteria: [] } };
+}
+
+function renderEditNode() {
+  if (!nodeDraft) initNode();
+  const isNew = !nodeDraft.id;
+  const acList = nodeDraft.extra_data?.acceptance_criteria || [];
+  const canSave = nodeDraft.title.trim().length > 0;
+  const crumb = nodeDraft.kind === 'farther' ? '今年之上 · 更远' : nodeDraft.kind === 'multi' ? '今年之上 · 多年' : nodeDraft.kind === 'year' ? `${nodeDraft.calendar_year} 年` : nodeDraft.kind === 'quarter' ? `${nodeDraft.calendar_year} · Q${nodeDraft.quarter}` : `${nodeDraft.calendar_year} · Q${nodeDraft.quarter} · ${nodeDraft.month} 月`;
+
+  return `
+    <div class="min-h-full flex flex-col pb-28">
+      <header class="sticky top-0 z-20 backdrop-blur-xl px-5 py-3 border-b border-hair flex items-center justify-between" style="background: color-mix(in srgb, var(--bg-app) 90%, transparent);">
+        <button onclick="nodeDraft = null; acOpen = false; nav('hub')" class="pressable text-xs font-medium text-sage flex items-center gap-1">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i> 返回
+        </button>
+        <div class="text-center">
+          <div class="font-serif-editorial text-xs font-bold text-main">${isNew ? '新建节点' : '编辑节点'}</div>
+          <div class="text-[10px] font-medium" style="color:var(--accent);">${crumb}</div>
+        </div>
+        ${!isNew ? `<button onclick="openDeleteSheet('${nodeDraft.id}')" class="pressable text-xs text-rose-500 font-medium">删除</button>` : '<div class="w-7"></div>'}
+      </header>
+
+      <div class="p-5 space-y-5">
+        <div class="rounded-[22px] bg-surface border border-hair p-5 space-y-4">
+          <div>
+            <div class="flex justify-between text-[11px] font-medium text-sage mb-1"><span>标题 *</span><span class="font-mono">${nodeDraft.title.length}/40</span></div>
+            <input id="nTitleEl" type="text" maxlength="40" value="${esc(nodeDraft.title)}" placeholder="这个节点叫什么？" class="w-full font-serif-editorial text-base font-bold text-main bg-transparent border-b border-hair pb-2 outline-none" />
+          </div>
+          <div>
+            <div class="flex justify-between text-[11px] font-medium text-sage mb-1"><span>说明</span><span class="font-mono">${(nodeDraft.note||'').length}/2000</span></div>
+            <textarea id="nNoteEl" maxlength="2000" rows="3" placeholder="可选：补充背景与意图" class="w-full text-xs text-main bg-transparent outline-none resize-none leading-relaxed">${esc(nodeDraft.note || '')}</textarea>
+          </div>
+          <div class="grid grid-cols-4 gap-1.5 pt-2 border-t border-hair">
+            ${Object.entries(STATUS_CFG).map(([k, v]) => `
+              <button onclick="nodeDraft.status = '${k}'; render()" class="pressable py-2 rounded-xl text-[11px] font-medium transition-all" style="${nodeDraft.status === k ? `background:var(--text-primary); color:var(--bg-app);` : 'background:var(--bg-surface-2); color:var(--text-secondary);'}">
+                ${v.label}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <button onclick="openAiUpdateSheet()" class="pressable w-full rounded-[20px] bg-hero text-[#F5F3E8] px-5 py-3.5 flex items-center justify-between">
+          <div class="text-left">
+            <div class="text-xs font-semibold">一句话更新节点</div>
+            <div class="text-[10px]" style="color:#A9C7B9;">自然语言解析状态与进度</div>
+          </div>
+          <span class="text-xs" style="color:#E0B072;">打开 →</span>
+        </button>
+
+        ${nodeDraft.kind === 'quarter' ? `
+          <button onclick="nodeDraft = null; nav('panorama')" class="pressable w-full rounded-2xl bg-surface border border-hair p-4 flex items-center justify-between text-xs font-medium text-main">
+            <span>查看本季度月份</span><span style="color:var(--accent);">道路全景 →</span>
+          </button>
+        ` : ''}
+
+        ${nodeDraft.kind === 'month' ? renderMonthWeeksPanel() : ''}
+
+        <div class="rounded-2xl bg-surface border border-hair overflow-hidden">
+          <button onclick="acOpen = !acOpen; render()" class="w-full px-4 py-3 flex items-center justify-between text-xs font-medium text-sage">
+            <span>历史验收（兼容 · ${acList.length} 条）</span>
+            <i data-lucide="chevron-down" class="w-4 h-4 transition-transform ${acOpen ? 'rotate-180' : ''}"></i>
+          </button>
+          <div class="drawer-grid ${acOpen ? 'open' : ''}">
+            <div class="drawer-inner">
+              <div class="px-4 pb-4 pt-1 space-y-2 border-t border-hair">
+                <div class="flex justify-between items-center">
+                  <span class="text-[10px] text-muted-sage">兼容保留字段</span>
+                  <button onclick="openAiAcSheet()" class="text-[11px] font-medium text-main underline">AI 拆解</button>
+                </div>
+                ${acList.map((a, i) => `
+                  <div class="flex items-center justify-between py-1.5 text-xs border-b border-hair last:border-0">
+                    <span class="${a.done ? 'line-through text-muted-sage' : 'text-main'}">${esc(a.text)}</span>
+                    <button onclick="nodeDraft.extra_data.acceptance_criteria.splice(${i},1); render()" class="text-sage hover:text-rose-500">×</button>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="fixed bottom-0 left-0 right-0 md:absolute bg-surface/95 backdrop-blur-md border-t border-hair px-5 py-3 flex items-center justify-between gap-3">
+        <span class="text-[10px] text-sage">${nodeDraft.kind === 'month' ? '月目标定方向；本月执行靠项目。' : '标题、说明、状态可保存。'}</span>
+        <button onclick="saveNode()" ${canSave ? '' : 'disabled'} class="pressable px-5 py-2.5 rounded-xl text-xs font-semibold" style="${canSave ? 'background:var(--text-primary); color:var(--bg-app);' : 'background:var(--bg-surface-2); color:var(--text-muted);'}">${isNew ? '创建节点' : '保存节点'}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMonthWeeksPanel() {
+  const mId = nodeDraft.id;
+  const projs = mId ? getMonthProjects(mId) : [];
+  const wg = nodeDraft.extra_data?.week_goals || {};
+  return `
+    <div class="rounded-[22px] bg-surface border border-hair p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold text-main">本月执行 · 周次与项目</span>
+        <button onclick="${mId ? `openNewProjSheet('${mId}', '2026-11-W4')` : `toast('请先保存月节点，再挂项目')`}" class="text-[11px] font-medium" style="color:var(--accent);">+ 新建项目</button>
+      </div>
+      <div class="divide-y divide-hair">
+        ${MONTH_WEEKS.map(w => {
+          const wp = projs.filter(p => p.life_week_key === w.key);
+          return `
+            <div class="py-3 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-semibold ${w.isCurrent ? '' : 'text-sage'}" style="${w.isCurrent ? 'color:var(--accent);' : ''}">${w.label}</span>
+                ${mId ? `<button onclick="openImportSheet('${mId}', '${w.key}')" class="text-[10px] font-medium text-sage hover:text-main">+ 引入</button>` : ''}
+              </div>
+              <input type="text" data-wg="${w.key}" value="${esc(wg[w.key] || '')}" placeholder="本周目标（可选）…" class="wg-input w-full text-xs bg-surface-2 px-3 py-1.5 rounded-lg text-main outline-none" />
+              ${wp.map(p => `
+                <div class="flex items-center justify-between text-xs pl-2">
+                  <span onclick="openProjectSheet('${p.id}')" class="cursor-pointer font-medium text-main truncate">• ${esc(p.title)}</span>
+                  <button onclick="var x=state.data.projects.find(i=>i.id==='${p.id}'); if(x)x.life_week_key=null; render();" class="text-[10px] text-muted-sage hover:text-rose-500">移出</button>
+                </div>
+              `).join('')}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================================
+// SHEETS & MUTATIONS
+// ============================================================================
+function closeSheet() {
+  const s = document.getElementById('sheetLayer');
+  s.classList.add('hidden');
+  s.innerHTML = '';
+}
+
+function showSheet(html) {
+  const s = document.getElementById('sheetLayer');
+  s.innerHTML = `
+    <div onclick="closeSheet()" class="absolute inset-0 bg-black/50 backdrop-blur-[2px]"></div>
+    <div class="absolute inset-x-0 bottom-0 max-h-[85%] bg-surface border-t border-hair rounded-t-[28px] shadow-2xl p-5 pt-3 overflow-y-auto no-scrollbar sheet-pop">
+      <div class="w-9 h-1 bg-surface-2 rounded-full mx-auto mb-4"></div>
+      ${html}
+    </div>
+  `;
+  s.classList.remove('hidden');
+  lucide.createIcons({ root: s });
+}
+
+function openDeleteSheet(id) {
+  const n = state.data.nodes.find(x => x.id === id);
+  if (!n) return;
+  showSheet(`
+    <div class="space-y-4">
+      <h3 class="font-serif-editorial text-base font-bold text-main">确定删除「${esc(n.title)}」？</h3>
+      <p class="text-xs text-sage">${n.kind === 'month' ? '挂在其下的项目会摘除月目标归属。' : '删除后不可恢复。'}</p>
+      <div class="flex gap-2">
+        <button onclick="closeSheet()" class="pressable flex-1 py-2.5 rounded-xl bg-surface-2 text-xs font-semibold text-main">取消</button>
+        <button onclick="doDeleteNode('${id}')" class="pressable flex-1 py-2.5 rounded-xl bg-rose-600 text-white text-xs font-semibold">确认删除</button>
+      </div>
+    </div>
+  `);
+}
+
+function doDeleteNode(id) {
+  state.data.projects.forEach(p => { if (p.life_month_goal_id === id) { p.life_month_goal_id = null; p.life_week_key = null; } });
+  state.data.nodes = state.data.nodes.filter(n => n.id !== id);
+  nodeDraft = null;
+  closeSheet();
+  toast('节点已删除，相关项目归属已摘除', 'success');
+  nav('hub');
+}
+
+function openAiUpdateSheet() {
+  if (!nodeDraft?.title?.trim()) { toast('请先填写标题', 'info'); return; }
+  showSheet(`
+    <div class="space-y-3.5">
+      <h3 class="font-serif-editorial text-sm font-bold text-main">一句话更新</h3>
+      <div class="flex flex-wrap gap-1.5">
+        <button onclick="previewAiPatch('核心动效已完成，标记为已抵达！')" class="pressable px-2.5 py-1 rounded-full bg-surface-2 text-main text-[11px] font-medium">标记已抵达</button>
+        <button onclick="previewAiPatch('先暂搁一段时间')" class="pressable px-2.5 py-1 rounded-full bg-surface-2 text-sage text-[11px] font-medium">先暂搁</button>
+      </div>
+      <div class="flex gap-2">
+        <input id="aiInp" type="text" placeholder="输入自然语言更新…" class="flex-1 text-xs px-3 py-2.5 rounded-xl bg-surface-2 border border-hair text-main outline-none" />
+        <button onclick="previewAiPatch(document.getElementById('aiInp').value)" class="pressable px-4 py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">解析</button>
+      </div>
+      <div id="aiPatchBox" class="hidden p-3 rounded-2xl bg-surface-2 border border-hair space-y-2"></div>
+    </div>
+  `);
+}
+
+let _patch = null;
+function previewAiPatch(txt) {
+  if (!txt?.trim()) return;
+  let st = nodeDraft.status;
+  if (/已抵达|完成|达成/.test(txt)) st = 'arrived';
+  else if (/放弃/.test(txt)) st = 'dropped';
+  else if (/暂搁/.test(txt)) st = 'paused';
+  _patch = { status: st, note: (nodeDraft.note ? nodeDraft.note + '\n' : '') + '[AI更新] ' + txt.trim() };
+  const term = st === 'arrived' || st === 'dropped';
+  const box = document.getElementById('aiPatchBox');
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="text-xs font-semibold text-main">预览：状态 → ${STATUS_CFG[st].label}</div>
+    <div class="text-[11px] text-sage bg-surface p-2 rounded-xl">${esc(_patch.note)}</div>
+    <button onclick="commitAiPatch(${term})" class="pressable w-full py-2 rounded-xl text-xs font-semibold" style="background:var(--accent); color:#121A16;">${term ? '确认终态并写入' : '写入编辑态'}</button>
+  `;
+}
+
+function commitAiPatch(celebrate) {
+  nodeDraft.status = _patch.status;
+  nodeDraft.note = _patch.note;
+  closeSheet();
+  render();
+  toast('已写入节点编辑态', 'success');
+  if (celebrate && typeof confetti === 'function') confetti({ particleCount: 45, spread: 55, origin: { y: 0.7 } });
+}
+
+function openAiAcSheet() {
+  showSheet(`
+    <div class="space-y-3">
+      <h3 class="font-serif-editorial text-sm font-bold text-main">AI 拆解历史验收</h3>
+      <p class="text-xs text-sage">为「${esc(nodeDraft.title || '当前节点')}」生成 2 条参考验收：</p>
+      <button onclick="nodeDraft.extra_data.acceptance_criteria.push({id:'ac_'+Date.now(),text:'完成核心交互走查',priority:'P0',done:false},{id:'ac_'+Date.now()+1,text:'归档阶段复盘记录',priority:'P1',done:false}); acOpen=true; closeSheet(); render(); toast('已合并 2 条验收','success');" class="pressable w-full py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">合并到历史验收</button>
+    </div>
+  `);
+}
+
+function openProjectSheet(pid) {
+  const p = state.data.projects.find(x => x.id === pid);
+  if (!p) return;
+  const mNodes = state.data.nodes.filter(n => n.kind === 'month');
+  showSheet(`
+    <div class="space-y-4">
+      <div>
+        <span class="text-[10px] font-semibold tracking-wider text-sage uppercase">任务域 · 编辑项目</span>
+        <h3 class="font-serif-editorial text-sm font-bold text-main mt-0.5">${esc(p.title)}</h3>
+      </div>
+      ${p.life_month_goal_id ? `
+        <button onclick="closeSheet(); nav('panorama', { focusMonthId: '${p.life_month_goal_id}' })" class="pressable w-full p-3 rounded-xl bg-hero text-[#F5F3E8] text-xs font-medium flex items-center justify-between">
+          <span>在道路全景中聚焦该月</span>
+          <span style="color:#E0B072;">前往 →</span>
+        </button>
+      ` : ''}
+      <div class="space-y-2.5 bg-surface-2 p-3.5 rounded-2xl border border-hair">
+        <label class="text-xs font-semibold text-main block">归属月目标</label>
+        <select id="pmSel" class="w-full text-xs bg-surface text-main p-2.5 rounded-xl border border-hair">
+          <option value="">不归入道路</option>
+          ${mNodes.map(m => `<option value="${m.id}" ${p.life_month_goal_id === m.id ? 'selected' : ''}>${m.calendar_year} Q${m.quarter} · ${m.month}月 — ${esc(m.title)}</option>`).join('')}
+        </select>
+        <select id="pwSel" class="w-full text-xs bg-surface text-main p-2.5 rounded-xl border border-hair">
+          <option value="">未分周次</option>
+          ${MONTH_WEEKS.map(w => `<option value="${w.key}" ${p.life_week_key === w.key ? 'selected' : ''}>${w.label}</option>`).join('')}
+        </select>
+      </div>
+      <button onclick="saveProjBind('${p.id}')" class="pressable w-full py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">保存归属</button>
+    </div>
+  `);
+}
+
+function saveProjBind(pid) {
+  const p = state.data.projects.find(x => x.id === pid);
+  const mv = document.getElementById('pmSel').value || null;
+  const wv = mv ? (document.getElementById('pwSel').value || null) : null;
+  if (p) { p.life_month_goal_id = mv; p.life_week_key = wv; }
+  closeSheet();
+  render();
+  toast('项目归属已更新', 'success');
+}
+
+function openNewProjSheet(mId, wKey = null) {
+  showSheet(`
+    <div class="space-y-3">
+      <h3 class="font-serif-editorial text-sm font-bold text-main">新建项目（已预填本月归属）</h3>
+      <input id="npTitle" type="text" placeholder="项目名称…" class="w-full text-xs p-3 rounded-xl bg-surface-2 border border-hair text-main outline-none" />
+      <button onclick="var t=document.getElementById('npTitle').value.trim(); if(!t)return; state.data.projects.unshift({id:'p_'+Date.now(),title:t,status:'active',life_month_goal_id:'${mId}',life_week_key:${wKey?`'${wKey}'`:'null'},tag:'本月推进'}); closeSheet(); render(); toast('已新建并挂载到本月','success');" class="pressable w-full py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">创建项目</button>
+    </div>
+  `);
+}
+
+function openImportSheet(mId, wKey) {
+  const list = state.data.projects.filter(p => p.life_month_goal_id !== mId || p.life_week_key !== wKey);
+  showSheet(`
+    <div class="space-y-2.5">
+      <h3 class="font-serif-editorial text-sm font-bold text-main">引入现有项目</h3>
+      ${list.map(p => `<button onclick="var x=state.data.projects.find(i=>i.id==='${p.id}'); x.life_month_goal_id='${mId}'; x.life_week_key='${wKey}'; closeSheet(); render(); toast('已引入本周','success');" class="pressable w-full p-2.5 rounded-xl bg-surface-2 text-left text-xs font-medium text-main flex justify-between"><span>${esc(p.title)}</span><span style="color:var(--accent);">+ 引入</span></button>`).join('')}
+    </div>
+  `);
+}
+
+function openTaskSheet(tid) {
+  const t = state.data.tasks.find(x => x.id === tid);
+  if (!t) return;
+  showSheet(`
+    <div class="space-y-3">
+      <span class="text-[10px] font-semibold tracking-wider text-sage uppercase">本周推进任务</span>
+      <h3 class="font-serif-editorial text-sm font-bold text-main">${esc(t.title)}</h3>
+      <div class="flex gap-2">
+        <button onclick="toggleTask('${t.id}'); closeSheet();" class="pressable flex-1 py-2.5 rounded-xl text-xs font-semibold" style="background:var(--text-primary); color:var(--bg-app);">${t.done ? '标为未完成' : '标为已完成'}</button>
+        <button onclick="closeSheet(); openProjectSheet('${t.project_id}')" class="pressable px-4 py-2.5 rounded-xl bg-surface-2 text-main text-xs font-semibold">所属项目</button>
+      </div>
+    </div>
+  `);
+}
+
+function toggleTask(tid, btnEl = null) {
+  const t = state.data.tasks.find(x => x.id === tid);
+  if (t) {
+    t.done = !t.done;
+    if (t.done) {
+      if (btnEl) {
+        const row = document.getElementById(`task-row-${tid}`);
+        if (row) {
+          const spark = document.createElement('span');
+          spark.textContent = '+1 推进';
+          spark.className = 'float-plus-one absolute right-2 top-3 text-[11px] font-semibold pointer-events-none';
+          spark.style.color = '#E0B35A';
+          row.appendChild(spark);
+        }
+      }
+      if (typeof confetti === 'function') confetti({ particleCount: 22, spread: 42, origin: { y: 0.7 } });
+      setTimeout(() => render(), 240);
+      return;
+    }
+  }
+  render();
+}
+
+function openNode(id) { nodeDraft = null; acOpen = false; nav('edit-node', { editingNodeId: id, newNodeParams: null }); }
+function openNewNode(p) { nodeDraft = null; acOpen = false; nav('edit-node', { editingNodeId: null, newNodeParams: p }); }
+
+function toggleKw(k) {
+  const idx = dirDraft.keywords.indexOf(k);
+  if (idx >= 0) dirDraft.keywords.splice(idx, 1);
+  else {
+    if (dirDraft.keywords.length >= 3) {
+      const w = document.getElementById('kwWrap');
+      if (w) { w.classList.remove('shake-x'); void w.offsetWidth; w.classList.add('shake-x'); }
+      toast('关键词最多 3 个', 'info');
+      return;
+    }
+    dirDraft.keywords.push(k);
+  }
+  render();
+}
+
+function saveDir() {
+  if (!dirDraft?.body?.trim()) return;
+  state.data.direction = { body: dirDraft.body.trim(), year_theme: dirDraft.year_theme.trim(), keywords: [...dirDraft.keywords] };
+  dirDraft = null;
+  toast('总方向已保存', 'success');
+  nav(state.prevScreen === 'profile' ? 'profile' : 'hub');
+}
+
+function saveNode() {
+  if (!nodeDraft?.title?.trim()) return;
+  document.querySelectorAll('.wg-input').forEach(el => {
+    const k = el.dataset.wg;
+    if (k) nodeDraft.extra_data.week_goals[k] = el.value.trim();
+  });
+  if (nodeDraft.id) {
+    const idx = state.data.nodes.findIndex(n => n.id === nodeDraft.id);
+    if (idx >= 0) state.data.nodes[idx] = JSON.parse(JSON.stringify(nodeDraft));
+  } else {
+    nodeDraft.id = 'n_' + Date.now();
+    state.data.nodes.push(JSON.parse(JSON.stringify(nodeDraft)));
+  }
+  const st = nodeDraft.status;
+  nodeDraft = null;
+  toast('节点已保存', 'success');
+  if (st === 'arrived' && typeof confetti === 'function') confetti({ particleCount: 40, spread: 50, origin: { y: 0.7 } });
+  nav('hub');
+}
+
+// ============================================================================
+// SCENARIOS & RENDER
+// ============================================================================
+const LAB_SCENARIOS = [
+  { id: 'default', label: '标准工作台 (默认丰富数据)' },
+  { id: 'no_direction', label: '1. 无总方向 (冷启动)' },
+  { id: 'no_month_goal', label: '2. 本月无目标' },
+  { id: 'no_projects', label: '3. 有月目标无项目' },
+  { id: 'sync_error', label: '4. 模拟同步失败' }
+];
+
+function setScenario(id) {
+  state.scenario = id;
+  state.data = seedData();
+  state.syncStatus = 'synced';
+  dirDraft = null; nodeDraft = null;
+  if (id === 'no_direction') {
+    state.data.direction = { body: '', year_theme: '', keywords: [] };
+    state.data.nodes = [];
+    state.data.projects.forEach(p => { p.life_month_goal_id = null; p.life_week_key = null; });
+    nav('profile');
+  } else if (id === 'no_month_goal') {
+    state.data.nodes = state.data.nodes.filter(n => n.id !== 'n_m_11');
+    state.data.projects.forEach(p => { if (p.life_month_goal_id === 'n_m_11') p.life_month_goal_id = null; });
+    nav('hub');
+  } else if (id === 'no_projects') {
+    state.data.projects = state.data.projects.filter(p => p.life_month_goal_id !== 'n_m_11');
+    nav('hub');
+  } else if (id === 'sync_error') {
+    nav('hub');
+    syncRoad(true);
+  } else {
+    nav('hub');
+  }
+}
+
+function render() {
+  const vp = document.getElementById('viewport');
+  if (state.screen === 'profile') vp.innerHTML = renderProfile();
+  else if (state.screen === 'hub') vp.innerHTML = renderHub();
+  else if (state.screen === 'panorama') vp.innerHTML = renderPanorama();
+  else if (state.screen === 'edit-direction') vp.innerHTML = renderEditDirection();
+  else if (state.screen === 'edit-node') vp.innerHTML = renderEditNode();
+
+  document.getElementById('dirBodyEl')?.addEventListener('input', e => {
+    dirDraft.body = e.target.value;
+    const cnt = document.getElementById('dirCount');
+    if (cnt) cnt.textContent = `${dirDraft.body.length}/200`;
+    const ring = document.getElementById('dirRing');
+    if (ring) { const c = 2 * Math.PI * 11; ring.setAttribute('stroke-dashoffset', c * (1 - Math.min(1, dirDraft.body.length / 200))); }
+  });
+  document.getElementById('dirThemeEl')?.addEventListener('input', e => { dirDraft.year_theme = e.target.value; });
+  document.getElementById('nTitleEl')?.addEventListener('input', e => { nodeDraft.title = e.target.value; });
+  document.getElementById('nNoteEl')?.addEventListener('input', e => { nodeDraft.note = e.target.value; });
+
+  const scBox = document.getElementById('labScenarios');
+  if (scBox) {
+    scBox.innerHTML = LAB_SCENARIOS.map(s => `
+      <button onclick="setScenario('${s.id}')" class="pressable text-left px-3 py-2 rounded-xl text-xs font-medium border transition-all" style="${state.scenario === s.id ? 'background:var(--text-primary); color:var(--bg-app); border-color:var(--text-primary);' : 'background:var(--bg-surface-2); color:var(--text-primary); border-color:var(--border-hair);'}">${s.label}</button>
+    `).join('');
+  }
+  lucide.createIcons();
+}
+
+document.getElementById('themeToggleBtn')?.addEventListener('click', toggleTheme);
+document.getElementById('wideToggleBtn')?.addEventListener('click', () => {
+  state.wideMode = !state.wideMode;
+  document.getElementById('deviceFrame').classList.toggle('wide-mode', state.wideMode);
+  document.getElementById('iosBar')?.classList.toggle('md:hidden', state.wideMode);
+});
+
+document.querySelectorAll('.lab-nav').forEach(b => {
+  b.addEventListener('click', () => { dirDraft = null; nodeDraft = null; nav(b.dataset.goto); });
+});
+
+render();
+</script>
+</body>
+</html>

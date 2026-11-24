@@ -17,6 +17,17 @@ import {
 import { AiHabitNudgeSheet } from '@/components/tasks/ai-habit-nudge-sheet';
 import { AiSuggestTodayTasksSheet } from '@/components/tasks/ai-suggest-today-sheet';
 import { AiTaskFromImageSheet } from '@/components/tasks/ai-task-from-image-sheet';
+import {
+  getInboxRetentionDaysLeft,
+  InboxArchiveDetailSheet,
+  InboxArchiveHeader,
+  InboxArchiveLogRow,
+  InboxArchiveProjectCard,
+  InboxArchiveSectionHeader,
+  isInboxAbandonedProject,
+  projectMatchesInboxInnerFilter,
+  type InboxInnerFilter,
+} from '@/components/tasks/inbox-archive-pane';
 import { TasksWeekStrip } from '@/components/tasks/TasksWeekStrip';
 import {
   WeeklyFrogSchedule,
@@ -93,13 +104,21 @@ import {
 } from '@/lib/frog-assignment';
 import { resyncHabitReminderForHabitId } from '@/lib/habit-reminder-notifications';
 import {
+  clearFrogSessionAbandonedOn,
   clearFrogSessionCompletedOn,
   getFrogSessionCompletedOn,
   getIsLongTermProject,
   getIsLongTermTask,
+  isFrogAbandonedOn,
   isFrogDoneForToday,
+  setFrogSessionAbandonedOn,
   setFrogSessionCompletedOn,
 } from '@/lib/long-term-task';
+import {
+  isHabitSkippedOn,
+  mergeHabitSkippedOn,
+  removeHabitSkippedOn,
+} from '@/lib/repositories/habits/habit-skip';
 import {
   isLeafProjectWithoutTasks,
   isMatrixProjectInCurrentWeek,
@@ -124,7 +143,7 @@ import {
   resolveProjectDisplayIcon,
   resolveTaskDisplayIcon,
 } from '@/lib/constants/entity-icon-choices';
-import { getHabitById } from '@/lib/repositories/habits/habit';
+import { getHabitById, updateHabit } from '@/lib/repositories/habits/habit';
 import {
   isBreakHabitSucceeded,
   scheduleSyncBreakHabitCompletions,
@@ -197,7 +216,6 @@ import {
 import {
   ensureProjectCompletionLogFromProject,
   listOrphanProjectCompletionLogs,
-  parseCompletionLogTagNames,
   type ProjectCompletionLogRow,
 } from '@/lib/repositories/projects/project-completion-logs';
 import {
@@ -347,6 +365,7 @@ import {
   markModuleLoading,
   markModuleResult,
   shouldShowTasksFullPageSkeleton,
+  shouldShowTasksSectionSkeleton,
   type TasksLoadState,
 } from '@/lib/tasks-page-module-loading';
 import {
@@ -357,6 +376,8 @@ import {
   resolveMatrixProjectIds,
   sortStandaloneTodosLocally,
 } from '@/lib/tasks-page-api';
+import { fetchTasksBootstrapV2Bundle } from '@/lib/tasks-bootstrap-v2-api';
+import { syncTasksTableFromApi } from '@/lib/tasks-table-sync';
 import {
   loadTasksHideCompletedProjectTasks,
   loadTasksMainListView,
@@ -932,6 +953,7 @@ function taskPeriodShortLabel(extraData: string | null): string {
 
 /** 任务页小习惯卡片是否已达今日完成态（完成后点击为撤销） */
 function isHabitGridItemCompletedToday(item: HabitGridItem, logicalTodayYmd: string): boolean {
+  if (isHabitSkippedOn(item.extraData, logicalTodayYmd)) return true;
   const hasSubs = Boolean(item.hasSubHabits || hasActiveSubHabits(item.extraData));
   // 子项模式：与桌面/后端一致，须先于 task 周期判断
   if (hasSubs) {
@@ -1261,10 +1283,18 @@ function formatFrogAssignDayLabel(ymd: string, todayYmd: string): string {
 
 /**
  * 列表「已指派」徽章文案：仅今日及以后的指派日。
+ * 今日已放弃时单独标出（放弃会清掉该日指派，不能只靠 dates）。
  * 历史未完成指派不在列表残留（数据仍保留，供日程滞留）。
  */
 function formatFrogAssignedBadgeText(extraData: string | null, todayYmd: string): string {
+  const abandonedToday = isFrogAbandonedOn(extraData, todayYmd);
   const dates = getActiveFrogAssignedDates(extraData, todayYmd);
+  if (abandonedToday) {
+    if (dates.length === 0) return '已放弃 · 今日';
+    const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
+    if (labels.length <= 2) return `已放弃 · 今日；另指派 ${labels.join('、')}`;
+    return `已放弃 · 今日；另指派 ${labels.slice(0, 2).join('、')}等`;
+  }
   if (dates.length === 0) return '';
   const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
   if (labels.length === 1) return `已指派 · ${labels[0]}`;
@@ -1277,6 +1307,12 @@ function getFrogAssignedHint(
   todayYmd: string,
   longPressHint = '长按可将待办放入日程时间线',
 ): string {
+  if (isFrogAbandonedOn(extraData, todayYmd)) {
+    const dates = getActiveFrogAssignedDates(extraData, todayYmd);
+    if (dates.length === 0) return '今日已放弃完成（课表仍保留记录）';
+    const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
+    return `今日已放弃；另有指派：${labels.join('、')}`;
+  }
   const dates = getActiveFrogAssignedDates(extraData, todayYmd);
   if (dates.length === 0) return longPressHint;
   const labels = dates.map((d) => formatFrogAssignDayLabel(d, todayYmd));
@@ -1571,36 +1607,10 @@ async function promptProjectCompletionWithHabitGate(
 }
 
 type ProjectListFlatItem =
+  | { kind: 'inbox-section'; key: string; title: string; meta: string }
   | { kind: 'month'; key: string; label: string; count: number; collapsed: boolean }
   | { kind: 'project'; key: string; project: ProjectRow }
   | { kind: 'log'; key: string; log: ProjectCompletionLogRow };
-
-function ymdToMonthKey(ymd: string | null | undefined): string {
-  const s = (ymd ?? '').trim();
-  if (/^\d{4}-\d{2}/.test(s)) return s.slice(0, 7);
-  return 'unknown';
-}
-
-function monthKeyToLabel(monthKey: string): string {
-  if (monthKey === 'unknown') return '更早';
-  const m = /^(\d{4})-(\d{2})$/.exec(monthKey);
-  if (!m) return monthKey;
-  return `${Number(m[1])}年${Number(m[2])}月`;
-}
-
-function projectInboxMonthKey(project: ProjectRow): string {
-  return (
-    ymdToMonthKey(project.inbox_entered_at) ||
-    ymdToMonthKey(project.updated_at) ||
-    ymdToMonthKey(project.created_at) ||
-    'unknown'
-  );
-}
-
-function currentCalendarMonthKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
 
 /** 到期自动归入收集箱所依据的日期（区间取结束日，否则取项目 due_date） */
 function getProjectInboxAutoArchiveDueYmd(project: ProjectRow): string | null {
@@ -2023,13 +2033,16 @@ export default function TasksScreen() {
   );
 
   const [orphanCompletionLogs, setOrphanCompletionLogs] = React.useState<ProjectCompletionLogRow[]>([]);
-  const [expandedInboxMonths, setExpandedInboxMonths] = React.useState<Set<string>>(
-    () => new Set([currentCalendarMonthKey()]),
-  );
+  const [inboxInnerFilter, setInboxInnerFilter] = React.useState<InboxInnerFilter>('all');
+  const [inboxSearchQuery, setInboxSearchQuery] = React.useState('');
+  const [inboxDetailProjectId, setInboxDetailProjectId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (projectTab !== INBOX_PROJECT_CATEGORY_ID) {
       setOrphanCompletionLogs([]);
+      setInboxInnerFilter('all');
+      setInboxSearchQuery('');
+      setInboxDetailProjectId(null);
       return;
     }
     let cancelled = false;
@@ -2048,62 +2061,88 @@ export default function TasksScreen() {
     };
   }, [projectTab, projects]);
 
-  const toggleInboxMonthExpanded = React.useCallback((monthKey: string) => {
-    setExpandedInboxMonths((prev) => {
-      const next = new Set(prev);
-      if (next.has(monthKey)) next.delete(monthKey);
-      else next.add(monthKey);
-      return next;
-    });
-  }, []);
+  const inboxStats = React.useMemo(() => {
+    const inboxProjects = projects.filter((p) => isProjectInInboxCategory(p.category_id));
+    let doneCount = 0;
+    let abandonedCount = 0;
+    let nearestRetentionDays: number | null = null;
+    for (const p of inboxProjects) {
+      if (isInboxAbandonedProject(p)) abandonedCount += 1;
+      else doneCount += 1;
+      const left = getInboxRetentionDaysLeft(p, logicalTodayYmd);
+      if (nearestRetentionDays == null || left < nearestRetentionDays) {
+        nearestRetentionDays = left;
+      }
+    }
+    return {
+      fullCount: inboxProjects.length,
+      doneCount,
+      abandonedCount,
+      nearestRetentionDays: inboxProjects.length > 0 ? nearestRetentionDays : null,
+    };
+  }, [logicalTodayYmd, projects]);
+
+  const inboxDetailProject = React.useMemo(
+    () =>
+      inboxDetailProjectId
+        ? (projects.find((p) => p.id === inboxDetailProjectId) ?? null)
+        : null,
+    [inboxDetailProjectId, projects],
+  );
 
   const projectListFlatItems = React.useMemo((): ProjectListFlatItem[] => {
     if (projectTab !== INBOX_PROJECT_CATEGORY_ID) {
       return projectsShownInList.map((p) => ({ kind: 'project' as const, key: p.id, project: p }));
     }
 
-    const byMonth = new Map<string, ProjectRow[]>();
-    for (const p of projectsShownInList) {
-      const mk = projectInboxMonthKey(p);
-      const list = byMonth.get(mk) ?? [];
-      list.push(p);
-      byMonth.set(mk, list);
-    }
-    const logByMonth = new Map<string, ProjectCompletionLogRow[]>();
-    for (const log of orphanCompletionLogs) {
-      const mk = ymdToMonthKey(log.completed_ymd);
-      const list = logByMonth.get(mk) ?? [];
-      list.push(log);
-      logByMonth.set(mk, list);
-    }
-    const monthKeys = [...new Set([...byMonth.keys(), ...logByMonth.keys()])].sort((a, b) =>
-      b.localeCompare(a),
-    );
+    const q = inboxSearchQuery.trim().toLowerCase();
+    const nameHit = (name: string) => !q || name.toLowerCase().includes(q);
     const items: ProjectListFlatItem[] = [];
-    for (const mk of monthKeys) {
-      const projs = byMonth.get(mk) ?? [];
-      const logs = logByMonth.get(mk) ?? [];
-      const count = projs.length + logs.length;
-      if (count === 0) continue;
-      const collapsed = !expandedInboxMonths.has(mk);
-      items.push({
-        kind: 'month',
-        key: `month:${mk}`,
-        label: monthKeyToLabel(mk),
-        count,
-        collapsed,
-      });
-      if (!collapsed) {
-        for (const p of projs) {
+
+    const showProjects = inboxInnerFilter !== 'log';
+    const showLogs = inboxInnerFilter === 'all' || inboxInnerFilter === 'log';
+
+    if (showProjects) {
+      const filtered = projectsInActiveTab.filter(
+        (p) => projectMatchesInboxInnerFilter(p, inboxInnerFilter) && nameHit(p.name),
+      );
+      if (filtered.length > 0) {
+        items.push({
+          kind: 'inbox-section',
+          key: 'inbox-section:full',
+          title: '仍保留完整细节',
+          meta: `${filtered.length} 个项目`,
+        });
+        for (const p of filtered) {
           items.push({ kind: 'project', key: p.id, project: p });
         }
+      }
+    }
+
+    if (showLogs) {
+      const logs = orphanCompletionLogs.filter((log) => nameHit(log.name));
+      if (logs.length > 0) {
+        items.push({
+          kind: 'inbox-section',
+          key: 'inbox-section:log',
+          title: '已压缩为完成履历',
+          meta: `只读快照 · ${logs.length} 条`,
+        });
         for (const log of logs) {
           items.push({ kind: 'log', key: `log:${log.id}`, log });
         }
       }
     }
+
     return items;
-  }, [expandedInboxMonths, orphanCompletionLogs, projectTab, projectsShownInList]);
+  }, [
+    inboxInnerFilter,
+    inboxSearchQuery,
+    orphanCompletionLogs,
+    projectTab,
+    projectsInActiveTab,
+    projectsShownInList,
+  ]);
 
   const pageFadeAnim = React.useRef(new Animated.Value(0)).current;
   const pageTranslateAnim = React.useRef(new Animated.Value(18)).current;
@@ -2873,35 +2912,63 @@ export default function TasksScreen() {
 
       const gate = createConcurrencyGate(3);
 
-      // 第一批：catalog + standaloneTodos + projects-list（sync 已在两侧去重）
-      const [coreData, projectsList] = await Promise.all([
-        gate.run(async () => {
-          try {
-            return await fetchTasksPageCoreData({
-              boundary: dayBoundary,
-              serverFallback: true,
-              forceRefresh: forceNet,
-              signal,
-            });
-          } catch (e) {
-            if (!isAbortError(e)) console.warn('[tasks] core 加载失败', e);
-            return null;
-          }
-        }),
-        gate.run(async () => {
-          try {
-            return await fetchProjectsListForTab(projectTab, {
-              hideCompletedProjectTasks: effectiveHideCompleted,
-              forceRefresh: forceNet,
-              serverFallback: true,
-              signal,
-            });
-          } catch (err) {
-            if (!isAbortError(err)) console.warn('加载项目列表 API 失败，回退本地组树', err);
-            return null;
-          }
-        }),
-      ]);
+      // 第一批：优先 bootstrap-v2 单快照；失败再分批 catalog + projects-list
+      // 全表 sync 挪到首屏 paint 后后台，避免阻塞可交互
+      let coreData: Awaited<ReturnType<typeof fetchTasksPageCoreData>> | null = null;
+      let projectsList: Awaited<ReturnType<typeof fetchProjectsListForTab>> | null = null;
+
+      const bootstrapBundle = await gate.run(async () => {
+        try {
+          return await fetchTasksBootstrapV2Bundle({
+            projectTab,
+            boundary: dayBoundary,
+            hideCompletedProjectTasks: effectiveHideCompleted,
+            forceRefresh: forceNet,
+            serverFallback: true,
+            signal,
+          });
+        } catch (e) {
+          if (!isAbortError(e)) console.warn('[tasks] bootstrap-v2 失败', e);
+          return null;
+        }
+      });
+
+      if (bootstrapBundle) {
+        coreData = bootstrapBundle.core;
+        projectsList = bootstrapBundle.projectsList;
+      } else {
+        const [core, projects] = await Promise.all([
+          gate.run(async () => {
+            try {
+              return await fetchTasksPageCoreData({
+                boundary: dayBoundary,
+                serverFallback: true,
+                forceRefresh: forceNet,
+                signal,
+              });
+            } catch (e) {
+              if (!isAbortError(e)) console.warn('[tasks] core 加载失败', e);
+              return null;
+            }
+          }),
+          gate.run(async () => {
+            try {
+              return await fetchProjectsListForTab(projectTab, {
+                hideCompletedProjectTasks: effectiveHideCompleted,
+                forceRefresh: forceNet,
+                serverFallback: true,
+                skipTasksTableSync: true,
+                signal,
+              });
+            } catch (err) {
+              if (!isAbortError(err)) console.warn('加载项目列表 API 失败，回退本地组树', err);
+              return null;
+            }
+          }),
+        ]);
+        coreData = core;
+        projectsList = projects;
+      }
       if (isStale()) return;
 
       setTasksLoadState((prev) =>
@@ -2933,6 +3000,17 @@ export default function TasksScreen() {
         pageData = await fetchTasksPageData({ boundary: dayBoundary, forceLocal: true });
         if (isStale()) return;
       }
+
+      // 后台增量 sync：补齐「他端已完成」等筛选视图漏行；不阻塞 matrix/habits
+      void gate
+        .run(async () => {
+          try {
+            await syncTasksTableFromApi({ forceRefresh: forceNet, signal });
+          } catch (e) {
+            if (!isAbortError(e)) console.warn('[tasks] 后台 tasks sync 失败', e);
+          }
+        })
+        .catch(() => undefined);
 
       const earlyProjects = projectsListResult
         ? reconcileProjectRowsForTab(pageData.projects, projectsListResult.projects, projectTab)
@@ -3173,9 +3251,6 @@ export default function TasksScreen() {
       if (isStale()) return;
     }
     await Promise.all([habitsPromise, pointsPromise]);
-    if (moduleLoading && !isStale()) {
-      setTasksLoadState((p) => markModuleResult(p, 'heatmap', true));
-    }
   }, [
     hideCompletedProjectTasks,
     loadExpandedProjectState,
@@ -3199,9 +3274,6 @@ export default function TasksScreen() {
       setInitialTasksLoadPending(false);
       setHasLocalTasksSnapshot(true);
       setCompletionHeatmapReloadToken((n) => n + 1);
-      if (isTasksModuleLoadingEnabled()) {
-        setTasksLoadState((p) => markModuleResult(p, 'heatmap', true));
-      }
     } catch (e) {
       if (!isAbortError(e)) {
         setInitialTasksLoadPending(false);
@@ -4949,6 +5021,250 @@ export default function TasksScreen() {
     ],
   );
 
+  /** 放弃今日：写 abandoned + unassign 该日；不删 schedule_placements */
+  const abandonFrogDay = React.useCallback(
+    async (taskId: string, assignYmd: string = logicalTodayYmd) => {
+      const project = projects.find((p) => p.id === taskId);
+      const isProjectFrog = Boolean(project);
+      const current = isProjectFrog
+        ? projectToFrogTaskRow(project!)
+        : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current) return;
+      if (isTaskTerminalStatus(current.status) || isTaskShelvedStatus(current.status)) return;
+      if (isFrogSubjectDeleted(current.extra_data)) return;
+      if (isFrogAbandonedOn(current.extra_data, assignYmd)) return;
+
+      markPageDirty();
+      dismissCompletionCelebration();
+      const withAbandoned = setFrogSessionAbandonedOn(current.extra_data, assignYmd);
+      const nextExtraData = removeFrogAssignedOn(withAbandoned, assignYmd);
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      if (isProjectFrog) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === taskId ? { ...p, extra_data: nextExtraData } : p)),
+        );
+      } else {
+        patchVisibleTask(taskId, { extra_data: nextExtraData });
+        setProjectTaskTreeMap((prev) =>
+          updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
+        );
+      }
+
+      try {
+        if (isProjectFrog) {
+          const snap = project ?? (await getProjectById(taskId));
+          await persistProjectFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            (snap ?? current) as Record<string, unknown>,
+          );
+        } else {
+          await persistTaskFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            current as Record<string, unknown>,
+          );
+        }
+        try {
+          await insertFrogCompletionEvent(taskId, assignYmd, 'abandoned', current.title ?? null);
+        } catch (frogLogErr) {
+          console.warn('记录青蛙放弃事件失败', frogLogErr);
+        }
+        scheduleHeatmapReload();
+        schedulePostMutationSync({
+          frogs: true,
+          projects: isProjectFrog,
+          projectTasks:
+            !isProjectFrog && isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+          tasks:
+            !isProjectFrog && !isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+        });
+        notifyFrogScheduleChanged();
+        toast.success('已放弃今日');
+      } catch (err) {
+        console.warn('放弃今日失败', err);
+        toast.error(toUserMessage(err, '未能放弃今日，请稍后重试'));
+        await loadTasks({ forceLocal: true });
+        if (isProjectFrog) await loadProjects();
+        await loadProjectTasks(projects);
+      }
+    },
+    [
+      findVisibleTask,
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      logicalTodayYmd,
+      markPageDirty,
+      patchVisibleTask,
+      projectTaskTreeMap,
+      projects,
+      scheduleHeatmapReload,
+      schedulePostMutationSync,
+      updateTaskInProjectTree,
+    ],
+  );
+
+  /** 撤销放弃：清 abandoned + 重新 assign 该日；保留占用 */
+  const unabandonFrogDay = React.useCallback(
+    async (taskId: string, assignYmd: string = logicalTodayYmd) => {
+      const project = projects.find((p) => p.id === taskId);
+      const isProjectFrog = Boolean(project);
+      const current = isProjectFrog
+        ? projectToFrogTaskRow(project!)
+        : findVisibleTask(taskId) ?? findTaskRowInProjectTreeMap(projectTaskTreeMap, taskId);
+      if (!current) return;
+      if (!isFrogAbandonedOn(current.extra_data, assignYmd)) return;
+
+      markPageDirty();
+      const cleared = clearFrogSessionAbandonedOn(current.extra_data);
+      const nextExtraData = mergeFrogAssignedOn(cleared, assignYmd);
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      if (isProjectFrog) {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === taskId ? { ...p, extra_data: nextExtraData } : p)),
+        );
+      } else {
+        patchVisibleTask(taskId, { extra_data: nextExtraData });
+        setProjectTaskTreeMap((prev) =>
+          updateTaskInProjectTree(prev, taskId, (node) => ({ ...node, extra_data: nextExtraData })),
+        );
+      }
+
+      try {
+        if (isProjectFrog) {
+          const snap = project ?? (await getProjectById(taskId));
+          await persistProjectFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            (snap ?? current) as Record<string, unknown>,
+          );
+        } else {
+          await persistTaskFrogExtraToApi(
+            taskId,
+            nextExtraData,
+            current as Record<string, unknown>,
+          );
+        }
+        try {
+          await insertFrogCompletionEvent(taskId, assignYmd, 'unabandoned', current.title ?? null);
+        } catch (frogLogErr) {
+          console.warn('记录青蛙撤销放弃事件失败', frogLogErr);
+        }
+        scheduleHeatmapReload();
+        schedulePostMutationSync({
+          frogs: true,
+          projects: isProjectFrog,
+          projectTasks:
+            !isProjectFrog && isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+          tasks:
+            !isProjectFrog && !isTaskInProjectListScope(current, projectTaskTreeMap, taskId),
+        });
+        notifyFrogScheduleChanged();
+        toast.success('已撤销放弃');
+      } catch (err) {
+        console.warn('撤销放弃失败', err);
+        toast.error(toUserMessage(err, '未能撤销放弃，请稍后重试'));
+        await loadTasks({ forceLocal: true });
+        if (isProjectFrog) await loadProjects();
+        await loadProjectTasks(projects);
+      }
+    },
+    [
+      findVisibleTask,
+      loadProjectTasks,
+      loadProjects,
+      loadTasks,
+      logicalTodayYmd,
+      markPageDirty,
+      patchVisibleTask,
+      projectTaskTreeMap,
+      projects,
+      scheduleHeatmapReload,
+      schedulePostMutationSync,
+      updateTaskInProjectTree,
+    ],
+  );
+
+  const abandonHabitToday = React.useCallback(
+    async (habitId: string, assignYmd: string = logicalTodayYmd) => {
+      try {
+        const habit = await getHabitById(habitId);
+        if (!habit) {
+          toast.error('习惯不存在');
+          return;
+        }
+        if (isHabitSkippedOn(habit.extra_data, assignYmd)) return;
+        markPageDirty();
+        const nextExtra = mergeHabitSkippedOn(habit.extra_data, assignYmd);
+        await updateHabit(habitId, { extra_data: nextExtra });
+        setHabitSections((prev) =>
+          prev.map((sec) => ({
+            ...sec,
+            items: sec.items.map((it) =>
+              it.id === habitId
+                ? { ...it, extraData: nextExtra, displayCompleted: true }
+                : it,
+            ),
+          })),
+        );
+        notifyFrogScheduleChanged();
+        toast.success('已跳过今日');
+      } catch (err) {
+        console.warn('习惯放弃今日失败', err);
+        toast.error(toUserMessage(err, '未能跳过今日，请稍后重试'));
+        void loadHabits();
+      }
+    },
+    [loadHabits, logicalTodayYmd, markPageDirty],
+  );
+
+  const unabandonHabitToday = React.useCallback(
+    async (habitId: string, assignYmd: string = logicalTodayYmd) => {
+      try {
+        const habit = await getHabitById(habitId);
+        if (!habit) {
+          toast.error('习惯不存在');
+          return;
+        }
+        if (!isHabitSkippedOn(habit.extra_data, assignYmd)) return;
+        markPageDirty();
+        const nextExtra = removeHabitSkippedOn(habit.extra_data, assignYmd);
+        await updateHabit(habitId, { extra_data: nextExtra });
+        setHabitSections((prev) =>
+          prev.map((sec) => ({
+            ...sec,
+            items: sec.items.map((it) =>
+              it.id === habitId
+                ? {
+                    ...it,
+                    extraData: nextExtra,
+                    displayCompleted: isHabitDayDisplayCompleted({
+                      kind: it.kind,
+                      todayCount: it.todayCount,
+                      dailyGoal: it.dailyGoal,
+                      hasDayRecord: it.kind === 'break' ? it.hasTodayRecord : undefined,
+                      ymd: assignYmd,
+                      logicalTodayYmd: logicalTodayYmd,
+                    }),
+                  }
+                : it,
+            ),
+          })),
+        );
+        notifyFrogScheduleChanged();
+        toast.success('已撤销跳过');
+      } catch (err) {
+        console.warn('习惯撤销跳过失败', err);
+        toast.error(toUserMessage(err, '未能撤销跳过，请稍后重试'));
+        void loadHabits();
+      }
+    },
+    [loadHabits, logicalTodayYmd, markPageDirty],
+  );
+
   const toggleFrogDone = React.useCallback(
     (taskId: string, assignYmd: string = logicalTodayYmd) => {
       const project = projects.find((p) => p.id === taskId);
@@ -6400,22 +6716,56 @@ export default function TasksScreen() {
     </View>
   );
 
+  const heatmapEverReadyRef = React.useRef(false);
+  const onHeatmapLoadState = React.useCallback((state: 'loading' | 'ready' | 'error') => {
+    if (!isTasksModuleLoadingEnabled()) return;
+    if (state === 'ready') heatmapEverReadyRef.current = true;
+    setTasksLoadState((prev) => ({
+      ...prev,
+      heatmap: state,
+    }));
+  }, []);
+
+  const showHabitsSectionSkeleton =
+    isTasksModuleLoadingEnabled() &&
+    shouldShowTasksSectionSkeleton(
+      tasksLoadState.habits,
+      habitSections.some((s) => s.items.length > 0),
+    );
+
+  // 仅「从未成功画过」时用分区骨架；有旧数据时后台刷新不闪空
+  const showHeatmapSectionSkeleton =
+    isTasksModuleLoadingEnabled() &&
+    shouldShowTasksSectionSkeleton(tasksLoadState.heatmap, heatmapEverReadyRef.current) &&
+    completionHeatmapReloadToken > 0;
+
   const heatmapBlock = (
     <View style={stackedSectionStyle}>
-      <TaskCompletionHeatmap
-        logicalTodayYmd={logicalTodayYmd}
-        dayBoundary={dayBoundary}
-        textMain={colors.text}
-        textMuted={outline}
-        accentColor={primary}
-        todoAccentColor={secondary}
-        innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
-        innerBorderColor={colors.outlineStrong}
-        isDark={isDark}
-        reloadToken={completionHeatmapReloadToken}
-        projects={projects.map((p) => ({ id: p.id, name: p.name }))}
-        onOpenDetail={() => router.push('/completion-heatmap')}
-      />
+      {showHeatmapSectionSkeleton ? (
+        <TasksHeatmapSkeleton colors={colors} cardBg={card} />
+      ) : null}
+      <View
+        style={
+          showHeatmapSectionSkeleton
+            ? { opacity: 0, height: 0, overflow: 'hidden' }
+            : undefined
+        }>
+        <TaskCompletionHeatmap
+          logicalTodayYmd={logicalTodayYmd}
+          dayBoundary={dayBoundary}
+          textMain={colors.text}
+          textMuted={outline}
+          accentColor={primary}
+          todoAccentColor={secondary}
+          innerCardBg={isDark ? colors.surfaceMuted : colors.surface}
+          innerBorderColor={colors.outlineStrong}
+          isDark={isDark}
+          reloadToken={completionHeatmapReloadToken}
+          projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+          onOpenDetail={() => router.push('/completion-heatmap')}
+          onLoadState={onHeatmapLoadState}
+        />
+      </View>
     </View>
   );
 
@@ -6455,6 +6805,18 @@ export default function TasksScreen() {
     onToggleDone: ({ id, assignYmd }: { id: string; assignYmd: string }) => {
       toggleFrogDone(id, assignYmd);
       notifyFrogScheduleChanged();
+    },
+    onAbandonToday: ({ id, assignYmd }: { id: string; assignYmd: string }) => {
+      void abandonFrogDay(id, assignYmd);
+    },
+    onUnabandonToday: ({ id, assignYmd }: { id: string; assignYmd: string }) => {
+      void unabandonFrogDay(id, assignYmd);
+    },
+    onHabitAbandonToday: (habitId: string, assignYmd: string) => {
+      void abandonHabitToday(habitId, assignYmd);
+    },
+    onHabitUnabandonToday: (habitId: string, assignYmd: string) => {
+      void unabandonHabitToday(habitId, assignYmd);
     },
     onHabitCheckIn: (habitId: string) => {
       const item = habitSections.flatMap((s) => s.items).find((h) => h.id === habitId);
@@ -6693,8 +7055,10 @@ export default function TasksScreen() {
           isDark,
           secondaryPane,
           projectListFlatItems,
-          expandedInboxMonths,
           orphanCompletionLogs,
+          inboxInnerFilter,
+          inboxSearchQuery,
+          inboxDetailProjectId,
         }}
         ListHeaderComponent={
           <>
@@ -6855,7 +7219,15 @@ export default function TasksScreen() {
                   </ScalePressable>
                 </View>
               </View>
-              {displayHabitSections.map((section) => {
+              {showHabitsSectionSkeleton ? (
+                <TasksHabitSectionSkeleton
+                  colors={colors}
+                  cardBg={card}
+                  habitItemWidth={habitGridItemWidth}
+                />
+              ) : null}
+              {!showHabitsSectionSkeleton
+                ? displayHabitSections.map((section) => {
                 const isOpen = expandedHabitSections[section.id] ?? true;
                 const visibleHabitItems = section.items.filter(
                   (it) => !isHabitHiddenByCalendarCycleOnTasks(it.extraData, habitScheduleAnchorDate)
@@ -7184,7 +7556,8 @@ export default function TasksScreen() {
                     ) : null}
                   </View>
                 );
-              })}
+              })
+                : null}
               <View style={[styles.paneFoot, { borderTopColor: isDark ? tf.line : 'rgba(232,224,210,0.6)' }]}>
                 <Text style={[styles.paneFootLeft, { color: tf.faint }]} numberOfLines={1}>
                   {habitsCollapseSummary}
@@ -7368,12 +7741,17 @@ export default function TasksScreen() {
                     const isShelved = isTaskShelvedStatus(t.status);
                     const frogAssignedDates = getActiveFrogAssignedDates(t.extra_data, logicalTodayYmd);
                     const hasManualFrogAssignment = frogAssignedDates.length > 0;
+                    const frogAbandonedToday = isFrogAbandonedOn(t.extra_data, logicalTodayYmd);
                     /** 今日入格：手拖指派，或重复规则自动入格指定日 */
                     const inGridToday =
                       !isShelved &&
                       isTaskInScheduleGridOnDay(t, logicalTodayYmd, logicalTodayYmd);
-                    const hasFrogAssignment = hasManualFrogAssignment || inGridToday;
-                    const frogAssignedBadgeText = formatFrogAssignedBadgeText(t.extra_data, logicalTodayYmd);
+                    const hasFrogAssignment =
+                      hasManualFrogAssignment || inGridToday || frogAbandonedToday;
+                    const frogAssignedBadgeText = formatFrogAssignedBadgeText(
+                      t.extra_data,
+                      logicalTodayYmd,
+                    );
                     const noteText = (t.note ?? '').trim();
                     const acceptanceText = trimTaskAcceptanceCriteria(t);
                     const meta = parseTaskMeta(t.extra_data);
@@ -7558,7 +7936,9 @@ export default function TasksScreen() {
                                 todoMetaParts.push(formatTaskDueText(due, logicalTodayYmd));
                               else if (dueDisplayYmd)
                                 todoMetaParts.push(formatTaskDueText(dueDisplayYmd, logicalTodayYmd));
-                              if (hasManualFrogAssignment) {
+                              if (frogAbandonedToday) {
+                                todoMetaParts.push(frogAssignedBadgeText || '已放弃 · 今日');
+                              } else if (hasManualFrogAssignment) {
                                 const assignLabel =
                                   frogAssignedDates
                                     .map((d) => formatFrogAssignDayLabel(d, logicalTodayYmd))
@@ -7598,9 +7978,15 @@ export default function TasksScreen() {
                                     bg: isDark ? tf.paper3 : '#EAE6DC',
                                     fg: isDark ? tf.muted : '#7E8B81',
                                   }
-                                : hasFrogAssignment
-                                  ? { label: '已入格', bg: tf.sage2, fg: '#36594D' }
-                                  : { label: '未入格', bg: tf.amber2, fg: tf.amberInk };
+                                : frogAbandonedToday
+                                  ? {
+                                      label: '已放弃',
+                                      bg: isDark ? tf.rose2 : '#F3E4DF',
+                                      fg: isDark ? tf.rose : '#9A5B4A',
+                                    }
+                                  : hasFrogAssignment
+                                    ? { label: '已入格', bg: tf.sage2, fg: '#36594D' }
+                                    : { label: '未入格', bg: tf.amber2, fg: tf.amberInk };
                             const drawerOpen = todoDrawerId === t.id;
                             const highlighted = highlightTodoId === t.id;
                             const todoIcon = resolveTaskDisplayIcon(t.extra_data);
@@ -7888,44 +8274,31 @@ export default function TasksScreen() {
                   ],
                 },
               ]}>
-                <View style={styles.habitHeaderRow}>
-                  <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
-                    {projectTab === INBOX_PROJECT_CATEGORY_ID
-                      ? `收集箱 · 保留 ${INBOX_PROJECT_FULL_RETENTION_DAYS} 天`
-                      : projectsShownInList.length !== projectsInActiveTab.length
+                {projectTab === INBOX_PROJECT_CATEGORY_ID ? null : (
+                  <View style={styles.habitHeaderRow}>
+                    <Text style={{ fontSize: 11, color: tf.faint, flex: 1 }} numberOfLines={1}>
+                      {projectsShownInList.length !== projectsInActiveTab.length
                         ? `${projectsShownInList.length}/${projectsInActiveTab.length} 个`
                         : `${projectsShownInList.length} 个进行中`}
-                  </Text>
-                  <ScalePressable
-                    onPress={() =>
-                      router.push(
-                        projectTab === 'all'
-                          ? '/add-project'
-                          : { pathname: '/add-project', params: { categoryId: projectTab } },
-                      )
-                    }
-                    accessibilityRole="button"
-                    accessibilityLabel="新建项目"
-                    style={({ pressed }) => [
-                      { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
-                    ]}>
-                    <MaterialIcons name="add" size={14} color={tf.frog} />
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>新建</Text>
-                  </ScalePressable>
-                </View>
-                {projectTab === INBOX_PROJECT_CATEGORY_ID ? (
-                  <ScalePressable
-                    onPress={() => router.push('/project-completion-logs' as never)}
-                    accessibilityRole="button"
-                    accessibilityLabel="查看完成履历"
-                    style={({ pressed }) => [
-                      { marginBottom: 4, alignSelf: 'flex-start', opacity: pressed ? 0.75 : 1 },
-                    ]}>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>
-                      查看全部完成履历 →
                     </Text>
-                  </ScalePressable>
-                ) : null}
+                    <ScalePressable
+                      onPress={() =>
+                        router.push(
+                          projectTab === 'all'
+                            ? '/add-project'
+                            : { pathname: '/add-project', params: { categoryId: projectTab } },
+                        )
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="新建项目"
+                      style={({ pressed }) => [
+                        { flexDirection: 'row', alignItems: 'center', gap: 1, opacity: pressed ? 0.75 : 1 },
+                      ]}>
+                      <MaterialIcons name="add" size={14} color={tf.frog} />
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: tf.frog }}>新建</Text>
+                    </ScalePressable>
+                  </View>
+                )}
                 <SegmentTabs
                   tabs={projectTabs}
                   active={projectTab}
@@ -7934,27 +8307,44 @@ export default function TasksScreen() {
                   color={primary}
                   muted={outline}
                 />
-                {projectsInActiveTab.length > 0 ? (
-                  <TaskListFilterBar
-                    value={projectListFilter}
-                    onChange={setProjectListFilter}
-                    tags={[]}
-                    resultCount={projectsShownInList.length}
-                    searchPlaceholder="搜索项目名称或备注…"
-                    longTermSectionLabel="长期项目"
-                    showEntityScope
-                  />
-                ) : null}
-                <View style={styles.projectListFilterRow}>
-                  <ProjectListTaskFilterChip
-                    active={hideCompletedProjectTasks}
-                    onPress={() => onHideCompletedProjectTasksChange(!hideCompletedProjectTasks)}
-                    primary={primary}
-                    outline={outline}
-                    onPrimary={colors.onPrimary}
+                {projectTab === INBOX_PROJECT_CATEGORY_ID ? (
+                  <InboxArchiveHeader
+                    tf={tf}
                     isDark={isDark}
+                    fullCount={inboxStats.fullCount}
+                    doneCount={inboxStats.doneCount}
+                    abandonedCount={inboxStats.abandonedCount}
+                    nearestRetentionDays={inboxStats.nearestRetentionDays}
+                    innerFilter={inboxInnerFilter}
+                    onInnerFilterChange={setInboxInnerFilter}
+                    search={inboxSearchQuery}
+                    onSearchChange={setInboxSearchQuery}
                   />
-                </View>
+                ) : (
+                  <>
+                    {projectsInActiveTab.length > 0 ? (
+                      <TaskListFilterBar
+                        value={projectListFilter}
+                        onChange={setProjectListFilter}
+                        tags={[]}
+                        resultCount={projectsShownInList.length}
+                        searchPlaceholder="搜索项目名称或备注…"
+                        longTermSectionLabel="长期项目"
+                        showEntityScope
+                      />
+                    ) : null}
+                    <View style={styles.projectListFilterRow}>
+                      <ProjectListTaskFilterChip
+                        active={hideCompletedProjectTasks}
+                        onPress={() => onHideCompletedProjectTasksChange(!hideCompletedProjectTasks)}
+                        primary={primary}
+                        outline={outline}
+                        onPrimary={colors.onPrimary}
+                        isDark={isDark}
+                      />
+                    </View>
+                  </>
+                )}
             </Animated.View>
             )}
             </View>
@@ -7968,102 +8358,114 @@ export default function TasksScreen() {
                 <View style={[styles.projectHead, { borderLeftColor: outline }]}>
                   <View style={styles.projectHeadLeft}>
                     <MaterialIcons
-                      name={projectsInActiveTab.length > 0 ? 'filter-list-off' : 'folder-open'}
+                      name={
+                        projectTab === INBOX_PROJECT_CATEGORY_ID
+                          ? inboxInnerFilter !== 'all' || inboxSearchQuery.trim()
+                            ? 'filter-list-off'
+                            : 'inventory-2'
+                          : projectsInActiveTab.length > 0
+                            ? 'filter-list-off'
+                            : 'folder-open'
+                      }
                       size={22}
                       color={outline}
                     />
                     <View style={styles.projectHeadMainColumn}>
                       <Text style={[styles.projectTitle, { color: colors.textSecondary }]}>
-                        {projectsInActiveTab.length > 0 ? '没有匹配的项目' : '暂无项目'}
+                        {projectTab === INBOX_PROJECT_CATEGORY_ID
+                          ? inboxInnerFilter !== 'all' || inboxSearchQuery.trim()
+                            ? '没有匹配的归档'
+                            : '收集箱是空的'
+                          : projectsInActiveTab.length > 0
+                            ? '没有匹配的项目'
+                            : '暂无项目'}
                       </Text>
                       <Text style={[styles.projectSub, { color: outline }]}>
-                        {projectsInActiveTab.length > 0
-                          ? '试试换个日期或紧急程度，或清除筛选'
-                          : '可点击右上角“新建项目”添加'}
+                        {projectTab === INBOX_PROJECT_CATEGORY_ID
+                          ? inboxInnerFilter !== 'all' || inboxSearchQuery.trim()
+                            ? '试试切换筛选，或清除搜索'
+                            : '完成或放弃的项目会先在这里停留'
+                          : projectsInActiveTab.length > 0
+                            ? '试试换个日期或紧急程度，或清除筛选'
+                            : '可点击右上角“新建项目”添加'}
                       </Text>
                     </View>
                   </View>
                 </View>
               </View>
             </View>
-          ) : null
+          ) : undefined
         }
         ListFooterComponent={<View style={{ height: glassTabBarContentInset(insets.bottom) + mainScrollKeyboardPad }} />}
         renderItem={({ item: listItem }) => {
-                  if (listItem.kind === 'month') {
-                    const monthKey = listItem.key.replace(/^month:/, '');
-                    return (
-                      <Pressable
-                        onPress={() => toggleInboxMonthExpanded(monthKey)}
-                        style={({ pressed }) => [
-                          styles.projectSwipeWrap,
-                          {
-                            paddingVertical: 10,
-                            paddingHorizontal: 4,
-                            flexDirection: 'row',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            opacity: pressed ? 0.85 : 1,
-                          },
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel={`${listItem.label}，${listItem.count} 项，${listItem.collapsed ? '展开' : '收起'}`}>
-                        <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 15 }]}>
-                          {listItem.label}
-                        </Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={[styles.sectionMeta, { color: outline }]}>{listItem.count}</Text>
-                          <MaterialIcons
-                            name={listItem.collapsed ? 'expand-more' : 'expand-less'}
-                            size={22}
-                            color={outline}
-                          />
-                        </View>
-                      </Pressable>
-                    );
+                  if (projectTab === INBOX_PROJECT_CATEGORY_ID) {
+                    if (listItem.kind === 'inbox-section') {
+                      return (
+                        <InboxArchiveSectionHeader
+                          title={listItem.title}
+                          meta={listItem.meta}
+                          tf={tf}
+                          isDark={isDark}
+                        />
+                      );
+                    }
+                    if (listItem.kind === 'log') {
+                      const log = listItem.log;
+                      return (
+                        <InboxArchiveLogRow
+                          log={log}
+                          tf={tf}
+                          isDark={isDark}
+                          onPress={() =>
+                            router.push({
+                              pathname: '/project-completion-log/[id]',
+                              params: { id: log.id },
+                            })
+                          }
+                        />
+                      );
+                    }
+                    if (listItem.kind === 'project') {
+                      const project = listItem.project;
+                      const tree = projectTaskTreeMap[project.id] ?? [];
+                      const progress = getProjectTreeTaskProgress(tree);
+                      const abandoned = isInboxAbandonedProject(project);
+                      return (
+                        <InboxArchiveProjectCard
+                          project={project}
+                          progress={progress}
+                          todayYmd={logicalTodayYmd}
+                          tf={tf}
+                          isDark={isDark}
+                          onPress={() => setInboxDetailProjectId(project.id)}
+                          onActionPress={() => {
+                            if (abandoned) {
+                              Alert.alert(
+                                '恢复项目',
+                                `确定将「${project.name}」移出收集箱并恢复为待办吗？`,
+                                [
+                                  { text: '取消', style: 'cancel' },
+                                  {
+                                    text: '恢复',
+                                    onPress: () => void reopenProjectFromList(project),
+                                  },
+                                ],
+                              );
+                              return;
+                            }
+                            setInboxDetailProjectId(project.id);
+                          }}
+                        />
+                      );
+                    }
+                    return null;
                   }
-                  if (listItem.kind === 'log') {
-                    const log = listItem.log;
-                    const tags = parseCompletionLogTagNames(log.tag_names);
-                    const pointsLabel =
-                      log.points_delta > 0
-                        ? `+${formatPoints(log.points_delta)}`
-                        : log.points_delta < 0
-                          ? formatPoints(log.points_delta)
-                          : null;
-                    return (
-                      <View style={styles.projectSwipeWrap}>
-                        <View
-                          style={[
-                            styles.projectCard,
-                            { backgroundColor: soft, opacity: 0.92, borderLeftColor: success, borderLeftWidth: 3 },
-                          ]}>
-                          <View style={[styles.projectHead, { borderLeftColor: 'transparent' }]}>
-                            <View style={styles.projectHeadLeft}>
-                              <MaterialIcons name="history" size={20} color={success} />
-                              <View style={styles.projectHeadMainColumn}>
-                                <Text style={[styles.projectTitle, { color: colors.text }]} numberOfLines={2}>
-                                  {log.name}
-                                </Text>
-                                <Text style={[styles.projectSub, { color: outline }]} numberOfLines={2}>
-                                  {log.completed_ymd}
-                                  {log.task_count > 0
-                                    ? ` · ${log.done_task_count}/${log.task_count} 任务`
-                                    : ''}
-                                  {pointsLabel ? ` · ${pointsLabel} 积分` : ''}
-                                  {' · 已压缩为履历'}
-                                </Text>
-                                {tags.length > 0 ? (
-                                  <Text style={[styles.projectSub, { color: outline }]} numberOfLines={1}>
-                                    {tags.join(' · ')}
-                                  </Text>
-                                ) : null}
-                              </View>
-                            </View>
-                          </View>
-                        </View>
-                      </View>
-                    );
+                  if (
+                    listItem.kind === 'month' ||
+                    listItem.kind === 'log' ||
+                    listItem.kind === 'inbox-section'
+                  ) {
+                    return null;
                   }
                   const project = listItem.project;
 
@@ -8073,10 +8475,13 @@ export default function TasksScreen() {
                   const isCompleted = isProjectTerminalStatus(project.status);
                   const isShelvedProject = isProjectShelvedStatus(project.status);
                   const isCancelledProject = normalizeProjectStatus(project.status) === 'cancelled';
-                  const hasFrogAssignment = hasActiveFrogAssignment(
+                  const frogAbandonedToday = isFrogAbandonedOn(
                     project.extra_data,
                     logicalTodayYmd,
                   );
+                  const hasFrogAssignment =
+                    hasActiveFrogAssignment(project.extra_data, logicalTodayYmd) ||
+                    frogAbandonedToday;
                   const frogAssignedBadgeText = formatFrogAssignedBadgeText(
                     project.extra_data,
                     logicalTodayYmd,
@@ -8471,12 +8876,24 @@ export default function TasksScreen() {
                                   style={[
                                     styles.projectDoneBadge,
                                     {
-                                      backgroundColor: taskUi.primaryWash,
-                                      borderColor: taskUi.primaryWashBorder,
+                                      backgroundColor: frogAbandonedToday
+                                        ? taskUi.dangerWash
+                                        : taskUi.primaryWash,
+                                      borderColor: frogAbandonedToday
+                                        ? taskUi.dangerWashBorder
+                                        : taskUi.primaryWashBorder,
                                     },
                                   ]}>
-                                  <MaterialIcons name="event-available" size={12} color={primary} />
-                                  <Text style={[styles.projectDoneBadgeText, { color: primary }]}>
+                                  <MaterialIcons
+                                    name={frogAbandonedToday ? 'block' : 'event-available'}
+                                    size={12}
+                                    color={frogAbandonedToday ? error : primary}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.projectDoneBadgeText,
+                                      { color: frogAbandonedToday ? error : primary },
+                                    ]}>
                                     {frogAssignedBadgeText}
                                   </Text>
                                 </View>
@@ -9064,9 +9481,24 @@ export default function TasksScreen() {
                               { borderTopColor: tf.line, opacity: pressed ? 0.85 : 1 },
                             ]}>
                             {hasFrogAssignment && !isCompleted ? (
-                              <View style={[styles.projectFrogChip, { backgroundColor: tf.lily2 }]}>
-                                <MaterialIcons name="eco" size={11} color={tf.frog} />
-                                <Text style={{ fontSize: 10, color: '#557A51', fontWeight: '700' }}>
+                              <View
+                                style={[
+                                  styles.projectFrogChip,
+                                  {
+                                    backgroundColor: frogAbandonedToday ? tf.rose2 : tf.lily2,
+                                  },
+                                ]}>
+                                <MaterialIcons
+                                  name={frogAbandonedToday ? 'block' : 'eco'}
+                                  size={11}
+                                  color={frogAbandonedToday ? tf.rose : tf.frog}
+                                />
+                                <Text
+                                  style={{
+                                    fontSize: 10,
+                                    color: frogAbandonedToday ? tf.rose : '#557A51',
+                                    fontWeight: '700',
+                                  }}>
                                   {frogAssignedBadgeText}
                                 </Text>
                               </View>
@@ -9292,6 +9724,41 @@ export default function TasksScreen() {
           const target = prioritySheetTarget;
           if (!target) return;
           void applyQuickPriority(target, priority);
+        }}
+      />
+
+      <InboxArchiveDetailSheet
+        visible={!!inboxDetailProject}
+        project={inboxDetailProject}
+        progress={
+          inboxDetailProject
+            ? getProjectTreeTaskProgress(projectTaskTreeMap[inboxDetailProject.id] ?? [])
+            : { total: 0, done: 0, ratio: 0 }
+        }
+        todayYmd={logicalTodayYmd}
+        tf={tf}
+        isDark={isDark}
+        onClose={() => setInboxDetailProjectId(null)}
+        onRestore={() => {
+          if (!inboxDetailProject) return;
+          const target = inboxDetailProject;
+          setInboxDetailProjectId(null);
+          Alert.alert('恢复项目', `确定将「${target.name}」移出收集箱并恢复为待办吗？`, [
+            { text: '取消', style: 'cancel' },
+            { text: '恢复', onPress: () => void reopenProjectFromList(target) },
+          ]);
+        }}
+        onOpenFull={() => {
+          if (!inboxDetailProject) return;
+          const id = inboxDetailProject.id;
+          setInboxDetailProjectId(null);
+          router.push({ pathname: '/edit-project', params: { id } });
+        }}
+        onDeleteDetails={() => {
+          if (!inboxDetailProject) return;
+          const target = inboxDetailProject;
+          setInboxDetailProjectId(null);
+          confirmDeleteInboxProject(target);
         }}
       />
 
