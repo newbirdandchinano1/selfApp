@@ -1,11 +1,9 @@
 ﻿import { FOLD_MOTION_EASE } from '@/components/review/fold-motion';
 import { Layout, Radius, Spacing } from '@/constants/design-tokens';
-import {
-  TaskFoldMotion,
-  useTaskFoldTheme,
-} from '@/constants/task-fold-theme';
+import { TaskFoldMotion } from '@/constants/task-fold-theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReducedMotionState } from '@/hooks/use-reduced-motion';
+import { useWeatherAwareTaskFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { toast, toUserMessage, Alert } from '@/lib/app-feedback';
 import { mergeFrogAssignedOn, removeFrogAssignedOn } from '@/lib/frog-assignment';
 import { isFrogAbandonedOn, isFrogDoneForToday } from '@/lib/long-term-task';
@@ -543,12 +541,21 @@ export function WeeklyFrogSchedule({
   onViewYmdChange,
 }: Props) {
   const { colors: theme, isDark, shadows } = useAppTheme();
-  const { tf, fonts: foldFonts } = useTaskFoldTheme();
+  const { tf, fonts: foldFonts, atmosphereActive } = useWeatherAwareTaskFoldTheme();
   const primary = tf.pond;
   const outline = tf.muted;
   const surfaceLow = isDark ? tf.paper2 : tf.paper3;
   const gridLineSoft = tf.line;
   const todayWash = isDark ? tf.lily2 : 'rgba(232,239,217,0.55)';
+  /** 氛围：日间米白卡 / 夜间墨绿玻璃不透明度 60%；关闭时保留暖纸卡底 */
+  const scheduleShellBg = atmosphereActive
+    ? isDark
+      ? tf.cardSoft
+      : tf.card
+    : isDark
+      ? tf.paper2
+      : tf.cardSoft;
+  const scheduleShellBorder = isDark ? tf.line : 'rgba(216,205,187,0.78)';
 
   /** 阶段 G：是否按分钟写入。缺省关（旧选格；J 完成前保持）。 */
   const [timelineWrite, setTimelineWrite] = React.useState(true);
@@ -2157,8 +2164,8 @@ export function WeeklyFrogSchedule({
             ? [
                 sectionCardStyle,
                 {
-                  backgroundColor: isDark ? tf.paper2 : tf.cardSoft,
-                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.78)',
+                  backgroundColor: scheduleShellBg,
+                  borderColor: scheduleShellBorder,
                   overflow: 'hidden',
                   paddingTop: 0,
                   paddingHorizontal: 0,
@@ -2166,10 +2173,10 @@ export function WeeklyFrogSchedule({
               ]
             : [
                 styles.summaryCard,
-                shadows.card,
+                atmosphereActive ? null : shadows.card,
                 {
-                  backgroundColor: isDark ? tf.paper2 : tf.cardSoft,
-                  borderColor: isDark ? tf.line : 'rgba(216,205,187,0.78)',
+                  backgroundColor: scheduleShellBg,
+                  borderColor: scheduleShellBorder,
                   overflow: 'hidden',
                   paddingTop: 0,
                   paddingHorizontal: 0,

@@ -1,5 +1,6 @@
 /**
- * 天气场景 → weather-atmosphere/*.webp 动图资源（设置面板选景 id 沿用）。
+ * 天气氛围场景 id / 选景类型（设置面板与 Skia 氛围共用）。
+ * 实拍 webp 文件仍保留在 `assets/weather-atmosphere/`，由 PhotoMistOverlay 等按需 require。
  */
 import type { WeatherSceneKey } from '@/lib/weather-scene';
 
@@ -52,38 +53,17 @@ export function isWeatherAtmosphereWebpPick(value: unknown): value is WeatherAtm
   return value === 'auto' || isWeatherAtmosphereWebpId(value);
 }
 
-const WEBP_SOURCES: Record<WeatherAtmosphereWebpId, number> = {
-  sunny: require('../assets/weather-atmosphere/sunny.webp'),
-  cloudy: require('../assets/weather-atmosphere/cloudy.webp'),
-  overcast: require('../assets/weather-atmosphere/overcast.webp'),
-  fog: require('../assets/weather-atmosphere/fog.webp'),
-  'rain-light': require('../assets/weather-atmosphere/rain-light.webp'),
-  rain: require('../assets/weather-atmosphere/rain.webp'),
-  // 暂无独立暴雨素材，复用 rain 动图（主路径已切 Skia）
-  'rain-heavy': require('../assets/weather-atmosphere/rain.webp'),
-  snow: require('../assets/weather-atmosphere/snow.webp'),
-  thunderstorm: require('../assets/weather-atmosphere/thunderstorm.webp'),
-};
-
-export function weatherAtmosphereWebpSource(id: WeatherAtmosphereWebpId): number {
-  return WEBP_SOURCES[id];
-}
-
 function isThunderstorm(input: { text?: string | null; icon?: string | null }): boolean {
   const text = (input.text ?? '').trim().toLowerCase();
   if (/雷|thunder|storm/.test(text)) return true;
   const icon = (input.icon ?? '').trim();
   const n = Number(icon);
-  // 和风：302–304 雷阵雨 / 雷暴常见码
   if (Number.isFinite(n) && n >= 302 && n <= 304) return true;
   if (icon === '1087' || icon === '1273' || icon === '1276') return true;
   return false;
 }
 
-/**
- * 按当前天气文案 / 图标 / 降水量选择 WebP。
- * 未识别场景时回退 cloudy。
- */
+/** 按当前天气文案 / 图标 / 降水量映射到场景 id（未识别回退 cloudy）。 */
 export function resolveWeatherAtmosphereWebpId(input: {
   scene?: WeatherSceneKey | null;
   text?: string | null;

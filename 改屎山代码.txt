@@ -1,0 +1,146 @@
+1. 表现层（UI / View 层）—— 只管“长什么样、怎么交互”
+包含什么：页面（Pages / Screens）、基础组件（Button、Modal、Card、EmptyState）、页面级布局。
+
+职责：接收数据渲染界面，把用户的点击、输入、滑动等事件抛出去。
+
+降耦关键：不直接发网络请求，不写复杂业务规则。组件尽量变成“傻瓜组件”——给它什么数据，它就画什么；用户点了什么，它只调用传进来的回调函数。
+
+--- 第1步覆盖评估（selfApp 现状）---
+范围：凡属“画界面 + 抛事件”的文件；不含业务 Hook / Store / API / repository。
+切分规则（按页体量，一次对话/PR 只做 1 个子步）：
+  · ≤800 行     → 可 1 次做完（抽展示组件 + 断直连仓库）
+  · 800～2k     → 拆 2 子步：①纯 UI 区块下沉 ②断网络/仓库，页只留组装
+  · 2k～5k      → 按可见区块拆 3～4 子步，每步只动一块 UI
+  · >5k         → 按主窗格拆 5～8 子步；禁止一次改整文件
+目标：页文件 ideally <300～500 行；仍直连 repository / page-api-fetch / 裸 SQL 则未过关。
+入口壳 app/(tabs)/* 已薄，不计入改造工时。
+
+======== 1.A 任务 Tab · TasksScreen（~10.8k）须拆 8 子步 ========
+  1.A.1 壳与顶栏：骨架/分段切换（项目·待办·小习惯）/空态/SegmentTabs 等纯展示下沉
+  1.A.2 周日程块：WeeklyFrogSchedule 周边 UI 与跳日条；页内只留回调接线
+  1.A.3 项目列表窗格：项目行、树展开、筛选 chip、收集箱列表 UI
+  1.A.4 独立待办窗格：待办行、行下抽屉、快捷输入条 UI
+  1.A.5 小习惯窗格：Habit 网格卡、进度点、分区头、子习惯弹层 UI
+  1.A.6 弹层/Sheet UI：分类编辑、优先级 sheet、AI 入口壳（不含业务实现）
+  1.A.7 断直连：完成/打卡/积分/同步等移出 Screen（交第2步 Hook；本步只删 UI 内调用）
+  1.A.8 收口：TasksScreen 降至组装页（<500 行），跑类型检查 + 主路径点检
+
+======== 1.B 财务 Tab · FinanceScreen（~7.4k）须拆 6 子步 ========
+  1.B.1 顶区：净资产/预算卡/趋势图纯展示组件
+  1.B.2 今日+历史明细列表 UI（TxnItem、按日 section）
+  1.B.3 记一笔 Sheet 壳：Segment、Phrase/支出收入/转账/相册面板只保留展示 props
+  1.B.4 预算编辑 Sheet、FAB、金额脱敏等剩余壳
+  1.B.5 断直连：记账保存/自动记账 handoff/账户聚合移出 Screen
+  1.B.6 收口：FinanceScreen <500 行 + 点检
+
+======== 1.C 首页 Tab · HomeScreen（~5.1k）须拆 5 子步 ========
+  1.C.1 头区日期/天气氛围/骨架与滚动壳
+  1.C.2 饮食摄入区 UI（列表行、营养条、快捷记录入口壳）
+  1.C.3 其余首页模块卡（今日任务摘要/习惯等已有块）逐块下沉
+  1.C.4 断直连：health_records 聚合、BMR/本地计算、page-api 拉数移出
+  1.C.5 收口：HomeScreen <500 行 + 点检
+
+======== 1.D 道路 · LifeRoadScreen（~2.5k）+ 编辑页 拆 4 子步 ========
+  1.D.1 Hub 工作台 UI：月目标 Hero、本周推进、本月项目卡
+  1.D.2 全景树 UI：年季月站、未规划入口、方向抽屉
+  1.D.3 EditLifeRoadNodeScreen（~0.9k）：表单分区展示化（可 1 次）
+  1.D.4 断直连：rebuild/SQL/周任务聚合移出；两页收口
+
+======== 1.E 我的 Tab · ProfileScreen（~1.6k）拆 2 子步 ========
+  1.E.1 身份头/资料完善/积分卡/道路卡/天气运势卡等展示下沉
+  1.E.2 断直连 hub/points/life-road fetch；ProfileScreen 收口
+
+======== 1.F 复盘域 拆 3 子步（Tab 壳已薄，打组件与子路由）========
+  1.F.1 复盘主内容组件（月网格 monthly-review-grid-view 等 ~0.9k）展示化
+  1.F.2 日/周/月复盘表单与详情路由页（各 ≤800 可合并批次，每批 ≤3 文件）
+  1.F.3 review-template-settings（~1.3k）按 800～2k 规则拆 2 刀后收口
+
+======== 1.G 二级页 · 按文件大小批次（P1）========
+  —— 单文件 >2k，必须再拆（不可一次做完）——
+  1.G.1 add-habit（~3.2k）
+        · G.1a 表单主区 UI（名称/图标/频率/目标）
+        · G.1b 进阶区 UI（子习惯/提醒/量化）
+        · G.1c 断直连 + 收口
+  1.G.2 edit-project（~2.5k）
+        · G.2a Hero+备注+优先级+子任务列表 UI
+        · G.2b 道路归属/高级设置/习惯绑定 UI
+        · G.2c 断直连 + 收口
+  1.G.3 schedule-picker（~2.3k）
+        · G.3a 日期 Tab 日历 UI
+        · G.3b 时间 Tab + 重复摘要 UI
+        · G.3c 断直连（若有）+ 收口
+  1.G.4 edit-task（~2.0k）
+        · G.4a 标题/日程优先级/备注子任务 UI
+        · G.4b 高级设置+习惯绑定 UI + 断直连收口
+  —— 单文件 800～2k，固定 2 子步（①UI 下沉 ②断直连收口）——
+  1.G.5 任务域其余：add-task、habit-detail、edit-profile、
+        tasks-calendar、add-project、habit-manage、tasks-overview、
+        completion-heatmap、habit-context、NotificationChannelDetail…
+        （每个文件 = 1.G.5.<名>.1 + .2；一次 PR 最多 1 个文件的两个子步）
+  1.G.6 财务域：finance-calendar、assets、add-account、finance-stats、
+        add-scheduled-expense、account-detail、scheduled-expenses、cash-flow/*
+  1.G.7 我的域：memo-list、wish-board*、notification*、widgets*、
+        points-ledger、project-completion-logs*
+  1.G.8 健康域：health-analysis、intake-record-detail、my-recipes/*、
+        intake-history、recipe-*
+  1.G.9 助手+博客：assistant/chat、preferences；zlog screens/*
+  —— 单文件 ≤800：可 1 次做完，按域打包，每包 ≤3 个文件 ——
+
+======== 1.H 调试/低频（P2）后置 ========
+  screens/debug/*、api-request-monitor、vision-cutout-test、zhipu-api-test
+  各 ≤1 子步，不挡主路径。
+
+执行顺序：1.A → 1.B → 1.C → 1.D → 1.E → 1.F → 1.G → 1.H。
+每次只宣称完成某一个子步编号（如 1.A.3），改完汇报：动到的文件、页剩余行数、是否仍有直连仓库。
+
+2. 业务层（Domain / Application / Hooks & Store 层）—— 只管“怎么办、状态是什么”
+包含什么：业务 Hooks / ViewModels / 状态仓库（Store）/ 业务服务（Service）。
+
+职责：管理页面或模块状态（loading、error、列表数据、筛选条件、表单状态）、协调多个接口调用、做数据清洗/转换（把后端原始字段转成前端好用的格式）、处理业务流转。
+
+降耦关键：它是 UI 和 网络/数据 之间的翻译官与调度员。UI 不直接碰接口，网络层也不关心 UI 怎么显示。
+
+3. 数据与网络层（Data / API / Repository 层）—— 只管“数据从哪来、怎么通信”
+包含什么：HTTP 客户端封装、接口定义（API 函数）、请求/响应类型（DTO / Types）、本地缓存读写（LocalStorage / AsyncStorage / DB）。
+
+职责：统一处理 baseURL、鉴权（Token）、请求/响应拦截器、超时与重试、错误码统一转换、缓存策略。
+
+降耦关键：把“怎么请求”和“业务逻辑”隔离开。哪怕以后把 fetch 换成 axios，或者接口路径/字段变了，主要改这一层，业务层和 UI 层几乎不用动。
+
+4. 基础设施 / 公共层（Core / Shared / Utils 层）—— 只管“通用能力”
+包含什么：纯工具函数（日期格式化、金额计算、防抖节流）、常量枚举、路由/埋点/日志封装、跨模块通用类型。
+
+职责：提供无业务状态、可随处调用的底层能力。
+
+降耦关键：保持纯粹，不反向依赖业务层，避免出现“工具函数里偷偷 import 某个业务 Store”的循环依赖。
+
+5.验证严格单向依赖（最核心）
+规定调用方向只能往下走：
+
+UI 层 可以调 业务层 和 公共层
+
+业务层 可以调 数据/网络层 和 公共层
+
+数据/网络层 只能调 公共层
+
+公共层 尽量不依赖上面任何一层
+
+6.按“业务模块”归拢，而不是把所有文件按类型摊平
+小项目按“层”建目录，大一点后如果 components/ 里塞 80 个文件、hooks/ 里塞 60 个文件，依然会乱。更好的方式是“按业务域分块 + 每块内部再分层”（或者公共通用放全局，业务专属放各自模块内）：
+
+通用基础件（按钮、弹窗、请求封装、通用工具）放全局；
+
+某个具体功能（比如“订单”、“聊天”、“设置”）相关的页面、业务 Hook、接口，尽量内聚在自己的模块里，模块之间尽量通过明确的状态或事件通信，少直接互调内部文件。
+
+7.巨文件拆掉
+意思是：别让一个文件同时干十件事，把「一万行的 Screen」拆成「薄页面 + 多个小块」。
+
+现在典型问题：TasksScreen.tsx 约 1 万行——里面可能同时有：
+
+列表怎么画、样式、动画
+筛选/排序/完成任务的业务规则
+直接调 repository、触发同步、发积分
+
+
+8.关键路径有守卫
+意思是：最容易炸、一炸全 App 难受的那几条链路，要有自动检查，别只靠你真机点一遍。

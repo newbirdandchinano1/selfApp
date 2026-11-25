@@ -3,7 +3,6 @@
  */
 import { apiRequest } from '@/lib/api/http';
 import { buildQuery, type ApiListPagination } from '@/lib/api/query';
-import { logPageListApiResponse } from '@/lib/api-debug';
 import { PAGE_API_TIMEOUTS_MS } from '@/lib/page-api-timeouts';
 import type {
   TasksCalendarDayResponse,
@@ -681,11 +680,5 @@ export async function apiGetProjectsList(
     },
     meta: data?.meta,
   };
-  logPageListApiResponse(
-    'projects-list',
-    `/api/app/pages/projects${qs}`,
-    params as Record<string, unknown>,
-    result,
-  );
   return result;
 }

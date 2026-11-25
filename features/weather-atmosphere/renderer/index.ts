@@ -10,9 +10,5 @@ export {
   type CloudDensity,
   type PhotoMistOverlayProps,
 } from './PhotoMistOverlay';
-export {
-  DriftMistLayer,
-  type DriftMistLayerProps,
-} from './DriftMistLayer';
 export { LightningLayer, type LightningLayerProps } from './LightningLayer';
 export { StarFieldLayer, type StarFieldLayerProps } from './StarFieldLayer';

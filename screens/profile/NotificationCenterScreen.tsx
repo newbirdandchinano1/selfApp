@@ -693,31 +693,10 @@ export function NotificationCenterScreen({
             </Pressable>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
-            <Pressable
-              onPress={() => router.push('/widgets-center' as never)}
-              style={({ pressed }) => [
-                styles.card,
-                styles.schedEntry,
-                {
-                  backgroundColor: fold.card,
-                  borderColor: fold.line,
-                  opacity: pressed ? 0.9 : 1,
-                },
-              ]}>
-              <AppIcon name="dashboard" size={16} color="#6A786F" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle}>桌面与状态栏</Text>
-                <Text style={styles.rowHint}>桌面常看摘要请到桌面与状态栏配置</Text>
-              </View>
-              <Text style={{ color: '#B2B6AD', fontSize: 14 }}>›</Text>
-            </Pressable>
-          </FoldRiseIn>
-
           <View style={styles.footNote}>
             <View style={[styles.dot, { backgroundColor: fold.sage }]} />
             <Text style={[styles.footText, { color: fold.muted }]}>
-              全部在本地调度 · 可随时一键暂停 · 提醒是推，组件是看
+              全部在本地调度 · 可随时一键暂停
             </Text>
           </View>
           <View style={{ height: 28 }} />

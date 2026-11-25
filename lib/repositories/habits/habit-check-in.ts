@@ -11,9 +11,6 @@ export function habitCheckInRowId(habitId: string, recordDateYmd: string): strin
 }
 
 function notifyHabitsTodayWidget(): void {
-  void import('@/lib/widgets/habits-today-widget-sync')
-    .then(({ scheduleHabitsTodayWidgetSync }) => scheduleHabitsTodayWidgetSync('habit-check-in'))
-    .catch(() => {});
 }
 
 let habitCheckInApiSyncChain: Promise<void> = Promise.resolve();

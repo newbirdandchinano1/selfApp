@@ -865,7 +865,7 @@ function StatusTrackWithThreshold({
 export default function HealthScreen() {
   const router = useRouter();
   const { colors, isDark } = useAppTheme();
-  const { hh, fonts: hhFonts, pageBackground } = useWeatherAwareHealthHomeTheme();
+  const { hh, fonts: hhFonts, pageBackground, atmosphereActive } = useWeatherAwareHealthHomeTheme();
   const sourceBadges = useNotificationSourceBadges();
   const {
     logicalTodayYmd: calendarTodayYmd,
@@ -875,10 +875,35 @@ export default function HealthScreen() {
   const insets = useSafeAreaInsets();
   const pageInset = Spacing.md * 2;
   const weekPagerWidth = width - pageInset;
-  /** 2×2 指标卡宽度（对齐稿面：纸底直铺，无外层白卡内边距） */
-  const metricCardWidth = (width - pageInset - Spacing.md) / 2;
+  /** 分区大框内边距 + 描边；指标卡宽度需扣除 */
+  const sectionPanelPad = Spacing.lg;
+  const sectionPanelBorder = 1;
+  const sectionPanelStyle = React.useMemo(
+    () => [
+      styles.sectionPanel,
+      {
+        borderColor: isDark ? hh.lineStrong : hh.line,
+        // 日间米白实底；夜间氛围下轻玻璃，无氛围则透明
+        backgroundColor: isDark
+          ? atmosphereActive
+            ? hh.paperAlt
+            : 'transparent'
+          : hh.card,
+      },
+    ],
+    [atmosphereActive, hh.card, hh.line, hh.lineStrong, hh.paperAlt, isDark],
+  );
+  /** 2×2 指标卡：一行两个（扣页面边距、分区 padding、描边、列间距） */
+  const metricCardWidth =
+    (width - pageInset - sectionPanelPad * 2 - sectionPanelBorder * 2 - Spacing.md) / 2;
   /** 快速添加横滑卡宽度 */
-  const cardWidth = Math.max(76, Math.min(92, (width - pageInset - Spacing.md * 3) / 4.2));
+  const cardWidth = Math.max(
+    76,
+    Math.min(
+      92,
+      (width - pageInset - sectionPanelPad * 2 - sectionPanelBorder * 2 - Spacing.md * 3) / 4.2,
+    ),
+  );
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [seedAiDraft, setSeedAiDraft] = React.useState<FoodTextIntakeJson | null>(null);
   const [suggestMealOpen, setSuggestMealOpen] = React.useState(false);
@@ -3120,7 +3145,7 @@ export default function HealthScreen() {
         <View style={styles.healthBodyStack}>
           {!skeletonPending ? (
               <View style={styles.sectionStack}>
-        <View style={styles.sectionPanel}>
+        <View style={sectionPanelStyle}>
         <View style={styles.sectionHeader}>
           <View>
             <Text style={[styles.sectionTitle, { color: hh.ink }]}>今日概况</Text>
@@ -3197,7 +3222,7 @@ export default function HealthScreen() {
                     style={[
                       styles.metricCard,
                       {
-                        backgroundColor: isDark ? hh.cardMuted : hh.card,
+                        backgroundColor: hh.card,
                         borderColor: hh.line,
                         width: metricCardWidth,
                       },
@@ -3256,7 +3281,7 @@ export default function HealthScreen() {
         <View>
         <View
           style={[
-            styles.sectionPanel,
+            sectionPanelStyle,
             { opacity: intakeParseLocked ? 0.72 : 1 },
           ]}
         >
@@ -3523,7 +3548,7 @@ export default function HealthScreen() {
         </View>
 
         <View>
-        <View style={styles.sectionPanel}>
+        <View style={sectionPanelStyle}>
           <View style={styles.sectionHeader}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={[styles.sectionTitle, { color: hh.ink }]}>摄入记录</Text>
@@ -3588,7 +3613,7 @@ export default function HealthScreen() {
             <View
               style={[
                 styles.intakeEmptyBox,
-                { backgroundColor: hh.cardMuted, borderColor: hh.line },
+                { backgroundColor: isDark ? hh.card : hh.cardMuted, borderColor: hh.line },
               ]}
             >
               <Text style={[styles.intakeEmptyText, { color: hh.muted }]}>
@@ -3654,7 +3679,11 @@ export default function HealthScreen() {
                       style={[
                         styles.intakeRow,
                         {
-                          backgroundColor: line.isPlaceholder ? 'rgba(224, 179, 90, 0.14)' : hh.cardMuted,
+                          backgroundColor: line.isPlaceholder
+                            ? 'rgba(224, 179, 90, 0.14)'
+                            : isDark
+                              ? hh.card
+                              : hh.cardMuted,
                           borderColor: line.isPlaceholder ? 'rgba(196, 120, 82, 0.55)' : hh.line,
                           borderStyle: line.isPlaceholder ? 'dashed' : 'solid',
                           borderWidth: line.isPlaceholder ? 1.5 : StyleSheet.hairlineWidth,
@@ -3734,7 +3763,10 @@ export default function HealthScreen() {
                     overshootRight={false}
                     rightThreshold={44}
                     // ReanimatedSwipeable 删除条常驻内容层后方；不透明底避免未左滑时透出
-                    childrenContainerStyle={{ backgroundColor: hh.paper }}
+                    // 氛围夜间用与玻璃卡同色相的实底，避免透出删条又不会冒出纯黑纸色块
+                    childrenContainerStyle={{
+                      backgroundColor: isDark ? 'rgb(24, 34, 30)' : hh.paper,
+                    }}
                     renderRightActions={() => (
                       <Pressable
                         onPress={() => {
@@ -3778,7 +3810,10 @@ export default function HealthScreen() {
                       params: { date: formatLocalYmd(selectedDate) },
                     })
                   }
-                  style={[styles.intakeMoreBtn, { backgroundColor: hh.cardMuted, borderColor: hh.line }]}
+                  style={[
+                    styles.intakeMoreBtn,
+                    { backgroundColor: isDark ? hh.card : hh.cardMuted, borderColor: hh.line },
+                  ]}
                 >
                   <Text style={[styles.intakeMoreHint, { color: hh.pine }]}>
                     还有 {intakeListPreview.total - intakeListPreview.lines.length} 条 · 查看全部 ›
@@ -3790,7 +3825,7 @@ export default function HealthScreen() {
         </View>
         </View>
 
-        <View style={styles.sectionPanel}>
+        <View style={sectionPanelStyle}>
           <View style={styles.sectionHeader}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={[styles.sectionTitle, { color: hh.ink }]}>每周趋势</Text>
@@ -3965,10 +4000,10 @@ export default function HealthScreen() {
               pending={skeletonPending}
               mounted={skeletonMounted}
               opacity={skeletonOpacity}
-              backgroundColor={hh.paper}
+              backgroundColor={pageBackground}
               style={{ gap: Spacing.xl }}
             >
-              <View style={styles.sectionPanel}>
+              <View style={sectionPanelStyle}>
                 <View style={styles.sectionHeader}>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[styles.sectionTitle, { color: hh.ink }]}>今日概况</Text>
@@ -3978,7 +4013,7 @@ export default function HealthScreen() {
                 </View>
                 <HealthMetricsSkeleton cardWidth={metricCardWidth} colors={colors} />
               </View>
-              <View style={styles.sectionPanel}>
+              <View style={sectionPanelStyle}>
                 <View style={styles.sectionHeader}>
                   <View>
                     <Text style={[styles.sectionTitle, { color: hh.ink }]}>快速添加</Text>
@@ -3987,7 +4022,7 @@ export default function HealthScreen() {
                 </View>
                 <HealthQuickAddSkeleton cardWidth={cardWidth} colors={colors} />
               </View>
-              <View style={styles.sectionPanel}>
+              <View style={sectionPanelStyle}>
                 <View style={styles.sectionHeader}>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[styles.sectionTitle, { color: hh.ink }]}>摄入记录</Text>
@@ -3999,7 +4034,7 @@ export default function HealthScreen() {
                 </View>
                 <HealthIntakeListSkeleton colors={colors} />
               </View>
-              <View style={styles.sectionPanel}>
+              <View style={sectionPanelStyle}>
                 <HealthTrendCardSkeleton colors={colors} isDark={isDark} />
               </View>
               <Text style={[styles.syncFooterHint, { color: hh.faint }]}>
@@ -4459,9 +4494,13 @@ const styles = StyleSheet.create({
   sectionStack: {
     gap: Spacing['3xl'],
   },
-  /** 对齐稿面：分区直铺纸底，不套外层白卡 */
+  /** 分区大框：可见描边；日间米白 / 夜间透明由 inline 控制 */
   sectionPanel: {
-    overflow: 'visible',
+    overflow: 'hidden',
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: Spacing.lg,
+    gap: Spacing.lg,
   },
   sectionActionRow: {
     flexDirection: 'row',
@@ -4472,7 +4511,7 @@ const styles = StyleSheet.create({
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    // 只用 gap，勿叠 space-between，否则卡宽+间距会溢出成竖排
     gap: Spacing.md,
   },
   metricCard: {

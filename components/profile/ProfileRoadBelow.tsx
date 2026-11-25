@@ -3,10 +3,8 @@
  */
 import { MotionPressable } from '@/components/ui/motion-pressable';
 import { Motion } from '@/constants/design-tokens';
-import {
-  lifeRoadType,
-  useLifeRoadTheme,
-} from '@/constants/life-road-theme';
+import { lifeRoadType } from '@/constants/life-road-theme';
+import { useWeatherAwareLifeRoadTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { currentCalendarYear } from '@/lib/life-road/life-road-limits';
 import type { LifeRoadNodeStatus } from '@/lib/life-road/life-road-node-model';
 import type { ProfileRoadHub } from '@/lib/profile-hub-stats';
@@ -48,7 +46,7 @@ function barColors(
 }
 
 export function ProfileRoadBelow({ road, onOpen }: ProfileRoadBelowProps) {
-  const { lr } = useLifeRoadTheme();
+  const { lr } = useWeatherAwareLifeRoadTheme();
   const year = currentCalendarYear();
   const nowMonth = new Date().getMonth() + 1;
   const statuses = road?.monthStatuses ?? {};

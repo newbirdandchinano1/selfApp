@@ -846,11 +846,6 @@ export async function createFinanceTransaction(
       void rememberFinanceLastUsedAccount(input.account_id);
     }
   }
-  void import('@/lib/widgets/finance-glance-widget-sync')
-    .then(({ scheduleFinanceGlanceWidgetSync }) =>
-      scheduleFinanceGlanceWidgetSync('finance-create'),
-    )
-    .catch(() => {});
 }
 
 function buildFinanceTransferLegNames(input: {
@@ -1370,11 +1365,6 @@ export async function updateFinanceTransaction(id: string, input: UpdateFinanceT
     applyFinanceAccountBalanceDelta(nextAccountId, newEffect);
   }
   await pushFinanceChangesToApi();
-  void import('@/lib/widgets/finance-glance-widget-sync')
-    .then(({ scheduleFinanceGlanceWidgetSync }) =>
-      scheduleFinanceGlanceWidgetSync('finance-update'),
-    )
-    .catch(() => {});
 }
 
 export async function deleteFinanceTransaction(id: string) {
@@ -1408,9 +1398,4 @@ export async function deleteFinanceTransaction(id: string) {
     );
   }
   await pushFinanceChangesToApi();
-  void import('@/lib/widgets/finance-glance-widget-sync')
-    .then(({ scheduleFinanceGlanceWidgetSync }) =>
-      scheduleFinanceGlanceWidgetSync('finance-delete'),
-    )
-    .catch(() => {});
 }

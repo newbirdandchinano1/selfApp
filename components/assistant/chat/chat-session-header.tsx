@@ -12,6 +12,7 @@ type Props = {
   onBack: () => void;
   onNewChat: () => void;
   onOpenHistory: () => void;
+  onOpenPrefs?: () => void;
   online?: boolean;
 };
 
@@ -20,6 +21,7 @@ export function ChatSessionHeader({
   onBack,
   onNewChat,
   onOpenHistory,
+  onOpenPrefs,
   online = true,
 }: Props) {
   const { colors } = useAppTheme();
@@ -71,6 +73,23 @@ export function ChatSessionHeader({
             </View>
           </View>
         </View>
+
+        {onOpenPrefs ? (
+          <Pressable
+            onPress={onOpenPrefs}
+            accessibilityLabel="偏好管理"
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.iconBtn,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.outline,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}>
+            <Text style={[styles.sideGlyph, { color: colors.primary }]}>◎</Text>
+          </Pressable>
+        ) : null}
 
         <Pressable
           onPress={onOpenHistory}

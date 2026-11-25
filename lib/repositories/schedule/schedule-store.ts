@@ -38,11 +38,6 @@ function markScheduleDirty(): void {
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
-  void import('@/lib/widgets/frog-schedule-widget-sync')
-    .then(({ scheduleFrogScheduleWidgetSync }) =>
-      scheduleFrogScheduleWidgetSync('schedule-dirty'),
-    )
-    .catch(() => {});
 }
 
 type PlacementDbRow = {
@@ -115,11 +110,6 @@ export async function saveScheduleAxisSettingsLocal(
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
-    )
-    .catch(() => {});
-  void import('@/lib/widgets/frog-schedule-widget-sync')
-    .then(({ scheduleFrogScheduleWidgetSync }) =>
-      scheduleFrogScheduleWidgetSync('axis-saved'),
     )
     .catch(() => {});
   return payload;

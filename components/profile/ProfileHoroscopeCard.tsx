@@ -3,7 +3,8 @@
  */
 import { ZodiacSignArt } from '@/components/profile/ZodiacSignArt';
 import { AppIcon } from '@/components/ui/app-icon';
-import { foldFonts, useFoldTheme } from '@/constants/review-fold-theme';
+import { foldFonts } from '@/constants/review-fold-theme';
+import { useWeatherAwareFoldTheme as useFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import {
   apiExternalHoroscope,
   type ExternalHoroscopeDayLike,
@@ -282,7 +283,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   wash: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: 16,
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },

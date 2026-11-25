@@ -128,10 +128,12 @@ export function MonthlyReviewGridView({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const { fold } = useFoldTheme();
+  const { fold, pageBackground, atmosphereActive } = useFoldTheme();
   const { animate: motionOn } = useFoldMotionGate();
   const { logicalTodayYmd: todayYmd } = usePageDayBoundary('review');
   const { wrapLoad } = usePageApiSync(pageApiKey);
+  /** 氛围开启时透出天气层，分页靠各 FoldCard 米白/玻璃面分割，勿铺整页纸底 */
+  const scrollBg = atmosphereActive ? pageBackground : fold.paper;
 
   const [monthStartYmd, setMonthStartYmd] = useState(() => monthStartYmdFromYmd(todayYmd));
   const [loading, setLoading] = useState(true);
@@ -460,90 +462,90 @@ export function MonthlyReviewGridView({
 
   return (
     <ScrollView
-      style={{ backgroundColor: fold.paper }}
+      style={{ backgroundColor: scrollBg }}
       refreshControl={refreshControl}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={[
         styles.scroll,
-        { paddingBottom: 32 + glassTabBarContentInset(insets.bottom), backgroundColor: fold.paper },
+        { paddingBottom: 32 + glassTabBarContentInset(insets.bottom) },
       ]}
       onScroll={e => reportTabBarScroll(e.nativeEvent.contentOffset.y)}
       scrollEventThrottle={16}>
       <ReviewPageContent style={styles.pageGap}>
         <FoldRiseIn animate={motionOn} index={0} duration={420}>
-          <View style={styles.monthTitleRow}>
-            <View style={styles.monthTitleCopy}>
-              <Text style={[styles.monthTitle, { color: fold.pine }]} maxFontSizeMultiplier={1.25}>
-                {formatMonthTitle(monthStartYmd)}
-              </Text>
-              <Text style={[styles.monthDays, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
-                {totalDays} 天
-              </Text>
+          <FoldCard style={styles.monthNavCard} padded={false}>
+            <View style={styles.monthTitleRow}>
+              <View style={styles.monthTitleCopy}>
+                <Text style={[styles.monthTitle, { color: fold.pine }]} maxFontSizeMultiplier={1.25}>
+                  {formatMonthTitle(monthStartYmd)}
+                </Text>
+                <Text style={[styles.monthDays, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
+                  {totalDays} 天
+                </Text>
+              </View>
+              <View style={styles.monthNav}>
+                <Pressable
+                  onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="上个月"
+                  style={({ pressed }) => [
+                    styles.navIconBtn,
+                    { borderColor: fold.line, backgroundColor: fold.cardSoft, opacity: pressed ? 0.7 : 1 },
+                  ]}>
+                  <MaterialIcons name="chevron-left" size={20} color={fold.muted} />
+                </Pressable>
+                <Pressable
+                  onPress={() => setMonthStartYmd(currentMonthStart)}
+                  disabled={monthStartYmd === currentMonthStart}
+                  accessibilityRole="button"
+                  accessibilityLabel="回到本月"
+                  accessibilityState={{ disabled: monthStartYmd === currentMonthStart }}
+                  style={({ pressed }) => [
+                    styles.navMonthPill,
+                    {
+                      borderColor: fold.line,
+                      backgroundColor: fold.cardSoft,
+                      opacity: monthStartYmd === currentMonthStart ? 0.55 : pressed ? 0.8 : 1,
+                    },
+                  ]}>
+                  <Text style={[styles.navMonthText, { color: fold.ink2 }]}>本月</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
+                  disabled={!canGoNext}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="下个月"
+                  accessibilityState={{ disabled: !canGoNext }}
+                  style={({ pressed }) => [
+                    styles.navIconBtn,
+                    {
+                      borderColor: fold.line,
+                      backgroundColor: fold.cardSoft,
+                      opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1,
+                    },
+                  ]}>
+                  <MaterialIcons name="chevron-right" size={20} color={fold.muted} />
+                </Pressable>
+              </View>
             </View>
-            <View style={styles.monthNav}>
-              <Pressable
-                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, -1))}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="上个月"
-                style={({ pressed }) => [
-                  styles.navIconBtn,
-                  { borderColor: fold.line, backgroundColor: fold.cardSoft, opacity: pressed ? 0.7 : 1 },
-                ]}>
-                <MaterialIcons name="chevron-left" size={20} color={fold.muted} />
-              </Pressable>
-              <Pressable
-                onPress={() => setMonthStartYmd(currentMonthStart)}
-                disabled={monthStartYmd === currentMonthStart}
-                accessibilityRole="button"
-                accessibilityLabel="回到本月"
-                accessibilityState={{ disabled: monthStartYmd === currentMonthStart }}
-                style={({ pressed }) => [
-                  styles.navMonthPill,
-                  {
-                    borderColor: fold.line,
-                    backgroundColor: fold.cardSoft,
-                    opacity: monthStartYmd === currentMonthStart ? 0.55 : pressed ? 0.8 : 1,
-                  },
-                ]}>
-                <Text style={[styles.navMonthText, { color: fold.ink2 }]}>本月</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setMonthStartYmd(prev => shiftMonthStartYmd(prev, 1))}
-                disabled={!canGoNext}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="下个月"
-                accessibilityState={{ disabled: !canGoNext }}
-                style={({ pressed }) => [
-                  styles.navIconBtn,
-                  {
-                    borderColor: fold.line,
-                    backgroundColor: fold.cardSoft,
-                    opacity: !canGoNext ? 0.3 : pressed ? 0.7 : 1,
-                  },
-                ]}>
-                <MaterialIcons name="chevron-right" size={20} color={fold.muted} />
-              </Pressable>
-            </View>
-          </View>
+          </FoldCard>
         </FoldRiseIn>
 
         <FoldRiseIn animate={motionOn} index={1} staggerMs={70} duration={420}>
-          <View style={[styles.summaryCard, { backgroundColor: fold.summaryBg }]}>
-            <View style={[styles.summaryOrb, styles.summaryOrbA]} />
-            <View style={[styles.summaryOrb, styles.summaryOrbB]} />
+          <FoldCard style={styles.summaryCard}>
             <View style={styles.summaryTop}>
-              <Text style={[styles.summaryEyebrow, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.2}>
+              <Text style={[styles.summaryEyebrow, { color: fold.muted }]} maxFontSizeMultiplier={1.2}>
                 MONTH IN REVIEW · {monthNumber} 月的折页
               </Text>
               <View
                 style={[
                   styles.summaryBadge,
-                  { backgroundColor: fold.badgeBg, borderColor: fold.badgeBorder },
+                  { backgroundColor: fold.amber2, borderColor: fold.line },
                 ]}>
-                <MaterialIcons name="auto-awesome" size={11} color={fold.badgeText} />
-                <Text style={[styles.summaryBadgeText, { color: fold.badgeText }]} maxFontSizeMultiplier={1.15}>
+                <MaterialIcons name="auto-awesome" size={11} color={fold.amber} />
+                <Text style={[styles.summaryBadgeText, { color: fold.amber }]} maxFontSizeMultiplier={1.15}>
                   {badgeText}
                 </Text>
               </View>
@@ -554,39 +556,39 @@ export function MonthlyReviewGridView({
                   value={reviewedDays}
                   animate={motionOn}
                   delayMs={160}
-                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                  textStyle={[styles.summaryValue, { color: fold.pine }]}
                 />
-                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                <Text style={[styles.summaryLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
                   天已复盘
                 </Text>
               </View>
-              <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
+              <View style={[styles.summaryDivider, { backgroundColor: fold.line }]} />
               <View style={styles.summaryStat}>
                 <FoldCountUpText
                   value={monthStreak}
                   animate={motionOn}
                   delayMs={240}
-                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                  textStyle={[styles.summaryValue, { color: fold.pine }]}
                 />
-                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                <Text style={[styles.summaryLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
                   个月连续
                 </Text>
               </View>
-              <View style={[styles.summaryDivider, { backgroundColor: fold.summaryLine }]} />
+              <View style={[styles.summaryDivider, { backgroundColor: fold.line }]} />
               <View style={styles.summaryStat}>
                 <FoldCountUpText
                   value={completionRate}
                   animate={motionOn}
                   delayMs={320}
                   formatter={n => `${Math.round(n)}%`}
-                  textStyle={[styles.summaryValue, { color: fold.summaryText }]}
+                  textStyle={[styles.summaryValue, { color: fold.pine }]}
                 />
-                <Text style={[styles.summaryLabel, { color: fold.summaryMuted }]} maxFontSizeMultiplier={1.15}>
+                <Text style={[styles.summaryLabel, { color: fold.muted }]} maxFontSizeMultiplier={1.15}>
                   完成率
                 </Text>
               </View>
             </View>
-          </View>
+          </FoldCard>
         </FoldRiseIn>
 
         {!canEdit ? (
@@ -640,7 +642,9 @@ export function MonthlyReviewGridView({
                                 cell.level < 0
                                   ? 'transparent'
                                   : cell.future
-                                    ? fold.paper
+                                    ? atmosphereActive
+                                      ? fold.cardSoft
+                                      : fold.paper
                                     : heatLevelColors[Math.max(0, Math.min(4, cell.level))],
                               borderWidth: cell.today ? 1.5 : 0,
                               borderColor: fold.pine,
@@ -812,12 +816,15 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
   },
+  monthNavCard: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   monthTitleRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
     gap: 10,
-    paddingTop: 4,
   },
   monthTitleCopy: {
     flexDirection: 'row',
@@ -852,20 +859,8 @@ const styles = StyleSheet.create({
   },
   navMonthText: { fontSize: 11.5, fontWeight: '700' },
   summaryCard: {
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
     gap: 16,
-    overflow: 'hidden',
   },
-  summaryOrb: {
-    position: 'absolute',
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.09)',
-  },
-  summaryOrbA: { width: 150, height: 150, right: -62, bottom: -86 },
-  summaryOrbB: { width: 110, height: 110, right: -20, top: -58 },
   summaryTop: {
     flexDirection: 'row',
     alignItems: 'center',

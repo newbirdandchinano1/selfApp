@@ -4,10 +4,8 @@
 import { useWardrobeFonts } from '@/components/wardrobe/use-wardrobe-fonts';
 import { MotionPressable } from '@/components/ui/motion-pressable';
 import { getMinTouchTarget, Motion } from '@/constants/design-tokens';
-import {
-  lifeRoadType,
-  useLifeRoadTheme,
-} from '@/constants/life-road-theme';
+import { lifeRoadType } from '@/constants/life-road-theme';
+import { useWeatherAwareLifeRoadTheme } from '@/hooks/use-weather-aware-fold-theme';
 import type { ProfileRoadHub } from '@/lib/profile-hub-stats';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -177,7 +175,9 @@ export function ProfileRoadCard({
   onWriteDirection,
 }: ProfileRoadCardProps) {
   useWardrobeFonts();
-  const { lr } = useLifeRoadTheme();
+  const { lr, isDark, atmosphereActive } = useWeatherAwareLifeRoadTheme();
+  /** 日间氛围：米白壳 + 深色字；夜间氛围 / 无氛围有内容时仍用深绿 hero */
+  const creamShell = atmosphereActive && !isDark;
   const beaconAnim = useBeaconBreath();
   const [size, setSize] = useState({ w: 0, h: 0 });
 
@@ -303,6 +303,11 @@ export function ProfileRoadCard({
     );
   }
 
+  const kickerColor = creamShell ? lr.sage : '#E0B072';
+  const linkColor = creamShell ? lr.muted : '#A9C7B9';
+  const footBorder = creamShell ? lr.line : 'rgba(255,255,255,0.1)';
+  const focusColor = creamShell ? lr.onRoadFocus : 'rgba(255,255,255,0.9)';
+
   return (
     <MotionPressable
       onPress={onOpen}
@@ -311,20 +316,29 @@ export function ProfileRoadCard({
       accessibilityLabel="我的道路，打开工作台"
       pressScale={Motion.pressScaleCard}
       pressOpacity={1}
-      style={[styles.contentCard, { backgroundColor: lr.roadDeep }]}>
-      <HeroGradientBg
-        width={size.w}
-        height={size.h}
-        from={lr.roadDeep}
-        to={lr.roadDeepMid}
-      />
+      style={[
+        styles.contentCard,
+        {
+          backgroundColor: creamShell ? lr.card : lr.roadDeep,
+          borderWidth: creamShell ? StyleSheet.hairlineWidth : 0,
+          borderColor: creamShell ? lr.line : 'transparent',
+        },
+      ]}>
+      {creamShell ? null : (
+        <HeroGradientBg
+          width={size.w}
+          height={size.h}
+          from={lr.roadDeep}
+          to={lr.roadDeepMid}
+        />
+      )}
       <HorizonDecor beaconAnim={beaconAnim} width={size.w} height={size.h} />
 
       <View style={styles.rcTop}>
-        <Text style={[lifeRoadType.kickerTiny, { color: '#E0B072' }]}>
+        <Text style={[lifeRoadType.kickerTiny, { color: kickerColor }]}>
           MY ROAD · 我的道路
         </Text>
-        <Text style={{ fontSize: 11, color: '#A9C7B9' }}>工作台 →</Text>
+        <Text style={{ fontSize: 11, color: linkColor }}>工作台 →</Text>
       </View>
 
       <Text
@@ -334,9 +348,9 @@ export function ProfileRoadCard({
       </Text>
 
       {road.focusTag || road.yearFocus ? (
-        <View style={[styles.rcFoot, { borderTopColor: 'rgba(255,255,255,0.1)' }]}>
+        <View style={[styles.rcFoot, { borderTopColor: footBorder }]}>
           <Text
-            style={[lifeRoadType.kickerTiny, { color: '#E0B072', flexShrink: 0 }]}
+            style={[lifeRoadType.kickerTiny, { color: kickerColor, flexShrink: 0 }]}
             numberOfLines={1}>
             {road.focusTag ?? 'FOCUS'}
           </Text>
@@ -345,7 +359,7 @@ export function ProfileRoadCard({
               flex: 1,
               fontSize: 12,
               fontWeight: '500',
-              color: 'rgba(255,255,255,0.9)',
+              color: focusColor,
               textAlign: 'right',
             }}
             numberOfLines={1}>

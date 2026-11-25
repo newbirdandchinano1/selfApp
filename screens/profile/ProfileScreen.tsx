@@ -231,8 +231,34 @@ export default function ProfileScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { wrapLoad } = usePageApiSync(PAGE_API_KEY);
   const reloadPageRef = useRef<((forceRefresh?: boolean) => Promise<void>) | null>(null);
-  const { fold, pageBackground } = useFoldTheme();
+  const { fold, pageBackground, atmosphereActive, isDark } = useFoldTheme();
   const { animate: motionOn } = useFoldMotionGate();
+  /** 氛围下工具钮：日间米白 / 夜间墨绿玻璃；关闭氛围时半透明纸色 */
+  const toolBtnBg = atmosphereActive
+    ? isDark
+      ? fold.cardSoft
+      : fold.card
+    : 'rgba(255,252,245,0.62)';
+  const cardSurface = { backgroundColor: fold.card, borderColor: fold.line } as const;
+  /** 积分主卡：氛围日间改米白壳，夜间墨绿玻璃；无氛围保持深绿强调面 */
+  const pointsShellBg = atmosphereActive
+    ? isDark
+      ? fold.summaryBg
+      : fold.card
+    : fold.summaryBg;
+  const pointsOnCream = atmosphereActive && !isDark;
+  const pointsBalColor = pointsOnCream ? fold.ink : fold.badgeText;
+  const pointsLabColor = pointsOnCream ? fold.muted : fold.summaryMuted;
+  const pointsHintTextColor = pointsOnCream ? fold.ink2 : '#E4D6BB';
+  const pointsWeekColor = pointsOnCream ? fold.muted : '#A9BFB3';
+  const pointsCtaTextColor = pointsOnCream ? fold.pine : '#F2E5CC';
+  const pointsHintBg = pointsOnCream ? fold.paper2 : 'rgba(255,255,255,0.07)';
+  const pointsHintBorder = pointsOnCream ? fold.line : 'rgba(255,255,255,0.1)';
+  const pointsCtaBg = pointsOnCream ? fold.sage2 : 'rgba(255,255,255,0.1)';
+  const pointsCtaBorder = pointsOnCream ? fold.line : 'rgba(255,255,255,0.16)';
+  const pointsBorder = atmosphereActive
+    ? fold.line
+    : '#2A4A3E';
   const inboxBadges = useNotificationInboxBadges();
   const bellBadgeLabel = formatInboxBadgeCount(inboxBadges.total);
   const [user, setUser] = useState<UserRow | null>(null);
@@ -486,38 +512,6 @@ export default function ProfileScreen() {
     const recipes = hub?.menuCounts.recipes ?? 0;
     return [
       {
-        key: 'notification-center',
-        title: '提醒设置',
-        subtitle: '通知权限、频道与免打扰',
-        meta: '设置 ›',
-        icon: 'notifications',
-        onPress: () => router.push({ pathname: '/messages', params: { tab: 'settings' } }),
-      },
-      {
-        key: 'project-completion-logs',
-        title: '完成履历',
-        subtitle: '已完成项目的只读归档',
-        meta: logs > 0 ? `${logs} 项 ›` : '›',
-        icon: 'history',
-        onPress: () => router.push('/project-completion-logs'),
-      },
-      {
-        key: 'wish-board',
-        title: '心愿板',
-        subtitle: '用积分兑换想要的生活',
-        meta: redeemable > 0 ? `${redeemable} 件可换 ›` : '›',
-                icon: 'card-giftcard',
-        onPress: () => router.push('/wish-board'),
-      },
-      {
-        key: 'points-ledger',
-        title: '积分记录',
-        subtitle: `本周 +${weekIn} / -${weekOut}`,
-        meta: '明细 ›',
-        icon: 'receipt-long',
-        onPress: () => router.push('/points-ledger'),
-      },
-      {
         key: 'memo-list',
         title: '备忘录',
         subtitle: '随手记与 AI 摘要',
@@ -536,13 +530,56 @@ export default function ProfileScreen() {
       {
         key: 'blog',
         title: '博客',
-        subtitle: '内嵌浏览 · jaxz.xyz',
+        subtitle: '文章 · 说说 · 发布',
         meta: '›',
         icon: 'menu-book',
         onPress: () => router.push('/blog'),
       },
+      {
+        key: 'project-completion-logs',
+        title: '完成履历',
+        subtitle: '已完成项目的只读归档',
+        meta: logs > 0 ? `${logs} 项 ›` : '›',
+        icon: 'history',
+        onPress: () => router.push('/project-completion-logs'),
+      },
+      {
+        key: 'wish-board',
+        title: '心愿板',
+        subtitle: '用积分兑换想要的生活',
+        meta: redeemable > 0 ? `${redeemable} 件可换 ›` : '›',
+        icon: 'card-giftcard',
+        onPress: () => router.push('/wish-board'),
+      },
+      {
+        key: 'points-ledger',
+        title: '积分记录',
+        subtitle: `本周 +${weekIn} / -${weekOut}`,
+        meta: '明细 ›',
+        icon: 'receipt-long',
+        onPress: () => router.push('/points-ledger'),
+      },
+      {
+        key: 'notification-center',
+        title: '提醒设置',
+        subtitle: '通知权限、频道与免打扰',
+        meta: '设置 ›',
+        icon: 'notifications',
+        onPress: () => router.push({ pathname: '/messages', params: { tab: 'settings' } }),
+      },
     ];
   }, [hub, router]);
+
+  /** 页内常用入口：高频工具前置，低频设置留在更多菜单 */
+  const quickTools = useMemo(
+    () =>
+      moreItems.filter((item) =>
+        ['memo-list', 'my-recipes', 'blog', 'project-completion-logs', 'points-ledger'].includes(
+          item.key,
+        ),
+      ),
+    [moreItems],
+  );
 
   const bellRotate = bellShake.interpolate({
     inputRange: [-1, 0, 1],
@@ -614,7 +651,7 @@ export default function ProfileScreen() {
                     styles.iconBtn,
                     {
                       borderColor: fold.line,
-                      backgroundColor: pressed ? fold.paper2 : 'rgba(255,252,245,0.6)',
+                      backgroundColor: pressed ? fold.paper2 : toolBtnBg,
                       minWidth: MIN_TOUCH,
                       minHeight: MIN_TOUCH,
                     },
@@ -637,7 +674,7 @@ export default function ProfileScreen() {
                   styles.iconBtn,
                   {
                     borderColor: fold.line,
-                    backgroundColor: pressed ? fold.paper2 : 'rgba(255,252,245,0.65)',
+                    backgroundColor: pressed ? fold.paper2 : toolBtnBg,
                     minWidth: MIN_TOUCH,
                     minHeight: MIN_TOUCH,
                   },
@@ -648,7 +685,7 @@ export default function ProfileScreen() {
           </View>
         </FoldRiseIn>
 
-        {/* Hero */}
+        {/* —— 1. 身份：高频入口，一眼认出自己 —— */}
         <FoldRiseIn animate={motionOn} index={1} staggerMs={45} fromY={12}>
           <View style={styles.hero}>
             <Pressable onPress={() => openEdit()} accessibilityRole="button" accessibilityLabel="编辑资料">
@@ -683,7 +720,7 @@ export default function ProfileScreen() {
                 styles.pillBtn,
                 {
                   borderColor: fold.line2,
-                  backgroundColor: pressed ? fold.paper2 : 'rgba(255,252,245,0.66)',
+                  backgroundColor: pressed ? fold.paper2 : toolBtnBg,
                   minHeight: Math.max(28, MIN_TOUCH * 0.7),
                 },
               ]}>
@@ -693,10 +730,9 @@ export default function ProfileScreen() {
           </View>
         </FoldRiseIn>
 
-        {/* 资料待完善 */}
         {unfilledChips.length > 0 ? (
           <FoldRiseIn animate={motionOn} index={2} staggerMs={45} fromY={12}>
-            <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
+            <View style={[styles.card, cardSurface]}>
               <View style={styles.rowBetween}>
                 <Text style={[styles.cardTitle, { color: fold.ink2 }]}>资料待完善</Text>
                 <Text style={[styles.cardHint, { color: fold.faint }]}>补全后 AI 建议更准</Text>
@@ -728,14 +764,14 @@ export default function ProfileScreen() {
                       style={({ pressed }) => [
                         styles.chip,
                         chip.filled
-                          ? { backgroundColor: fold.sage2, borderColor: '#D6E4DA' }
+                          ? { backgroundColor: fold.sage2, borderColor: fold.line }
                           : isPrimary
                             ? {
-                                backgroundColor: '#EAF3EC',
+                                backgroundColor: fold.sage2,
                                 borderColor: fold.pine,
                                 borderWidth: 1.5,
                               }
-                            : { backgroundColor: '#F7F0E2', borderColor: '#E6D9C4' },
+                            : { backgroundColor: fold.paper2, borderColor: fold.line2 },
                         pressed && { transform: [{ scale: 0.94 }] },
                       ]}>
                       <Text
@@ -746,7 +782,7 @@ export default function ProfileScreen() {
                               ? fold.pine2
                               : isPrimary
                                 ? fold.pine
-                                : '#8B6B3A',
+                                : fold.ink2,
                             fontWeight: isPrimary ? '800' : '600',
                           },
                         ]}>
@@ -773,85 +809,15 @@ export default function ProfileScreen() {
           </FoldRiseIn>
         ) : null}
 
-        {/* 积分卡 */}
-        <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={12}>
-          <Pressable
-            onPress={openWishBoard}
-            accessibilityRole="button"
-            accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
-            style={({ pressed }) => [
-              styles.pointsCard,
-              {
-                backgroundColor: fold.summaryBg,
-                borderColor: '#2A4A3E',
-                opacity: pressed ? 0.94 : 1,
-                transform: [{ scale: pressed ? 0.985 : 1 }],
-              },
-            ]}>
-            <View style={styles.pointsDecor} pointerEvents="none" />
-            <View style={styles.pcTop}>
-              <FoldCountUpText
-                value={pointsBalance}
-                animate={motionOn}
-                duration={760}
-                formatter={(n) => formatPoints(Math.round(n))}
-                textStyle={[styles.pcBal, { color: fold.badgeText, fontFamily: foldFonts.mono }]}
-              />
-              <Text style={[styles.pcLab, { color: fold.summaryMuted }]}>当前积分</Text>
-              {(hub?.wish.redeemableCount ?? 0) > 0 ? (
-                <View style={[styles.tagAmber, { marginLeft: 'auto', backgroundColor: fold.badgeBg, borderColor: fold.badgeBorder }]}>
-                  <Text style={[styles.tagAmberText, { color: fold.badgeText }]}>
-                    可兑换 {hub!.wish.redeemableCount}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-            <View style={styles.pcHint}>
-              <AppIcon name="favorite" size={12} color="#E2B87C" />
-              <Text style={styles.pcHintText} numberOfLines={2}>
-                {wishLine}
-              </Text>
-            </View>
-            <View style={styles.pcFoot}>
-              <Text style={styles.pcWeek}>
-                本周{' '}
-                <Text style={{ color: '#9FD3B4', fontWeight: '700' }}>
-                  +{formatPoints(hub?.wish.weekEarned ?? 0)}
-                </Text>
-                {' / '}
-                <Text style={{ color: '#E9A08A', fontWeight: '700' }}>
-                  -{formatPoints(hub?.wish.weekSpent ?? 0)}
-                </Text>
-              </Text>
-              <View style={styles.pcCta}>
-                <Text style={styles.pcCtaText}>去心愿板</Text>
-                <AppIcon name="chevron-right" size={12} color="#F2E5CC" />
-              </View>
-            </View>
-          </Pressable>
+        {/* —— 2. 本周动态：最高频查阅 —— */}
+        <FoldRiseIn animate={motionOn} index={3} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>本周动态</Text>
+            <Text style={[styles.sectionHint, { color: fold.faint }]}>习惯 · 任务 · 复盘</Text>
+          </View>
         </FoldRiseIn>
-
-        {/* 道路 */}
         <FoldRiseIn animate={motionOn} index={4} staggerMs={45} fromY={12}>
-          <ProfileRoadCard
-            road={hub?.road}
-            loading={hub == null}
-            onOpen={openLifeRoad}
-            onRetry={retryHub}
-            onWriteDirection={openEditDirection}
-          />
-        </FoldRiseIn>
-        <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={10}>
-          <ProfileRoadBelow
-            road={hub?.road}
-            animate={motionOn}
-            onOpen={openLifeRoadPanorama}
-          />
-        </FoldRiseIn>
-
-        {/* 本周节奏 */}
-        <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
-          <View style={[styles.card, { backgroundColor: fold.card, borderColor: fold.line }]}>
+          <View style={[styles.card, cardSurface]}>
             <View style={[styles.rowBetween, { marginBottom: 6 }]}>
               <Text style={[styles.cardTitle, { color: fold.ink2 }]}>本周节奏</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -938,74 +904,118 @@ export default function ProfileScreen() {
           </View>
         </FoldRiseIn>
 
-        {/* 档案摘要 */}
-        <FoldRiseIn animate={motionOn} index={7} staggerMs={45} fromY={12}>
+        {/* —— 3. 激励：积分兑换，次高频 —— */}
+        <FoldRiseIn animate={motionOn} index={5} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>激励与心愿</Text>
+            <Text style={[styles.sectionHint, { color: fold.faint }]}>积分兑换想要的生活</Text>
+          </View>
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={6} staggerMs={45} fromY={12}>
           <Pressable
-            onPress={() => openEdit('basic')}
+            onPress={openWishBoard}
             accessibilityRole="button"
-            accessibilityLabel="档案摘要，点击编辑资料"
+            accessibilityLabel={`当前积分 ${formatPoints(pointsBalance)}，打开心愿板`}
             style={({ pressed }) => [
-              styles.card,
+              styles.pointsCard,
               {
-                backgroundColor: fold.card,
-                borderColor: fold.line,
+                backgroundColor: pointsShellBg,
+                borderColor: pointsBorder,
                 opacity: pressed ? 0.94 : 1,
+                transform: [{ scale: pressed ? 0.985 : 1 }],
               },
             ]}>
-            <View style={[styles.rowBetween, { marginBottom: 5 }]}>
-              <Text style={[styles.cardTitle, { color: fold.ink2 }]}>档案摘要</Text>
-              <Text style={[styles.cardHint, { color: fold.faint }]}>点击编辑资料 ›</Text>
+            <View style={styles.pointsDecor} pointerEvents="none" />
+            <View style={styles.pcTop}>
+              <FoldCountUpText
+                value={pointsBalance}
+                animate={motionOn}
+                duration={760}
+                formatter={(n) => formatPoints(Math.round(n))}
+                textStyle={[styles.pcBal, { color: pointsBalColor, fontFamily: foldFonts.mono }]}
+              />
+              <Text style={[styles.pcLab, { color: pointsLabColor }]}>当前积分</Text>
+              {(hub?.wish.redeemableCount ?? 0) > 0 ? (
+                <View style={[styles.tagAmber, { marginLeft: 'auto', backgroundColor: fold.badgeBg, borderColor: fold.badgeBorder }]}>
+                  <Text style={[styles.tagAmberText, { color: fold.badgeText }]}>
+                    可兑换 {hub!.wish.redeemableCount}
+                  </Text>
+                </View>
+              ) : null}
             </View>
-            <View style={styles.sumGrid}>
-              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
-                <Text style={[styles.sumKey, { color: fold.ink2 }]}>目标</Text>
-                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
-                  {archiveGoal}
-                </Text>
-              </View>
-              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
-                <Text style={[styles.sumKey, { color: fold.ink2 }]}>生活习惯</Text>
-                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
-                  {hub?.archive.lifestyle ?? '未设置'}
-                </Text>
-              </View>
-              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
-                <Text style={[styles.sumKey, { color: fold.ink2 }]}>健身日</Text>
-                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
-                  {hub?.archive.workoutDaysLabel ?? '未设置'}
-                </Text>
-              </View>
-              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
-                <Text style={[styles.sumKey, { color: fold.ink2 }]}>人物画像</Text>
-                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
-                  {hub?.archive.personaFilled
-                    ? `已填写 · ${hub.archive.personaCharCount} 字`
-                    : '未填写'}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.sumItem, { backgroundColor: fold.paper2, marginTop: 5 }]}>
-              <Text style={[styles.sumKey, { color: fold.ink2 }]}>饮食偏好</Text>
-              <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={2}>
-                {hub?.archive.dietaryEmpty ? '未设置' : hub?.archive.dietarySummary ?? '未设置'}
+            <View
+              style={[
+                styles.pcHint,
+                { backgroundColor: pointsHintBg, borderColor: pointsHintBorder },
+              ]}>
+              <AppIcon name="favorite" size={12} color={fold.amber} />
+              <Text style={[styles.pcHintText, { color: pointsHintTextColor }]} numberOfLines={2}>
+                {wishLine}
               </Text>
+            </View>
+            <View style={styles.pcFoot}>
+              <Text style={[styles.pcWeek, { color: pointsWeekColor }]}>
+                本周{' '}
+                <Text style={{ color: pointsOnCream ? fold.pine : '#9FD3B4', fontWeight: '700' }}>
+                  +{formatPoints(hub?.wish.weekEarned ?? 0)}
+                </Text>
+                {' / '}
+                <Text style={{ color: pointsOnCream ? fold.clay : '#E9A08A', fontWeight: '700' }}>
+                  -{formatPoints(hub?.wish.weekSpent ?? 0)}
+                </Text>
+              </Text>
+              <View
+                style={[
+                  styles.pcCta,
+                  { backgroundColor: pointsCtaBg, borderColor: pointsCtaBorder },
+                ]}>
+                <Text style={[styles.pcCtaText, { color: pointsCtaTextColor }]}>去心愿板</Text>
+                <AppIcon name="chevron-right" size={12} color={pointsCtaTextColor} />
+              </View>
             </View>
           </Pressable>
         </FoldRiseIn>
 
-        {/* 身体数据 */}
+        {/* —— 4. 人生方向：中频，主动规划 —— */}
+        <FoldRiseIn animate={motionOn} index={7} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>人生方向</Text>
+            <Text style={[styles.sectionHint, { color: fold.faint }]}>长期北极星与月轨</Text>
+          </View>
+        </FoldRiseIn>
         <FoldRiseIn animate={motionOn} index={8} staggerMs={45} fromY={12}>
+          <ProfileRoadCard
+            road={hub?.road}
+            loading={hub == null}
+            onOpen={openLifeRoad}
+            onRetry={retryHub}
+            onWriteDirection={openEditDirection}
+          />
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={9} staggerMs={45} fromY={10}>
+          <ProfileRoadBelow
+            road={hub?.road}
+            animate={motionOn}
+            onOpen={openLifeRoadPanorama}
+          />
+        </FoldRiseIn>
+
+        {/* —— 5. 身体与档案：低频查阅 / 编辑 —— */}
+        <FoldRiseIn animate={motionOn} index={10} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>身体与档案</Text>
+            <Text style={[styles.sectionHint, { color: fold.faint }]}>体征与画像，按需完善</Text>
+          </View>
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={11} staggerMs={45} fromY={12}>
           <Pressable
             onPress={() => openEdit('body')}
             accessibilityRole="button"
             accessibilityLabel="身体数据，进入体征"
             style={({ pressed }) => [
               styles.card,
-              {
-                backgroundColor: fold.card,
-                borderColor: fold.line,
-                opacity: pressed ? 0.94 : 1,
-              },
+              cardSurface,
+              { opacity: pressed ? 0.94 : 1 },
             ]}>
             <View style={[styles.rowBetween, { marginBottom: 6 }]}>
               <Text style={[styles.cardTitle, { color: fold.ink2 }]}>身体数据</Text>
@@ -1059,13 +1069,110 @@ export default function ProfileScreen() {
             </View>
           </Pressable>
         </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={12} staggerMs={45} fromY={12}>
+          <Pressable
+            onPress={() => openEdit('basic')}
+            accessibilityRole="button"
+            accessibilityLabel="档案摘要，点击编辑资料"
+            style={({ pressed }) => [
+              styles.card,
+              cardSurface,
+              { opacity: pressed ? 0.94 : 1 },
+            ]}>
+            <View style={[styles.rowBetween, { marginBottom: 5 }]}>
+              <Text style={[styles.cardTitle, { color: fold.ink2 }]}>档案摘要</Text>
+              <Text style={[styles.cardHint, { color: fold.faint }]}>点击编辑资料 ›</Text>
+            </View>
+            <View style={styles.sumGrid}>
+              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
+                <Text style={[styles.sumKey, { color: fold.ink2 }]}>目标</Text>
+                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
+                  {archiveGoal}
+                </Text>
+              </View>
+              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
+                <Text style={[styles.sumKey, { color: fold.ink2 }]}>生活习惯</Text>
+                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
+                  {hub?.archive.lifestyle ?? '未设置'}
+                </Text>
+              </View>
+              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
+                <Text style={[styles.sumKey, { color: fold.ink2 }]}>健身日</Text>
+                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
+                  {hub?.archive.workoutDaysLabel ?? '未设置'}
+                </Text>
+              </View>
+              <View style={[styles.sumItem, { backgroundColor: fold.paper2 }]}>
+                <Text style={[styles.sumKey, { color: fold.ink2 }]}>人物画像</Text>
+                <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={1}>
+                  {hub?.archive.personaFilled
+                    ? `已填写 · ${hub.archive.personaCharCount} 字`
+                    : '未填写'}
+                </Text>
+              </View>
+            </View>
+            <View style={[styles.sumItem, { backgroundColor: fold.paper2, marginTop: 5 }]}>
+              <Text style={[styles.sumKey, { color: fold.ink2 }]}>饮食偏好</Text>
+              <Text style={[styles.sumVal, { color: fold.muted }]} numberOfLines={2}>
+                {hub?.archive.dietaryEmpty ? '未设置' : hub?.archive.dietarySummary ?? '未设置'}
+              </Text>
+            </View>
+          </Pressable>
+        </FoldRiseIn>
 
-        {/* 天气 / 星座：页底附属卡，独立通道异步拉取，不挡主数据 */}
-        <FoldRiseIn animate={motionOn} index={9} staggerMs={45} fromY={12}>
+        {/* —— 6. 常用工具：功能属性归组，避免与主内容抢注意力 —— */}
+        <FoldRiseIn animate={motionOn} index={13} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>常用工具</Text>
+            <Pressable onPress={() => setMoreOpen(true)} hitSlop={8}>
+              <Text style={[styles.sectionHint, { color: fold.pine }]}>全部 ›</Text>
+            </Pressable>
+          </View>
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={14} staggerMs={45} fromY={12}>
+          <View style={[styles.card, cardSurface, styles.toolsCard]}>
+            <View style={styles.toolsGrid}>
+              {quickTools.map((item) => (
+                <Pressable
+                  key={item.key}
+                  onPress={item.onPress}
+                  accessibilityRole="button"
+                  accessibilityLabel={item.title}
+                  style={({ pressed }) => [
+                    styles.toolCell,
+                    {
+                      backgroundColor: fold.paper2,
+                      opacity: pressed ? 0.88 : 1,
+                      minHeight: MIN_TOUCH + 8,
+                    },
+                  ]}>
+                  <View style={[styles.toolIconWrap, { backgroundColor: fold.sage2 }]}>
+                    <AppIcon name={item.icon} size={16} color={fold.pine} />
+                  </View>
+                  <Text style={[styles.toolTitle, { color: fold.ink2 }]} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  <Text style={[styles.toolMeta, { color: fold.faint }]} numberOfLines={1}>
+                    {item.meta.replace(' ›', '')}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        </FoldRiseIn>
+
+        {/* —— 7. 环境与运势：页底附属，最低注意力 —— */}
+        <FoldRiseIn animate={motionOn} index={15} staggerMs={45} fromY={10}>
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionKicker, { color: fold.muted }]}>环境与运势</Text>
+            <Text style={[styles.sectionHint, { color: fold.faint }]}>天气 · 星座</Text>
+          </View>
+        </FoldRiseIn>
+        <FoldRiseIn animate={motionOn} index={16} staggerMs={45} fromY={12}>
           <ProfileWeatherCard refreshToken={externalRefreshToken} />
         </FoldRiseIn>
         {hub?.zodiacLabel ? (
-          <FoldRiseIn animate={motionOn} index={10} staggerMs={45} fromY={12}>
+          <FoldRiseIn animate={motionOn} index={17} staggerMs={45} fromY={12}>
             <ProfileHoroscopeCard
               zodiacLabel={hub.zodiacLabel}
               refreshToken={externalRefreshToken}
@@ -1128,6 +1235,58 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: {
     gap: 8,
+  },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingTop: 10,
+    marginBottom: -2,
+  },
+  sectionKicker: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  sectionHint: {
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  toolsCard: {
+    paddingVertical: 10,
+  },
+  toolsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  toolCell: {
+    width: '31.5%',
+    flexGrow: 1,
+    minWidth: '30%',
+    maxWidth: '33%',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    gap: 4,
+  },
+  toolIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  toolMeta: {
+    fontSize: 9,
   },
   appBar: {
     height: 48,
@@ -1350,7 +1509,6 @@ const styles = StyleSheet.create({
   pcHintText: {
     flex: 1,
     fontSize: 11,
-    color: '#E4D6BB',
   },
   pcFoot: {
     marginTop: 9,
@@ -1361,15 +1519,12 @@ const styles = StyleSheet.create({
   },
   pcWeek: {
     fontSize: 11,
-    color: '#A9BFB3',
   },
   pcCta: {
     height: 25,
     paddingHorizontal: 9,
     borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.1)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.16)',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
@@ -1377,7 +1532,6 @@ const styles = StyleSheet.create({
   pcCtaText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#F2E5CC',
   },
   rhythmGrid: {
     flexDirection: 'row',

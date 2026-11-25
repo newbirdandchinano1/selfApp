@@ -175,6 +175,8 @@ async function buildBody(opts: {
   const body: Record<string, unknown> = {
     message: opts.message,
     session_id: opts.sessionId || undefined,
+    // 单用户偏好文件键；与 /agent/preferences 默认 user_id 对齐
+    user_id: 'default',
     history: opts.history,
     brief_context: opts.brief_context,
     // S9.2：随已注册 commit handler 递增；无 handler 时与 S8 preview 基线一致

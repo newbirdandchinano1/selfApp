@@ -98,11 +98,6 @@ export async function createHealthRecord(input: CreateHealthRecordInput) {
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
-  void import('@/lib/widgets/health-intake-widget-sync')
-    .then(({ scheduleHealthIntakeWidgetSync }) =>
-      scheduleHealthIntakeWidgetSync('health-create'),
-    )
-    .catch(() => {});
 }
 
 export async function getHealthRecordById(id: string) {
@@ -356,11 +351,6 @@ export async function updateHealthRecord(id: string, input: UpdateHealthRecordIn
       resyncAppNotificationsAfterPreferenceChange(),
     )
     .catch(() => {});
-  void import('@/lib/widgets/health-intake-widget-sync')
-    .then(({ scheduleHealthIntakeWidgetSync }) =>
-      scheduleHealthIntakeWidgetSync('health-update'),
-    )
-    .catch(() => {});
 }
 
 export async function deleteHealthRecord(id: string) {
@@ -391,11 +381,6 @@ export async function deleteHealthRecord(id: string) {
   void import('@/lib/notification-center')
     .then(({ resyncAppNotificationsAfterPreferenceChange }) =>
       resyncAppNotificationsAfterPreferenceChange(),
-    )
-    .catch(() => {});
-  void import('@/lib/widgets/health-intake-widget-sync')
-    .then(({ scheduleHealthIntakeWidgetSync }) =>
-      scheduleHealthIntakeWidgetSync('health-delete'),
     )
     .catch(() => {});
 }

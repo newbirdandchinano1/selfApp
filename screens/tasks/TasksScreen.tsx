@@ -15,7 +15,6 @@ import {
   resolveTaskStatusTone,
 } from '@/components/tasks/task-status-tag';
 import { AiHabitNudgeSheet } from '@/components/tasks/ai-habit-nudge-sheet';
-import { AiSuggestTodayTasksSheet } from '@/components/tasks/ai-suggest-today-sheet';
 import { AiTaskFromImageSheet } from '@/components/tasks/ai-task-from-image-sheet';
 import {
   getInboxRetentionDaysLeft,
@@ -412,9 +411,34 @@ import {
   View,
   useWindowDimensions,
   type KeyboardEvent,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
+import Reanimated, {
+  useAnimatedStyle,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+/**
+ * 侧滑操作条：随 progress 显隐。合上时 opacity=0，玻璃半透明行面也不会透出红/灰钮。
+ */
+function SwipeActionsReveal({
+  progress,
+  style,
+  children,
+}: {
+  progress: SharedValue<number>;
+  style?: StyleProp<ViewStyle>;
+  children: React.ReactNode;
+}) {
+  const animatedStyle = useAnimatedStyle(() => {
+    const p = Math.min(1, Math.max(0, progress.value));
+    return { opacity: p <= 0.02 ? 0 : Math.min(1, (p - 0.02) / 0.28) };
+  });
+  return <Reanimated.View style={[style, animatedStyle]}>{children}</Reanimated.View>;
+}
 
 const PAGE_API_KEY = 'tabs/tasks';
 const LOCAL_TABLES = listUiRefreshTables(PAGE_API_KEY);
@@ -1787,7 +1811,7 @@ export default function TasksScreen() {
 
   const router = useRouter();
   const { colors, isDark, shadows } = useAppTheme();
-  const { tf, fonts: foldFonts, pageBackground } = useWeatherAwareTaskFoldTheme();
+  const { tf, fonts: foldFonts, pageBackground, atmosphereActive } = useWeatherAwareTaskFoldTheme();
   const taskStatusTones = useTaskStatusToneColors();
   const taskUi = getTaskUiColors(isDark);
   const habitBreakSuccess = taskUi.habitBreakSuccess;
@@ -1868,7 +1892,6 @@ export default function TasksScreen() {
   /** 底部「无项目待办」快捷输入框内容 */
   const [quickTodoDraft, setQuickTodoDraft] = React.useState('');
   const [quickTodoSaving, setQuickTodoSaving] = React.useState(false);
-  const [aiSuggestTodayOpen, setAiSuggestTodayOpen] = React.useState(false);
   const [aiHabitNudgeOpen, setAiHabitNudgeOpen] = React.useState(false);
   const [aiTaskFromImageOpen, setAiTaskFromImageOpen] = React.useState(false);
   /** 设计稿 shot 06：行下操作抽屉 / 新建行高亮 */
@@ -6232,9 +6255,13 @@ export default function TasksScreen() {
   };
 
   const bg = pageBackground;
-  /** 左滑行必须用不透明纸色，避免半透明透出删除条 */
-  const swipeBg = tf.paper;
-  const card = isDark ? tf.paper2 : tf.card;
+  /**
+   * 氛围夜间：侧滑行与分区壳同为 60% 玻璃；操作条用 SwipeActionsReveal 按 progress 显隐。
+   * 无氛围：侧滑仍用不透明实底盖钮。
+   */
+  const swipeCoverBg = isDark ? '#1B2621' : '#FFFCF5';
+  const swipeBg = atmosphereActive && isDark ? tf.paper2 : swipeCoverBg;
+  const card = isDark ? (atmosphereActive ? tf.card : tf.paper2) : tf.card;
   const modalCardBg = isDark ? colors.accentCard : card;
   const soft = colors.input;
   const outline = tf.muted;
@@ -6262,14 +6289,42 @@ export default function TasksScreen() {
   /** 已放弃项目：红色底，与完成绿底区分 */
   const projectCancelledSurface = isDark ? taskUi.overdueSurface : taskUi.dangerSoftWash;
 
+  /**
+   * 氛围分区壳：日间米白实底；夜间墨绿玻璃不透明度 60%。
+   * 无氛围时沿用原纸色卡。
+   */
+  const atmosphereShellBg = atmosphereActive
+    ? isDark
+      ? tf.cardSoft
+      : tf.card
+    : card;
+  const atmosphereShellBorder = atmosphereActive
+    ? isDark
+      ? tf.line
+      : 'rgba(216,205,187,0.75)'
+    : colors.outline;
   const sectionCardStyle = React.useMemo(
-    () => [styles.sectionCard, shadows.card, { backgroundColor: card, borderColor: colors.outline }],
-    [card, colors.outline, shadows.card],
+    () => [
+      styles.sectionCard,
+      atmosphereActive ? null : shadows.card,
+      {
+        backgroundColor: atmosphereShellBg,
+        borderColor: atmosphereShellBorder,
+      },
+    ],
+    [atmosphereActive, atmosphereShellBg, atmosphereShellBorder, shadows.card],
   );
   /** 待办/项目等次要区块：保留描边，去掉厚阴影 */
   const sectionCardQuietStyle = React.useMemo(
-    () => [styles.sectionCard, styles.sectionCardQuiet, { backgroundColor: card, borderColor: colors.outline }],
-    [card, colors.outline],
+    () => [
+      styles.sectionCard,
+      styles.sectionCardQuiet,
+      {
+        backgroundColor: atmosphereShellBg,
+        borderColor: atmosphereShellBorder,
+      },
+    ],
+    [atmosphereShellBg, atmosphereShellBorder],
   );
   /** 次要分区：无阴影卡片壳，仅用顶部分隔线区分 */
   const stackedSectionStyle = React.useMemo(
@@ -6277,16 +6332,25 @@ export default function TasksScreen() {
     [colors.outline],
   );
   /**
-   * 待办/三窗格行面：夜间必须用不透明实底。
-   * 暗色 `tf.card` 为 rgba(…,0.06)，会把 ReanimatedSwipeable 侧滑钮透到表层。
+   * 待办行面：氛围夜间走 60% 玻璃；无氛围实底。
+   * 合上时侧滑钮靠 SwipeActionsReveal 隐藏，不依赖实色遮盖。
    */
-  const todoListSurface = isDark ? tf.paper2 : 'rgba(255,252,245,0.92)';
-  /** 设计稿 `.card.panes`：三窗格统一暖纸卡片（强制无阴影） */
+  const todoListSurface =
+    atmosphereActive && isDark
+      ? tf.paper2
+      : isDark
+        ? swipeCoverBg
+        : 'rgba(255,252,245,0.92)';
+  /** 设计稿 `.card.panes`：三窗格统一暖纸/玻璃卡片（强制无阴影） */
   const panesCardStyle = React.useMemo(
     () => [
       styles.panesCard,
       {
-        backgroundColor: todoListSurface,
+        backgroundColor: atmosphereActive
+          ? isDark
+            ? tf.cardSoft
+            : tf.card
+          : todoListSurface,
         borderColor: isDark ? tf.line : 'rgba(216,205,187,0.75)',
         shadowColor: 'transparent',
         shadowOpacity: 0,
@@ -6295,7 +6359,7 @@ export default function TasksScreen() {
         elevation: 0,
       },
     ],
-    [isDark, tf.line, todoListSurface],
+    [atmosphereActive, isDark, tf.card, tf.cardSoft, tf.line, todoListSurface],
   );
 
   /** 情境内：未完成在前、已完成沉底；不再按标签权重排序。 */
@@ -6688,31 +6752,6 @@ export default function TasksScreen() {
         todayMeta={`待办 ${standaloneTodoOpenCount} · 习惯 ${habitSections.reduce((n, s) => n + s.items.length, 0)}`}
         syncLabel={null}
       />
-      <Pressable
-        onPress={() => setAiSuggestTodayOpen(true)}
-        accessibilityRole="button"
-        accessibilityLabel="今天先做什么"
-        style={({ pressed }) => ({
-          marginHorizontal: 14,
-          marginTop: 8,
-          marginBottom: 2,
-          paddingVertical: 10,
-          paddingHorizontal: 12,
-          borderRadius: 12,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: colors.outlineStrong,
-          backgroundColor: isDark ? colors.surfaceMuted : colors.surface,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 8,
-          opacity: pressed ? 0.85 : 1,
-        })}>
-        <MaterialIcons name="auto-awesome" size={16} color={primary} />
-        <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: colors.text }}>
-          今天先做什么
-        </Text>
-        <Text style={{ fontSize: 11, color: outline }}>AI 优先 ›</Text>
-      </Pressable>
     </View>
   );
 
@@ -6904,7 +6943,7 @@ export default function TasksScreen() {
           {
             paddingTop: insets.top,
             borderBottomColor: tf.line,
-            backgroundColor: isDark ? 'rgba(20,28,24,0.92)' : 'rgba(244,240,232,0.92)',
+            backgroundColor: pageBackground,
           },
         ]}>
         <View style={styles.pageHeaderRow}>
@@ -7788,15 +7827,17 @@ export default function TasksScreen() {
                           friction={2}
                           /** 多钮操作条很宽；默认半宽阈值 + friction=2 几乎要滑半屏才吸开 */
                           rightThreshold={40}
-                          /** 与窗格同色实底盖住侧滑钮；elevation 0 避免行阴影 */
+                          /** 氛围下与行面同为玻璃底；合上时操作条 opacity=0 */
                           childrenContainerStyle={[
                             styles.standaloneTodoSwipeChild,
                             { backgroundColor: todoListSurface },
                           ]}
-                          renderRightActions={() => {
+                          renderRightActions={(progress) => {
                             const isCancelledTodo = t.status === 'cancelled';
                             return (
-                            <View style={styles.standaloneSwipeActions}>
+                            <SwipeActionsReveal
+                              progress={progress}
+                              style={styles.standaloneSwipeActions}>
                               {isCancelledTodo ? (
                                 <Pressable
                                   onPress={() => confirmUncancelStandaloneTodo(t.id, t.title)}
@@ -7920,7 +7961,7 @@ export default function TasksScreen() {
                                 </Text>
                               </Pressable>
                               ) : null}
-                            </View>
+                            </SwipeActionsReveal>
                             );
                           }}>
                           {(() => {
@@ -8616,8 +8657,10 @@ export default function TasksScreen() {
                         friction={2}
                         rightThreshold={40}
                         childrenContainerStyle={{ backgroundColor: swipeBg }}
-                        renderRightActions={() => (
-                          <View style={styles.projectSwipeActions}>
+                        renderRightActions={(progress) => (
+                          <SwipeActionsReveal
+                            progress={progress}
+                            style={styles.projectSwipeActions}>
                             {canSwipeDeleteFromInbox ? (
                               <Pressable
                                 onPress={() => confirmDeleteInboxProject(project)}
@@ -8686,7 +8729,7 @@ export default function TasksScreen() {
                                 )}
                               </>
                             ) : null}
-                          </View>
+                          </SwipeActionsReveal>
                         )}>
                         <View
                           style={[
@@ -9852,35 +9895,6 @@ export default function TasksScreen() {
           </View>
         </View>
       </Modal>
-
-      <AiSuggestTodayTasksSheet
-        visible={aiSuggestTodayOpen}
-        onClose={() => setAiSuggestTodayOpen(false)}
-        logicalTodayYmd={logicalTodayYmd}
-        dayBoundary={dayBoundary}
-        tasks={(() => {
-          const byId = new Map<string, TaskRow>();
-          for (const t of standaloneTodos) byId.set(t.id, t);
-          for (const t of scheduleSubjects.tasks) byId.set(t.id, t);
-          return [...byId.values()];
-        })()}
-        habits={habitSections.flatMap((s) =>
-          s.items.map((h) => ({
-            id: h.id,
-            name: h.name,
-            kind: h.kind,
-            todayCount: h.todayCount,
-            dailyGoal: h.dailyGoal ?? 1,
-            streak: 0,
-          })),
-        )}
-        tagsByTaskId={new Map()}
-        onOpenTask={(id) => router.push({ pathname: '/task/[id]', params: { id } })}
-        onAssignedFrog={() => {
-          markPageDirty();
-          schedulePostMutationSync({ frogs: true, tasks: true, projects: true });
-        }}
-      />
 
       <AiHabitNudgeSheet
         visible={aiHabitNudgeOpen}

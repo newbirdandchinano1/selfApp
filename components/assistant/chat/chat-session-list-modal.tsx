@@ -22,6 +22,7 @@ type Props = {
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
   onNewChat: () => void;
+  onOpenPrefs?: () => void;
 };
 
 function formatTime(ts: number): string {
@@ -45,6 +46,7 @@ export function ChatSessionListModal({
   onSelect,
   onDelete,
   onNewChat,
+  onOpenPrefs,
 }: Props) {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -64,6 +66,16 @@ export function ChatSessionListModal({
           <View style={styles.head}>
             <Text style={[styles.title, { color: colors.text }]}>历史对话</Text>
             <View style={styles.headActions}>
+              {onOpenPrefs ? (
+                <Pressable
+                  onPress={() => {
+                    onClose();
+                    onOpenPrefs();
+                  }}
+                  hitSlop={8}>
+                  <Text style={[styles.link, { color: colors.primary }]}>偏好</Text>
+                </Pressable>
+              ) : null}
               <Pressable onPress={onNewChat} hitSlop={8}>
                 <Text style={[styles.link, { color: colors.primary }]}>新建</Text>
               </Pressable>

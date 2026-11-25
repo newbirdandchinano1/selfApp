@@ -120,7 +120,7 @@ import {
     validateFinanceTransactionBeforeSave,
 } from '@/lib/repositories/finance/finance';
 import { fetchFinanceHome, fetchFinanceRecentDays } from '@/lib/finance-page-api';
-import { aggregateTransactions, listMonthKeysInclusive } from '@/lib/finance-aggregate';
+import { aggregateTransactions } from '@/lib/finance-aggregate';
 import { formatYmd } from '@/lib/date';
 import {
   computeNetWorthTotal,
@@ -552,7 +552,8 @@ export default function FinanceScreen() {
     skeletonOpacity: financeSkeletonOpacity,
     contentOpacity: financeContentOpacity,
   } = useHomeSkeletonReveal(initialFinanceLoadPending);
-  const { ff, isDark, fonts: ffFonts, pageBackground } = useWeatherAwareFinanceFoldTheme();
+  const { ff, isDark, fonts: ffFonts, pageBackground, atmosphereActive } =
+    useWeatherAwareFinanceFoldTheme();
   const { animate: foldAnimate } = useFoldMotionGate();
   const sourceBadges = useNotificationSourceBadges();
 
@@ -575,7 +576,38 @@ export default function FinanceScreen() {
   const danger = ff.clay;
   const progressTrack = ff.budgetTrack;
   const progressFill = ff.amber;
-  const headerScrim = isDark ? 'rgba(23,43,36,0.94)' : 'rgba(243,238,228,0.94)';
+  /**
+   * 氛围分区壳：日间米白；夜间半透明墨绿玻璃（α=0.60）。
+   * 无氛围时沿用原纸色卡。
+   */
+  const atmosphereShellBg = atmosphereActive
+    ? isDark
+      ? ff.cardSoft
+      : ff.card
+    : surface;
+  const atmosphereShellBorder = atmosphereActive
+    ? isDark
+      ? ff.line
+      : 'rgba(216,205,187,0.75)'
+    : outlineVariant;
+  /** 预算卡嵌在米白/玻璃壳上时，改用深色字，不再用深绿底专用浅色字 */
+  const budgetOnShell = true;
+  const budgetLabelColor = budgetOnShell ? subtle : ff.budgetLabel;
+  const budgetAmountColor = budgetOnShell ? primary : ff.budgetAmount;
+  const budgetAmountSoftColor = budgetOnShell ? ff.amberInk : ff.budgetAmountSoft;
+  const budgetFootColor = budgetOnShell ? textMuted : ff.budgetFoot;
+  const budgetTrackColor = budgetOnShell
+    ? isDark
+      ? 'rgba(230,221,206,0.14)'
+      : ff.line
+    : ff.budgetTrack;
+  const budgetRingTrackColor = budgetOnShell
+    ? isDark
+      ? 'rgba(230,221,206,0.14)'
+      : 'rgba(30,64,52,0.12)'
+    : ff.ringTrack;
+  /** 与健康/复盘一致：氛围开启时顶栏透出天气层，勿再铺米白/墨绿遮罩 */
+  const headerScrim = pageBackground;
   const weekdayCn = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
   const { logicalTodayYmd: calendarTodayYmd, logicalTodayDate: today, boundary: financeDayBoundary } =
     usePageDayBoundary('finance');
@@ -1492,17 +1524,6 @@ export default function FinanceScreen() {
 
   const monthlySurplus = monthlyIncome - monthlyExpense;
   const savingsRate = monthlyIncome > 0 ? (monthlySurplus / monthlyIncome) * 100 : 0;
-
-  /** 近 6 个自然月净储蓄（旧→新），供储蓄目标 AI 教练 */
-  const recentMonthlyNetSavings = React.useMemo(() => {
-    const end = formatYmd(new Date(today.getFullYear(), today.getMonth() + 1, 0));
-    const start = formatYmd(new Date(today.getFullYear(), today.getMonth() - 5, 1));
-    const agg = aggregateTransactions(financeTransactions, { start, end });
-    return listMonthKeysInclusive(start, end).map((mk) => {
-      const bucket = agg.byMonth.get(mk);
-      return bucket ? Math.round(bucket.net * 100) / 100 : 0;
-    });
-  }, [financeTransactions, today]);
 
   const prevBudgetPeriodStart = getPreviousBudgetPeriodStart(budgetPeriodStart, budgetRefreshDay);
   const prevBudgetPeriodEndExclusive = budgetPeriodStart;
@@ -3873,222 +3894,240 @@ export default function FinanceScreen() {
             <Animated.View style={{ opacity: financeContentOpacity }}>
           <View style={styles.sectionStack}>
           <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={0} fromY={11}>
-            <Pressable
-              onPress={openBudgetAdjust}
-              style={({ pressed }) => [
-                styles.budgetCardFold,
+            <View
+              style={[
+                styles.budgetSavingsMerged,
                 {
-                  backgroundColor: ff.budgetFrom,
-                  borderColor: ff.budgetBorder,
-                  opacity: pressed ? 0.96 : 1,
+                  backgroundColor: atmosphereShellBg,
+                  borderColor: atmosphereShellBorder,
                 },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={
-                sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')
-                  ? '调整预算，有未读提醒'
-                  : '调整预算'
-              }>
-              <InboxSourceDot
-                visible={sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')}
-                size={8}
-                style={{ top: 10, right: 10 }}
-              />
-              <View style={styles.budgetFoldMain}>
-                <View style={styles.budgetFoldLabelRow}>
-                  <Text style={[styles.budgetFoldLabel, { color: ff.budgetLabel }]}>
-                    {budgetUiScopeShort}预算结余
-                  </Text>
-                  <Pressable
-                    onPress={() => setShowNetAmounts((prev) => !prev)}
-                    hitSlop={8}
-                    style={({ pressed }) => [
-                      styles.budgetMiniEye,
-                      pressed && { opacity: 0.75 },
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
-                    <MaterialIcons
-                      name={showNetAmounts ? 'visibility' : 'visibility-off'}
-                      size={12}
-                      color={ff.budgetLabel}
-                    />
-                  </Pressable>
-                </View>
-                <View style={styles.budgetFoldAmountRow}>
-                  {showNetAmounts ? (
-                    <FoldCountUpText
-                      value={budgetSurplusAmount}
-                      animate={foldAnimate}
-                      duration={760}
-                      textStyle={[
-                        styles.budgetFoldAmount,
-                        { color: ff.budgetAmount, fontFamily: ffFonts.mono },
-                      ]}
-                      formatter={(n) => formatCurrencyWithDecimals(n)}
-                    />
-                  ) : (
-                    <Text
-                      style={[
-                        styles.budgetFoldAmount,
-                        { color: ff.budgetAmount, fontFamily: ffFonts.mono },
-                      ]}>
-                      {hiddenAmountText}
-                    </Text>
-                  )}
-                </View>
-                <View style={styles.budgetFoldProgress}>
-                  <View style={[styles.budgetFoldTrack, { backgroundColor: ff.budgetTrack }]}>
-                    <View
-                      style={[
-                        styles.budgetFoldFill,
-                        {
-                          width: `${budgetUsedPercent}%`,
-                          backgroundColor: ff.amber,
-                        },
-                      ]}
-                    />
-                  </View>
-                  <View style={styles.budgetFoldFoot}>
-                    <Text style={[styles.budgetFoldFootText, { color: ff.budgetFoot }]}>
-                      已用{' '}
-                      <Text style={{ color: ff.budgetAmountSoft, fontWeight: '700' }}>
-                        {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
-                      </Text>
-                      {' · '}
-                      {budgetPeriodCountdownLabel}
-                    </Text>
-                    <Text style={[styles.budgetFoldFootText, { color: ff.budgetFoot }]}>
-                      月预算{' '}
-                      <Text style={{ color: ff.budgetAmountSoft, fontWeight: '700' }}>
-                        {showNetAmounts
-                          ? formatCurrencyWithDecimals(budgetTotalAmount)
-                          : hiddenAmountText}
-                      </Text>
-                    </Text>
-                  </View>
-                </View>
-              </View>
+                atmosphereActive ? null : Shadows.card,
+              ]}>
               <Pressable
-                onPress={() => setIsTodayBudgetHintVisible(true)}
-                style={styles.budgetFoldRingCol}
+                onPress={openBudgetAdjust}
+                style={({ pressed }) => [
+                  styles.budgetCardFoldInner,
+                  { opacity: pressed ? 0.96 : 1 },
+                ]}
                 accessibilityRole="button"
-                accessibilityLabel="查看今日可用说明">
-                {(() => {
-                  const ringSize = 72;
-                  const stroke = 5;
-                  const r = (ringSize - stroke) / 2;
-                  const c = 2 * Math.PI * r;
-                  const usage = isTodayBudgetOver ? 1 : todayBudgetUsagePct;
-                  const dash = c * usage;
-                  const ringProg = isTodayBudgetOver ? ff.clay : ff.ringStroke;
-                  return (
-                    <>
-                      <View style={{ width: ringSize, height: ringSize, alignItems: 'center', justifyContent: 'center' }}>
-                        <Svg
-                          width={ringSize}
-                          height={ringSize}
-                          viewBox={`0 0 ${ringSize} ${ringSize}`}
-                          style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
-                          <Circle
-                            cx={ringSize / 2}
-                            cy={ringSize / 2}
-                            r={r}
-                            stroke={ff.ringTrack}
-                            strokeWidth={stroke}
-                            fill="none"
-                          />
-                          <Circle
-                            cx={ringSize / 2}
-                            cy={ringSize / 2}
-                            r={r}
-                            stroke={ringProg}
-                            strokeWidth={stroke}
-                            fill="none"
-                            strokeDasharray={`${dash} ${c}`}
-                            strokeLinecap="round"
-                          />
-                        </Svg>
-                        <View style={styles.budgetRingCenter}>
-                          <Text
-                            style={[
-                              styles.budgetFoldRingValue,
-                              {
-                                color: isTodayBudgetOver ? ff.clay : ff.budgetAmount,
-                                fontFamily: ffFonts.mono,
-                              },
-                            ]}
-                            numberOfLines={1}>
-                            {showNetAmounts
-                              ? formatCurrencyWithDecimals(
-                                  isTodayBudgetOver ? todayBudgetOverAmount : todayAvailableAmount,
-                                )
-                              : hiddenAmountText}
-                          </Text>
-                          <Text style={[styles.budgetFoldRingLabel, { color: ff.budgetFoot }]}>
-                            {isTodayBudgetOver ? '超出预算' : '今日可用'}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.budgetFoldRingCap}>
-                        <View style={[styles.foldDot, { backgroundColor: ff.amber }]} />
-                        <Text style={{ color: ff.budgetLabel, fontSize: 10 }}>
-                          今日已用{' '}
+                accessibilityLabel={
+                  sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')
+                    ? '调整预算，有未读提醒'
+                    : '调整预算'
+                }>
+                <InboxSourceDot
+                  visible={sourceBadges.hasAnchor('budget') || sourceBadges.hasAnchor('ledger-wrap')}
+                  size={8}
+                  style={{ top: 2, right: 2 }}
+                />
+                <View style={styles.budgetFoldMain}>
+                  <View style={styles.budgetFoldLabelRow}>
+                    <Text style={[styles.budgetFoldLabel, { color: budgetLabelColor }]}>
+                      {budgetUiScopeShort}预算结余
+                    </Text>
+                    <Pressable
+                      onPress={() => setShowNetAmounts((prev) => !prev)}
+                      hitSlop={8}
+                      style={({ pressed }) => [
+                        styles.budgetMiniEye,
+                        pressed && { opacity: 0.75 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={showNetAmounts ? '隐藏金额' : '显示金额'}>
+                      <MaterialIcons
+                        name={showNetAmounts ? 'visibility' : 'visibility-off'}
+                        size={12}
+                        color={budgetLabelColor}
+                      />
+                    </Pressable>
+                  </View>
+                  <View style={styles.budgetFoldAmountRow}>
+                    {showNetAmounts ? (
+                      <FoldCountUpText
+                        value={budgetSurplusAmount}
+                        animate={foldAnimate}
+                        duration={760}
+                        textStyle={[
+                          styles.budgetFoldAmount,
+                          { color: budgetAmountColor, fontFamily: ffFonts.mono },
+                        ]}
+                        formatter={(n) => formatCurrencyWithDecimals(n)}
+                      />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.budgetFoldAmount,
+                          { color: budgetAmountColor, fontFamily: ffFonts.mono },
+                        ]}>
+                        {hiddenAmountText}
+                      </Text>
+                    )}
+                  </View>
+                  <View style={styles.budgetFoldProgress}>
+                    <View style={[styles.budgetFoldTrack, { backgroundColor: budgetTrackColor }]}>
+                      <View
+                        style={[
+                          styles.budgetFoldFill,
+                          {
+                            width: `${budgetUsedPercent}%`,
+                            backgroundColor: ff.amber,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <View style={styles.budgetFoldFoot}>
+                      <Text style={[styles.budgetFoldFootText, { color: budgetFootColor }]}>
+                        已用{' '}
+                        <Text style={{ color: budgetAmountSoftColor, fontWeight: '700' }}>
+                          {showNetAmounts ? `${Math.round(budgetUsedPercent)}%` : '--'}
+                        </Text>
+                        {' · '}
+                        {budgetPeriodCountdownLabel}
+                      </Text>
+                      <Text style={[styles.budgetFoldFootText, { color: budgetFootColor }]}>
+                        月预算{' '}
+                        <Text style={{ color: budgetAmountSoftColor, fontWeight: '700' }}>
                           {showNetAmounts
-                            ? formatCurrencyWithDecimals(todayBudgetExpenseTotal)
+                            ? formatCurrencyWithDecimals(budgetTotalAmount)
                             : hiddenAmountText}
                         </Text>
-                      </View>
-                    </>
-                  );
-                })()}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+                <Pressable
+                  onPress={() => setIsTodayBudgetHintVisible(true)}
+                  style={styles.budgetFoldRingCol}
+                  accessibilityRole="button"
+                  accessibilityLabel="查看今日可用说明">
+                  {(() => {
+                    const ringSize = 72;
+                    const stroke = 5;
+                    const r = (ringSize - stroke) / 2;
+                    const c = 2 * Math.PI * r;
+                    const usage = isTodayBudgetOver ? 1 : todayBudgetUsagePct;
+                    const dash = c * usage;
+                    const ringProg = isTodayBudgetOver ? ff.clay : ff.ringStroke;
+                    return (
+                      <>
+                        <View
+                          style={{
+                            width: ringSize,
+                            height: ringSize,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}>
+                          <Svg
+                            width={ringSize}
+                            height={ringSize}
+                            viewBox={`0 0 ${ringSize} ${ringSize}`}
+                            style={{ position: 'absolute', transform: [{ rotate: '-90deg' }] }}>
+                            <Circle
+                              cx={ringSize / 2}
+                              cy={ringSize / 2}
+                              r={r}
+                              stroke={budgetRingTrackColor}
+                              strokeWidth={stroke}
+                              fill="none"
+                            />
+                            <Circle
+                              cx={ringSize / 2}
+                              cy={ringSize / 2}
+                              r={r}
+                              stroke={ringProg}
+                              strokeWidth={stroke}
+                              fill="none"
+                              strokeDasharray={`${dash} ${c}`}
+                              strokeLinecap="round"
+                            />
+                          </Svg>
+                          <View style={styles.budgetRingCenter}>
+                            <Text
+                              style={[
+                                styles.budgetFoldRingValue,
+                                {
+                                  color: isTodayBudgetOver ? ff.clay : budgetAmountColor,
+                                  fontFamily: ffFonts.mono,
+                                },
+                              ]}
+                              numberOfLines={1}>
+                              {showNetAmounts
+                                ? formatCurrencyWithDecimals(
+                                    isTodayBudgetOver
+                                      ? todayBudgetOverAmount
+                                      : todayAvailableAmount,
+                                  )
+                                : hiddenAmountText}
+                            </Text>
+                            <Text style={[styles.budgetFoldRingLabel, { color: budgetFootColor }]}>
+                              {isTodayBudgetOver ? '超出预算' : '今日可用'}
+                            </Text>
+                          </View>
+                        </View>
+                        <View style={styles.budgetFoldRingCap}>
+                          <View style={[styles.foldDot, { backgroundColor: ff.amber }]} />
+                          <Text style={{ color: budgetLabelColor, fontSize: 10 }}>
+                            今日已用{' '}
+                            {showNetAmounts
+                              ? formatCurrencyWithDecimals(todayBudgetExpenseTotal)
+                              : hiddenAmountText}
+                          </Text>
+                        </View>
+                      </>
+                    );
+                  })()}
+                </Pressable>
               </Pressable>
-            </Pressable>
-          </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={1} fromY={11}>
-            <View style={{ position: 'relative' }}>
-            <InboxSourceDot
-              visible={sourceBadges.hasAnchor('savings')}
-              size={8}
-              style={{ top: 8, right: 8, zIndex: 3 }}
-            />
-            <FinanceSavingsGoalBlock
-              currentNetWorth={netTotalForTrend}
-              today={today}
-              showAmounts={showNetAmounts}
-              hiddenAmountText={hiddenAmountText}
-              formatCurrency={formatCurrencyWithDecimals}
-              isDark={isDark}
-              text={text}
-              subtle={subtle}
-              primary={primary}
-              surface={surface}
-              surfaceMuted={surfaceMuted}
-              primaryMuted={primaryMuted}
-              danger={danger}
-              secondary={secondary}
-              outlineVariant={outlineVariant}
-              tertiary={tertiary}
-              onOpenEditor={() => {
-                void acknowledgeInboxSources({ anchors: ['savings'] });
-              }}
-              scheduledDrainUntilTarget={scheduledWithholdingRemaining}
-              scheduledBudgetDeduction={scheduledWithholdingRemaining}
-              logicalTodayYmd={calendarTodayYmd}
-              dayBoundaryHour={financeDayBoundary.hour}
-              dayBoundaryMinute={financeDayBoundary.minute}
-              onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
-              recentMonthlyNetSavings={recentMonthlyNetSavings}
-            />
+              <View style={[styles.budgetSavingsDivider, { backgroundColor: atmosphereShellBorder }]} />
+
+              <View style={{ position: 'relative' }}>
+                <InboxSourceDot
+                  visible={sourceBadges.hasAnchor('savings')}
+                  size={8}
+                  style={{ top: 4, right: 0, zIndex: 3 }}
+                />
+                <FinanceSavingsGoalBlock
+                  embedded
+                  currentNetWorth={netTotalForTrend}
+                  today={today}
+                  showAmounts={showNetAmounts}
+                  hiddenAmountText={hiddenAmountText}
+                  formatCurrency={formatCurrencyWithDecimals}
+                  isDark={isDark}
+                  text={text}
+                  subtle={subtle}
+                  primary={primary}
+                  surface={surface}
+                  surfaceMuted={surfaceMuted}
+                  primaryMuted={primaryMuted}
+                  danger={danger}
+                  secondary={secondary}
+                  outlineVariant={outlineVariant}
+                  tertiary={tertiary}
+                  onOpenEditor={() => {
+                    void acknowledgeInboxSources({ anchors: ['savings'] });
+                  }}
+                  scheduledDrainUntilTarget={scheduledWithholdingRemaining}
+                  scheduledBudgetDeduction={scheduledWithholdingRemaining}
+                  logicalTodayYmd={calendarTodayYmd}
+                  dayBoundaryHour={financeDayBoundary.hour}
+                  dayBoundaryMinute={financeDayBoundary.minute}
+                  onGoalChange={(g) => setSavingsGoalTargetDate(g?.targetDate ?? null)}
+                />
+              </View>
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={2} fromY={11}>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={1} fromY={11}>
             <View
               style={[
                 styles.netCardFold,
-                { backgroundColor: surface, borderColor: outlineVariant },
+                {
+                  backgroundColor: atmosphereShellBg,
+                  borderColor: atmosphereShellBorder,
+                  borderWidth: 1,
+                },
               ]}>
               <View style={styles.budgetNetHeader}>
                 <View style={styles.budgetNetHeaderLeft}>
@@ -4254,13 +4293,22 @@ export default function FinanceScreen() {
             </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={3} fromY={11}>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={2} fromY={11}>
+            <View
+              style={[
+                styles.sectionPanel,
+                styles.quickRowPanel,
+                { backgroundColor: 'transparent', borderColor: outlineVariant },
+              ]}>
             <View style={styles.quickRow}>
               <Pressable
                 onPress={() => router.push('/assets')}
                 style={({ pressed }) => [
                   styles.quickBtn,
-                  { backgroundColor: surface, borderColor: outlineVariant },
+                  {
+                    backgroundColor: atmosphereActive ? atmosphereShellBg : surface,
+                    borderColor: atmosphereShellBorder,
+                  },
                   pressed && { opacity: 0.9 },
                 ]}
                 accessibilityRole="button"
@@ -4282,7 +4330,10 @@ export default function FinanceScreen() {
                 }}
                 style={({ pressed }) => [
                   styles.quickBtn,
-                  { backgroundColor: surface, borderColor: outlineVariant },
+                  {
+                    backgroundColor: atmosphereActive ? atmosphereShellBg : surface,
+                    borderColor: atmosphereShellBorder,
+                  },
                   pressed && { opacity: 0.9 },
                 ]}
                 accessibilityRole="button"
@@ -4308,7 +4359,10 @@ export default function FinanceScreen() {
                 onPress={() => router.push('/cash-flow')}
                 style={({ pressed }) => [
                   styles.quickBtn,
-                  { backgroundColor: surface, borderColor: outlineVariant },
+                  {
+                    backgroundColor: atmosphereActive ? atmosphereShellBg : surface,
+                    borderColor: atmosphereShellBorder,
+                  },
                   pressed && { opacity: 0.9 },
                 ]}
                 accessibilityRole="button"
@@ -4324,10 +4378,20 @@ export default function FinanceScreen() {
                 </View>
               </Pressable>
             </View>
+            </View>
           </FoldRiseIn>
 
-          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={4} fromY={12}>
-          <View style={styles.sectionStack}>
+          <FoldRiseIn animate={foldAnimate && !initialFinanceLoadPending} index={3} fromY={12}>
+          <View
+            style={[
+              styles.sectionStack,
+              styles.sectionPanel,
+              {
+                backgroundColor: atmosphereShellBg,
+                borderColor: atmosphereShellBorder,
+              },
+              atmosphereActive ? null : Shadows.card,
+            ]}>
           <View style={styles.sectionEyebrowRow}>
             <Text style={[styles.sectionEyebrow, { color: ff.ink2 }]}>ACCOUNTS / 账户</Text>
             <Pressable onPress={() => router.push('/assets')} style={({ pressed }) => [styles.sectionLink, pressed && { opacity: 0.8 }]}>
@@ -4342,7 +4406,10 @@ export default function FinanceScreen() {
                 onPress={() => router.push('/add-account')}
                 style={({ pressed }) => [
                   styles.accountCardFoldAdd,
-                  { borderColor: ff.line2, backgroundColor: surface },
+                  {
+                    borderColor: atmosphereShellBorder,
+                    backgroundColor: atmosphereActive ? ff.card : surface,
+                  },
                   pressed && { opacity: 0.92 },
                 ]}>
                 <MaterialIcons name="add" size={18} color={subtle} />
@@ -4353,9 +4420,18 @@ export default function FinanceScreen() {
                 {financeAccountsSortedByBalance.map((acc, idx) => {
                   const isLiab = isFinanceLiabilityAccount(acc);
                   const tone = isLiab ? 'warm' : idx % 3 === 1 ? 'soft' : 'pine';
-                  const cardBg =
-                    tone === 'warm' ? '#C88947' : tone === 'soft' ? '#E9DED0' : ff.budgetFrom;
-                  const cardFg = tone === 'soft' ? '#3D473F' : ff.onPine;
+                  const cardBg = atmosphereActive
+                    ? ff.card
+                    : tone === 'warm'
+                      ? '#C88947'
+                      : tone === 'soft'
+                        ? '#E9DED0'
+                        : ff.budgetFrom;
+                  const cardFg = atmosphereActive
+                    ? text
+                    : tone === 'soft'
+                      ? '#3D473F'
+                      : ff.onPine;
                   return (
                     <Pressable
                       key={acc.id}
@@ -4371,7 +4447,11 @@ export default function FinanceScreen() {
                       }
                       style={({ pressed }) => [
                         styles.accountCardFold,
-                        { backgroundColor: cardBg },
+                        {
+                          backgroundColor: cardBg,
+                          borderWidth: atmosphereActive ? StyleSheet.hairlineWidth : 0,
+                          borderColor: atmosphereActive ? atmosphereShellBorder : 'transparent',
+                        },
                         pressed && { opacity: 0.92, transform: [{ scale: 0.99 }] },
                       ]}>
                       <View style={styles.accountFoldTop}>
@@ -4399,7 +4479,10 @@ export default function FinanceScreen() {
                   onPress={() => router.push('/add-account')}
                   style={({ pressed }) => [
                     styles.accountCardFoldAdd,
-                    { borderColor: ff.line2, backgroundColor: surface },
+                    {
+                      borderColor: atmosphereShellBorder,
+                      backgroundColor: atmosphereActive ? ff.card : surface,
+                    },
                     pressed && { opacity: 0.92 },
                   ]}>
                   <MaterialIcons name="add" size={18} color={subtle} />
@@ -4622,10 +4705,26 @@ export default function FinanceScreen() {
                 <FinanceBudgetCardSkeleton
                   colors={{ surface, outline: outlineStrong, cardBg: surface }}
                 />
-                <View style={[styles.sectionPanel, { backgroundColor: surface, borderColor: outlineStrong }, Shadows.card]}>
+                <View
+                  style={[
+                    styles.sectionPanel,
+                    {
+                      backgroundColor: atmosphereShellBg,
+                      borderColor: atmosphereShellBorder,
+                    },
+                    atmosphereActive ? null : Shadows.card,
+                  ]}>
                   <FinanceAccountCarouselSkeleton colors={{ surface: surfaceSubtle, outline: outlineVariant, cardBg: surfaceSubtle }} />
                 </View>
-                <View style={[styles.sectionPanel, { backgroundColor: surface, borderColor: outlineStrong }, Shadows.card]}>
+                <View
+                  style={[
+                    styles.sectionPanel,
+                    {
+                      backgroundColor: atmosphereShellBg,
+                      borderColor: atmosphereShellBorder,
+                    },
+                    atmosphereActive ? null : Shadows.card,
+                  ]}>
                   <FinanceTxnListSkeleton colors={{ surface: surfaceSubtle, outline: outlineVariant, cardBg: surfaceSubtle }} />
                 </View>
               </View>
@@ -5376,6 +5475,27 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 6,
   },
+  /** 预算结余 + 储蓄目标合并卡 */
+  budgetSavingsMerged: {
+    position: 'relative',
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 13,
+    overflow: 'hidden',
+    gap: 0,
+  },
+  budgetCardFoldInner: {
+    position: 'relative',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  budgetSavingsDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginTop: 10,
+    marginBottom: 2,
+    opacity: 0.9,
+  },
   budgetFoldMain: {
     flex: 1,
     minWidth: 0,
@@ -5491,6 +5611,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     flex: 1,
     minWidth: 0,
+  },
+  quickRowPanel: {
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
   },
   quickRow: {
     flexDirection: 'row',

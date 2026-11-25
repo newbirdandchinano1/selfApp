@@ -2,9 +2,9 @@ import {
   FOLD_DARK,
   FOLD_LIGHT,
   foldFonts,
-  useFoldTheme,
   type FoldPalette,
 } from '@/constants/review-fold-theme';
+import { useWeatherAwareFoldTheme as useFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 import { reviewContentToPlainDisplay } from '@/lib/review-journal-format';
 import {
   REVIEW_BUILTIN_MODULE_KEYS,
@@ -28,8 +28,9 @@ import {
   type ViewStyle,
 } from 'react-native';
 
-/** 折页 · FOLD 设计令牌由 `@/constants/review-fold-theme` 统一提供 */
-export { FOLD_LIGHT, FOLD_DARK, foldFonts, useFoldTheme, type FoldPalette };
+/** 折页 · FOLD 设计令牌；`useFoldTheme` 走氛围感知（夜间墨绿玻璃） */
+export { FOLD_LIGHT, FOLD_DARK, foldFonts, type FoldPalette };
+export { useWeatherAwareFoldTheme as useFoldTheme } from '@/hooks/use-weather-aware-fold-theme';
 
 export function FoldCard({
   children,

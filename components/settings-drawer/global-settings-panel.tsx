@@ -701,7 +701,7 @@ export function GlobalSettingsPanel({
                 icon="public"
                 tone="pine"
                 title="博客"
-                hint="站内阅读 jaxz.xyz，打不开时可用浏览器打开"
+                hint="浏览文章与说说，支持发布"
                 onPress={() => go('/blog')}
                 palette={palette}
               />
@@ -717,33 +717,6 @@ export function GlobalSettingsPanel({
                 title="天气位置"
                 hint="自动定位，或手填城市名与经纬度"
                 onPress={() => go('/weather-location')}
-                palette={palette}
-                showDivider
-              />
-              <NavRow
-                icon="dashboard"
-                tone="pine"
-                title="桌面与状态栏"
-                hint="今日青蛙小组件、锁屏与灵动岛（仅 iOS）"
-                onPress={() => go('/widgets-center')}
-                palette={palette}
-                showDivider
-              />
-              <NavRow
-                icon="bug-report"
-                tone="sage"
-                title="API 请求监控"
-                hint="实时查看本机发出的接口请求与返回，支持复制详情"
-                onPress={() => go('/api-request-monitor')}
-                palette={palette}
-                showDivider
-              />
-              <NavRow
-                icon="content-cut"
-                tone="pine"
-                title="Vision 抠图测试"
-                hint="端上人像去背景（iOS 实机 / development build）"
-                onPress={() => go('/vision-cutout-test')}
                 palette={palette}
               />
             </GroupCard>

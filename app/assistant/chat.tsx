@@ -59,6 +59,7 @@ import {
   toUserMessage,
 } from '@/lib/app-feedback';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import React from 'react';
 import {
@@ -69,6 +70,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 const DELTA_FLUSH_MS = 48;
 
@@ -134,6 +136,9 @@ export default function AssistantChatScreen() {
   const [streamingMessageId, setStreamingMessageId] = React.useState<string | null>(null);
   const [thinking, setThinking] = React.useState<AgentThinkingState | null>(null);
   const [stickToBottomToken, setStickToBottomToken] = React.useState(0);
+  /** 切换会话时递增，驱动主内容区淡入过渡 */
+  const [paneEpoch, setPaneEpoch] = React.useState(0);
+  const paneAnimEnabledRef = React.useRef(false);
   const listRef = React.useRef<FlatList<ChatMessage> | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
   const bootRef = React.useRef(false);
@@ -719,22 +724,43 @@ export default function AssistantChatScreen() {
     ]);
   }, [pickChatImage]);
 
+  const bumpPane = React.useCallback(() => {
+    paneAnimEnabledRef.current = true;
+    setPaneEpoch(e => e + 1);
+  }, []);
+
   const onNewChat = React.useCallback(async () => {
     if (busyRef.current) return;
     abortRef.current?.abort();
-    const next = await createChatSession({ makeActive: true });
-    sessionRef.current = next;
-    setSession(next);
     setDraft('');
     clearPendingImage();
     setHistoryOpen(false);
     autoSentRef.current = false;
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    const current = sessionRef.current;
+    // 已在空白新对话：不叠空会话，只重播过渡给反馈
+    if (current && current.messages.length === 0) {
+      bumpPane();
+      toast.info('已在新对话中');
+      return;
+    }
+
+    const next = await createChatSession({ makeActive: true });
+    sessionRef.current = next;
+    setSession(next);
+    bumpPane();
     void refreshSummaries();
-  }, [clearPendingImage, refreshSummaries]);
+    toast.info('已开启新对话');
+  }, [bumpPane, clearPendingImage, refreshSummaries]);
 
   const onSelectSession = React.useCallback(
     async (sessionId: string) => {
       if (busyRef.current) return;
+      if (sessionRef.current?.id === sessionId) {
+        setHistoryOpen(false);
+        return;
+      }
       const found = await getChatSession(sessionId);
       if (!found) {
         toast.info('对话不存在或已过期');
@@ -746,9 +772,10 @@ export default function AssistantChatScreen() {
       setHistoryOpen(false);
       setDraft('');
       clearPendingImage();
+      bumpPane();
       void refreshSummaries();
     },
-    [clearPendingImage, refreshSummaries],
+    [bumpPane, clearPendingImage, refreshSummaries],
   );
 
   const onDeleteSession = React.useCallback(
@@ -759,10 +786,11 @@ export default function AssistantChatScreen() {
         sessionRef.current = next;
         setSession(next);
         setDraft('');
+        bumpPane();
       }
       void refreshSummaries();
     },
-    [refreshSummaries],
+    [bumpPane, refreshSummaries],
   );
 
   const onConfirmCard = React.useCallback(async (card: ActionCard) => {
@@ -898,29 +926,37 @@ export default function AssistantChatScreen() {
           void refreshSummaries();
           setHistoryOpen(true);
         }}
+        onOpenPrefs={() => router.push('/assistant/preferences' as never)}
       />
 
       <KeyboardAvoidingView
         style={styles.body}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={0}>
-        <ChatMessageList
-          messages={session?.messages ?? []}
-          listRef={listRef}
-          confirmingCardId={confirmingCardId}
-          onConfirmCard={card => void onConfirmCard(card)}
-          onCancelCard={onCancelCard}
-          onDraftFieldChange={onDraftFieldChange}
-          onClarifyChoice={onClarifyChoice}
-          streamingMessageId={streamingMessageId}
-          thinking={thinking}
-          stickToBottomToken={stickToBottomToken}
-          onSelectSkill={onSelectSkill}
-          skillsDisabled={busy}
-          recentSessions={summaries}
-          activeSessionId={session?.id ?? null}
-          onSelectRecentSession={id => void onSelectSession(id)}
-        />
+        <Animated.View
+          key={paneEpoch}
+          entering={
+            paneAnimEnabledRef.current ? FadeInDown.duration(280) : undefined
+          }
+          style={styles.pane}>
+          <ChatMessageList
+            messages={session?.messages ?? []}
+            listRef={listRef}
+            confirmingCardId={confirmingCardId}
+            onConfirmCard={card => void onConfirmCard(card)}
+            onCancelCard={onCancelCard}
+            onDraftFieldChange={onDraftFieldChange}
+            onClarifyChoice={onClarifyChoice}
+            streamingMessageId={streamingMessageId}
+            thinking={thinking}
+            stickToBottomToken={stickToBottomToken}
+            onSelectSkill={onSelectSkill}
+            skillsDisabled={busy}
+            recentSessions={summaries}
+            activeSessionId={session?.id ?? null}
+            onSelectRecentSession={id => void onSelectSession(id)}
+          />
+        </Animated.View>
         {showSuggestions ? (
           <AgentSuggestionChips onSelect={onSelectSuggestion} disabled={busy} />
         ) : null}
@@ -948,6 +984,7 @@ export default function AssistantChatScreen() {
         onSelect={id => void onSelectSession(id)}
         onDelete={id => void onDeleteSession(id)}
         onNewChat={() => void onNewChat()}
+        onOpenPrefs={() => router.push('/assistant/preferences' as never)}
       />
     </View>
   );
@@ -956,4 +993,5 @@ export default function AssistantChatScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, overflow: 'hidden' },
   body: { flex: 1, zIndex: 1 },
+  pane: { flex: 1 },
 });

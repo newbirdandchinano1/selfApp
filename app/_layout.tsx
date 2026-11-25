@@ -65,8 +65,6 @@ import {
   isNotificationCategoryAllowed,
 } from '@/lib/notification-center-settings';
 import { recordNotificationSystemDelivered } from '@/lib/notification-daily-budget';
-import { ApiDebugOverlay } from '@/components/api-debug-overlay';
-import { loadApiDebugEnabled } from '@/lib/api-debug';
 import {
   resolveNotificationCategoryFromData,
 } from '@/lib/notification-catalog';
@@ -224,7 +222,6 @@ function RootLayoutInner() {
           await loadPersistedIntakeTargets();
           await loadPersistedIntakeAssistantSelections();
           await loadThemePreference();
-          await loadApiDebugEnabled();
           await loadCloudBackupTokenCache();
           if (Platform.OS !== 'web') {
             startCloudPeriodicAlignScheduler();
@@ -243,18 +240,6 @@ function RootLayoutInner() {
               void import('@/lib/api/reminder-inbox-sync').then(m =>
                 m.syncReminderInboxFromServer(),
               );
-            }
-            if (Platform.OS === 'ios') {
-              const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
-              markHomeWidgetsDbReady();
-              const { ensureHomeWidgetsRegistered } = await import('@/lib/widgets/widget-bridge');
-              await ensureHomeWidgetsRegistered().catch((e) =>
-                console.warn('[widgets] register failed', e),
-              );
-              const { scheduleAllHomeWidgetsSync } = await import(
-                '@/lib/widgets/schedule-all-widget-sync'
-              );
-              scheduleAllHomeWidgetsSync('deferred-bootstrap');
             }
           } else {
             void import('@/lib/sync-manager').then((m) => m.SyncManager.start());
@@ -391,7 +376,6 @@ function RootLayoutInner() {
       // P0-03：历史 Worker 脏表迁入 API Outbox；日常写入只走 markApiTableDirty
       await hydrateCloudDirtyFromStorage();
       await hydrateApiDirtyFromStorage();
-      await loadApiDebugEnabled();
     };
 
     const run = async () => {
@@ -475,45 +459,8 @@ function RootLayoutInner() {
           m.syncReminderInboxFromServer(),
         );
       }
-      if (Platform.OS === 'ios') {
-        void import('@/lib/widgets/schedule-all-widget-sync').then(({ scheduleAllHomeWidgetsSync }) =>
-          scheduleAllHomeWidgetsSync('app-active'),
-        );
-      }
     });
     return () => sub.remove();
-  }, []);
-
-  // 库迁移完成后再放行组件推送，并立刻刷一遍（避免停在 INITIAL「打开 App 后同步」）
-  useEffect(() => {
-    if (Platform.OS !== 'ios' || !isDbReady) return;
-    void (async () => {
-      const { markHomeWidgetsDbReady } = await import('@/lib/widgets/widget-sync-ready');
-      markHomeWidgetsDbReady();
-      const { ensureHomeWidgetsRegistered } = await import('@/lib/widgets/widget-bridge');
-      await ensureHomeWidgetsRegistered().catch((e) =>
-        console.warn('[widgets] register failed', e),
-      );
-      const { scheduleAllHomeWidgetsSync } = await import('@/lib/widgets/schedule-all-widget-sync');
-      scheduleAllHomeWidgetsSync('db-ready');
-    })();
-  }, [isDbReady]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    let unsub = () => {};
-    void import('@/lib/schedule-events').then(({ subscribeFrogScheduleChanged }) => {
-      unsub = subscribeFrogScheduleChanged(() => {
-        void import('@/lib/widgets/frog-schedule-widget-sync').then(({ scheduleFrogScheduleWidgetSync }) =>
-          scheduleFrogScheduleWidgetSync('schedule-event'),
-        );
-      });
-    });
-    // 预注册全部小组件 + Live Activity layout
-    void import('@/lib/widgets/widget-bridge').then(({ ensureHomeWidgetsRegistered }) =>
-      ensureHomeWidgetsRegistered().catch(() => {}),
-    );
-    return () => unsub();
   }, []);
 
   useEffect(() => {
@@ -554,7 +501,6 @@ function RootLayoutInner() {
               options={{ gestureEnabled: false, headerBackButtonMenuEnabled: false }}
             />
             <Stack.Screen name="add-project" />
-            <Stack.Screen name="add-subtask" options={{ animation: 'fade' }} />
             <Stack.Screen name="pick-parent-task" />
             <Stack.Screen name="add-account" />
             <Stack.Screen name="account-detail" />
@@ -630,11 +576,6 @@ function RootLayoutInner() {
             <Stack.Screen name="recipe-edit/[id]" />
             <Stack.Screen name="recipe-categories" />
             <Stack.Screen name="recipe-basket" />
-            {__DEV__ ? <Stack.Screen name="zhipu-api-test" /> : null}
-            <Stack.Screen name="api-request-monitor" />
-            <Stack.Screen name="vision-cutout-test" />
-            <Stack.Screen name="widgets-center" />
-            <Stack.Screen name="widgets-center/[id]" />
             <Stack.Screen name="weather-location" options={{ headerShown: false }} />
             <Stack.Screen name="horoscope-detail" options={{ headerShown: false }} />
             <Stack.Screen name="category-sort" />
@@ -681,7 +622,6 @@ function RootLayoutInner() {
             }}
           />
         ) : null}
-        <ApiDebugOverlay />
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
       </ThemeProvider>
   );
